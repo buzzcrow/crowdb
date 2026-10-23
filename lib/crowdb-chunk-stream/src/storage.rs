@@ -11,6 +11,9 @@ use crowdb_protocol::frame::{parse_frame, FrameMagic};
 
 use crate::Result;
 
+mod unwritten;
+pub(crate) use unwritten::{append_tail_view, padded_end, validate_write_tail, EMPTY_TAIL};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CursorAdvance {
     Committed,
@@ -38,6 +41,7 @@ pub struct MirrorStripImage {
 }
 
 /// Ordered bounded strip images and the exact complete data boundary of one batch.
+/// A zero unwritten header follows complete data, clipped only at the hard limit.
 #[derive(Clone, Copy)]
 pub struct StreamMirrorWrite<'a> {
     pub physical_offset: u64,

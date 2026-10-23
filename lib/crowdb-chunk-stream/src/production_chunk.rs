@@ -338,7 +338,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         if StreamName::from_chunk_owner_key(&chunk.owner_key) != Some(stream_name) {
             return Err(StreamError::StaleWriter);
         }
-        let data_end = admit_write(&state, &chunk, writer_epoch, &write)?;
+        let data_end = admit_write(&state, &chunk, writer_epoch, &write, self.chunk_capacity_bytes)?;
         let physical_offset = write.physical_offset;
         let images = write.images;
         let flow = MirrorStripFlow::with_shared_failures(
@@ -383,6 +383,9 @@ impl StreamChunkStore for ProductionStreamChunkStore {
                 ));
             }
             progress::ensure_mirror_copies(&strip, self.mirror_copies)?;
+            if image_index == 0 {
+                progress::begin_write(&state)?;
+            }
             let mut pending_advance = None;
             let result = flow
                 .write(

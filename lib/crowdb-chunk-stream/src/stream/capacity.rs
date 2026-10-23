@@ -129,6 +129,10 @@ async fn grow_active(state: &mut WorkerState, bytes: usize) -> Result<bool> {
                 .map_err(|_| StreamError::InvalidRequest("append length exceeds addressable range".into()))?,
         )
         .ok_or_else(|| StreamError::InvalidRequest("append cursor overflows".into()))?;
+    if required_capacity > state.config.chunk_capacity_bytes {
+        return Ok(false);
+    }
+    let required_capacity = crate::storage::padded_end(required_capacity, state.config.chunk_capacity_bytes)?;
     if let Some(mut grown) = state
         .chunks
         .grow_mirrored(
@@ -158,6 +162,7 @@ pub(super) fn fits_active(state: &WorkerState, bytes: usize) -> bool {
         active
             .acknowledged_cursor
             .checked_add(bytes as u64)
+            .and_then(|end| crate::storage::padded_end(end, state.config.chunk_capacity_bytes).ok())
             .is_some_and(|end| end <= active.capacity)
     })
 }

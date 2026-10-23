@@ -877,6 +877,34 @@ adaptation rather than a new transport or storage engine.
   in `grouped-worker-{initial,suite}.log` identify stale fixture geometry and
   the now-rejected attempt to discard synchronized bytes using an older cursor.
 
+## Explicit unwritten tail on recycled media (partial T15)
+
+- Fresh allocation validates segment ownership/geometry and synchronizes a zero
+  14-byte header on all required mirrors before returning an attachment. Failed
+  initialization leaves no fresh-write token. This is allocation IO, not a
+  Stream checkpoint or an ordinary-append extra request.
+- Complete grouped batches carry the next zero header in their existing image
+  writes. Their cursor, compact locations and checkpoint checksum exclude it;
+  physical append traffic includes it. Capacity preparation reserves the full
+  header below the physical limit, growing first if necessary. At the hard limit
+  the header can be clipped or absent at an exact-capacity end.
+- MirrorShadow keeps at most two necessary strips across a pad boundary. It
+  truncates only the known at-most-14-byte zero pad at the exact prior complete
+  end. Append can overwrite a header split across strips without erasing any
+  prior acknowledged byte. Physical range/image validation and required copy
+  checks precede first-IO token consumption; a restored layout can retry after
+  a validation-only rejection. Uncertain first IO still cannot be blindly resumed.
+- Added real retained-media cases prefilled with nonzero recycled bytes: empty
+  and uncheckpointed-group observation, malformed/missing pad, failed initial
+  synchronization, exact physical capacity, a group ending seven bytes before
+  a strip edge, later growth and the next append. The existing repair case also
+  uses that exact split-pad boundary. Tail reads stop at the explicit header and
+  do not adopt stale media bytes. Ordinary object read bounds stay unchanged.
+- All 858 tests across 137 Protocol, Client, Stream, Chunk-KV, Chunk-KV-server and
+  ChunkDB targets pass, zero failed/ignored. All-target clippy and workspace fmt
+  pass. Receipts: `unwritten-tail-{initial,suite-two,focused,full,clippy-full,fmt}.log`.
+  Root/index wiring, excluded-owner cold recovery and lease integration remain.
+
 ## Immutable view and bounded repair-image wiring (partial T14/T20/T22)
 
 - Removed the duplicate whole-batch byte buffer. Frame header/payload/footer

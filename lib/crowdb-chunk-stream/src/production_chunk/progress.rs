@@ -34,6 +34,7 @@ pub(super) fn admit_write(
     chunk: &Chunk,
     writer_epoch: u64,
     write: &StreamMirrorWrite<'_>,
+    physical_limit: u64,
 ) -> Result<u64> {
     if chunk.writer_epoch != writer_epoch
         || state.sealed.load(Ordering::Acquire)
@@ -41,18 +42,10 @@ pub(super) fn admit_write(
     {
         return Err(StreamError::StaleWriter);
     }
-    let length = write
-        .images
-        .iter()
-        .try_fold(0_u64, |sum, image| sum.checked_add(image.data.len() as u64))
-        .ok_or_else(|| StreamError::InvalidRequest("stream write length overflows".into()))?;
-    let data_end = write
-        .physical_offset
-        .checked_add(length)
-        .ok_or_else(|| StreamError::InvalidRequest("stream write cursor overflows".into()))?;
-    if length == 0 || data_end != write.complete_end {
+    let data_end = crate::storage::validate_write_tail(*write, physical_limit)?;
+    if data_end > super::chunk_capacity(chunk)? {
         return Err(StreamError::InvalidRequest(
-            "stream images do not end at the complete append boundary".into(),
+            "stream write requires more allocated capacity".into(),
         ));
     }
     let mut prefix = [0; 15];
@@ -75,14 +68,25 @@ pub(super) fn admit_write(
     if !state.writer_started.load(Ordering::Acquire)
         && (write.physical_offset != 0
             || state.synchronized_cursor.load(Ordering::Acquire) != 0
-            || state
-                .fresh_grouped_allocation
-                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-                .is_err())
+            || !state.fresh_grouped_allocation.load(Ordering::Acquire))
     {
         return Err(StreamError::InvalidRequest(
             "first grouped write requires this owner's fresh allocation".into(),
         ));
     }
     Ok(data_end)
+}
+
+pub(super) fn begin_write(state: &ChunkStateView) -> Result<()> {
+    if !state.writer_started.load(Ordering::Acquire)
+        && state
+            .fresh_grouped_allocation
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    {
+        return Err(StreamError::InvalidRequest(
+            "first stream write has already started or is not owned".into(),
+        ));
+    }
+    Ok(())
 }

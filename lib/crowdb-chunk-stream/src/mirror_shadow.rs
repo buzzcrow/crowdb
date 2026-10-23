@@ -49,7 +49,9 @@ impl MirrorShadow {
             .checked_add(length)
             .ok_or_else(|| StreamError::InvalidRequest("stream write offset overflows".into()))?;
         if length == 0
-            || complete_end != end
+            || complete_end > end
+            || complete_end <= physical_offset
+            || end - complete_end > crate::storage::EMPTY_TAIL.len() as u64
             || (self.chunk_id == Some(chunk_id) && self.complete_end != physical_offset)
         {
             return Err(StreamError::Corruption(
@@ -114,7 +116,7 @@ impl MirrorShadow {
         } else {
             None
         };
-        let buffer = match buffer {
+        let mut buffer = match buffer {
             Some(buffer) => buffer,
             None if offset == 0 => {
                 BytesMut::with_capacity(usize::try_from(STREAM_STRIP_BYTES).expect("bounded strip"))
@@ -125,11 +127,15 @@ impl MirrorShadow {
                 ))
             }
         };
-        if buffer.len() != offset {
+        if buffer.len() < offset
+            || buffer.len() - offset > crate::storage::EMPTY_TAIL.len()
+            || buffer[offset..].iter().any(|byte| *byte != 0)
+        {
             return Err(StreamError::Corruption(
                 "mirror shadow does not match synchronized cursor".into(),
             ));
         }
+        buffer.truncate(offset);
         Ok(buffer)
     }
 

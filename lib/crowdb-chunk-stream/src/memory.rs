@@ -103,6 +103,11 @@ impl MemoryStreamStore {
             state: Arc::new(Mutex::new(MemoryState::default())),
             chunk_capacity: FrameLayout::StreamGroupV2
                 .physical_length(chunk_capacity)
+                .and_then(|length| {
+                    length
+                        .checked_add(crate::storage::EMPTY_TAIL.len() as u64)
+                        .ok_or(crowdb_protocol::frame::FrameError::LengthOverflow)
+                })
                 .expect("valid test chunk geometry"),
             next_chunk: AtomicU64::new(1),
             metadata_publishes: Arc::new(AtomicU64::new(0)),
@@ -231,6 +236,11 @@ impl MemoryStreamStore {
         prefix.extend_from_slice(&data);
         let complete_end = u64::try_from(prefix.len())
             .map_err(|_| StreamError::InvalidRequest("test write overflows".into()))?;
+        let padded = crate::storage::padded_end(complete_end, self.current_capacity(chunk_id).await?)?;
+        prefix.resize(
+            usize::try_from(padded).map_err(|_| StreamError::InvalidRequest("test tail overflows".into()))?,
+            0,
+        );
         let strip_bytes = usize::try_from(crowdb_chunk_client::STREAM_STRIP_BYTES).expect("bounded strip");
         let first = start / strip_bytes * strip_bytes;
         let images: Vec<_> = (first..prefix.len())
@@ -393,7 +403,7 @@ impl StreamChunkStore for MemoryStreamStore {
         let grouped = crowdb_protocol::frame::parse_header(&prefix)
             .is_ok_and(|header| header.magic == crowdb_protocol::frame::FrameMagic::StreamV2)
             && prefix.get(14) == Some(&1);
-        if write.complete_end != end as u64 {
+        if crate::storage::validate_write_tail(write, chunk.capacity)? != end as u64 {
             return Err(StreamError::InvalidRequest(
                 "image bytes differ from complete append end".into(),
             ));
@@ -410,7 +420,7 @@ impl StreamChunkStore for MemoryStreamStore {
             chunk.bytes[cursor..next].copy_from_slice(&image.data);
             cursor = next;
         }
-        chunk.synchronized_cursor = chunk.synchronized_cursor.max(end as u64);
+        chunk.synchronized_cursor = chunk.synchronized_cursor.max(write.complete_end);
         Ok(())
     }
 

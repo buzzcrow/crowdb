@@ -21,6 +21,7 @@ async fn configured_replica_count_cannot_silently_accept_a_two_copy_layout() {
             .allocate_mirrored(name, 9, crowdb_chunk_stream::StreamPurpose::Stream)
             .await
             .unwrap();
+        let original = allocator.chunk.lock().unwrap().clone().unwrap();
         {
             let mut guard = allocator.chunk.lock().unwrap();
             let chunk = guard.as_mut().unwrap();
@@ -41,6 +42,10 @@ async fn configured_replica_count_cannot_silently_accept_a_two_copy_layout() {
             .unwrap()
             .concat(),
         );
+        let complete_end = data.len() as u64;
+        let mut padded = data.to_vec();
+        padded.extend_from_slice(&[0; 14]);
+        let data = Bytes::from(padded);
         let result = store
             .write_mirrors(
                 name,
@@ -48,7 +53,7 @@ async fn configured_replica_count_cannot_silently_accept_a_two_copy_layout() {
                 active.chunk_id,
                 crowdb_chunk_stream::StreamMirrorWrite {
                     physical_offset: 0,
-                    complete_end: data.len() as u64,
+                    complete_end,
                     images: &[MirrorStripImage {
                         block_offset: 0,
                         data: data.clone(),
@@ -62,8 +67,18 @@ async fn configured_replica_count_cannot_silently_accept_a_two_copy_layout() {
             "configured {copies} copies: result={result:?}, synchronized copies={}",
             disks.fsyncs.load(Ordering::Relaxed)
         );
-        assert_eq!(disks.fsyncs.load(Ordering::Relaxed), 0);
+        assert_eq!(disks.fsyncs.load(Ordering::Relaxed), copies as usize);
         assert_eq!(store.durable_cursor(active.chunk_id, 9).await.unwrap().offset, 0);
+        {
+            let mut guard = allocator.chunk.lock().unwrap();
+            let current = guard.as_mut().unwrap();
+            current.strips = original.strips;
+            current.modify_ts += 1;
+        }
+        store.durable_cursor(active.chunk_id, 9).await.unwrap();
+        let mut retry = TestGroupedStrip::default();
+        retry.append(&store, name, 9, active.chunk_id, b"record").await;
+        assert_eq!(disks.fsyncs.load(Ordering::Relaxed), 2 * copies as usize);
     }
 }
 
@@ -170,7 +185,7 @@ async fn a_grouped_chunk_rejects_removed_magic_after_synchronized_progress() {
             .await,
         Err(crowdb_chunk_stream::StreamError::InvalidRequest(_))
     ));
-    assert_eq!(disks.fsyncs.load(Ordering::Acquire), 2);
+    assert_eq!(disks.fsyncs.load(Ordering::Acquire), 4);
     assert_eq!(store.durable_cursor(active.chunk_id, 9).await.unwrap().offset, 0);
 }
 
@@ -211,6 +226,10 @@ async fn a_cold_adapter_cannot_overwrite_the_previous_owners_uncheckpointed_grou
     )
     .unwrap();
     let bytes = Bytes::from(views.concat());
+    let complete_end = bytes.len() as u64;
+    let mut padded = bytes.to_vec();
+    padded.extend_from_slice(&[0; 14]);
+    let bytes = Bytes::from(padded);
     assert!(matches!(
         cold.write_mirrors(
             name,
@@ -218,7 +237,7 @@ async fn a_cold_adapter_cannot_overwrite_the_previous_owners_uncheckpointed_grou
             active.chunk_id,
             crowdb_chunk_stream::StreamMirrorWrite {
                 physical_offset: 0,
-                complete_end: bytes.len() as u64,
+                complete_end,
                 images: &[MirrorStripImage {
                     block_offset: 0,
                     data: bytes.clone(),
@@ -230,5 +249,5 @@ async fn a_cold_adapter_cannot_overwrite_the_previous_owners_uncheckpointed_grou
         Err(crowdb_chunk_stream::StreamError::InvalidRequest(_))
     ));
     assert_eq!(*disks.bytes.lock().unwrap(), retained);
-    assert_eq!(disks.fsyncs.load(Ordering::Acquire), 2);
+    assert_eq!(disks.fsyncs.load(Ordering::Acquire), 4);
 }

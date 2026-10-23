@@ -304,6 +304,21 @@ CRC, chunk identity, and address arithmetic. It tracks a tentative frame cursor
 inside a group and advances the recovered physical cursor and logical tail only
 after validating the entire group. It then adds one compact location.
 
+Before publishing a fresh attachment, synchronize a zero 14-byte unwritten
+header on every required mirror. Each append carries the next zero header in
+the same synchronized data write, after its complete groups. These bytes do not
+enter append lengths, locations, checkpoints or their checksum. A subsequent
+append overwrites the known header at the exact preceding complete boundary.
+The repair shadow retains at most two strips when that header crosses an edge.
+
+Capacity preparation reserves the whole header while the chunk can still grow;
+it grows before writing if the next data end would leave too little space.
+Clipping is legal only at the physical chunk limit. This preserves an explicit
+unwritten boundary across later growth on recycled media, without an extra
+commit frame or append RPC. Failed empty initialization exposes no writable
+allocation. Input/availability validation failures before the first data IO do
+not consume that owner's fresh-write admission.
+
 An unwritten suffix, incomplete final frame, or incomplete group bounds the
 candidate prefix at the previous complete append. No later group can skip that
 hole. Individually valid frames in an incomplete group do not advance the tail.

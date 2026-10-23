@@ -31,6 +31,9 @@ mod local_progress;
 #[path = "production_chunk_test/scope.rs"]
 mod scope;
 
+#[path = "production_chunk_test/unwritten.rs"]
+mod unwritten;
+
 #[path = "common/grouped_write.rs"]
 mod grouped_write;
 use grouped_write::TestGroupedStrip;
@@ -441,7 +444,7 @@ async fn production_store_writes_reads_advances_and_releases_one_mirror_chunk() 
         .unwrap();
     let mut strip = TestGroupedStrip::default();
     let end = strip.append(&store, name, 9, active.chunk_id, b"stream").await;
-    assert_eq!(disks.fsyncs.load(Ordering::Relaxed), 2);
+    assert_eq!(disks.fsyncs.load(Ordering::Relaxed), 4);
     assert_eq!(
         store
             .advance_cursor(name, 9, active.chunk_id, 0, end, 17)
@@ -505,6 +508,10 @@ async fn production_store_grows_and_writes_across_mirror_strips() {
             .unwrap()
             .concat(),
     );
+    let complete_end = data.len() as u64;
+    let mut padded = data.to_vec();
+    padded.extend_from_slice(&[0; 14]);
+    let data = Bytes::from(padded);
     let boundary = usize::try_from(active.capacity).unwrap();
     let images: Vec<_> = (0..data.len())
         .step_by(boundary)
@@ -524,13 +531,13 @@ async fn production_store_grows_and_writes_across_mirror_strips() {
             active.chunk_id,
             crowdb_chunk_stream::StreamMirrorWrite {
                 physical_offset: 0,
-                complete_end: data.len() as u64,
+                complete_end,
                 images: &images,
             },
         )
         .await
         .unwrap();
-    let end = data.len() as u64;
+    let end = complete_end;
     assert_eq!(
         store
             .advance_cursor(name, 9, active.chunk_id, 0, end, 0)
@@ -716,7 +723,10 @@ async fn stream_repair_preserves_a_batch_crossing_mirror_strips() {
     )
     .await
     .unwrap();
-    let prefix = Bytes::from(vec![b'a'; 1024 * 1024 - 60]);
+    let prefix = Bytes::from(vec![
+        b'a';
+        16 * crowdb_protocol::frame::MAX_FRAME_GROUP_PAYLOAD_BYTES - 7
+    ]);
     stream.append(std::slice::from_ref(&prefix)).await.unwrap();
     disks.fail_disk_once.store(11, Ordering::Release);
     let suffix = Bytes::from_static(b"crossing-the-boundary");

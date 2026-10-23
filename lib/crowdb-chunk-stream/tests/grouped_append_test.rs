@@ -39,7 +39,7 @@ async fn every_append_has_one_location_and_subranges_read_only_intersecting_fram
         4 * 1024 * 1024,
     ];
     let mut physical = 0_u64;
-    for size in sizes {
+    for (index, size) in sizes.into_iter().enumerate() {
         let payload = Bytes::from(
             (0..size)
                 .map(|index| u8::try_from(index % 251).unwrap())
@@ -50,7 +50,10 @@ async fn every_append_has_one_location_and_subranges_read_only_intersecting_fram
         let active = manifest.active.as_ref().unwrap();
         physical += FrameLayout::StreamGroupV2.physical_length(size as u64).unwrap();
         assert_eq!(active.acknowledged_cursor, physical);
-        assert_eq!(stream.metrics().physical_append_bytes, physical);
+        assert_eq!(
+            stream.metrics().physical_append_bytes,
+            physical + 14 * (index as u64 + 1)
+        );
         for offset in [0, size / 2, size - 1] {
             let count = (size - offset).min(101);
             let before = stream.metrics().physical_read_requests;

@@ -3,9 +3,10 @@
 
 //! Fresh attributed Stream/Wal allocation before attachment publication.
 
+use bytes::Bytes;
 use crowdb_chunk_client::STREAM_STRIP_BYTES;
 use crowdb_protocol::chunk_stream::StreamPurpose;
-use crowdb_protocol::chunkdb::rpc::{AllocateChunkRequest, Chunk, ChunkState, StripType};
+use crowdb_protocol::chunkdb::rpc::{AllocateChunkRequest, Chunk, ChunkState, Strip, StripType};
 
 use super::{
     io_error, progress, ActiveChunkDescriptor, Ordering, ProductionStreamChunkStore, Result, StreamError,
@@ -52,9 +53,9 @@ impl ProductionStreamChunkStore {
                 "allocator reused a known stream chunk identity".into(),
             ));
         }
-        self.install(chunk)?
-            .fresh_grouped_allocation
-            .store(true, Ordering::Release);
+        let state = self.install(chunk.clone())?;
+        self.initialize_empty_tail(&chunk).await?;
+        state.fresh_grouped_allocation.store(true, Ordering::Release);
         Ok(ActiveChunkDescriptor {
             chunk_id,
             physical_start: 0,
@@ -62,6 +63,48 @@ impl ProductionStreamChunkStore {
             acknowledged_cursor: 0,
             capacity: STREAM_STRIP_BYTES,
         })
+    }
+
+    async fn initialize_empty_tail(&self, chunk: &Chunk) -> Result<()> {
+        let strip = &chunk.strips[0];
+        let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
+            return Err(StreamError::Corruption(
+                "fresh stream allocation is not mirrored".into(),
+            ));
+        };
+        let unit_bytes = u64::from(strip.unit_kb) * 1024;
+        for (index, segment) in mirror.segments.iter().enumerate() {
+            if segment.disk_id.is_none()
+                || segment.owner_chunk != chunk.id
+                || segment.allocation_ts == 0
+                || u64::from(segment.unit_count) * unit_bytes < STREAM_STRIP_BYTES
+                || segment
+                    .unit_offset
+                    .checked_add(u64::from(segment.unit_count))
+                    .and_then(|end| end.checked_mul(unit_bytes))
+                    .is_none()
+                || mirror.segments[..index]
+                    .iter()
+                    .any(|previous| previous.disk_id == segment.disk_id)
+            {
+                return Err(StreamError::Corruption(
+                    "fresh stream segment identity or geometry is invalid".into(),
+                ));
+            }
+        }
+        let writes = mirror.segments.iter().map(|segment| {
+            self.disk_writer.write_synchronized_at_byte_offset(
+                segment,
+                unit_bytes,
+                0,
+                Bytes::from_static(&crate::storage::EMPTY_TAIL),
+            )
+        });
+        let results = futures::future::join_all(writes).await;
+        for result in results {
+            result.map_err(io_error)?;
+        }
+        Ok(())
     }
 }
 

@@ -30,6 +30,11 @@ impl TestGroupedStrip {
                 .collect::<Vec<_>>(),
         );
         self.prefix.extend_from_slice(&bytes);
+        let complete_end = self.prefix.len() as u64;
+        let mut full_image = self.prefix.clone();
+        full_image.extend_from_slice(&[0; 14]);
+        let mut written = bytes.to_vec();
+        written.extend_from_slice(&[0; 14]);
         store
             .write_mirrors(
                 name,
@@ -37,11 +42,11 @@ impl TestGroupedStrip {
                 chunk,
                 crowdb_chunk_stream::StreamMirrorWrite {
                     physical_offset: offset,
-                    complete_end: offset + bytes.len() as u64,
+                    complete_end,
                     images: &[MirrorStripImage {
                         block_offset: offset,
-                        data: bytes,
-                        full_image: Bytes::copy_from_slice(&self.prefix),
+                        data: Bytes::from(written),
+                        full_image: Bytes::from(full_image),
                     }],
                 },
             )

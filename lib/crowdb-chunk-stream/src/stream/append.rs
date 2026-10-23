@@ -114,6 +114,7 @@ async fn write_batch(
         &active,
         state.tail_view.load(Ordering::Acquire),
         requests,
+        state.config.chunk_capacity_bytes,
     )
     .map_err(BatchFailure::Other)?;
     let new_cursor = encoded.physical_end;
