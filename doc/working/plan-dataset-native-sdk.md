@@ -49,16 +49,22 @@ bounded owner-backed delivery and independently packaged Python bindings.
 
 ## Python and acceptance
 
-- [~] **Add optional native binding**: main-workspace PyO3 extension
+- [x] **Add optional native binding**: main-workspace PyO3 extension
   `crowdb_dataset_native`, with owned runtime, Dataset control/read operations,
   retained immutable payload objects, explicit ack/cancel/close and exception
   mapping. Keep `sdk/` HTTP distribution free of native storage dependencies.
   Files: `lib/crowdb-sdk-native-python/`, `tools/sdk/`, workspace manifest.
-- [ ] **Verify semantics**: shared authority tests and native facade tests for
+- [x] **Verify semantics**: shared authority tests and native facade tests for
   projection/missing/tombstone, Split/revision/worker selection, explicit ack
   replay, TTL, corruption/truncation, cancellation, dropped pulls, held memory,
   stale routing, partial transport failure and S3/runtime coexistence. Files:
   native and access-dataset `tests/`, access-server parity tests.
+- [~] **Bound shared KV retention**: retain acceptor nodes through concurrent
+  lookup/reclamation, reclaim only below an all-learner and durable-snapshot
+  certificate, and propagate that certificate to followers with membership
+  and term fencing. Verify RPC, maintenance, replay and concurrent access;
+  prove the unchanged full workload no longer OOMs before closing this task.
+  Files: `lib/crowdb-kv/src/{paxos,cluster,rpc}/`, related tests, protocol schema.
 - [ ] **Run real services and compare**: use the same corpus/snapshot for HTTP
   and native Rust/Python, restart storage, validate explicit resume and held
   buffers, TCP and local shared-HCA policies. Run the same pinned workload and
@@ -215,3 +221,139 @@ verifies every original payload address survives the durable writer, while
 partial allocation failure, short interior frames and mixed budgets release
 their credits correctly. Six focused producer/upload tests pass. Real HCA
 and common-snapshot semantics are still pending.
+
+The packaging, namespace and producer-chain fixes are committed in `d3e285b2`.
+All native SDK target tests, native/Python all-feature clippy, fmt, rs-lint and
+19 image-identity tests pass. A first unprivileged suite invocation could not
+open the TCP fixture listener; the authorized socket-capable rerun passes.
+
+Strict same-host HCA acceptance passes in
+`native-dataset-hca/3d1ddb03a4f148d2917300cb6f97a2c1`: 4-MiB multipart
+publication, Split read, durable owner cleanup, restart, registered receive
+ownership and held buffers after runtime shutdown. Fallback, protocol, CQ,
+send and receive-post error counters stay zero. This is local HCA functional
+evidence, not a physical multi-host throughput claim.
+
+Long-run OOM diagnosis also finds that no production caller trims/reclaims
+Paxos acceptor history. Simply enabling `PxSlotList` reclamation is unsafe:
+its documented late-pin race and `get_or_prepare_slot`'s unpinned returned
+reference permit a reader to outlive its node. The bounded retention fix must
+first give each acceptor access a retained node, then reclaim only below all
+learners' applied frontier and durable snapshots. Heartbeat progress from
+peers completing after the first quorum must be retained, and followers need
+an explicit membership-fenced reclamation watermark distinct from the commit
+frontier. Keep the exact failed workload and 2-GiB limits for verification.
+
+Installed Python semantics and restart acceptance passes in
+`dataset-workload/988b49756a1841e0862b63b75977a222`, snapshot
+`afc3c2c1c2be4960aa78b894f924d11c`. HTTP publishes all eight payload sizes;
+Python verifies exact bytes, disjoint workers, explicit ack/unacked replay,
+65-second idle across the 60-second lease TTL, held-budget pressure/cancel,
+multipart publication, Split, owner cleanup and retained buffers after close.
+This `--semantics-only` run is functional evidence, not performance acceptance.
+
+## Handoff 2026-10-23
+
+### Scope and pause
+
+- User requested a handoff, commit of completed work, and deferred long-running
+  acceptance. Stop after the commit; do not start another image build or workload.
+- Branch: `task-rdma`. R5 is complete; retain its accepted evidence in
+  [RDMA acceptance record](plan-rdma.md). Physical multi-node testing is only a
+  refined [independent plan](plan-rdma-multi-node.md), not a remaining R5 gate.
+- R220 is not complete. Keep its requirement/backlog entry and this plan until
+  full workload acceptance and final cleanup. Do not restart R242 or R5 work.
+
+### Completed implementation and evidence
+
+- Native Dataset implementation: `f5fefdfe`; common workload: `982c1809`.
+  Shared read-lease CAS fixes: `93aefa43`, `4127a966`, `a8e1571e` with focused
+  competing-renewal regressions. HTTP contention no longer returns 409 in the
+  recorded full HTTP runs; the subsequent failure is metadata process OOM.
+- Packaging/default namespace/bounded multi-owner producer fixes: `d3e285b2`.
+  Python fills bounded final-frame owners once; multi-part producer chains
+  preserve original pointers through the durable writer. Ordinary Python input
+  still needs that initial copy; do not claim a completely copy-free upload.
+- Ordinary Dataset E2E passes in
+  `container-e2e/run-97e635e2d2054f1b8f6ff8d44e7a475c`.
+- Strict local HCA passes in
+  `native-dataset-hca/3d1ddb03a4f148d2917300cb6f97a2c1`, using
+  `rocep35s0f0` / `10.200.1.1`. Python TCP semantics passes in the run above.
+- Artifact paths are relative to `.crowdb-runtime/artifacts/`. Prior images and
+  artifacts remain evidence for their own source versions, not the new KV fix.
+
+### KV retention change in this handoff commit
+
+- `PxAcceptor` uses the existing lock-free `SkipMap`, retaining its `Entry`
+  throughout node access. The old `PxSlotList` late-pin/unpinned-reference paths
+  are no longer used by the acceptor. Late requests below trim are rejected;
+  outstanding cloned payload owners survive reclamation.
+- `group_retention` derives a certificate capped by every configured learner's
+  applied progress, local durable snapshot and a durable voting witness.
+  Singleton voting groups need only local durability but still wait for their
+  non-voting learners. Replies completing after quorum now update progress.
+- Heartbeats carry an exclusive GC boundary and membership epoch. Followers
+  retain epoch, term, leader and watermark together in `ArcSwapOption`, then
+  cap reclamation by local applied/snapshot state. Epoch adoption cannot relabel
+  an old certificate. Membership replacement and new tenure reset evidence.
+- Maintenance drives acceptor trim/reclaim and WAL segment GC. Status exposes
+  `acceptor.trim_before_slot` and `acceptor.retained_slots`. RPC heartbeat
+  implementation is split into child modules; protocol fields are appended.
+- Focused verification passes: four group retention tests, thirteen acceptor
+  tests including concurrent readers/removers and retained payload lifetime.
+  `pixi run clean-env && pixi run cargo test -p crowdb-kv -p crowdb-protocol
+  --all-targets` passes, including election, group, WAL/replay and RPC tests.
+  Scoped KV/protocol all-feature clippy, workspace `rs-lint`, Rust formatting
+  and `git diff --check` pass. No C++ source changed in this commit.
+- No new lock, dependency or unsafe exception is introduced. Generic slot-list
+  reclamation remains a separate utility; this change does not establish that
+  utility's general concurrent-reclamation safety.
+- Long-run memory/performance acceptance is still pending. The ordered map
+  adds per-slot allocation/lookup overhead; do not describe it as a measured
+  throughput improvement. A stalled configured learner can still hold GC back.
+
+### Next work, in order
+
+1. Resume from the committed branch and check `git status` before editing.
+   Rebuild/import the server image from the current source before real-service
+   acceptance; the currently accepted image predates the retention change.
+2. Run the unchanged complete HTTP/native Rust/native Python workload. Keep
+   client CPU 2, server CPUs 4-15, metadata memory 2 GiB, all eight payload sizes,
+   warmups/repeats and exact-byte checks. The runner pins one common snapshot.
+   Do not use `--semantics-only` as the performance gate; do not raise memory,
+   shorten the workload, extend deadlines or add request retries to obtain a pass.
+3. Inspect retained slots, trim progress, per-container RSS/CPU and exit status
+   alongside throughput and per-size tails. Compare phase/state effects: an
+   HTTP phase earlier in the same accumulating fixture is not an isolated
+   transport-speed baseline. Report trade-offs even if native TPS does not win.
+4. If memory is still unbounded, diagnose the first growing owner. Separate
+   known remaining amplification: `ChunkStream::publish_state` rewrites all
+   historical extent pages per append, and `Partition::reclaim_published_checkpoint`
+   has no production caller. These paths are not changed by this commit.
+5. After final behavior changes, run affected real-service restart/TCP/local-HCA
+   acceptance and applicable gates. Only then remove the R220 detail, backlog
+   entry and this plan in a cleanup commit, moving final accepted evidence to
+   the retained record and fixing its links.
+
+Commands from the repository root (run long commands asynchronously and poll):
+
+```bash
+pixi run image-build --privileged
+pixi run image-import target/crowdb.oci.tar --image crowdb-node:dev
+pixi run -- python tools/sdk/dataset_workload.py
+pixi run -- python tools/rdma/run-native-dataset.py --address 10.200.1.1 --device rocep35s0f0
+pixi run clean-env && pixi run test-e2e-dataset
+```
+
+The currently imported pre-retention image is
+`sha256:6a840db3f06d2247d5827b2ed59e75fca3f547bb6427d8f6460db6831469f242`
+with revision `d3e285b2`; the runner must reject it after the server-source change.
+Docker, HCA and socket-based tests require the existing authorized execution
+environment. Do not run heavy builds concurrently with measured trials.
+
+The failed full comparison to reproduce is
+`dataset-workload/8cf0653d34f74e0c955f5ac5642d1316`: HTTP six trials and native
+Rust singleton trials completed, then native multi-flight failed with a Chunk-KV
+deadline; metadata replicas 1 and 2 exited 137 with `OOMKilled=true` at 2 GiB.
+Those partial rates are not accepted comparative performance. There is no
+remaining user design decision and no requirement `Blocked` condition.

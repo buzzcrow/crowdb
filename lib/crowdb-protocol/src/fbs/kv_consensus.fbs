@@ -186,6 +186,8 @@ table FBHeartbeatRequest {
     committed_safe_slot:uint64;
     lease_grant_until_ms_mono:uint64;
     t_send_ms_mono:uint64;
+    gc_before_slot:uint64;
+    gc_membership_epoch:uint64;
 }
 
 table FBHeartbeatResponse {

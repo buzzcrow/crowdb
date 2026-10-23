@@ -202,6 +202,8 @@ pub struct HeartbeatRequest {
     pub committed_safe_slot: u64,
     pub lease_grant_until_ms_mono: u64,
     pub t_send_ms_mono: u64,
+    pub gc_before_slot: u64,
+    pub gc_membership_epoch: u64,
     pub request_id: u64,
     pub request_create_ms: u64,
 }

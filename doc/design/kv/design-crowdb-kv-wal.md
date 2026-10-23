@@ -478,13 +478,16 @@ WAL GC is the mechanism that keeps disk usage bounded. It interacts with snapsho
 
 ### 7.1 GC watermark
 
-The watermark for a group's WAL GC is:
+The local watermark is `min(reclamation_certificate, local_contiguous_applied,
+local_durable_snapshot)`. The leader derives the certificate from every
+configured learner's applied progress and durable snapshots on itself plus a
+voting peer (local durability alone for a singleton voting group). Followers
+receive the certificate in a heartbeat bound to the current membership epoch,
+term and known voting leader. A missing certificate or local snapshot gives zero.
 
-```
-   gc_slot = min(safe_slot, snapshot_slot)
-```
-
-Records with `slot < gc_slot` are eligible for GC. The two-watermark rule is justified in [`design-crowdb-kv-slot.md`](design-crowdb-kv-slot.md) §11.
+Only records with `slot < gc_slot` are eligible. The same boundary trims
+in-memory acceptor history; retained readers keep their owners alive. The full
+contract is in [slot retention](design-crowdb-kv-slot.md#11-interaction-with-snapshot-and-wal-gc).
 
 ### 7.2 GC granularity
 
@@ -499,7 +502,7 @@ GC is triggered by:
 
 ### 7.4 Interaction with leader change
 
-After leader change, the new leader may temporarily not know other acceptors' `contiguous_applied`, so `safe_slot` is conservatively low. GC pauses until safe-slot has stabilized. This is fine: GC is asynchronous to correctness.
+After a leader or membership change, fresh progress and a matching certificate must be established. Until then reclamation pauses. Snapshot creation remains local and can continue independently.
 
 ### 7.5 Force-retain window
 

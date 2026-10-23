@@ -19,7 +19,11 @@ pub mod group_operations;
 pub(crate) mod group_owner_fence;
 pub mod group_prepare;
 pub mod group_propose;
+<<<<<<< HEAD
 mod group_routes;
+=======
+mod group_retention;
+>>>>>>> 0f5d94a8 (Reclaim snapshot-backed Paxos history with retained readers)
 #[cfg(feature = "test-util")]
 mod group_tests;
 pub mod kv_server;

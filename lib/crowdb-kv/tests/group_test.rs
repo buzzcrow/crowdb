@@ -120,6 +120,10 @@ mod safe_slot;
 mod snapshot_slot;
 
 #[cfg(feature = "test-util")]
+#[path = "group_test/retention_test.rs"]
+mod retention;
+
+#[cfg(feature = "test-util")]
 #[path = "group_test/maintenance_test.rs"]
 mod maintenance;
 

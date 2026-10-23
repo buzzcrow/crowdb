@@ -4,7 +4,7 @@
 //! Acceptor state machine for one consensus group.
 //!
 //! Implements P1 M1 consensus logic. Holds per-slot promised and accepted
-//! state in a lock-free `SlotList`; persistence is added in P2 (WAL).
+//! state in a lock-free ordered map with retained entries during reclamation.
 //!
 //! Invariants enforced:
 //! - **C2 — Ballot monotonic per slot.** `prepare`/`accept` reject any ballot strictly
@@ -13,8 +13,8 @@
 #![allow(unsafe_code)]
 
 use crate::paxos::roles::{Acceptor, PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply, SlotIndex};
-use crate::paxos::slot_list::PxSlotList;
-use crate::paxos::slot_node::{get_or_prepare_slot, PxSlotNode};
+use crate::paxos::slot_node::PxSlotNode;
+use crossbeam_skiplist::{map::Entry, SkipMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -25,7 +25,8 @@ enum PxAcceptResult {
 
 #[derive(Default)]
 pub struct PxAcceptor {
-    slot_list: PxSlotList<PxSlotNode>,
+    slots: SkipMap<SlotIndex, PxSlotNode>,
+    trim_slot: AtomicU64,
     /// Highest slot index ever opened on this acceptor via `prepare` or
     /// `accept`. Used as the bulk-Phase-1 ceiling input so a new leader
     /// can re-Prepare every slot a previous leader may have touched here,
@@ -47,13 +48,11 @@ impl PxAcceptor {
 
     #[must_use]
     pub fn accepted_log_tip(&self) -> Option<(SlotIndex, u64)> {
-        let highest = self.highest_seen_slot();
-        for slot in (1..=highest).rev() {
-            if let Some(entry) = self.slot_list.get(slot).and_then(|node| node.accepted_cloned()) {
-                return Some((entry.slot, entry.term));
-            }
-        }
-        None
+        self.slots.range(self.trim_slot()..).rev().find_map(|node| {
+            node.value()
+                .accepted_cloned()
+                .map(|entry| (entry.slot, entry.term))
+        })
     }
 
     /// Slot-ordered iteration over accepted entries in
@@ -66,19 +65,20 @@ impl PxAcceptor {
     /// slot-ordered op log bounded by `contiguous_applied`.
     ///
     /// Lock-free and safe under concurrent writers: each yielded entry
-    /// is a clone taken under a chunk read pin.
+    /// is a clone taken while retaining the map entry.
     pub fn accepted_iter_range(
         &self,
         start_slot: SlotIndex,
         end_slot_exclusive: SlotIndex,
     ) -> Vec<(SlotIndex, PxLogEntry)> {
-        let mut out = Vec::new();
-        for (slot, guard) in self.slot_list.iter_range(start_slot, end_slot_exclusive) {
-            if let Some(entry) = guard.accepted_cloned() {
-                out.push((slot, entry));
-            }
+        let start = start_slot.max(self.trim_slot());
+        if start >= end_slot_exclusive {
+            return Vec::new();
         }
-        out
+        self.slots
+            .range(start..end_slot_exclusive)
+            .filter_map(|node| node.value().accepted_cloned().map(|entry| (*node.key(), entry)))
+            .collect()
     }
 
     /// Current trim slot — slots below this have been GC'd and are no
@@ -86,7 +86,26 @@ impl PxAcceptor {
     /// when `min_slot < trim_slot`.
     #[must_use]
     pub fn trim_slot(&self) -> SlotIndex {
-        self.slot_list.trim_slot()
+        self.trim_slot.load(Ordering::Acquire)
+    }
+
+    #[must_use]
+    pub fn retained_slots(&self) -> usize {
+        self.slots.len()
+    }
+
+    fn open_slot(&self, slot: SlotIndex) -> Option<Entry<'_, SlotIndex, PxSlotNode>> {
+        if slot < self.trim_slot() {
+            return None;
+        }
+        let node = self.slots.get_or_insert_with(slot, PxSlotNode::default);
+        // A concurrent trim may have passed the initial admission check.
+        // Retaining this entry keeps all node fields alive through rejection.
+        if slot < self.trim_slot() {
+            node.remove();
+            return None;
+        }
+        Some(node)
     }
 
     fn bump_highest_seen(&self, slot: SlotIndex) {
@@ -108,12 +127,13 @@ impl PxAcceptor {
 
     #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn prepare(&self, slot: SlotIndex, ballot: PxBallot) -> PxPrepareReply {
-        let Some(node) = get_or_prepare_slot(&self.slot_list, slot) else {
+        let Some(guard) = self.open_slot(slot) else {
             return PxPrepareReply::Rejected {
                 slot,
                 current_promised: PxBallot::new(0, 0),
             };
         };
+        let node = guard.value();
         self.bump_highest_seen(slot);
         loop {
             let current_ptr = node.promised.load(Ordering::Acquire);
@@ -137,7 +157,8 @@ impl PxAcceptor {
     fn inner_accept(&self, entry: &PxLogEntry) -> Option<PxAcceptResult> {
         let slot = entry.slot;
         let ballot = entry.ballot;
-        let node = get_or_prepare_slot(&self.slot_list, slot)?;
+        let guard = self.open_slot(slot)?;
+        let node = guard.value();
         self.bump_highest_seen(slot);
         loop {
             let promised_ptr = node.promised.load(Ordering::Acquire);
@@ -189,18 +210,24 @@ impl Acceptor for PxAcceptor {
     }
 
     fn accepted_at(&self, slot: SlotIndex) -> Option<PxLogEntry> {
-        self.slot_list.get(slot)?.accepted_cloned()
+        if slot < self.trim_slot() {
+            return None;
+        }
+        self.slots.get(&slot)?.value().accepted_cloned()
     }
     fn promised_at(&self, slot: SlotIndex) -> Option<PxBallot> {
-        self.slot_list.get(slot)?.promised_cloned()
+        if slot < self.trim_slot() {
+            return None;
+        }
+        self.slots.get(&slot)?.value().promised_cloned()
     }
     fn reclaim(&self) -> usize {
-        self.slot_list.reclaim()
+        self.slots.range(..self.trim_slot()).filter(Entry::remove).count()
     }
     fn trim(&self, before_slot: SlotIndex) {
-        self.slot_list.trim(before_slot);
+        self.trim_slot.fetch_max(before_slot, Ordering::AcqRel);
     }
     fn trim_slot(&self) -> SlotIndex {
-        self.slot_list.trim_slot()
+        self.trim_slot()
     }
 }

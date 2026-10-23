@@ -7,6 +7,8 @@
 //! awaits `CallFuture`, and parses flatbuffer responses via the
 //! zero-copy `Ref` wrappers.
 
+mod heartbeat;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -14,18 +16,18 @@ use flatbuffers::FlatBufferBuilder;
 
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_protocol::fb_wrappers::kv_consensus::{
-    FBAcceptedResponseRef, FBFetchGapResponseRef, FBHeartbeatResponseRef, FBPreVoteResponseRef,
-    FBPromiseResponseRef, FBRequestVoteResponseRef, FBSnapshotAbortResponseRef, FBSnapshotBeginResponseRef,
+    FBAcceptedResponseRef, FBFetchGapResponseRef, FBPreVoteResponseRef, FBPromiseResponseRef,
+    FBRequestVoteResponseRef, FBSnapshotAbortResponseRef, FBSnapshotBeginResponseRef,
     FBSnapshotFinishResponseRef, FBSnapshotReadResponseRef, FBStepDownResponseRef,
 };
 use crowdb_protocol::kv_consensus_fb::{
     FBAcceptRequest, FBAcceptRequestArgs, FBAcceptedValue, FBAcceptedValueArgs, FBBatchChosenNotification,
     FBBatchChosenNotificationArgs, FBChosenNotification, FBChosenNotificationArgs, FBFetchGapRequest,
-    FBFetchGapRequestArgs, FBHeartbeatRequest, FBHeartbeatRequestArgs, FBKvRetCode, FBPreVoteRequest,
-    FBPreVoteRequestArgs, FBPrepareRequest, FBPrepareRequestArgs, FBRequestVoteRequest,
-    FBRequestVoteRequestArgs, FBSnapshotAbortRequest, FBSnapshotAbortRequestArgs, FBSnapshotBeginRequest,
-    FBSnapshotBeginRequestArgs, FBSnapshotFinishRequest, FBSnapshotFinishRequestArgs, FBSnapshotReadRequest,
-    FBSnapshotReadRequestArgs, FBStepDownRequest, FBStepDownRequestArgs,
+    FBFetchGapRequestArgs, FBKvRetCode, FBPreVoteRequest, FBPreVoteRequestArgs, FBPrepareRequest,
+    FBPrepareRequestArgs, FBRequestVoteRequest, FBRequestVoteRequestArgs, FBSnapshotAbortRequest,
+    FBSnapshotAbortRequestArgs, FBSnapshotBeginRequest, FBSnapshotBeginRequestArgs, FBSnapshotFinishRequest,
+    FBSnapshotFinishRequestArgs, FBSnapshotReadRequest, FBSnapshotReadRequestArgs, FBStepDownRequest,
+    FBStepDownRequestArgs,
 };
 use crowdb_rpc_ffi::{
     noop_completion, Buffer, ConnectionPoolError, ConnectionPoolIndex, RpcClient, RpcError, RpcServer,
@@ -33,8 +35,7 @@ use crowdb_rpc_ffi::{
 };
 
 use crate::cluster::replica::{
-    FetchGapReply, HeartbeatReply, HeartbeatRequestPayload, PxReplicaError, StepDownReply,
-    StepDownRequestPayload, VoteReply, VoteRequestPayload,
+    FetchGapReply, PxReplicaError, StepDownReply, StepDownRequestPayload, VoteReply, VoteRequestPayload,
 };
 use crate::paxos::roles::{PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
 
@@ -405,6 +406,7 @@ impl PxRpcTransport {
         })
     }
 
+<<<<<<< HEAD
     /// Send a `Heartbeat` request via crowdb-rpc.
     pub async fn send_heartbeat(
         &self,
@@ -463,6 +465,8 @@ impl PxRpcTransport {
         })
     }
 
+=======
+>>>>>>> 0f5d94a8 (Reclaim snapshot-backed Paxos history with retained readers)
     /// Send a `StepDown` request via crowdb-rpc.
     pub async fn send_step_down(
         &self,

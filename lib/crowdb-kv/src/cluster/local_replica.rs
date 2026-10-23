@@ -956,6 +956,10 @@ impl PxLocalReplica {
                 crowtree_stats,
             },
             election,
+            acceptor: Some(crowdb_protocol::mgmt::AcceptorStateView {
+                trim_before_slot: self.acceptor.trim_slot(),
+                retained_slots: self.acceptor.retained_slots(),
+            }),
         }
     }
 }

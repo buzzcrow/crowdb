@@ -1,18 +1,21 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# CROWDB RDMA implementation Plan
+# CROWDB RDMA Acceptance Record
 
 Upstream: [RDMA RPC design](../design/rpc/design-crowdb-rpc-rdma.md), and the
 [native SDK contract](../design/access-server/design-crowdb-native-sdk.md).
 
-Goal: implement the host-memory RDMA SEND/RECV path end to end, with RDMA as
-the preferred connection path, TCP as the one-way fallback, shared aggregation
-semantics, bounded buffer leases, and automated OCI verification using a
-single-node HCA local-loop with multiple containers.
+Scope: accepted host-memory RDMA SEND/RECV, bounded mixed-size aggregation,
+registered buffer ownership, and single-node shared-HCA verification.
 
 Persistent-plan exception: retain this root record for accepted local-HCA
 measurements. Completed child plans and implementation checklists are removed; the evidence remains reproducible.
+
+R5 is complete. Active Dataset work and its pause/resume handoff live in the
+[native Dataset plan](plan-dataset-native-sdk.md#handoff-2026-10-23).
+[Physical multi-node verification](plan-rdma-multi-node.md) is an independent,
+plan-only follow-up and is outside the completed R5 acceptance.
 
 ## Current implementation status
 
@@ -255,10 +258,11 @@ The [native SDK guide](../../lib/crowdb-sdk-native/README.md) and
 [architecture](../design/access-server/design-crowdb-native-sdk.md) define the
 supported API. [R220](../backlog/R220-dataset-fat-client-plan.md) attaches
 Dataset authority, Snapshot/Split binding and explicit acknowledgement to the
-same runtime after its HTTP workload measurements. Dataset binding work and
-GPUDirect remain separate follow-ups.
+same runtime. Its implementation and real-service Python/local-HCA semantics
+pass; complete workload acceptance and shared KV retention verification remain
+in the linked Dataset plan. GPUDirect remains a separate follow-up.
 
-## Final verification
+## Verification commands
 
 Unit and integration gates:
 
@@ -274,20 +278,12 @@ pixi run rs-lint
 pixi run tree-lint
 ```
 
-OCI E2E verification must run the TCP-only and single-node HCA local-loop
-multi-container profiles when their prerequisites are available. Namespace
-profiles are not part of acceptance.
+Revalidation uses the TCP-only and single-node HCA local-loop multi-container
+profiles with their declared prerequisites. These commands reproduce checks;
+they are not outstanding R5 tasks. Namespace profiles are outside acceptance.
 
 ## Test and setup files
 
 - `tools/rdma/setup-rdma.sh`
 - `tools/rdma/run-local-loop.sh`
 - OCI image and multi-container runner configuration
-
-## Handoff and blocking rules
-
-Each child plan is marked `[x]` only after its own acceptance cases and gates
-pass. If a child discovers a protocol ambiguity, stop that child, record the
-question here, and resolve it before changing the formal design. If the host
-cannot provide RDMA, continue portable SDK/TCP checks and mark only hardware
-E2E as pending.

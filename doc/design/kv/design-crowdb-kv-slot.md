@@ -1,7 +1,7 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# CROWDB - Design: Slots — Parallel Pipelining & Concurrent Slot List
+# CROWDB - Design: Slots — Parallel Pipelining & Acceptor Retention
 
 Depends on: [`design-crowdb-kv.md`](design-crowdb-kv.md) §5.1, §6.5, §7.3
 Satisfies: [`design-crowdb-kv.md`](design-crowdb-kv.md) §5.1, §6.5, §7.3
@@ -9,7 +9,7 @@ Satisfies: [`design-crowdb-kv.md`](design-crowdb-kv.md) §5.1, §6.5, §7.3
 This document covers two aspects of CROWDB's slot mechanism:
 
 - **Part A (§1–§14): Parallel Slot Pipelining** — the consensus protocol that distinguishes CROWDB from Raft-based KV systems. How the leader pipelines proposals, how gaps are detected and repaired, how the safe-slot is maintained, and how the system stays correct under concurrent in-flight slots.
-- **Part B (§15–§22): Concurrent Sparse Slot List** — the `SlotList<T>` data structure that backs the Acceptor's per-slot state. Chunked array, lock-free reads, trim/GC, reclamation.
+- **Part B (§15–§22): Acceptor Retention** — guarded per-slot state, concurrent trim/reclamation and snapshot-backed retention certificates.
 
 ## Table of Contents
 
@@ -28,14 +28,14 @@ This document covers two aspects of CROWDB's slot mechanism:
 - [12. Tunables and Defaults](#12-tunables-and-defaults)
 - [13. Correctness Analysis for Parallel Slot Writes](#13-correctness-analysis-for-parallel-slot-writes)
 - [14. Parallel-Slot Linearizability Analysis](#14-parallel-slot-linearizability-analysis)
-- [15. Slot List: Problem Statement](#15-slot-list-problem-statement)
-- [16. Slot List: Design Overview](#16-slot-list-design-overview)
-- [17. Slot List: PxSlotNode](#17-slot-list-pxslotnode)
-- [18. Slot List: Algorithms](#18-slot-list-algorithms)
-- [19. Slot List: API Surface](#19-slot-list-api-surface)
-- [20. Slot List: Correctness Invariants](#20-slot-list-correctness-invariants)
-- [21. Slot List: Performance Model](#21-slot-list-performance-model)
-- [22. Slot List: Risks, Reclamation & Open Questions](#22-slot-list-risks-reclamation--open-questions)
+- [15. Acceptor Storage Requirements](#15-acceptor-storage-requirements)
+- [16. Retained Slot Entries](#16-retained-slot-entries)
+- [17. Per-Slot State](#17-per-slot-state)
+- [18. Lookup and Reclamation](#18-lookup-and-reclamation)
+- [19. Acceptor API](#19-acceptor-api)
+- [20. Retention Invariants](#20-retention-invariants)
+- [21. Storage Cost](#21-storage-cost)
+- [22. Retention Limits](#22-retention-limits)
 - [23. Server-side Proposal Coalescing](#23-server-side-proposal-coalescing)
 
 ---
@@ -78,7 +78,7 @@ The blind-ops premise from design-crowdb-kv.md §5.2](design-crowdb-kv.md) makes
 
 **When does the ack happen?** When the slot reaches `Chosen` *and* the leader's own learner has applied it. The leader's own learner application is required so that an immediately-following `Get` on the leader sees the new value (see [§6.1 of design-crowdb-kv.md](design-crowdb-kv.md#61-linearizable-leader-read)).
 
-**Eviction.** Once a slot's record is `Applied` *and* its slot number is below the safe-slot, it can be dropped from the in-memory map. The WAL record stays until WAL GC catches up.
+**Eviction.** Acceptor entries and WAL segments become eligible below the snapshot-backed reclamation watermark in §11. Local application alone does not authorize eviction.
 
 ---
 
@@ -286,14 +286,30 @@ This ensures accepted-but-not-chosen slots are never applied, while allowing out
 
 ## 11. Interaction with Snapshot and WAL GC
 
-Parallel slots interact with WAL GC through two watermarks:
+Acceptor and WAL reclamation share a certificate distinct from the commit
+frontier and voting-member `group_safe_slot`:
 
-- `safe_slot` — every slot ≤ `safe_slot` is chosen and applied on every learner.
-- `snapshot_slot` — the engine state at `snapshot_slot` is durably snapshotted on at least the leader and one peer.
+- The leader takes the minimum contiguous-applied frontier of itself and every
+  configured remote learner, including non-voting learners. Unknown progress
+  is zero; replies arriving after quorum still update progress.
+- It caps that frontier by its local durable snapshot and the greatest durable
+  snapshot of a voting peer. A singleton voting group needs only its own durable
+  snapshot, while any attached non-voting learners still constrain progress.
+- Heartbeats carry `gc_before_slot` and `gc_membership_epoch`. A follower accepts
+  the certificate only from its known voting leader in the current term and
+  membership epoch. The retained certificate binds these identities and the
+  watermark atomically; a later epoch or term cannot relabel an old certificate.
+- Each replica caps its certificate by its own contiguous-applied and durable
+  snapshot frontiers before reclaiming. A missing WAL/snapshot yields zero.
+- Maintenance trims acceptor entries with `slot < gc_slot` and unlinks only WAL
+  segments wholly below that boundary. It retains the boundary slot. Outstanding
+  readers retain node/payload owners until they finish.
 
-**WAL GC rule:** discard WAL records with `slot < min(safe_slot, snapshot_slot)`. Both must advance past a slot before its WAL record can be GC'd. Repair never needs GC'd slots; every slot ≤ safe_slot is already chosen on every learner, so it cannot be a gap.
+A new group or leader tenure clears progress evidence. Membership replacement
+also clears evidence, including when it adds a non-voting learner. A joining
+replica that needs a prefix already reclaimed uses snapshot catch-up.
 
-Detailed further in [`design-crowdb-kv-wal.md`](design-crowdb-kv-wal.md) §4.
+See [WAL garbage collection](design-crowdb-kv-wal.md#7-garbage-collection).
 
 ---
 
@@ -350,195 +366,84 @@ This would NOT be safe for `CAS` or `Increment`, which read current state. Not s
 
 ---
 
-# Part B: Concurrent Sparse Slot List
+# Part B: Acceptor Retention
 
-## 15. Slot List: Problem Statement
+## 15. Acceptor Storage Requirements
 
-The Acceptor's per-slot state (`promised` ballot + `accepted` entry) needs a data structure optimized for:
+Per-slot promised ballots and accepted entries must support sparse, concurrent
+Prepare/Accept operations while maintenance reclaims a proven-safe prefix.
+Lookups must retain the node before accessing its fields. Reclamation must
+support overlapping maintenance callers during group replacement.
 
-- **O(1) insert by slot** — no re-allocation per slot; chunk created lazily.
-- **O(1) hot-slot access** — tail-first lookup hits the newest chunk.
-- **O(1) batch front-trim** — drop whole chunks, not individual slots.
-- **Wait-free / lock-free reads** — readers never block each other.
-- **Safe reclamation** — a chunk is freed only after all concurrent readers have passed it.
+## 16. Retained Slot Entries
 
-`PxSlot` is a monotonically increasing `u64` assigned by an external sequencer. Access is strongly tail-biased (latest-slot prepare/accept/replay), while allocation may be sparse.
+`PxAcceptor` owns a `crossbeam_skiplist::SkipMap<SlotIndex, PxSlotNode>`, a
+monotonic `trim_slot`, and a monotonic `highest_seen_slot`. Each operation keeps
+the returned map `Entry` alive throughout field access. Removing an entry does
+not invalidate an outstanding retained entry. Sparse slots allocate individual
+nodes; absent slot ranges allocate nothing.
 
----
+## 17. Per-Slot State
 
-## 16. Slot List: Design Overview
+`PxSlotNode` contains atomic promised and accepted pointers. Replaced pointers
+enter per-node retired lists and are freed only when the node is dropped. This
+keeps a field read valid for the entire retained node lifetime. Returned log
+entries clone their `Bytes` owner, so a caller may keep a payload after trim.
 
-A **chunked, reader-pinned concurrent sparse list** (`SlotList<T>`):
+## 18. Lookup and Reclamation
 
-```
-SlotList<T>
-├─ head  ──► Chunk { start: 1024, entries: [1024..2047] }  (partially filled)
-│            ⇅
-│            Chunk { start: 4096, entries: [4096..5119] }  (sparse gap 2048..4095)
-│            ⇅
-│            Chunk { start: 5120, entries: [5120..6143] }  ◄── tail
-│
-├─ trim_slot: AtomicU64  (slots below this are logically invalid)
-└─ retired:   AtomicPtr<RetiredChunk<T>>
-```
+- `open_slot` rejects a slot below the trim boundary, obtains or inserts a
+  retained node, then checks the boundary again. An insertion racing trim is
+  removed and rejected instead of resurrecting old history.
+- Prepare/Accept keep the entry guard while reading or changing node fields.
+  Queries and ordered range scans clone values while retaining their entries.
+- `trim` advances the boundary with `fetch_max`. `reclaim` removes entries below
+  that boundary; concurrent removers can safely encounter the same entry.
+- A lookup already in progress may complete with its retained state. A newly
+  admitted request below the boundary is rejected. The boundary is exclusive.
 
-Each chunk is a fixed-size array (`SLOT_CHUNK_SIZE = 1024` slots). A slot index maps to a chunk via `chunk = start / SLOT_CHUNK_SIZE` and an intra-chunk offset. Chunks are doubly-linked so the hot path walks backward from `tail` while the general path walks forward from `head`.
+## 19. Acceptor API
 
-### Chunk layout
+- `prepare`, `accept`, `accepted_at`, `promised_at`: per-slot protocol access.
+- `accepted_iter_range`: ordered retained-history view; missing/trimmed slots
+  are absent. `JournalScan` reports a GC gap for a start below `trim_slot`.
+- `accepted_log_tip`: highest retained accepted slot and its term.
+- `highest_seen_slot`: highest slot ever opened, independent of reclamation.
+- `trim`, `reclaim`, `trim_slot`, `retained_slots`: reclamation and observability.
 
-```rust
-const SLOT_CHUNK_SIZE: usize = 1024;
+`ReplicaStatus.acceptor` exposes the exclusive trim boundary and retained slot
+count. The count describes map entries, not payload bytes or process RSS.
 
-struct Chunk<T> {
-    start_slot: PxSlot,
-    entries: [AtomicPtr<T>; SLOT_CHUNK_SIZE],
-    next: AtomicPtr<Chunk<T>>,
-    prev: AtomicPtr<Chunk<T>>,
-    live_count: AtomicUsize,
-    reader_refs: AtomicU32,
-    retired: AtomicBool,
-    _pad: [u8; 64],  // cache-line padded to prevent false sharing
-}
-```
+## 20. Retention Invariants
 
-**Why `AtomicPtr<T>` per slot?** Writers CAS from `null → Box::into_raw(Box::new(value))`. Readers pin the containing chunk (`reader_refs += 1`), then load the pointer. Retired chunks are freed only after `reader_refs == 0`.
+- **R1 — Retained access:** every node field access holds a live map entry.
+- **R2 — No resurrection:** a request admitted below the current trim boundary
+  cannot create visible accepted history.
+- **R3 — Durable local recovery:** reclamation cannot exceed the local durable
+  snapshot or contiguous-applied frontier.
+- **R4 — Learner coverage:** the leader certificate cannot exceed the least
+  applied frontier of any configured learner, including non-voting learners.
+- **R5 — Certificate identity:** followers use only the certificate bound to
+  their current membership epoch, term and known voting leader.
+- **R6 — Independent payload lifetime:** reclaiming a node does not invalidate
+  a log entry already cloned by a caller.
 
-### List header
+## 21. Storage Cost
 
-```rust
-pub struct SlotList<T> {
-    head: AtomicPtr<Chunk<T>>,
-    tail: AtomicPtr<Chunk<T>>,
-    trim_slot: AtomicU64,
-    retired: AtomicPtr<Chunk<T>>,
-}
-```
+The ordered map adds per-node allocation and lookup overhead. Reclamation walks
+only the eligible prefix and releases historical payload owners as readers
+finish. No throughput improvement follows from this representation alone;
+measure request throughput, tails, retained slots and RSS under sustained load.
 
----
+## 22. Retention Limits
 
-## 17. Slot List: PxSlotNode
-
-For the `PxAcceptor` we store **both** the promised ballot and the accepted entry in a single node, eliminating the double-map indirection:
-
-```rust
-pub struct PxSlotNode {
-    promised: AtomicPtr<PxBallot>,
-    accepted: AtomicPtr<PxLogEntry>,
-    retired_promised: AtomicPtr<RetiredPtr<PxBallot>>,
-    retired_accepted: AtomicPtr<RetiredPtr<PxLogEntry>>,
-}
-
-pub struct PxAcceptor {
-    log: SlotList<PxSlotNode>,
-}
-```
-
-Paxos operations use `get_tail_ptr` / `get_ptr` to obtain the `AtomicPtr<PxSlotNode>` for a slot, then CAS the node pointer itself (installing a default node if absent) before mutating fields inside the stable node. `PxSlotNode` uses deferred reclamation: when `cas_promised` / `cas_accepted` swaps an existing pointer, the old pointer goes into a per-field retired list, drained on `PxSlotNode::drop`.
-
----
-
-## 18. Slot List: Algorithms
-
-### 18.1 Insert (by external slot)
-
-The caller decides the exact `slot`; the list only stores the value. Slots may be non-consecutive (sparse). `insert` locates or lazily creates the chunk covering the slot, pins the chunk (`reader_refs += 1`), then CAS-installs the slot object from `null → ptr`. If another writer raced, the existing object is kept. `insert` never replaces an existing slot pointer; callers needing field-level CAS use `get_ptr` / `get_tail_ptr` directly.
-
-Chunk lookup (`find_or_create_chunk`) walks the doubly-linked list to find the predecessor/successor window around the aligned chunk start, then splices a new chunk in via CAS. Sparse gaps are cheap: no chunk is allocated for empty ranges.
-
-### 18.2 Get (head-first, general path)
-
-`get(slot)` walks from `head`, checking `trim_slot` first. When the covering chunk is found, it pins the chunk, loads the slot pointer, and returns a `SlotReadGuard`. Used for any already-known slot.
-
-### 18.3 Get Tail (tail-first, hot path)
-
-`get_tail(slot)` walks backward from `tail`. This is the normal Paxos read path: latest-slot prepare/accept/replay almost always hit the last chunk or one of its immediate predecessors.
-
-### 18.4 Trim (front GC)
-
-`trim(before_slot)` advances `trim_slot` via `fetch_max`, then walks from `head` unlinking chunks whose `end ≤ before_slot`. Unlinked chunks are marked `retired = true` and pushed onto the retired list. **Single-caller by contract.** Each `get` / `get_tail` checks `trim_slot` before touching any chunk, so newly arriving readers immediately reject trimmed slots.
-
-### 18.5 Chunk-Level Reclamation
-
-A background `reclaim()` walks the retired list and frees chunks whose `reader_refs == 0`. **Single-caller by contract.** This is safe because `trim_slot` is advanced before chunk unlinking; only readers that pinned the chunk before trim can still hold a reference.
-
-**Current limitation:** there is a narrow race between "reader has observed a chunk pointer" and "reader has incremented `reader_refs`". The current manual scheme is safe under a restricted envelope (single GC caller, disciplined reclaim timing). For fully general lock-free safety, use epoch/hazard pointers or `Arc<Chunk<T>>` ownership.
-
----
-
-## 19. Slot List: API Surface
-
-```rust
-impl<T> SlotList<T> {
-    pub fn new() -> Self;
-    pub fn get(&self, slot: PxSlot) -> Option<SlotReadGuard<'_, T>>;
-    pub fn get_tail(&self, slot: PxSlot) -> Option<SlotReadGuard<'_, T>>;
-    pub fn get_ptr(&self, slot: PxSlot) -> Option<SlotPtrGuard<'_, T>>;
-    pub fn get_tail_ptr(&self, slot: PxSlot) -> Option<SlotPtrGuard<'_, T>>;
-    pub fn iter_range(&self, start: PxSlot, end_exclusive: PxSlot) -> SlotIter<'_, T>;
-    pub fn insert(&self, slot: PxSlot, value: T) -> SlotReadGuard<'_, T>;
-    pub fn trim(&self, before_slot: PxSlot);
-    pub fn reclaim(&self) -> usize;
-    pub fn trim_slot(&self) -> PxSlot;
-    pub fn len(&self) -> usize;
-}
-```
-
-`SlotReadGuard` derefs to `&T` and decrements `reader_refs` on drop. `SlotPtrGuard` derefs to `&AtomicPtr<T>` for caller-controlled CAS.
-
----
-
-## 20. Slot List: Correctness Invariants
-
-| Invariant | Why it matters | Enforced by |
-|---|---|---|
-| **I1 — External slot assignment** | Slot number chosen by caller; list only stores at that index | `insert` validates slot is inside the chunk range it targets |
-| **I2 — Stable slot object** | Once installed, readers keep seeing the same pointer | `insert` / `get_ptr` only CASes `null → ptr`; later updates mutate fields inside the object |
-| **I3 — Trim coherence** | Readers never observe a trimmed slot | `trim_slot` advanced before chunks are unlinked; every `get` checks it first |
-| **I4 — No dangling reads** | A retired chunk is freed only after all pinned readers have dropped | Chunk-level `reader_refs` + retired list |
-| **I5 — Sparse ordering** | Chunks stay ordered by `start_slot` | `find_window` and `link_between` preserve sorted doubly linked order |
-
----
-
-## 21. Slot List: Performance Model
-
-| Operation | Cost | Notes |
-|---|---|---|
-| `insert` (existing chunk) | 1 slot CAS + 1 reader-ref increment | Reuses existing slot object if present |
-| `insert` (new chunk) | 1 allocation + chunk-link CAS | Amortised only when touching a previously empty chunk range |
-| `get_tail` | 1 trim check + 1 chunk pin + 1 atomic load | Tail chunk is cache-hot; covers most reads |
-| `get` (head-first) | 1 trim check + ≤ N chunk hops + 1 atomic load | N = number of live sparse chunks |
-| `trim` | 1 watermark advance + O(retired chunks) unlink | Drops whole chunks, never individual slots |
-| `reclaim` | O(retired chunks) | Frees only chunks whose `reader_refs == 0` |
-| Memory overhead | ~8 bytes / slot (on 64-bit) | `AtomicPtr` per slot; chunk metadata negligible |
-
-Compared to `BTreeMap`: ~10× faster insert, ~5× faster latest-slot access, ~3× lower per-slot overhead.
-
----
-
-## 22. Slot List: Risks, Reclamation & Open Questions
-
-### 22.1 Risks
-
-| Risk | Mitigation |
-|---|---|
-| `unsafe` in raw-pointer linking | Review with `miri`; maintain `Arc` fallback for comparison |
-| `reader_refs` leak due to forgotten guard drop | Keep all public reads guard-based; no bare `&T` escapes |
-| Prev/next inconsistency under sparse insertion | Centralise linking in `find_window` / `link_between`; stress tests |
-| Reader late-pin race | Short-term: single GC caller + disciplined reclaim. Long-term: epoch/hazard pointers or `Arc<Chunk<T>>` |
-
-### 22.2 PxSlotNode Reclamation Evolution
-
-**Current:** Replaced `promised`/`accepted` pointers are retired and reclaimed on `PxSlotNode::drop`. No replacement leak, no dangling-reference regression.
-
-**Future triggers:** Per-node retired-chain depth growing across GC cycles, RSS growth from field churn, or tail latency regression from large node-drop reclamation bursts.
-
-**Options:** (1) Epoch/hazard-based early reclaim (preferred long-term). (2) Guarded/owned return API replacing raw references. (3) `Arc` payload fields (simplest, higher overhead).
-
-### 22.3 Open Questions
-
-1. **Manual `reader_refs` vs `Arc<Chunk<T>>`:** Keep manual as target; validate against `Arc` prototype if risk grows.
-2. **Chunk size:** Start with 1K; make `SLOT_CHUNK_SIZE` a `const` generic for benchmarking.
-3. **Per-slot `AtomicPtr` vs inline storage:** Start with `AtomicPtr`; optimise if profiles show bottleneck.
+A lagging configured learner or unavailable durable witness can hold retention
+at zero. An operator must restore/catch up that learner or change membership;
+maintenance cannot discard history merely to satisfy a memory target. A slot
+with repeated ballot/value changes retains its old field versions until that
+slot is reclaimed. Long-lived readers may delay physical release after logical
+removal. The generic `PxSlotList` remains a separate utility and is not the
+acceptor's reclamation mechanism.
 
 ## 23. Server-side Proposal Coalescing
 

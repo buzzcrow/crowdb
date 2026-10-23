@@ -25,25 +25,12 @@
 //!    ([`KVEngine::set_gc_watermark`](crate::kv::KVEngine::set_gc_watermark)),
 //!    conditionally runs cadence-driven block compaction
 //!    ([`KVEngine::compact_sparse_blocks`](crate::kv::KVEngine::compact_sparse_blocks)),
-//!    and runs a WAL segment GC pass
-//!    ([`crate::wal::gc::run_gc_with_watermark`]) -- these *are*
-//!    cross-replica-safety sensitive, so they stay gated on
-//!    [`PxGroup::group_safe_slot`] (`0` — not yet established, or this
-//!    replica is a follower that doesn't track it; see that method's own
-//!    doc — means "nothing yet provably safe to reclaim").
-//!
-//! `set_gc_watermark`'s two inputs are `snapshot_slot` (state
-//! durable on the leader plus at least one peer) and `safe_slot` (state every learner has applied). `snapshot_slot` is
-//! [`PxGroup::group_snapshot_slot`]: each replica's own
-//! `WalEngine::snapshot_slot` (updated below, right after `persist_snapshot`
-//! advances it) is gossiped to the leader piggybacked on the same heartbeat
-//! round as `contiguous_applied` (see `HeartbeatReply::durable_snapshot_slot`
-//! / `PxGroup::note_peer_durable`), which aggregates it into `min(leader's
-//! own durable slot, max(voting peer durable slots))` -- always `<=` what
-//! `group_safe_slot` would have allowed (a slot cannot be locally applied
-//! everywhere without having first been durably chosen), so this can only
-//! let reclaim run *more* conservatively than the old `safe_slot`
-//! approximation, never less.
+//!    using [`PxGroup::group_safe_slot`] and [`PxGroup::group_snapshot_slot`].
+//! 5. Reclaims acceptor entries and WAL segments below a separate certificate
+//!    capped by local applied and durable-snapshot progress. The leader needs
+//!    every learner's applied progress and a durable voting witness; followers
+//!    consume its membership/term-fenced certificate. Unknown progress blocks
+//!    reclamation without preventing local snapshots.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
@@ -55,6 +42,7 @@ use tracing::{debug, error, info, info_span, warn, Instrument, Span};
 
 use super::group::PxGroup;
 use super::group_election::LeaderElection;
+use crate::paxos::roles::Acceptor;
 use crate::wal::gc::run_gc_with_watermark;
 
 /// Start the per-group maintenance loop on `group`, unless already running
@@ -362,17 +350,19 @@ pub(crate) async fn run_pass(group: &PxGroup, do_flush: bool) {
         }
     }
 
-    // 5. WAL GC: only advance snapshot_slot when we actually persisted.
+    // 5. Acceptor and WAL GC: advance local durability only after persistence.
     let Some(wal) = group.local_replica().wal() else {
         return;
     };
     if engine_snapshot_at > 0 && engine_snapshot_at > wal.snapshot_slot() {
         wal.set_snapshot_slot(engine_snapshot_at);
     }
-    if safe_slot == 0 {
+    let gc_slot = group.local_reclamation_slot();
+    if gc_slot == 0 {
         return;
     }
-    let gc_slot = wal.snapshot_slot().min(safe_slot);
+    group.local_replica().acceptor.trim(gc_slot);
+    group.local_replica().acceptor.reclaim();
     if let Err(e) = run_gc_with_watermark(wal, gc_slot).await {
         warn!(
             error = %e,
