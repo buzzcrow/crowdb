@@ -3,6 +3,9 @@
 
 //! Retained independent routing observations for caller scheduling.
 
+mod capabilities;
+pub use capabilities::{RdmaCapabilities, TransportCapabilities, TransportGroup};
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -11,6 +14,7 @@ use crowdb_diskio_client::DiskTopologyView;
 use crowdb_kv_client::ServiceRegistryClient;
 use crowdb_protocol::common::InstanceValue;
 
+use crate::error::{TopologyFailureKind, TopologySource};
 use crate::{ClientRuntime, Error, OperationContext, Result};
 
 pub(crate) struct CatalogObservation {
@@ -34,6 +38,7 @@ pub struct TopologyView {
     pub services: Arc<Vec<ServiceObservation>>,
     pub metadata_transport_json: Vec<u8>,
     pub data_transport_json: Option<Vec<u8>>,
+    pub transports: Vec<TransportCapabilities>,
 }
 
 impl TopologyView {
@@ -60,22 +65,38 @@ impl ClientRuntime {
                 self.storage
                     .chunks
                     .transport_status_json()
-                    .map_err(|error| Error::Storage(error.to_string()))?,
+                    .map_err(|error| unavailable(TopologySource::DataTransport, &error))?,
             )
         } else {
             None
         };
+        let metadata_transport_json = self
+            .storage
+            .metadata_transport
+            .transport_status_json()
+            .map_err(|error| unavailable(TopologySource::MetadataTransport, &error))?;
+        let transports = capabilities::observe(&metadata_transport_json, data_transport_json.as_deref())?;
         Ok(TopologyView {
-            catalog: self.storage.catalog.load_full(),
+            catalog: self.catalog_observation(),
             disks,
             services: self.storage.services.load_full(),
-            metadata_transport_json: self
-                .storage
-                .metadata_transport
-                .transport_status_json()
-                .map_err(|error| Error::Storage(error.to_string()))?,
+            metadata_transport_json,
             data_transport_json,
+            transports,
         })
+    }
+
+    /// Refresh only the catalog authority, without dialing data services.
+    /// # Errors
+    /// Returns admission, cancellation/deadline or a typed catalog failure.
+    pub async fn refresh_catalog(&self, context: OperationContext) -> Result<TopologyView> {
+        let request = self.resources.admit(context)?;
+        request
+            .run(async {
+                self.refresh_catalog_observation().await?;
+                self.topology()
+            })
+            .await
     }
 
     /// Refreshes each authority independently; old views remain safe to inspect.
@@ -86,30 +107,24 @@ impl ClientRuntime {
         let request = self.resources.admit(context)?;
         request
             .run(async {
-                let catalog = self
-                    .storage
-                    .metadata
-                    .refresh_catalog()
-                    .await
-                    .map_err(|error| Error::Storage(error.to_string()))?;
-                self.record_catalog(&catalog);
+                self.refresh_catalog_observation().await?;
                 self.storage
                     .chunks
                     .refresh_chunkdb_routes()
                     .await
-                    .map_err(|error| Error::Storage(error.to_string()))?;
+                    .map_err(|error| unavailable(TopologySource::ChunkRoutes, &error))?;
                 self.storage
                     .chunks
                     .refresh_diskio_routes()
                     .await
-                    .map_err(|error| Error::Storage(error.to_string()))?;
+                    .map_err(|error| unavailable(TopologySource::DiskRoutes, &error))?;
                 let registry = ServiceRegistryClient::from_shared(Arc::clone(&self.storage.control));
                 let mut services = Vec::with_capacity(3);
                 for service in ["chunkdb", "chunk-kv", "diskio"] {
                     let instances = registry
                         .read_all_instances(service)
                         .await
-                        .map_err(|error| Error::Storage(error.to_string()))?;
+                        .map_err(|error| unavailable(TopologySource::Services, &error))?;
                     services.push(ServiceObservation {
                         service,
                         observed_at: Instant::now(),
@@ -122,19 +137,60 @@ impl ClientRuntime {
             .await
     }
 
-    fn record_catalog(&self, catalog: &Arc<ChunkKvRangeCatalogMap>) {
+    async fn refresh_catalog_observation(&self) -> Result<()> {
+        let catalog = self.storage.metadata.refresh_catalog().await.map_err(|error| {
+            if error == crowdb_chunk_kv_client::ClientError::Deadline {
+                return Error::Deadline;
+            }
+            Error::Topology {
+                origin: TopologySource::Catalog,
+                kind: if matches!(error, crowdb_chunk_kv_client::ClientError::InvalidCatalog(_)) {
+                    TopologyFailureKind::Invalid
+                } else {
+                    TopologyFailureKind::Unavailable
+                },
+                detail: error.to_string(),
+            }
+        })?;
+        self.record_catalog(&catalog, Some(Instant::now()));
+        Ok(())
+    }
+
+    fn catalog_observation(&self) -> Arc<CatalogObservation> {
+        if let Some(catalog) = self.storage.metadata.cached_catalog() {
+            if catalog.generation() > self.storage.catalog.load().catalog.generation() {
+                // A different client operation refreshed the routing cache. Its
+                // original observation time is unknown to this runtime facade.
+                self.record_catalog(&catalog, None);
+            }
+        }
+        self.storage.catalog.load_full()
+    }
+
+    fn record_catalog(&self, catalog: &Arc<ChunkKvRangeCatalogMap>, observed_at: Option<Instant>) {
         loop {
             let observed = self.storage.catalog.load_full();
             if catalog.generation() < observed.catalog.generation() {
                 return;
             }
+            if catalog.generation() == observed.catalog.generation() && observed_at.is_none() {
+                return;
+            }
             let next = Arc::new(CatalogObservation {
                 catalog: Arc::clone(catalog),
-                observed_at: Some(Instant::now()),
+                observed_at,
             });
             if Arc::ptr_eq(&self.storage.catalog.compare_and_swap(&observed, next), &observed) {
                 return;
             }
         }
+    }
+}
+
+pub(crate) fn unavailable(origin: TopologySource, error: &impl std::fmt::Display) -> Error {
+    Error::Topology {
+        origin,
+        kind: TopologyFailureKind::Unavailable,
+        detail: error.to_string(),
     }
 }

@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 mod body;
 mod config;
+mod locality;
 mod object;
 mod read;
 
@@ -20,6 +21,10 @@ pub use body::ObjectBody;
 pub use config::S3ClientConfig;
 pub use crowdb_access_s3::condition::{EtagSelection, ReadPreconditions};
 pub use crowdb_access_s3::range::ByteRange;
+pub use locality::{
+    ChunkLayoutObservation, FragmentPlacement, FragmentRole, LocalityOptions, ObjectExtent, ObjectLocality,
+    StripPlacement,
+};
 pub use object::{ObjectMetadata, ResolvedObject};
 pub use read::{GetObject, GetOptions};
 

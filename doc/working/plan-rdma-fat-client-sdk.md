@@ -70,7 +70,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
 
 ## Phase 2: supported topology and scheduling surface
 
-- [ ] **Expose retained topology views**: provide inspection and explicit
+- [x] **Expose retained topology views**: provide inspection and explicit
   refresh of service endpoints, rack/node/disk membership, Chunk-KV range
   owners, transport capabilities, and source generation/age. Reuse existing
   catalog and route owners; independently observed generations must not
@@ -80,7 +80,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   `lib/crowdb-diskio-client/src/topology.rs`,
   `lib/crowdb-diskio-client/src/status.rs`,
   `lib/crowdb-diskio-client/src/semantic/native_routes.rs`.
-- [ ] **Expose object locality**: resolve a logical object generation/range to
+- [x] **Expose object locality**: resolve a logical object generation/range to
   chunk placement and route observations for caller scheduling/prefetch.
   Preserve the metadata-selected identity during execution instead of
   re-resolving a mutable key to a different generation. Observation cannot
@@ -89,7 +89,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   `lib/crowdb-sdk-native/src/topology.rs`,
   `lib/crowdb-access-s3/src/metadata/record.rs`,
   `lib/crowdb-chunk-client/src/client.rs`.
-- [ ] **Handle stale observations**: retain catalog invalidation, endpoint
+- [~] **Handle stale observations**: retain catalog invalidation, endpoint
   refresh, ownership epochs, and generation fencing. Old views stay safe to
   inspect but cannot force execution past validation. Return typed
   stale/fenced/deadline outcomes when refresh fails; never replay ambiguous
@@ -305,6 +305,25 @@ transport acceptance alone cannot establish SDK completion.
   new native test code adds no unsafe exception. FFI/ChunkIO/native all-target
   tests, clippy and formatting pass. These focused RPC tests still inject
   metadata/layout and disk contents; the final corpus must use real services.
+- Retained topology now follows newer catalog generations installed by normal
+  operations, with unknown original observation age rather than a fabricated
+  timestamp. Explicit catalog-only refresh reports typed invalid/unavailable
+  failures and refuses generation regression. Endpoint, disk and catalog
+  sources remain independent. Typed transport observations expose readiness,
+  wire classes, TCP fallback policy and configured queue/registration bounds;
+  configured values do not pretend to be provider connection limits.
+- `object_locality` inspects one tenant/authority-bound `ResolvedObject`,
+  range and bounded 1..128 extent page without fetching payload. Each chunk
+  observation retains its own modification revision and layout validity;
+  mirror/EC roles, unavailable fragments and observed disk/rack/node owners
+  remain explicit. Shared chunk references query once per page. Pagination
+  stays on the selected generation after name overwrite. Old views remain
+  inspectable, report typed stale outcomes at expiry and cannot force a deleted
+  layout into execution. General injected disk writers can expose actual
+  native route/transport observations; real TCP/RDMA cases verify these owners.
+  Three new catalog/locality cases pass; the native suite now has 27 cases.
+  Native/S3/ChunkIO all-target suites and clippy pass. Full service restart,
+  stale-catalog/endpoint fault acceptance remains part of the final corpus.
 
 ## Subsequent Dataset integration under R220
 

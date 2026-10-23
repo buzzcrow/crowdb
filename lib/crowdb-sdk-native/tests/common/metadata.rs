@@ -132,6 +132,55 @@ fn scan(request: &ScanRequest, values: &BTreeMap<Vec<u8>, RpcValue>) -> Operatio
 }
 
 pub async fn client() -> Arc<ChunkKvClient> {
+    let (head, pages) = catalog(1, 1);
+    client_with_source(Arc::new(TestCatalog(head, pages))).await
+}
+
+pub fn catalog(
+    generation: u64,
+    owner_instance: u64,
+) -> (ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>) {
+    let mut page = ChunkKvRangeCatalogPage {
+        generation,
+        page_index: 0,
+        entries: vec![ChunkKvRangeCatalogEntry {
+            partition_id: Id128 { high: 1, low: 1 },
+            range: KeyRange {
+                start: Vec::new(),
+                end: None,
+            },
+            owner: OwnerDescriptor {
+                instance_id: owner_instance,
+                rpc_endpoint: format!("test-owner-{owner_instance}"),
+            },
+            owner_epoch: generation,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
+            artifact: PartitionArtifact {
+                tree_id: 1,
+                stream_name: StreamName { high: 1, low: 1 },
+                tail_overlay: None,
+            },
+            transition_id: None,
+        }],
+        checksum: [0; 32],
+    };
+    page.seal().unwrap();
+    let mut head = ChunkKvRangeCatalogHead {
+        generation,
+        previous_generation: None,
+        pages: vec![ChunkKvRangeCatalogPageRef {
+            page_generation: generation,
+            page_index: 0,
+            first_key: Vec::new(),
+            page_checksum: page.checksum,
+        }],
+        checksum: [0; 32],
+    };
+    head.seal().unwrap();
+    (head, vec![page])
+}
+
+pub async fn client_with_source(source: Arc<dyn ChunkKvRangeCatalogSource>) -> Arc<ChunkKvClient> {
     let (sender, mut receiver) = mpsc::channel(64);
     tokio::spawn(async move {
         let mut values = BTreeMap::new();
@@ -150,47 +199,10 @@ pub async fn client() -> Arc<ChunkKvClient> {
             });
         }
     });
-    let mut page = ChunkKvRangeCatalogPage {
-        generation: 1,
-        page_index: 0,
-        entries: vec![ChunkKvRangeCatalogEntry {
-            partition_id: Id128 { high: 1, low: 1 },
-            range: KeyRange {
-                start: Vec::new(),
-                end: None,
-            },
-            owner: OwnerDescriptor {
-                instance_id: 1,
-                rpc_endpoint: "test-owner".into(),
-            },
-            owner_epoch: 1,
-            state: ChunkKvRangeCatalogPartitionState::Serving,
-            artifact: PartitionArtifact {
-                tree_id: 1,
-                stream_name: StreamName { high: 1, low: 1 },
-                tail_overlay: None,
-            },
-            transition_id: None,
-        }],
-        checksum: [0; 32],
-    };
-    page.seal().unwrap();
-    let mut head = ChunkKvRangeCatalogHead {
-        generation: 1,
-        previous_generation: None,
-        pages: vec![ChunkKvRangeCatalogPageRef {
-            page_generation: 1,
-            page_index: 0,
-            first_key: Vec::new(),
-            page_checksum: page.checksum,
-        }],
-        checksum: [0; 32],
-    };
-    head.seal().unwrap();
     let client = Arc::new(
         ChunkKvClient::new(
             ClientConfig::default(),
-            Arc::new(TestCatalog(head, vec![page])),
+            source,
             Arc::new(TestMetadataTransport(sender)),
         )
         .unwrap(),

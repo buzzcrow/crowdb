@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::num::NonZeroU64;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,10 @@ use crowdb_sdk_native::{ClientRuntime, OperationContext, RuntimeLimits};
 pub struct TestReadStorage {
     pub data: Vec<OwnedPayload>,
     pub reads: AtomicUsize,
+    pub queries: AtomicUsize,
+    pub validity_ms: AtomicU64,
+    pub revision: AtomicU64,
+    pub deleted: AtomicBool,
 }
 
 impl TestReadStorage {
@@ -42,6 +46,10 @@ impl TestReadStorage {
                 })
                 .collect(),
             reads: AtomicUsize::new(0),
+            queries: AtomicUsize::new(0),
+            validity_ms: AtomicU64::new(60_000),
+            revision: AtomicU64::new(1),
+            deleted: AtomicBool::new(false),
         }
     }
 }
@@ -71,11 +79,17 @@ impl ChunkAllocator for TestReadStorage {
         panic!("read updated")
     }
     async fn query_chunk(&self, request: QueryChunkRequest) -> Result<QueryChunkResponse> {
+        self.queries.fetch_add(1, Ordering::Relaxed);
         let id = request.chunk_id.unwrap();
         Ok(QueryChunkResponse {
             chunk: Some(Chunk {
                 id: Some(id),
-                state: ChunkState::Sealed as i32,
+                state: if self.deleted.load(Ordering::Acquire) {
+                    ChunkState::Deleted as i32
+                } else {
+                    ChunkState::Sealed as i32
+                },
+                modify_ts: self.revision.load(Ordering::Acquire),
                 capacity: 1,
                 sealed_length: 1,
                 strips: vec![ChunkStrip {
@@ -97,7 +111,7 @@ impl ChunkAllocator for TestReadStorage {
                 }],
                 ..Chunk::default()
             }),
-            layout_validity_ms: 60_000,
+            layout_validity_ms: self.validity_ms.load(Ordering::Acquire),
         })
     }
 }

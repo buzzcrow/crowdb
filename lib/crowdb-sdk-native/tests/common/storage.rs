@@ -47,8 +47,12 @@ impl DiskWriter for TestNoPayload {
     }
 }
 
+#[allow(dead_code)] // Shared fixture has a custom catalog entry point in topology tests.
 pub async fn runtime() -> ClientRuntime {
-    let metadata = super::metadata::client().await;
+    runtime_with_metadata(super::metadata::client().await)
+}
+
+pub fn runtime_with_metadata(metadata: Arc<crowdb_chunk_kv_client::ChunkKvClient>) -> ClientRuntime {
     let metadata_transport =
         Arc::new(ChunkKvRpcTransport::with_config(8, 1, 1, &ChunkKvRpcTransportConfig::default()).unwrap());
     ClientRuntime::from_clients(

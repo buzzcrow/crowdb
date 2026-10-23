@@ -13,6 +13,15 @@ use crate::{IoError, Result};
 /// Block-IO seam. Production routing is owned by `crowdb-diskio-client`.
 #[async_trait]
 pub trait DiskWriter: Send + Sync {
+    /// Retained route inspection never opens a connection or publishes placement.
+    fn disk_topology(&self) -> Option<crowdb_diskio_client::DiskTopologyView> {
+        None
+    }
+
+    fn transport_observation(&self) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
     /// Optional native storage for an owner-backed upstream producer.
     fn producer_allocator(&self) -> Option<crowdb_rpc_ffi::ProducerBufferAllocator> {
         None

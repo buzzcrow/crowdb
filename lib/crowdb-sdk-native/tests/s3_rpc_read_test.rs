@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crowdb_chunk_client::RoutedDiskWriter;
-use crowdb_sdk_native::s3::GetOptions;
+use crowdb_sdk_native::s3::{GetOptions, LocalityOptions};
 use storage::{context, TestFixture, TestReadStorage};
 
 async fn assert_rpc_delivery(rdma: bool) {
@@ -27,6 +27,34 @@ async fn assert_rpc_delivery(rdma: bool) {
     )
     .await;
     fixture.publish(&fixture.record(0)).await;
+    let selected = fixture
+        .client
+        .resolve_object(context(101), b"bucket", b"key")
+        .await
+        .unwrap();
+    let locality = fixture
+        .client
+        .object_locality(context(102), &selected, &LocalityOptions::default())
+        .await
+        .unwrap();
+    assert!(locality.topology.disks.is_some());
+    assert!(locality.topology.data_transport_json.is_some());
+    let capability = locality
+        .topology
+        .transports
+        .iter()
+        .find(|group| group.group == crowdb_sdk_native::topology::TransportGroup::Data)
+        .unwrap();
+    assert_eq!(capability.rdma.is_some(), rdma);
+    if let Some(capability) = &capability.rdma {
+        assert!(capability.ready);
+        assert_eq!(capability.data_slot_capacity, 65_536);
+    }
+    let placement = locality.extents[0].strips[0].fragments[0].disk.as_ref().unwrap();
+    assert_eq!(placement.rack_id, 1);
+    assert_eq!(placement.node_id, 1);
+    assert_eq!(placement.disk_id, crowdb_diskio_client::DiskId::new(1, 1));
+    assert_eq!(disk.status().read_operations, 0);
     let mut first = fixture
         .client
         .get_object(context(2), b"bucket", b"key", &GetOptions::default())

@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
+use bincode::Options;
 use crowdb_chunk_client::{ChunkIoClient, ChunkReadStream, ReadError};
 use crowdb_protocol::chunkdb::rpc::Location;
 use crowdb_rpc_ffi::OwnedPayload;
@@ -207,8 +208,7 @@ fn build_get(
     let inner = if interval.start == interval.end {
         None
     } else {
-        let locations: Vec<Location> =
-            bincode::deserialize(&record.data_reference).map_err(|_| RetrievalError::DataReference)?;
+        let locations = object_locations(record)?;
         Some(
             client
                 .read_range_stream(&locations, interval.start, interval.end)
@@ -231,6 +231,26 @@ fn build_get(
         stream,
         partial: requested.is_some(),
     })
+}
+
+/// Decodes the selected generation's bounded physical references for reading
+/// or scheduling. It never resolves the object name or reads payload storage.
+/// # Errors
+/// Rejects oversized or malformed references before constructing a stream.
+pub fn object_locations(record: &ObjectRecord) -> Result<Vec<Location>, RetrievalError> {
+    const LIMIT: usize = crate::inspection::MAX_REFERENCE_BYTES;
+    if record.data_reference.len() > LIMIT {
+        return Err(RetrievalError::DataReference);
+    }
+    if record.data_reference.is_empty() && record.logical_length == 0 {
+        return Ok(Vec::new());
+    }
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .with_limit(LIMIT as u64)
+        .reject_trailing_bytes()
+        .deserialize(&record.data_reference)
+        .map_err(|_| RetrievalError::DataReference)
 }
 
 fn check_conditions(

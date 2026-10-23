@@ -128,6 +128,14 @@ impl RoutedDiskWriter {
 
 #[async_trait]
 impl DiskWriter for RoutedDiskWriter {
+    fn disk_topology(&self) -> Option<crowdb_diskio_client::DiskTopologyView> {
+        Some(self.topology())
+    }
+
+    fn transport_observation(&self) -> Result<Option<Vec<u8>>> {
+        self.transport_status_json().map(Some)
+    }
+
     fn producer_allocator(&self) -> Option<crowdb_rpc_ffi::ProducerBufferAllocator> {
         Some(self.client.producer_allocator())
     }

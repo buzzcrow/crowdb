@@ -31,6 +31,25 @@ pub enum ReadFailureKind {
     FailedRange,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TopologySource {
+    Catalog,
+    ChunkLayout,
+    ChunkRoutes,
+    DiskRoutes,
+    Services,
+    MetadataTransport,
+    DataTransport,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TopologyFailureKind {
+    Unavailable,
+    Invalid,
+    Stale,
+    Fenced,
+}
+
 #[derive(Clone, Debug, thiserror::Error, Eq, PartialEq)]
 pub enum Error {
     #[error("invalid native client configuration: {0}")]
@@ -57,6 +76,12 @@ pub enum Error {
     Length { expected: u64, delivered: u64 },
     #[error("object read failed: {kind:?}: {detail}")]
     Read { kind: ReadFailureKind, detail: String },
+    #[error("topology {origin:?} failed: {kind:?}: {detail}")]
+    Topology {
+        origin: TopologySource,
+        kind: TopologyFailureKind,
+        detail: String,
+    },
     #[error("mutation outcome is uncertain: request={request_id} reason={reason:?}")]
     UncertainMutation {
         request_id: u64,

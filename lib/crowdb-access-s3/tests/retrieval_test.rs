@@ -129,3 +129,21 @@ fn typed_ranges_reject_invalid_intervals_and_keep_condition_precedence() {
         .partial
     );
 }
+
+#[test]
+fn invalid_references_are_bounded_before_payload_access() {
+    let storage = backend();
+    let client = storage.client();
+    let mut record = object(1);
+    record.data_reference.push(0);
+    assert!(matches!(
+        prepare_get_range(&client, &record, None, &ObjectConditions::default()),
+        Err(RetrievalError::DataReference)
+    ));
+    record.data_reference = vec![0; crowdb_access_s3::inspection::MAX_REFERENCE_BYTES + 1];
+    assert!(matches!(
+        prepare_get_range(&client, &record, None, &ObjectConditions::default()),
+        Err(RetrievalError::DataReference)
+    ));
+    assert_eq!(storage.queries.load(Ordering::Relaxed), 0);
+}
