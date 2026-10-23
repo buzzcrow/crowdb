@@ -140,5 +140,12 @@ pub trait StreamChunkStore: Send + Sync {
         }
         Ok(frame)
     }
-    async fn release_trimmed(&self, chunk_id: ChunkId, logical_end: u64) -> Result<TrimmedChunk>;
+    /// Releases an exactly sealed whole chunk. Active chunks or a different
+    /// physical end must fail before deletion; already released IDs are idempotent.
+    async fn release_trimmed(
+        &self,
+        chunk_id: ChunkId,
+        logical_end: u64,
+        physical_end: u64,
+    ) -> Result<TrimmedChunk>;
 }

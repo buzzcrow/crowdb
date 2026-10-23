@@ -9,7 +9,7 @@ mod indexed_metadata;
 mod metadata_server;
 
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, DirectoryMetadataStore, DirectoryPageCollectionStep, KvStreamMetadataStore,
+    memory::MemoryStreamStore, DirectoryCollectionStep, DirectoryMetadataStore, KvStreamMetadataStore,
     StreamDirectoryStore, StreamError, StreamMetadataStore,
 };
 use directory_collection::TestCollectionState as State;
@@ -109,10 +109,8 @@ async fn new_pin_invalidates_an_in_progress_collection_proof() {
         .await
         .unwrap()
         .unwrap();
-    let DirectoryPageCollectionStep::Pending(cursor) = directory
-        .advance_directory_page_collection(cursor, 1)
-        .await
-        .unwrap()
+    let DirectoryCollectionStep::Pending(cursor) =
+        directory.advance_directory_collection(cursor, 1).await.unwrap()
     else {
         panic!("first bounded pass must stop after current-root observation")
     };
@@ -121,7 +119,7 @@ async fn new_pin_invalidates_an_in_progress_collection_proof() {
     pin.captured_tail = pin.head.published_tail;
     let saved = directory.pin_directory_root(pin).await.unwrap();
     assert!(matches!(
-        directory.advance_directory_page_collection(cursor, 128).await,
+        directory.advance_directory_collection(cursor, 128).await,
         Err(StreamError::Backpressure)
     ));
     assert!(directory

@@ -480,12 +480,22 @@ impl StreamChunkStore for MemoryStreamStore {
         .await
     }
 
-    async fn release_trimmed(&self, chunk_id: ChunkId, _logical_end: u64) -> Result<TrimmedChunk> {
+    async fn release_trimmed(
+        &self,
+        chunk_id: ChunkId,
+        _logical_end: u64,
+        physical_end: u64,
+    ) -> Result<TrimmedChunk> {
         let mut state = self.state.lock().await;
         let chunk = state
             .chunks
             .get_mut(&chunk_id)
             .ok_or_else(|| StreamError::ReadUnavailable("chunk is missing".into()))?;
+        if !chunk.released && (!chunk.sealed || chunk.cursor != physical_end) {
+            return Err(StreamError::Corruption(
+                "chunk release requires its exact sealed boundary".into(),
+            ));
+        }
         let reclaimed_bytes = if chunk.released { 0 } else { chunk.cursor };
         chunk.released = true;
         Ok(TrimmedChunk {

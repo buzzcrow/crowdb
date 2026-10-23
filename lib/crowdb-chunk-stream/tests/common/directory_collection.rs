@@ -2,8 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_chunk_stream::{
-    DirectoryHeadSnapshot, DirectoryIndex, DirectoryMetadataStore, DirectoryPageCollectionStep,
-    DirectoryRecord,
+    DirectoryCollectionStep, DirectoryHeadSnapshot, DirectoryIndex, DirectoryMetadataStore, DirectoryRecord,
 };
 use crowdb_protocol::chunk_stream::{StreamDirectoryPageId, StreamRootPin, StreamRootPinId};
 
@@ -100,14 +99,11 @@ impl TestCollectionState {
             .unwrap()
             .unwrap();
         for observations in 1..=64 {
-            match directory
-                .advance_directory_page_collection(cursor, 1)
-                .await
-                .unwrap()
-            {
-                DirectoryPageCollectionStep::Pending(next) => cursor = next,
-                DirectoryPageCollectionStep::Retained => return (false, observations),
-                DirectoryPageCollectionStep::Deleted => return (true, observations),
+            match directory.advance_directory_collection(cursor, 1).await.unwrap() {
+                DirectoryCollectionStep::Pending(next) => cursor = next,
+                DirectoryCollectionStep::Retained => return (false, observations),
+                DirectoryCollectionStep::PageDeleted => return (true, observations),
+                DirectoryCollectionStep::ChunkRelease(_) => panic!("page proof returned a chunk release"),
             }
         }
         panic!("bounded page proof did not make progress")

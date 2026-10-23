@@ -3,20 +3,20 @@
 
 use crowdb_protocol::chunk_stream::{StreamPublicationGuard, StreamPublicationId};
 
-use super::{CollectionStage, DirectoryPageCollection};
+use super::{CollectionStage, DirectoryCollection};
 use crate::{DirectoryMetadataStore, Result, StreamError};
 
 impl DirectoryMetadataStore {
-    pub(super) async fn check_page_protections(
+    pub(super) async fn check_collection_protections(
         &self,
-        cursor: &mut DirectoryPageCollection,
+        cursor: &mut DirectoryCollection,
         mut budget: usize,
     ) -> Result<bool> {
         let name = cursor.scope.stream_name;
         while budget > 0 {
             match cursor.stage {
                 CollectionStage::Current => {
-                    if self.page_reachable_from_root(cursor, cursor.current_root).await? {
+                    if self.collection_protected_by_current(cursor).await? {
                         return Ok(true);
                     }
                     budget -= 1;
@@ -29,7 +29,7 @@ impl DirectoryMetadataStore {
                             .load_directory_root(name, *identity)
                             .await?
                             .ok_or(StreamError::Backpressure)?;
-                        if self.page_reachable_from_head(cursor, &head).await? {
+                        if self.collection_protected_by_head(cursor, &head).await? {
                             return Ok(true);
                         }
                     }
@@ -47,7 +47,7 @@ impl DirectoryMetadataStore {
                             .ok_or(StreamError::Backpressure)?;
                         // Expired metadata remains conservative protection until
                         // lease, skew and outstanding read-IO grace are resolved.
-                        if self.page_reachable_from_head(cursor, &pin.pin().head).await? {
+                        if self.collection_protected_by_pin(cursor, pin.pin()).await? {
                             return Ok(true);
                         }
                     }
@@ -60,13 +60,8 @@ impl DirectoryMetadataStore {
                     let page = self.scan_directory_publications(name, after, budget).await?;
                     for id in &page.entries {
                         let guard = self.load_collection_guard(cursor, *id).await?;
-                        if guard.pages.contains(&cursor.target.id) {
+                        if self.collection_protected_by_guard(cursor, &guard).await? {
                             return Ok(true);
-                        }
-                        if let Some(base) = guard.base {
-                            if self.page_reachable_from_head(cursor, &base).await? {
-                                return Ok(true);
-                            }
                         }
                     }
                     budget -= page.entries.len();
@@ -82,7 +77,7 @@ impl DirectoryMetadataStore {
 
     async fn load_collection_guard(
         &self,
-        cursor: &DirectoryPageCollection,
+        cursor: &DirectoryCollection,
         id: StreamPublicationId,
     ) -> Result<StreamPublicationGuard> {
         let guard = self

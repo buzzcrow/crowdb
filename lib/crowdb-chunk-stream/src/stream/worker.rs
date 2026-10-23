@@ -213,10 +213,14 @@ async fn process_trim(state: &mut WorkerState, offset: u64) -> Result<u64> {
         if last.logical_end > offset {
             break;
         }
+        let physical_end = last
+            .frame_start
+            .checked_add(u64::from(last.frame_length))
+            .ok_or_else(|| StreamError::Corruption("trimmed chunk physical end overflows".into()))?;
         reclaimed = reclaimed.saturating_add(
             state
                 .chunks
-                .release_trimmed(chunk_id, last.logical_end)
+                .release_trimmed(chunk_id, last.logical_end, physical_end)
                 .await?
                 .reclaimed_bytes,
         );

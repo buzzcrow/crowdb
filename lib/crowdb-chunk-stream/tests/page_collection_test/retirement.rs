@@ -161,7 +161,7 @@ async fn malformed_publication_protection_prevents_retirement_and_page_collectio
         .unwrap()
         .unwrap();
     assert!(matches!(
-        directory.advance_directory_page_collection(cursor, 128).await,
+        directory.advance_directory_collection(cursor, 128).await,
         Err(StreamError::Corruption(_))
     ));
     assert!(matches!(

@@ -609,9 +609,50 @@ impl StreamChunkStore for ProductionStreamChunkStore {
             .map_err(read_error)
     }
 
-    async fn release_trimmed(&self, chunk_id: ChunkId, _logical_end: u64) -> Result<TrimmedChunk> {
-        let state = self.state(chunk_id).await?;
-        let reclaimed_bytes = state.persisted_cursor.load(Ordering::Acquire);
+    async fn release_trimmed(
+        &self,
+        chunk_id: ChunkId,
+        _logical_end: u64,
+        physical_end: u64,
+    ) -> Result<TrimmedChunk> {
+        let response = match self
+            .allocator
+            .query_chunk(QueryChunkRequest {
+                chunk_id: Some(chunk_id),
+            })
+            .await
+        {
+            Ok(response) => response,
+            Err(crowdb_chunk_client::IoError::ChunkNotFound(_)) => {
+                return Ok(TrimmedChunk {
+                    chunk_id,
+                    reclaimed_bytes: 0,
+                })
+            }
+            Err(error) => return Err(io_error(error)),
+        };
+        let Some(chunk) = response.chunk else {
+            return Ok(TrimmedChunk {
+                chunk_id,
+                reclaimed_bytes: 0,
+            });
+        };
+        if chunk.id != Some(chunk_id) {
+            return Err(StreamError::Corruption(
+                "chunk release query returned a different identity".into(),
+            ));
+        }
+        if chunk.state == ChunkState::Deleted as i32 {
+            return Ok(TrimmedChunk {
+                chunk_id,
+                reclaimed_bytes: 0,
+            });
+        }
+        if chunk.state != ChunkState::Sealed as i32 || chunk.acknowledged_cursor != physical_end {
+            return Err(StreamError::Corruption(
+                "chunk release requires its exact sealed boundary".into(),
+            ));
+        }
         self.allocator
             .delete_chunk(DeleteChunkRequest {
                 chunk_id: Some(chunk_id),
@@ -620,7 +661,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
             .map_err(io_error)?;
         Ok(TrimmedChunk {
             chunk_id,
-            reclaimed_bytes,
+            reclaimed_bytes: physical_end,
         })
     }
 }

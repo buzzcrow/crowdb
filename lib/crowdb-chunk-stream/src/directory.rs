@@ -18,8 +18,8 @@ mod append;
 mod metadata;
 pub(crate) use metadata::DirectoryRecords;
 pub use metadata::{
-    DirectoryCacheSnapshot, DirectoryHeadSnapshot, DirectoryKeyScan, DirectoryMetadataStore,
-    DirectoryPageCollection, DirectoryPageCollectionStep, DirectoryPublicationRetirement,
+    DirectoryCacheSnapshot, DirectoryChunkRelease, DirectoryCollection, DirectoryCollectionStep,
+    DirectoryHeadSnapshot, DirectoryKeyScan, DirectoryMetadataStore, DirectoryPublicationRetirement,
     DirectoryRootPinSnapshot, DIRECTORY_PAGE_CACHE_SLOTS, MAX_DIRECTORY_SCAN_KEYS,
 };
 mod publication;

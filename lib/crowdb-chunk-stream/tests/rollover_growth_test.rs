@@ -100,8 +100,8 @@ impl StreamChunkStore for TestGrowingChunks {
         self.store.read(chunk, offset, length).await
     }
 
-    async fn release_trimmed(&self, chunk: ChunkId, end: u64) -> Result<TrimmedChunk> {
-        self.store.release_trimmed(chunk, end).await
+    async fn release_trimmed(&self, chunk: ChunkId, end: u64, physical_end: u64) -> Result<TrimmedChunk> {
+        self.store.release_trimmed(chunk, end, physical_end).await
     }
 }
 

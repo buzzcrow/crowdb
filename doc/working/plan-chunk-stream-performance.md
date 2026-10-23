@@ -12,7 +12,9 @@ KV work, with compact locations, incremental directories, and bounded recovery.
 ## Status and scope
 
 - Deployment requirement R243 is complete at `c3d7d64d`; R244 is in progress.
-- T01/T02/T03/T05–T07 foundations are committed. T13 is the active retention foundation task. Directory, shared-codec, ordinary writer and local-progress
+- T01/T02/T03/T05–T07 foundations are committed. T15 is the active recovery task.
+  T13's indexed retention primitives are committed; expiry/read-IO grace and
+  runtime/consumer wiring remain. Directory, shared-codec, ordinary writer and local-progress
   foundations exist; the main Stream worker still needs grouped/indexed wiring,
   safe ownership/recovery, bounded retention and production acceptance.
 - User instruction: this product has never shipped. Support only the chosen
@@ -622,7 +624,7 @@ adaptation rather than a new transport or storage engine.
 
 ## Bounded directory-page collection (partial T13)
 
-- An opaque 224-byte proof cursor captures retention control before validating
+- An opaque bounded proof cursor captures retention control before validating
   the exact current head and independently addressed candidate bytes. One
   continuation allocation is reused across passes; no historical mark set or
   full directory is materialized. Each pass observes at most 128 protections.
@@ -705,10 +707,42 @@ adaptation rather than a new transport or storage engine.
 - This fixes the currently running worker. It does not claim new indexed
   root/pin retention or the no-KV append completion boundary is wired.
 
+## Whole-chunk retention proof and retryable release (partial T13)
+
+- Page and sealed-chunk collection share the bounded protection walker and an
+  opaque `DirectoryCollection` continuation; the unpublished page-only type/API
+  was replaced without forwarding aliases. Each pass observes at most 128
+  records, with no growing history set or new production lock.
+- Complete span end must not exceed current trim. Current/retained heads protect
+  visible intervals plus their whole active chunk, pins protect fixed captured
+  intervals, and guards protect both candidate/base data. Partial overlap keeps
+  the whole chunk. Expired pins remain conservative until safe expiry cleanup.
+- A successful proof CAS advances control and retickets the unchanged span by
+  its KV row revision. The span itself remains durable work until physical
+  release succeeds; no extra tombstone/job namespace is needed. A newer ticket
+  invalidates the old one before IO. Completion removes the span under a fresh
+  control fence; interrupted physical or metadata completion can restart/reprove.
+- `release_trimmed` now requires the exact physical end in every adapter. The
+  production adapter queries current ChunkDB state, rejects active/mismatched
+  seals and treats deleted/absent IDs idempotently. Memory enforces the same
+  seal boundary. The predecessor worker supplies its checked whole-chunk end.
+- Five additional tests with real grouped payloads cover current trim, retained
+  roots, one-byte exact pins, late empty views, interruption before/after data
+  release, idempotent retry, rejected active physical chunks and superseded
+  tickets. Shared actual-KV/Memory cases keep the active successor untouched.
+  Production-adapter tests also reject active/short boundaries and repeat a
+  completed release as zero bytes. Full Stream: 111 passed, zero ignored; final
+  ten span tests, strict all-target clippy and Rust fmt pass. Logs:
+  `chunk-collection-{check,tests,full-stream,tests-final,clippy-final,fmt}.log`.
+- T13 still needs the runtime driver/budgets and consumer wiring, safe automatic
+  pin expiry/read-IO grace and ownership-proven cleanup of next-generation
+  abandoned candidates. Move to T15/T16 recovery now; do not enable no-KV append
+  ACKs before ownership, finalization and finite-view dependencies are complete.
+
 ## Remaining bounded-publication wiring
 
-- New indexed retention still requires whole-span root/pin proofs and
-  crash-retryable physical release. Preserve the predecessor whole-chunk trim
+- New indexed retention still requires runtime whole-span collection and
+  safe expiry integration. Preserve the predecessor whole-chunk trim
   regression cases when replacing that worker.
 - An active 256 MiB chunk can hold more than 65,536 tiny append locations.
   `MAX_DIRECTORY_MUTATION_EXTENTS` and the 128-page publication guard cannot be
@@ -877,7 +911,7 @@ adaptation rather than a new transport or storage engine.
   `lib/crowdb-chunk-stream/src/extent_cache.rs`,
   `lib/crowdb-chunk-client/src/chunk/chunk_reader.rs`,
   `lib/crowdb-chunk-stream/tests/read_publication_test.rs`.
-- [~] **T13 — Reclaim by roots and whole-chunk retention**: associate consumer
+- [ ] **T13 — Reclaim by roots and whole-chunk retention**: associate consumer
   generation horizons with retained root references; protect current, pinned,
   and in-flight roots/pages. Replace generation-only page deletion. Trim cannot
   free a chunk while another extent or consumer still needs it. Bound cleanup
@@ -903,7 +937,7 @@ adaptation rather than a new transport or storage engine.
   `lib/crowdb-chunk-stream/src/memory.rs`,
   `lib/crowdb-chunk-stream/tests/production_chunk_test.rs`,
   `lib/crowdb-chunk-stream/tests/rollover_growth_test.rs`.
-- [ ] **T15 — Implement bounded tail observation and scanning**: establish a
+- [~] **T15 — Implement bounded tail observation and scanning**: establish a
   chunk-layer read mode/bound that can inspect the last allocated chunk beyond
   an older checkpoint without globally widening ordinary object reads. Read
   bounded windows, parse multiple frames locally, and carry frames across read

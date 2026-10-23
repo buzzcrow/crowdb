@@ -501,6 +501,26 @@ the captured retention-control revision. It does not delete their pages. A
 candidate newer than the head keeps protection until publication or independent
 owner exclusion resolves its outcome; elapsed time alone grants no authority.
 
+Page and whole-chunk collection share one bounded continuation over the same
+protection set. A chunk's complete logical end must be at or below current trim.
+Current/retained heads protect their visible intervals and their whole active
+chunk; a pin protects only its fixed needed/captured interval. Any overlap keeps
+the whole sealed chunk. Publication candidates and their base heads both protect
+data. Logical trim is monotonic and allocations use fresh chunk identities, so
+later views cannot reintroduce a retired prefix or append to an old sealed chunk.
+
+A successful whole-chunk proof conditionally rewrites the unchanged span with
+retention control, issuing a ticket bound to that span-row revision. The span
+remains durable retry work. The chunk adapter queries current metadata and
+releases only an exactly matching sealed physical boundary; active/differently
+sealed chunks fail, while deleted or absent IDs are idempotent zero-byte work.
+Only after successful physical release does a control-fenced batch remove the
+span. Interruption before or after physical release therefore leaves retryable
+work; restart reproves it and repeats the idempotent operation. A newer ticket
+supersedes an older one before IO. No extra migration marker or compatibility
+state is involved. Pin release must follow drained read IO; automatic expiry
+collection additionally requires the clock/read-IO grace contract.
+
 ## 8. Bounds and Observation
 
 Defaults bound admission at 1,024 requests and 64 MiB, a batch at 64 requests

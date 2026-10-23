@@ -452,14 +452,24 @@ async fn production_store_writes_reads_advances_and_releases_one_mirror_chunk() 
         store.read(active.chunk_id, 0, 6).await.unwrap(),
         Bytes::from_static(b"stream")
     );
+    assert!(store.release_trimmed(active.chunk_id, 6, 6).await.is_err());
     store.seal(active.chunk_id, 9, 6).await.unwrap();
+    assert!(store.release_trimmed(active.chunk_id, 6, 5).await.is_err());
     assert_eq!(
         store
-            .release_trimmed(active.chunk_id, 6)
+            .release_trimmed(active.chunk_id, 6, 6)
             .await
             .unwrap()
             .reclaimed_bytes,
         6
+    );
+    assert_eq!(
+        store
+            .release_trimmed(active.chunk_id, 6, 6)
+            .await
+            .unwrap()
+            .reclaimed_bytes,
+        0
     );
 }
 

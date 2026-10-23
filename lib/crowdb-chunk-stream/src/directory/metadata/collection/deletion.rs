@@ -5,7 +5,7 @@ use bytes::Bytes;
 use crowdb_kv_client::BatchOp;
 use crowdb_protocol::key::{BinaryKey, StreamDirectoryPageKey};
 
-use super::DirectoryPageCollection;
+use super::{CollectionTarget, DirectoryCollection};
 use crate::directory::metadata::{kv_error, GetOutcome};
 use crate::{DirectoryMetadataStore, Result, StreamError};
 
@@ -13,11 +13,14 @@ impl DirectoryMetadataStore {
     pub(super) async fn delete_unreachable_directory_page(
         &self,
         control: BatchOp,
-        cursor: &DirectoryPageCollection,
+        cursor: &DirectoryCollection,
     ) -> Result<()> {
+        let CollectionTarget::Page(target) = cursor.target else {
+            unreachable!()
+        };
         let page_key = StreamDirectoryPageKey {
             stream_name: cursor.scope.stream_name,
-            page_id: cursor.target.id,
+            page_id: target.id,
         }
         .to_bytes();
         let ops = [
@@ -48,7 +51,7 @@ impl DirectoryMetadataStore {
         };
         if result.is_ok() {
             self.directory_pages
-                .invalidate(cursor.scope.stream_name, cursor.target.id);
+                .invalidate(cursor.scope.stream_name, target.id);
         }
         result
     }

@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/chunk_collection.rs"]
+mod chunk_collection;
 #[path = "common/indexed_metadata.rs"]
 mod indexed_metadata;
 #[path = "common/metadata_server.rs"]
@@ -16,6 +18,8 @@ use crowdb_protocol::chunk_stream::{
 use indexed_metadata::TestIndexedMetadata as Test;
 use metadata_server::TestMetadataServer;
 
+#[path = "sealed_span_test/collection.rs"]
+mod collection;
 #[path = "sealed_span_test/kv.rs"]
 mod kv;
 

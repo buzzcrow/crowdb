@@ -57,7 +57,7 @@ async fn unpublished_guard_keeps_candidate_pages_and_invalidates_old_proofs() {
         .await
         .is_err());
     assert!(matches!(
-        directory.advance_directory_page_collection(old_cursor, 128).await,
+        directory.advance_directory_collection(old_cursor, 128).await,
         Err(StreamError::Backpressure)
     ));
     for page in mutation.pages() {
@@ -77,11 +77,8 @@ async fn unpublished_guard_keeps_candidate_pages_and_invalidates_old_proofs() {
         .unwrap()
         .unwrap();
     assert!(matches!(
-        directory
-            .advance_directory_page_collection(cursor, 128)
-            .await
-            .unwrap(),
-        DirectoryPageCollectionStep::Retained
+        directory.advance_directory_collection(cursor, 128).await.unwrap(),
+        DirectoryCollectionStep::Retained
     ));
 }
 
@@ -102,7 +99,7 @@ async fn invalid_budgets_or_corrupt_candidate_bytes_cannot_authorize_deletion() 
             .unwrap()
             .unwrap();
         assert!(matches!(
-            directory.advance_directory_page_collection(cursor, budget).await,
+            directory.advance_directory_collection(cursor, budget).await,
             Err(StreamError::InvalidRequest(_))
         ));
     }
