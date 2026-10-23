@@ -12,8 +12,8 @@ KV work, with compact locations, incremental directories, and bounded recovery.
 ## Status and scope
 
 - Deployment requirement R243 is complete at `c3d7d64d`; R244 is in progress.
-- T01/T02/T03/T05–T07 foundations are committed. T20a is the active measured
-  hot-path task; T18 remains incomplete and gates removal of cursor commits.
+- T01/T02/T03/T05–T07 foundations and T20a's measured hot-path changes are
+  verified. T18 is next and still gates removal of cursor commits.
   T15's bounded observation primitives await the same runtime authority wiring.
   T13's indexed retention primitives are committed; expiry/read-IO grace and
   runtime/consumer wiring remain. Directory, shared-codec, ordinary writer and local-progress
@@ -25,10 +25,10 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   its fixtures. Existing development runtime artifacts remain preserved; a test
   fixture creates data in its current format.
 - The matched retained-MemDisk baseline and intermediate rerun at `377870bb`
-  fail six performance gates. The first hot-path run at `fc6ae4e4` passes the
-  single-producer append gate and directory-publication bounds, but fails five
-  gates, including a replay regression being corrected. Evidence locations and
-  measured comparisons are recorded below. Performance acceptance is incomplete.
+  fail six performance gates. The final hot-path run passes four of seven gates;
+  the three remaining failures are concurrent small-append p99 and large-append
+  throughput. All cases have zero errors/watchdogs, and directory publication,
+  queue and RSS bounds pass. Performance acceptance is still incomplete.
 - The two pre-existing unrelated user edits stay outside this requirement.
 
 - The main worker now uses current grouped frames and one location per append.
@@ -124,6 +124,62 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   all 42 reader/production-adapter tests pass again. Logs are
   `clippy-verified.log`, `focused-verified.log` and `fmt-verified.log` in that
   checks directory. No lint suppression, timeout extension or gate change was used.
+
+### Final measured hot-path result
+
+- At `05076149`, the layout cache and restored read task parallelism raise random
+  reads to 40767.95 ops/s and replay to 540.01 MiB/s. Large append rises to
+  86.99 MiB/s, but the fixed 8 MiB growth window increases concurrent small-write
+  p99 to 38.833 ms. Full evidence is in
+  `/home/cj/.cache/crowdb-r244-live-directory-results/20261023T103745Z/`.
+- The final follow-up sizes the window from four waiting append lengths, rounded
+  to a power of two and bounded to 2–8 MiB. It retains the hard chunk limit and
+  full zero/sync initialization. Small appends avoid the largest initialization
+  burst; large appends retain the allocation amortization. All 57 affected
+  production-adapter/growth/Stream tests, strict four-crate all-target clippy and
+  fmt pass (`adaptive-tests-2.log`, `adaptive-clippy.log`, `adaptive-fmt.log`).
+- Rerun every original workload/gate after rebuilding, with the same 10-second
+  timed workloads, 180-second watchdog, three-node native retained-MemDisk and
+  mem-block KV/WAL fixture. No container/CLI conversion, null-disk substitution,
+  threshold change or competing test/build ran during measurement.
+- Final artifacts:
+  `/home/cj/.cache/crowdb-r244-live-directory-results/20261023T104812Z/`.
+  `intent.json` and `source.patch` identify the exact follow-up on `05076149`;
+  `binaries.json` records release identities. `run.log`, original
+  `stream/results.tsv`, `comparison.tsv`/`comparison.json`, `phases.tsv` and
+  successful fixture-stop receipt retain the results. The earlier baseline's
+  raw-log loss remains disclosed above; comparisons use its recorded values.
+
+| Workload                | Before `377870bb` | Final     | Unit  | Throughput gain |
+| ----------------------- | ----------------- | --------- | ----- | --------------- |
+| Append 4 KiB, 1 producer | 156.68            | 326.75    | ops/s | 108.55%         |
+| Append 4 KiB, 32         | 1894.28           | 3512.56   | ops/s | 85.43%          |
+| Append 1 MiB, 8          | 46.74             | 86.40     | MiB/s | 84.85%          |
+| Rollover 4 MiB           | 94.23             | 123.48    | MiB/s | 31.04%          |
+| Random 4 KiB, 32         | 22019.79          | 38564.78  | ops/s | 75.14%          |
+| Replay 320 MiB, 1        | 159.29            | 496.66    | MiB/s | 211.80%         |
+
+- Small single-producer average latency falls 6.381 -> 3.059 ms; p99 falls
+  7.461 -> 3.931 ms. Concurrent small-write p99 falls 39.568 -> 25.288 ms
+  (from 38.833 ms in the fixed-window attempt), but still exceeds 20 ms.
+  Large-write p99 falls 235.470 -> 111.738 ms. GC passes at 19.638 ms;
+  this is one operation, so do not infer a stable throughput improvement.
+- The script exits 1: small concurrent p99 25.288 > 20 ms; 1 MiB throughput
+  86.40 < 125 MiB/s; rollover throughput 123.48 < 200 MiB/s. It is not a passed
+  performance regression or R244 completion. The single-producer, random-read,
+  replay and GC gates pass. All seven cases have zero errors/watchdogs.
+- Publication counts are 1/3268 single-producer batches, 1/2152 concurrent
+  batches, 4/872 large batches and 2/65 rollover batches: only chunk attachments.
+  The small single-producer stages average 0.666 ms mirror, 2.320 ms cursor and
+  0.003 ms local view; cursor work remains about 76% of total latency. Large
+  append averages 4.099 ms capacity, 0.751 ms encode, 3.023 ms mirror and
+  3.665 ms cursor. Nested stages/parallel initialization percentiles are not
+  additive. Replay physical reads average 13.626 ms per 8 MiB window, compared
+  with 87.673 ms in the rejected same-task read implementation.
+- T20a is complete as the measured removal of directory waits and read/growth
+  amplification. T18/T19/T20 still must replace cursor authority safely; the
+  indexed directory, bounded historical checkpoints and consumer root pins
+  remain unfinished. The unchanged final performance gates remain T26 work.
 
 ## Gap assessment
 
@@ -1721,7 +1777,7 @@ adaptation rather than a new transport or storage engine.
   `lib/crowdb-chunk-stream/src/stream/read.rs`,
   `lib/crowdb-chunk-stream/tests/read_publication_test.rs`,
   `app/crowdb-chunk-kv-server/src/storage.rs`.
-- [~] **T20a — Remove the per-batch directory wait and read amplification**:
+- [x] **T20a — Remove the per-batch directory wait and read amplification**:
   publish lock-free local append mappings, add an ordered checkpoint/finite view,
   flush WAL recovery proofs, validate cached directory pages once, reuse bounded
   valid chunk layouts and preserve parallel multi-frame reads. Amortize physical

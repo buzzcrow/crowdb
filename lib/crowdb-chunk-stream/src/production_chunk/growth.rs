@@ -8,9 +8,11 @@ use super::{
     ProductionStreamChunkStore, Result, StreamError, StreamName,
 };
 use crate::perf::{perf, PhaseTimer};
+use crowdb_chunk_client::STREAM_STRIP_BYTES;
 use crowdb_protocol::chunkdb::rpc::{AppendChunkRequest, AppendChunkResponse, Chunk, Strip, StripType};
 
-const GROWTH_WINDOW_BYTES: u64 = 8 * 1024 * 1024;
+const MIN_GROWTH_WINDOW_BYTES: u64 = 2 * STREAM_STRIP_BYTES;
+const MAX_GROWTH_WINDOW_BYTES: u64 = 8 * STREAM_STRIP_BYTES;
 
 impl ProductionStreamChunkStore {
     pub(super) async fn grow_active_chunk(
@@ -46,9 +48,16 @@ impl ProductionStreamChunkStore {
                     capacity,
                 }));
             }
+            // Small appends must not wait for a large initialization burst.
+            // Large appends amortize allocation over several following writes.
+            let window = required_capacity
+                .saturating_sub(write_cursor(&state))
+                .saturating_mul(4)
+                .clamp(MIN_GROWTH_WINDOW_BYTES, MAX_GROWTH_WINDOW_BYTES)
+                .next_power_of_two();
             let target = required_capacity
-                .div_ceil(GROWTH_WINDOW_BYTES)
-                .saturating_mul(GROWTH_WINDOW_BYTES)
+                .div_ceil(window)
+                .saturating_mul(window)
                 .min(self.chunk_capacity_bytes);
             let growth_timer = PhaseTimer::start(&perf().growth);
             let response = self.request_growth(&chunk, target, capacity).await?;

@@ -275,9 +275,9 @@ async fn uncertain_growth_initialization_cannot_be_retried_or_written() {
         .grow_mirrored(name, 9, active.chunk_id, active.capacity + 1)
         .await
         .is_err());
-    // All seven added strips complete their submitted work, including the healthy
+    // All three added strips complete their submitted work, including the healthy
     // replica of the failing strip, before uncertain initialization is returned.
-    assert_eq!(disks.fsyncs.load(Ordering::Acquire), 17);
+    assert_eq!(disks.fsyncs.load(Ordering::Acquire), 9);
     let submissions = disks.writes.lock().unwrap().len();
     assert!(store
         .grow_mirrored(name, 9, active.chunk_id, active.capacity + 1)
