@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <utility>
 
 namespace crowdb::diskio
 {
@@ -56,7 +58,7 @@ static bool parse_u32(const char *s, uint32_t &out)
 {
     char *end = nullptr;
     long  v   = std::strtol(s, &end, 10);
-    if (end == s || *end != '\0' || v < 0 || v > 0xFFFFFFFF) {
+    if (end == s || *end != '\0' || v < 0 || std::cmp_greater(v, std::numeric_limits<uint32_t>::max())) {
         return false;
     }
     out = static_cast<uint32_t>(v);
@@ -175,7 +177,8 @@ bool DioConfig::parse_args(int argc, char *argv[], DioConfig &out, std::string &
                 err = "--fault-latency expects <min_ms>:<max_ms>";
                 return false;
             }
-            uint32_t lo, hi;
+            uint32_t lo;
+            uint32_t hi;
             if (!parse_u32(spec.substr(0, colon).c_str(), lo) || !parse_u32(spec.substr(colon + 1).c_str(), hi)) {
                 err = "invalid --fault-latency value";
                 return false;
@@ -369,6 +372,11 @@ bool DioConfig::validate(std::string &err) const
     }
     if (max_write_request_age_ms == 0) {
         err = "max_write_request_age_ms must be > 0";
+        return false;
+    }
+    if (max_write_request_age_ms > protocol::kMaxWriteRequestAgeMs ||
+        max_clock_skew_ms > protocol::kMaxWriteClockSkewMs) {
+        err = "write request age and clock skew must not exceed the shared recovery bounds";
         return false;
     }
     for (const auto &d : disks) {

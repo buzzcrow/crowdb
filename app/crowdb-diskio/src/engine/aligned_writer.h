@@ -9,6 +9,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -35,18 +36,20 @@ class AlignedWriter
     void submit(std::shared_ptr<Disk> disk, off_t phys_offset, const uint8_t *data, size_t size,
                 std::function<void(int)> on_complete);
     void submit_ordered(std::shared_ptr<Disk> disk, off_t phys_offset, const uint8_t *data, size_t size,
-                        uint64_t ordering_phys_offset, std::function<void(int)> on_complete);
+                        uint64_t ordering_phys_offset, std::function<void(int)> on_complete,
+                        std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max());
     void stop();
 
   private:
     struct Request
     {
-        std::shared_ptr<Disk>    disk;
-        off_t                    phys_offset;
-        const uint8_t           *data;
-        size_t                   size;
-        uint64_t                 ordering_phys_offset;
-        std::function<void(int)> on_complete;
+        std::shared_ptr<Disk>                 disk;
+        off_t                                 phys_offset;
+        const uint8_t                        *data;
+        size_t                                size;
+        uint64_t                              ordering_phys_offset;
+        std::chrono::steady_clock::time_point deadline;
+        std::function<void(int)>              on_complete;
     };
 
     struct MergeBuffer

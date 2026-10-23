@@ -40,6 +40,15 @@ impl DiskWriter for MetricsDiskWriter {
         self.inner.fsync(seg).await
     }
 
+    async fn drain_segment(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        self.inner.drain_segment(seg, unit_bytes, deadline).await
+    }
+
     async fn write_views_at_byte_offset(
         &self,
         seg: &Segment,

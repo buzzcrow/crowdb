@@ -63,6 +63,40 @@ async fn metrics_and_routing_preserve_single_attempt_initialization() {
     assert_eq!(peer.counts.fsyncs.load(Ordering::Acquire), 0);
 }
 
+#[tokio::test]
+async fn metrics_and_routing_preserve_ordered_drain_completion() {
+    let peer = TestDiskioPeer::start(true, true, FBDiskIoRetCode::Success).await;
+    let diskio = Arc::new(
+        DiskioClient::connect_for_tests(vec![peer.route(DiskId::new(1, 0))], DiskioClientConfig::default())
+            .unwrap(),
+    );
+    let metrics = Arc::new(ChunkClientMetrics::register(&mut MetricsRegistry::new()));
+    let client = ChunkIoClient::from_parts(
+        Arc::new(allocator::TestAllocator::default()),
+        Arc::new(RoutedDiskWriter::from_client_for_tests(diskio)),
+        ChunkType::Stream,
+    )
+    .with_metrics(&metrics);
+    let (_, writer) = client.storage_parts();
+    let operation = tokio::spawn(async move {
+        writer
+            .drain_segment(
+                &allocator::segment(1),
+                4096,
+                std::time::Instant::now() + std::time::Duration::from_secs(3),
+            )
+            .await
+    });
+    peer.wait_for_write().await;
+    assert!(!operation.is_finished());
+    peer.gate.notify_one();
+    operation.await.unwrap().unwrap();
+    assert_eq!(peer.counts.writes.load(Ordering::Acquire), 1);
+    assert_eq!(peer.counts.sync_requests.load(Ordering::Acquire), 1);
+    assert_eq!(peer.counts.bytes.load(Ordering::Acquire), 0);
+    assert_eq!(peer.counts.fsyncs.load(Ordering::Acquire), 0);
+}
+
 async fn run_flow(repair: bool) {
     let peers = [
         TestDiskioPeer::start(true, false, FBDiskIoRetCode::Success).await,

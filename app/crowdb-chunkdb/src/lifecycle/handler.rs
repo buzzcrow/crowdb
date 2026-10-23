@@ -26,7 +26,7 @@ use crowdb_protocol::chunkdb::rpc::{
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::timing::{DEFAULT_MAX_CLOCK_SKEW_MS, DEFAULT_SELF_FENCE_MARGIN_MS};
+use crowdb_protocol::timing::{DEFAULT_SELF_FENCE_MARGIN_MS, MAX_WRITE_CLOCK_SKEW_MS};
 
 use crate::allocator::{AllocError, ChunkAllocator, StripAllocType, StripBatchSpec};
 use crate::metrics::ChunkdbMetrics;
@@ -49,7 +49,7 @@ const DEFAULT_LAYOUT_VALIDITY_MS: u64 = 30_000;
 const FINALIZE_CHUNK_LIVENESS_MS: u64 = 15 * 60 * 1_000;
 const FINALIZE_CHUNK_RENEWAL_MS: u64 = 12 * 60 * 1_000;
 const FINALIZE_CHUNK_SELF_FENCE_MS: u64 =
-    FINALIZE_CHUNK_LIVENESS_MS - DEFAULT_MAX_CLOCK_SKEW_MS - DEFAULT_SELF_FENCE_MARGIN_MS;
+    FINALIZE_CHUNK_LIVENESS_MS - MAX_WRITE_CLOCK_SKEW_MS - DEFAULT_SELF_FENCE_MARGIN_MS;
 
 /// Lifecycle error — maps to crowdb-rpc status codes in the service layer.
 #[derive(Debug, thiserror::Error)]

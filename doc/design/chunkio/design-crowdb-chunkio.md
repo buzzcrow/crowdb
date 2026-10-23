@@ -38,6 +38,13 @@ are retained. Stream and WAL replacement images initialize their complete strip
 with a retained prefix and zero suffix in one attempt, without automatic retries.
 An uncertain initialization cannot authorize publication or immediate reuse.
 
+`DiskWriter::drain_segment` preserves the segment ordering base and one absolute
+deadline through metrics and routing adapters. Its empty synchronized request
+waits for earlier backend writes and disk flush; a missing completion proof fails
+directly. The caller must first exclude old producers and late admissible requests.
+Recovery and allocation reuse cannot substitute an independent disk fsync for
+this ordered barrier.
+
 EC shard capacity is the persisted segment's `unit_count × unit_kb × 1024`,
 independent of the allocation-unit size. ISA-L consumes only each data shard's
 actual byte prefix. A partial first shard produces equally short code shards;

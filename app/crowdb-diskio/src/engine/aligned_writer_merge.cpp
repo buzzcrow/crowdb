@@ -54,6 +54,10 @@ void AlignedWriter::merge_boundaries(size_t index, Request *request, MergeBuffer
 
 void AlignedWriter::submit_buffer(size_t index, Request *request, MergeBuffer buffer)
 {
+    if (std::chrono::steady_clock::now() >= request->deadline) {
+        finish(index, request, -ETIMEDOUT);
+        return;
+    }
     auto        *bytes  = buffer.bytes.get();
     const off_t  offset = buffer.offset;
     const size_t size   = buffer.size;

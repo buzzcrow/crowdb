@@ -195,6 +195,9 @@ under Open Questions instead of being selected here.
    checkpoints the final tail, and durably releases the old grant; a new grant
    can activate immediately after that proof. An unreachable owner requires
    safe lease expiry and bounded old-request handling before tail recovery.
+   DiskIO's configured request age and clock skew must not exceed the shared
+   recovery bounds; shorter local limits are allowed. One server cannot silently
+   extend the late-write window assumed by recovery and reclamation.
    Compose Chunk-KV's existing serving grants/transfer proofs with Stream
    ownership, rather than add conflicting authorities. A cached epoch,
    lifecycle CAS, or raw DiskIO success alone cannot authorize stale replies.
@@ -393,6 +396,10 @@ under Open Questions instead of being selected here.
   artificial shorter cursor, no arbitration wait occurs, and absence of a
   healthy completed candidate yields unavailable. Subsequent success still requires all configured mirror
   writes and repair as needed. Invariants I1, I3, I4. Integration test.
+- A17 (D09): Given the shared write-age and clock-skew ceilings -> configure
+  DiskIO above either bound or with shorter windows -> assert startup rejects
+  the longer late-write window and accepts the stricter policy. Invariant I3.
+  Unit test.
 
 Required verification commands for implementation, not for this documentation
 update. The C++ gates apply to the synchronized DiskIO request/server changes:

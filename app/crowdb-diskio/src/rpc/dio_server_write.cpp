@@ -9,9 +9,11 @@
 #include <diskio_generated.h>
 #include <msg_type_generated.h>
 
+#include <cerrno>
 #include <chrono>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <utility>
 
 namespace crowdb::diskio
@@ -32,6 +34,29 @@ uint64_t elapsed_nanos(std::chrono::steady_clock::time_point started)
 {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count());
+}
+
+std::optional<std::chrono::steady_clock::time_point> write_deadline(uint64_t created_ms, uint64_t max_age_ms,
+                                                                    uint64_t skew_ms)
+{
+    const auto steady_now = std::chrono::steady_clock::now();
+    const auto now_ms     = unix_time_ms();
+    if (created_ms == 0 || max_age_ms == 0 || (created_ms > now_ms && created_ms - now_ms > skew_ms) ||
+        max_age_ms > UINT64_MAX - skew_ms) {
+        return std::nullopt;
+    }
+    const auto allowance = max_age_ms + skew_ms;
+    if (created_ms > UINT64_MAX - allowance || created_ms + allowance <= now_ms) {
+        return std::nullopt;
+    }
+    const auto remaining_ms = created_ms + allowance - now_ms;
+    const auto max_wait_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::time_point::max() - steady_now)
+            .count();
+    if (std::cmp_greater(remaining_ms, max_wait_ms)) {
+        return std::nullopt;
+    }
+    return steady_now + std::chrono::milliseconds(static_cast<int64_t>(remaining_ms));
 }
 } // namespace
 
@@ -57,11 +82,8 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
     uint64_t    write_create_time_ms = fb_req->write_create_time_ms();
     const bool  sync                 = fb_req->sync();
 
-    const uint64_t allowance = max_write_request_age_ms_ > UINT64_MAX - max_clock_skew_ms_
-                                 ? UINT64_MAX
-                                 : max_write_request_age_ms_ + max_clock_skew_ms_;
-    const uint64_t now_ms    = unix_time_ms();
-    if (write_create_time_ms == 0 || (now_ms >= write_create_time_ms && now_ms - write_create_time_ms > allowance)) {
+    const auto deadline = write_deadline(write_create_time_ms, max_write_request_age_ms_, max_clock_skew_ms_);
+    if (!deadline) {
         delete request;
         send_error_response(conn, req_id, create_nano, msg_type,
                             static_cast<int16_t>(dproto::FBDiskIoRetCode_OldRequest));
@@ -83,8 +105,8 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
                             static_cast<int16_t>(dproto::FBDiskIoRetCode_ZoneNotExist));
         return nullptr;
     }
-    if (zone->base_offset < 0 || zone->capacity < 0 || std::cmp_greater(zone_offset, zone->capacity) ||
-        size > static_cast<uint64_t>(zone->capacity) - zone_offset ||
+    if (zone->base_offset < 0 || zone->capacity < 0 || ordering_zone_offset > zone_offset ||
+        std::cmp_greater(zone_offset, zone->capacity) || size > static_cast<uint64_t>(zone->capacity) - zone_offset ||
         std::cmp_greater(zone_offset, std::numeric_limits<off_t>::max() - zone->base_offset) ||
         (size > 0 && (request->data_buf == nullptr || request->data_buf->len != size))) {
         delete request;
@@ -127,7 +149,10 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
         disk, phys_offset, data_buf != nullptr ? data_buf->data : nullptr, size, ordering_phys_offset,
         [this, disk, complete = std::move(complete), sync, size, started](int res) mutable {
             write_latency_->observe(elapsed_nanos(started));
-            if (res < 0) {
+            if (res == -ETIMEDOUT) {
+                complete(static_cast<int16_t>(dproto::FBDiskIoRetCode_OldRequest), false);
+            }
+            else if (res < 0) {
                 complete(static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError), false);
             }
             else if (std::cmp_less(res, size)) {
@@ -146,7 +171,8 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
                                  result >= 0);
                     });
             }
-        });
+        },
+        *deadline);
     return nullptr;
 }
 

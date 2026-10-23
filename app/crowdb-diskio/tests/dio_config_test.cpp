@@ -82,8 +82,8 @@ rpc_workers = 7
 node_id = 9
 dummy_disk_type = "mem"
 o_direct = false
-max_write_request_age_ms = 40000
-max_clock_skew_ms = 2000
+max_write_request_age_ms = 20000
+max_clock_skew_ms = 500
 fault_latency_min_ms = 2
 fault_latency_max_ms = 8
 fault_error_rate = 0.25
@@ -119,12 +119,13 @@ zone_capacity = 4096
     EXPECT_EQ(config.node_id, 9U);
     EXPECT_EQ(config.dummy_disk_type, DummyDiskType::Mem);
     EXPECT_FALSE(config.o_direct);
-    EXPECT_EQ(config.max_write_request_age_ms, 40000U);
-    EXPECT_EQ(config.max_clock_skew_ms, 2000U);
+    EXPECT_EQ(config.max_write_request_age_ms, 20000U);
+    EXPECT_EQ(config.max_clock_skew_ms, 500U);
     ASSERT_TRUE(config.dummy_props.has_value());
-    EXPECT_EQ(config.dummy_props->latency_min_ms, 2U);
-    EXPECT_EQ(config.dummy_props->latency_max_ms, 8U);
-    EXPECT_DOUBLE_EQ(config.dummy_props->error_rate, 0.25);
+    const auto properties = config.dummy_props.value();
+    EXPECT_EQ(properties.latency_min_ms, 2U);
+    EXPECT_EQ(properties.latency_max_ms, 8U);
+    EXPECT_DOUBLE_EQ(properties.error_rate, 0.25);
     EXPECT_EQ(config.thread_pool_size, 6U);
     EXPECT_EQ(config.sq_entries, 512U);
     EXPECT_EQ(config.kv_seeds.size(), 2U);
@@ -141,6 +142,21 @@ zone_capacity = 4096
     EXPECT_EQ(config.disks[0].path, "/dev/test");
     ASSERT_EQ(config.disks[0].zones.size(), 1U);
     EXPECT_EQ(config.disks[0].zones[0].capacity, 4096);
+}
+
+TEST(DioConfigTest, RejectsPoliciesBeyondSharedRecoveryBounds)
+{
+    DioConfig   config;
+    std::string error;
+    config.max_write_request_age_ms = crowdb::protocol::kMaxWriteRequestAgeMs + 1;
+    EXPECT_FALSE(config.validate(error));
+    EXPECT_EQ(error, "write request age and clock skew must not exceed the shared recovery bounds");
+    config.max_write_request_age_ms = crowdb::protocol::kMaxWriteRequestAgeMs;
+    config.max_clock_skew_ms        = crowdb::protocol::kMaxWriteClockSkewMs + 1;
+    EXPECT_FALSE(config.validate(error));
+    config.max_write_request_age_ms = 100;
+    config.max_clock_skew_ms        = 0;
+    EXPECT_TRUE(config.validate(error)) << error;
 }
 
 TEST(DioConfigTest, CliOverridesFileRegardlessOfArgumentOrder)

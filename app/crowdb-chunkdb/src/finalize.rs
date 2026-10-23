@@ -43,8 +43,8 @@ impl TaskHandler for FinalizeChunkTaskHandler {
         Box::pin(async move {
             let safe_at = task
                 .eligible_at_ms
-                .saturating_add(crowdb_protocol::timing::DEFAULT_MAX_WRITE_REQUEST_AGE_MS)
-                .saturating_add(crowdb_protocol::timing::DEFAULT_MAX_CLOCK_SKEW_MS)
+                .saturating_add(crowdb_protocol::timing::MAX_WRITE_REQUEST_AGE_MS)
+                .saturating_add(crowdb_protocol::timing::MAX_WRITE_CLOCK_SKEW_MS)
                 .saturating_add(crowdb_protocol::timing::DEFAULT_FINALIZER_SCANNER_MARGIN_MS);
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)

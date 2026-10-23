@@ -40,8 +40,8 @@ class DiskioServer
 {
   public:
     DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::Transport *transport,
-                 uint64_t max_write_request_age_ms = protocol::kDefaultMaxWriteRequestAgeMs,
-                 uint64_t max_clock_skew_ms        = protocol::kDefaultMaxClockSkewMs);
+                 uint64_t max_write_request_age_ms = protocol::kMaxWriteRequestAgeMs,
+                 uint64_t max_clock_skew_ms        = protocol::kMaxWriteClockSkewMs);
 
     // Handler functions (registered with RpcServer::register_handler).
     // Each parses the flatbuffer control from the Frame, looks up the

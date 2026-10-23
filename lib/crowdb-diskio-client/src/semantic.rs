@@ -24,6 +24,7 @@ use crate::{DiskId, DiskioError, DiskioResult, DiskioStatus, SegmentTarget};
 mod connection;
 mod native_routes;
 pub use native_routes::NativeDiskRouteResolver;
+mod drain;
 mod write;
 mod write_views;
 
@@ -224,6 +225,12 @@ enum OperationKind {
 enum WritePayload {
     Contiguous(Bytes),
     Views(Arc<[Bytes]>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WriteMode {
+    Data(Durability),
+    Drain,
 }
 
 impl WritePayload {

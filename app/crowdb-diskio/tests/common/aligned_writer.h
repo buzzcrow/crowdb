@@ -59,6 +59,13 @@ class TestRecordingEngine final : public crowdb::diskio::IoEngine
             on_complete(-1);
             return;
         }
+        if (defer_reads) {
+            pending_reads.emplace_back([this, offset, buf, size, callback = std::move(on_complete)] {
+                std::memcpy(buf, storage.data() + offset, size);
+                callback(static_cast<int>(size));
+            });
+            return;
+        }
         std::memcpy(buf, storage.data() + offset, size);
         on_complete(static_cast<int>(size));
     }
@@ -76,8 +83,18 @@ class TestRecordingEngine final : public crowdb::diskio::IoEngine
         callback(static_cast<int>(size));
     }
 
+    void complete_one_read()
+    {
+        ASSERT_FALSE(pending_reads.empty());
+        auto callback = std::move(pending_reads.front());
+        pending_reads.pop_front();
+        callback();
+    }
+
     std::vector<uint8_t>                                    storage;
     bool                                                    defer_writes;
+    bool                                                    defer_reads{false};
+    std::deque<std::function<void()>>                       pending_reads;
     std::optional<off_t>                                    failed_read_offset;
     int                                                     failed_read_result{-EIO};
     size_t                                                  read_count{0};

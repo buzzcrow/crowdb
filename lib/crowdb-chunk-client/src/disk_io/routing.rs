@@ -260,6 +260,21 @@ impl DiskWriter for RoutedDiskWriter {
             .map_err(map_write_error)
     }
 
+    async fn drain_segment(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        let target = Self::target(seg, unit_bytes)?;
+        let mut options = self.client.normal_options();
+        options.deadline = deadline;
+        self.client
+            .drain_segment(target, options)
+            .await
+            .map_err(map_write_error)
+    }
+
     async fn fsync_priority(&self, seg: &Segment) -> Result<()> {
         let disk_id = disk_id(seg).map_err(map_write_error)?;
         self.client

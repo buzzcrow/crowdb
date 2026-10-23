@@ -305,6 +305,23 @@ completion. Related partial-block writes remain ordered without a mutex.
 Independent segment bases and disks can execute separately apart from hash
 collisions. Queue saturation fails the request with `-EAGAIN`.
 
+Byte-addressed writes use the same ordering queue. A zero-length ordered request
+waits for preceding write completions without issuing a media write; when its
+sync flag is set, the RPC handler then flushes the disk before proving completion.
+This is a segment drain after the caller has excluded future producers. A flush
+alone, or a drain while new producers remain authorized, cannot establish a final
+tail or authorize physical reuse.
+
+At admission, a write timestamp must fall within the bounded request age and
+future clock-skew allowance. The server derives a conservative monotonic deadline
+and checks it when dequeuing and before submitting an aligned merge after boundary
+reads. An expired queued request returns `OldRequest` without a media write. An
+already submitted backend operation retains its queue position through completion,
+so a later drain waits for it even when its kernel execution outlasts request age.
+The shared admission ceilings are 30 seconds of request age and one second of
+clock skew. A server may use shorter windows; startup rejects larger values so
+it cannot extend the late-write interval assumed by recovery and reclamation.
+
 Concurrent overlapping writes are not a supported caller contract. As with
 raw `pwrite`, their final contents would otherwise depend on completion order.
 The chunk writers submit sequential updates to a segment and wait for each

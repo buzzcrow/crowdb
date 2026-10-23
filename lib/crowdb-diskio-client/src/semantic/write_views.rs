@@ -2,7 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    Bytes, DiskioClient, DiskioError, DiskioResult, Durability, OperationOptions, SegmentTarget, WritePayload,
+    Bytes, DiskioClient, DiskioError, DiskioResult, Durability, OperationOptions, SegmentTarget, WriteMode,
+    WritePayload,
 };
 
 impl DiskioClient {
@@ -40,7 +41,7 @@ impl DiskioClient {
                     target,
                     offset,
                     WritePayload::Views(data.into()),
-                    durability,
+                    WriteMode::Data(durability),
                     options,
                 )
                 .await;
@@ -66,11 +67,11 @@ impl DiskioClient {
                 target,
                 position,
                 WritePayload::Views(batch.into()),
-                if views.len() == 0 {
+                WriteMode::Data(if views.len() == 0 {
                     durability
                 } else {
                     Durability::Buffered
-                },
+                }),
                 options,
             )
             .await?;

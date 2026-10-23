@@ -906,6 +906,13 @@ adaptation rather than a new transport or storage engine.
 - Matched protocol cleanup removes the retired allocation slot and response code;
   current schema fields are contiguous. Malformed synchronization proof still
   fails directly, with no fallback request or capability negotiation.
+- T04 follow-up: ChunkDB seal RPC still interprets `seal_bytes == 0` as a
+  legacy KiB-only request in `chunkdb_rpc_service/mutations.rs`. Remove that
+  branch, the request's coarse `seal_length` field and LifecycleHandler's KiB
+  wrapper; all current producers already provide exact bytes. Keep the chunk's
+  coarse geometry summaries distinct from this obsolete request compatibility.
+  Update Rust/C++ clients, CLI and fixtures directly, including an exact empty
+  seal. The FBS header also contains obsolete proto-migration commentary.
 - Verification: 875 tests across 144 targets in Protocol, DiskIO-client,
   Chunk-client, Stream, ChunkDB, Chunk-KV and Chunk-KV-server pass with zero
   failures/ignored. Full native tests pass (724 C++ cases plus 85 Rust FFI cases).
@@ -918,6 +925,46 @@ adaptation rather than a new transport or storage engine.
   integration remain. Timing defaults alone do not prove that an already submitted
   kernel write has finished; ordered completion/flush barriers are required before
   observing an excluded owner or reusing its allocation.
+
+## Ordered segment drain and queued request expiry (partial T15/T16/T18)
+
+- Immutable-range and strict matched-wire cleanup is committed at `2fb1ff81`.
+- Two new native regressions first failed: byte-addressed writes bypassed the
+  segment queue, and an empty ordered request issued a second media write instead
+  of waiting as a barrier. All writes now retain their segment queue position
+  until backend completion; a zero-size request completes without media IO.
+- The server rejects missing, stale, overflowing and unbounded-future timestamps.
+  It samples monotonic time before wall time, derives the fixed conservative
+  request deadline, and rechecks it at dequeue and after boundary reads. Queued
+  expiry returns `OldRequest`, not synchronization proof. Existing kernel writes
+  retain their active queue position until completion regardless of elapsed age.
+- Admission age/skew cannot exceed the shared protocol ceilings (30 seconds and
+  one second). The previous parser fixture used 40 seconds/two seconds despite
+  the finalizer assuming 30 seconds/one second. Startup now rejects that unsafe
+  mismatch; shorter configured windows remain supported. The constants name their
+  upper-bound role and keep no obsolete aliases. Owner expiry still must compose
+  conservative clock bounds with ordered drains, not a fixed sleep alone.
+- DiskioClient has an explicit drain operation sharing the existing synchronized
+  wire contract. Empty data writes still fail. DiskWriter routing and metrics
+  forward the same segment identity, absolute deadline and completion proof.
+  No independent-fsync fallback, capability field or ordinary-append extra RPC
+  is introduced.
+- Focused native cases cover byte-write ordering, empty barriers, expired queued
+  requests, expiration during boundary reads, stale/future admission and a fresh
+  drain after a blocked write. Rust wire tests distinguish empty drains from
+  invalid empty data writes; the real routing/metrics seam waits for drain proof.
+- This provides the primitive, not caller-proven owner exclusion. Integrate it
+  with owner/late-request exclusion before tail observation, and with every
+  affected physical release before reuse. Sealing currently retires excess strips
+  and finalization can delete an empty chunk; those paths also require safe drain
+  or deferred reclamation. A healthy-prefix scan cannot authorize freeing an
+  unavailable replica's allocation. Resolve these together with T16/T18/T19.
+- Verification: 878 Rust tests across 145 targets pass with zero failures or
+  ignored cases; native tests pass (732 C++ cases plus 85 Rust FFI cases).
+  The gated drain/empty-data test passes after its final response-lifetime update.
+  All-target clippy, changed-file tree-lint and Rust/C++ format gates pass.
+  Receipts: `ordered-drain-{full,native-full,final-focused,clippy,native-lint-final,
+  fmt}.log`; the original two failing cases remain in `ordered-drain-red.log`.
 
 ## Immutable view and bounded repair-image wiring (partial T14/T20/T22)
 
@@ -1017,6 +1064,11 @@ adaptation rather than a new transport or storage engine.
   encoded prefixes; longer observations may need a bounded second pass up to
   the selected shortest boundary. Rebuild mappings in bounded batches from the
   chosen validated source rather than retaining a full location vector per copy.
+- Reserve comparison/replay time inside that budget. `select_frame_prefix`
+  currently lets one hung observation consume its entire deadline before comparing
+  unequal healthy ends; the subsequent comparison or mapping replay can then
+  reject otherwise healthy candidates. Cover short/long healthy mirrors plus a
+  hung mirror with paused time, and bound each phase by the original deadline.
 - Before enabling deferred completion, establish an authoritative unwritten
   suffix on recycled units. Initialize each fresh or newly grown strip once on
   every required mirror before admitting its first data. Replacement images

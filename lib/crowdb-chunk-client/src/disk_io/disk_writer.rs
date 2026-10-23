@@ -112,6 +112,19 @@ pub trait DiskWriter: Send + Sync {
         Ok(())
     }
 
+    /// Drain the segment's ordered writes and synchronize before this deadline.
+    /// The caller must exclude future producers before observing or reusing it.
+    async fn drain_segment(
+        &self,
+        _seg: &Segment,
+        _unit_bytes: u64,
+        _deadline: std::time::Instant,
+    ) -> Result<()> {
+        Err(IoError::WriteFailed(
+            "disk writer does not support ordered segment drains".into(),
+        ))
+    }
+
     /// Flush conversion data through the priority lane when available.
     async fn fsync_priority(&self, seg: &Segment) -> Result<()> {
         self.fsync(seg).await

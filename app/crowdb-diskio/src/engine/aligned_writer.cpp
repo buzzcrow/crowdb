@@ -83,7 +83,8 @@ void AlignedWriter::submit(std::shared_ptr<Disk> disk, off_t phys_offset, const 
 }
 
 void AlignedWriter::submit_ordered(std::shared_ptr<Disk> disk, off_t phys_offset, const uint8_t *data, size_t size,
-                                   uint64_t ordering_phys_offset, std::function<void(int)> on_complete)
+                                   uint64_t ordering_phys_offset, std::function<void(int)> on_complete,
+                                   std::chrono::steady_clock::time_point deadline)
 {
     if (stopping_.load(std::memory_order_acquire)) {
         if (on_complete) {
@@ -97,22 +98,12 @@ void AlignedWriter::submit_ordered(std::shared_ptr<Disk> disk, off_t phys_offset
         }
         return;
     }
-    if (disk->block_size() == 1 || size == 0) {
-        Disk     *disk_ptr = disk.get();
-        IoEngine *engine   = disk_ptr->engine();
-        engine->submit_write(disk_ptr, phys_offset, data, size,
-                             [disk = std::move(disk), callback = std::move(on_complete)](int result) mutable {
-                                 if (callback) {
-                                     callback(result);
-                                 }
-                             });
-        return;
-    }
     auto  *request = new Request{.disk                 = std::move(disk),
                                  .phys_offset          = phys_offset,
                                  .data                 = data,
                                  .size                 = size,
                                  .ordering_phys_offset = ordering_phys_offset,
+                                 .deadline             = deadline,
                                  .on_complete          = std::move(on_complete)};
     size_t index   = shard_index(*request);
     if (!shards_[index]->pending.try_push(request)) {
@@ -158,12 +149,20 @@ void AlignedWriter::process_next(size_t index)
 
 void AlignedWriter::process(size_t index, Request *request)
 {
+    if (std::chrono::steady_clock::now() >= request->deadline) {
+        finish(index, request, -ETIMEDOUT);
+        return;
+    }
     size_t block_size = request->disk->block_size();
     if (block_size == 0) {
         finish(index, request, -EINVAL);
         return;
     }
-    if (block_size == 1 || request->size == 0) {
+    if (request->size == 0) {
+        finish(index, request, 0);
+        return;
+    }
+    if (block_size == 1) {
         request->disk->engine()->submit_write(request->disk.get(), request->phys_offset, request->data, request->size,
                                               [this, index, request](int result) { finish(index, request, result); });
         return;

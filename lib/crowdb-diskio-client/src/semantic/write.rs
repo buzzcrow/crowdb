@@ -5,7 +5,7 @@
 
 use super::{
     unix_time_ms, Bytes, DiskioClient, DiskioError, DiskioResult, Durability, Instant, OperationKind,
-    OperationOptions, Ordering, SegmentTarget, WireClient, WireWriteTarget, WritePayload,
+    OperationOptions, Ordering, SegmentTarget, WireClient, WireWriteTarget, WriteMode, WritePayload,
 };
 use crate::client::WireError;
 
@@ -28,7 +28,7 @@ impl DiskioClient {
             target,
             offset,
             WritePayload::Contiguous(data),
-            durability,
+            WriteMode::Data(durability),
             options,
         )
         .await
@@ -39,7 +39,7 @@ impl DiskioClient {
         target: SegmentTarget,
         offset: u64,
         data: WritePayload,
-        durability: Durability,
+        mode: WriteMode,
         options: OperationOptions,
     ) -> DiskioResult<()> {
         if Instant::now() >= options.deadline {
@@ -47,7 +47,7 @@ impl DiskioClient {
         }
         let write_create_time_ms = unix_time_ms();
         self.refresh_topology_if_due().await;
-        if data.is_empty() {
+        if data.is_empty() && mode != WriteMode::Drain {
             return Err(DiskioError::InvalidInput("write data must be nonempty".into()));
         }
         let (zone_offset, _) = target.checked_range(offset, data.len())?;
@@ -73,7 +73,7 @@ impl DiskioClient {
                 zone_index: target.zone_index,
                 zone_offset,
                 ordering_zone_offset: target.segment_base,
-                sync: durability == Durability::Fsync,
+                sync: matches!(mode, WriteMode::Data(Durability::Fsync) | WriteMode::Drain),
                 write_create_time_ms,
             };
             let future = match self.submit_payload(&selected, write_target, &data) {
@@ -97,7 +97,7 @@ impl DiskioClient {
             };
             match self.await_synchronized_write(future, options.deadline).await {
                 Ok(synchronized) => {
-                    if durability == Durability::Fsync && !synchronized {
+                    if write_target.sync && !synchronized {
                         return Err(DiskioError::DurabilityFailure(
                             "synchronized write response omitted completion proof".into(),
                         ));

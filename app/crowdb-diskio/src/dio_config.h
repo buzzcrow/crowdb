@@ -53,8 +53,8 @@ struct DioConfig
 
     // Shared stale-write exclusion budget. DiskIO rejects a write whose
     // wall-clock creation time is older than this age plus peer clock skew.
-    uint64_t max_write_request_age_ms = protocol::kDefaultMaxWriteRequestAgeMs;
-    uint64_t max_clock_skew_ms        = protocol::kDefaultMaxClockSkewMs;
+    uint64_t max_write_request_age_ms = protocol::kMaxWriteRequestAgeMs;
+    uint64_t max_clock_skew_ms        = protocol::kMaxWriteClockSkewMs;
 
     // Optional fault injection for dummy disks.
     std::optional<DiskProperties> dummy_props;
