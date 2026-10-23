@@ -760,6 +760,55 @@ adaptation rather than a new transport or storage engine.
   Persist exact sealed chunk spans for whole-chunk retention. No unknown-base
   compatibility fallback or old-consumer generation conversion is needed.
 
+## Bounded complete-prefix parser (partial T15)
+
+- `FramePrefixScanner` accepts only selected revision-2 ordinary/grouped bytes,
+  keeps one at-most-64-KiB frame plus constant validator/hash state, accepts at
+  most 1 MiB per push and emits at most 1,024 complete extents per batch. Stream
+  emits one location per complete append; ordinary frames retain their mode.
+- Only a complete group advances physical/logical progress and its SHA-256
+  prefix digest. Observed bytes/parsed frames are separate counters. Missing
+  followers cannot expose interior frames or skip holes. Exact-capacity end
+  needs no next-header input. Nonzero start checkpoints preserve original bases.
+- Wrong CRC/identity/role/revision, oversized declarations, arithmetic errors,
+  short observations and interior grouped checkpoints fail explicitly. A full
+  header overrunning capacity is invalid, not a shorter healthy candidate. Any
+  parser/observation error poisons the scanner; finishing it later cannot revive
+  an apparently healthy prefix. Incomplete data never contaminates the digest.
+- Twelve focused cases pass, covering byte-sized fragments, frame/window splits,
+  3,000 tiny groups with bounded batches, incomplete capacity suffix, ordinary
+  mode, required checkpoints, limits and all error classes. Full Protocol: 288
+  passed, zero ignored; strict all-target clippy and Rust fmt pass. The only lint
+  repair replaced newer Option helpers with MSRV-supported expressions. Logs:
+  `frame-prefix-{tests-final,full-protocol,clippy-final,fmt}.log`.
+- This is shared parsing, not completed mirror observation/finalizer/runtime
+  integration. Continue with bounded physical-window IO and Q2 comparison.
+
+## Recovery IO execution notes (T15/T16 target)
+
+- Shared parsing uses only current revision-2 ordinary/grouped frames. Separate
+  tentative frame progress from committed complete-append progress, keep one
+  frame buffer and bounded output batches, reject corrupt/failed observations,
+  and hash only the complete encoded prefix for cross-replica comparison.
+- A full nonzero header whose declared frame exceeds allocated capacity is an
+  invalid observation, not a healthy short prefix. A genuinely partial header at
+  exact capacity can retain the prior complete boundary. Short IO before the
+  allocated bound is unavailable. Never synthesize zero bytes on IO failure.
+- Observe replica prefixes within one original IO budget. Compare exact complete
+  encoded prefixes; longer observations may need a bounded second pass up to
+  the selected shortest boundary. Rebuild mappings in bounded batches from the
+  chosen validated source rather than retaining a full location vector per copy.
+- Before enabling deferred completion, establish an authoritative unwritten
+  header at the owned tail even on recycled disk units. Raw block reads do not
+  provide an allocation-generation EOF marker. Write the short zero header in
+  the same synchronized payload write after complete groups, excluding it from
+  the logical/physical group cursor; exact-capacity ends need no marker. Initialize
+  an empty new attachment's header before publication. Preserve that pad in
+  repair images while allowing the next append to overwrite it. This adds no
+  commit frame, per-append KV operation or extra ordinary-append sync request.
+  Do not silently reinterpret stale/corrupt bytes as EOF. Ordinary producers keep
+  their existing persisted cursor authority; Stream/Wal get the grouped contract.
+
 ## Phase 0 — Establish evidence and settle contracts
 
 - [x] **T01 — Capture a matched implementation baseline**: retain release

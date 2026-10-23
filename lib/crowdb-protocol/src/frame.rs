@@ -6,6 +6,11 @@
 use thiserror::Error;
 
 use crate::common::ChunkId;
+mod scan;
+pub use scan::{
+    FramePrefixScanner, FrameScanBatch, FrameScanConfig, FrameScanError, FrameScanMode, FrameScanStop,
+    FrameScanSummary, ScannedFrameExtent, MAX_FRAME_SCAN_EXTENTS, MAX_FRAME_SCAN_INPUT_BYTES,
+};
 
 pub const FRAME_HEADER_PREFIX_BYTES: usize = 14;
 pub const FRAME_FOOTER_BYTES: usize = 20;

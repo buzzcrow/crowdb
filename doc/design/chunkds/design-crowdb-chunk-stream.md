@@ -312,6 +312,14 @@ validation/repair or fail recovery. Bytes with a wrong chunk identity cannot
 extend the tail. Syntactically valid bytes beyond the last checkpoint remain
 candidates; a stale persisted cursor is not an authority to discard them.
 
+The shared parser keeps one at-most-64-KiB frame and constant group/hash state.
+Input windows are at most 1 MiB; output batches contain at most 1,024 complete
+locations. Observed bytes and parsed frames are distinct from committed group
+progress. An exact-capacity end needs no extra header read. Required grouped
+checkpoints are exact append boundaries. A SHA-256 digest covers only the encoded
+complete prefix; incomplete groups do not enter it. A failed observation cannot
+subsequently be finalized as a healthy shorter prefix.
+
 After owner exclusion, observe the current available mirrors concurrently
 within a bounded IO budget. Use the shortest complete-append prefix among healthy
 mirrors that finish observation. A mirror that fails or times out during the
