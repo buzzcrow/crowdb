@@ -180,7 +180,7 @@ impl LifecycleHandler {
                     rollback.push(group.strips[index].clone());
                 }
                 StripReservationState::Consumed => {
-                    if group.planned_cursors[index] != 0 && now_ms >= reuse_not_before_ms {
+                    if now_ms >= reuse_not_before_ms {
                         // Consume is durable before data I/O, so a crashed
                         // writer cannot prove the mirrors reached stable
                         // storage. Keep its blocks allocated beyond the RPC
@@ -201,8 +201,7 @@ impl LifecycleHandler {
                 self.reservation_admission.release(usage.0, usage.1);
             }
         }
-        // Retain legacy consumed reservations indefinitely and newer consumed
-        // reservations until their reuse grace period has elapsed.
+        // Retain consumed reservations until their reuse grace has elapsed.
         if group.states.contains(&(StripReservationState::Consumed as i32)) {
             return Ok(ReservationRecovery::Reconciled);
         }
@@ -684,6 +683,16 @@ pub(super) fn validate_group_shape(group: &StripReservationGroup) -> Result<(), 
     {
         return Err(LifecycleError::InvalidRequest(
             "reservation state and strip counts differ".into(),
+        ));
+    }
+    if group
+        .states
+        .iter()
+        .zip(&group.planned_cursors)
+        .any(|(state, cursor)| *state == StripReservationState::Consumed as i32 && *cursor == 0)
+    {
+        return Err(LifecycleError::InvalidRequest(
+            "consumed reservation must record a planned cursor".into(),
         ));
     }
     Ok(())

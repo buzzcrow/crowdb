@@ -949,8 +949,9 @@ adaptation rather than a new transport or storage engine.
   requests, expiration during boundary reads, stale/future admission and a fresh
   drain after a blocked write. Rust wire tests distinguish empty drains from
   invalid empty data writes; the real routing/metrics seam waits for drain proof.
-- This provides the primitive, not caller-proven owner exclusion. Integrate it
-  with owner/late-request exclusion before tail observation, and with every
+- The finalizer now invokes this primitive before tail observation, as recorded
+  below. This does not yet provide caller-proven owner exclusion. Integrate it
+  with owner/late-request exclusion and with every
   affected physical release before reuse. Sealing currently retires excess strips
   and finalization can delete an empty chunk; those paths also require safe drain
   or deferred reclamation. A healthy-prefix scan cannot authorize freeing an
@@ -961,6 +962,38 @@ adaptation rather than a new transport or storage engine.
   All-target clippy, changed-file tree-lint and Rust/C++ format gates pass.
   Receipts: `ordered-drain-{full,native-full,final-focused,clippy,native-lint-final,
   fmt}.log`; the original two failing cases remain in `ordered-drain-red.log`.
+
+## Finalizer drains and current metadata shape (partial T04/T15/T16)
+
+- A consumed reservation without a planned cursor previously returned Reconciled.
+  The regression now requires an explicit format error with the durable record
+  and blocks untouched. Removed the legacy branch rather than reclaiming it.
+  Required placement policy/repair fields and reservation planned vectors no
+  longer deserialize through old missing-field defaults. Two protocol regressions
+  first failed on omitted policy/planned-cursor fields; optional values remain
+  optional under the current schema.
+- The finalizer drains every captured mirror/EC segment with bounded concurrency
+  before any content scan, including ordinary empty chunks. Missing synchronization
+  proof retries with no scan, seal or free. Drain has at most 15 seconds inside
+  the original 30-second drain/scan budget; scan/comparison do not reset it.
+- Sealing an observed prefix compares the complete captured metadata while holding
+  the existing lifecycle guard. Changed revision/layout means retry. Empty tails
+  use that same seal fence before deletion; a crash between seal and deletion
+  resumes without accessing physical identities already retired. Deleted cleanup
+  can also resume through the idempotent lifecycle path.
+- The TCP regression first returned Complete without any drain proof. It now
+  checks empty S3 and nonempty Wal retention, zero reads on proof failure, then
+  successful recovery when proof returns. Snapshot conflict and seal/deletion
+  restart cases cover the additional lifecycle fence. Verification passes: 900
+  Rust cases across 149 targets, eleven-package all-target clippy and formatting.
+  A final 29-case seal rerun passes after extracting reservation cancellation;
+  the full suite includes all twelve finalizer cases. Receipts use
+  `finalizer-drain-*`, `reservation-cursor-red.log` and `metadata-shape-red.log`.
+- This is partial integration. Group-0 process/session continuity, captured IO
+  deadlines and all other physical release paths still need T18/T19 wiring.
+  The finalizer conservatively retries if any allocation lacks drain proof;
+  completing healthy-prefix recovery while deferring failed-copy reclamation
+  requires that wiring. Do not infer producer exclusion from elapsed time alone.
 
 ## Exact-byte ChunkDB sealing (partial T04/T08)
 
@@ -1134,6 +1167,34 @@ adaptation rather than a new transport or storage engine.
   only the unfinished strip prefix and grants no tail truncation/rewrite exception.
   Do not interpret stale/corrupt bytes or IO errors as EOF. Ordinary object
   producers retain persisted cursor authority; Stream/Wal use complete groups.
+
+## Ownership execution notes (T18/T19 target)
+
+- `ServingGrant` currently binds a persistent instance ID, not a process boot.
+  The monitor can renew that identity while a paused predecessor still exists.
+  Bind grants and conditional service heartbeat to one fixed per-boot session,
+  using the existing DiskDB session fencing pattern without adding a second WAL
+  authority. A new boot must respect the prior grant's safe exclusion boundary
+  before observing the abandoned tail; a cached instance ID cannot prove that.
+- `ServingAuthority.install` currently accepts a higher sequence after the old
+  local deadline expired. Add captured assignment continuity to admission/ACK
+  checks: continuous renewal may preserve the context; a gap, clear, assignment
+  removal or process change permanently fences an old in-flight context. Preserve
+  the sequence high-water mark across clear so an old grant cannot reinstall.
+- Point and batch execution currently authorize before asynchronous WAL work.
+  They need current captured-context validation before success as well. Bind
+  Stream IO to the minimum captured Group-0/liveness absolute deadline; checking
+  only before creating an async future permits a paused producer to resume with
+  a fresh request timestamp. Renewal must run independently of blocked data IO.
+- Keep one process worker per Stream owner session. The production runtime
+  currently opens new handles without a shared worker registry; independent
+  same-epoch workers must not acknowledge competing tails once per-batch KV
+  fencing is removed. Wire this together with the indexed worker and finite-view
+  flush path, then remove the flat predecessor.
+- Ordered drains prove completion only after future producers are excluded.
+  Apply that ordering to cold recovery, excess-strip release, uncertain
+  initialization/replacement, consumed reservations and whole-chunk GC. A missing
+  drain proof preserves durable cleanup work and physical allocation.
 
 ## Phase 0 — Establish evidence and settle contracts
 

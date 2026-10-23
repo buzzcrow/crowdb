@@ -14,6 +14,7 @@ use tokio::time::Instant;
 
 use crate::conversion::io::ConversionDiskIo;
 
+mod drain;
 mod read;
 use read::FinalizerWindowReader;
 
@@ -24,12 +25,22 @@ pub(super) async fn complete_boundary(io: Arc<ConversionDiskIo>, chunk: Arc<Chun
         return Err("finalizer chunk identity or owner does not match purpose".into());
     }
     let grouped = [ChunkType::Stream as i32, ChunkType::Wal as i32].contains(&chunk.chunk_type);
+    let (capacity, replicas) = layout_bounds(&chunk)?;
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(30);
+    drain::drain_layout(&io, &chunk, started + Duration::from_secs(15))
+        .await
+        .map_err(|error| {
+            format!(
+                "chunk {chunk_id:?}: cannot drain prior writes before observing acknowledged cursor {}: {error}",
+                chunk.acknowledged_cursor
+            )
+        })?;
     // Ordinary object publication already persists its exact physical cursor.
     // Only grouped streams have acknowledged data newer than that checkpoint.
     if !grouped && chunk.acknowledged_cursor == 0 {
         return Ok(0);
     }
-    let (capacity, replicas) = layout_bounds(&chunk)?;
     let config = FrameScanConfig {
         chunk_id,
         mode: if grouped {
@@ -56,7 +67,6 @@ pub(super) async fn complete_boundary(io: Arc<ConversionDiskIo>, chunk: Arc<Chun
             )) as _
         })
         .collect();
-    let deadline = Instant::now() + Duration::from_secs(30);
     let window = u32::try_from(MAX_FRAME_SCAN_INPUT_BYTES).expect("bounded observation window");
     select_frame_prefix(&readers, config, window, deadline)
         .await

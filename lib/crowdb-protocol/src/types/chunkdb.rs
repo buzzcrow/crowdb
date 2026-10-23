@@ -10,8 +10,7 @@
     clippy::too_many_lines
 )]
 
-//! Hand-written Rust types replacing the prost-generated `crow.chunkdb.rpc`
-//! types. API-compatible with the former proto-generated structs.
+//! Typed records for the current ChunkDB service and metadata contract.
 
 use serde::{Deserialize, Serialize};
 
@@ -187,14 +186,11 @@ pub struct ChunkStrip {
     pub usage_bitmap: Vec<u8>,
     /// Replica identities known unavailable until background recovery.
     pub unavailable_segments: Vec<Segment>,
-    /// Policy selected when the strip was created. Legacy strips default to rack-first.
-    #[serde(default)]
+    /// Policy selected when the strip was created.
     pub placement_priority: i32,
     /// Creation-time physical failure-domain assessment.
-    #[serde(default)]
     pub placement_assessment: Option<PlacementAssessment>,
     /// A durable placement task must improve this temporary EC layout.
-    #[serde(default)]
     pub placement_repair_required: bool,
 }
 
@@ -317,9 +313,7 @@ pub struct StripReservationGroup {
     pub preferred_survivors: Vec<u32>,
     pub data_num: u32,
     pub code_num: u32,
-    #[serde(default)]
     pub planned_cursors: Vec<u64>,
-    #[serde(default)]
     pub planned_closed_sequences: Vec<u32>,
 }
 
@@ -337,7 +331,6 @@ pub struct ReserveStripGroupRequest {
     pub conversion_data_num: u32,
     pub conversion_code_num: u32,
     /// Append position supplied by the exclusive writer, including hidden strips.
-    #[serde(default)]
     pub reservation_offset_kb: Option<u32>,
 }
 

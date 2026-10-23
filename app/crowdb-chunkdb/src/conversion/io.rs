@@ -134,6 +134,24 @@ impl ConversionDiskIo {
             .map_err(|error| ConversionIoError::Io(error.to_string()))
     }
 
+    /// Prove completion and synchronization of earlier writes in this segment.
+    /// Owner exclusion and late-request age must be established by the caller.
+    pub async fn drain_segment(
+        &self,
+        segment: &Segment,
+        unit_bytes: u64,
+        deadline: std::time::Instant,
+    ) -> Result<(), ConversionIoError> {
+        let target = target(segment, unit_bytes)?;
+        let client = self.client()?;
+        let mut options = client.normal_options().priority();
+        options.deadline = deadline;
+        client
+            .drain_segment(target, options)
+            .await
+            .map_err(|error| ConversionIoError::Io(error.to_string()))
+    }
+
     pub async fn fsync_segment(&self, segment: &Segment) -> Result<(), ConversionIoError> {
         let disk_id = disk_id(segment)?;
         let client = self.client()?;

@@ -1202,36 +1202,10 @@ async fn active_chunk_creates_one_deadline_indexed_finalizer() {
 
 #[tokio::test]
 async fn finalizer_reclaims_an_empty_active_chunk() {
-    let cluster = KvCluster::start_pinned().await;
-    seed_hardware(&cluster.make_hardware_client()).await;
-    let _diskdb = DiskdbServer::start(&cluster).await;
-    let harness = ChunkdbHarness::start(&cluster).await;
-    let chunk = harness
-        .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 19, 60_000)
-        .await
-        .unwrap();
-    let chunk_id = chunk.id.unwrap();
-    let bindings = BindingCache::new();
-    bindings
-        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
-        .unwrap();
-    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
-    let mut task = tasks
-        .get(&chunk_id, TASK_KIND_FINALIZE_CHUNK, &chunk_id)
-        .await
-        .unwrap()
-        .unwrap();
-    task.eligible_at_ms = 0;
-    let finalizer = FinalizeChunkTaskHandler::new(
-        Arc::clone(&harness.handler),
-        Arc::new(ConversionDiskIo::empty_for_tests()),
-    );
-    assert!(matches!(finalizer.execute(&task).await, TaskOutcome::Complete));
-    assert_eq!(
-        harness.handler.query_chunk(&chunk_id).await.unwrap().state,
-        ChunkState::Deleted as i32
-    );
+    let test = common::finalization::TestFinalization::start(ChunkType::S3).await;
+    let outcome = test.run().await;
+    assert!(matches!(outcome, TaskOutcome::Complete), "{outcome:?}");
+    assert_eq!(test.current().await.state, ChunkState::Deleted as i32);
 }
 
 #[tokio::test]
@@ -2661,26 +2635,29 @@ async fn reserved_strips_stay_hidden_until_idempotent_confirmation() {
         .expect("seal and remove terminal reservations");
 }
 
-async fn assert_legacy_consumed_reservation_is_retained(
+async fn assert_consumed_reservation_requires_a_planned_cursor(
     harness: &ChunkdbHarness,
     chunk_id: &ChunkId,
     group_id: &ChunkId,
     planned_cursor: u64,
 ) {
-    let mut legacy = harness
+    let mut malformed = harness
         .store
         .get_reservation_group(chunk_id, group_id)
         .await
         .unwrap()
         .unwrap();
-    legacy.planned_cursors[0] = 0;
-    harness.store.put_reservation_group(&legacy).await.unwrap();
+    malformed.planned_cursors[0] = 0;
+    harness.store.put_reservation_group(&malformed).await.unwrap();
     let outcome = harness
         .handler
         .recover_expired_reservation_group(chunk_id, group_id, u64::MAX)
         .await
-        .unwrap();
-    assert_eq!(outcome, ReservationRecovery::Reconciled);
+        .unwrap_err();
+    assert!(
+        matches!(outcome, LifecycleError::InvalidRequest(ref error) if error.contains("planned cursor")),
+        "{outcome:?}"
+    );
     let mut retained = harness
         .store
         .get_reservation_group(chunk_id, group_id)
@@ -2688,6 +2665,7 @@ async fn assert_legacy_consumed_reservation_is_retained(
         .unwrap()
         .unwrap();
     assert_eq!(retained.states[0], StripReservationState::Consumed as i32);
+    assert_eq!(retained, malformed);
     retained.planned_cursors[0] = planned_cursor;
     harness.store.put_reservation_group(&retained).await.unwrap();
 }
@@ -2795,7 +2773,8 @@ async fn expired_consumed_reservation_waits_for_reuse_grace() {
         .await
         .unwrap();
 
-    assert_legacy_consumed_reservation_is_retained(&harness, &chunk_id, &group_id, planned_cursor).await;
+    assert_consumed_reservation_requires_a_planned_cursor(&harness, &chunk_id, &group_id, planned_cursor)
+        .await;
 
     assert_consumed_reservation_waits_for_reuse_grace(&harness, &chunk_id, &group_id).await;
 

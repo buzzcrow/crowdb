@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use std::sync::Arc;
+use std::sync::{atomic::Ordering, Arc};
 
 use bytes::Bytes;
 use crowdb_chunkdb::{
@@ -27,7 +27,7 @@ pub struct TestFinalization {
     pub io: Arc<ConversionDiskIo>,
     pub chunk: Chunk,
     pub task: ChunkTaskValue,
-    _diskio: Vec<TestDiskio>,
+    diskio: Vec<TestDiskio>,
     _diskdb: DiskdbServer,
     _cluster: KvCluster,
 }
@@ -59,7 +59,11 @@ impl TestFinalization {
                 chunk_type,
                 19,
                 60_000,
-                StreamName::generate().chunk_owner_key(),
+                if matches!(chunk_type, ChunkType::Stream | ChunkType::Wal) {
+                    StreamName::generate().chunk_owner_key()
+                } else {
+                    Vec::new()
+                },
             )
             .await
             .unwrap();
@@ -80,10 +84,25 @@ impl TestFinalization {
             io,
             chunk,
             task,
-            _diskio: diskio,
+            diskio,
             _diskdb: diskdb,
             _cluster: cluster,
         }
+    }
+
+    pub fn reject_drains(&self, reject: bool) {
+        for diskio in &self.diskio {
+            diskio.control.reject_drains.store(reject, Ordering::Relaxed);
+        }
+    }
+
+    pub fn io_counts(&self) -> (usize, usize) {
+        self.diskio.iter().fold((0, 0), |(drains, reads), diskio| {
+            (
+                drains + diskio.control.drain_calls.load(Ordering::Relaxed),
+                reads + diskio.control.read_calls.load(Ordering::Relaxed),
+            )
+        })
     }
 
     pub fn group(&self, offset: u64, payload: &[u8]) -> Vec<u8> {

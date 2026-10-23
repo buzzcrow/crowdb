@@ -739,11 +739,16 @@ entry and task record in one task-partition transaction; no second expiry is
 stored in chunk metadata. The owner self-fences before that authority can
 expire. The task scanner reads due task-index entries only, never scans the
 chunk table. After claim and the shared request-age/skew safety window, it
-observes content using at-most-1-MiB windows and the shared bounded frame
+requires ordered synchronization proof from every segment in the captured
+layout, including ordinary empty chunks and unavailable mirror identities.
+Failure retains the layout and retries without scanning or freeing blocks.
+It then observes content using at-most-1-MiB windows and the shared bounded frame
 parser. Stream/Wal scans include allocated capacity beyond the persisted
 checkpoint and commit only complete append groups. Ordinary object publication
 already persists its physical cursor; its finalization validates that prefix.
-An exact-capacity end needs no extra header request.
+An exact-capacity end needs no extra header request. Drain and scan share one
+30-second IO budget; drain has at most its first half. Observation and comparison
+reserve time within the remainder rather than restarting a timeout per copy.
 
 Available mirror candidates run concurrently within one IO deadline. Select
 the shortest healthy complete prefix and verify agreement on overlapping
@@ -752,6 +757,10 @@ candidates; valid conflicting contents fail explicitly. No readable candidate
 means retry while retaining the Active layout, including a Stream/Wal with a
 zero checkpoint. A scan must cover the persisted `acknowledged_cursor` before
 sealing or deleting. The task writer generation must match the chunk epoch.
+Sealing compares the exact captured chunk metadata while holding its lifecycle
+guard; a concurrent revision/layout change forces another observation. Empty
+chunks first seal through that same fence, then resume tombstone publication
+after restart without accessing physical segments that were already retired.
 Finalization uses this durable task path exclusively; an expired metadata
 checkpoint cannot independently authorize sealing. A restarted owner always
 allocates a new Active chunk.
@@ -983,10 +992,14 @@ pages, so an old prefix cannot starve later records. It deterministically
 admits a completed special group to the normal conversion task path. An
 expired incomplete group is cancelled and reclaimed when its consumed strips
 carry persisted planned cursors and the writer lease deadline plus
-`lifecycle.layout_validity_ms` has elapsed. This reuse grace exceeds the data
-RPC retry window, so a delayed write finishes or times out before DiskDB can
-reallocate the extent. Consumed records without planned cursors remain allocated
-fail-safe. DiskIO does not validate allocation ownership. Terminal reservation
+`lifecycle.layout_validity_ms` has elapsed. This grace bounds late request
+admission; ordered completion proof and producer exclusion are also required
+before physical reuse because an expired RPC can still have backend IO in flight.
+Current reservation records require explicit planned
+cursor/sequence vectors; a consumed strip with a zero planned cursor is malformed
+and fails before reconciliation changes storage. Placement records require
+explicit policy and repair-state fields. DiskIO does not validate allocation
+ownership. Terminal reservation
 records release their quota only after the durable record has been removed;
 ambiguous persistence retains the permit unless a linearizable read proves that
 no record exists.

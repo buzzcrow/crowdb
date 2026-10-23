@@ -116,3 +116,84 @@ async fn a_different_owner_generation_cannot_finalize_the_chunk() {
     );
     assert_eq!(test.current().await, test.chunk);
 }
+
+#[tokio::test]
+async fn missing_drain_proof_retains_empty_and_nonempty_layouts_before_any_scan() {
+    for (purpose, payload) in [(ChunkType::S3, b"".as_slice()), (ChunkType::Wal, b"durable")] {
+        let test = TestFinalization::start(purpose).await;
+        let expected_end = if payload.is_empty() {
+            0
+        } else {
+            let data = test.group(0, payload);
+            for replica in 0..3 {
+                test.write(replica, data.clone()).await;
+            }
+            data.len() as u64
+        };
+        test.reject_drains(true);
+        let outcome = test.run().await;
+        assert!(
+            matches!(outcome, TaskOutcome::Retry { ref error, .. } if error.contains("completion proof")),
+            "{outcome:?}"
+        );
+        assert_eq!(test.current().await, test.chunk);
+        let (drains, reads) = test.io_counts();
+        assert!(drains > 0);
+        assert_eq!(reads, 0);
+        test.reject_drains(false);
+        let outcome = test.run().await;
+        assert!(matches!(outcome, TaskOutcome::Complete), "{outcome:?}");
+        let current = test.current().await;
+        assert_eq!(current.acknowledged_cursor, expected_end);
+        assert_eq!(
+            current.state,
+            if payload.is_empty() {
+                ChunkState::Deleted
+            } else {
+                ChunkState::Sealed
+            } as i32
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_changed_metadata_snapshot_cannot_commit_an_observed_seal_boundary() {
+    let mut test = TestFinalization::start(ChunkType::Stream).await;
+    let observed = test.chunk.clone();
+    test.checkpoint(0).await;
+    let error = test
+        .harness
+        .handler
+        .seal_observed_chunk(&observed, 0)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crowdb_chunkdb::lifecycle::LifecycleError::StateConflict
+    ));
+    assert_eq!(test.current().await, test.chunk);
+    let sealed = test
+        .harness
+        .handler
+        .seal_observed_chunk(&test.chunk, 0)
+        .await
+        .unwrap();
+    assert_eq!(sealed.state, ChunkState::Sealed as i32);
+    assert_eq!(sealed.capacity, 0);
+    assert!(sealed.strips.is_empty());
+}
+
+#[tokio::test]
+async fn finalization_resumes_empty_deletion_after_a_completed_seal() {
+    let test = TestFinalization::start(ChunkType::S3).await;
+    test.harness
+        .handler
+        .seal_observed_chunk(&test.chunk, 0)
+        .await
+        .unwrap();
+    test.reject_drains(true);
+    let outcome = test.run().await;
+    assert!(matches!(outcome, TaskOutcome::Complete), "{outcome:?}");
+    assert_eq!(test.current().await.state, ChunkState::Deleted as i32);
+    assert_eq!(test.io_counts(), (0, 0));
+}

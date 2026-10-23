@@ -8,7 +8,7 @@ use super::{
     LifecycleError, LifecycleHandler, LockPolicy, ProtoChunkState, Segment, StripCleanupIntent,
     StripReservationState,
 };
-use crowdb_protocol::chunkdb::rpc::ChunkType;
+use crowdb_protocol::chunkdb::rpc::{ChunkStrip, ChunkType, StripReservationGroup};
 use tracing::info;
 
 impl LifecycleHandler {
@@ -17,6 +17,30 @@ impl LifecycleHandler {
         &self,
         chunk_id: &ChunkId,
         seal_bytes: u64,
+    ) -> Result<Chunk, LifecycleError> {
+        self.seal_chunk_at_boundary(chunk_id, seal_bytes, None).await
+    }
+
+    /// Seal only the exact metadata snapshot whose physical bytes were observed.
+    /// The caller must independently establish writer exclusion and IO completion.
+    pub async fn seal_observed_chunk(
+        &self,
+        observed: &Chunk,
+        seal_bytes: u64,
+    ) -> Result<Chunk, LifecycleError> {
+        let chunk_id = observed
+            .id
+            .as_ref()
+            .ok_or_else(|| LifecycleError::InvalidRequest("observed chunk has no identity".into()))?;
+        self.seal_chunk_at_boundary(chunk_id, seal_bytes, Some(observed))
+            .await
+    }
+
+    async fn seal_chunk_at_boundary(
+        &self,
+        chunk_id: &ChunkId,
+        seal_bytes: u64,
+        observed: Option<&Chunk>,
     ) -> Result<Chunk, LifecycleError> {
         let seal_length = u32::try_from(seal_bytes.div_ceil(1024))
             .map_err(|_| LifecycleError::InvalidRequest("seal size exceeds capacity field".into()))?;
@@ -39,34 +63,14 @@ impl LifecycleHandler {
                 .clone(),
             None => self.store.get_chunk(chunk_id).await?,
         };
+        if observed.is_some_and(|observed| observed != &chunk) {
+            return Err(LifecycleError::StateConflict);
+        }
         let current_state = ChunkState::from_proto(chunk.state);
         current_state.check_can_seal()?;
         validate_seal_bounds(&chunk, seal_bytes, seal_length)?;
 
-        let reservation_groups = self.store.list_reservation_groups(chunk_id).await?;
-        if reservation_groups
-            .iter()
-            .any(|group| group.states.contains(&(StripReservationState::Consumed as i32)))
-        {
-            return Err(LifecycleError::StateConflict);
-        }
-        let mut reserved_strips = Vec::new();
-        let mut reserved_parity = Vec::new();
-        let mut reserved_parity_groups = Vec::new();
-        for mut group in reservation_groups {
-            reservation::validate_group_shape(&group)?;
-            reserved_parity.extend_from_slice(&group.parity_segments);
-            for (index, state) in group.states.iter_mut().enumerate() {
-                if *state == StripReservationState::Reserved as i32 {
-                    *state = StripReservationState::Cancelled as i32;
-                    reserved_strips.push(group.strips[index].clone());
-                } else if *state == StripReservationState::Cancelled as i32 {
-                    reserved_strips.push(group.strips[index].clone());
-                }
-            }
-            self.store.put_reservation_group(&group).await?;
-            reserved_parity_groups.push(group);
-        }
+        let reservations = self.cancel_seal_reservations(chunk_id).await?;
 
         let now_ms = unix_time_ms();
         let (unused_segments, cleanup_operation) = trim_sealed_strips(&mut chunk, chunk_id, seal_length);
@@ -84,7 +88,7 @@ impl LifecycleHandler {
                 not_before_ms: now_ms,
             });
         }
-        self.rollback_reserved_resources(&reserved_strips, reserved_parity, &reserved_parity_groups)
+        self.rollback_reserved_resources(&reservations.strips, reservations.parity, &reservations.groups)
             .await?;
         for group in self.store.list_reservation_groups(chunk_id).await? {
             if let Some(group_id) = group.group_id {
@@ -117,6 +121,45 @@ impl LifecycleHandler {
         info!(chunk_id = ?chunk_id, seal_length, "chunk sealed");
         Ok(chunk)
     }
+
+    async fn cancel_seal_reservations(&self, chunk_id: &ChunkId) -> Result<SealReservations, LifecycleError> {
+        let reservation_groups = self.store.list_reservation_groups(chunk_id).await?;
+        if reservation_groups
+            .iter()
+            .any(|group| group.states.contains(&(StripReservationState::Consumed as i32)))
+        {
+            return Err(LifecycleError::StateConflict);
+        }
+        let mut reserved_strips = Vec::new();
+        let mut reserved_parity = Vec::new();
+        let mut reserved_parity_groups = Vec::new();
+        for mut group in reservation_groups {
+            reservation::validate_group_shape(&group)?;
+            reserved_parity.extend_from_slice(&group.parity_segments);
+            for (index, state) in group.states.iter_mut().enumerate() {
+                if *state == StripReservationState::Reserved as i32 {
+                    *state = StripReservationState::Cancelled as i32;
+                    reserved_strips.push(group.strips[index].clone());
+                } else if *state == StripReservationState::Cancelled as i32 {
+                    reserved_strips.push(group.strips[index].clone());
+                }
+            }
+            self.store.put_reservation_group(&group).await?;
+            reserved_parity_groups.push(group);
+        }
+
+        Ok(SealReservations {
+            strips: reserved_strips,
+            parity: reserved_parity,
+            groups: reserved_parity_groups,
+        })
+    }
+}
+
+struct SealReservations {
+    strips: Vec<ChunkStrip>,
+    parity: Vec<Segment>,
+    groups: Vec<StripReservationGroup>,
 }
 
 fn trim_sealed_strips(
