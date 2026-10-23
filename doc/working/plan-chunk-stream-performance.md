@@ -620,6 +620,35 @@ adaptation rather than a new transport or storage engine.
   contract. Full Stream passes 88 tests, zero ignored. Strict all-target clippy
   and Rust fmt gate this cleanup; logs are `adapter-cleanup-{tests,clippy,fmt}.log`.
 
+## Bounded directory-page collection (partial T13)
+
+- An opaque 224-byte proof cursor captures retention control before validating
+  the exact current head and independently addressed candidate bytes. One
+  continuation allocation is reused across passes; no historical mark set or
+  full directory is materialized. Each pass observes at most 128 protections.
+- Current and retained roots, every exact pin, and every publication guard are
+  checked. Root fences select one path with at most directory-height page IO;
+  guards protect explicit new pages and the complete base subtree even when
+  the candidate root is not readable or its base root-index row has retired.
+  Expired pins remain conservative protection pending safe expiry cleanup.
+- Control changes invalidate partial proofs. Only a complete proof permits
+  deletion in a control-revision CAS that also advances control. Uncertain
+  writes reconcile absence; malformed/missing proof records fail closed. The
+  bounded local cache evicts confirmed deletions. Restart simply begins a fresh
+  proof against current protection, without trusting incomplete old marks.
+- Six Memory/actual-KV tests cover shared and changed pages, retired roots with
+  exact pins, ten retained generations with one-observation continuation,
+  pin/publication invalidation, unpublished pages/base subtrees, invalid budgets
+  and corrupt candidates. Current reads/head remain unchanged. A protocol test
+  verifies ID-only record decoding derives checked fences and rejects unknown
+  envelopes, trailing bytes and wrong scope. This is the current format only.
+- Full Protocol/Stream: 370 passed, zero ignored; final six focused tests,
+  strict all-target clippy and Rust fmt pass. Lint repairs moved a fixture test
+  into its existing target, boxed the large continuation once, and replaced two
+  redundant closures. Logs: `page-collection-{tests-final,full-suite,
+  clippy-final,fmt}.log`. Whole-chunk spans/data collection, expiry grace,
+  abandoned-guard cleanup and runtime wiring remain unfinished.
+
 ## Remaining bounded-publication wiring
 
 - An active 256 MiB chunk can hold more than 65,536 tiny append locations.

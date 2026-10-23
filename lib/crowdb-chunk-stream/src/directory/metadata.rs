@@ -16,11 +16,13 @@ use crowdb_kv_client::GetOutcome;
 use std::sync::Arc;
 
 mod cache;
+mod collection;
 mod control;
 mod pin;
 mod publication;
 mod records;
 mod retirement;
+pub use collection::{DirectoryPageCollection, DirectoryPageCollectionStep};
 pub use pin::DirectoryRootPinSnapshot;
 mod scan;
 use cache::DirectoryRecordCache;

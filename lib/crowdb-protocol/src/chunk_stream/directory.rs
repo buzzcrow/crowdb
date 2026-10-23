@@ -20,7 +20,10 @@ pub use pin::{
 };
 mod validation;
 
-pub use codec::{decode_stream_directory_page, encode_stream_directory_page, stream_directory_page_id};
+pub use codec::{
+    decode_stream_directory_page, decode_stream_directory_record, encode_stream_directory_page,
+    stream_directory_page_id,
+};
 pub use publication::{
     decode_stream_publication_guard, encode_stream_publication_guard, stream_publication_id,
     StreamDirectoryControl, StreamPublicationGuard, StreamPublicationId, MAX_STREAM_PUBLICATION_PAGES,

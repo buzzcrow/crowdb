@@ -99,6 +99,13 @@ impl DirectoryRecordCache {
         }
         snapshot
     }
+
+    pub(super) fn invalidate(&self, name: StreamName, id: StreamDirectoryPageId) {
+        self.slots[slot(name, id)].rcu(|entry| match entry {
+            Some(page) if page.stream_name == name && page.id == id => None,
+            entry => entry.clone(),
+        });
+    }
 }
 
 fn slot(name: StreamName, id: StreamDirectoryPageId) -> usize {

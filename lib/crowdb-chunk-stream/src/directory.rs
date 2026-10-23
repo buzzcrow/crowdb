@@ -19,7 +19,8 @@ mod metadata;
 pub(crate) use metadata::DirectoryRecords;
 pub use metadata::{
     DirectoryCacheSnapshot, DirectoryHeadSnapshot, DirectoryKeyScan, DirectoryMetadataStore,
-    DirectoryRootPinSnapshot, DIRECTORY_PAGE_CACHE_SLOTS, MAX_DIRECTORY_SCAN_KEYS,
+    DirectoryPageCollection, DirectoryPageCollectionStep, DirectoryRootPinSnapshot,
+    DIRECTORY_PAGE_CACHE_SLOTS, MAX_DIRECTORY_SCAN_KEYS,
 };
 mod publication;
 mod read;

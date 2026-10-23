@@ -53,10 +53,27 @@ pub fn decode_stream_directory_page(
     purpose: StreamPurpose,
 ) -> Result<StreamDirectoryPage, StreamDirectoryError> {
     expected.validate()?;
+    let (actual, page) = decode_stream_directory_record(bytes, expected.id, stream_name, purpose)?;
+    if actual != expected {
+        return Err(StreamDirectoryError::IdentityMismatch);
+    }
+    Ok(page)
+}
+
+/// Decodes one independently addressed record when enumeration supplies its ID
+/// rather than a parent fence. The returned fence is derived from checked bytes.
+/// # Errors
+/// Rejects corrupt content, wrong scope, invalid geometry or an oversized record.
+pub fn decode_stream_directory_record(
+    bytes: &[u8],
+    expected_id: StreamDirectoryPageId,
+    stream_name: StreamName,
+    purpose: StreamPurpose,
+) -> Result<(StreamDirectoryRef, StreamDirectoryPage), StreamDirectoryError> {
     if bytes.len() > MAX_STREAM_DIRECTORY_RECORD_BYTES {
         return Err(StreamDirectoryError::InvalidBounds);
     }
-    if stream_directory_page_id(bytes)? != expected.id {
+    if stream_directory_page_id(bytes)? != expected_id {
         return Err(StreamDirectoryError::IdentityMismatch);
     }
     let body =
@@ -68,12 +85,14 @@ pub fn decode_stream_directory_page(
         return Err(StreamDirectoryError::WrongPurpose);
     }
     let bounds = page.bounds()?;
-    if bounds.level != expected.level
-        || bounds.first_logical != expected.first_logical
-        || bounds.end_logical != expected.end_logical
-        || bounds.extent_count != expected.extent_count
-    {
-        return Err(StreamDirectoryError::IdentityMismatch);
-    }
-    Ok(page)
+    Ok((
+        StreamDirectoryRef {
+            id: expected_id,
+            level: bounds.level,
+            first_logical: bounds.first_logical,
+            end_logical: bounds.end_logical,
+            extent_count: bounds.extent_count,
+        },
+        page,
+    ))
 }

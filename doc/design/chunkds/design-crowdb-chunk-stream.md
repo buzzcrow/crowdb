@@ -464,6 +464,25 @@ before revalidating the head. Concurrent publication or pin changes force a
 retry. Retirement changes neither the head nor directory pages or physical
 chunks; page and data collection require their separate reachability proof.
 
+Directory-page collection uses an opaque constant-size continuation for one
+enumerated page. It captures retention control before validating the current
+head and candidate bytes, then checks current and retained roots, every pin,
+and in-flight publication protection in bounded batches. A root's logical and
+level fences select at most one height-bounded path to the candidate; collection
+does not materialize the tree or a historical mark set. Guards protect their
+explicit new-page list and their base root even when the candidate root is not
+yet readable. Until expiry grace is resolved, expired pin records conservatively
+remain protection.
+
+Each continuation step observes at most 128 protection records. A control change
+invalidates partial proof and requires restart. Only completion of every stage
+permits a page delete in the same control-revision CAS that advances control;
+new publication or pin protection therefore cannot race with a stale deletion.
+Corrupt or missing proof records fail closed. A confirmed deletion evicts the
+local bounded cache entry; interrupted collection can restart without trusting
+an incomplete persisted sweep. Physical chunk collection has its own span and
+logical-interval proof and cannot follow from a page's generation or deletion.
+
 ## 8. Bounds and Observation
 
 Defaults bound admission at 1,024 requests and 64 MiB, a batch at 64 requests
