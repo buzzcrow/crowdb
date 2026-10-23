@@ -25,7 +25,8 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   fixture creates data in its current format.
 - Matched retained-MemDisk baseline remains under
   `r244-chunk-stream/baseline/`; six Stream performance gates are still red.
-  No postimplementation performance acceptance is claimed.
+  The intermediate rerun at `377870bb` also fails six gates; its measured
+  comparison is recorded below. No completed performance acceptance is claimed.
 - The two pre-existing unrelated user edits stay outside this requirement.
 
 - The main worker now uses current grouped frames and one location per append.
@@ -172,6 +173,50 @@ adaptation rather than a new transport or storage engine.
   contains server phase perf logs, configs, RSS and results. Both exact fixture
   shutdown receipts have `ok=true,error=null`. These are baseline results,
   not completion of the new append/ownership/format contract.
+
+## Intermediate performance rerun
+
+- At user request, reran the unchanged original regression script against
+  `377870bb714a8129810eb138d01ad2b917249d91`. Services, native DiskIO, benchmark
+  and fixture were rebuilt from that source before measurement. All seven
+  original cases, durations, thresholds, mirror configuration and retained
+  MemDisk/mem-block fixture settings remain unchanged. Container/CLI conversion
+  is deferred at the user's request; this run uses the existing native fixture.
+- Receipts are under
+  `r244-chunk-stream/comparison-377870bb-20261023T090139Z/`: `intent.json`,
+  eight binary identities in `binaries.json`, complete `run.log`, original
+  `stream/results.tsv`, computed `comparison.tsv`/`comparison.json`, and
+  count/avg/p50/p99/max in `phase-comparison.tsv`. The measured code baseline
+  identity comes from the original binary manifest at `fceee28e`, whose changes
+  from R243's final commit are documentation only.
+- Throughput compared with baseline:
+  - 4 KiB/1T: 147.47 -> 156.68 ops/s (+6.25%); average 6.780 -> 6.381 ms,
+    p99 7.865 -> 7.461 ms.
+  - 4 KiB/32T: 1841.59 -> 1894.28 ops/s (+2.86%); average 17.371 ->
+    16.879 ms, p99 36.948 -> 39.568 ms (+7.09%).
+  - 1 MiB/8T: 42.01 -> 46.74 MiB/s (+11.26%); average 188.807 ->
+    169.752 ms, p99 214.455 -> 235.470 ms (+9.80%).
+  - 4 MiB rollover: 97.88 -> 94.23 MiB/s (-3.73%); p99 344.329 -> 362.054 ms.
+  - Random 4 KiB/32T: 22101.41 -> 22019.79 ops/s (-0.37%);
+    p99 2.240 -> 2.196 ms.
+  - Sequential replay of 320 MiB: 159.42 -> 159.29 MiB/s (-0.08%);
+    five completed replays, p99 2039.324 -> 1998.867 ms. This measures sequential
+    read replay, not cold failover recovery.
+  - GC: one operation, 22.690 -> 21.543 ms. Its reported 11110.75 ->
+    11704.42 MiB/s is a single-sample metadata/reclamation measurement.
+- Every case completes with zero operational errors/watchdogs, but the script
+  exits 1: all four append cases still violate the hot-path metadata publication
+  bound, random reads remain below 30000 ops/s, and replay remains below
+  300 MiB/s. GC passes. Do not report this run as a passed regression or completed
+  performance acceptance. Queue and RSS growth checks pass. Fixture cleanup
+  confirms `ok=true,error=null`; no test service remains running.
+- The single-producer mirror stage improves from 1.222 to 0.747 ms on average.
+  Cursor persistence remains 2.531 ms and Stream publication remains 3.009 ms,
+  together about 87% of the 6.381-ms append latency. There are 1567 append
+  batches and 1568 Stream publications: ordinary append still publishes once per
+  batch. These measurements confirm that the principal latency bottleneck has
+  not been removed. Grouped framing and growth-publication cleanup reduce
+  amplification, but do not replace T18/T20's remaining runtime work.
 
 ## Synchronized write implementation evidence
 
