@@ -43,6 +43,7 @@ struct Allocator {
     fail_query_once: AtomicBool,
     replacement_calls: AtomicUsize,
     replacements: AtomicUsize,
+    allocation_copy_limit: AtomicUsize,
 }
 
 impl Allocator {
@@ -55,6 +56,7 @@ impl Allocator {
             fail_query_once: AtomicBool::new(false),
             replacement_calls: AtomicUsize::new(0),
             replacements: AtomicUsize::new(0),
+            allocation_copy_limit: AtomicUsize::new(0),
         }
     }
 }
@@ -104,7 +106,13 @@ impl ChunkAllocator for Allocator {
             high: u64::try_from(request.chunk_type).unwrap() << 56,
             low: 8,
         };
-        let segments = (1..=request.copy_count)
+        let limit = self.allocation_copy_limit.load(Ordering::Acquire);
+        let copies = if limit == 0 {
+            request.copy_count
+        } else {
+            request.copy_count.min(u32::try_from(limit).unwrap())
+        };
+        let segments = (1..=copies)
             .map(|disk| Segment {
                 disk_id: Some(DiskId {
                     high: u64::from(disk),

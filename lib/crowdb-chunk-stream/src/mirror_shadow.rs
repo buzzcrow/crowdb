@@ -1,5 +1,5 @@
 use bytes::{Bytes, BytesMut};
-use crowdb_chunk_client::chunk::mirror_chunk_writer::STREAM_STRIP_BYTES;
+use crowdb_chunk_client::STREAM_STRIP_BYTES;
 use crowdb_protocol::common::ChunkId;
 
 use crate::storage::MirrorStripImage;

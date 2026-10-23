@@ -4,6 +4,35 @@
 use super::*;
 
 #[tokio::test]
+async fn allocation_rejects_fewer_than_the_configured_copies() {
+    for copies in [3, 5] {
+        let allocator = Arc::new(Allocator::new());
+        allocator.allocation_copy_limit.store(2, Ordering::Release);
+        let disks = Arc::new(Disks::default());
+        let store = ProductionStreamChunkStore::new_with_mirror_copies(
+            allocator,
+            disks.clone(),
+            30_000,
+            ChunkReadPolicy::default(),
+            copies,
+        )
+        .unwrap();
+        let result = store
+            .allocate_mirrored(
+                StreamName { high: 41, low: 43 },
+                9,
+                crowdb_chunk_stream::StreamPurpose::Stream,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(crowdb_chunk_stream::StreamError::ReadUnavailable(_))),
+            "{copies}-copy allocation accepted an incomplete replica set: {result:?}"
+        );
+        assert_eq!(disks.fsyncs.load(Ordering::Acquire), 0);
+    }
+}
+
+#[tokio::test]
 async fn another_stream_cannot_write_or_checkpoint_an_attributed_chunk() {
     let allocator = Arc::new(Allocator::new());
     let disks = Arc::new(Disks::default());

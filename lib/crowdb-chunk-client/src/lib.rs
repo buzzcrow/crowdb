@@ -46,8 +46,8 @@ pub use chunk::frame_observation::{
 };
 pub use chunk::{
     ChunkPrefetch, ChunkReadPolicy, ChunkReadStream, ChunkReader, ChunkWriter, EcStripWriter,
-    FailedReadRange, MirrorChunkWriter, MirrorStripFlow, MirrorStripWriter, PartialReadResult, ReadRangeData,
-    StripReader, StripResult, StripWriter, STREAM_CHUNK_BYTES,
+    FailedReadRange, MirrorStripFlow, MirrorStripWriter, PartialReadResult, ReadRangeData, StripReader,
+    StripResult, StripWriter, STREAM_CHUNK_BYTES, STREAM_STRIP_BYTES,
 };
 pub use client::{
     ChunkIoClient, ChunkIoClientConfig, LargeWritePolicy, LargeWriteResult, PreparedLargeWrite,

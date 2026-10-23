@@ -9,8 +9,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_client::{
-    ChunkAllocator, ChunkIoClient, ChunkIoWriter, DiskWriter, IoError, MirrorChunkWriter, Result,
-    SmallWritePolicy,
+    ChunkAllocator, ChunkIoClient, ChunkIoWriter, DiskWriter, IoError, Result, SmallWritePolicy,
 };
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
@@ -1399,105 +1398,6 @@ async fn small_object_initialization_failure_retires_prepared_pipelines() {
     ));
     assert_eq!(allocator.snapshot().0, 1);
     assert_eq!(allocator.snapshot().4, 1);
-}
-
-#[tokio::test]
-async fn direct_mirror_chunk_writer_replicates_advances_and_seals() {
-    let allocator = Arc::new(MockAllocator::default());
-    let disk = Arc::new(RecordingDiskWriter::default());
-    let allocator_trait: Arc<dyn ChunkAllocator> = allocator.clone();
-    let disk_trait: Arc<dyn DiskWriter> = disk.clone();
-    let mut writer = MirrorChunkWriter::allocate(
-        allocator_trait,
-        disk_trait,
-        crowdb_protocol::chunk_stream::StreamName { high: 1, low: 2 },
-        44,
-        30_000,
-        crowdb_protocol::chunk_stream::StreamPurpose::Stream,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(writer.cursor(), 0);
-    assert_eq!(
-        writer.append(Bytes::from_static(b"stream")).await.unwrap(),
-        (0, 6)
-    );
-    assert_eq!(writer.cursor(), 6);
-    assert_eq!(disk.calls(), 2);
-    assert_eq!(allocator.snapshot().2, 1);
-
-    writer.seal().await.unwrap();
-    assert_eq!(allocator.snapshot().3, 1);
-}
-
-#[tokio::test]
-async fn direct_mirror_chunk_writer_supports_five_copies() {
-    let allocator: Arc<dyn ChunkAllocator> = Arc::new(MockAllocator::default());
-    let disk = Arc::new(RecordingDiskWriter::default());
-    let disk_writer: Arc<dyn DiskWriter> = disk.clone();
-    let mut writer = MirrorChunkWriter::allocate_with_copy_count(
-        allocator,
-        disk_writer,
-        crowdb_protocol::chunk_stream::StreamName { high: 1, low: 5 },
-        44,
-        30_000,
-        5,
-        crowdb_protocol::chunk_stream::StreamPurpose::Stream,
-    )
-    .await
-    .unwrap();
-    writer.append(Bytes::from_static(b"stream")).await.unwrap();
-    assert_eq!(disk.calls(), 5);
-}
-
-#[tokio::test]
-async fn direct_mirror_chunk_writer_accepts_protected_degraded_layout() {
-    let allocator: Arc<dyn ChunkAllocator> = Arc::new(MockAllocator::default());
-    let disk: Arc<dyn DiskWriter> = Arc::new(RecordingDiskWriter::default());
-    let stream = crowdb_protocol::chunk_stream::StreamName { high: 1, low: 3 };
-    let healthy = MirrorChunkWriter::allocate_with_copy_count(
-        Arc::clone(&allocator),
-        Arc::clone(&disk),
-        stream,
-        44,
-        30_000,
-        3,
-        crowdb_protocol::chunk_stream::StreamPurpose::Stream,
-    )
-    .await
-    .unwrap();
-    let mut chunk = healthy.chunk().clone();
-    let Some(Strip::MirrorStrip(mirror)) = &mut chunk.strips[0].strip else {
-        panic!("allocated stream chunk must use mirrors");
-    };
-    mirror.segments.pop();
-    assert!(MirrorChunkWriter::open_with_copy_count(
-        Arc::clone(&allocator),
-        Arc::clone(&disk),
-        chunk.clone(),
-        stream,
-        44,
-        30_000,
-        3,
-        crowdb_protocol::chunk_stream::StreamPurpose::Stream
-    )
-    .is_ok());
-    let Some(Strip::MirrorStrip(mirror)) = &mut chunk.strips[0].strip else {
-        panic!("allocated stream chunk must use mirrors");
-    };
-    mirror.segments.pop();
-    assert!(MirrorChunkWriter::open_with_copy_count(
-        allocator,
-        disk,
-        chunk,
-        stream,
-        44,
-        30_000,
-        3,
-        crowdb_protocol::chunk_stream::StreamPurpose::Stream
-    )
-    .is_err());
 }
 
 #[path = "small_object_test/prefix_recovery.rs"]

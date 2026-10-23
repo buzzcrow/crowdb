@@ -47,13 +47,13 @@ or runtime correctness is claimed by this audit.
   direct-KV clients. Allocation, updates, listing, reservations, task scanning
   and owner queries have no complete repo backend path. A shared backend switch
   would not establish the required separate system/repo operation logic.
-- **Recursive dependency:** chunk-kv's journal uses chunk-stream, whose
-  `MirrorChunkWriter` currently allocates `Stream`. Routing all Stream chunks
-  to chunk-kv before distinguishing system `Wal` would make journal metadata
-  depend on the storage it must recover. Owner-key validation and reopen also
-  currently expect Stream. The binding's `owner_kind="chunk-kv-partition"`
-  does not itself change the allocated type. See
-  [mirror writer](../../lib/crowdb-chunk-client/src/chunk/mirror_chunk_writer.rs),
+- **Recursive dependency:** chunk-kv's journal uses chunk-stream. Allocation,
+  owner validation and reopen now preserve an explicit system `Wal` or business
+  `Stream` purpose. Backend dispatch must preserve that distinction: routing
+  system WAL metadata to chunk-kv would make journal metadata depend on the
+  storage it must recover. The binding's `owner_kind="chunk-kv-partition"`
+  does not itself select the allocated type. See
+  [Stream allocation](../../lib/crowdb-chunk-stream/src/production_chunk/allocation.rs),
   [owner validation](../../lib/crowdb-protocol/src/chunk_stream.rs) and
   [storage assembly](../../app/crowdb-chunk-kv-server/src/storage.rs).
 - **Atomic publication:** chunk creation writes a Chunk, finalize task and

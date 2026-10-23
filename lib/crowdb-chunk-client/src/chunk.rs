@@ -18,7 +18,6 @@ pub mod chunk_writer;
 pub(crate) mod client_recovery;
 pub mod ec_strip_writer;
 pub mod frame_observation;
-pub mod mirror_chunk_writer;
 pub mod mirror_flow;
 pub mod mirror_strip_writer;
 pub mod parity_writer;
@@ -33,8 +32,12 @@ pub use chunk_reader::{
 };
 pub use chunk_writer::ChunkWriter;
 pub use ec_strip_writer::EcStripWriter;
-pub use mirror_chunk_writer::{MirrorChunkWriter, STREAM_CHUNK_BYTES};
 pub use mirror_flow::MirrorStripFlow;
 pub use mirror_strip_writer::MirrorStripWriter;
 pub use strip::{StripResult, StripWriter};
 pub use strip_reader::StripReader;
+
+/// Maximum physical capacity of one Stream/Wal chunk.
+pub const STREAM_CHUNK_BYTES: u64 = 256 * 1024 * 1024;
+/// Physical allocation granularity of a growing Stream/Wal chunk.
+pub const STREAM_STRIP_BYTES: u64 = 1024 * 1024;

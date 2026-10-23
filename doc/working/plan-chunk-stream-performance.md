@@ -877,6 +877,27 @@ adaptation rather than a new transport or storage engine.
   in `grouped-worker-{initial,suite}.log` identify stale fixture geometry and
   the now-rejected attempt to discard synchronized bytes using an older cursor.
 
+## Single production Stream write path cleanup (partial T04/T14)
+
+- Removed the unused raw-byte `MirrorChunkWriter` and its public exports. Its
+  append/grow/seal path had no production callers; ProductionStreamChunkStore
+  only borrowed allocation from it. Allocation now directly requests the typed
+  Stream/Wal chunk and validates fresh identity, owner, epoch, state, zero
+  checkpoint and initial geometry before installing the local writer token.
+  Physical Stream constants belong to the chunk facade. There is no forwarding
+  alias or alternative unframed Stream write path.
+- The removed writer also accepted two copies for a three/five-copy request.
+  A new regression reproduced Production allocation returning success with that
+  incomplete set. Fresh allocation now requires every configured copy. Existing
+  write/repair admission retains the same requirement after attachment.
+- Removed three tests of the obsolete raw writer; production grouped-byte
+  tests cover actual writes, growth, synchronized repair and exact release.
+  A stale audit link now points to current typed allocation and preserves the
+  system-Wal/business-Stream separation.
+- All 260 Client/Stream tests across 40 targets pass, zero failed/ignored;
+  affected all-target clippy and workspace fmt pass. Receipts:
+  `direct-allocation-{before,full,clippy,fmt}.log`.
+
 ## Finalizer shared-prefix integration (partial T16)
 
 - Removed the unused table-scanning expiry API and its cursor-only seal path,

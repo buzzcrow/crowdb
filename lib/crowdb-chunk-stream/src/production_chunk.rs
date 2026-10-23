@@ -12,8 +12,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use crowdb_chunk_client::{
-    ChunkAllocator, ChunkReadPolicy, ChunkReader, DiskWriter, FailedDiskList, MirrorChunkWriter,
-    MirrorStripFlow, ProtoLocation,
+    ChunkAllocator, ChunkReadPolicy, ChunkReader, DiskWriter, FailedDiskList, MirrorStripFlow, ProtoLocation,
 };
 use crowdb_protocol::chunk_stream::{ActiveChunkDescriptor, StreamName};
 use crowdb_protocol::chunkdb::rpc::{
