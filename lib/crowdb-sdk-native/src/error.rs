@@ -15,6 +15,7 @@ pub enum MutationInterruption {
     Cancelled,
     Deadline,
     Shutdown,
+    Transport,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -44,6 +44,7 @@ pub struct RuntimeResources {
     pub(crate) allocations: Arc<AllocationRegistry>,
     pub(crate) compatibility_copy_bytes: AtomicU64,
     pub(crate) closing: Cancellation,
+    pub(crate) continuation_key: Vec<u8>,
 }
 
 impl RuntimeResources {
@@ -60,6 +61,10 @@ impl RuntimeResources {
         {
             return Err(Error::Configuration("invalid request or memory limits".into()));
         }
+        let identity = crowdb_chunk_kv_client::RequestIdentityAllocator::new().client_instance_id();
+        let mut continuation_key = Vec::with_capacity(16);
+        continuation_key.extend_from_slice(&identity.high.to_le_bytes());
+        continuation_key.extend_from_slice(&identity.low.to_le_bytes());
         Ok(Arc::new(Self {
             requests: Budget::new(limits.requests, CapacityKind::Requests),
             producers: Budget::new(limits.producer_bytes, CapacityKind::Producers),
@@ -67,6 +72,7 @@ impl RuntimeResources {
             closing: Cancellation::default(),
             allocations: Arc::new(AllocationRegistry::default()),
             compatibility_copy_bytes: AtomicU64::new(0),
+            continuation_key,
         }))
     }
 

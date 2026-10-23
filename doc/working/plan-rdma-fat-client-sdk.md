@@ -99,7 +99,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
 
 ## Phase 3: shared S3 execution and first native frontend
 
-- [ ] **Extract bucket and metadata operations**: move typed bucket, HEAD,
+- [x] **Extract bucket and metadata operations**: move typed bucket, HEAD,
   list, and delete orchestration into the S3 library. Preserve bounded
   listing, continuation scope, conditions, and shared-range cleanup. HTTP
   parses/authenticates, calls shared execution, and encodes. Files:
@@ -324,6 +324,37 @@ transport acceptance alone cannot establish SDK completion.
   Three new catalog/locality cases pass; the native suite now has 27 cases.
   Native/S3/ChunkIO all-target suites and clippy pass. Full service restart,
   stale-catalog/endpoint fault acceptance remains part of the final corpus.
+- HTTP and native listing/batch deletion now use shared `S3Executor` execution.
+  Native listing returns bounded typed entries and scoped continuation; handles
+  share a runtime-local random signer key unless configured for stable cursors.
+  This key is not a user credential and requires no credential database.
+  Lazy native batch deletion validates the entire selection, returns each
+  independent ordered result, keeps duplicate semantics and stops its tail on
+  drop/cancellation. Shared typed deletion preserves transport/deadline reply
+  loss as uncertainty; HTTP renders the same stable ServiceUnavailable code.
+  Four focused native cases cover paging/scope, lazy ordered partial progress,
+  cancellation and an applied mutation with a deliberately lost reply. The
+  native suite now has 31 cases. Native/S3 all-target tests, affected HTTP
+  service/inspection/multipart tests, three-crate clippy and formatting pass.
+
+## Immediate dependent implementation
+
+- Extract HTTP `ObjectWriter` selection/finalization and publication into
+  shared S3 write sessions before native PUT/copy/multipart. Preserve the
+  existing digest pipeline, native framed owners, small-writer pools, large
+  EC policy, and `PutOutcome::Timeout`; frontend parsing/encoding stays HTTP.
+  Ordinary native input and frozen registered input must use these sessions,
+  with reserved frame space for in-place preparation when eligible.
+- Complete owned runtime shutdown without prematurely destroying held leases.
+  Distinguish borrowed attached clients from runtime-owned transports and
+  newly created writer groups. Shared shutdown must run once, drain owned
+  producers, close RPC workers/reapers and let all shutdown callers observe
+  the same terminal result. Do not stop externally borrowed clients implicitly.
+- Audit accepted RDMA read failures above semantic DiskIO: the routed adapter
+  and strip recovery currently have read retry paths. Ensure a native accepted
+  failure cannot turn into a TCP suffix across these layers, while retaining
+  qualified ordinary mirror/EC recovery. Add native GET fault coverage before
+  claiming the final fallback boundary.
 
 ## Subsequent Dataset integration under R220
 

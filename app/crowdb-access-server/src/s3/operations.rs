@@ -10,9 +10,8 @@ use base64::Engine as _;
 use crowdb_access_s3::condition::ObjectConditions;
 use crowdb_access_s3::continuation::ContinuationTokenSigner;
 use crowdb_access_s3::error::{S3Error, S3ErrorCode};
-use crowdb_access_s3::execution::S3Executor;
+use crowdb_access_s3::execution::{ObjectListRequest, S3Executor};
 use crowdb_access_s3::metadata::{ObjectRecord, TenantId};
-use crowdb_access_s3::object::{self, ListObjectsV2Request, ObjectMetadataError};
 use crowdb_access_s3::publication::PublicationRequest;
 use crowdb_access_s3::retrieval::{ObjectHeaders, RetrievalError};
 use crowdb_access_s3::route::{S3Operation, S3Route};
@@ -356,25 +355,24 @@ impl ProductionS3Operations {
             .map_or(Ok(DEFAULT_LIST_LIMIT), |value| value.parse::<usize>())
             .map_err(|_| S3ErrorCode::InvalidRequest)?
             .min(DEFAULT_LIST_LIMIT);
-        let page = object::list_v2(
-            &self.storage.metadata,
-            &self.signer,
-            &ListObjectsV2Request {
-                tenant: &self.config.tenant,
-                bucket: bucket_id,
-                prefix: &prefix,
-                delimiter: delimiter.as_deref(),
-                start_after: start_after.as_deref(),
-                continuation_token: continuation.as_deref(),
-                max_keys,
-                max_scan_items: self.config.list_scan_items,
-                max_scan_bytes: self.config.list_scan_bytes,
-                now_unix_seconds: unix_seconds(),
-                token_ttl_seconds: self.config.continuation_ttl_seconds,
-            },
-        )
-        .await
-        .map_err(|error| map_object_error(&error))?;
+        let page = self
+            .execution
+            .list_objects(
+                &self.signer,
+                &ObjectListRequest {
+                    bucket: bucket_id,
+                    prefix: &prefix,
+                    delimiter: delimiter.as_deref(),
+                    start_after: start_after.as_deref(),
+                    continuation_token: continuation.as_deref(),
+                    max_keys,
+                    max_scan_items: self.config.list_scan_items,
+                    max_scan_bytes: self.config.list_scan_bytes,
+                    now_unix_seconds: unix_seconds(),
+                    token_ttl_seconds: self.config.continuation_ttl_seconds,
+                },
+            )
+            .await?;
         xml_response(wire::list_objects(
             bucket_name,
             &prefix,
@@ -625,16 +623,6 @@ fn map_retrieval(error: &RetrievalError) -> S3ErrorCode {
         RetrievalError::NotModified | RetrievalError::DataReference | RetrievalError::ChunkRead => {
             S3ErrorCode::InternalError
         }
-    }
-}
-
-fn map_object_error(error: &ObjectMetadataError) -> S3ErrorCode {
-    match error {
-        ObjectMetadataError::Key(_)
-        | ObjectMetadataError::Continuation(_)
-        | ObjectMetadataError::InvalidListLimit => S3ErrorCode::InvalidRequest,
-        ObjectMetadataError::Record(_) => S3ErrorCode::InternalError,
-        ObjectMetadataError::Store(_) => S3ErrorCode::ServiceUnavailable,
     }
 }
 

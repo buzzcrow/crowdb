@@ -3,6 +3,9 @@
 
 //! Trusted S3 execution shared by HTTP parsing and native business handles.
 
+mod namespace;
+pub use namespace::{DeleteObjectFailure, DeleteObjectResult, DeleteObjectStream, ObjectListRequest};
+
 use std::sync::Arc;
 
 use crate::bucket::{self, BucketError, DeleteBucketResult, RandomBucketIdGenerator};
@@ -104,10 +107,21 @@ impl S3Executor {
     /// # Errors
     /// Returns namespace or metadata mutation failure. Physical reclamation is deferred.
     pub async fn delete_object(&self, bucket: &[u8], key: &[u8]) -> Result<(), S3ErrorCode> {
-        let bucket_id = self.resolve_bucket(bucket).await?;
+        self.delete_object_typed(bucket, key)
+            .await
+            .map_err(|error| error.code())
+    }
+
+    /// # Errors
+    /// Preserves a possibly applied metadata mutation after a lost transport reply.
+    pub async fn delete_object_typed(&self, bucket: &[u8], key: &[u8]) -> Result<(), DeleteObjectFailure> {
+        let bucket_id = self
+            .resolve_bucket(bucket)
+            .await
+            .map_err(DeleteObjectFailure::Error)?;
         object::delete(&self.storage.metadata, &self.tenant, bucket_id, key)
             .await
-            .map_err(|error| object_error(&error))
+            .map_err(|error| namespace::delete_failure(&error))
     }
 
     /// # Errors

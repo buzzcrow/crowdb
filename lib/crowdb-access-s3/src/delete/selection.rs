@@ -61,6 +61,20 @@ impl DeleteSelection {
         F: FnMut(Vec<u8>) -> Fut,
         Fut: std::future::Future<Output = Result<(), S3ErrorCode>>,
     {
+        self.stream_typed(delete)
+    }
+
+    /// Preserves typed mutation uncertainty for trusted execution frontends.
+    /// # Errors
+    /// Validates the entire selection before invoking any mutation.
+    pub fn stream_typed<F, Fut, E>(
+        &self,
+        delete: F,
+    ) -> Result<impl futures::Stream<Item = (Vec<u8>, Result<(), E>)>, S3ErrorCode>
+    where
+        F: FnMut(Vec<u8>) -> Fut,
+        Fut: std::future::Future<Output = Result<(), E>>,
+    {
         if self.keys.is_empty() || self.keys.len() > 1000 {
             return Err(S3ErrorCode::InvalidRequest);
         }

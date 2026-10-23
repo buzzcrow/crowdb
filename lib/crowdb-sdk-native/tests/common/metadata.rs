@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -26,17 +27,28 @@ enum TestCommand {
     Scan(ScanRequest, oneshot::Sender<ChunkKvResponse>),
 }
 
-pub struct TestMetadataTransport(mpsc::Sender<TestCommand>);
+pub struct TestMetadataTransport {
+    sender: mpsc::Sender<TestCommand>,
+    lose_mutation_reply: Arc<AtomicBool>,
+}
 
 #[async_trait]
 impl ChunkKvTransport for TestMetadataTransport {
     async fn point(&self, _: &str, request: &PointRequest) -> Result<ChunkKvResponse> {
         let (sender, receiver) = oneshot::channel();
-        self.0
+        self.sender
             .send(TestCommand::Point(request.operation.clone(), sender))
             .await
             .unwrap();
-        Ok(receiver.await.unwrap())
+        let response = receiver.await.unwrap();
+        if !matches!(request.operation, PointOperation::Get { .. })
+            && self.lose_mutation_reply.load(Ordering::Acquire)
+        {
+            return Err(crowdb_chunk_kv_client::ClientError::Transport(
+                "test lost an applied mutation reply".into(),
+            ));
+        }
+        Ok(response)
     }
 
     async fn seek(&self, _: &str, _: &SeekRequest) -> Result<ChunkKvResponse> {
@@ -45,7 +57,7 @@ impl ChunkKvTransport for TestMetadataTransport {
 
     async fn scan(&self, _: &str, request: &ScanRequest) -> Result<ChunkKvResponse> {
         let (sender, receiver) = oneshot::channel();
-        self.0
+        self.sender
             .send(TestCommand::Scan(request.clone(), sender))
             .await
             .unwrap();
@@ -181,6 +193,28 @@ pub fn catalog(
 }
 
 pub async fn client_with_source(source: Arc<dyn ChunkKvRangeCatalogSource>) -> Arc<ChunkKvClient> {
+    client_with_options(source, Arc::new(AtomicBool::new(false)), ClientConfig::default()).await
+}
+
+#[allow(dead_code)] // Used by namespace uncertainty tests only.
+pub async fn client_with_loss(loss: Arc<AtomicBool>) -> Arc<ChunkKvClient> {
+    let (head, pages) = catalog(1, 1);
+    client_with_options(
+        Arc::new(TestCatalog(head, pages)),
+        loss,
+        ClientConfig {
+            max_attempts: 1,
+            ..ClientConfig::default()
+        },
+    )
+    .await
+}
+
+async fn client_with_options(
+    source: Arc<dyn ChunkKvRangeCatalogSource>,
+    loss: Arc<AtomicBool>,
+    config: ClientConfig,
+) -> Arc<ChunkKvClient> {
     let (sender, mut receiver) = mpsc::channel(64);
     tokio::spawn(async move {
         let mut values = BTreeMap::new();
@@ -201,9 +235,12 @@ pub async fn client_with_source(source: Arc<dyn ChunkKvRangeCatalogSource>) -> A
     });
     let client = Arc::new(
         ChunkKvClient::new(
-            ClientConfig::default(),
+            config,
             source,
-            Arc::new(TestMetadataTransport(sender)),
+            Arc::new(TestMetadataTransport {
+                sender,
+                lose_mutation_reply: loss,
+            }),
         )
         .unwrap(),
     );

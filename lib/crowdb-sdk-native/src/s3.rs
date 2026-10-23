@@ -14,8 +14,11 @@ use std::sync::Arc;
 mod body;
 mod config;
 mod locality;
+mod namespace;
 mod object;
 mod read;
+pub use crowdb_access_s3::execution::{DeleteObjectFailure, DeleteObjectResult};
+pub use namespace::{DeleteObjects, ListObject, ListObjects, ListOptions};
 
 pub use body::ObjectBody;
 pub use config::S3ClientConfig;
@@ -32,6 +35,7 @@ pub use read::{GetObject, GetOptions};
 pub struct S3Client {
     runtime: ClientRuntime,
     execution: S3Executor,
+    signer: Arc<crowdb_access_s3::continuation::ContinuationTokenSigner>,
 }
 
 impl S3Client {
@@ -40,6 +44,11 @@ impl S3Client {
     /// Rejects closed runtime or a writer group for another concrete chunk type.
     pub fn new(runtime: ClientRuntime, config: impl Into<S3ClientConfig>) -> Result<Self> {
         let config = config.into();
+        if config.continuation_key.as_ref().is_some_and(Vec::is_empty) {
+            return Err(Error::Configuration(
+                "S3 continuation key must be nonempty".into(),
+            ));
+        }
         if config
             .small_write
             .as_ref()
@@ -60,8 +69,15 @@ impl S3Client {
             metadata: Arc::new(ChunkKvMetadataStore::new(Arc::clone(&runtime.storage.metadata))),
             chunks: Arc::clone(&runtime.storage.chunks),
         };
+        let signer = crowdb_access_s3::continuation::ContinuationTokenSigner::new(
+            config
+                .continuation_key
+                .unwrap_or_else(|| runtime.resources.continuation_key.clone()),
+        )
+        .map_err(|_| Error::Configuration("S3 continuation key must be nonempty".into()))?;
         Ok(Self {
             execution: S3Executor::new(storage, config.tenant),
+            signer: Arc::new(signer),
             runtime,
         })
     }
@@ -122,9 +138,21 @@ impl S3Client {
     /// # Errors
     /// Returns namespace, admission or routed metadata mutation failure.
     pub async fn delete_object(&self, context: OperationContext, bucket: &[u8], key: &[u8]) -> Result<()> {
+        let id = context.request_id.get();
         let request = self.runtime.resources.admit(context)?;
         request
-            .run_mutation(async { self.execution.delete_object(bucket, key).await.map_err(Error::S3) })
+            .run_mutation(async {
+                self.execution
+                    .delete_object_typed(bucket, key)
+                    .await
+                    .map_err(|error| match error {
+                        DeleteObjectFailure::Error(code) => Error::S3(code),
+                        DeleteObjectFailure::Uncertain => Error::UncertainMutation {
+                            request_id: id,
+                            reason: crate::error::MutationInterruption::Transport,
+                        },
+                    })
+            })
             .await
     }
 }

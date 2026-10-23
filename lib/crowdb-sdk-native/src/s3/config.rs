@@ -8,6 +8,8 @@ pub struct S3ClientConfig {
     pub tenant: TenantId,
     /// None reuses the runtime's current compatible S3 writer group.
     pub small_write: Option<SmallWritePolicy>,
+    /// None shares a runtime-local key. Supply a stable key for cross-runtime cursors.
+    pub continuation_key: Option<Vec<u8>>,
 }
 
 impl From<TenantId> for S3ClientConfig {
@@ -15,6 +17,7 @@ impl From<TenantId> for S3ClientConfig {
         Self {
             tenant,
             small_write: None,
+            continuation_key: None,
         }
     }
 }
