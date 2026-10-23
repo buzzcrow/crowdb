@@ -35,6 +35,7 @@ async fn stream_stages_appear_in_perf_output_and_survive_window_flushes() {
     for name in [
         "stream.append.e2e.lh",
         "stream.append.queue.lh",
+        "stream.capacity.wait.lh",
         "stream.append.encode.lh",
         "stream.append.mirror.lh",
         "stream.append.cursor.lh",

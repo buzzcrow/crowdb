@@ -4,12 +4,14 @@
 //! Grow physical allocation only after initializing every newly attached strip.
 
 use super::{
-    chunk_capacity, io_error, update_state, write_cursor, ActiveChunkDescriptor, ChunkId, Ordering,
-    ProductionStreamChunkStore, Result, StreamError, StreamName,
+    chunk_capacity, io_error, update_state, write_cursor, ActiveChunkDescriptor, ChunkId, ChunkStateView,
+    Ordering, ProductionStreamChunkStore, Result, StreamError, StreamName,
 };
 use crate::perf::{perf, PhaseTimer};
-use crowdb_chunk_client::STREAM_STRIP_BYTES;
-use crowdb_protocol::chunkdb::rpc::{AppendChunkRequest, AppendChunkResponse, Chunk, Strip, StripType};
+use crowdb_chunk_client::{IoError, STREAM_STRIP_BYTES};
+use crowdb_protocol::chunkdb::rpc::{
+    AppendChunkRequest, AppendChunkResponse, Chunk, QueryChunkRequest, Strip, StripType,
+};
 
 const MIN_GROWTH_WINDOW_BYTES: u64 = 2 * STREAM_STRIP_BYTES;
 const MAX_GROWTH_WINDOW_BYTES: u64 = 8 * STREAM_STRIP_BYTES;
@@ -69,32 +71,61 @@ impl ProductionStreamChunkStore {
                 }
                 return Err(StreamError::WriteStalled);
             }
-            if response.strips.is_empty() {
-                return Err(StreamError::Corruption(
-                    "stream chunk growth returned no strips".into(),
-                ));
-            }
-            let mut updated = (*chunk).clone();
-            let added = response.strips;
-            updated.strips.extend(added.iter().cloned());
-            updated.modify_ts = response.modify_ts;
-            updated.capacity = updated.strips.iter().map(|strip| strip.capacity).sum();
-            let capacity = chunk_capacity(&updated)?;
-            update_state(&state, updated.clone());
-            self.initialize_strips(&updated, &added).await.map_err(|error| {
-                StreamError::InvalidRequest(format!("stream growth initialization is uncertain: {error}"))
-            })?;
-            state.initialized_capacity.store(capacity, Ordering::Release);
-            return Ok(Some(ActiveChunkDescriptor {
-                chunk_id,
-                physical_start: write_cursor(&state),
-                logical_start: 0,
-                acknowledged_cursor: write_cursor(&state),
-                capacity,
-            }));
+            return self.finish_growth(&state, &chunk, response).await.map(Some);
         }
         unreachable!("two append attempts either return or fail")
     }
+
+    async fn finish_growth(
+        &self,
+        state: &ChunkStateView,
+        chunk: &Chunk,
+        response: AppendChunkResponse,
+    ) -> Result<ActiveChunkDescriptor> {
+        if response.strips.is_empty() {
+            return Err(StreamError::Corruption(
+                "stream chunk growth returned no strips".into(),
+            ));
+        }
+        let added = response.strips;
+        // Allocation may merge a concurrent cursor commit. Fetch the full
+        // record instead of stamping its new revision onto our old cursor,
+        // which could hide a delayed cursor response.
+        let updated = self
+            .allocator
+            .query_chunk(QueryChunkRequest { chunk_id: chunk.id })
+            .await
+            .map_err(preparation_error)?
+            .chunk
+            .ok_or_else(|| StreamError::Corruption("grown chunk metadata is missing".into()))?;
+        if updated.id != chunk.id
+            || updated.writer_epoch != chunk.writer_epoch
+            || updated.owner_key != chunk.owner_key
+        {
+            return Err(StreamError::StaleWriter);
+        }
+        if updated.modify_ts < response.modify_ts
+            || updated.strips.get(chunk.strips.len()..) != Some(added.as_slice())
+        {
+            return Err(StreamError::Corruption(
+                "grown layout changed before initialization".into(),
+            ));
+        }
+        let capacity = chunk_capacity(&updated)?;
+        update_state(state, updated.clone());
+        self.initialize_strips(&updated, &added).await.map_err(|error| {
+            StreamError::InvalidRequest(format!("stream growth initialization is uncertain: {error}"))
+        })?;
+        state.initialized_capacity.store(capacity, Ordering::Release);
+        Ok(ActiveChunkDescriptor {
+            chunk_id: chunk.id.expect("owned chunk has an identity"),
+            physical_start: write_cursor(state),
+            logical_start: 0,
+            acknowledged_cursor: write_cursor(state),
+            capacity,
+        })
+    }
+
     async fn request_growth(
         &self,
         chunk: &Chunk,
@@ -131,6 +162,13 @@ impl ProductionStreamChunkStore {
                 copy_count: self.mirror_copies,
             })
             .await
-            .map_err(io_error)
+            .map_err(preparation_error)
+    }
+}
+
+fn preparation_error(error: IoError) -> StreamError {
+    match error {
+        IoError::AllocationFailed(message) => StreamError::ReadUnavailable(message),
+        other => io_error(other),
     }
 }

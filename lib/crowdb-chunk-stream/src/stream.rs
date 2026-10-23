@@ -25,6 +25,7 @@ mod append;
 mod capacity;
 mod liveness;
 mod observation;
+mod preparation;
 mod publication;
 mod read;
 mod recovery;
@@ -211,6 +212,9 @@ struct WorkerState {
     manifest: StreamManifest,
     extents: Vec<Extent>,
     mirror_shadow: MirrorShadow,
+    capacity_preparation: Option<preparation::CapacityPreparation>,
+    capacity_failure: Option<(ChunkId, StreamError)>,
+    capacity_exhausted: Option<ChunkId>,
     stalled: bool,
     last_unavailable_log: Option<Instant>,
     metrics: Arc<StreamMetrics>,
@@ -528,6 +532,9 @@ impl ChunkStream {
             manifest,
             extents,
             mirror_shadow: MirrorShadow::default(),
+            capacity_preparation: None,
+            capacity_failure: None,
+            capacity_exhausted: None,
             stalled: false,
             last_unavailable_log: None,
             metrics: Arc::clone(&metrics),

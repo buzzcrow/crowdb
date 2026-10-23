@@ -12,6 +12,8 @@ pub(crate) struct StreamPerfMetrics {
     pub(crate) append: Arc<LatencyHistogram>,
     pub(crate) queue: Arc<LatencyHistogram>,
     pub(crate) capacity: Arc<LatencyHistogram>,
+    pub(crate) capacity_wait: Arc<LatencyHistogram>,
+    pub(crate) preparation: Arc<LatencyHistogram>,
     pub(crate) growth: Arc<LatencyHistogram>,
     pub(crate) initialize: Arc<LatencyHistogram>,
     pub(crate) batch: Arc<LatencyHistogram>,
@@ -40,6 +42,8 @@ pub(crate) fn perf() -> &'static StreamPerfMetrics {
         append: histogram("stream.append.e2e.lh"),
         queue: histogram("stream.append.queue.lh"),
         capacity: histogram("stream.append.capacity.lh"),
+        capacity_wait: histogram("stream.capacity.wait.lh"),
+        preparation: histogram("stream.capacity.prepare.lh"),
         growth: histogram("stream.capacity.grow.lh"),
         initialize: histogram("stream.capacity.initialize.lh"),
         batch: histogram("stream.append.batch.lh"),
@@ -61,7 +65,9 @@ pub(crate) fn perf() -> &'static StreamPerfMetrics {
 
 /// Cumulative process-wide latency distributions, including failed operations.
 /// Values are nanoseconds; periodic perf flushes do not reset these snapshots.
-/// Queue samples end at batch dispatch and include capacity preparation.
+/// Queue samples end when the worker takes each request. A later request can
+/// wait behind another request's capacity preparation; the first request's own
+/// preparation is recorded separately. Preparation overlaps ordinary appends.
 /// Batch and metadata stages are nested, so their percentiles are not additive.
 #[must_use]
 pub fn stream_perf_metrics() -> Vec<(&'static str, HistogramSnapshot)> {
@@ -82,12 +88,14 @@ pub fn register_stream_perf_metrics(registry: &mut MetricsRegistry) {
     }
 }
 
-fn histograms() -> [(&'static str, &'static Arc<LatencyHistogram>); 19] {
+fn histograms() -> [(&'static str, &'static Arc<LatencyHistogram>); 21] {
     let metrics = perf();
     [
         ("stream.append.e2e.lh", &metrics.append),
         ("stream.append.queue.lh", &metrics.queue),
         ("stream.append.capacity.lh", &metrics.capacity),
+        ("stream.capacity.wait.lh", &metrics.capacity_wait),
+        ("stream.capacity.prepare.lh", &metrics.preparation),
         ("stream.capacity.grow.lh", &metrics.growth),
         ("stream.capacity.initialize.lh", &metrics.initialize),
         ("stream.append.batch.lh", &metrics.batch),

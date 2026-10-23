@@ -31,6 +31,9 @@ mod local_progress;
 #[path = "production_chunk_test/growth.rs"]
 mod growth;
 
+#[path = "production_chunk_test/preparation.rs"]
+mod preparation;
+
 #[path = "production_chunk_test/scope.rs"]
 mod scope;
 
@@ -56,6 +59,14 @@ struct Allocator {
     replacement_calls: AtomicUsize,
     replacements: AtomicUsize,
     allocation_copy_limit: AtomicUsize,
+    pause_growth: AtomicBool,
+    growth_started: tokio::sync::Notify,
+    growth_resume: tokio::sync::Notify,
+    conflict_advance_once: AtomicBool,
+    advance_calls: AtomicUsize,
+    fail_growth_once: AtomicBool,
+    advance_during_growth: AtomicU64,
+    conflict_replacement_once: AtomicBool,
 }
 
 impl Allocator {
@@ -69,6 +80,14 @@ impl Allocator {
             replacement_calls: AtomicUsize::new(0),
             replacements: AtomicUsize::new(0),
             allocation_copy_limit: AtomicUsize::new(0),
+            pause_growth: AtomicBool::new(false),
+            growth_started: tokio::sync::Notify::new(),
+            growth_resume: tokio::sync::Notify::new(),
+            conflict_advance_once: AtomicBool::new(false),
+            advance_calls: AtomicUsize::new(0),
+            fail_growth_once: AtomicBool::new(false),
+            advance_during_growth: AtomicU64::new(0),
+            conflict_replacement_once: AtomicBool::new(false),
         }
     }
 }
@@ -166,6 +185,15 @@ impl ChunkAllocator for Allocator {
         &self,
         request: AppendChunkRequest,
     ) -> crowdb_chunk_client::Result<AppendChunkResponse> {
+        if self.pause_growth.swap(false, Ordering::AcqRel) {
+            self.growth_started.notify_one();
+            self.growth_resume.notified().await;
+        }
+        if self.fail_growth_once.swap(false, Ordering::AcqRel) {
+            return Err(IoError::AllocationFailed(
+                "injected allocation unavailability".into(),
+            ));
+        }
         let mut guard = self.chunk.lock().unwrap();
         let chunk = guard.as_mut().unwrap();
         if chunk.id != request.chunk_id || chunk.modify_ts != request.modify_ts {
@@ -176,6 +204,11 @@ impl ChunkAllocator for Allocator {
             });
         }
         let unit_kb = chunk.strips.first().unwrap().unit_kb;
+        let concurrent_cursor = self.advance_during_growth.swap(0, Ordering::AcqRel);
+        if concurrent_cursor != 0 {
+            chunk.acknowledged_cursor = concurrent_cursor;
+            chunk.modify_ts += 1;
+        }
         let capacity = request.strip_size * unit_kb;
         let chunk_id = chunk.id.unwrap();
         let mut added = Vec::new();
@@ -221,8 +254,12 @@ impl ChunkAllocator for Allocator {
         &self,
         request: AdvanceChunkWriteRequest,
     ) -> crowdb_chunk_client::Result<AdvanceChunkWriteResponse> {
+        self.advance_calls.fetch_add(1, Ordering::AcqRel);
         let mut guard = self.chunk.lock().unwrap();
         let chunk = guard.as_mut().unwrap();
+        if self.conflict_advance_once.swap(false, Ordering::AcqRel) {
+            chunk.modify_ts += 1;
+        }
         if chunk.id != request.chunk_id
             || chunk.writer_epoch != request.writer_epoch
             || chunk.modify_ts != request.expected_modify_ts
@@ -313,6 +350,9 @@ impl ChunkAllocator for Allocator {
         let mut guard = self.chunk.lock().unwrap();
         let chunk = guard.as_mut().unwrap();
         let index = request.start_index as usize;
+        if self.conflict_replacement_once.swap(false, Ordering::AcqRel) {
+            chunk.modify_ts += 1;
+        }
         if chunk.modify_ts != request.expected_modify_ts
             || chunk.strips.get(index) != request.old_strips.first()
         {
@@ -346,6 +386,9 @@ struct Disks {
     fsyncs: AtomicUsize,
     fail_disk_once: AtomicU64,
     fail_fsync_once: AtomicU64,
+    pause_initialization: AtomicBool,
+    initialization_started: tokio::sync::Notify,
+    initialization_resume: tokio::sync::Notify,
 }
 
 #[test]
@@ -379,6 +422,12 @@ impl DiskWriter for Disks {
         offset: u64,
         data: Bytes,
     ) -> crowdb_chunk_client::Result<()> {
+        if segment.disk_id.is_some_and(|disk| disk.high > 2)
+            && self.pause_initialization.swap(false, Ordering::AcqRel)
+        {
+            self.initialization_started.notify_one();
+            self.initialization_resume.notified().await;
+        }
         self.write_at_byte_offset(segment, unit_bytes, offset, data)
             .await?;
         self.fsync(segment).await

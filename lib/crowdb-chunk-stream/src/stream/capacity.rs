@@ -3,10 +3,18 @@
 
 //! Allocate, grow and rotate the worker-owned active chunk.
 
+use super::preparation;
 use super::publication::publish_state;
 use super::{Duration, Ordering, Result, StreamError, WorkerState};
+use crate::perf::{perf, PhaseTimer};
 
 pub(super) async fn prepare_active_for_append(state: &mut WorkerState, first_len: usize) -> Result<()> {
+    preparation::poll_ready(state).await?;
+    if fits_active(state, first_len) {
+        return Ok(());
+    }
+    let _wait = PhaseTimer::start(&perf().capacity_wait);
+    preparation::drain(state).await?;
     loop {
         if state.manifest.active.is_none() {
             match ensure_active(state).await {
@@ -69,6 +77,7 @@ async fn ensure_active(state: &mut WorkerState) -> Result<()> {
 }
 
 pub(super) async fn rollover(state: &mut WorkerState) -> Result<()> {
+    preparation::drain(state).await?;
     let active = state
         .manifest
         .active

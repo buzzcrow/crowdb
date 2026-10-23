@@ -26,6 +26,7 @@ use crate::{
 };
 
 mod allocation;
+mod cursor;
 mod growth;
 mod progress;
 use progress::{admit_write, write_cursor};
@@ -358,67 +359,20 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         new_cursor: u64,
         checksum: u32,
     ) -> Result<CursorAdvance> {
-        let state = self.state(chunk_id).await?;
-        if state.chunk.load().writer_epoch != writer_epoch
-            || StreamName::from_chunk_owner_key(&state.chunk.load().owner_key) != Some(stream_name)
-            || state.persisted_cursor.load(Ordering::Acquire) != expected_cursor
-        {
-            return Err(StreamError::StaleWriter);
-        }
-        let advance = self
-            .allocator
-            .advance_chunk_write(AdvanceChunkWriteRequest {
+        self.advance_active_cursor(
+            stream_name,
+            AdvanceChunkWriteRequest {
                 chunk_id: Some(chunk_id),
                 writer_epoch,
-                expected_modify_ts: state.modify_ts.load(Ordering::Acquire),
+                expected_modify_ts: 0,
                 acknowledged_cursor: new_cursor,
                 closed_strip_sequence: None,
                 writer_lease_ms: self.writer_lease_ms,
-            })
-            .await;
-        if let Err(error) = &advance {
-            tracing::warn!(?chunk_id, writer_epoch, expected_cursor, new_cursor, %error, "stream cursor advance failed; querying durable state");
-        }
-        if let Ok(response) = advance {
-            let chunk = response
-                .chunk
-                .ok_or_else(|| StreamError::Corruption("cursor advance returned no chunk".into()))?;
-            if chunk.id != Some(chunk_id)
-                || chunk.writer_epoch != writer_epoch
-                || chunk.acknowledged_cursor != new_cursor
-            {
-                return Err(StreamError::Corruption(
-                    "cursor advance returned inconsistent metadata".into(),
-                ));
-            }
-            update_state(&state, chunk);
-            state.last_checksum.store(checksum, Ordering::Release);
-            state.has_checksum.store(true, Ordering::Release);
-            return Ok(CursorAdvance::Committed);
-        }
-        let response = self
-            .allocator
-            .query_chunk(QueryChunkRequest {
-                chunk_id: Some(chunk_id),
-            })
-            .await;
-        let Ok(response) = response else {
-            return Ok(CursorAdvance::Ambiguous);
-        };
-        let Some(chunk) = response.chunk else {
-            return Ok(CursorAdvance::Ambiguous);
-        };
-        if chunk.writer_epoch != writer_epoch {
-            return Err(StreamError::StaleWriter);
-        }
-        update_state(&state, chunk.clone());
-        if chunk.acknowledged_cursor == new_cursor {
-            state.last_checksum.store(checksum, Ordering::Release);
-            state.has_checksum.store(true, Ordering::Release);
-            Ok(CursorAdvance::Committed)
-        } else {
-            Ok(CursorAdvance::Ambiguous)
-        }
+            },
+            expected_cursor,
+            checksum,
+        )
+        .await
     }
 
     async fn durable_cursor(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<DurableCursor> {

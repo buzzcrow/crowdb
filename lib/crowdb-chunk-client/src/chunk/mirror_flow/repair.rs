@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateReplacementSegmentRequest, Chunk, ChunkType, DiscardReplacementSegmentRequest, QueryChunkRequest,
-    ReplaceChunkStripRangeRequest, Strip,
+    AllocateReplacementSegmentRequest, Chunk, ChunkState, ChunkType, DiscardReplacementSegmentRequest,
+    QueryChunkRequest, ReplaceChunkStripRangeRequest, Strip,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -205,7 +205,11 @@ impl MirrorStripFlow {
         Err(IoError::ReplicaRepairExhausted(last_error))
     }
 
-    async fn publish(&self, request: ReplaceChunkStripRangeRequest, replacement: Segment) -> Result<Chunk> {
+    async fn publish(
+        &self,
+        mut request: ReplaceChunkStripRangeRequest,
+        replacement: Segment,
+    ) -> Result<Chunk> {
         let mut attempt = 0_usize;
         loop {
             if attempt > 0 {
@@ -222,8 +226,9 @@ impl MirrorStripFlow {
                 }
                 Err(error @ IoError::MetadataConflict(_)) => {
                     if self.resolve_ambiguity {
-                        match self.resolve_replacement(&request).await {
+                        match self.resolve_replacement(&mut request).await {
                             Ok(Some(chunk)) => return Ok(chunk),
+                            Ok(None) if attempt < self.attempts => continue,
                             Ok(None) => {}
                             Err(error) => return Err(error),
                         }
@@ -231,7 +236,7 @@ impl MirrorStripFlow {
                     self.discard(request.chunk_id, replacement).await;
                     return Err(error);
                 }
-                Err(_) if self.resolve_ambiguity => match self.resolve_replacement(&request).await {
+                Err(_) if self.resolve_ambiguity => match self.resolve_replacement(&mut request).await {
                     Ok(Some(chunk)) => return Ok(chunk),
                     Ok(None) if attempt < self.attempts => {}
                     Ok(None) => {
@@ -252,7 +257,10 @@ impl MirrorStripFlow {
         }
     }
 
-    async fn resolve_replacement(&self, request: &ReplaceChunkStripRangeRequest) -> Result<Option<Chunk>> {
+    async fn resolve_replacement(
+        &self,
+        request: &mut ReplaceChunkStripRangeRequest,
+    ) -> Result<Option<Chunk>> {
         loop {
             match self.inspect_replacement(request).await {
                 Ok(state) => return Ok(state),
@@ -265,7 +273,10 @@ impl MirrorStripFlow {
         }
     }
 
-    async fn inspect_replacement(&self, request: &ReplaceChunkStripRangeRequest) -> Result<Option<Chunk>> {
+    async fn inspect_replacement(
+        &self,
+        request: &mut ReplaceChunkStripRangeRequest,
+    ) -> Result<Option<Chunk>> {
         let chunk = self
             .allocator
             .query_chunk(QueryChunkRequest {
@@ -274,7 +285,7 @@ impl MirrorStripFlow {
             .await?
             .chunk
             .ok_or_else(|| IoError::MetadataConflict("replacement chunk disappeared".into()))?;
-        if chunk.writer_epoch != self.writer_epoch {
+        if chunk.id != request.chunk_id || chunk.writer_epoch != self.writer_epoch {
             return Err(IoError::MetadataConflict("mirror writer epoch changed".into()));
         }
         let start = usize::try_from(request.start_index)
@@ -284,9 +295,14 @@ impl MirrorStripFlow {
             return Ok(Some(chunk));
         }
         let old_end = start.saturating_add(request.old_strips.len());
-        if chunk.modify_ts == request.expected_modify_ts
+        if chunk.state == ChunkState::Active as i32
+            && chunk.modify_ts >= request.expected_modify_ts
             && chunk.strips.get(start..old_end) == Some(request.old_strips.as_slice())
         {
+            // Independent strip preparation can advance the chunk revision.
+            // Reuse the already initialized replacement and stable operation ID
+            // only while this owner and the exact replaced range still match.
+            request.expected_modify_ts = chunk.modify_ts;
             return Ok(None);
         }
         Err(IoError::MetadataConflict(

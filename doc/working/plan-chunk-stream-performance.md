@@ -13,7 +13,8 @@ KV work, with compact locations, incremental directories, and bounded recovery.
 
 - Deployment requirement R243 is complete at `c3d7d64d`; R244 is in progress.
 - T01/T02/T03/T05–T07 foundations and T20a's measured hot-path changes are
-  verified. T18 is next and still gates removal of cursor commits.
+  verified. T20b capacity preparation is verified; T18 is active to wire
+  authority and content recovery before removing ordinary cursor commits.
   T15's bounded observation primitives await the same runtime authority wiring.
   T13's indexed retention primitives are committed; expiry/read-IO grace and
   runtime/consumer wiring remain. Directory, shared-codec, ordinary writer and local-progress
@@ -37,6 +38,26 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   removal of per-batch cursor work remain separate implementation tasks.
 
 ## Direct hot-path integration
+
+- [x] **T20b — Prepare strip capacity ahead of writes**: overlap bounded
+  allocation and single-attempt replica initialization with appends in the
+  already initialized prefix. A worker owns at most one preparation task;
+  consume only completed capacity and drain preparation before seal/rotation
+  or worker shutdown. Preserve current batching policy. Separate queue dispatch,
+  foreground capacity waits, and background preparation in perf histograms.
+  Permit allocation publication across cursor-only metadata progress while
+  retaining exact layout/owner fences; reconcile definite cursor CAS conflicts
+  caused by that allocation without replaying data. Verify blocked preparation,
+  uncertain initialization, close/drain, growth/cursor races, and unchanged
+  4 KiB single-producer/32-producer benchmarks. Files:
+  `lib/crowdb-chunk-stream/src/stream/{capacity,preparation,worker}.rs`,
+  `lib/crowdb-chunk-stream/src/production_chunk{,/growth,/cursor}.rs`,
+  `lib/crowdb-chunk-stream/src/perf.rs`,
+  `lib/crowdb-chunk-client/src/chunk/mirror_flow/repair.rs`,
+  `app/crowdb-chunkdb/src/lifecycle/handler/append.rs`.
+- The selected final design has no per-batch ChunkDB cursor update. Retaining
+  it during this capacity change is unfinished integration, not a new contract.
+  Queue dispatch and capacity waits now have separate histograms.
 
 - The user requests actual measured performance gains after the intermediate
   rerun. Split directory removal from cursor removal: the existing synchronized
@@ -180,6 +201,52 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   amplification. T18/T19/T20 still must replace cursor authority safely; the
   indexed directory, bounded historical checkpoints and consumer root pins
   remain unfinished. The unchanged final performance gates remain T26 work.
+
+### Capacity preparation verification
+
+- The worker starts at most one bounded preparation while writing the initialized
+  prefix. Ready results change only capacity, preserving the worker's newer
+  cursors. Close, rollover and worker exit drain initialization before changing
+  the chunk lifetime. Uncertain initialization never retries zeroing; temporary
+  allocation unavailability permits the normal capacity slow path to retry.
+- Allocation publication accepts monotonic cursor/lease-only changes against
+  the exact same owner and layout. The production adapter reads the resulting
+  complete chunk record in the background: constructing its new revision from
+  an older local cursor could hide a delayed cursor response. Repair publication
+  likewise rebases only while epoch and the exact replaced strip range match,
+  reusing its initialized replacement and stable operation ID.
+- Fault tests cover delayed allocation, delayed initialization, exhaustion of
+  ready capacity, close/drain, initialization failure, temporary allocation
+  recovery, cursor publication races, and repair publication races. The latter
+  initially failed with `StaleWriter`; `repair-race-red-exact.log` preserves
+  the exact failure. A first test invocation selected zero cases and is not
+  counted as evidence. The transient-allocation test initially exposed a generic
+  `Internal` error classification; only allocator availability now maps to the
+  retryable preparation outcome. The exact failed output remains retained.
+- Before the final race fixes, all 186 Stream/WAL tests and four ChunkDB fence/
+  append integration tests passed. The final focused suite passes 36 tests,
+  all 154 Chunk-client tests pass, strict all-target clippy for Chunk-client,
+  Stream, Chunk-KV and ChunkDB passes, and workspace fmt passes. Evidence is in
+  `/home/cj/.cache/crowdb-r244-capacity-results/`, including
+  `stream-wal-tests.log`, `allocation-fence-test.log`,
+  `append-integration-tests.log`, `focused-tests-4.log`, `client-tests.log` and
+  `clippy-3.log`. A test-only cloned-slice lint was corrected without suppression.
+- The first unchanged two-case measurement is retained in
+  `/home/cj/.cache/crowdb-r244-capacity-results/20261023T124047Z/`.
+  Concurrent append increases 3512.56 -> 3726.08 ops/s and p99 decreases
+  25.288 -> 13.077 ms. All 19 growth preparations finish in the background;
+  the only foreground capacity wait is initial attachment. Single-producer
+  throughput is 291.64 ops/s versus the older 326.75; cursor latency increases
+  2.320 -> 2.641 ms, while actual queue dispatch averages 3.03 us. Do not claim
+  a single-producer throughput gain from this capacity change.
+- Final unchanged two-case rerun, including the repair race fix:
+  `/home/cj/.cache/crowdb-r244-capacity-results/20261023T124827Z/`.
+  Receipt confirms exit 0 and unchanged measured sources; binary hashes and
+  source copies are retained. 1T: 295.63 ops/s, average 3.381 ms, p99 3.997 ms.
+  32T: 3706.15 ops/s, average 8.631 ms, p99 13.927 ms. Both cases have zero
+  errors/watchdogs and pass their unchanged gates. All 19 concurrent growths
+  finish in the background; the sole foreground wait is initial attachment.
+  This is verification of two cases only, not the complete seven-case gate.
 
 ## Gap assessment
 
@@ -1740,7 +1807,7 @@ adaptation rather than a new transport or storage engine.
   `lib/crowdb-chunk-stream/src/stream/publication.rs`,
   `lib/crowdb-chunk-stream/tests/rollover_growth_test.rs`,
   `lib/crowdb-chunk-stream/tests/stream_test.rs`.
-- [ ] **T18 — Enforce the selected Group-0 writer lease**: implement Q3 for busy
+- [~] **T18 — Enforce the selected Group-0 writer lease**: implement Q3 for busy
   workers, long IO, paused/resumed owners, renewal failure, delayed old writes,
   and takeover. Acknowledgment requires current authority even when all writes
   succeeded; no per-append KV fallback. Compose serving grants and Stream owner

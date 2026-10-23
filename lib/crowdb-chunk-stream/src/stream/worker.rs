@@ -6,7 +6,9 @@
 use super::append::write_with_recovery;
 use super::capacity::{fits_active, prepare_active_for_append};
 use super::publication::publish_state;
-use super::{finish_failed, liveness, AppendRequest, BatchFailure, Command, ReadView, WorkerState};
+use super::{
+    finish_failed, liveness, preparation, AppendRequest, BatchFailure, Command, ReadView, WorkerState,
+};
 use crate::perf::{observe, perf, PhaseTimer};
 use crate::{Result, StreamError};
 use std::sync::atomic::Ordering;
@@ -52,6 +54,10 @@ pub(super) async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Recei
             }
         }
     }
+    // Never detach initialization IO that could outlive its owner or a seal.
+    if let Err(error) = preparation::drain(&mut state).await {
+        state.log_unavailable("drain_capacity", &error);
+    }
     state.closed_view.store(true, Ordering::Release);
 }
 
@@ -81,6 +87,7 @@ async fn process_append_batch(
         finish_failed(state, vec![first], &StreamError::WriteStalled);
         return;
     }
+    observe(&perf().queue, first.enqueued_at);
     let first_len = match first.physical_len() {
         Ok(length) => length,
         Err(error) => {
@@ -106,6 +113,7 @@ async fn process_append_batch(
                     .checked_add(request.physical_len().unwrap_or(usize::MAX))
                     .is_some_and(|total| total <= state.config.batch_bytes && fits_active(state, total)) =>
             {
+                observe(&perf().queue, request.enqueued_at);
                 bytes += request.physical_len().expect("checked above");
                 requests.push(request);
             }
@@ -116,9 +124,7 @@ async fn process_append_batch(
             Err(_) => break,
         }
     }
-    for request in &requests {
-        observe(&perf().queue, request.enqueued_at);
-    }
+    preparation::start(state, bytes);
     let result = write_with_recovery(state, &requests, bytes).await;
     match result {
         Ok(ranges) => {
@@ -164,6 +170,7 @@ impl WorkerState {
 }
 
 pub(super) async fn rotate_externally_sealed_active(state: &mut WorkerState) -> Result<bool> {
+    preparation::drain(state).await?;
     let Some(active) = state.manifest.active.clone() else {
         return Ok(false);
     };
@@ -264,6 +271,7 @@ async fn process_close(state: &mut WorkerState) -> Result<()> {
     if state.manifest.closed {
         return Ok(());
     }
+    preparation::drain(state).await?;
     if let Some(active) = state.manifest.active.take() {
         state
             .chunks
