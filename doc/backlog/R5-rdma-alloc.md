@@ -6,8 +6,9 @@
 ## Status
 
 The registered host-buffer foundation, common RDMA RPC transport,
-HTTP/ChunkIO/DiskIO datapath and Chunk-KV/access integration are accepted.
-Remaining child requirement R242 retains the fat-client goal.
+HTTP/ChunkIO/DiskIO datapath, Chunk-KV/access integration and native S3 runtime
+are accepted. The deployment-policy questions below remain separate from the
+completed native SDK functional acceptance.
 
 ## Problem
 
@@ -30,9 +31,10 @@ defined in [`design-crowdb-rpc-rdma.md`](../design/rpc/design-crowdb-rpc-rdma.md
 4. Reuse the accepted [Chunk-KV/access stream](../design/rpc/design-crowdb-rpc-rdma.md#7-service-interactions),
    using 64 KiB metadata and 256 KiB aggregate classes, bounded logical control
    assembly, shared request identity and final-caller byte admission ownership.
-5. Implement the native fat client and FFI lease API in
-   [R242](R242-rdma-fat-client-sdk.md), with host memory first and explicit
-   host-to-GPU copy for the initial GPU simulation.
+5. Reuse the accepted [native SDK and lease contract](../design/access-server/design-crowdb-native-sdk.md),
+   with host memory first and explicit host-to-GPU copy completion before final
+   lease release. Native and unprivileged OCI TCP/shared-HCA acceptance evidence
+   is retained in the [root plan](../working/plan-rdma.md).
 
 The base transfer mechanism is SEND/RECV. Large client buffers are split into
 ordered messages with request ID, sequence, and logical offset. RDMA READ and
