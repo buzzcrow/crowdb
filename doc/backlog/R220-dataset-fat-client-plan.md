@@ -3,13 +3,6 @@
 
 ### R220: Dataset — Fat-client direct access plan
 
-Status: Deferred until dedicated CPU HTTP measurements establish latency,
-throughput, memory, and digest costs. The shared native runtime, topology,
-buffer leases and S3 frontend are available in `crowdb-sdk-native`; native and
-unprivileged OCI consumers pass TCP and shared-HCA functional acceptance.
-The public Rust HTTP SDK and Python wrapper remain independently packaged
-under `sdk/`; functional container acceptance is complete.
-
 ## Problem
 
 Trusted internal data-processing and AI systems need Dataset semantics over
@@ -43,7 +36,9 @@ and [SDK API guide](../../lib/crowdb-sdk-native/README.md).
    including topology refresh, stale owners, failures, digest costs, and the
    existing 60-second active-read inactivity TTL. Keep placement, fencing,
    durability, and publication rules in their existing components.
-5. Expose native Dataset through a Python binding to the same Rust data plane.
+5. Expose native Dataset through an opt-in main-workspace Python extension
+   (`crowdb_dataset_native`) to the same Rust data plane. The existing
+   `crowdb_dataset` HTTP package remains independently installable.
    Preserve the portable HTTP distribution without adding mandatory native
    dependencies. Additional C/C++ business bindings are later work; reuse the
    existing lease ABI rather than making a new business ABI a prerequisite.

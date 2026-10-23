@@ -18,8 +18,8 @@ live in the linked document; implementation follows
   **Area:** SDK. **Complexity:** High. **Status:** Deferred until dedicated HTTP workload measurements.
 - **[R220](R220-dataset-fat-client-plan.md)** — trusted internal Dataset adapter
   on the existing native runtime, measurements, and Python integration.
-  **Area:** Dataset SDK. **Complexity:** High. **Status:** Deferred until
-  dedicated Dataset HTTP workload measurements.
+  **Area:** Dataset SDK. **Complexity:** High. **Status:** In progress; dedicated
+  HTTP baseline precedes native integration.
 
 ## Access server and external data
 
