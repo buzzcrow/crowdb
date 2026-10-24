@@ -47,6 +47,9 @@ Upstream: [Dataset SDK](../backlog/R220-dataset-fat-client-plan.md)、
 - **用户决定（2026-10-24）**：未发布 MPU part 有明确可提交期限；过期拒绝新提交，
   客户端重传。GC 在期限后再等待安全期回收；已发布资源不能按该临时期限回收。
   期限必须随 part 结果返回，最终提交验证期限；本地时钟检查不能单独证明迟到发布安全。
+- **用户澄清（2026-10-24）**：Access GC 只需通知 ChunkDB 的 DeleteChunkRange 接口。
+  接口成功即完成本层责任，不等待物理释放、不轮询 reclaimed、不保存物理回收进度。
+  ChunkDB 内部范围回收尚属单独工作，不作为本轮 Access 清理的实施内容。
 - 幂等按操作效果判断：同目标同内容的普通覆盖可直接重试，不要求原响应重放、
   operation ledger 或多次查询来“证明幂等”。有反例按 R1–R4 单独 review；
   不把“最小提交回执 + 查询结果”设成所有写 API 的默认成本。
@@ -167,20 +170,21 @@ Dataset expiry 依赖 upload/part 记录，Iceberg discovery/write sweep 依赖 
 
 **初始核查（2026-10-24）**：生产 `chunkdb_rpc_service/mutations.rs::handle_delete_range`
 当时返回 `Unimplemented`，没有更新 used-range/bitmap。R4.3 已补精确退休，
-但物理回收仍由 R4.4 跟踪，`reclaim_location` 在未物理释放时仍为 Deferred。
-因此测试替身返回 Reclaimed 不能证明实际范围已释放。底层依赖是
+物理回收独立于本计划；`reclaim_location` 收到成功后返回 Accepted，表示通知已接受，
+不表示容量已释放。底层独立工作是
 [R95](../backlog/R95-chunkdb-chunk-range-delete.md)（范围资格与孤儿发现）及
 [R92](../backlog/R92-chunkdb-in-chunk-gc.md)（混存 strip 的物理回收，当前仅占位设计）。
 不能用“把 RPC 改为成功”或把共享 chunk 整块删除替代实现；R95 旧文档的 reader/session
 约束需按本计划已确认的删除 grace、part 期限重新整理。R168 的逐对象 cleanup record
 也不是本计划自动批准的新状态。涉及新持久化资源字段先列出用途、写入频率和替代方案。
 
-**已确认的物理资源事实（2026-10-24，待实施）**：R95 若按范围逐步回收，需要在 chunk/strip
+**已确认的物理资源事实（2026-10-24，ChunkDB 独立工作）**：R95 若按范围逐步回收，需要在 chunk/strip
 元数据中保留已经判定死亡的精确区间及布局代际。它表示“哪些物理字节已经不可再引用”，
 不是 upload 的步骤、进度或 owner session；由后台 GC 按 chunk 合并写，前台上传不追加
 cleanup/journal RPC。现有 `usage_bitmap` 描述的粒度不能直接用于任意字节范围，不能把
 一个 frame 的删除向邻居取整。部分死亡 strip 暂时只记录死亡事实，释放整块分配或搬迁
-存活部分后才能报告物理 reclaimed；R92 负责后者及逻辑地址到新物理布局的映射。
+存活部分后才增加实际可用容量；R92 负责后者及逻辑地址到新物理布局的映射。
+Access 不等待这些步骤，不消费物理 reclaimed 字段。
 
 失败流程：GC 先完成发布隔离与活引用检查 → 以 chunk revision 条件更新死亡范围/布局 →
 物理释放。进程在二者间退出时，从资源事实重做释放；丢回复时重复操作不得伤及新代际。
@@ -209,15 +213,15 @@ S3 普通对象是直接 PUT，不能未经设计就套用 Dataset head 机制�
 - [ ] **R4.2 实现提交期限和回收隔离**：part 结果携带期限，提交权威边界验证；覆盖期限前准入
   但期限后落地的 RPC、GC 与最终引用并发、成功发布后的长期存活。若需新增持久化资源事实，
   先列出最小字段和每请求 RPC 成本供 review。Files: Dataset publication/upload、Iceberg file、GC。
-- [ ] **R4.4 补齐物理释放和资格扫描**：在 R4.3 基础上实现死亡 strip 释放/混存搬迁、布局
-  grace 与迟到 IO 拒绝，再接 R4.1/R4.2 的全引用资格检查。不得仅因 RPC Success 计入物理 reclaimed。
-  后续补按 chunk 批量提交候选，避免逐 part 单独退休；4096 区间达到上限时需有界分块/归并，
-  不能把超额候选静默丢弃。初始退休接口允许单范围调用，不声称批量扫描已完成。
-  已核实 reader 的 strip 布局检查允许非重叠空洞，但现有 replacement 要求非空、等 capacity，
-  不能直接拿通用 replacement 删除 strip。`reconcile_pending_chunks` 目前仅 startup 调用，
-  不能据此承诺运行中的 grace 到期清理；需独立有界周期扫描，不为每个上传新增任务。
-  底层 `crowdb-kv-client::put_cas` 目前冲突只返回 revision，未返回 value；本批不做冲突后
-  GET 重试，返回冲突由下一轮扫描重新评估。补全 raw KV observed 协议的缺口需单独跟踪。
+- [ ] **R4.5 简化通知入口的前置查询**：当前接口要求 expected_modify_ts，reclaim_location
+  因此先 QueryChunk，并兼容旧的 dedicated DeleteChunk 分支。与后续 ChunkDB 接口实现一起
+  收敛为 chunk_id/offset/length 的单次 DeleteChunkRange 通知；布局、封口与物理回收判断归
+  ChunkDB。删除此查询需要同步调整服务端的 revision 契约，另行实施。
+
+**已移出 Access 实施范围**：死亡 strip 释放、混存搬迁、布局 grace、迟到 IO、后台物理扫描
+属于 R92/R95 的 ChunkDB 工作。未提交的实验保存于 git stash
+`e28ee7be`（`WIP whole-strip reclamation saved separately from access cleanup`），未并入本次修改。
+已有精确退休接口不代表完整物理回收已实现；本计划不以它的完成作为 Access 通知成功条件。
 
 ### D4 — 全局硬配额，还是每台 Access 的资源准入？仅在发现活跃需求后讨论
 
@@ -435,12 +439,20 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 
 ## 已完成与验证记录
 
+- **2026-10-24，R4.4**：按用户明确的职责边界，DeleteChunkRange 成功即返回 Accepted，
+  不等待 `reclaimed`；已接受的 dedicated 删除也不再检查 strips/cleanup intents 是否排空。
+  Dataset/Iceberg 同步使用 Accepted，Iceberg reclaimed_bytes 注明为逻辑通知完成量，
+  不代表磁盘可复用容量。无新增持久化、轮询或确认 RPC；不支持/未准入仍 Deferred，
+  错误仍传播。物理回收实验另存 stash，未提交；R4.5 保留前置 QueryChunk 的简化任务。
+  pixi 下 `reclamation_test` 7、`split_reclaim_test` 2、`gc_worker_test` 21、
+  `iceberg_gc_budget_test` 2 项通过；四 crate all-target/all-feature clippy 与 fmt 通过。
+
 - **2026-10-24，R4.3**：生产 DeleteChunkRange 支持 expected layout revision、封口用户共享
   chunk 的精确区间；在相同 KV group 以 chunk KV revision 条件批量更新
   `/chunk-ranges/<id>` 和原样 chunk。资源包含 writer/封口身份、布局代际、有界合并区间；
   不改变 QueryChunk 内容，不新增锁或上传 journal。重复退休零写，新范围遇 stale revision
-  返回冲突，unknown 不确认 GET。RPC 资源退休返回 `reclaimed=false`，客户端仍 Deferred；
-  旧请求无 qualification revision 被拒绝，旧响应缺物理完成字段按 false 解释。
+  返回冲突，unknown 不确认 GET。该批曾让客户端等待 `reclaimed`；用户随后明确此边界过重，
+  R4.4 改为成功通知即结束。当前服务仍拒绝无 qualification revision 的旧请求。
   `range_retirement_test` 7 项（真实 KV 与生产 RPC）、`reclamation_test` 6 项、
   `chunkdb_wrappers_test` 10 项通过；覆盖精确相邻/重叠、live gap、重启重放、并发、stale、
   物理身份复用、4096 上限/合并、Active/system/非法范围和未释放不误报完成。

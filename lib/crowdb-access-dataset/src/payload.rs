@@ -194,7 +194,7 @@ impl PayloadStorage for ChunkPayloadStorage {
             complete &= crowdb_chunk_client::reclaim_location(allocator.as_ref(), location)
                 .await
                 .map_err(|error| UploadError::Storage(error.to_string()))?
-                == ReclaimOutcome::Reclaimed;
+                == ReclaimOutcome::Accepted;
         }
         Ok(complete)
     }

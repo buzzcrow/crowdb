@@ -6,7 +6,10 @@ use crate::{ChunkAllocator, IoError, Result};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReclaimOutcome {
-    Reclaimed,
+    /// ChunkDB accepted durable cleanup ownership, or the chunk is already gone.
+    /// This does not report physical capacity reclaimed by DiskDB.
+    Accepted,
+    /// ChunkDB has not accepted this notification yet.
     Deferred,
 }
 
@@ -29,7 +32,7 @@ pub async fn reclaim_location(allocator: &dyn ChunkAllocator, location: &Locatio
         Ok(response) => response
             .chunk
             .ok_or_else(|| IoError::MetadataConflict("missing chunk response".into()))?,
-        Err(IoError::ChunkNotFound(_)) => return Ok(ReclaimOutcome::Reclaimed),
+        Err(IoError::ChunkNotFound(_)) => return Ok(ReclaimOutcome::Accepted),
         Err(error) => return Err(error),
     };
     if chunk.id != Some(chunk_id) {
@@ -57,12 +60,7 @@ pub async fn reclaim_location(allocator: &dyn ChunkAllocator, location: &Locatio
             expected_modify_ts: chunk.modify_ts,
         };
         return match allocator.delete_chunk_range(request).await {
-            Ok(response) => Ok(if response.reclaimed {
-                ReclaimOutcome::Reclaimed
-            } else {
-                ReclaimOutcome::Deferred
-            }),
-            Err(IoError::ChunkNotFound(_)) => Ok(ReclaimOutcome::Reclaimed),
+            Ok(_) | Err(IoError::ChunkNotFound(_)) => Ok(ReclaimOutcome::Accepted),
             Err(IoError::Unsupported(_)) => Ok(ReclaimOutcome::Deferred),
             Err(error) => Err(error),
         };
@@ -87,15 +85,11 @@ pub async fn reclaim_location(allocator: &dyn ChunkAllocator, location: &Locatio
         Ok(response) => response
             .chunk
             .ok_or_else(|| IoError::MetadataConflict("missing deletion response".into()))?,
-        Err(IoError::ChunkNotFound(_)) => return Ok(ReclaimOutcome::Reclaimed),
+        Err(IoError::ChunkNotFound(_)) => return Ok(ReclaimOutcome::Accepted),
         Err(error) => return Err(error),
     };
-    if deleted.id != Some(chunk_id)
-        || deleted.state != ChunkState::Deleted as i32
-        || !deleted.strips.is_empty()
-        || !deleted.cleanup_intents.is_empty()
-    {
+    if deleted.id != Some(chunk_id) || deleted.state != ChunkState::Deleted as i32 {
         return Ok(ReclaimOutcome::Deferred);
     }
-    Ok(ReclaimOutcome::Reclaimed)
+    Ok(ReclaimOutcome::Accepted)
 }

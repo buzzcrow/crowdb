@@ -959,10 +959,10 @@ mutating RPC acquires the per-chunk lock before its RMW cycle:
   Records are bounded to 4096 intervals and decoded within 128 KiB. Foreground
   QueryChunk does not load or return this resource metadata. Conflict or unknown
   write results do not trigger confirmation GETs inside the retirement handler.
-  `reclaimed=false` means the exact range is retired but physical space remains
-  allocated, so callers keep it Deferred. Only a completed physical deletion
-  reports `reclaimed=true`. Missing qualification revisions are rejected, and
-  old responses default to unreclaimed. An intersecting strip is never permission
+  A successful response means ChunkDB has accepted cleanup ownership. Access
+  finishes its notification without waiting for the physical `reclaimed` flag;
+  physical capacity release is a separate ChunkDB/DiskDB responsibility.
+  Missing qualification revisions are rejected. An intersecting strip is never permission
   to free blocks containing live neighbours. Mixed-strip physical compaction and
   independent orphan qualification are not implemented by range retirement.
 - `update_chunk_strip`: compatibility wrapper over the one-strip form of

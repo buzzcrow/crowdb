@@ -85,7 +85,7 @@ impl FileBlockStore for TestBlocks {
 
     async fn reclaim(&self, _root: &ChunkRoot) -> Result<ReclaimOutcome, FileIoError> {
         self.deletes.fetch_add(1, Ordering::Relaxed);
-        Ok(ReclaimOutcome::Reclaimed)
+        Ok(ReclaimOutcome::Accepted)
     }
 }
 
@@ -109,7 +109,7 @@ async fn chunk_io_budget_rejects_work_before_dispatch_and_resets_per_step() {
     assert!(matches!(blocks.reclaim(&root).await, Err(FileIoError::Bounds)));
     assert_eq!(inner.deletes.load(Ordering::Relaxed), 0);
     budget.reset();
-    assert_eq!(blocks.reclaim(&root).await.unwrap(), ReclaimOutcome::Reclaimed);
+    assert_eq!(blocks.reclaim(&root).await.unwrap(), ReclaimOutcome::Accepted);
     assert_eq!(inner.deletes.load(Ordering::Relaxed), 1);
 }
 

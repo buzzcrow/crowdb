@@ -19,8 +19,9 @@ add metadata writes to the upload path and still miss those pre-record crashes.
    writers are rejected. Persist merged dead intervals and the sealed physical
    identity as resource metadata, atomically fenced by the chunk revision.
    This background resource state is approved; per-upload process records are
-   not. A successful retirement is distinct from physical reclamation: return
-   an explicit unreclaimed result until blocks have actually been released.
+   not. Successful retirement completes the caller's notification responsibility;
+   Access must not wait for physical reclamation or poll the returned physical
+   status. ChunkDB owns subsequent release and restart recovery independently.
    Never round a dead frame outward to the usage bitmap's coarser granularity.
 2. Use a bounded, chunk-centered scanner to find old chunks and ranges whose
    bytes have no live owner. Do not create per-MPU cleanup intents, candidate
@@ -90,8 +91,8 @@ add metadata writes to the upload path and still miss those pre-record crashes.
   retired range can be queried again. Invariant: monotonic exact retirement.
   Integration test.
 - Given retirement success with blocks still allocated, when the client receives
-  that response, assert Deferred rather than Reclaimed. Invariant: logical
-  retirement never reports physical capacity recovery. Unit test.
+  that response, assert Accepted without further polling. Invariant: notification
+  completion is independent of physical capacity recovery. Unit test.
 
 Required gates:
 

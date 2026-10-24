@@ -76,6 +76,7 @@ pub struct GcTask {
     pub marked: u64,
     pub deleted: u64,
     /// Logical bytes of completed file records, not freed disk allocation or parity bytes.
+    /// Logical bytes whose cleanup notification was accepted, not reusable disk capacity.
     pub reclaimed_bytes: u64,
 }
 

@@ -133,6 +133,12 @@ Iceberg file-record construction also lives in the Iceberg library, including
 the format rule shared by ordinary uploads and multipart completion.
 Iceberg GC uses a separate chunk client with Iceberg's small-write policy.
 The Iceberg library owns its GC storage budget and file-block adapters.
+After proving a payload range unreachable, GC hands its exact byte range to
+ChunkDB. A successful deletion notification completes Access's responsibility;
+Access does not poll physical reclamation or retain progress for DiskDB capacity
+release. `ReclaimOutcome::Accepted` means the notification was accepted (or the
+chunk is already absent), not that disk space is reusable. Physical range
+retirement, layout grace and compaction belong to ChunkDB and DiskDB.
 Each small-write policy also chooses its chunk capacity; each protocol's
 large-write policy chooses its own maximum chunk size. The deployment profile
 sets RPC workers and DiskIO connections independently of these data limits.

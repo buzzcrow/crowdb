@@ -12,6 +12,7 @@ use crowdb_protocol::common::ChunkId;
 struct TestAllocator {
     chunk: Chunk,
     range_calls: AtomicUsize,
+    query_calls: AtomicUsize,
     chunk_calls: AtomicUsize,
     range_supported: bool,
     range_reclaimed: bool,
@@ -32,6 +33,7 @@ impl TestAllocator {
                 ..Chunk::default()
             },
             range_calls: AtomicUsize::new(0),
+            query_calls: AtomicUsize::new(0),
             chunk_calls: AtomicUsize::new(0),
             range_supported: false,
             range_reclaimed: true,
@@ -67,6 +69,7 @@ impl ChunkAllocator for TestAllocator {
 
     async fn query_chunk(&self, request: QueryChunkRequest) -> Result<QueryChunkResponse> {
         assert_eq!(request.chunk_id, self.chunk.id);
+        self.query_calls.fetch_add(1, Ordering::Relaxed);
         Ok(QueryChunkResponse {
             chunk: Some(self.chunk.clone()),
             ..QueryChunkResponse::default()
@@ -114,14 +117,14 @@ async fn dedicated_chunk_deletion_checks_ownership_and_retries_failures() {
     allocator.delete_failed = false;
     assert_eq!(
         reclaim_location(&allocator, &location).await.unwrap(),
-        ReclaimOutcome::Reclaimed
+        ReclaimOutcome::Accepted
     );
     assert_eq!(allocator.chunk_calls.load(Ordering::Relaxed), 2);
     assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
-async fn shared_range_remains_deferred_until_storage_supports_it() {
+async fn shared_range_finishes_when_chunkdb_accepts_notification_without_physical_completion() {
     let mut allocator = TestAllocator::new(true);
     allocator.expected_range = (134, 234);
     let mut location = allocator.location();
@@ -135,15 +138,34 @@ async fn shared_range_remains_deferred_until_storage_supports_it() {
     allocator.range_reclaimed = false;
     assert_eq!(
         reclaim_location(&allocator, &location).await.unwrap(),
-        ReclaimOutcome::Deferred
+        ReclaimOutcome::Accepted
     );
+    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(allocator.query_calls.load(Ordering::Relaxed), 2);
     allocator.range_reclaimed = true;
     assert_eq!(
         reclaim_location(&allocator, &location).await.unwrap(),
-        ReclaimOutcome::Reclaimed
+        ReclaimOutcome::Accepted
     );
     assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 3);
     assert_eq!(allocator.chunk_calls.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn accepted_dedicated_deletion_does_not_wait_for_chunkdb_cleanup() {
+    use crowdb_protocol::chunkdb::rpc::{ChunkStrip, StripCleanupIntent};
+    let mut allocator = TestAllocator::new(false);
+    allocator.chunk.strips.push(ChunkStrip::default());
+    allocator
+        .chunk
+        .cleanup_intents
+        .push(StripCleanupIntent::default());
+    assert_eq!(
+        reclaim_location(&allocator, &allocator.location()).await.unwrap(),
+        ReclaimOutcome::Accepted
+    );
+    assert_eq!(allocator.chunk_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(allocator.query_calls.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
@@ -173,7 +195,7 @@ async fn shared_retirement_requires_a_sealed_writer_and_readable_range() {
     allocator.chunk.acknowledged_cursor = 4096;
     assert_eq!(
         reclaim_location(&allocator, &location).await.unwrap(),
-        ReclaimOutcome::Reclaimed
+        ReclaimOutcome::Accepted
     );
     assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 1);
 }
@@ -211,7 +233,7 @@ async fn shared_byte_ranges_are_never_rounded_into_neighbouring_objects() {
         location.length = u64::from(length);
         assert_eq!(
             reclaim_location(&allocator, &location).await.unwrap(),
-            ReclaimOutcome::Reclaimed
+            ReclaimOutcome::Accepted
         );
     }
     assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 5);
