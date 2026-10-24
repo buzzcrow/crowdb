@@ -166,3 +166,45 @@ async fn a_shared_physical_charge_keeps_each_upstream_logical_owner() {
     assert_eq!(released.load(std::sync::atomic::Ordering::Acquire), 2);
     assert_eq!(resources.status().held_bytes, 0);
 }
+
+#[tokio::test]
+async fn a_waiting_large_delivery_does_not_block_a_small_delivery_on_one_thread() {
+    let resources = RuntimeResources::new(RuntimeLimits {
+        requests: 2,
+        producer_bytes: 64,
+        held_bytes: 64,
+    })
+    .unwrap();
+    let held = resources.retain_vec(vec![1; 40], 1, 1, 0, 0).unwrap();
+    let context = |id| {
+        OperationContext::new(
+            NonZeroU64::new(id).unwrap(),
+            Instant::now() + Duration::from_secs(1),
+        )
+    };
+    let large_request = resources.admit(context(2)).unwrap();
+    let small_request = resources.admit(context(3)).unwrap();
+    let mut large =
+        Box::pin(large_request.run(resources.retain_payload(OwnedPayload::from(vec![2; 32]), 2, 2, 0, 0)));
+    assert!(futures::poll!(large.as_mut()).is_pending());
+    let small = small_request
+        .run(resources.retain_payload(OwnedPayload::from(vec![3; 8]), 3, 3, 0, 0))
+        .await
+        .unwrap();
+    assert_eq!(resources.status().held_bytes, 48);
+    assert_eq!(resources.status().requests, 2);
+    assert!(futures::poll!(large.as_mut()).is_pending());
+    drop(small_request);
+    assert_eq!(resources.status().requests, 1);
+    assert_eq!(small.as_slice(), &[3; 8]);
+    drop(held);
+    let large = large.await.unwrap();
+    drop(large_request);
+    assert_eq!(resources.status().requests, 0);
+    assert_eq!(resources.status().held_bytes, 40);
+    assert_eq!(resources.status().held_bytes_high_water, 48);
+    assert_eq!(large.as_slice(), &[2; 32]);
+    drop((large, small));
+    assert_eq!(resources.status().held_bytes, 0);
+    assert_eq!(resources.status().compatibility_copy_bytes, 0);
+}
