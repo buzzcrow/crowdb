@@ -21,7 +21,7 @@ pub struct FileWriteIntent {
 }
 
 impl FileWriteIntent {
-    /// Registers exact ownership before disk IO and resolves an uncertain KV reply.
+    /// Registers exact ownership before disk IO; an uncertain reply stops the write.
     /// # Errors
     /// Rejects fenced owners, mutable reclamation state and unconfirmed persistence.
     pub async fn register(&self, store: Arc<dyn CatalogStore>) -> Result<(), CatalogError> {
@@ -90,16 +90,11 @@ pub(crate) async fn register_intent(
     let bytes = StorageRecord::FileWriteIntent(Box::new(intent.clone())).encode()?;
     let outcome = store
         .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
-        .await;
+        .await?;
     match outcome {
-        Ok(CasOutcome::Applied(_)) => {}
-        Ok(CasOutcome::Conflict(Some(value))) if value.bytes == bytes => {}
-        Ok(CasOutcome::Conflict(_)) => return Err(CatalogError::Conflict),
-        Err(error) => {
-            if store.get(&key).await?.map_or(true, |value| value.bytes != bytes) {
-                return Err(error.into());
-            }
-        }
+        CasOutcome::Applied(_) => {}
+        CasOutcome::Conflict(Some(value)) if value.bytes == bytes => {}
+        CasOutcome::Conflict(_) => return Err(CatalogError::Conflict),
     }
     check_writer(store.as_ref(), intent.owner).await
 }
