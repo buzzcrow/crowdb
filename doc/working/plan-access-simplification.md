@@ -391,6 +391,14 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
 
 - [ ] **P14.1 审查 root/context/初始化回读**：记录正常请求内重复 GET 和初始化写，复用已验证
   immutable 事实，保留撤销和 catalog reset 的准入边界。凭据持久化不是 reader session。Files: Iceberg `catalog/{repository,storage}.rs`、Access `credentials.rs`、`credentials/ensure.rs`。
+- [ ] **P14.2 删除凭据 bootstrap 准备状态**：现状 `ensure_user` 先扫全部 credential，GET/创建
+  `user-bootstrap/<user hash>` 的加密候选，再 CAS credential，最后再全量 scan 取回 token。
+  准备记录不是认证来源，唯一用途是多个 bootstrap 共用随机 access key。改为 user 派生的
+  稳定 access-key 目标，secret 仍随机；在现有 credential scope 一次 create-CAS 保存最终
+  加密资源。冲突读取唯一该目标并核对 user/密文/启用状态，成功直接返回本次已知 token。
+  保留 legacy inventory 查找与显式 issue-user 的多 token 语义；旧准备记录不恢复/覆盖正式
+  凭据。Group-0 `put_cas` 当前只返回 revision，不能假装有 observed value；需单独补返回值
+  或保留一次确有必要的直接 GET，未知结果不能当作明确冲突。Files: Access credentials、S3 auth。
 
 ## 其他性能任务
 
@@ -462,6 +470,14 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P14.1a**：Catalog management install/audit 复用 ledger locator 的 absent/value，
+  authority publication 与退休 CAS 复用 observed，删除重复 GET。initialize 正常路径实测
+  19G + 7C（原 22G + 7C），重复已完成请求 2G + 0C（原 3G + 0C）；只是逻辑 store 成本，
+  不是 routed TPS。没有改变 root/context、维护 grace 或旧 management 恢复/审计合同。
+  management 12、admission 3、catalog contract 6 项、Iceberg all-target/all-feature clippy、
+  fmt/diff 通过；包含并发初始化 100 轮、slot collision overflow 与各写入丢回复恢复。
+  management journal 和凭据准备状态的必要性仍待各自审查，未据此宣称清理完成。
 
 - **2026-10-24，R3.1 / P9.2（rename 部分）**：新 rename 只在参与父 authority 中保存一个
   `NamespaceRename`：原精确 mapping、目标 namespace/name、head generation/fence 和本次

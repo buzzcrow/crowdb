@@ -46,6 +46,29 @@ fn request(action: ManagementAction, epoch: u64, name: &str) -> ManagementReques
     }
 }
 
+#[tokio::test]
+async fn initialization_and_replay_do_not_reread_located_ledger_values() {
+    let store = Arc::new(TestStore::default());
+    let catalog = repository(&store);
+    let initialize = request(ManagementAction::Initialize, 0, "cost");
+    let result = catalog
+        .execute(initialize.clone(), ManagementPrivilege::Manage, 100)
+        .await
+        .unwrap();
+    assert_eq!(store.reads.load(Ordering::SeqCst), 19);
+    assert_eq!(store.cas_attempts.load(Ordering::SeqCst), 7);
+    let reads = store.reads.load(Ordering::SeqCst);
+    assert_eq!(
+        catalog
+            .execute(initialize, ManagementPrivilege::Manage, 101)
+            .await
+            .unwrap(),
+        result
+    );
+    assert_eq!(store.reads.load(Ordering::SeqCst) - reads, 2);
+    assert_eq!(store.cas_attempts.load(Ordering::SeqCst), 7);
+}
+
 #[tokio::test(start_paused = true)]
 async fn completed_clear_admits_one_retired_catalog_task() {
     let store = Arc::new(TestStore::default());

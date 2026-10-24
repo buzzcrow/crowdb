@@ -7,8 +7,8 @@ use crate::record::StorageRecord;
 
 use super::repository::{authority_key, decode_authority, elapsed_now, operation_bytes, root_key};
 use super::{
-    ActiveCatalogRecord, CatalogAuthority, CatalogContext, CatalogError, CatalogRepository, ClearTransition,
-    RootState,
+    ActiveCatalogRecord, CasOutcome, CatalogAuthority, CatalogContext, CatalogError, CatalogRepository,
+    ClearTransition, RootState,
 };
 
 impl CatalogRepository {
@@ -157,18 +157,13 @@ impl CatalogRepository {
                 retired.lifecycle = super::CatalogLifecycle::Retired;
                 let bytes = StorageRecord::Authority(retired).encode()?;
                 let key = authority_key(transition.previous.catalog);
-                if !self
-                    .cas(&key, Some(&operation.original_authority), &bytes)
+                match self
+                    .exchange(&key, Some(&operation.original_authority), &bytes)
                     .await?
                 {
-                    let actual = self
-                        .store
-                        .get(&key.encode()?)
-                        .await?
-                        .ok_or(ValidationError::Record)?;
-                    if actual.bytes != bytes {
-                        return Err(ValidationError::Record.into());
-                    }
+                    CasOutcome::Applied(_) => (),
+                    CasOutcome::Conflict(Some(actual)) if actual.bytes == bytes => (),
+                    CasOutcome::Conflict(_) => return Err(ValidationError::Record.into()),
                 }
                 let mut published = operation.clone();
                 published.phase = ManagementPhase::Published;
@@ -205,26 +200,19 @@ impl CatalogRepository {
         } else {
             None
         };
-        if self.cas(&key, expected, &operation.result_authority).await? {
-            return Ok(());
+        match self.exchange(&key, expected, &operation.result_authority).await? {
+            CasOutcome::Applied(_) => Ok(()),
+            CasOutcome::Conflict(Some(actual)) if actual.bytes == operation.result_authority => Ok(()),
+            CasOutcome::Conflict(_) => Err(ValidationError::Record.into()),
         }
-        let actual = self
-            .store
-            .get(&key.encode()?)
-            .await?
-            .ok_or(ValidationError::Record)?;
-        if actual.bytes != operation.result_authority {
-            return Err(ValidationError::Record.into());
-        }
-        Ok(())
     }
 
     async fn audit(&self, operation: &ManagementOperation, now_ms: u64) -> Result<(), CatalogError> {
-        let key = match ledger_locate(self.store.as_ref(), SystemScope::Audit, operation.id()).await? {
-            LedgerLocation::Existing(key, _) | LedgerLocation::Vacant(key) => key,
+        let (key, old) = match ledger_locate(self.store.as_ref(), SystemScope::Audit, operation.id()).await? {
+            LedgerLocation::Existing(key, value) => (key, Some(value)),
+            LedgerLocation::Vacant(key) => (key, None),
         };
         let bytes = operation_bytes(operation)?;
-        let old = self.store.get(&key.encode()?).await?;
         if let Some(value) = &old {
             if value.bytes == bytes {
                 return Ok(());
@@ -236,12 +224,13 @@ impl CatalogRepository {
                 return Err(CatalogError::Busy);
             }
         }
-        if !self
-            .cas(&key, old.as_ref().map(|value| value.bytes.as_slice()), &bytes)
+        match self
+            .exchange(&key, old.as_ref().map(|value| value.bytes.as_slice()), &bytes)
             .await?
         {
-            return Err(CatalogError::Busy);
+            CasOutcome::Applied(_) => Ok(()),
+            CasOutcome::Conflict(Some(observed)) if observed.bytes == bytes => Ok(()),
+            CasOutcome::Conflict(_) => Err(CatalogError::Busy),
         }
-        Ok(())
     }
 }
