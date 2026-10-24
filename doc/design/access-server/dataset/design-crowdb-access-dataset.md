@@ -256,12 +256,16 @@ index page. Legacy index records are ignored.
 
 Prepare validates the complete current sample membership, schema, parent and
 operation token, then persists an invisible candidate and claims completed
-uploads. Omitted samples disappear; surviving samples inherit omitted optional
+uploads. New caller tokens directly select the immutable Snapshot ID; they do
+not create a separate operation-to-Snapshot mapping. Existing legacy mappings
+remain readable and select their original Snapshot. Retirement retains a small
+negative fence for legacy delayed writers and the selected Snapshot resource.
+Omitted samples disappear; surviving samples inherit omitted optional
 fields through explicit ancestry. Tombstones remove inherited values. Required
 field names cannot be removed from a child schema.
 
 Publish reuses the prepared Snapshot ID, marks its complete record Published,
-and CAS-advances the head. A Published operation record can precede head
+and CAS-advances the head. A Published Snapshot record can precede head
 advancement; a successful publish response establishes the completed operation.
 Lost responses are resolved by inspecting status and retrying identical content
 with the same operation token. Historical retries cannot rewind a newer head.
