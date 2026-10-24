@@ -198,6 +198,52 @@ reset accumulated persistent state, and three rounds give no stable latency
 SLO. Reconsider grouped writes after improving the wire/processing path and
 repeating this comparison, without relaxing ordering or publication barriers.
 
+## Shared upload owner CPU
+
+The release CPU decomposition passes on client CPU 2 in
+`upload-owner-cpu/10866bc17bf14e53877a2d3be19c390e`. Its manifest retains binary
+and source hashes; `measurement.log` and `measurements.json` retain every sample.
+The fixture has two live owners and 1/64/256/4,095 retired owners. A retirement
+removes one live owner and adds its permanent negative fence. The last case
+reaches the existing 4,096-entry bound; it does not change the saturated-resource
+format or late-claim rules.
+
+Each mode has eight warmups and seven fixed 128-iteration samples. Fixture
+setup is separate. Values below are medians of calling-thread CPU per operation,
+with Linux scheduler accounting refreshed at both boundaries by a safe yield.
+The empty boundary costs approximately 6.6 µs per sample and is reported without
+subtraction. Wall-clock samples are retained separately. The initial unrefreshed
+counter was tick-quantized and is not used for these results.
+
+| Retired owners | Input record (bytes) | Serde roundtrip (µs) | Canned retirement (µs) |
+| -------------- | -------------------- | -------------------- | ---------------------- |
+| 1              | 343                  | 1.3                  | 1.5                    |
+| 64             | 4,051                | 14.3                 | 15.1                   |
+| 256            | 15,535               | 55.9                 | 57.5                   |
+| 4,095          | 245,760              | 832.1                | 849.2                  |
+
+The canned path calls production `retire_owner`, including its record checks,
+one GET clone and one exact expected/result comparison. Its CAS returns a fixed
+Applied outcome and does not persist. Standalone serde modes exclude session
+validation. They are independently timed; subtracting or adding their medians
+cannot apportion production CPU. At the largest input, decode and encode alone
+measure approximately 574 and 236 µs. A separate test-store CAS/reset pair costs
+about 106 µs and includes two mutations and fixture map/Vec cloning; it is never
+subtracted from the authority measurement.
+
+This establishes substantial whole-record codec cost with large shared-owner
+histories. It is not routed RPC latency, WAL cost, allocation counting or an
+end-to-end throughput limit. Keep the CAS and retired-owner safety contract;
+review a smaller resource representation or different layout before changing
+publication/reclaim ordering.
+
+Reproduce in an exclusive window, with no service workload running:
+
+```sh
+pixi run cargo test --release --locked -p crowdb-access-dataset --test upload_owner_cpu_test --no-run
+pixi run taskset -c 2 cargo test --release --locked -p crowdb-access-dataset --test upload_owner_cpu_test upload_owner_cpu_decomposition -- --ignored --exact --nocapture --test-threads=1
+```
+
 ## Verification and execution notes
 
 - Library: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`.
