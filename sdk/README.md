@@ -189,6 +189,16 @@ HTTP pools, credentials and admission budgets. Every operation checks its server
 capability before sending a request; unsupported mutations never fall back to v1.
 Existing `DatasetClient` methods retain their v1 contracts.
 
+Successful capability discovery supplies a bounded set of hints shared by client
+clones and control wrappers. Warm calls send the business request directly;
+authentication, deletion admission and conditional updates still run on the server.
+Missing capabilities and failed discoveries are not remembered as denials.
+`capabilities()` always queries the server and replaces the hints on a valid reply;
+an unsupported API version clears them. Refresh discovery or create a new client
+after changing server features. Concurrent cold calls may repeat discovery within
+the existing HTTP admission budget. The hint has no TTL and is not a cached read
+permission or promise that a redeployed endpoint still supports the operation.
+
 - `OpaqueId` preserves operation/Snapshot/revision IDs; `Generation` is an opaque
   head precondition. `Decimal` encodes exact u64 values as JSON strings, and
   `SampleId` preserves binary IDs through canonical base64.

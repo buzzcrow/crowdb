@@ -26,7 +26,7 @@ impl ControlClient {
         path
     }
     pub(crate) async fn require(&self, capability: &str) -> Result<(), Error> {
-        self.inner.capabilities().await?.require(&[capability])
+        self.inner.require_capability(capability).await
     }
     pub(crate) async fn call<T: Serialize + ?Sized, R: DeserializeOwned>(
         &self,

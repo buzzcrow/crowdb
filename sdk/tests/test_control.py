@@ -48,6 +48,25 @@ class TestControlPeer:
 
 
 class TestControl(unittest.TestCase):
+    def test_successful_capabilities_are_reused_across_control_wrappers(self):
+        with TestControlPeer(["head-inspection"]) as peer, DatasetClient(peer.endpoint, "test") as owner:
+            owner.control().head()
+            owner.control().head()
+            paths = [peer.requests.get(timeout=10) for _ in range(3)]
+            self.assertEqual(sum(path.endswith("capabilities") for path in paths), 1)
+            self.assertTrue(peer.requests.empty())
+            peer.capabilities = []
+            owner.control().capabilities()
+            with self.assertRaises(DatasetError): owner.control().head()
+            self.assertTrue(peer.requests.get(timeout=10).endswith("capabilities"))
+            self.assertTrue(peer.requests.get(timeout=10).endswith("capabilities"))
+            self.assertTrue(peer.requests.empty())
+            peer.capabilities = ["head-inspection"]
+            self.assertIsNone(owner.control().head()["latest"])
+            self.assertTrue(peer.requests.get(timeout=10).endswith("capabilities"))
+            self.assertTrue(peer.requests.get(timeout=10).endswith("head"))
+            self.assertTrue(peer.requests.empty())
+
     def test_exact_integer_and_unavailable_mutation(self):
         self.assertEqual(decimal(2**64-1), "18446744073709551615")
         for value in (True, 1.0, -1, 2**64):

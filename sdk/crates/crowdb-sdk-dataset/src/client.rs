@@ -6,12 +6,14 @@ use crate::{
 };
 use crowdb_sdk_core::{HttpClient, HttpConfig};
 use serde::{de::DeserializeOwned, Serialize};
+use std::sync::{atomic::AtomicU64, Arc};
 
 #[derive(Clone)]
 pub struct DatasetClient {
     pub(crate) http: HttpClient,
     namespace: String,
     name: String,
+    pub(crate) capability_hints: Arc<AtomicU64>,
 }
 
 impl DatasetClient {
@@ -34,6 +36,7 @@ impl DatasetClient {
             http: HttpClient::with_config(endpoint, bearer, config)?,
             namespace: "dataset-ns".into(),
             name: name.into(),
+            capability_hints: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -50,6 +53,7 @@ impl DatasetClient {
             http: HttpClient::with_provider(endpoint, credentials, config)?,
             namespace: "dataset-ns".into(),
             name: name.into(),
+            capability_hints: Arc::new(AtomicU64::new(0)),
         })
     }
     pub(crate) fn path<'a>(&'a self, suffix: &[&'a str]) -> Vec<&'a str> {

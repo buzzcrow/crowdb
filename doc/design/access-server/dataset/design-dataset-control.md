@@ -223,6 +223,17 @@ cannot be omitted; u64s use decimal strings; binary IDs use canonical base64. Cl
 check capabilities before mutation and never downgrade a Split-aware operation to v1.
 Existing v1 routes, persisted read interpretation and binary framing remain available.
 Rust and Python control clients share transport/admission/retry/cancellation semantics.
+SDK clones share a fixed atomic bitset of capabilities previously advertised by
+the versioned endpoint. Positive hints remove discovery GETs from warm control
+calls; absent capabilities are rediscovered, never downgraded. Explicit
+`capabilities()` queries replace hints after a valid response and clear them for
+an unsupported API version. Unknown transport outcomes do not imply capability
+revocation. Concurrent cold calls may duplicate discovery under the existing
+HTTP budget; there is no discovery lock or server session. Every actual operation
+still passes server authentication, capacity, deletion admission and mutation
+preconditions. Server redeployment can invalidate a hint and make the operation
+fail; explicit discovery refreshes it. A preflight GET could not eliminate that
+deployment window either.
 
 - **I1 — Immutable data:** committed Snapshot content never changes.
 - **I2 — Independent revision:** Split publication cannot move Dataset latest.

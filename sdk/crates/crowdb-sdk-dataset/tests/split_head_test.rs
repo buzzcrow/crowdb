@@ -56,7 +56,7 @@ async fn unsupported_head_updates_do_not_fall_back_to_draft_publication() {
 
 #[tokio::test]
 async fn a_conflict_can_supply_the_next_explicit_request_without_another_head_get() {
-    let mut peer = peer::TestPeer::start_statuses(r#"{"api_version":2,"capabilities":["split-head-update"],"revision":"02020202020202020202020202020202","generation":"0303030303030303030303030303030303030303030303030303030303030303","code":"conflict","message":"conflict","request_id":"test","retryable":false,"observed_head":{"snapshot":"01010101010101010101010101010101","revision":"04040404040404040404040404040404","generation":"0505050505050505050505050505050505050505050505050505050505050505"}}"#, false, vec![200, 409, 200, 200]).await;
+    let mut peer = peer::TestPeer::start_statuses(r#"{"api_version":2,"capabilities":["split-head-update"],"revision":"02020202020202020202020202020202","generation":"0303030303030303030303030303030303030303030303030303030303030303","code":"conflict","message":"conflict","request_id":"test","retryable":false,"observed_head":{"snapshot":"01010101010101010101010101010101","revision":"04040404040404040404040404040404","generation":"0505050505050505050505050505050505050505050505050505050505050505"}}"#, false, vec![200, 409, 200]).await;
     let client = DatasetClient::new(&peer.endpoint, "test", None)
         .unwrap()
         .control();
@@ -86,8 +86,6 @@ async fn a_conflict_can_supply_the_next_explicit_request_without_another_head_ge
         .unwrap()
         .starts_with("GET /api/dataset/v2/capabilities "));
     let first = peer.requests.recv().await.unwrap();
-    let discovery = peer.requests.recv().await.unwrap();
-    assert!(discovery.starts_with("GET /api/dataset/v2/capabilities "));
     let next = peer.requests.recv().await.unwrap();
     assert!(first.starts_with("PUT /api/dataset/v2/namespaces/dataset-ns/datasets/test/snapshots/"));
     assert!(first.contains("\"expected_head\":null"));

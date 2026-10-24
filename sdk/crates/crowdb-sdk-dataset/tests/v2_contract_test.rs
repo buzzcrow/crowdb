@@ -118,7 +118,6 @@ async fn pages_are_lazy_bounded_and_reject_a_repeated_continuation() {
     assert!(peer.requests.try_recv().is_err());
     assert!(pages.next_page().await.is_err());
     assert_eq!(pages.continuation(), Some("YQ=="));
-    peer.requests.recv().await.unwrap();
     assert!(peer.requests.recv().await.unwrap().contains("after=YQ%3D%3D"));
 }
 

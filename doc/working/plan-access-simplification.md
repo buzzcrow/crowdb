@@ -427,18 +427,6 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
 - [ ] **F1 请求级成本计数**：记录 GET/bounded GET/scan/CAS/PUT/delete、重复 key、冲突与
   unknown、真实 routed RPC、串行阶段和复制字节；用测试 wrapper/已有 metrics，不加生产
   每 RPC 日志或 profiling 锁。Files: Dataset/S3/Iceberg 测试 store、现有指标、`tools/sdk/`。
-- [~] **F1.1 去掉 SDK 每次 control 调用的 capabilities GET**：R2.2b 抓到显式重试的请求
-  为 capabilities GET → PUT → capabilities GET → PUT；没有 head GET，但仍多一次 Access
-  往返。能力是版本化路由/配置发现，不是鉴权或资源准入；研究按 client 复用已确认能力，
-  保持服务端每次真实鉴权/条件检查、缺失能力不降级、重新发现/滚动升级的失效语义。
-  不增加热路径锁或 TTL 准入缓存。先写清语义，再补冷启动并发、服务失效和实际请求数。
-  Files: SDK `client.rs`、capabilities、v2 `client.rs`、native Python dispatch 与协议 fixture。
-  已核实 `DatasetHttpService` 的能力由版本化路由和构造时的 uploads 配置决定，鉴权与资源
-  条件每个真实请求仍独立检查。拟在同一 client/clone 中以固定有界 atomic bitset 复用成功
-  发现的能力，不缓存拒绝/缺失、不保存服务端状态；显式 capabilities() 仍重新发现并替换
-  提示。冷启动并发可重复有界发现，避免 single-flight 锁。服务端重启/能力变化时真实路由
-  仍拒绝不支持的操作，没有 v1 fallback；预先 GET 本来也不能消除发现与写之间的重启窗口。
-  不将该提示用于跳过鉴权、删除准入或 expected-base 检查；未知传输结果不解释成能力撤销。
 - [ ] **F2 复核 legacy/多源读取的重复准入**：现代 continuation 的 selection→HTTP/native
   delivery 已共用请求局部的 Snapshot/schema/membership，Split 同 Snapshot 也复用准入。
   剩余复核 legacy `DatasetReadService`、多源/祖先元数据，独立入口和不同 Snapshot 仍各自准入；
@@ -506,6 +494,19 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，F1.1**：同一 SDK client/clone/control wrapper 共享固定有界 atomic bitset，
+  复用已成功发现的路由能力。连续五次 head 读取实测由十次 HTTP 请求降为六次；Split
+  冲突显式重试由 capabilities GET → PUT → capabilities GET → PUT 降为 GET → PUT → PUT，
+  使用冲突返回的 observed head，不补 head GET。每个业务请求仍独立取凭据并由服务端鉴权、
+  检查删除与 expected base；未新增锁、持久化、TTL 准入缓存或依赖。
+  显式 capabilities() 总是重新发现并替换提示；不缓存缺失能力；未知传输/解码结果不当成
+  撤销，已解码的不支持版本清空提示。冷启动并发允许有界重复发现，无 single-flight 状态；
+  取消不安装提示，服务能力变化由真实版本化路由拒绝，不能降级写入。
+  独立 SDK workspace 的 29 项测试、all-target clippy、fmt、边界检查通过；sdist 在仓库外
+  独立测试并构建 wheel，安装后九项 Python 单元测试及 Rust/Python 两项真实 HTTP Split
+  consumer 通过。wheel 位于 `.crowdb-runtime/artifacts/sdk-capabilities-20261024`。
+  SDK 变更不改变服务端镜像；此处是实际请求数与功能证据，没有声称 TPS 提升比例。
 
 - **V2.2（2026-10-24）**：源码 `5f18bd58`、source tree
   `1f22dcff0524d743893bc993824350827dc6049f` 稳定构建的新镜像
