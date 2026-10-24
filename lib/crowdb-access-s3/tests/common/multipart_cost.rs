@@ -53,6 +53,69 @@ async fn normal_part_and_completion_have_no_post_write_metadata_reload() {
 }
 
 #[tokio::test]
+async fn upload_identity_admission_reads_only_the_bound_authority() {
+    let (repository, probe, _) = repository_with_probe().await;
+    let session = session();
+    repository.begin(&session).await.unwrap();
+    for (object, upload, expected) in [
+        (
+            session.object_key.as_slice(),
+            session.upload_id,
+            Some(session.clone()),
+        ),
+        (b"another".as_slice(), session.upload_id, None),
+        (session.object_key.as_slice(), [8; 16], None),
+    ] {
+        let before = probe.counts();
+        assert_eq!(
+            repository
+                .load_identity(session.bucket_id, object, &upload)
+                .await
+                .unwrap(),
+            expected
+        );
+        let after = probe.counts();
+        assert_eq!((after.0 - before.0, after.1 - before.1), (1, 0));
+    }
+}
+
+#[tokio::test]
+async fn a_foreign_listing_index_does_not_gate_direct_upload_requests() {
+    let (repository, probe, store) = repository_with_probe().await;
+    let session = session();
+    repository.begin(&session).await.unwrap();
+    let mut other = session.clone();
+    other.upload_id = [8; 16];
+    repository.begin(&other).await.unwrap();
+    let index = MetadataKey::multipart_upload_index(
+        &tenant(),
+        session.bucket_id,
+        &session.object_key,
+        &session.upload_id,
+    )
+    .unwrap();
+    let authority = MetadataKey::multipart_session(&tenant(), session.bucket_id, &session.upload_id);
+    let foreign = MetadataKey::multipart_session(&tenant(), other.bucket_id, &other.upload_id);
+    assert!(store.compare_exchange(index, authority, foreign).await.unwrap());
+    let before = probe.counts();
+    assert_eq!(
+        repository
+            .load_identity(session.bucket_id, &session.object_key, &session.upload_id)
+            .await
+            .unwrap(),
+        Some(session.clone())
+    );
+    let after = probe.counts();
+    assert_eq!((after.0 - before.0, after.1 - before.1), (1, 0));
+    assert!(matches!(
+        repository
+            .list_uploads(session.bucket_id, b"", None, None, 10, 110)
+            .await,
+        Err(MultipartRepositoryError::Conflict)
+    ));
+}
+
+#[tokio::test]
 async fn abort_accepts_the_returned_terminal_record_without_get() {
     let (repository, probe, _) = repository_with_probe().await;
     let session = session();

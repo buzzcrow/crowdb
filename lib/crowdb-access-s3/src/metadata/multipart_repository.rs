@@ -107,7 +107,7 @@ impl MultipartRepository {
             .transpose()
     }
 
-    /// Reads one session through its bucket, object and upload identity.
+    /// Reads the authority bound to the bucket, object and upload identity.
     ///
     /// # Errors
     /// Rejects corrupt or foreign values and storage failures.
@@ -117,21 +117,15 @@ impl MultipartRepository {
         object: &[u8],
         upload_id: &[u8; 16],
     ) -> Result<Option<MultipartSessionRecord>, MultipartRepositoryError> {
-        let key = MetadataKey::multipart_upload_index(&self.tenant, bucket, object, upload_id)?;
-        let Some(index) = self.store.get(key).await? else {
-            return Ok(None);
-        };
-        let expected = MetadataKey::multipart_session(&self.tenant, bucket, upload_id);
-        if index.value != expected {
-            return Err(MultipartRepositoryError::Conflict);
-        }
-        self.store
-            .get(expected)
-            .await?
-            .map(|value| {
-                MultipartSessionRecord::decode(&value.value, bucket, object, upload_id).map_err(Into::into)
-            })
-            .transpose()
+        MetadataKey::object(&self.tenant, bucket, object)?;
+        let key = MetadataKey::multipart_session(&self.tenant, bucket, upload_id);
+        self.store.get(key).await?.map_or(Ok(None), |value| {
+            match MultipartSessionRecord::decode(&value.value, bucket, object, upload_id) {
+                Ok(session) => Ok(Some(session)),
+                Err(MultipartRecordError::Identity) => Ok(None),
+                Err(error) => Err(error.into()),
+            }
+        })
     }
 
     /// Reads one current part generation.

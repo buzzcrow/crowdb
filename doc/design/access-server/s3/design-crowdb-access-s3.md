@@ -230,7 +230,9 @@ After a successful reservation, the writer reuses its known part pointer and
 immutable generation to publish and settle it. Recovery loads that evidence
 when a later request helps the reservation. A bound upload is loaded directly
 through its authoritative key and validated against its bucket, object, and
-upload identity; the listing index is not reread at every stage. Definite
+upload identity; direct identity lookup does not read the listing index.
+ListUploads and expiry scanning validate that index when enumerating resources.
+Definite
 conflicts retain the typed upload record for the next operation. Part progress
 has a five-second work deadline so continuous contention cannot run forever;
 expiration of this local work budget returns a retryable busy result.
