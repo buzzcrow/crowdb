@@ -338,31 +338,18 @@ pub(super) async fn prepared(
     snapshot: SnapshotId,
     expected: Option<SplitRevisionId>,
 ) -> crowdb_access_dataset::split::SplitRevisionRecord {
-    let operation = OperationId::random();
+    let _ = expected;
     authority
-        .begin_split_draft(
+        .prepare_split_revision(
             identity,
-            operation,
             snapshot,
-            expected,
-            crowdb_access_dataset::split::SplitPolicy::default(),
-            partition_splits(),
+            &crowdb_access_dataset::split::SplitPreparation {
+                revision: SplitRevisionId::random(),
+                policy: crowdb_access_dataset::split::SplitPolicy::default(),
+                splits: partition_splits(),
+            },
+            &ReadCancellation::new(),
         )
-        .await
-        .unwrap();
-    let mut page = 0;
-    loop {
-        let preview = authority
-            .evaluate_split_draft(identity, operation, 1, page, &ReadCancellation::new())
-            .await
-            .unwrap();
-        if preview.complete {
-            break;
-        }
-        page = preview.next_page;
-    }
-    authority
-        .prepare_split_draft(identity, operation, 1)
         .await
         .unwrap()
 }
@@ -414,12 +401,33 @@ pub(super) async fn publish_revision(
     identity: &DatasetIdentity,
     record: &crowdb_access_dataset::split::SplitRevisionRecord,
 ) -> SuccessfulCommit {
-    authority
-        .publish_split_draft(
+    let current = authority
+        .inspect_split_head(identity, record.snapshot)
+        .await
+        .unwrap();
+    let head = authority
+        .update_split_head(
             identity,
-            record.operation,
-            &attempt(authority, identity, record).await,
+            record.snapshot,
+            &crowdb_access_dataset::split::SplitHeadUpdate {
+                revision: record.revision,
+                expected_revision: current.revision,
+                expected_head: current.generation,
+            },
         )
         .await
-        .unwrap()
+        .unwrap();
+    SuccessfulCommit {
+        version: 1,
+        attempt: CommitAttempt {
+            version: 1,
+            id: OperationId::random(),
+            target: CommitTarget::SplitRevision {
+                snapshot: record.snapshot,
+                revision: record.revision,
+            },
+            expected_head: current.generation,
+        },
+        committed_head: head.generation.unwrap(),
+    }
 }

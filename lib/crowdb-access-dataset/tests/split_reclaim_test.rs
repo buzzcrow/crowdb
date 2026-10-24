@@ -16,10 +16,7 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
     let authority = authority.with_reclaim_clock_for_tests(clock.clone());
     let first = split_store::prepared(&authority, &identity, snapshot, None).await;
     let first_attempt = split_store::attempt(&authority, &identity, &first).await;
-    authority
-        .publish_split_draft(&identity, first.operation, &first_attempt)
-        .await
-        .unwrap();
+    split_store::publish_revision(&authority, &identity, &first).await;
     let second = split_store::prepared(&authority, &identity, snapshot, Some(first.revision)).await;
     split_store::publish_revision(&authority, &identity, &second).await;
     let root = authority
@@ -36,14 +33,7 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
         .await
         .unwrap();
     let foreign = split_store::prepared(&authority, &identity, root, None).await;
-    authority
-        .publish_split_draft(
-            &identity,
-            foreign.operation,
-            &split_store::attempt(&authority, &identity, &foreign).await,
-        )
-        .await
-        .unwrap();
+    split_store::publish_revision(&authority, &identity, &foreign).await;
     authority.begin_reclaim(&identity, snapshot).await.unwrap();
     clock.store(1300, std::sync::atomic::Ordering::Release);
     let cancel = ReadCancellation::new();

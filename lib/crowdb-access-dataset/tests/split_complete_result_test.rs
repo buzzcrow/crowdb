@@ -1,9 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#[path = "common/composition.rs"]
-#[allow(dead_code)]
-mod common;
+#[path = "common/legacy_split.rs"]
+mod legacy;
 #[path = "common/publication.rs"]
 mod publication;
 #[path = "common/split_store.rs"]
@@ -30,12 +29,20 @@ async fn cleanup(authority: &DatasetAuthority, identity: &DatasetIdentity, opera
 async fn losing_pointer_cas_keeps_result_readable_without_split_proofs_or_writes() {
     let (store, authority, identity, snapshot) = split_store::fixture().await;
     let winner = split_store::prepared(&authority, &identity, snapshot, None).await;
-    let candidate = split_store::prepared(&authority, &identity, snapshot, None).await;
+    let candidate = legacy::prepared(store.as_ref(), &authority, &identity, snapshot, None).await;
     let attempt = split_store::attempt(&authority, &identity, &candidate).await;
     split_store::publish_revision(&authority, &identity, &winner).await;
     assert!(matches!(
         authority
-            .publish_split_draft(&identity, candidate.operation, &attempt)
+            .update_split_head(
+                &identity,
+                snapshot,
+                &SplitHeadUpdate {
+                    revision: candidate.revision,
+                    expected_revision: None,
+                    expected_head: attempt.expected_head
+                }
+            )
             .await,
         Err(SplitLifecycleError::HeadConflict { .. })
     ));
@@ -57,7 +64,7 @@ async fn losing_pointer_cas_keeps_result_readable_without_split_proofs_or_writes
                 &identity,
                 snapshot,
                 candidate.revision,
-                common::budget(),
+                budget(),
                 &ReadCancellation::new()
             )
             .await
@@ -77,10 +84,7 @@ async fn losing_pointer_cas_keeps_result_readable_without_split_proofs_or_writes
                 candidate.revision,
                 &split.name,
                 after,
-                MetadataScanBudget {
-                    items: 1,
-                    ..common::budget()
-                },
+                MetadataScanBudget { items: 1, ..budget() },
                 &ReadCancellation::new(),
             )
             .await
@@ -104,25 +108,14 @@ async fn losing_pointer_cas_keeps_result_readable_without_split_proofs_or_writes
 async fn complete_root_with_lost_reply_survives_abandonment_and_cleanup_cas_race() {
     let (store, authority, identity, snapshot) = split_store::fixture().await;
     let operation = OperationId::random();
-    authority
-        .begin_split_draft(
-            &identity,
-            operation,
-            snapshot,
-            None,
-            SplitPolicy::default(),
-            split_store::partition_splits(),
-        )
-        .await
-        .unwrap();
-    let preview = authority
-        .evaluate_split_draft(&identity, operation, 1, 0, &ReadCancellation::new())
-        .await
-        .unwrap();
-    assert!(preview.complete);
+    let input = SplitPreparation {
+        revision: legacy::revision(operation, 1),
+        policy: SplitPolicy::default(),
+        splits: split_store::partition_splits(),
+    };
     store.lose_revision_reply.store(true, Ordering::Relaxed);
     assert!(authority
-        .prepare_split_draft(&identity, operation, 1)
+        .prepare_split_revision(&identity, snapshot, &input, &ReadCancellation::new())
         .await
         .is_err());
     let roots = store
@@ -130,7 +123,7 @@ async fn complete_root_with_lost_reply_survives_abandonment_and_cleanup_cas_race
             &MetadataScan {
                 prefix: b"DS\0SR\0".to_vec(),
                 after: None,
-                budget: common::budget(),
+                budget: budget(),
             },
             &ReadCancellation::new(),
         )
@@ -138,6 +131,7 @@ async fn complete_root_with_lost_reply_survives_abandonment_and_cleanup_cas_race
         .unwrap();
     assert_eq!(roots.entries.len(), 1);
     let record = SplitRevisionRecord::decode(&roots.entries[0].1.bytes).unwrap();
+    let record = legacy::install(store.as_ref(), &identity, operation, 1, None, &record).await;
     authority
         .abandon_split_draft(&identity, operation, 1)
         .await
@@ -160,7 +154,7 @@ async fn complete_root_with_lost_reply_survives_abandonment_and_cleanup_cas_race
                 &identity,
                 snapshot,
                 record.revision,
-                common::budget(),
+                budget(),
                 &ReadCancellation::new()
             )
             .await
@@ -175,7 +169,7 @@ async fn complete_root_with_lost_reply_survives_abandonment_and_cleanup_cas_race
                 record.revision,
                 &split.name,
                 None,
-                common::budget(),
+                budget(),
                 &ReadCancellation::new(),
             )
             .await
@@ -187,7 +181,7 @@ async fn complete_root_with_lost_reply_survives_abandonment_and_cleanup_cas_race
 #[tokio::test]
 async fn cleanup_fences_missing_final_root_before_retiring_pages() {
     let (store, authority, identity, snapshot) = split_store::fixture().await;
-    let record = split_store::prepared(&authority, &identity, snapshot, None).await;
+    let record = legacy::prepared(store.as_ref(), &authority, &identity, snapshot, None).await;
     let root = key::revision(&identity, snapshot, record.revision).unwrap();
     // Recreate a producer paused before its final immutable write.
     store.delete(&root).await.unwrap();
@@ -213,7 +207,7 @@ async fn cleanup_fences_missing_final_root_before_retiring_pages() {
                 &identity,
                 snapshot,
                 record.revision,
-                common::budget(),
+                budget(),
                 &ReadCancellation::new()
             )
             .await,
@@ -232,37 +226,50 @@ async fn cleanup_fences_missing_final_root_before_retiring_pages() {
 async fn unpublished_revision_can_supply_frozen_child_membership() {
     let (_, authority, identity, parent) = split_store::fixture().await;
     let source = split_store::prepared(&authority, &identity, parent, None).await;
-    let operation = OperationId::random();
-    let input = CompositionInput {
-        parent_split_revision: Some(source.revision),
-        inherit_parent_splits: true,
-        ..common::input(parent)
-    };
-    common::begin_evaluated(&authority, &identity, operation, &input).await;
-    let draft = common::prepare(&authority, &identity, operation, 1).await;
-    let child = draft.preparation.unwrap().candidate;
-    authority
-        .publish_composition(
-            &identity,
-            operation,
-            &common::attempt(&authority, &identity, child).await,
-        )
-        .await
-        .unwrap();
-    let revision = authority
-        .inspect_split_head(&identity, child)
-        .await
-        .unwrap()
-        .revision
-        .unwrap();
-    let child_splits = authority
-        .get_split_revision(
+    let child = SnapshotId::random();
+    let result = authority
+        .prepare_composition_resource(
             &identity,
             child,
-            revision,
-            common::budget(),
+            &CompositionRequest {
+                parent: Some(parent),
+                source: CompositionSource::All,
+                schema: None,
+                samples: vec![],
+                splits: source
+                    .splits
+                    .iter()
+                    .map(|split| DraftSplit {
+                        name: split.name.clone(),
+                        definition: split.definition.clone(),
+                        origin: MembershipOrigin::Inherited(SplitSource {
+                            snapshot: parent,
+                            revision: source.revision,
+                            name: split.name.clone(),
+                        }),
+                    })
+                    .collect(),
+                policy: source.policy,
+            },
+            None,
             &ReadCancellation::new(),
         )
+        .await
+        .unwrap();
+    let head = authority.inspect_head(&identity).await.unwrap();
+    authority
+        .update_snapshot_head(
+            &identity,
+            &SnapshotHeadUpdate {
+                snapshot: child,
+                expected_head: head.generation,
+            },
+        )
+        .await
+        .unwrap();
+    let revision = result.initial_split.unwrap();
+    let child_splits = authority
+        .get_split_revision(&identity, child, revision, budget(), &ReadCancellation::new())
         .await
         .unwrap();
     assert_eq!(
@@ -270,17 +277,34 @@ async fn unpublished_revision_can_supply_frozen_child_membership() {
         source.splits.iter().map(|s| s.count).sum::<u64>()
     );
     assert!(child_splits.splits.iter().all(|s| matches!(&s.origin, MembershipOrigin::Inherited(origin) if origin.snapshot == parent && origin.revision == source.revision)));
-    let root = authority
-        .prepare_snapshot_candidate(
+    let root = SnapshotId::random();
+    let manifest: ManifestRecord = bincode::deserialize(&publication::publication_manifest(7)).unwrap();
+    authority
+        .prepare_composition_resource(
             &identity,
+            root,
+            &CompositionRequest {
+                parent: None,
+                source: CompositionSource::All,
+                schema: Some(manifest.schema),
+                samples: manifest.samples.into_iter().map(SampleChange::Upsert).collect(),
+                splits: vec![],
+                policy: SplitPolicy::default(),
+            },
             None,
-            publication::publication_manifest(7),
-            OperationId::random(),
+            &ReadCancellation::new(),
         )
         .await
         .unwrap();
+    let head = authority.inspect_head(&identity).await.unwrap();
     authority
-        .publish_snapshot_candidate(&identity, &common::attempt(&authority, &identity, root).await)
+        .update_snapshot_head(
+            &identity,
+            &SnapshotHeadUpdate {
+                snapshot: root,
+                expected_head: head.generation,
+            },
+        )
         .await
         .unwrap();
     assert!(matches!(
@@ -289,13 +313,15 @@ async fn unpublished_revision_can_supply_frozen_child_membership() {
     ));
     authority.begin_reclaim(&identity, child).await.unwrap();
     assert!(authority
-        .get_split_revision(
-            &identity,
-            child,
-            revision,
-            common::budget(),
-            &ReadCancellation::new()
-        )
+        .get_split_revision(&identity, child, revision, budget(), &ReadCancellation::new())
         .await
         .is_err());
+}
+
+fn budget() -> MetadataScanBudget {
+    MetadataScanBudget {
+        items: 20,
+        bytes: 1024 * 1024,
+        timeout: std::time::Duration::from_secs(2),
+    }
 }

@@ -5,7 +5,7 @@ mod publication;
 #[path = "common/split_store.rs"]
 mod split_store;
 use crowdb_access_dataset::{split::*, *};
-use split_store::{attempt, fixture, prepared};
+use split_store::{fixture, prepared};
 use std::{sync::atomic::Ordering, time::Duration};
 fn budget(items: usize) -> MetadataScanBudget {
     MetadataScanBudget {
@@ -21,23 +21,9 @@ async fn members_are_scoped_ordered_and_bounded() {
     let snapshot = split_store::publish_binary_samples(&authority, &identity, parent).await;
     let first = prepared(&authority, &identity, snapshot, None).await;
     let cancel = ReadCancellation::new();
-    authority
-        .publish_split_draft(
-            &identity,
-            first.operation,
-            &attempt(&authority, &identity, &first).await,
-        )
-        .await
-        .unwrap();
+    split_store::publish_revision(&authority, &identity, &first).await;
     let second = prepared(&authority, &identity, snapshot, Some(first.revision)).await;
-    authority
-        .publish_split_draft(
-            &identity,
-            second.operation,
-            &attempt(&authority, &identity, &second).await,
-        )
-        .await
-        .unwrap();
+    split_store::publish_revision(&authority, &identity, &second).await;
     store.inspect_only.store(true, Ordering::Relaxed);
     let name = SplitName::new("train").unwrap();
     let initial = authority
@@ -135,23 +121,9 @@ async fn history_includes_complete_revisions_before_and_after_publication() {
             .unwrap(),
         first
     );
-    authority
-        .publish_split_draft(
-            &identity,
-            first.operation,
-            &attempt(&authority, &identity, &first).await,
-        )
-        .await
-        .unwrap();
+    split_store::publish_revision(&authority, &identity, &first).await;
     let second = prepared(&authority, &identity, snapshot, Some(first.revision)).await;
-    authority
-        .publish_split_draft(
-            &identity,
-            second.operation,
-            &attempt(&authority, &identity, &second).await,
-        )
-        .await
-        .unwrap();
+    split_store::publish_revision(&authority, &identity, &second).await;
     let _uncommitted = prepared(&authority, &identity, snapshot, Some(second.revision)).await;
     store.inspect_only.store(true, Ordering::Relaxed);
     let history = authority

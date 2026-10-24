@@ -7,7 +7,27 @@ mod publication;
 #[path = "common/split_store.rs"]
 mod split_store;
 use crowdb_access_dataset::{split::*, *};
-use split_store::{attempt, fixture};
+use split_store::fixture;
+
+async fn prepare(
+    authority: &DatasetAuthority,
+    identity: &DatasetIdentity,
+    snapshot: SnapshotId,
+    splits: Vec<DraftSplit>,
+) -> Result<SplitRevisionRecord, SplitLifecycleError> {
+    authority
+        .prepare_split_revision(
+            identity,
+            snapshot,
+            &SplitPreparation {
+                revision: SplitRevisionId::random(),
+                policy: SplitPolicy::default(),
+                splits,
+            },
+            &ReadCancellation::new(),
+        )
+        .await
+}
 
 #[tokio::test]
 async fn frozen_child_membership_ignores_new_parent_revision_and_new_matching_samples() {
@@ -19,70 +39,26 @@ async fn frozen_child_membership_ignores_new_parent_revision_and_new_matching_sa
         source,
         inherited,
     } = inheritance::fixture().await;
-    let child_operation = OperationId::random();
-    authority
-        .begin_split_draft(
-            &identity,
-            child_operation,
-            child,
-            None,
-            SplitPolicy::default(),
-            vec![inherited.clone()],
-        )
+    let latest = prepare(&authority, &identity, parent, vec![]).await.unwrap();
+    split_store::publish_revision(&authority, &identity, &latest).await;
+    assert_ne!(latest.revision, source.revision);
+    let frozen = prepare(&authority, &identity, child, vec![inherited.clone()])
         .await
         .unwrap();
-    let newer = OperationId::random();
-    authority
-        .begin_split_draft(
-            &identity,
-            newer,
-            parent,
-            Some(source.revision),
-            SplitPolicy::default(),
-            vec![],
-        )
-        .await
-        .unwrap();
-    authority
-        .evaluate_split_draft(&identity, newer, 1, 0, &ReadCancellation::new())
-        .await
-        .unwrap();
-    let latest = authority.prepare_split_draft(&identity, newer, 1).await.unwrap();
-    authority
-        .publish_split_draft(&identity, newer, &attempt(&authority, &identity, &latest).await)
-        .await
-        .unwrap();
-    let preview = authority
-        .evaluate_split_draft(&identity, child_operation, 1, 0, &ReadCancellation::new())
-        .await
-        .unwrap();
-    assert_eq!(preview.member_counts, vec![1]);
-    assert_eq!(preview.validation.unassigned, 1);
-    let frozen = authority
-        .prepare_split_draft(&identity, child_operation, 1)
-        .await
-        .unwrap();
+    assert_eq!(frozen.splits[0].count, 1);
     assert_eq!(frozen.splits[0].origin, inherited.origin);
-    let reevaluate = OperationId::random();
-    authority
-        .begin_split_draft(
-            &identity,
-            reevaluate,
-            child,
-            None,
-            SplitPolicy::default(),
-            vec![DraftSplit {
-                origin: MembershipOrigin::Evaluated,
-                ..inherited
-            }],
-        )
-        .await
-        .unwrap();
-    let preview = authority
-        .evaluate_split_draft(&identity, reevaluate, 1, 0, &ReadCancellation::new())
-        .await
-        .unwrap();
-    assert_eq!(preview.member_counts, vec![2]);
+    let evaluated = prepare(
+        &authority,
+        &identity,
+        child,
+        vec![DraftSplit {
+            origin: MembershipOrigin::Evaluated,
+            ..inherited
+        }],
+    )
+    .await
+    .unwrap();
+    assert_eq!(evaluated.splits[0].count, 2);
 }
 
 #[tokio::test]
@@ -102,53 +78,18 @@ async fn inherited_sources_accept_complete_parent_revisions_and_require_exact_na
             name: SplitName::new("train").unwrap(),
         }),
     };
-    assert!(authority
-        .begin_split_draft(
-            &identity,
-            OperationId::random(),
-            child,
-            None,
-            SplitPolicy::default(),
-            vec![inherited.clone()]
-        )
+    let complete = prepare(&authority, &identity, child, vec![inherited.clone()])
         .await
-        .is_ok());
+        .unwrap();
+    assert_eq!(complete.splits[0].count, 0);
     let mut missing_name = inherited.clone();
     if let MembershipOrigin::Inherited(source) = &mut missing_name.origin {
         source.name = SplitName::new("missing").unwrap();
     }
     assert!(matches!(
-        authority
-            .begin_split_draft(
-                &identity,
-                OperationId::random(),
-                child,
-                None,
-                SplitPolicy::default(),
-                vec![missing_name]
-            )
-            .await,
+        prepare(&authority, &identity, child, vec![missing_name]).await,
         Err(SplitLifecycleError::NotFound)
     ));
-    let operation = OperationId::random();
-    authority
-        .begin_split_draft(
-            &identity,
-            operation,
-            child,
-            None,
-            SplitPolicy::default(),
-            vec![inherited],
-        )
-        .await
-        .unwrap();
-    let preview = authority
-        .evaluate_split_draft(&identity, operation, 1, 0, &ReadCancellation::new())
-        .await
-        .unwrap();
-    assert_eq!(preview.member_counts, vec![0]);
-    authority
-        .abandon_split_draft(&identity, operation, 1)
-        .await
-        .unwrap();
+    // The definition alone matches nothing; frozen membership still comes from the named source.
+    assert_eq!(complete.splits[0].origin, inherited.origin);
 }
