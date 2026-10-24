@@ -92,7 +92,7 @@ async fn lost_write_reply_is_retried_from_resource_facts_without_a_response_reco
     let records = fixture.store.values.load().len();
     fixture.store.fail_after.store(writes + 1, Ordering::Relaxed);
     assert!(repository.update_properties(&request).await.is_err());
-    assert_eq!(fixture.store.reads.load(Ordering::Relaxed) - reads, 4);
+    assert_eq!(fixture.store.reads.load(Ordering::Relaxed) - reads, 3);
     let restarted = NamespaceRepository::new(fixture.store.clone());
     let result = restarted.update_properties(&request).await.unwrap().unwrap();
     assert!(result.removed.is_empty());
@@ -225,12 +225,12 @@ async fn normal_property_write_is_one_resource_cas_and_no_new_records() {
     let writes = fixture.store.writes.load(Ordering::Relaxed);
     let request = request(&fixture, &authority);
     repository.update_properties(&request).await.unwrap().unwrap();
-    assert_eq!(fixture.store.reads.load(Ordering::Relaxed) - reads, 5);
+    assert_eq!(fixture.store.reads.load(Ordering::Relaxed) - reads, 4);
     assert_eq!(fixture.store.cas_attempts.load(Ordering::Relaxed) - attempts, 1);
     assert_eq!(fixture.store.writes.load(Ordering::Relaxed) - writes, 1);
     assert_eq!(fixture.store.values.load().len(), records);
     repository.update_properties(&request).await.unwrap().unwrap();
-    assert_eq!(fixture.store.reads.load(Ordering::Relaxed) - reads, 10);
+    assert_eq!(fixture.store.reads.load(Ordering::Relaxed) - reads, 8);
     assert_eq!(fixture.store.cas_attempts.load(Ordering::Relaxed) - attempts, 1);
 }
 
@@ -326,7 +326,7 @@ async fn four_real_property_conflicts_merge_the_observed_authority_without_get()
         .unwrap()
         .unwrap();
     assert_eq!(store.attempts.load(Ordering::Relaxed), 5);
-    assert_eq!(store.reads.load(Ordering::Relaxed), 5);
+    assert_eq!(store.reads.load(Ordering::Relaxed), 4);
     let selected = repository
         .load(fixture.context, &original.identifier)
         .await
@@ -363,7 +363,7 @@ async fn observed_deletion_stops_property_writes_without_helping_or_reloading() 
             .await,
         Err(CatalogError::Conflict)
     ));
-    assert_eq!(store.reads.load(Ordering::Relaxed), 4);
+    assert_eq!(store.reads.load(Ordering::Relaxed), 3);
     assert_eq!(store.attempts.load(Ordering::Relaxed), 1);
 }
 

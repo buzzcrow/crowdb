@@ -30,6 +30,7 @@ impl NamespaceRepository {
             .settle_property_target(request.context, &request.identifier)
             .await?
         else {
+            self.check_context(request.context).await?;
             return Ok(None);
         };
         let key = super::authority_key(authority.catalog, authority.namespace);
@@ -184,8 +185,21 @@ impl NamespaceRepository {
         context: CatalogContext,
         identifier: &NamespaceIdentifier,
     ) -> Result<Option<NamespaceAuthority>, CatalogError> {
-        self.settle_property_target_with_budget(context, identifier, &mut 16)
-            .await
+        self.check_context(context).await?;
+        let selected = self.resolve(context, identifier).await?;
+        let Some(pending) = selected
+            .as_ref()
+            .and_then(|authority| authority.pending_operation)
+        else {
+            return Ok(selected);
+        };
+        let authority = selected.as_ref().ok_or(ValidationError::Record)?;
+        let creator = super::NamespaceCreator {
+            repository: self.clone(),
+            names: self.names.clone(),
+        };
+        Box::pin(creator.help_marker(context, authority.namespace, pending, &mut 16)).await?;
+        self.resolve(context, identifier).await
     }
 
     async fn settle_property_target_with_budget(
