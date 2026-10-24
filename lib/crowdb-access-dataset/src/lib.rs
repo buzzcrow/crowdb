@@ -35,8 +35,8 @@ pub use payload::{
     ChunkPayloadStorage, PayloadDurability, PayloadStorage, PayloadStream, UploadedChunkReader,
 };
 pub use upload::{
-    DatasetUploads, SnapshotUploadCleanup, UploadError, UploadPart, UploadReclaimError, UploadRecord,
-    UploadState, MAX_UPLOAD_PART_BYTES,
+    DatasetUploads, SnapshotUploadCleanup, UploadError, UploadExpiryCursor, UploadExpiryStep, UploadPart,
+    UploadReclaimError, UploadRecord, UploadState, MAX_UPLOAD_PART_BYTES,
 };
 pub use upload::{UploadReadDescriptor, VerifiedUploadPart};
 

@@ -34,5 +34,5 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 crowdb-access-dataset = { path = ".", features = ["test-util"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 arc-swap = "1.9"

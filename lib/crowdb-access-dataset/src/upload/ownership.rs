@@ -7,6 +7,11 @@ use super::{
 };
 use crate::{CasOutcome, OperationId};
 
+pub(super) enum PartCleanupMode {
+    RetainMetadata,
+    RemoveMetadata,
+}
+
 impl DatasetUploads {
     /// Pins a complete upload for one publication operation.
     /// # Errors
@@ -80,7 +85,16 @@ impl DatasetUploads {
     /// # Errors
     /// Claimed data conflicts. Deferred cleanup notifications remain observable.
     pub async fn abort(&self, location: &[u8]) -> Result<UploadRecord, UploadError> {
-        let mut stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
+        let stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
+        let (record, expected) = self.abort_record(location, stored).await?;
+        self.cleanup(location, record, expected).await
+    }
+
+    pub(super) async fn abort_record(
+        &self,
+        location: &[u8],
+        mut stored: crate::StoredValue,
+    ) -> Result<(UploadRecord, Vec<u8>), UploadError> {
         for _ in 0..16 {
             let mut record = decode_session(&stored.bytes)?;
             if !record.owners.is_empty() {
@@ -88,12 +102,13 @@ impl DatasetUploads {
             }
             if record.state != UploadState::Aborted {
                 record.state = UploadState::Aborted;
+                let bytes = encode(&record)?;
                 match self
                     .store
-                    .compare_exchange(location, Some(&stored.bytes), &encode(&record)?)
+                    .compare_exchange(location, Some(&stored.bytes), &bytes)
                     .await?
                 {
-                    CasOutcome::Applied(_) => {}
+                    CasOutcome::Applied(_) => return Ok((record, bytes)),
                     CasOutcome::Conflict(Some(observed)) => {
                         stored = observed;
                         continue;
@@ -101,55 +116,78 @@ impl DatasetUploads {
                     CasOutcome::Conflict(None) => return Err(UploadError::NotFound),
                 }
             }
-            return self.cleanup(location, record).await;
+            return Ok((record, stored.bytes));
         }
         Err(UploadError::Pending)
     }
 
-    async fn cleanup(&self, location: &[u8], mut record: UploadRecord) -> Result<UploadRecord, UploadError> {
+    async fn cleanup(
+        &self,
+        location: &[u8],
+        mut record: UploadRecord,
+        expected: Vec<u8>,
+    ) -> Result<UploadRecord, UploadError> {
         if record.cleanup_complete {
             record.parts = self.accepted_parts(location, &record).await?;
             return Ok(record);
         }
         let entries = self.entries(location, &record).await?;
         let mut complete = true;
+        let mut ranges = usize::MAX;
         for entry in entries {
             complete &= self
-                .cleanup_part(&part_key(location, entry.part.index), entry)
+                .cleanup_part(
+                    &part_key(location, entry.part.index),
+                    entry,
+                    &mut ranges,
+                    PartCleanupMode::RetainMetadata,
+                )
                 .await?;
         }
         if complete {
-            let mut expected = encode(&record)?;
-            for _ in 0..16 {
-                if record.state != UploadState::Aborted {
-                    return Err(UploadError::Conflict);
-                }
-                if record.cleanup_complete {
-                    break;
-                }
-                record.cleanup_complete = true;
-                match self
-                    .store
-                    .compare_exchange(location, Some(&expected), &encode(&record)?)
-                    .await?
-                {
-                    CasOutcome::Applied(_) => break,
-                    CasOutcome::Conflict(Some(observed)) => {
-                        record = decode_session(&observed.bytes)?;
-                        expected = observed.bytes;
-                    }
-                    CasOutcome::Conflict(None) => return Err(UploadError::NotFound),
-                }
-            }
-            if !record.cleanup_complete {
-                return Err(UploadError::Pending);
-            }
+            record = self.finish_cleanup(location, record, expected).await?;
         }
         record.parts = self.accepted_parts(location, &record).await?;
         Ok(record)
     }
 
-    async fn cleanup_part(&self, key: &[u8], mut record: super::PartEntry) -> Result<bool, UploadError> {
+    pub(super) async fn finish_cleanup(
+        &self,
+        location: &[u8],
+        mut record: UploadRecord,
+        mut expected: Vec<u8>,
+    ) -> Result<UploadRecord, UploadError> {
+        for _ in 0..16 {
+            if record.state != UploadState::Aborted || !record.owners.is_empty() {
+                return Err(UploadError::Conflict);
+            }
+            if record.cleanup_complete {
+                return Ok(record);
+            }
+            record.cleanup_complete = true;
+            match self
+                .store
+                .compare_exchange(location, Some(&expected), &encode(&record)?)
+                .await?
+            {
+                CasOutcome::Applied(_) => return Ok(record),
+                CasOutcome::Conflict(Some(observed)) => {
+                    record = decode_session(&observed.bytes)?;
+                    expected = observed.bytes;
+                }
+                CasOutcome::Conflict(None) => return Err(UploadError::NotFound),
+            }
+        }
+        Err(UploadError::Pending)
+    }
+
+    pub(super) async fn cleanup_part(
+        &self,
+        key: &[u8],
+        mut record: super::PartEntry,
+        ranges: &mut usize,
+        mode: PartCleanupMode,
+    ) -> Result<bool, UploadError> {
         let mut expected = encode(&record)?;
         for _ in 0..16 {
             if record.state != PartState::Reclaimed {
@@ -166,10 +204,23 @@ impl DatasetUploads {
                 }
             }
             if record.part.locations.is_empty() {
+                if matches!(mode, PartCleanupMode::RemoveMetadata) {
+                    self.store.delete(key).await?;
+                }
                 return Ok(true);
             }
+            if *ranges < record.part.locations.len() {
+                return Ok(false);
+            }
+            *ranges -= record.part.locations.len();
             if !self.payloads.discard(&record.part.locations).await? {
                 return Ok(false);
+            }
+            if matches!(mode, PartCleanupMode::RemoveMetadata) {
+                // The aborted upload cannot acquire new owners or accept another
+                // part. ChunkDB now owns the accepted range retirement obligation.
+                self.store.delete(key).await?;
+                return Ok(true);
             }
             record.part.locations.clear();
             match self

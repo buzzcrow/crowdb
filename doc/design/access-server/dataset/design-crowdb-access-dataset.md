@@ -233,6 +233,16 @@ digests cannot be concatenated into the whole-upload MD5.
 
 Expiry scans bounded pages of upload authorities directly. Each caller retains
 its scan cursor locally; restart repeats the scan and loses no cleanup obligation.
+Discovery reads at most twenty keys / 1 MiB and seeks past each upload's child
+subtree. A bounded local queue schedules uploads in turn; each cleanup window
+scans at most 32 actual part records / 1 MiB and attempts at most 64 range
+notifications. Discovery and cleanup each have a two-second deadline. Sparse
+uploads do not perform a point GET for every declared but absent part.
+Accepted range retirement permits deletion of that aborted upload's part record;
+the upload cannot accept a new part or owner. Deferred or uncertain notification
+retains the exact range. A full queue can discard a hint only after serving it,
+leaving a discovery slot; removed part records ensure useful progress survives
+hint eviction and restart. There is no persistent scan or queue record.
 Independent upload creation writes only its own authority. No shared registry tail,
 registration generation, registry fence or durable scan cursor participates in
 creation, part upload or owner release. Corrupt/failed entries are reported and
@@ -387,12 +397,14 @@ session CAS that removes its ownership. A delayed claim for that operation then
 conflicts; other owners remain valid. Sessions retain at most 4096 retired owner
 IDs and report capacity explicitly. Ordinary `release` remains reversible.
 
-Upload expiry scans a bounded page of upload authorities with a local continuation
-cursor. Shared registry registration and removal are absent. Restart restores
-sessions, accepted parts, progress and pending cleanup from the durable store;
-restarting the scan cannot lose a cleanup obligation. Scan throughput and per-upload
-cleanup work determine the delay beyond expiry; the grace deadline is not a
-maximum reclamation-latency guarantee.
+Upload expiry uses local continuation/queue hints and existing upload/part resource
+facts. Shared registry registration and removal are absent. Snapshot deletion
+sweeps also yield after a two-second page deadline, keeping durable deletion marks
+and advancing past a stalled item. The listener schedules snapshot pages every
+fifteen seconds and upload catch-up windows fifty milliseconds apart; failed
+upload windows back off five hundred milliseconds while other work remains.
+Idle discovery runs every fifteen seconds. Limits bound work per window rather
+than promise a maximum reclamation latency or measured foreground p99.
 
 ### 10.4 Transport and compatibility
 

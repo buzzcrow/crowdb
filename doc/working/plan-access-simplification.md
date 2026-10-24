@@ -380,12 +380,14 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
 
 ### P13 — GC / expiry / cleanup
 
-- [ ] **P13.1 拆开有界发现与回收**：复核 15 秒/20 key 调度，避免一个最多 10,000-part 的
-  upload 串行清理阻塞 snapshot sweep；分时间/字节/IO 预算公平推进。Files: Access Dataset `start_cleanup`、Dataset `upload/{expiry,ownership,reclaim}.rs`。
 - [ ] **P13.2 审查 cleanup 持久化**：将 claim/phase/cursor/tombstone 分为可重做进度与不可丢的
   义务/代际；即使重扫昂贵也先优化发现/预算；新增持久化信息必须 review，用途和额外前台写均写明。Files: Dataset `authority/access/`、Split/Composition cleanup、Iceberg `gc/`、S3 terminal cleanup。
 - [ ] **P13.3 量化回收滞后**：稀疏过期、大 upload、多 cleaner、频繁重启、损坏记录下测 backlog、
   前台 p99 和孤儿收敛；如需确定完成时限再讨论 D5。Files: 相关 cleanup 测试、负载工具。
+- [ ] **P13.4 Snapshot 回收复用 CAS observation**：`fence_reclaim` 与 `retire_snapshot_record`
+  当前在每次 definite conflict 后重新 GET；移到循环外初读，再使用返回的 head/Snapshot，
+  保留帮助已发布 head 的 commit evidence。前者只推进当前 head fence，不改变 latest/stable；
+  后者只退休固定 Snapshot，不能把显式 expected-base 发布改成 rebase。Files: authority/access/reclaim.rs。
 
 ### P14 — Catalog 与凭据
 
@@ -466,6 +468,20 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P13.1**：删除旧整 upload expiry 入口；新的 `expire_step` 每次发现至多
+  20 key/1 MiB，跳过 upload 子树；每个清理窗口只扫描实际存在的至多 32 part/1 MiB，
+  不逐个 GET 最多 10,000 个声明位置，通知预算至多 64 个范围。发现与清理分别限两秒；
+  timeout/unknown 保留尚未接受的精确范围。通知被接受后删除 Aborted upload 的 part 资源，
+  该 upload 不能再接收 part/owner；没有增加 phase/progress/queue key。队列最多 32 项，
+  满时仅丢弃已服务的本地 hint，始终给新发现留位；已删除 part 不会因 hint 丢失而反复扫描，
+  永久 deferred 的旧任务不会挡住后来的小任务。扫描 hint 丢失从资源事实恢复。
+  Snapshot due page 也有两秒总预算，超时行保留标记并让后续行推进。服务按独立到期时间
+  调度 Snapshot 15 秒、upload backlog 50 ms；失败且仍有工作时 500 ms，空闲发现 15 秒。
+  10,000 声明/33 实际 part、64 个 deferred 后新增小任务、队列容量、32-range part、超时、
+  cursor loss、claimed/损坏行和 Snapshot slow IO 共 8 项通过；Dataset `--all-targets`、
+  HTTP lifecycle observation、两 crate all-target/all-feature clippy、fmt/diff 通过。
+  这是预算和故障验证；未测真实 foreground p99/全量 backlog，P13.3 与 V4 仍未完成。
 
 - **2026-10-24，P14.2**：删除 PreparedUser、prepare_user、准备记录格式/验证和相应状态错误；
   ensure-user 的稳定公开 key 由 user 域分离摘要确定，secret/nonce 仍随机。在原有 credential

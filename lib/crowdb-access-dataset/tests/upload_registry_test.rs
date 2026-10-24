@@ -40,10 +40,10 @@ async fn independent_uploads_need_one_create_write_and_no_shared_registry() {
     let owner = OperationId::random();
     uploads.claim(&keys[0], owner, 3).await.unwrap();
     let restarted = DatasetUploads::new(store, payloads);
-    let mut after = None;
+    let mut cursor = UploadExpiryCursor::default();
     loop {
-        restarted.expire(20, &mut after).await.unwrap();
-        if after.is_none() {
+        restarted.expire_step(20, &mut cursor).await.unwrap();
+        if !cursor.has_more() {
             break;
         }
     }
@@ -53,8 +53,8 @@ async fn independent_uploads_need_one_create_write_and_no_shared_registry() {
     }
     restarted.release(&keys[0], owner).await.unwrap();
     loop {
-        restarted.expire(20, &mut after).await.unwrap();
-        if after.is_none() {
+        restarted.expire_step(20, &mut cursor).await.unwrap();
+        if !cursor.has_more() {
             break;
         }
     }
@@ -80,11 +80,17 @@ async fn legacy_registry_fields_are_unnecessary_for_expiry_after_restart() {
         .await
         .unwrap();
     let restarted = DatasetUploads::new(store.clone(), payloads);
-    restarted.expire(20, &mut None).await.unwrap();
+    restarted
+        .expire_step(20, &mut crowdb_access_dataset::UploadExpiryCursor::default())
+        .await
+        .unwrap();
     assert!(restarted.get(&location).await.unwrap().cleanup_complete);
     let writes = store.writes.load(Ordering::Relaxed);
     restarted.abort(&location).await.unwrap();
-    restarted.expire(20, &mut None).await.unwrap();
+    restarted
+        .expire_step(20, &mut crowdb_access_dataset::UploadExpiryCursor::default())
+        .await
+        .unwrap();
     assert_eq!(store.writes.load(Ordering::Relaxed), writes);
 }
 

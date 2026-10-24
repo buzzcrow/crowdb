@@ -109,7 +109,10 @@ async fn independent_owners_and_deferred_cleanup_survive_restart() {
     assert!(!aborted.cleanup_complete);
     let restarted = DatasetUploads::new(store, payloads.clone());
     payloads.defer_reclaim.store(false, Ordering::Release);
-    restarted.expire(20, &mut None).await.unwrap();
+    restarted
+        .expire_step(20, &mut crowdb_access_dataset::UploadExpiryCursor::default())
+        .await
+        .unwrap();
     assert!(restarted.get(&key).await.unwrap().cleanup_complete);
 }
 #[tokio::test]
@@ -129,7 +132,10 @@ async fn invalid_length_digest_and_expiry_do_not_publish() {
         uploads.complete(&key, 2).await,
         Err(UploadError::Integrity)
     ));
-    uploads.expire(11, &mut None).await.unwrap();
+    uploads
+        .expire_step(11, &mut crowdb_access_dataset::UploadExpiryCursor::default())
+        .await
+        .unwrap();
     assert_eq!(uploads.get(&key).await.unwrap().state, UploadState::Aborted);
 }
 

@@ -21,6 +21,20 @@ impl DatasetAuthority {
         after: &mut Option<Vec<u8>>,
         cancel: &ReadCancellation,
     ) -> Result<(), SnapshotReclaimError> {
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            self.reclaim_due_window(uploads, after, cancel),
+        )
+        .await
+        .map_err(|_| SnapshotReclaimError::Limit)?
+    }
+
+    async fn reclaim_due_window(
+        &self,
+        uploads: &DatasetUploads,
+        after: &mut Option<Vec<u8>>,
+        cancel: &ReadCancellation,
+    ) -> Result<(), SnapshotReclaimError> {
         let page = self
             .store
             .scan_page(

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crowdb_access_dataset::{
     AuthorityError, ChunkKvDatasetStore, ChunkPayloadStorage, DatasetAuthority, DatasetReadService,
-    DatasetSnapshotRequest, DatasetUploads, UploadedChunkReader,
+    DatasetSnapshotRequest, DatasetUploads, UploadExpiryCursor, UploadedChunkReader,
 };
 use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig as ChunkKvConfig, Group0ChunkKvRangeCatalogSource,
@@ -229,21 +229,30 @@ fn start_cleanup(
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(15));
         let mut after = None;
-        let mut upload_after = None;
+        let mut upload_cursor = UploadExpiryCursor::default();
+        let mut next_upload = tokio::time::Instant::now();
         loop {
-            tick.tick().await;
-            if let Err(error) = authority
-                .reclaim_due_page(
-                    &uploads,
-                    &mut after,
-                    &crowdb_access_dataset::ReadCancellation::new(),
-                )
-                .await
-            {
-                tracing::error!(%error, "Dataset snapshot cleanup failed; durable deletion marks retained for retry");
-            }
-            if let Err(error) = uploads.expire(unix_seconds(), &mut upload_after).await {
-                tracing::error!(%error, "Dataset upload cleanup failed; retaining cleanup records for retry");
+            tokio::select! {
+                _ = tick.tick() => {
+                    if let Err(error) = authority.reclaim_due_page(&uploads, &mut after,
+                        &crowdb_access_dataset::ReadCancellation::new()).await {
+                        if matches!(error, crowdb_access_dataset::SnapshotReclaimError::Limit) {
+                            tracing::debug!("Dataset snapshot cleanup yielded at its work deadline");
+                        } else {
+                            tracing::error!(%error, "Dataset snapshot cleanup failed; durable deletion marks retained for retry");
+                        }
+                    }
+                }
+                () = tokio::time::sleep_until(next_upload) => {
+                    let result = uploads.expire_step(unix_seconds(), &mut upload_cursor).await;
+                    let delay = if upload_cursor.has_more() {
+                        if result.is_ok() { Duration::from_millis(50) } else { Duration::from_millis(500) }
+                    } else { Duration::from_secs(15) };
+                    next_upload = tokio::time::Instant::now() + delay;
+                    if let Err(error) = result {
+                        tracing::error!(%error, "Dataset upload cleanup failed; retaining cleanup records for retry");
+                    }
+                }
             }
         }
     })

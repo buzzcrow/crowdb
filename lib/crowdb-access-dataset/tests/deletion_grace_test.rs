@@ -7,11 +7,58 @@ mod access_store;
 mod deletion;
 #[path = "common/publication.rs"]
 mod publication;
+#[path = "common/snapshot_cleanup_stall.rs"]
+mod stall;
 #[path = "common/upload.rs"]
 #[allow(dead_code)]
 mod upload;
 use crowdb_access_dataset::*;
 use std::sync::{atomic::Ordering, Arc};
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_snapshot_yields_the_sweep_and_keeps_its_durable_cleanup_obligation() {
+    let fixture = deletion::TestDeletionFixture::new().await;
+    fixture
+        .authority
+        .begin_reclaim(&fixture.identity, fixture.snapshot)
+        .await
+        .unwrap();
+    fixture.clock.store(1300, Ordering::Release);
+    let store = Arc::new(stall::TestSnapshotCleanupStall {
+        inner: fixture.store.clone(),
+        stall: std::sync::atomic::AtomicBool::new(true),
+    });
+    let authority = DatasetAuthority::new(store.clone()).with_reclaim_clock_for_tests(fixture.clock.clone());
+    let uploads = DatasetUploads::new(store, Arc::new(upload::TestPayload::default()));
+    let mut after = None;
+    assert!(matches!(
+        authority
+            .reclaim_due_page(&uploads, &mut after, &ReadCancellation::new())
+            .await,
+        Err(SnapshotReclaimError::Limit)
+    ));
+    assert!(
+        after.is_some(),
+        "a timed-out row must yield to the next deletion mark"
+    );
+    // Losing the local cursor does not lose the persistent retirement fact.
+    after = None;
+    for _ in 0..32 {
+        authority
+            .reclaim_due_page(&uploads, &mut after, &ReadCancellation::new())
+            .await
+            .unwrap();
+        if authority
+            .inspect_snapshot_lifecycle(&fixture.identity, fixture.snapshot, &ReadCancellation::new())
+            .await
+            .unwrap()
+            .completed
+        {
+            return;
+        }
+    }
+    panic!("snapshot cleanup did not recover after the stalled request was canceled");
+}
 
 #[tokio::test]
 async fn deletion_rejects_new_reads_and_keeps_the_grace_deadline_across_restarts() {

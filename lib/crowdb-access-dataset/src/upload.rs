@@ -4,6 +4,7 @@
 //! Durable Dataset uploads with independent immutable part records.
 
 mod expiry;
+pub use expiry::{UploadExpiryCursor, UploadExpiryStep};
 mod index;
 mod ownership;
 mod parts;

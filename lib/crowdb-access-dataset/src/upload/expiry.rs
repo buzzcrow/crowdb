@@ -3,52 +3,13 @@
 
 use super::{decode_session, DatasetUploads, UploadError, UploadState};
 use crate::{MetadataScan, MetadataScanBudget, ReadCancellation};
-use std::time::Duration;
 
 const PREFIX: &[u8] = b"DS\0U\0";
 
-impl DatasetUploads {
-    /// Scans one bounded page of upload records. The caller-owned cursor is an
-    /// optimization only; restarting the scan cannot lose a cleanup obligation.
-    /// # Errors
-    /// Reports corrupt records or cleanup/storage failures. An item failure
-    /// advances the cursor so unrelated uploads can progress before it is retried.
-    pub async fn expire(&self, now: u64, after: &mut Option<Vec<u8>>) -> Result<(), UploadError> {
-        let page = self
-            .store
-            .scan_page(
-                &MetadataScan {
-                    prefix: PREFIX.to_vec(),
-                    after: after.clone(),
-                    budget: MetadataScanBudget {
-                        items: 20,
-                        bytes: 1024 * 1024,
-                        timeout: Duration::from_secs(2),
-                    },
-                },
-                &ReadCancellation::new(),
-            )
-            .await?;
-        for (key, stored) in &page.entries {
-            *after = Some(key.clone());
-            if !is_session_key(key)? {
-                continue;
-            }
-            let session = decode_session(&stored.bytes)?;
-            if session.cleanup_complete || !session.owners.is_empty() {
-                continue;
-            }
-            if session.state == UploadState::Aborted || now >= session.expires_at {
-                match self.abort(key).await {
-                    Ok(_) | Err(UploadError::Conflict) => {}
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-        *after = page.after;
-        Ok(())
-    }
-}
+mod cursor;
+mod discovery;
+mod window;
+pub use cursor::{UploadExpiryCursor, UploadExpiryStep};
 
 // Qualified identity = length-prefixed namespace segments, 0xff, name;
 // the upload ID follows it. Part and index records append six bytes.
