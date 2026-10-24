@@ -8,7 +8,7 @@ use super::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use crowdb_access_dataset::{
-    inspection::{InspectionError, PreparationLimits, PreparationState},
+    inspection::{InspectionError, InspectionPreparationLimits, PreparationState},
     DatasetIdentity, NamespacePath, ReadCancellation,
 };
 use hyper::{body::Incoming, Method, Request};
@@ -124,14 +124,19 @@ impl DatasetHttpService {
         &self,
         identity: &DatasetIdentity,
         snapshot: crowdb_access_dataset::SnapshotId,
-        advance: bool,
+        prepare: bool,
     ) -> ApiResult {
         let authority = self.reads.authority();
         let cancel = ReadCancellation::new();
-        let progress = if advance {
+        let progress = if prepare {
             authority.require_committed_snapshot(identity, snapshot).await?;
             authority
-                .prepare_inspection_page(identity, snapshot, PreparationLimits::default(), &cancel)
+                .prepare_inspection(
+                    identity,
+                    snapshot,
+                    InspectionPreparationLimits::default(),
+                    &cancel,
+                )
                 .await?
         } else {
             authority

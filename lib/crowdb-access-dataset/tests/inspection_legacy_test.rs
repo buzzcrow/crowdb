@@ -1,200 +1,93 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-
 #[path = "common/dataset_store.rs"]
 #[allow(dead_code)]
 mod dataset_store;
+#[path = "common/legacy_inspection.rs"]
+mod legacy;
 use crowdb_access_dataset::{
-    inspection::{InspectionError, PreparationLimits, PreparationState},
+    inspection::{InspectionError, InspectionPreparationLimits, PreparationState},
     *,
 };
-use std::{sync::Arc, time::Duration};
+use std::sync::atomic::Ordering;
 
-fn snapshot_key(identity: &DatasetIdentity, snapshot: SnapshotId) -> Vec<u8> {
-    let mut key = b"DS\0S\0".to_vec();
-    key.extend_from_slice(&identity.key().unwrap());
-    key.extend_from_slice(snapshot.as_bytes());
-    key
-}
-#[derive(serde::Serialize)]
-struct TestVersioned<T> {
-    version: u16,
-    payload: T,
-}
-struct TestStore(dataset_store::TestDatasetStore);
-#[async_trait::async_trait]
-impl DatasetStore for TestStore {
-    async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
-        assert!(
-            !key.starts_with(b"DS\0S\0"),
-            "legacy publication must use bounded read"
-        );
-        self.0.get(key).await
-    }
-    async fn get_bounded(
-        &self,
-        key: &[u8],
-        budget: MetadataScanBudget,
-        cancel: &ReadCancellation,
-    ) -> Result<Option<StoredValue>, StoreError> {
-        self.0.get_bounded(key, budget, cancel).await
-    }
-    async fn compare_exchange(
-        &self,
-        key: &[u8],
-        expected: Option<&[u8]>,
-        value: &[u8],
-    ) -> Result<CasOutcome, StoreError> {
-        self.0.compare_exchange(key, expected, value).await
-    }
-}
-async fn fixture(opaque: bool) -> (Arc<TestStore>, DatasetIdentity, SnapshotId, Vec<u8>) {
-    let store = Arc::new(TestStore(dataset_store::TestDatasetStore::default()));
-    let identity = DatasetIdentity::new(NamespacePath::root(), "legacy").unwrap();
-    DatasetAuthority::new(store.clone())
-        .create_dataset(identity.clone())
-        .await
-        .unwrap();
-    let snapshot = SnapshotId::random();
-    let manifest = ManifestRecord {
-        version: 1,
-        snapshot,
-        schema: SchemaRecord {
-            version: 1,
-            fields: vec![FieldDefinition {
-                name: "value".into(),
-                required: false,
-            }],
-        },
-        samples: (0..3)
-            .map(|i| SampleRecord {
-                sample_id: vec![i],
-                fields: vec![FieldRecord {
-                    name: "value".into(),
-                    value: FieldLocator::Tombstone,
-                }],
-            })
-            .collect(),
-    };
-    let publication = SnapshotPublication {
-        snapshot,
-        parent: None,
-        operation: OperationId::random(),
-        manifest: if opaque {
-            b"opaque".to_vec()
-        } else {
-            bincode::serialize(&manifest).unwrap()
-        },
-        state: PublicationState::Published,
-    };
-    let bytes = bincode::serialize(&TestVersioned {
-        version: 1,
-        payload: SnapshotRecord { publication },
-    })
-    .unwrap();
-    store
-        .compare_exchange(&snapshot_key(&identity, snapshot), None, &bytes)
-        .await
-        .unwrap();
-    (store, identity, snapshot, bytes)
-}
 #[tokio::test]
-async fn legacy_preparation_is_bounded_resumable_and_preserves_old_bytes() {
-    let (store, identity, snapshot, old_bytes) = fixture(false).await;
-    let cancel = ReadCancellation::new();
-    let limits = PreparationLimits {
-        rows: 2,
-        ..PreparationLimits::default()
-    };
-    let mut previous = 0;
-    let mut completed = None;
-    for _ in 0..8 {
-        let authority = DatasetAuthority::new(store.clone());
-        let progress = authority
-            .prepare_inspection_page(&identity, snapshot, limits, &cancel)
-            .await
-            .unwrap();
-        assert!(progress.rows_written <= previous + 2);
-        assert!(progress.rows_written >= previous);
-        previous = progress.rows_written;
-        assert_eq!(
-            authority
-                .inspection_preparation_status(&identity, snapshot, &cancel)
-                .await
-                .unwrap(),
-            progress
-        );
-        if progress.state == PreparationState::Ready {
-            completed = Some(progress);
-            break;
-        }
-    }
-    let completed = completed.expect("bounded steps must finish");
-    assert_eq!(completed.rows_written, 10);
-    let restarted = DatasetAuthority::new(store.clone());
-    assert_eq!(
-        restarted
-            .prepare_inspection_page(&identity, snapshot, limits, &cancel)
-            .await
-            .unwrap(),
-        completed
-    );
-    assert_eq!(
-        store
-            .0
-            .get(&snapshot_key(&identity, snapshot))
-            .await
-            .unwrap()
-            .unwrap()
-            .bytes,
-        old_bytes
-    );
-}
-#[tokio::test]
-async fn legacy_limits_cancellation_and_opaque_data_are_explicit() {
-    let (store, identity, snapshot, _) = fixture(false).await;
-    let authority = DatasetAuthority::new(store.clone());
-    let cancel = ReadCancellation::new();
-    assert!(matches!(
-        authority
-            .prepare_inspection_page(
-                &identity,
-                snapshot,
-                PreparationLimits {
-                    legacy_bytes: 32,
-                    ..PreparationLimits::default()
-                },
-                &cancel
-            )
-            .await,
-        Err(InspectionError::Limit)
-    ));
-    cancel.cancel();
-    assert!(matches!(
-        authority
-            .prepare_inspection_page(&identity, snapshot, PreparationLimits::default(), &cancel)
-            .await,
-        Err(InspectionError::Cancelled)
-    ));
-    assert!(matches!(
-        authority
-            .inspection_preparation_status(&identity, snapshot, &ReadCancellation::new())
-            .await,
-        Err(InspectionError::NotPrepared)
-    ));
-    let (store, identity, snapshot, _) = fixture(true).await;
-    let authority = DatasetAuthority::new(store);
+async fn legacy_preparation_rebuilds_final_rows_without_progress_and_reuses_ready_root() {
+    let (store, authority, identity, snapshot, bytes) = legacy::fixture(false).await;
+    let before = store.mutations.load(Ordering::Relaxed);
+    let reads = store.reads.load(Ordering::Relaxed);
     let result = authority
-        .prepare_inspection_page(
+        .prepare_inspection(
             &identity,
             snapshot,
-            PreparationLimits::default(),
+            InspectionPreparationLimits::default(),
             &ReadCancellation::new(),
         )
         .await
         .unwrap();
-    assert!(matches!(result.state, PreparationState::Unsupported { .. }));
-    assert_eq!(result.rows_written, 0);
+    assert_eq!(result.state, PreparationState::Ready);
+    assert_eq!((result.revision, result.rows_written), (0, 0));
+    assert_eq!(store.reads.load(Ordering::Relaxed) - reads, 3);
+    assert_eq!(store.source_reads.load(Ordering::Relaxed), 1);
+    assert_eq!(store.progress_reads.load(Ordering::Relaxed), 0);
+    assert_eq!(store.mutations.load(Ordering::Relaxed) - before, 13);
+    let reads = store.reads.load(Ordering::Relaxed);
+    assert_eq!(
+        DatasetAuthority::new(store.clone())
+            .prepare_inspection(
+                &identity,
+                snapshot,
+                InspectionPreparationLimits::default(),
+                &ReadCancellation::new()
+            )
+            .await
+            .unwrap(),
+        result
+    );
+    assert_eq!(store.mutations.load(Ordering::Relaxed) - before, 13);
+    assert_eq!(store.reads.load(Ordering::Relaxed) - reads, 2);
+    assert_eq!(store.source_reads.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        store
+            .inner
+            .get(&legacy::snapshot_key(&identity, snapshot))
+            .await
+            .unwrap()
+            .unwrap()
+            .bytes,
+        bytes
+    );
+    assert!(store
+        .inner
+        .get(&legacy::index_key(&identity, snapshot, b'P'))
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn legacy_progress_is_observed_but_never_resumed_or_allowed_to_override_a_ready_root() {
+    let (store, authority, identity, snapshot, _) = legacy::fixture(false).await;
+    let key = legacy::index_key(&identity, snapshot, b'P');
+    let bytes = legacy::old_progress(snapshot, false);
+    store.inner.compare_exchange(&key, None, &bytes).await.unwrap();
+    let old = authority
+        .inspection_preparation_status(&identity, snapshot, &ReadCancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(old.state, PreparationState::Preparing);
+    assert_eq!(old.revision, 7);
+    let reads = store.progress_reads.load(Ordering::Relaxed);
+    let result = authority
+        .prepare_inspection(
+            &identity,
+            snapshot,
+            InspectionPreparationLimits::default(),
+            &ReadCancellation::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.progress_reads.load(Ordering::Relaxed), reads);
     assert_eq!(
         authority
             .inspection_preparation_status(&identity, snapshot, &ReadCancellation::new())
@@ -202,109 +95,133 @@ async fn legacy_limits_cancellation_and_opaque_data_are_explicit() {
             .unwrap(),
         result
     );
+    assert_eq!(store.progress_reads.load(Ordering::Relaxed), reads);
+    assert_eq!(store.inner.get(&key).await.unwrap().unwrap().bytes, bytes);
 }
+
 #[tokio::test]
-async fn legacy_work_never_persists_reader_activity_on_limit_failure() {
-    let (store, identity, snapshot, _) = fixture(false).await;
-    let authority = DatasetAuthority::new(store.clone());
-    let _ = authority
-        .prepare_inspection_page(
+async fn corrupt_legacy_progress_does_not_control_a_complete_rebuild() {
+    let (store, authority, identity, snapshot, _) = legacy::fixture(false).await;
+    let key = legacy::index_key(&identity, snapshot, b'P');
+    let mut old: serde_json::Value = serde_json::from_slice(&legacy::old_progress(snapshot, false)).unwrap();
+    old["version"] = 99.into();
+    let bytes = serde_json::to_vec(&old).unwrap();
+    store.inner.compare_exchange(&key, None, &bytes).await.unwrap();
+    assert!(matches!(
+        authority
+            .inspection_preparation_status(&identity, snapshot, &ReadCancellation::new())
+            .await,
+        Err(InspectionError::Corrupt)
+    ));
+    let result = authority
+        .prepare_inspection(
             &identity,
             snapshot,
-            PreparationLimits {
-                bytes: 1,
-                ..PreparationLimits::default()
-            },
-            &ReadCancellation::new(),
-        )
-        .await;
-    // Preparing inspection work must not register snapshot reader activity.
-    let mut key = b"DS\0L\0".to_vec();
-    key.extend_from_slice(&identity.key().unwrap());
-    key.extend_from_slice(snapshot.as_bytes());
-    let stored = store
-        .get_bounded(
-            &key,
-            MetadataScanBudget {
-                items: 1,
-                bytes: 4096,
-                timeout: Duration::from_secs(1),
-            },
+            InspectionPreparationLimits::default(),
             &ReadCancellation::new(),
         )
         .await
         .unwrap();
-    assert!(stored.is_none());
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct TestAccess {
-    _reclaiming: bool,
-    _legacy: u64,
-    _deadline: u64,
-    leases: Vec<(OperationId, u64)>,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-struct TestEnvelope {
-    _version: u16,
-    payload: TestAccess,
+    assert_eq!(result.state, PreparationState::Ready);
+    assert_eq!(store.inner.get(&key).await.unwrap().unwrap().bytes, bytes);
 }
 
 #[tokio::test]
-async fn legacy_preparation_rejects_reclaim_fence_and_corrupt_resume_position() {
-    let (store, identity, snapshot, _) = fixture(false).await;
-    let authority = DatasetAuthority::new(store.clone());
+async fn legacy_limits_and_cancellation_do_not_write_rows_or_reader_activity() {
+    let (store, authority, identity, snapshot, _) = legacy::fixture(false).await;
+    let writes = store.mutations.load(Ordering::Relaxed);
+    assert!(matches!(
+        authority
+            .prepare_inspection(
+                &identity,
+                snapshot,
+                InspectionPreparationLimits { source_bytes: 32 },
+                &ReadCancellation::new()
+            )
+            .await,
+        Err(InspectionError::Limit)
+    ));
     let cancel = ReadCancellation::new();
-    authority
-        .prepare_inspection_page(
-            &identity,
-            snapshot,
-            PreparationLimits {
-                rows: 1,
-                ..PreparationLimits::default()
-            },
-            &cancel,
+    cancel.cancel();
+    assert!(matches!(
+        authority
+            .prepare_inspection(
+                &identity,
+                snapshot,
+                InspectionPreparationLimits::default(),
+                &cancel
+            )
+            .await,
+        Err(InspectionError::Cancelled)
+    ));
+    assert_eq!(store.mutations.load(Ordering::Relaxed), writes);
+    assert!(store
+        .inner
+        .get(
+            &[
+                b"DS\0L\0".as_slice(),
+                &identity.key().unwrap(),
+                snapshot.as_bytes()
+            ]
+            .concat()
         )
         .await
-        .unwrap();
-    let mut key = b"DS\0I\0".to_vec();
-    key.extend_from_slice(&identity.key().unwrap());
-    key.extend_from_slice(snapshot.as_bytes());
-    key.push(b'P');
-    let old = store.get(&key).await.unwrap().unwrap();
-    let mut progress: serde_json::Value = serde_json::from_slice(&old.bytes).unwrap();
-    progress["position"]["sample"] = serde_json::json!(999);
+        .unwrap()
+        .is_none());
+    assert!(matches!(
+        authority
+            .inspection_preparation_status(&identity, snapshot, &ReadCancellation::new())
+            .await,
+        Err(InspectionError::NotPrepared)
+    ));
+}
+
+#[tokio::test]
+async fn unsupported_legacy_source_is_an_error_without_new_process_state() {
+    let (store, authority, identity, snapshot, _) = legacy::fixture(true).await;
+    let writes = store.mutations.load(Ordering::Relaxed);
+    assert!(matches!(
+        authority
+            .prepare_inspection(
+                &identity,
+                snapshot,
+                InspectionPreparationLimits::default(),
+                &ReadCancellation::new()
+            )
+            .await,
+        Err(InspectionError::Unsupported(_))
+    ));
+    assert_eq!(store.mutations.load(Ordering::Relaxed), writes);
+    assert!(store
+        .inner
+        .get(&legacy::index_key(&identity, snapshot, b'P'))
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .inner
+        .get(&legacy::index_key(&identity, snapshot, b'H'))
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn legacy_ready_progress_without_final_root_remains_corrupt() {
+    let (store, authority, identity, snapshot, _) = legacy::fixture(false).await;
     store
-        .compare_exchange(&key, Some(&old.bytes), &serde_json::to_vec(&progress).unwrap())
+        .inner
+        .compare_exchange(
+            &legacy::index_key(&identity, snapshot, b'P'),
+            None,
+            &legacy::old_progress(snapshot, true),
+        )
         .await
         .unwrap();
     assert!(matches!(
         authority
-            .prepare_inspection_page(&identity, snapshot, PreparationLimits::default(), &cancel)
+            .inspection_preparation_status(&identity, snapshot, &ReadCancellation::new())
             .await,
-        Err(InspectionError::Authority(AuthorityError::Corrupt))
-    ));
-    let (store, identity, snapshot, _) = fixture(false).await;
-    let mut key = b"DS\0L\0".to_vec();
-    key.extend_from_slice(&identity.key().unwrap());
-    key.extend_from_slice(snapshot.as_bytes());
-    let fence = TestEnvelope {
-        _version: 2,
-        payload: TestAccess {
-            _reclaiming: true,
-            _legacy: 0,
-            _deadline: 0,
-            leases: vec![],
-        },
-    };
-    store
-        .compare_exchange(&key, None, &bincode::serialize(&fence).unwrap())
-        .await
-        .unwrap();
-    assert!(matches!(
-        DatasetAuthority::new(store)
-            .prepare_inspection_page(&identity, snapshot, PreparationLimits::default(), &cancel)
-            .await,
-        Err(InspectionError::Authority(AuthorityError::SnapshotProtected))
+        Err(InspectionError::Corrupt)
     ));
 }

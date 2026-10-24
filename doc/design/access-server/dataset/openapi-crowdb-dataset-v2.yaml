@@ -340,14 +340,14 @@ paths:
           $ref: '#/components/responses/InspectionError'
     post:
       operationId: prepareSnapshotInspection
-      summary: Advance one bounded legacy metadata preparation window
-      description: Explicit mutation; retry resumes durable progress. Does not publish data or acknowledge reads.
+      summary: Rebuild complete legacy inspection metadata
+      description: Explicit mutation with a thirty-second deadline, a 9 MiB source-record limit and an 8 MiB embedded-Manifest limit. Writes complete index rows and installs the summary last without durable preparation progress. Retry rebuilds from the source or reuses an existing summary without writes. Errors propagate without confirmation reads. Does not change publication heads or acknowledge reads.
       parameters:
         - {$ref: '#/components/parameters/dataset'}
         - {$ref: '#/components/parameters/snapshot'}
       responses:
         '200':
-          description: Durable preparation progress
+          description: Complete metadata readiness; revision and rows_written are zero compatibility fields.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/InspectionPreparation'}
@@ -1122,9 +1122,9 @@ components:
       required: [snapshot, revision, rows_written, state, reason]
       properties:
         snapshot: {type: string}
-        revision: {type: string, pattern: '^[0-9]+$'}
-        rows_written: {type: string, pattern: '^[0-9]+$'}
-        state: {enum: [preparing, ready, unsupported]}
+        revision: {type: string, pattern: '^[0-9]+$', description: Zero for complete rebuilds; historical GET progress can retain a nonzero value.}
+        rows_written: {type: string, pattern: '^[0-9]+$', description: Zero for complete rebuilds; historical GET progress can retain a nonzero value.}
+        state: {enum: [preparing, ready, unsupported], description: Preparing is observable only for historical progress through GET. New POST results describe a complete index.}
         reason: {type: [string, 'null']}
     DatasetPage:
       type: object

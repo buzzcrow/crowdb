@@ -13,7 +13,9 @@ mod status;
 
 pub use record::{FieldMetadata, FieldStorageKind, InspectionState, SnapshotSummary};
 
-pub use preparation::{InspectionError, InspectionPreparation, PreparationLimits, PreparationState};
+pub use preparation::{
+    InspectionError, InspectionPreparation, InspectionPreparationLimits, PreparationState,
+};
 
 pub(crate) mod work;
 
@@ -40,4 +42,4 @@ mod split_rules;
 mod reclaim;
 
 mod retirement;
-pub(crate) use retirement::RETIRED_RECORD;
+pub(crate) use retirement::{CandidateRetirementCursor, RETIRED_RECORD};

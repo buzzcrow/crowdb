@@ -260,10 +260,24 @@ pull, so a one-slot reader can make progress. Short, oversized and failed termin
 reads remain errors. Whole-part digest verification still runs on the returned
 bytes before acceptance.
 
-Old snapshots without projections require explicit resumable inspection preparation.
-Unsupported or oversized legacy state is reported, never represented as an empty
-Snapshot. Field preview is explicit and capped at 64 KiB after read-only admission; it
-does not create a read plan or acknowledge application consumption.
+Old snapshots without projections require an explicit complete inspection rebuild.
+One request bounds the source record at 9 MiB, its embedded Manifest at 8 MiB and
+the entire rebuild at thirty seconds. Final rows use at most sixteen pending
+writes and 2 MiB of encoded keys and values in flight. The builder writes complete
+rows, inventory and parent-child discovery before installing the immutable summary
+root. Partial rows are invisible without that root. A failed request returns its
+error and a retry recomputes from the source; it saves no preparation cursor or
+request receipt. An existing summary returns without writes. Cleanup and the
+finalizer conditionally replace the same root, so a retired root rejects a delayed
+finalizer.
+
+Status can decode historical preparation progress when no summary exists, but a
+complete rebuild never resumes or rewrites that progress. The summary takes
+precedence over historical progress, including corrupt progress. New successful
+responses retain zero revision and row-count fields for wire compatibility.
+Unsupported or oversized sources return errors instead of empty Snapshots. Field
+preview is explicit and capped at 64 KiB after read-only admission; it does not
+create a read plan or acknowledge application consumption.
 
 V2 read planning pins Snapshot and optional Split revision once, intersects Selection
 with Split membership, then orders/shuffles and partitions workers before fetching

@@ -2,19 +2,19 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    index, key,
-    preparation::{budget, decode_preparation, summary_progress, PreparationRecord},
-    rows::{next_row, IndexPosition},
-    InspectionError, InspectionPreparation, InspectionState, PreparationLimits, PreparationState,
+    index,
+    preparation::{budget, summary_progress},
+    InspectionError, InspectionPreparation, InspectionPreparationLimits, InspectionState,
 };
 use crate::{
-    AuthorityError, CasOutcome, DatasetAuthority, DatasetIdentity, ManifestRecord, PublicationState,
-    ReadCancellation, SnapshotId, SnapshotPublication, SnapshotRecord,
+    AuthorityError, DatasetAuthority, DatasetIdentity, ManifestRecord, PublicationState, ReadCancellation,
+    SnapshotId, SnapshotRecord,
 };
 use bincode::Options;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::time::Duration;
+
+const MAX_MANIFEST_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Deserialize)]
 struct LegacyRecord<T> {
@@ -22,233 +22,94 @@ struct LegacyRecord<T> {
     payload: T,
 }
 
-struct LegacyInput {
-    publication: SnapshotPublication,
-    source_sha256: [u8; 32],
-}
-
 impl DatasetAuthority {
-    /// Builds a bounded, durable window of inspection metadata for one old Snapshot.
+    /// Rebuilds a complete immutable projection from its original legacy Manifest.
+    /// Failures leave no progress record; a retry repeats final row writes or reuses the ready root.
     /// # Errors
-    /// Rejects unavailable snapshots, corrupt records, limits and cancellation.
-    pub async fn prepare_inspection_page(
+    /// Rejects unavailable sources, unsupported formats, corruption, cancellation and work limits.
+    pub async fn prepare_inspection(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
-        limits: PreparationLimits,
+        limits: InspectionPreparationLimits,
         cancel: &ReadCancellation,
     ) -> Result<InspectionPreparation, InspectionError> {
         limits.validate()?;
         if cancel.is_cancelled() {
             return Err(InspectionError::Cancelled);
         }
-        // Old published records gain a small visibility marker only with head/ancestry proof.
-        match tokio::time::timeout(
-            Duration::from_secs(2),
-            self.require_committed_snapshot(identity, snapshot),
-        )
-        .await
-        .map_err(|_| InspectionError::Limit)?
-        {
-            Ok(()) | Err(AuthorityError::SnapshotNotFound) => {}
-            Err(error) => return Err(error.into()),
+        let cancelled = async {
+            while !cancel.is_cancelled() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::select! {
+            result = tokio::time::timeout(Duration::from_secs(30), self.rebuild_inspection(identity, snapshot, limits, cancel)) => result.map_err(|_| InspectionError::Limit)?,
+            () = cancelled => Err(InspectionError::Cancelled),
         }
-        match self
-            .inspection_preparation_status(identity, snapshot, cancel)
-            .await
-        {
-            Ok(progress) if progress.state != PreparationState::Preparing => return Ok(progress),
-            Ok(_) | Err(InspectionError::NotPrepared) => {}
-            Err(error) => return Err(error),
-        }
-        let source = self
-            .load_legacy_inspection(identity, snapshot, limits, cancel)
-            .await?;
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            self.check_snapshot_readable(identity, snapshot),
-        )
-        .await
-        .map_err(|_| InspectionError::Limit)??;
-        let result = tokio::time::timeout(
-            Duration::from_secs(2),
-            self.prepare_inspection_inner(identity, snapshot, limits, cancel, source),
-        )
-        .await;
-        let progress = result.map_err(|_| InspectionError::Limit)??;
-        Ok(progress)
     }
 
-    async fn prepare_inspection_inner(
+    async fn rebuild_inspection(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
-        limits: PreparationLimits,
+        limits: InspectionPreparationLimits,
         cancel: &ReadCancellation,
-        source: LegacyInput,
     ) -> Result<InspectionPreparation, InspectionError> {
-        let LegacyInput {
-            publication,
-            source_sha256,
-        } = source;
-        let progress_key = key::scope(identity, snapshot, b'P').map_err(AuthorityError::from)?;
-        let old = self
-            .store
-            .get_bounded(&progress_key, budget(16 * 1024), cancel)
-            .await?;
-        let mut record = if let Some(old) = &old {
-            let record = decode_preparation(&old.bytes, snapshot)?;
-            if record.source_sha256 != source_sha256 {
-                return Err(InspectionError::Corrupt);
-            }
-            record
-        } else {
-            PreparationRecord {
-                version: 1,
-                source_sha256,
-                position: IndexPosition::default(),
-                progress: InspectionPreparation {
-                    snapshot,
-                    revision: 0,
-                    rows_written: 0,
-                    state: PreparationState::Preparing,
-                },
-            }
-        };
-        self.advance_legacy_inspection(identity, &publication, &mut record, limits, cancel)
-            .await?;
-        if cancel.is_cancelled() {
-            return Err(InspectionError::Cancelled);
+        self.check_snapshot_readable(identity, snapshot).await?;
+        if let Some(summary) = self.read_inspection_summary(identity, snapshot, cancel).await? {
+            return Ok(summary_progress(&summary));
         }
-        record.progress.revision = record
-            .progress
-            .revision
-            .checked_add(1)
-            .ok_or(InspectionError::Corrupt)?;
-        let bytes = serde_json::to_vec(&record).map_err(|_| InspectionError::Corrupt)?;
-        match self
-            .store
-            .compare_exchange(
-                &progress_key,
-                old.as_ref().map(|value| value.bytes.as_slice()),
-                &bytes,
-            )
-            .await?
-        {
-            CasOutcome::Applied(_) => Ok(record.progress),
-            CasOutcome::Conflict(Some(value)) => {
-                let winner = decode_preparation(&value.bytes, snapshot)?;
-                if winner.source_sha256 != source_sha256 {
-                    return Err(InspectionError::Corrupt);
-                }
-                Ok(winner.progress)
-            }
-            CasOutcome::Conflict(None) => Err(InspectionError::Corrupt),
+        let (parent, manifest) = self
+            .load_legacy_inspection(identity, snapshot, limits, cancel)
+            .await?;
+        let summary = index::summary(parent, &manifest)?;
+        if summary.state == InspectionState::Ready {
+            self.persist_inspection_rows(identity, &manifest).await?;
         }
+        // Rows and discovery indexes precede this immutable readiness root. Cleanup
+        // competes on the same keys and a delayed create cannot replace a retired value.
+        self.finish_inspection_index(identity, &summary).await?;
+        Ok(summary_progress(&summary))
     }
 
     async fn load_legacy_inspection(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
-        limits: PreparationLimits,
+        limits: InspectionPreparationLimits,
         cancel: &ReadCancellation,
-    ) -> Result<LegacyInput, InspectionError> {
+    ) -> Result<(Option<SnapshotId>, ManifestRecord), InspectionError> {
         let legacy = self
             .store
             .get_bounded(
                 &crate::key::snapshot(identity, snapshot).map_err(AuthorityError::from)?,
-                budget(limits.legacy_bytes),
+                budget(limits.source_bytes),
                 cancel,
             )
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
-        let source_sha256: [u8; 32] = Sha256::digest(&legacy.bytes).into();
-        let snapshot_record: LegacyRecord<SnapshotRecord> =
-            decode_legacy(&legacy.bytes, limits.legacy_bytes)?;
-        if snapshot_record.version != 1 || snapshot_record.payload.publication.snapshot != snapshot {
+        let record: LegacyRecord<SnapshotRecord> = decode_legacy(&legacy.bytes, limits.source_bytes)?;
+        if record.version != 1 || record.payload.publication.snapshot != snapshot {
             return Err(InspectionError::Corrupt);
         }
-        let publication = snapshot_record.payload.publication;
+        let publication = record.payload.publication;
+        publication.validate().map_err(AuthorityError::from)?;
         if publication.state != PublicationState::Published {
             return Err(AuthorityError::SnapshotNotFound.into());
         }
-        Ok(LegacyInput {
-            publication,
-            source_sha256,
-        })
-    }
-
-    async fn advance_legacy_inspection(
-        &self,
-        identity: &DatasetIdentity,
-        publication: &SnapshotPublication,
-        record: &mut PreparationRecord,
-        limits: PreparationLimits,
-        cancel: &ReadCancellation,
-    ) -> Result<(), InspectionError> {
-        let snapshot = publication.snapshot;
-        let manifest = decode_manifest(&publication.manifest, limits.legacy_bytes);
-        match manifest {
-            Ok(mut manifest) => {
-                manifest.snapshot = snapshot;
-                manifest.validate().map_err(AuthorityError::from)?;
-                if manifest.samples.is_empty() {
-                    return Err(InspectionError::Corrupt);
-                }
-                record.position.validate(&manifest)?;
-                let summary = index::summary(publication.parent, &manifest)?;
-                if summary.state == InspectionState::Ready {
-                    self.write_inspection_window(identity, &manifest, record, limits, cancel)
-                        .await?;
-                    if record.progress.state == PreparationState::Ready {
-                        self.finish_inspection_index(identity, &summary).await?;
-                    }
-                } else {
-                    record.progress = summary_progress(&summary);
-                    self.finish_inspection_index(identity, &summary).await?;
-                }
-            }
-            Err(_) => {
-                record.progress.state = PreparationState::Unsupported {
-                    reason: "legacy publication does not contain a supported Manifest".into(),
-                }
-            }
+        if publication.manifest.len() > MAX_MANIFEST_BYTES {
+            return Err(InspectionError::Limit);
         }
-        Ok(())
-    }
-
-    async fn write_inspection_window(
-        &self,
-        identity: &DatasetIdentity,
-        manifest: &ManifestRecord,
-        record: &mut PreparationRecord,
-        limits: PreparationLimits,
-        cancel: &ReadCancellation,
-    ) -> Result<(), InspectionError> {
-        let mut bytes = 0usize;
-        for _ in 0..limits.rows {
-            if cancel.is_cancelled() {
-                return Err(InspectionError::Cancelled);
-            }
-            let mut next = record.position.clone();
-            let Some(row) = next_row(identity, manifest, &mut next)? else {
-                record.progress.state = PreparationState::Ready;
-                break;
-            };
-            let size = row.key.len().saturating_add(row.bytes.len());
-            if size > limits.bytes {
-                return Err(InspectionError::Limit);
-            }
-            if size > limits.bytes - bytes {
-                break;
-            }
-            self.put_inspection_bytes(row).await?;
-            bytes += size;
-            record.position = next;
-            record.progress.rows_written = record.position.rows;
+        let mut manifest = decode_manifest(&publication.manifest, MAX_MANIFEST_BYTES).map_err(|_| {
+            InspectionError::Unsupported("legacy publication does not contain a supported Manifest".into())
+        })?;
+        manifest.snapshot = snapshot;
+        manifest.validate().map_err(AuthorityError::from)?;
+        if manifest.samples.is_empty() {
+            return Err(InspectionError::Corrupt);
         }
-        Ok(())
+        Ok((publication.parent, manifest))
     }
 }
 

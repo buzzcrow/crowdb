@@ -359,9 +359,19 @@ partition follows the versioned SHA-256 algorithm in the
 
 Inspection MUST bound underlying metadata work, not merely paginate a fully loaded
 Manifest. Committed inventory/children, Schema, Samples and projected field metadata
-are separate bounded reads. Legacy inspection preparation is explicit and resumable;
-unsupported state MUST NOT appear as an empty result. Preview is opt-in, capped at
-64 KiB and MUST NOT acknowledge read consumption.
+are separate bounded reads. Legacy inspection preparation MUST rebuild complete
+metadata in one request without durable preparation progress. The source record
+limit is 9 MiB, the embedded Manifest limit is 8 MiB and the request deadline is
+thirty seconds. Final index writes MUST remain bounded at sixteen pending rows and
+2 MiB of encoded keys and values. The immutable summary root MUST become visible
+only after all rows and discovery entries are complete; cleanup MUST prevent a
+delayed finalizer from replacing a retired root. Failures propagate without
+confirmation reads, and retries rebuild from the source or reuse an existing root
+without writes. Historical progress MAY be observed when the root is absent, but
+MUST NOT drive or override a complete rebuild. Successful rebuilds return zero
+revision and row-count compatibility fields. Unsupported or oversized sources MUST
+return errors rather than empty results. Preview is opt-in, capped at 64 KiB and
+MUST NOT acknowledge read consumption.
 
 The HTTP surface is the portable wire contract. It exposes Dataset creation and
 opening, latest and Snapshot inspection, publication and preparation, Manifest

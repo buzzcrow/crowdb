@@ -40,7 +40,7 @@ impl DatasetAuthority {
             .await
     }
 
-    async fn persist_inspection_rows(
+    pub(super) async fn persist_inspection_rows(
         &self,
         identity: &DatasetIdentity,
         manifest: &ManifestRecord,
