@@ -154,7 +154,8 @@ async fn selection_reply_loss_allows_full_input_retry_without_byte_progress_writ
             assert!(repository
                 .freeze_completion(&session, &selection, 102)
                 .await
-                .unwrap());
+                .unwrap()
+                .is_applied());
             session = load(&repository, &session).await;
         }
         assert_eq!(session.phase, MultipartPhase::Completing);
@@ -194,7 +195,8 @@ async fn uncertain_copy_has_no_resumable_state_and_full_request_retry_is_exact()
     assert!(repository
         .freeze_completion(&initial, &selection, 102)
         .await
-        .unwrap());
+        .unwrap()
+        .is_applied());
     let session = load(&repository, &initial).await;
     let mutations = fixture.store.writes.load(Ordering::SeqCst);
     blocks
@@ -225,7 +227,8 @@ async fn abort_during_copy_rejects_the_result_without_publishing_or_resuming_wor
     assert!(repository
         .freeze_completion(&initial, &selection, 102)
         .await
-        .unwrap());
+        .unwrap()
+        .is_applied());
     let session = load(&repository, &initial).await;
     blocks.pause_reads.store(true, Ordering::SeqCst);
     let copy = repository.assemble(&session, &selection, blocks.clone(), 1000, 8);
@@ -259,7 +262,8 @@ async fn selection_mismatch_and_abort_never_publish_or_copy_partial_bytes() {
         assert!(repository
             .freeze_completion(&initial, &selection, 102)
             .await
-            .unwrap());
+            .unwrap()
+            .is_applied());
         let session = load(&repository, &initial).await;
         let writes = blocks.writes.load(Ordering::SeqCst);
         assert!(repository
@@ -291,7 +295,8 @@ async fn complete_byte_admission_checks_the_entire_selection_before_any_physical
     assert!(repository
         .freeze_completion(&initial, &selection, 102)
         .await
-        .unwrap());
+        .unwrap()
+        .is_applied());
     let session = load(&repository, &initial).await;
     let writes = blocks.writes.load(Ordering::SeqCst);
     let reads = blocks.reads.load(Ordering::SeqCst);

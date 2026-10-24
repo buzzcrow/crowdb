@@ -114,7 +114,7 @@ impl MultipartRecovery {
                 RecoveryAction::Retained
             });
         } else if session.phase == MultipartPhase::Publishing {
-            self.repository.publish(session).await?.is_some()
+            self.repository.publish(session).await?.is_applied()
         } else {
             return Ok(RecoveryAction::Retained);
         };

@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crowdb_access_iceberg::catalog::CatalogContext;
 use crowdb_access_iceberg::file::{
-    FileIdentity, FileOperation, FileSealError, FileSealer, MultipartPart, MultipartPhase,
+    FileIdentity, FileOperation, FileSealError, FileSealer, MultipartMutation, MultipartPart, MultipartPhase,
     MultipartSelection, MultipartSession, MultipartWorkError,
 };
 use crowdb_access_iceberg::key::{FileId, OperationId};
@@ -290,15 +290,15 @@ impl FileHttp {
                 crate::iceberg::CompleteResolveError::Catalog(error) => catalog_error(error),
             })?;
         if session.phase == MultipartPhase::Open {
-            if !self
+            match self
                 .multipart
                 .freeze_completion(&session, &selection, now_ms)
                 .await
                 .map_err(catalog_error)?
             {
-                return Err(FileS3ErrorCode::SlowDown);
+                MultipartMutation::Applied { session: next, .. } => session = next,
+                MultipartMutation::Conflict(_) => return Err(FileS3ErrorCode::SlowDown),
             }
-            session = self.current(&session).await?;
         }
         let max_copy_bytes = admission.copy_byte_limit();
         let service = Arc::clone(self);
@@ -345,16 +345,16 @@ impl FileHttp {
                         .completion
                         .as_ref()
                         .ok_or(FileS3ErrorCode::InternalError)?;
-                    if completion.progress.next_part == 0
-                        && self
+                    if completion.progress.next_part == 0 {
+                        if let Some(update) = self
                             .multipart
-                            .prepare_stream_publication(&session, now_ms)
+                            .prepare_stream_publication(&session, selection, now_ms)
                             .await
                             .map_err(catalog_error)?
-                            .is_some()
-                    {
-                        session = self.current(&session).await?;
-                        continue;
+                        {
+                            session = completion_state(update)?;
+                            continue;
+                        }
                     }
                     let _permit = self.uploads.acquire().map_err(|_| FileS3ErrorCode::SlowDown)?;
                     let tree = self
@@ -373,32 +373,35 @@ impl FileHttp {
                         .seal_uploaded(session.owner, session.location.clone(), tree.clone())
                         .await
                         .map_err(seal_error)?;
-                    self.multipart
-                        .prepare_publication(&session, &tree, &sealed, now_ms)
-                        .await
-                        .map_err(catalog_error)?;
+                    session = completion_state(
+                        self.multipart
+                            .prepare_publication(&session, &tree, &sealed, now_ms)
+                            .await
+                            .map_err(catalog_error)?,
+                    )?;
                 }
                 MultipartPhase::Publishing | MultipartPhase::Published => {
-                    let Some(record) = self.multipart.publish(&session).await.map_err(catalog_error)? else {
-                        session = self.current(&session).await?;
-                        continue;
-                    };
-                    session = self.current(&session).await?;
-                    return MultipartResponses::complete(&session, &record, url)
-                        .map_err(|_| FileS3ErrorCode::InternalError);
+                    match self.multipart.publish(&session).await.map_err(catalog_error)? {
+                        MultipartMutation::Applied { session, value } => {
+                            return MultipartResponses::complete(&session, &value, url)
+                                .map_err(|_| FileS3ErrorCode::InternalError);
+                        }
+                        MultipartMutation::Conflict(Some(observed)) => session = observed,
+                        MultipartMutation::Conflict(None) => return Err(FileS3ErrorCode::NoSuchUpload),
+                    }
                 }
                 _ => return Err(FileS3ErrorCode::Conflict),
             }
-            session = self.current(&session).await?;
         }
     }
+}
 
-    async fn current(&self, session: &MultipartSession) -> Result<MultipartSession, FileS3ErrorCode> {
-        self.multipart
-            .load(session.context, session.upload)
-            .await
-            .map_err(catalog_error)?
-            .ok_or(FileS3ErrorCode::NoSuchUpload)
+fn completion_state(update: MultipartMutation<()>) -> Result<MultipartSession, FileS3ErrorCode> {
+    match update {
+        MultipartMutation::Applied { session, .. } | MultipartMutation::Conflict(Some(session)) => {
+            Ok(session)
+        }
+        MultipartMutation::Conflict(None) => Err(FileS3ErrorCode::NoSuchUpload),
     }
 }
 

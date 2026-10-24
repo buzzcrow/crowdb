@@ -79,7 +79,7 @@ pub use multipart_list::{MultipartLister, MultipartPartPage, MultipartPartScan, 
 pub use multipart_recovery::{
     MultipartRecovery, MultipartRecoveryPage, MultipartRecoveryScan, MultipartRecoveryStore,
 };
-pub use multipart_repository::{MultipartRepository, MultipartWorkError};
+pub use multipart_repository::{MultipartMutation, MultipartRepository, MultipartWorkError};
 pub use multipart_selection::{MultipartSelection, SelectedPart, SelectedStreamPart};
 #[cfg(feature = "test-util")]
 pub use parquet::{

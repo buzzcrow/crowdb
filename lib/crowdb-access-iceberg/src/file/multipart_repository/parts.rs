@@ -74,18 +74,11 @@ impl MultipartRepository {
                 &value,
                 mutation_identity(&key, expected.as_deref(), &value),
             )
-            .await;
+            .await?;
         let written = match outcome {
-            Ok(CasOutcome::Applied(_)) => Some(after),
-            Ok(CasOutcome::Conflict(Some(existing))) if existing.bytes == value => Some(after),
-            Ok(CasOutcome::Conflict(_)) => None,
-            Err(error) => {
-                if self.read_part(&after.key()).await?.as_ref() == Some(&after) {
-                    Some(after)
-                } else {
-                    return Err(error.into());
-                }
-            }
+            CasOutcome::Applied(_) => Some(after),
+            CasOutcome::Conflict(Some(existing)) if existing.bytes == value => Some(after),
+            CasOutcome::Conflict(_) => None,
         };
         Ok(written)
     }

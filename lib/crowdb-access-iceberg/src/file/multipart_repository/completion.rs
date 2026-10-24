@@ -9,7 +9,7 @@ use crate::file::{
 };
 use crate::operation::PayloadStore;
 
-use super::{check_live, increment, MultipartRepository};
+use super::{check_live, increment, MultipartMutation, MultipartRepository};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MultipartWorkError {
@@ -53,7 +53,7 @@ impl MultipartRepository {
         session: &MultipartSession,
         selection: &MultipartSelection,
         now_ms: u64,
-    ) -> Result<bool, CatalogError> {
+    ) -> Result<MultipartMutation<()>, CatalogError> {
         session.validate()?;
         check_live(session, now_ms)?;
         if session.phase != MultipartPhase::Open {
@@ -71,8 +71,9 @@ impl MultipartRepository {
             return Err(ValidationError::Record.into());
         }
         let mut next = increment(session)?;
-        if self.load(session.context, session.upload).await?.as_ref() != Some(session) {
-            return Ok(false);
+        let current = self.load(session.context, session.upload).await?;
+        if current.as_ref() != Some(session) {
+            return Ok(MultipartMutation::Conflict(current));
         }
         let reference = PayloadStore::new(self.store.clone())
             .put(session.context.catalog, session.upload, &selection.encode())
@@ -93,7 +94,7 @@ impl MultipartRepository {
             candidate: None,
             publication: None,
         });
-        self.exchange(session, &next).await
+        self.exchange_state(session, &next, ()).await
     }
 
     /// Copies the complete selected legacy tree parts within this request's byte budget.

@@ -135,7 +135,7 @@ async fn streamed_parts_commit_independently_without_session_mutations() {
 }
 
 #[tokio::test]
-async fn streamed_part_lost_cas_reply_resolves_from_the_part_record() {
+async fn streamed_part_lost_cas_reply_returns_unknown_and_client_retry_replaces_the_part() {
     let (fixture, initial) = setup().await;
     let repository = MultipartRepository::new(fixture.store.clone());
     repository.begin(&initial, 100).await.unwrap();
@@ -143,11 +143,18 @@ async fn streamed_part_lost_cas_reply_resolves_from_the_part_record() {
         .store
         .fail_after
         .store(fixture.store.writes.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
-    let published = repository
+    let reads = fixture.store.reads.load(Ordering::SeqCst);
+    assert!(repository
         .put_stream_part(&initial, &stream_part(&initial, 1, 1), 101)
+        .await
+        .is_err());
+    assert_eq!(fixture.store.reads.load(Ordering::SeqCst) - reads, 1);
+    let published = repository
+        .put_stream_part(&initial, &stream_part(&initial, 1, 2), 102)
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(published.revision, 2);
     assert_eq!(
         repository.part_for_upload(&initial, 1).await.unwrap(),
         Some(published)
