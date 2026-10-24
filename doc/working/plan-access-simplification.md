@@ -473,13 +473,6 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   记录 p50/p99、TPS、CPU/RSS、RPC、复制/摘要、清理积压，不缩小负载掩盖失败。
   Files: `tools/sdk/dataset_workload.py`、相关 examples、`e2e-test/`、本机 HCA runner。
   物理多主机验证继续留在独立计划，不并回此处。
-- [~] **V4.2 验证并发 metadata 与单块 owner 移交的真实链路**：由 `acd25325` 生产源码重新
-  构建独立本地镜像，运行 Dataset 全部容器用例与同参数 TCP workload。与 V4.1 使用相同
-  client/server CPU、metadata 内存、size 集合、并发和校验，保留精确 artifact/source 身份；
-  不把单 sample-field 的当前 workload 当作宽投影并发性能证明，后者继续由 F6/F1 验证。
-  首次 build 的 release/C++/frontend 均完成，但构建期间修改了本计划与成本测试，触发
-  `Source tree changed while building; rebuild the shared OCI image`，退出 1；没有生成新 OCI。
-  恢复时先提交完整稳定树，重跑 build 期间不改任何非忽略文件，保留 source guard。
 
 ## 成本口径与集中代码索引
 
@@ -499,6 +492,23 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **V4.2（2026-10-24）**：稳定源码树重新构建成功；本地镜像
+  `crowdb-node:access-cleanup-acd25325`，revision `d82721f1`，source tree
+  `7e19feabf2c73f469fa93156b6239cb79b040244`，OCI digest
+  `sha256:7ddb31ac6ebd3c1cab0fb0c5b118ab0209d0b4c1139bd3cca32fb4572ddfce55`，
+  Docker import identity `sha256:21d9ec146e42f4c3c36453232d7c0566766372ebe283e55984b10a3641e39ba0`。
+  全部五个 Dataset 容器用例通过，记录在 `container-e2e/run-e2c9c096a5b34e7e9d1ea0aefe5d0757`；
+  同 V4.1 参数的完整 TCP workload、native Python 安装/parity/held buffer/cancel 与存储重启
+  校验均通过，18 档试验 errors=0，记录在 `dataset-workload/e538038bee3f4153b78d01bca7829aac`。
+  两个路径均相对于 `.crowdb-runtime/artifacts/`。并发 1 的中位 MiB/s 为 HTTP 169.52 /
+  Rust 185.83 / Python 189.66，并发 3 为 258.62 / 254.11 / 264.70；最大 client RSS
+  分别约 19/32/56 MiB。相对 V4.1，HTTP 接近，Rust 低约 7%–11%，Python 并发 1 低约 9%、
+  并发 3 接近；这次短负载没有证明吞吐提高。4 KiB 并发 1 中位 p50 为 578/712/829 µs，
+  每档每尺寸仅 16 个延迟样本，不作尾延迟生产结论。当前 workload 单 sample-field，不能
+  证明宽投影并发收益，也没有逐请求 RPC、复制计数或 HCA 对比，V4/F1/F6 继续跟踪。
+  首次构建因中途修改非忽略文档/测试触发 source guard 失败，重跑保留 guard；成功记录不
+  覆盖失败记录。构建/import/容器/workload 命令全部通过 `pixi run`，镜像仅导入本地。
 
 - **F8.3（2026-10-24）**：`ChunkPayloadStorage::read` 在读前按逻辑长度限制最大 4 MiB，
   单块完整结果确认 EOF 后直接移交 Bytes owner；多块只按最终长度分配一次，复制当前片段后
