@@ -10,63 +10,34 @@ export async function call(request: APIRequestContext, path: string, method = 'G
 }
 export async function seed(request: APIRequestContext, name: string, parent: string | null = null, count = 22, columns = 13) {
   const root = datasetPath(name); if (!parent) await call(request, root, 'PUT');
-  const head = await call(request, `${root}/head`); const operation = id();
-  const path = `${root}/compositions/${operation}`;
-  let draft = await call(request, `${root}/compositions`, 'POST', { operation, parent, source: { kind: 'all' },
+  const head = await call(request, `${root}/head`); const snapshot = id();
+  const samples = parent ? [] : Array.from({ length: count }, (_, index) => ({ kind: 'upsert',
+    id: Buffer.from(`sample-${String(index).padStart(2, '0')}`).toString('base64'),
+    fields: [{ name: 'field-00', value: { kind: 'inline', data: Buffer.from(`value-${index}`).toString('base64') } }] }));
+  await call(request, `${root}/snapshots/${snapshot}`, 'PUT', { parent, source: { kind: 'all' },
     schema: parent ? null : { version: 1, fields: Array.from({ length: columns }, (_, index) => ({ name: `field-${String(index).padStart(2, '0')}`, required: false })) },
-    inherit_parent_splits: false, parent_split_revision: null, splits: [], policy: null });
-  if (!parent) for (let offset = 0; offset < count; offset += 20) {
-    const samples = Array.from({ length: Math.min(20, count - offset) }, (_, index) => ({ kind: 'upsert', id: Buffer.from(`sample-${String(offset + index).padStart(2, '0')}`).toString('base64'), fields: [{ name: 'field-00', value: { kind: 'inline', data: Buffer.from(`value-${offset + index}`).toString('base64') } }] }));
-    draft = await call(request, path, 'PUT', { edit: id(), expected_revision: draft.revision, samples });
-  }
-  let page = '0'; let evaluated = false;
-  for (let step = 0; step < 100 && !evaluated; step++) {
-    const preview = await call(request, `${path}/evaluate`, 'POST', { expected_revision: draft.revision, expected_page: page }); page = preview.next_page; evaluated = preview.complete;
-  }
-  expect(evaluated).toBe(true);
-  for (let step = 0; step < 100 && !draft.uploads.publication_ready; step++) draft = await call(request, `${path}/prepare`, 'POST', { expected_revision: draft.revision });
-  expect(draft.uploads.publication_ready).toBe(true);
-  const receipt = await call(request, `${path}/publish`, 'POST', { attempt: id(), snapshot: draft.preparation.snapshot, expected_head: head.generation });
-  return receipt.target.snapshot as string;
+    samples, splits: [], policy: { overlap: 'disjoint', coverage: 'allow_unassigned' } });
+  await call(request, `${root}/head`, 'PUT', { snapshot, expected_head: head.generation });
+  return snapshot;
 }
 export async function openDataset(page: Page, name: string) {
   await page.goto('/?domain=Dataset');
   await page.getByRole('navigation', { name: 'Dataset tree' }).getByRole('button', { name, exact: true }).click();
 }
-export async function prepareDraft(page: Page, kind: 'Snapshot' | 'Split revision') {
-  const region = page.getByRole('region', { name: 'Draft publication' });
-  for (let step = 0; step < 100; step++) {
-    const evaluate = region.getByRole('button', { name: /^(Evaluate complete membership|Continue evaluation)$/ });
-    if (!await evaluate.isEnabled()) break;
-    await evaluate.click();
-    await expect(region.getByRole('button', { name: 'Inspect draft status' })).toBeEnabled();
-  }
-  const publish = region.getByRole('button', { name: `Publish ${kind}`, exact: true });
-  for (let step = 0; step < 100 && !await publish.isEnabled(); step++) {
-    await region.getByRole('button', { name: 'Prepare candidate' }).click();
-    await expect(region.getByRole('button', { name: 'Inspect draft status' })).toBeEnabled();
-  }
-  await expect(publish).toBeEnabled();
+export async function preparedResult(page: Page, kind: 'Snapshot' | 'Split revision') {
+  const region = page.getByRole('region', { name: 'Resource publication' });
+  await expect(region.getByRole('button', { name: `Publish ${kind}`, exact: true })).toBeEnabled();
 }
-export async function publishDraft(page: Page, kind: 'Snapshot' | 'Split revision') {
-  await prepareDraft(page, kind);
-  await page.getByRole('region', { name: 'Draft publication' }).getByRole('button', { name: `Publish ${kind}`, exact: true }).click();
+export async function publishResult(page: Page, kind: 'Snapshot' | 'Split revision') {
+  await preparedResult(page, kind);
+  await page.getByRole('region', { name: 'Resource publication' }).getByRole('button', { name: `Publish ${kind}`, exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
 }
-
 export async function publishSplits(request: APIRequestContext, name: string, snapshot: string, splits: unknown[]) {
-  const root = datasetPath(name); const operation = id(); const path = `${root}/split-drafts/${operation}`;
-  const head = await call(request, `${root}/snapshots/${snapshot}/split-head`);
-  let draft = await call(request, `${root}/snapshots/${snapshot}/split-drafts`, 'POST', {
-    operation, expected_revision: head.revision, splits, policy: { overlap: 'disjoint', coverage: 'allow_unassigned' },
+  const path = `${datasetPath(name)}/snapshots/${snapshot}`; const revision = id();
+  const head = await call(request, `${path}/split-head`);
+  await call(request, `${path}/split-revisions/${revision}`, 'PUT', {
+    splits, policy: { overlap: 'disjoint', coverage: 'allow_unassigned' },
   });
-  let next = '0'; let complete = false;
-  for (let step = 0; step < 100 && !complete; step++) {
-    const value = await call(request, `${path}/evaluate`, 'POST', { expected_revision: draft.revision, expected_page: next });
-    complete = value.complete; next = value.next_page;
-  }
-  expect(complete).toBe(true);
-  await call(request, `${path}/prepare`, 'POST', { expected_revision: draft.revision });
-  draft = await call(request, path);
-  return call(request, `${path}/publish`, 'POST', { attempt: id(), revision: draft.progress.target.revision, expected_head: head.generation });
+  return call(request, `${path}/split-head`, 'PUT', { revision, expected_revision: head.revision, expected_head: head.generation });
 }

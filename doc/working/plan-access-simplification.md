@@ -356,16 +356,18 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 
 - [ ] **P2.1 分清输入、计算进度与候选内容**：逐项列出 draft/edit receipt/work page/row/candidate/
   cleanup seal 的用途、写入次数和调用者；按 D1 更新 API/SDK 合同，移除服务端续算接口。Files: Dataset `composition/{begin,edit,state,evaluation,evaluate_step,prepare,cleanup}.rs`。
-- [~] **P2.2d 控制台迁移 Snapshot/Split 完整资源 API**：删除服务端草稿、编辑/计算进度、
-  attempt/receipt reconciliation；完整输入、资源 ID、显式 expected base 和 pending 请求由
-  客户端保存。上传完成返回已有 descriptor，显式冻结 Source/继承 revision；丢回复重试原
-  请求，409 使用 observed head 审阅后更新。迁移 import/Split/recovery/capability 组件与
-  五项浏览器 case，保留 binary ID、MPU、继承/历史成员和冲突检查。当前精确 import 基线
-  在新镜像上失败（3.6s，入口依赖已删除 composition capability，按钮 disabled）；不是既有
-  通过结果。基线 artifact `run-d463ff78dac94b26b59a028f52b9d565`。Files: console Dataset
-  UI、browser Dataset fixtures/flows、proxy 测试。
+- [~] **P2.2e 删除旧 Composition/Split forward driver**：所有生产调用者已迁移；删除
+  authority begin/edit/evaluate/prepare/publish 与 staging-owner 登记/续算写路径，不只关闭
+  HTTP 或加 test-util 开关。先抽取新资源仍复用的 parent schema、source sample 读取、
+  validation 和确定性 revision ID；保留现存 CD/CE/CW/CM/SB/SD/SW 的 decoder、旧 owner
+  释放和封口隔离直到 P13/R4 替代发现已验证。24 个旧 writer 调用测试/fixture 分为业务
+  回归（迁移完整资源）、旧格式清理（直接构造历史 bytes）和已退休续算合同（删除），不能
+  删除完整/部分资源回收、late-finalizer fencing、共享 owner、冲突/unknown 的真实断言。
+  旧路径与新路径的运行时成本对照改为记录历史基线并锁定新成本，不能为比较保留生产旧驱动。
+  Files: `composition/{begin,edit,evaluation,evaluate_step,prepare,publication,uploads}.rs`、
+  `split/{lifecycle,evaluation,prepare,initial,publication}.rs`、相关 test/common。
 - [ ] **P2.2 删除服务端编辑/计算过程**：删除 durable 编辑/进度阶段，客户端失败重新请求；
-  保持发布前不可见、expected head 及源 Snapshot 被删时的明确错误。孤儿清理通过 R4 验证，例外封口记录先 review。Files: `composition/`、Access v2 composition、SDK 和恢复测试。
+  保持完整前不可见、完整结果可按 ID 使用、显式 expected head 及源 Snapshot 被删时的明确错误。孤儿清理通过 R4 验证，例外封口记录先 review。Files: `composition/`、Access v2 composition、SDK 和恢复测试。
 
 ### P3 — Dataset Split（执行已确认 D1）
 
@@ -546,6 +548,31 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P2.2d**：控制台导入/Split 改为完整资源 PUT 与独立 head 更新；移除
+  server draft/edit/evaluate/prepare/status、attempt/receipt reconciliation、abandon/cleanup UI
+  和废弃 DTO。浏览器 IndexedDB 保存一份完整输入、资源 ID、原 head 条件与 pending 类型，
+  请求前等待本地存储完成；10 MiB 记录界限，防其他 tab 覆盖/错误删除，不复制整份 pending
+  prepare body。关闭/刷新从客户端恢复，丢回复重试原资源/条件，无额外 draft/commit 查询。
+  409 保留 observed head 供明确审阅后使用，不自动 rebase。source/继承 revision 固定，
+  完整 upload descriptor 直接进入准备输入；新 upload 直接 create，省一次状态 GET；
+  已明确 aborted 的缓存 upload 使用新 ID。代理仅 Snapshot PUT 放到 8 MiB，part 仍 4 MiB，
+  metadata reply 仍 1 MiB；正文超限和 readonly 回归通过。
+  276 项 UI/类型检查、三项 proxy、crowdb-web all-target/all-feature clippy、fmt/diff 通过；
+  三份 Dataset browser spec 的专门 TypeScript 检查通过。完整 native browser tsconfig 在
+  裸目录依赖 runner staging 的两个 src 文件，改用安装好的 UI compiler 对受影响 spec 校验，
+  没有装新依赖。五项精确旧基线在 retired API/capability 失败，artifact
+  `run-a2f44dcfb0a94482985c03ba268c82c0`，不能用失败时长证明性能。
+  新镜像五项浏览器全部通过：browse 1.899s、import 3.056s、Split 3.909s、recovery 1.931s、
+  capabilities 1.609s；保留 MPU 4 MiB+17、MD5/二进制 ID/preview 边界、materialized child、
+  frozen Split/继承交集、历史成员、并发失败完整结果可读、丢回复刷新后原请求重试/单资源
+  inventory、readonly/API prefix/disabled module/retain/reclaim 等断言。artifact
+  `.crowdb-runtime/artifacts/container-e2e/run-fb06f2b724d44ed38782d2cadbfae9e8`，
+  `server_sources_match=true`；镜像 `crowdb-node:access-cleanup-console-preparation-20261024`
+  从提交前源码快照 tree `c8931e28eebccc38dd91c7ba0c51739eac92834d` 构建，
+  OCI `sha256:7a27e26f92d11e33777ac970b6d4b13123850562237537697fc9652bfdd0189a`，
+  Docker `sha256:cbca007ec757fc0f312c0135be189ec5aa84d7594f2cafcf922acd5acd95064e`。
+  这是本机 TCP 功能验收，未声称 RPC/TPS/HCA 提升；旧 authority 驱动/legacy GC 仍跟踪。
 
 - **2026-10-24，P2.2c**：native Rust/Python SDK 删除 Composition 的 begin/edit/evaluate/
   prepare/publish/abandon/cleanup 包装，提供完整 Snapshot/Split 准备和独立显式 head 更新。

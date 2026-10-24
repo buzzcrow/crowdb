@@ -4,56 +4,48 @@
 import { useEffect, useRef, useState } from 'react';
 import { buttonClass } from '../../access/Workbench';
 import * as api from '../api';
-import { defaultPolicy, type DraftSplit, type Receipt, type SplitDraft, type SplitPolicy } from '../types';
+import { defaultPolicy, type DraftSplit, type PublicationResult, type SplitHead, type SplitPolicy } from '../types';
 import { newId } from '../import/upload';
-import { operationPath, request, saveOperation, type Operation } from '../operation';
+import { prepare, saveOperation, type Operation } from '../operation';
 import { Definitions, validateEditor } from './Definitions';
-import { BeginRecovery } from '../BeginRecovery';
 import { Publication } from '../Publication';
 
 export function SplitEditor({ dataset, snapshot, initialRevision, recovery, close, complete }: {
-  dataset: string; snapshot: string; initialRevision?: string; recovery?: Operation; close: () => void; complete: (receipt: Receipt) => void;
+  dataset: string; snapshot: string; initialRevision?: string; recovery?: Operation; close: () => void; complete: (result: PublicationResult) => void;
 }) {
   const element = useRef<HTMLElement>(null);
   const [op, setOp] = useState<Operation | undefined>(recovery);
-  const [draft, setDraft] = useState<SplitDraft>();
   const [splits, setSplits] = useState<DraftSplit[]>([]); const [policy, setPolicy] = useState<SplitPolicy>(defaultPolicy);
-  const [ready, setReady] = useState(false);
-  const [base, setBase] = useState<{ revision: string | null; generation: string | null }>();
-  const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [dirty, setDirty] = useState(false);
+  const [base, setBase] = useState<SplitHead>(); const [ready, setReady] = useState(false);
+  const [busy, setBusy] = useState(false); const [error, setError] = useState('');
   const run = (action: () => Promise<void>) => { setBusy(true); setError(''); void action().catch(reason => setError(String(reason))).finally(() => setBusy(false)); };
   useEffect(() => {
     const cancel = new AbortController(); setReady(false);
     void (async () => {
-      if (recovery) { const value = await api.control<SplitDraft>(operationPath(recovery), 'GET', undefined, cancel.signal); if (!cancel.signal.aborted) { setDraft(value); setSplits(value.splits); setPolicy(value.policy); setReady(true); } return; }
+      if (recovery?.input) { setSplits(recovery.input.splits); setPolicy(recovery.input.policy); setReady(true); return; }
       const head = await api.splitHead(dataset, snapshot, cancel.signal);
       const revision = initialRevision ?? head.revision;
       const value = revision ? await api.revision(dataset, snapshot, revision, cancel.signal) : null;
-      if (!cancel.signal.aborted) { setBase({ ...head, revision }); setSplits(value?.splits.map(({ name, definition, origin }) => ({ name, definition, origin })) ?? []); setPolicy(value?.policy ?? defaultPolicy); setReady(true); }
+      if (!cancel.signal.aborted) { setBase(head); setSplits(value?.splits.map(({ name, definition, origin }) => ({ name, definition, origin })) ?? []); setPolicy(value?.policy ?? defaultPolicy); setReady(true); }
     })().catch(reason => { if (!cancel.signal.aborted) setError(String(reason)); });
     return () => cancel.abort();
   }, [dataset, snapshot, initialRevision, recovery]);
   const save = async () => {
     validateEditor(element.current);
-    if (op && draft) {
-      const value = await request<SplitDraft>(op, operationPath(op), 'PUT', { edit: newId(), expected_revision: draft.revision, splits, policy }); setDraft(value);
-    } else {
-      if (!base) throw new Error('Current Split revision is unavailable.');
-      const value: Operation = { dataset, kind: 'split', snapshot, operation: newId(), expectedHead: base.generation }; saveOperation(value); setOp(value);
-      setDraft(await request<SplitDraft>(value, `${api.snapshotPath(dataset, snapshot)}/split-drafts`, 'POST', { operation: value.operation, expected_revision: base.revision, splits, policy }));
-    }
-    setDirty(false);
+    if (!base) throw new Error('Current Split head is unavailable.');
+    const value: Operation = { version: 2, dataset, kind: 'split', snapshot, resource: newId(), expectedHead: base.generation,
+      expectedRevision: base.revision, input: { splits, policy } };
+    await saveOperation(value); setOp(value);
+    try { await prepare(value); } finally { setOp({ ...value }); }
   };
   return <section ref={element} role="dialog" aria-label="Edit Split revision" className="tw-space-y-3 tw-border tw-border-border tw-p-4">
     <h2 className="tw-font-semibold">Edit Split revision · {snapshot}</h2>
-    <p className="tw-text-xs">Expected revision: {base?.revision ?? draft?.expected_revision ?? 'none'}. Renaming or removing a Split never changes historical revisions.</p>
-    <Definitions splits={splits} policy={policy} disabled={!ready || busy || !!op?.pending || !!draft && !['editing', 'evaluating', 'evaluated'].includes(draft.progress.state)} change={(values, rules) => { setSplits(values); setPolicy(rules); setDirty(true); }} />
+    <p className="tw-text-xs">Expected revision: {op?.expectedRevision ?? base?.revision ?? 'none'}. Renaming or removing a Split keeps historical revisions available.</p>
+    <Definitions splits={splits} policy={policy} disabled={!ready || busy || !!op} change={(values, rules) => { setSplits(values); setPolicy(rules); }} />
     {!ready && !error && <p role="status">Loading Split revision…</p>}
     {error && <p role="alert">{error}</p>}
-    <button className={buttonClass} disabled={!ready || busy || !!op?.pending || !!draft && !dirty} onClick={() => run(save)}>Save Split draft</button>
+    {!op && <button className={buttonClass} disabled={!ready || busy} onClick={() => run(save)}>Prepare Split revision</button>}
     <button className={buttonClass} disabled={busy} onClick={close}>Close editor</button>
-    {op && !draft && <BeginRecovery discarded={() => setOp(undefined)} operation={op} busy={busy} run={run} loaded={value => { setReady(true); setDraft(value as SplitDraft); setSplits(value.splits); setPolicy(value.policy); }} />}
-    {op && draft && !dirty && <Publication restart={async () => { setBase(await api.splitHead(dataset, snapshot)); setOp(undefined); setDraft(undefined); setDirty(true); }} operation={op} draft={draft} update={value => setDraft(value as SplitDraft)} complete={complete} busy={busy} run={run} />}
-    {dirty && draft && <p>Unsaved edits invalidate preview. Save before evaluation.</p>}
+    {op?.input && <Publication operation={op} update={setOp} complete={complete} close={close} busy={busy} run={run} />}
   </section>;
 }

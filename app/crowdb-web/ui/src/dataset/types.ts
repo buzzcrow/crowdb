@@ -36,34 +36,18 @@ export interface SplitRevision {
 export interface SplitHead { revision: string | null; generation: string | null }
 export interface RevisionSummary { snapshot: string; revision: string; operation: string; split_count: number }
 export type Target = { kind: 'snapshot'; snapshot: string } | { kind: 'split_revision'; snapshot: string; revision: string };
-export type DraftProgress = { state: 'editing' | 'abandoned' }
-  | { state: 'evaluating'; input_revision: string; next_page: string }
-  | { state: 'evaluated'; input_revision: string; binding: string }
-  | { state: 'prepared'; target: Target }
-  | { state: 'committing' | 'published'; target: Target; attempt: string };
-export interface Receipt { attempt: string; target: Target; expected_head: string | null; committed_head: string }
+export interface PublicationResult { target: Target }
 export type CompositionSource = { kind: 'all' } | { kind: 'selection'; predicate: Predicate }
   | { kind: 'split'; source: SplitSource; selection: Predicate | null };
-export interface BeginComposition {
-  operation: string; parent: string | null; source: CompositionSource; schema: Schema | null;
-  inherit_parent_splits: boolean; parent_split_revision: string | null; splits: DraftSplit[]; policy: SplitPolicy | null;
+export interface PrepareSnapshot {
+  parent: string | null; source: CompositionSource; schema: Schema | null;
+  samples: SampleChange[]; splits: DraftSplit[]; policy: SplitPolicy;
 }
-export type FieldValue = { kind: 'inline'; data: string } | { kind: 'upload'; id: string } | { kind: 'tombstone' };
+export interface PreparedSnapshot { snapshot: string; initial_split: string | null; sample_count: string }
+export interface PrepareSplit { splits: DraftSplit[]; policy: SplitPolicy }
+export interface UploadDescriptor { id: string; length: string; md5: string }
+export type FieldValue = { kind: 'inline'; data: string } | ({ kind: 'upload' } & UploadDescriptor) | { kind: 'tombstone' };
 export type SampleChange = { kind: 'remove'; id: string } | { kind: 'upsert'; id: string; fields: Array<{ name: string; value: FieldValue }> };
-export interface CompositionDraft extends Omit<BeginComposition, 'schema' | 'policy' | 'inherit_parent_splits'> {
-  revision: string; schema: Schema; policy: SplitPolicy; progress: DraftProgress;
-  source_lease_deadline: string; preparation: { snapshot: string; split_preview: SplitPreview | null } | null;
-  uploads: { publication_ready: boolean; staged_uploads: string; candidate_uploads: string };
-}
-export interface SplitDraft {
-  operation: string; snapshot: string; expected_revision: string | null; revision: string;
-  policy: SplitPolicy; splits: DraftSplit[]; progress: DraftProgress;
-}
-export interface SplitPreview {
-  input_revision: string; next_page: string; complete: boolean; member_counts: string[];
-  validation: { scanned: string; assigned: string; unassigned: string; overlapping: string; unassigned_examples: string[]; overlap_examples: string[] };
-}
-export interface CompositionPreview { input_revision: string; next_page: string; members: string; complete: boolean; binding: string }
 export interface UploadStatus { id: string; length: string; part_size: number; md5: string; state: 'open' | 'complete' | 'claimed' | 'aborted'; expires_at: string; cleanup_complete: boolean; parts: Array<{ index: number; length: string; md5: string }> }
 
 export type DatasetSelection = { kind: 'root' } | { kind: 'dataset'; dataset: string }

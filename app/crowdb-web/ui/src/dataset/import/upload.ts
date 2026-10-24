@@ -2,28 +2,36 @@
 // Licensed under the Apache License, Version 2.0.
 
 import * as api from '../api';
-import type { UploadStatus } from '../types';
+import type { UploadDescriptor, UploadStatus } from '../types';
 import { randomUUID } from '../../utils/randomUUID';
 import { digest } from './digest';
 import { getApiBase } from '../../api';
 export const newId = () => randomUUID().replaceAll('-', '');
 const partSize = 4 * 1024 * 1024;
-export async function upload(dataset: string, file: File, progress: (text: string) => void, signal?: AbortSignal, register?: (id: string, key: string) => void): Promise<string> {
+export async function upload(dataset: string, file: File, progress: (text: string) => void, signal?: AbortSignal, register?: (id: string, key: string) => Promise<void>): Promise<UploadDescriptor> {
   if (Math.ceil(file.size / partSize) > 10000) throw new Error('File exceeds 10000 upload parts.');
   const md5 = await digest(file, signal, count => progress(`${file.name}: checksum ${count}/${file.size}`));
   const key = `crowdb.dataset.upload:${getApiBase()}:${dataset}:${file.size}:${md5}`;
   const saved = localStorage.getItem(key);
-  const id = saved ?? newId();
-  localStorage.setItem(key, id); register?.(id, key);
-  const path = `${api.datasetPath(dataset)}/uploads/${id}`;
+  let id = saved ?? newId();
+  localStorage.setItem(key, id); await register?.(id, key);
+  let path = `${api.datasetPath(dataset)}/uploads/${id}`;
+  const create = () => api.mutate<UploadStatus>('uploads', `${api.datasetPath(dataset)}/uploads`, 'POST', { id, length: String(file.size), part_size: partSize, md5 }, signal);
   let status: UploadStatus;
-  try { status = await api.control<UploadStatus>(path, 'GET', undefined, signal); }
-  catch (reason) {
-    if (!(reason instanceof api.DatasetError) || reason.status !== 404) throw reason;
-    status = await api.mutate<UploadStatus>('uploads', `${api.datasetPath(dataset)}/uploads`, 'POST', { id, length: String(file.size), part_size: partSize, md5 }, signal);
+  if (!saved) status = await create();
+  else {
+    try { status = await api.control<UploadStatus>(path, 'GET', undefined, signal); }
+    catch (reason) {
+      if (!(reason instanceof api.DatasetError) || reason.status !== 404) throw reason;
+      status = await create();
+    }
+    if (status.state === 'aborted') {
+      id = newId(); localStorage.setItem(key, id); await register?.(id, key);
+      path = `${api.datasetPath(dataset)}/uploads/${id}`; status = await create();
+    }
   }
   if (status.length !== String(file.size) || status.md5 !== md5 || status.part_size !== partSize) throw new Error('Reselected file does not match upload.');
-  if (status.state === 'complete' || status.state === 'claimed') return id;
+  if (status.state === 'complete' || status.state === 'claimed') return descriptor(status);
   if (status.state !== 'open') throw new Error('Upload was aborted. Start a new upload explicitly.');
   const received = new Set(status.parts.map(part => part.index));
   const count = Math.ceil(file.size / partSize);
@@ -38,5 +46,7 @@ export async function upload(dataset: string, file: File, progress: (text: strin
   }
   status = await api.mutate<UploadStatus>('uploads', `${path}/complete`, 'POST', undefined, signal);
   if (status.state !== 'complete' && status.state !== 'claimed') throw new Error('Upload did not complete. Inspect status before retrying.');
-  progress(`${file.name}: complete`); return id;
+  progress(`${file.name}: complete`); return descriptor(status);
 }
+
+const descriptor = (status: UploadStatus): UploadDescriptor => ({ id: status.id, length: status.length, md5: status.md5 });
