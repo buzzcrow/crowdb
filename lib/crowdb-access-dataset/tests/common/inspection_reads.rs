@@ -23,6 +23,8 @@ pub struct TestIndexReads {
     pub peak_pending: AtomicUsize,
     pub peak_reserved: AtomicUsize,
     pub total_bytes: AtomicUsize,
+    pub schema_scans: AtomicUsize,
+    pub member_scans: AtomicUsize,
     pub reads: Mutex<BTreeMap<Vec<u8>, usize>>,
 }
 
@@ -41,6 +43,8 @@ impl TestIndexReads {
     pub fn begin(&self) {
         self.reads.lock().unwrap().clear();
         self.total_bytes.store(0, Ordering::Relaxed);
+        self.schema_scans.store(0, Ordering::Relaxed);
+        self.member_scans.store(0, Ordering::Relaxed);
         self.reading.store(true, Ordering::Relaxed);
     }
     pub fn key(identity: &DatasetIdentity, snapshot: SnapshotId, kind: u8, suffix: &[&[u8]]) -> Vec<u8> {
@@ -118,6 +122,17 @@ impl DatasetStore for TestIndexReads {
         request: &MetadataScan,
         cancel: &ReadCancellation,
     ) -> Result<MetadataPage, StoreError> {
+        if request.prefix.starts_with(b"DS\0I\0") {
+            match request.prefix.last() {
+                Some(b'S') => {
+                    self.schema_scans.fetch_add(1, Ordering::Relaxed);
+                }
+                Some(b'M') => {
+                    self.member_scans.fetch_add(1, Ordering::Relaxed);
+                }
+                _ => {}
+            }
+        }
         let page = self.inner.scan_page(request, cancel).await?;
         self.total_bytes.fetch_add(
             page.entries

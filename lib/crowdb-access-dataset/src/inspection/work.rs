@@ -51,6 +51,9 @@ impl<'a> InspectionWork<'a> {
         cap: usize,
     ) -> Result<Option<StoredValue>, InspectionError> {
         let budget = self.budget(cap, 1)?;
+        if key.len() > budget.bytes {
+            return Err(InspectionError::Limit);
+        }
         let value = tokio::time::timeout(budget.timeout, self.store.get_bounded(key, budget, self.cancel))
             .await
             .map_err(|_| InspectionError::Limit)??;
@@ -85,6 +88,10 @@ impl<'a> InspectionWork<'a> {
                 }
                 let budget = self.budget(cap.min(available), 1)?;
                 let key = keys.next().ok_or(InspectionError::Corrupt)?;
+                // Missing values still consume their key's aggregate byte cost.
+                if key.len() > budget.bytes {
+                    return Err(InspectionError::Limit);
+                }
                 reserved += budget.bytes;
                 let store = self.store;
                 let cancel = self.cancel;

@@ -5,7 +5,7 @@ use super::{
     validate_delivery, AuthorityError, Continuation, DatasetError, DatasetIdentity, DatasetReads,
     ReadBinding, ReadSpec, SnapshotId,
 };
-use crate::{split::SplitSource, MetadataScanBudget, ReadCancellation};
+use crate::{inspection::work::InspectionWork, split::SplitSource, MetadataScanBudget, ReadCancellation};
 use std::time::Duration;
 
 pub(super) fn budget() -> MetadataScanBudget {
@@ -26,12 +26,14 @@ impl DatasetReads {
     ) -> Result<ReadBinding, AuthorityError> {
         validate_delivery(&spec)?;
         let snapshot = self.resolve_snapshot(identity, &spec.snapshot).await?;
-        self.authority
-            .require_committed_snapshot(identity, snapshot)
-            .await?;
         let split = if let Some(request) = &mut spec.split {
             let revision = match request.revision {
-                Some(revision) => revision,
+                Some(revision) => {
+                    self.authority
+                        .require_committed_snapshot(identity, snapshot)
+                        .await?;
+                    revision
+                }
                 None => self
                     .authority
                     .inspect_split_head(identity, snapshot)
@@ -40,9 +42,14 @@ impl DatasetReads {
                     .revision
                     .ok_or(AuthorityError::NotFound)?,
             };
+            // Both branches admitted this exact Snapshot in this request. Reuse that
+            // observation only while resolving its immutable Split resource.
+            let cancel = ReadCancellation::new();
+            let mut work = InspectionWork::new(self.authority.store.as_ref(), &cancel, budget())
+                .map_err(inspection_error)?;
             let record = self
                 .authority
-                .get_split_revision(identity, snapshot, revision, budget(), &ReadCancellation::new())
+                .read_admitted_split_revision(identity, snapshot, revision, &mut work)
                 .await
                 .map_err(split_error)?;
             if !record.splits.iter().any(|s| s.name == request.name) {
@@ -55,6 +62,9 @@ impl DatasetReads {
                 name: request.name.clone(),
             })
         } else {
+            self.authority
+                .require_committed_snapshot(identity, snapshot)
+                .await?;
             None
         };
         spec.snapshot = snapshot.to_string();

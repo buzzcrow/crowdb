@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{key, work::InspectionWork, InspectionError, InspectionSample};
+use super::{read::PreparedInspectionRead, work::InspectionWork, InspectionError, InspectionSample};
 use crate::{
     AuthorityError, DatasetAuthority, DatasetError, DatasetIdentity, MetadataScanBudget, ReadCancellation,
     SnapshotId,
@@ -36,36 +36,20 @@ impl DatasetAuthority {
         }
         let mut work = InspectionWork::new(self.store.as_ref(), cancel, budget)?;
         let summary = self.ready_inspection(identity, snapshot, &mut work).await?;
-        self.validate_inspection_projection(identity, &summary, fields, &mut work)
+        let schema = self
+            .validate_inspection_projection(identity, &summary, fields, &mut work)
             .await?;
-        let mut summaries = BTreeMap::from([(snapshot, summary)]);
-        let mut entries = Vec::new();
-        for id in ids {
-            if id.is_empty() || id.len() > 16 * 1024 {
-                return Err(InspectionError::Limit);
-            }
-            let mut member = key::scope(identity, snapshot, b'M').map_err(AuthorityError::from)?;
-            key::component(&mut member, id);
-            let row = work
-                .get(&member, 128 * 1024)
-                .await?
-                .ok_or(AuthorityError::Invalid(DatasetError::SampleNotFound))?;
-            let stored: Vec<u8> = serde_json::from_slice(&row.bytes).map_err(|_| InspectionError::Corrupt)?;
-            if stored != *id {
-                return Err(InspectionError::Corrupt);
-            }
-            let mut metadata = Vec::new();
-            for field in fields {
-                metadata.push(
-                    self.effective_field_metadata(identity, snapshot, id, field, &mut summaries, &mut work)
-                        .await?,
-                );
-            }
-            entries.push(InspectionSample {
-                sample_id: id.clone(),
-                fields: metadata,
-            });
+        if ids.iter().any(|id| id.is_empty() || id.len() > 16 * 1024) {
+            return Err(InspectionError::Limit);
         }
-        Ok(entries)
+        let mut read = PreparedInspectionRead {
+            authority: self,
+            identity,
+            snapshot,
+            schema,
+            summaries: BTreeMap::from([(snapshot, summary)]),
+        };
+        read.members(ids, &mut work).await?;
+        read.metadata_matrix(ids, fields, &mut work).await
     }
 }

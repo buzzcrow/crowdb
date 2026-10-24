@@ -123,7 +123,11 @@ impl PreparedInspectionRead<'_> {
         Ok(output)
     }
 
-    async fn members(&self, ids: &[Vec<u8>], work: &mut InspectionWork<'_>) -> Result<(), InspectionError> {
+    pub(super) async fn members(
+        &self,
+        ids: &[Vec<u8>],
+        work: &mut InspectionWork<'_>,
+    ) -> Result<(), InspectionError> {
         let prefix = key::scope(self.identity, self.snapshot, b'M').map_err(AuthorityError::from)?;
         for window in ids.chunks(16) {
             let keys = window

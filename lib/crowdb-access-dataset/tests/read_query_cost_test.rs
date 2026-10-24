@@ -98,3 +98,149 @@ async fn legacy_scan_replays_only_the_caller_checkpoint_without_writes() {
     assert!(completed.end);
     assert_eq!(store.writes.load(Ordering::Relaxed), writes);
 }
+
+async fn split_binding_fixture() -> (
+    Arc<access_store::TestAccessStore>,
+    DatasetReads,
+    DatasetIdentity,
+    SnapshotId,
+    SplitRevisionId,
+) {
+    use crowdb_access_dataset::split::*;
+    let store = access_store::TestAccessStore::shared();
+    let authority = Arc::new(DatasetAuthority::new(store.clone()));
+    let identity = DatasetIdentity::new(NamespacePath::root(), "bind-split-cost").unwrap();
+    authority.create_dataset(identity.clone()).await.unwrap();
+    let snapshot = authority
+        .publish_snapshot(&identity, None, publication::publication_manifest(1))
+        .await
+        .unwrap();
+    let input = SplitPreparation {
+        revision: SplitRevisionId::random(),
+        policy: SplitPolicy::default(),
+        splits: vec![DraftSplit {
+            name: SplitName::new("train").unwrap(),
+            definition: SplitDefinition::Selection(Selection::Prefix(b"sample".to_vec())),
+            origin: MembershipOrigin::Evaluated,
+        }],
+    };
+    authority
+        .prepare_split_revision(&identity, snapshot, &input, &ReadCancellation::new())
+        .await
+        .unwrap();
+    authority
+        .update_split_head(
+            &identity,
+            snapshot,
+            &SplitHeadUpdate {
+                revision: input.revision,
+                expected_revision: None,
+                expected_head: None,
+            },
+        )
+        .await
+        .unwrap();
+    (
+        store,
+        DatasetReads::new(authority),
+        identity,
+        snapshot,
+        input.revision,
+    )
+}
+fn binding_spec(snapshot: SnapshotId, revision: Option<SplitRevisionId>) -> ReadSpec {
+    ReadSpec {
+        snapshot: snapshot.to_string(),
+        selection: Selection::Prefix(b"sample".to_vec()),
+        fields: vec!["marker".into()],
+        batch_size: 1,
+        partition: ReadPartition {
+            worker: 0,
+            workers: 1,
+            rank: 0,
+            world_size: 1,
+        },
+        shuffle: None,
+        split: Some(ReadSplit {
+            name: split::SplitName::new("train").unwrap(),
+            revision,
+        }),
+    }
+}
+
+#[tokio::test]
+async fn explicit_split_binding_reuses_snapshot_admission() {
+    let (store, reads, identity, snapshot, revision) = split_binding_fixture().await;
+    let before = store.reads.load(Ordering::Relaxed) + store.bounded_reads.load(Ordering::Relaxed);
+    let admissions = store.admission_reads.load(Ordering::Relaxed);
+    let writes = store.writes.load(Ordering::Relaxed);
+    let binding = reads
+        .bind(&identity, binding_spec(snapshot, Some(revision)))
+        .await
+        .unwrap();
+    assert_eq!(binding.split.unwrap().revision, revision);
+    assert_eq!(
+        store.reads.load(Ordering::Relaxed) + store.bounded_reads.load(Ordering::Relaxed) - before,
+        3
+    );
+    assert_eq!(store.admission_reads.load(Ordering::Relaxed) - admissions, 1);
+    assert_eq!(store.writes.load(Ordering::Relaxed), writes);
+}
+
+#[tokio::test]
+async fn current_split_binding_admits_snapshot_once_before_resolving_the_resource() {
+    let (store, reads, identity, snapshot, revision) = split_binding_fixture().await;
+    let before = store.reads.load(Ordering::Relaxed) + store.bounded_reads.load(Ordering::Relaxed);
+    let admissions = store.admission_reads.load(Ordering::Relaxed);
+    let writes = store.writes.load(Ordering::Relaxed);
+    let binding = reads.bind(&identity, binding_spec(snapshot, None)).await.unwrap();
+    assert_eq!(binding.split.unwrap().revision, revision);
+    assert_eq!(
+        store.reads.load(Ordering::Relaxed) + store.bounded_reads.load(Ordering::Relaxed) - before,
+        4
+    );
+    assert_eq!(store.admission_reads.load(Ordering::Relaxed) - admissions, 1);
+    assert_eq!(store.writes.load(Ordering::Relaxed), writes);
+}
+
+#[tokio::test]
+async fn later_bindings_recheck_deletion_for_explicit_and_current_split_requests() {
+    let (store, reads, identity, snapshot, revision) = split_binding_fixture().await;
+    reads
+        .bind(&identity, binding_spec(snapshot, Some(revision)))
+        .await
+        .unwrap();
+    reads.bind(&identity, binding_spec(snapshot, None)).await.unwrap();
+    let authority = DatasetAuthority::new(store.clone());
+    let root = authority
+        .prepare_snapshot_candidate(
+            &identity,
+            None,
+            publication::publication_manifest(2),
+            OperationId::random(),
+        )
+        .await
+        .unwrap();
+    let head = authority.inspect_head(&identity).await.unwrap();
+    authority
+        .update_snapshot_head(
+            &identity,
+            &SnapshotHeadUpdate {
+                snapshot: root,
+                expected_head: head.generation,
+            },
+        )
+        .await
+        .unwrap();
+    authority.begin_reclaim(&identity, snapshot).await.unwrap();
+    let writes = store.writes.load(Ordering::Relaxed);
+    for revision in [Some(revision), None] {
+        let admissions = store.admission_reads.load(Ordering::Relaxed);
+        assert!(matches!(
+            reads.bind(&identity, binding_spec(snapshot, revision)).await,
+            Err(AuthorityError::SnapshotProtected)
+        ));
+        assert_eq!(store.admission_reads.load(Ordering::Relaxed) - admissions, 1);
+    }
+    assert_eq!(store.writes.load(Ordering::Relaxed), writes);
+}

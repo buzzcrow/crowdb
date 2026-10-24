@@ -47,7 +47,7 @@ impl PreparedInspectionRead<'_> {
             .collect()
     }
 
-    async fn metadata(
+    pub(super) async fn metadata(
         &mut self,
         requests: &[FieldRequest<'_>],
         work: &mut InspectionWork<'_>,
