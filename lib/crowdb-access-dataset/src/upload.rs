@@ -5,7 +5,7 @@
 
 mod expiry;
 pub use expiry::{UploadExpiryCursor, UploadExpiryStep};
-mod index;
+mod listing;
 mod ownership;
 mod parts;
 mod read;

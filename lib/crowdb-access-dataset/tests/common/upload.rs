@@ -23,6 +23,7 @@ pub struct TestStore {
     pub upload_reads: AtomicU64,
     pub admission_reads: AtomicU64,
     pub mutations: AtomicU64,
+    pub scans: AtomicU64,
 }
 #[async_trait]
 impl DatasetStore for TestStore {
@@ -65,6 +66,7 @@ impl DatasetStore for TestStore {
         request: &crowdb_access_dataset::MetadataScan,
         cancel: &crowdb_access_dataset::ReadCancellation,
     ) -> Result<crowdb_access_dataset::MetadataPage, crowdb_access_dataset::StoreError> {
+        self.scans.fetch_add(1, Ordering::Relaxed);
         request.validate()?;
         if cancel.is_cancelled() {
             return Err(crowdb_access_dataset::DatasetError::ReadCancelled.into());

@@ -61,11 +61,8 @@ async fn create_and_complete_return_known_results_without_confirmation_reads() {
         uploads.create(&key, 4, 4, declared.md5, 100).await.unwrap(),
         declared
     );
-    assert_eq!(
-        store.reads.load(Ordering::Relaxed),
-        1,
-        "only the part index is read"
-    );
+    assert_eq!(store.reads.load(Ordering::Relaxed), 0);
+    assert_eq!(store.scans.load(Ordering::Relaxed), 1);
     uploads
         .put_part(&key, 0, Bytes::from_static(b"data"), 1)
         .await
@@ -75,7 +72,7 @@ async fn create_and_complete_return_known_results_without_confirmation_reads() {
         let complete = uploads.complete(&key, 2).await.unwrap();
         assert_eq!(complete.state, UploadState::Complete);
         assert_eq!(complete.parts.len(), 1);
-        assert_eq!(store.reads.load(Ordering::Relaxed) - reads, 2);
+        assert_eq!(store.reads.load(Ordering::Relaxed) - reads, 1);
     }
 }
 
@@ -94,8 +91,8 @@ async fn successful_part_uses_its_known_write_intent_without_confirmation_get() 
         .put_part(&key, 0, Bytes::from_static(b"data"), 1)
         .await
         .unwrap();
-    assert_eq!(store.reads.load(Ordering::Relaxed) - reads, 6);
-    assert_eq!(store.mutations.load(Ordering::Relaxed) - writes, 4);
+    assert_eq!(store.reads.load(Ordering::Relaxed) - reads, 5);
+    assert_eq!(store.mutations.load(Ordering::Relaxed) - writes, 3);
     assert_eq!(uploads.complete(&key, 2).await.unwrap().parts, vec![part]);
 }
 
@@ -141,36 +138,35 @@ async fn accepting_a_known_intent_still_rejects_concurrent_reclamation() {
 }
 
 #[tokio::test]
-async fn four_index_conflicts_merge_other_parts_using_each_observation() {
+async fn accepted_part_reply_loss_needs_no_shared_index_repair_or_new_write() {
     let store = Arc::new(TestStore::default());
     let payloads = Arc::new(TestPayload::default());
     let uploads = DatasetUploads::new(store.clone(), payloads.clone());
     let key = location();
-    uploads.create(&key, 20, 4, [0; 16], 100).await.unwrap();
-    let mut parts = Vec::new();
-    let mut mutations = Vec::new();
-    for index in 1..5 {
-        parts.push(
-            uploads
-                .put_part(&key, index, Bytes::from_static(b"data"), 1)
-                .await
-                .unwrap(),
-        );
-        mutations.push(TestMutation::Conflict(serde_json::to_vec(&parts).unwrap()));
-    }
-    let mut index_key = key.clone();
-    index_key.extend_from_slice(b"\0I\0\0\0\0");
-    store.delete(&index_key).await.unwrap();
-    let fault = TestUploadFaultStore::new(store, index_key, mutations);
-    let uploads = DatasetUploads::new(fault.clone(), payloads);
-    let first = uploads
-        .put_part(&key, 0, Bytes::from_static(b"data"), 1)
+    uploads
+        .create(&key, 4, 4, Md5::digest(b"data").into(), 100)
         .await
         .unwrap();
-    assert_eq!(fault.reads.load(Ordering::Relaxed), 1);
-    assert_eq!(fault.writes.load(Ordering::Relaxed), 5);
-    parts.insert(0, first);
-    assert_eq!(uploads.get(&key).await.unwrap().parts, parts);
+    let mut part_key = key.clone();
+    part_key.extend_from_slice(b"\0P\0\0\0\0");
+    let fault = TestUploadFaultStore::new(
+        store,
+        part_key,
+        vec![TestMutation::Apply, TestMutation::Apply, TestMutation::LoseReply],
+    );
+    let uploads = DatasetUploads::new(fault.clone(), payloads);
+    assert!(matches!(
+        uploads.put_part(&key, 0, Bytes::from_static(b"data"), 1).await,
+        Err(UploadError::Store(_))
+    ));
+    assert_eq!(fault.writes.load(Ordering::Relaxed), 3);
+    let part = uploads
+        .put_part(&key, 0, Bytes::from_static(b"data"), 2)
+        .await
+        .unwrap();
+    assert_eq!(fault.reads.load(Ordering::Relaxed), 2);
+    assert_eq!(fault.writes.load(Ordering::Relaxed), 3);
+    assert_eq!(uploads.complete(&key, 3).await.unwrap().parts, vec![part]);
 }
 
 #[tokio::test]

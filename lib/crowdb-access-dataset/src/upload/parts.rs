@@ -73,9 +73,6 @@ impl DatasetUploads {
                 }
                 match existing.state {
                     PartState::Accepted => {
-                        if session.state == UploadState::Open {
-                            self.index_part(location, &existing.part).await?;
-                        }
                         return Ok(existing.part);
                     }
                     PartState::Intent => match self.payloads.durability(&existing.part.locations).await? {
@@ -161,7 +158,6 @@ impl DatasetUploads {
             CasOutcome::Conflict(Some(value)) if decode_part(&value.bytes)? == accepted => {}
             CasOutcome::Conflict(_) => return Err(UploadError::Conflict),
         }
-        self.index_part(location, &entry.part).await?;
         Ok(entry.part.clone())
     }
 

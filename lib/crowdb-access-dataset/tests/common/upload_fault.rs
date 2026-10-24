@@ -45,6 +45,14 @@ impl DatasetStore for TestUploadFaultStore {
         self.inner.get(key).await
     }
 
+    async fn scan_page(
+        &self,
+        request: &crowdb_access_dataset::MetadataScan,
+        cancel: &crowdb_access_dataset::ReadCancellation,
+    ) -> Result<crowdb_access_dataset::MetadataPage, StoreError> {
+        self.inner.scan_page(request, cancel).await
+    }
+
     async fn compare_exchange(
         &self,
         key: &[u8],

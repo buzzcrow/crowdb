@@ -248,9 +248,11 @@ registration generation, registry fence or durable scan cursor participates in
 creation, part upload or owner release. Corrupt/failed entries are reported and
 retried next cycle without starving subsequent records. Legacy registry pages are
 ignored. Claimed payloads and terminal owner revocation remain authoritative;
-removing an owner cannot release another owner's bytes. Accepted-part index pages
-remain bounded to 128 entries to avoid a point read for every part during listing
-and completion.
+removing an owner cannot release another owner's bytes. Immutable Accepted part
+records are the sole part-listing facts. Listing and completion scan at most
+128 records / 1 MiB per page, with sixteen concurrent disjoint prefixes of 256
+part IDs. A part write updates only its own record; it does not rewrite a shared
+index page. Legacy index records are ignored.
 
 Prepare validates the complete current sample membership, schema, parent and
 operation token, then persists an invisible candidate and claims completed
