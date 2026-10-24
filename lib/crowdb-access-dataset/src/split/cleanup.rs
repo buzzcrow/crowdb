@@ -25,28 +25,89 @@ pub struct SplitScratchCleanup {
     pub next_page: u64,
     pub complete: bool,
 }
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Cursor {
-    version: u16,
     revision: u64,
     page: u64,
     item: usize,
 }
+/// Opaque local work position bound to one historical Split draft.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SplitReclaimCursor {
+    pub(super) identity: DatasetIdentity,
+    pub(super) operation: OperationId,
+    progress: Cursor,
+}
+impl SplitReclaimCursor {
+    #[must_use]
+    pub fn new(identity: DatasetIdentity, operation: OperationId) -> Self {
+        Self {
+            identity,
+            operation,
+            progress: Cursor {
+                revision: 1,
+                page: 0,
+                item: 0,
+            },
+        }
+    }
+}
 impl DatasetAuthority {
+    /// Advances one bounded historical work window using a local cursor.
+    /// # Errors
+    /// Returns protected resources, corrupt facts, storage failures and work limits.
+    pub async fn advance_split_reclaim(
+        &self,
+        cursor: &mut SplitReclaimCursor,
+        cancel: &ReadCancellation,
+    ) -> Result<SplitScratchCleanup, SplitLifecycleError> {
+        if cancel.is_cancelled() {
+            return Err(crate::inspection::InspectionError::Cancelled.into());
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let result = self
+                .cleanup_split_scratch_step(&cursor.identity, cursor.operation, &mut cursor.progress, cancel)
+                .await?;
+            if result.complete {
+                self.store
+                    .delete(&state_key(
+                        b"DS\0SCG\0",
+                        &cursor.identity,
+                        cursor.operation,
+                        None,
+                    )?)
+                    .await?;
+            }
+            Ok(result)
+        })
+        .await
+        .map_err(|_| SplitLifecycleError::Limit)?
+    }
+    #[cfg(feature = "test-util")]
+    /// Advances an isolated historical scratch fixture.
+    /// # Errors
+    /// Returns protected resources, corrupt facts, storage failures and work limits.
+    pub async fn cleanup_split_scratch_step_for_tests(
+        &self,
+        cursor: &mut SplitReclaimCursor,
+        cancel: &ReadCancellation,
+    ) -> Result<SplitScratchCleanup, SplitLifecycleError> {
+        self.advance_split_reclaim(cursor, cancel).await
+    }
     /// Retires obsolete incomplete membership windows, preserving complete revision data.
     /// Each call processes at most twenty page references and retains small write fences.
     /// # Errors
     /// Rejects legacy drafts without work intents, live initial drafts, corruption and bounded-work failures.
-    pub async fn cleanup_split_scratch_step(
+    async fn cleanup_split_scratch_step(
         &self,
         identity: &DatasetIdentity,
         operation: OperationId,
+        cursor: &mut Cursor,
         cancel: &ReadCancellation,
     ) -> Result<SplitScratchCleanup, SplitLifecycleError> {
         tokio::time::timeout(
             Duration::from_secs(2),
-            self.cleanup_split_window(identity, operation, cancel),
+            self.cleanup_split_window(identity, operation, cursor, cancel),
         )
         .await
         .map_err(|_| SplitLifecycleError::Limit)?
@@ -55,12 +116,10 @@ impl DatasetAuthority {
         &self,
         identity: &DatasetIdentity,
         operation: OperationId,
+        cursor: &mut Cursor,
         cancel: &ReadCancellation,
     ) -> Result<SplitScratchCleanup, SplitLifecycleError> {
         let (_, state) = self.load_split_draft(identity, operation).await?;
-        if state.work_version != Some(1) {
-            return Err(SplitLifecycleError::Frozen);
-        }
         let mut work = InspectionWork::new(
             self.store.as_ref(),
             cancel,
@@ -73,6 +132,13 @@ impl DatasetAuthority {
         let retired = self
             .inspection_snapshot_retired(identity, state.record.snapshot, &mut work)
             .await?;
+        if state.work_version != Some(1) && !retired {
+            return Err(SplitLifecycleError::Frozen);
+        }
+        if retired {
+            self.require_legacy_scratch_reclaim_ready(identity, state.record.snapshot, cancel)
+                .await?;
+        }
         let complete_initial = state.initial
             && !retired
             && self
@@ -85,23 +151,18 @@ impl DatasetAuthority {
             .record
             .revision
             .checked_add(u64::from(
-                retired || complete_initial || matches!(state.record.progress, DraftProgress::Abandoned),
+                retired
+                    || complete_initial
+                    || matches!(
+                        state.record.progress,
+                        DraftProgress::Prepared { .. }
+                            | DraftProgress::Committing { .. }
+                            | DraftProgress::Published { .. }
+                            | DraftProgress::Abandoned
+                    ),
             ))
             .ok_or(SplitLifecycleError::Limit)?;
-        let cursor_key = state_key(b"DS\0SCG\0", identity, operation, None)?;
-        let stored = work.get(&cursor_key, 4096).await?;
-        let mut cursor: Cursor = stored.as_ref().map_or_else(
-            || {
-                Ok(Cursor {
-                    version: 1,
-                    revision: 1,
-                    page: 0,
-                    item: 0,
-                })
-            },
-            |v| super::codec::decode(&v.bytes),
-        )?;
-        if cursor.version != 1 || cursor.revision == 0 || cursor.revision > end {
+        if cursor.revision == 0 || cursor.revision > end {
             return Err(SplitLifecycleError::Corrupt);
         }
         if cursor.revision < end {
@@ -122,20 +183,10 @@ impl DatasetAuthority {
                 &super::key::membership_prefix(identity, state.record.snapshot, revision)
                     .map_err(AuthorityError::from)?,
                 !preserve,
-                &mut cursor,
+                cursor,
                 &mut work,
             )
             .await?;
-            let bytes = super::codec::encode(&cursor)?;
-            match self
-                .store
-                .compare_exchange(&cursor_key, stored.as_ref().map(|v| v.bytes.as_slice()), &bytes)
-                .await?
-            {
-                CasOutcome::Applied(_) => {}
-                CasOutcome::Conflict(Some(v)) if v.bytes == bytes => {}
-                CasOutcome::Conflict(_) => return Err(SplitLifecycleError::Conflict),
-            }
         }
         Ok(SplitScratchCleanup {
             input_revision: cursor.revision,

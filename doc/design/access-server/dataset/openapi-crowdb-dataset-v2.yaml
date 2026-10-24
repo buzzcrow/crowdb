@@ -790,20 +790,17 @@ paths:
     post:
       deprecated: true
       operationId: cleanupSplitDraft
-      summary: Retire obsolete Split work
+      summary: Retired Split cleanup action
       parameters:
       - $ref: '#/components/parameters/dataset'
       - in: path
         name: operation
         required: true
         schema: *id001
+      description: Returns unsupported after authentication and route validation, before storage. Background workers discover historical Split draft and work facts using local cursors. Readable Snapshot owners retain their deletion grace; permanently sealed incomplete roots do not require a reader deadline.
       responses:
-        '200':
-          description: Successful bounded operation. Integer counts are exact decimal strings.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SplitCleanup'
+        '501':
+          $ref: '#/components/responses/InspectionError'
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/uploads:
@@ -1643,17 +1640,6 @@ components:
           - type: 'null'
         uploads:
           $ref: '#/components/schemas/CompositionUploadStatus'
-    SplitCleanup:
-      type: object
-      additionalProperties: false
-      required:
-      - input_revision
-      - next_page
-      - complete
-      properties:
-        input_revision: {$ref: '#/components/schemas/Decimal'}
-        next_page: {$ref: '#/components/schemas/Decimal'}
-        complete: {type: boolean}
     CreateUpload:
       type: object
       additionalProperties: false

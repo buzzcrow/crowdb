@@ -15,12 +15,14 @@ pub struct CompositionCandidateCleanup {
 pub(super) struct CandidateCursor {
     revision: u64,
     indexes: crate::inspection::CandidateRetirementCursor,
+    split: Option<crate::split::SplitReclaimCursor>,
 }
 impl Default for CandidateCursor {
     fn default() -> Self {
         Self {
             revision: 1,
             indexes: crate::inspection::CandidateRetirementCursor::default(),
+            split: None,
         }
     }
 }
@@ -68,11 +70,18 @@ impl DatasetAuthority {
         if cursor.revision < end {
             let candidate = candidate_operation(operation, cursor.revision)?;
             if self
-                .retire_composition_candidate(identity, candidate, &mut cursor.indexes, cancel)
+                .retire_composition_candidate(
+                    identity,
+                    candidate,
+                    &mut cursor.indexes,
+                    &mut cursor.split,
+                    cancel,
+                )
                 .await?
             {
                 cursor.revision += 1;
                 cursor.indexes = crate::inspection::CandidateRetirementCursor::default();
+                cursor.split = None;
             }
         }
         Ok(CompositionCandidateCleanup {
@@ -85,6 +94,7 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         candidate: OperationId,
         indexes: &mut crate::inspection::CandidateRetirementCursor,
+        split: &mut Option<crate::split::SplitReclaimCursor>,
         cancel: &ReadCancellation,
     ) -> Result<bool, CompositionError> {
         let Some(record) = self.fence_candidate_reservation(identity, candidate).await? else {
@@ -111,10 +121,9 @@ impl DatasetAuthority {
         if !initial_exists {
             return Ok(true);
         }
-        match self
-            .cleanup_split_scratch_step(identity, split_operation, cancel)
-            .await
-        {
+        let split = split
+            .get_or_insert_with(|| crate::split::SplitReclaimCursor::new(identity.clone(), split_operation));
+        match self.advance_split_reclaim(split, cancel).await {
             Ok(progress) => Ok(progress.complete),
             Err(crate::split::SplitLifecycleError::NotFound) => Ok(true),
             Err(error) => Err(error.into()),

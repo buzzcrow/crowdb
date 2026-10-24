@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{target, CompositionReclaimCursor};
+use super::CompositionReclaimCursor;
 use crate::{
     composition::CompositionError, DatasetAuthority, DatasetUploads, MetadataScan, MetadataScanBudget,
     ReadCancellation,
@@ -97,7 +97,7 @@ impl DatasetAuthority {
             .await?;
         for (key, _) in &page.entries {
             cursor.after = Some(key.clone());
-            let (identity, operation) = target::decode(key)?;
+            let (identity, operation) = crate::key::decode_scoped_operation(key, b"DS\0CD\0")?;
             if !cursor
                 .pending
                 .iter()

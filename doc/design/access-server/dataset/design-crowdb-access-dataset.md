@@ -392,12 +392,19 @@ Composition evaluation work pages record their possible row writes before applyi
 those writes. Obsolete-window cleanup seals rows before sealing their work page,
 then seals the first absent work page to exclude delayed next-window creation.
 Split evaluation similarly registers immutable page keys/digests before writing
-members. Split cleanup processes at most twenty page references per step, retaining
-committed live revision data. Initial Split cleanup requires terminal retirement of
-its data Snapshot. Both cleanup cursors survive restart and preserve active input
-revisions. Split drafts without the work-intent format remain readable but are
-rejected by draft scratch cleanup; new roots carry an explicit work format marker
-that older strict decoders reject. Terminal Snapshot cleanup walks Dataset draft
+members. Split cleanup processes at most twenty page references per local window. A
+separate background queue discovers eight historical drafts / 9 MiB at a time and
+keeps at most 32 hints. Snapshot and Composition cleanup embed the same local
+Split cursor; no Split checkpoint or work-format migration is written. Restart
+repeats idempotent fences. Complete final roots preserve their member pages; an
+absent root competes with cleanup on that same key before member retirement.
+Readable Snapshot owners wait for the persisted deletion grace. A permanently
+sealed incomplete root can retire without creating or waiting for a reader
+deadline. Grace waiting and initial work still protected by a live owner leave
+the current queue pass and are rescanned after fifteen seconds. The retired
+HTTP Split cleanup action returns 501 before storage. Work-intent facts and
+negative fences remain; old drafts without that format are retired with their
+Snapshot metadata instead of receiving a process-format upgrade. Terminal Snapshot cleanup walks Dataset draft
 roots in resumable single-root windows, including drafts without a published
 revision summary. Under that terminal fence it can upgrade an older root's work
 marker before retiring its stored pages. Split revision summaries remain valid

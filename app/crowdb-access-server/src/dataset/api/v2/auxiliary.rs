@@ -75,13 +75,8 @@ impl DatasetHttpService {
                 );
             }
             (Method::POST, ["split-drafts", id, "cleanup"]) => {
-                read_body(request, false).await?;
-                let progress = authority
-                    .cleanup_split_scratch_step(identity, operation(id)?, &ReadCancellation::new())
-                    .await?;
-                return json(
-                    &serde_json::json!({"input_revision":progress.input_revision.to_string(),"next_page":progress.next_page.to_string(),"complete":progress.complete}),
-                );
+                operation(id)?;
+                return Err(ApiError::unsupported());
             }
             _ => return Err(ApiError::not_found()),
         }

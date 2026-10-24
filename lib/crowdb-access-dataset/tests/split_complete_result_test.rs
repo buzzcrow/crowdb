@@ -12,9 +12,10 @@ use crowdb_access_dataset::{composition::*, split::*, *};
 use std::sync::atomic::Ordering;
 
 async fn cleanup(authority: &DatasetAuthority, identity: &DatasetIdentity, operation: OperationId) {
+    let mut cursor = SplitReclaimCursor::new(identity.clone(), operation);
     for _ in 0..100 {
         if authority
-            .cleanup_split_scratch_step(identity, operation, &ReadCancellation::new())
+            .cleanup_split_scratch_step_for_tests(&mut cursor, &ReadCancellation::new())
             .await
             .unwrap()
             .complete
@@ -23,6 +24,30 @@ async fn cleanup(authority: &DatasetAuthority, identity: &DatasetIdentity, opera
         }
     }
     panic!("Split cleanup did not finish");
+}
+
+async fn interrupted_publication(
+    store: &dyn DatasetStore,
+    identity: &DatasetIdentity,
+    record: &SplitRevisionRecord,
+) {
+    let key = legacy::state_key(b"DS\0SD\0", identity, record.operation);
+    let old = store.get(&key).await.unwrap().unwrap();
+    let mut state: serde_json::Value = serde_json::from_slice(&old.bytes).unwrap();
+    state["record"]["progress"] = serde_json::json!(DraftProgress::Committing {
+        target: CommitTarget::SplitRevision {
+            snapshot: record.snapshot,
+            revision: record.revision
+        },
+        attempt: OperationId::random()
+    });
+    assert!(matches!(
+        store
+            .compare_exchange(&key, Some(&old.bytes), &serde_json::to_vec(&state).unwrap())
+            .await
+            .unwrap(),
+        CasOutcome::Applied(_)
+    ));
 }
 
 #[tokio::test]
@@ -48,6 +73,7 @@ async fn losing_pointer_cas_keeps_result_readable_without_split_proofs_or_writes
     ));
     let head = authority.inspect_split_head(&identity, snapshot).await.unwrap();
     assert_eq!(head.revision, Some(winner.revision));
+    interrupted_publication(store.as_ref(), &identity, &candidate).await;
     authority
         .abandon_split_draft(&identity, candidate.operation, 1)
         .await
@@ -140,7 +166,10 @@ async fn complete_root_with_lost_reply_survives_abandonment_and_cleanup_cas_race
     store.hide_revision_once.store(true, Ordering::Relaxed);
     let reads = store.revision_reads.load(Ordering::Relaxed);
     authority
-        .cleanup_split_scratch_step(&identity, operation, &ReadCancellation::new())
+        .cleanup_split_scratch_step_for_tests(
+            &mut SplitReclaimCursor::new(identity.clone(), operation),
+            &ReadCancellation::new(),
+        )
         .await
         .unwrap();
     assert_eq!(store.revision_reads.load(Ordering::Relaxed) - reads, 1);
@@ -182,6 +211,7 @@ async fn complete_root_with_lost_reply_survives_abandonment_and_cleanup_cas_race
 async fn cleanup_fences_missing_final_root_before_retiring_pages() {
     let (store, authority, identity, snapshot) = split_store::fixture().await;
     let record = legacy::prepared(store.as_ref(), &authority, &identity, snapshot, None).await;
+    interrupted_publication(store.as_ref(), &identity, &record).await;
     let root = key::revision(&identity, snapshot, record.revision).unwrap();
     // Recreate a producer paused before its final immutable write.
     store.delete(&root).await.unwrap();

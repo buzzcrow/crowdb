@@ -232,10 +232,23 @@ fn start_cleanup(
         let mut next_snapshot = tokio::time::Instant::now();
         let mut composition_cursor = crowdb_access_dataset::composition::CompositionReclaimSweep::default();
         let mut next_composition = tokio::time::Instant::now();
+        let mut split_cursor = crowdb_access_dataset::split::SplitReclaimSweep::default();
+        let mut next_split = tokio::time::Instant::now();
         let mut upload_cursor = UploadExpiryCursor::default();
         let mut next_upload = tokio::time::Instant::now();
         loop {
             tokio::select! {
+                () = tokio::time::sleep_until(next_split) => {
+                    let result = authority.reclaim_splits_page(&mut split_cursor,
+                        &crowdb_access_dataset::ReadCancellation::new()).await;
+                    let delay = if split_cursor.has_more() {
+                        if result.is_ok() { Duration::from_millis(50) } else { Duration::from_millis(500) }
+                    } else { Duration::from_secs(15) };
+                    next_split = tokio::time::Instant::now() + delay;
+                    if let Err(error) = result {
+                        tracing::error!(%error, "Dataset legacy Split cleanup failed; resource facts retained for retry");
+                    }
+                }
                 () = tokio::time::sleep_until(next_composition) => {
                     let result = authority.reclaim_compositions_page(&uploads, &mut composition_cursor,
                         &crowdb_access_dataset::ReadCancellation::new()).await;

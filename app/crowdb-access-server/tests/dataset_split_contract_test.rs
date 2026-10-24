@@ -114,7 +114,7 @@ async fn retired_split_workflow_writes_never_access_storage() {
     .await;
     let draft = format!("{root}/split-drafts/04040404040404040404040404040404");
     response(client.put(&draft).json(&json!({})), 501).await;
-    for suffix in ["evaluate", "prepare", "publish"] {
+    for suffix in ["evaluate", "prepare", "publish", "cleanup"] {
         response(client.post(format!("{draft}/{suffix}")).json(&json!({})), 501).await;
     }
     assert_eq!(

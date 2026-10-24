@@ -4,7 +4,6 @@
 //! Restartable cleanup of historical draft facts without process checkpoints.
 
 mod sweep;
-mod target;
 #[cfg(feature = "test-util")]
 mod test_hooks;
 pub use sweep::CompositionReclaimSweep;

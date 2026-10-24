@@ -259,8 +259,12 @@ progress or invoke draft APIs. Input and final bindings are bounded to 1 MiB and
 computation to 30 seconds. An identical complete result MUST be reusable without
 recomputation; different input at that ID MUST conflict. Incomplete work is retried
 from client inputs. SDKs MUST retain the same ID/input and never downgrade to a
-workflow mutation. Standalone begin/edit/evaluate/prepare/publish routes return
-501; legacy draft observation and cleanup are for existing records only.
+workflow mutation. Standalone begin/edit/evaluate/prepare/publish and cleanup
+routes return 501; legacy draft observation and abandonment remain available.
+Background cleanup MUST use local revision/page/item cursors and retain permanent
+final-root and member fences. Reader-visible Snapshot owners wait for their
+persisted deletion grace; incomplete content sealed at its final root has no
+admitted readers and MUST NOT wait for a missing deadline.
 Direct Split head updates MUST accept the complete resource ID and explicit
 nullable expected revision and head generation without an operation/attempt ID or
 draft lookup. A failed head condition MUST return the observed revision/generation,

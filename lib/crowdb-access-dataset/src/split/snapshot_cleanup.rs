@@ -16,6 +16,7 @@ pub struct SnapshotSplitCleanup {
     pub scanned_drafts: u64,
     pub complete: bool,
     identity: Option<DatasetIdentity>,
+    child: Option<super::SplitReclaimCursor>,
 }
 impl SnapshotSplitCleanup {
     #[must_use]
@@ -27,6 +28,7 @@ impl SnapshotSplitCleanup {
             scanned_drafts: 0,
             complete: false,
             identity: None,
+            child: None,
         }
     }
 }
@@ -113,20 +115,15 @@ impl DatasetAuthority {
             )
             .map_err(AuthorityError::from)?;
             if value.bytes != super::cleanup::SEALED {
-                let mut state = DraftState::decode(&value.bytes, operation)?;
+                let state = DraftState::decode(&value.bytes, operation)?;
                 if state.record.snapshot == snapshot {
-                    if state.work_version.is_none() {
-                        let old = state.clone();
-                        state.work_version = Some(1);
-                        self.replace_split_draft(identity, value, &old, &state).await?;
-                    }
-                    if !self
-                        .cleanup_split_scratch_step(identity, operation, cancel)
-                        .await?
-                        .complete
-                    {
+                    let child = progress
+                        .child
+                        .get_or_insert_with(|| super::SplitReclaimCursor::new(identity.clone(), operation));
+                    if !self.advance_split_reclaim(child, cancel).await?.complete {
                         return Ok(progress.clone());
                     }
+                    progress.child = None;
                 }
             }
             progress.after = Some(key.clone());

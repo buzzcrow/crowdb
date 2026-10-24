@@ -1,3 +1,6 @@
+mod operation;
+pub(crate) use operation::decode_scoped_operation;
+
 use crate::{DatasetError, DatasetIdentity, OperationId, SnapshotId};
 
 pub const DATASET_PREFIX: &[u8] = b"DS\0D\0";

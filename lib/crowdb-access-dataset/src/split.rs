@@ -41,12 +41,14 @@ mod state;
 pub use lifecycle::SplitLifecycleError;
 
 mod cleanup;
+mod reclamation;
+pub use reclamation::SplitReclaimSweep;
 mod snapshot_cleanup;
 pub use snapshot_cleanup::SnapshotSplitCleanup;
 mod evaluation;
 mod work;
-pub use cleanup::SplitScratchCleanup;
 pub(crate) use cleanup::SEALED as RETIRED_RECORD;
+pub use cleanup::{SplitReclaimCursor, SplitScratchCleanup};
 pub use evaluation::SplitPreview;
 
 mod preparation;

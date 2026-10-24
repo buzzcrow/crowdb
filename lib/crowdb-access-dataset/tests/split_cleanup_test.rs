@@ -9,9 +9,10 @@ mod split_store;
 use crowdb_access_dataset::{composition::DraftProgress, split::*, *};
 
 async fn finish(authority: &DatasetAuthority, identity: &DatasetIdentity, operation: OperationId) {
+    let mut cursor = SplitReclaimCursor::new(identity.clone(), operation);
     for _ in 0..100 {
         if authority
-            .cleanup_split_scratch_step(identity, operation, &ReadCancellation::new())
+            .cleanup_split_scratch_step_for_tests(&mut cursor, &ReadCancellation::new())
             .await
             .unwrap()
             .complete
@@ -203,9 +204,10 @@ async fn cleanup_chunks_large_overlap_windows() {
         .abandon_split_draft(&identity, operation, 1)
         .await
         .unwrap();
+    let mut cursor = SplitReclaimCursor::new(identity.clone(), operation);
     for _ in 0..2 {
         let progress = authority
-            .cleanup_split_scratch_step(&identity, operation, &ReadCancellation::new())
+            .cleanup_split_scratch_step_for_tests(&mut cursor, &ReadCancellation::new())
             .await
             .unwrap();
         assert!(!progress.complete);

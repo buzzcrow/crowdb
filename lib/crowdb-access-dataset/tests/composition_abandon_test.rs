@@ -13,7 +13,7 @@ mod legacy_split;
 mod publication;
 #[path = "common/split_store.rs"]
 mod split_store;
-use crowdb_access_dataset::{composition::*, *};
+use crowdb_access_dataset::{composition::*, split::SplitReclaimCursor, *};
 
 #[tokio::test]
 async fn abandoned_complete_composition_preserves_raw_candidate_and_initial_split() {
@@ -67,9 +67,10 @@ async fn abandoned_complete_composition_preserves_raw_candidate_and_initial_spli
         Some(parent)
     );
     let mut complete = false;
+    let mut cursor = SplitReclaimCursor::new(identity.clone(), split_operation);
     for _ in 0..100 {
         if authority
-            .cleanup_split_scratch_step(&identity, split_operation, &ReadCancellation::new())
+            .cleanup_split_scratch_step_for_tests(&mut cursor, &ReadCancellation::new())
             .await
             .unwrap()
             .complete

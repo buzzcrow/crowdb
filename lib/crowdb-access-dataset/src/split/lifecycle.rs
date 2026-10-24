@@ -73,10 +73,7 @@ impl DatasetAuthority {
         if matches!(state.record.progress, DraftProgress::Abandoned) {
             return Ok(state.record);
         }
-        if matches!(
-            state.record.progress,
-            DraftProgress::Published { .. } | DraftProgress::Committing { .. }
-        ) {
+        if matches!(state.record.progress, DraftProgress::Published { .. }) {
             return Err(SplitLifecycleError::Frozen);
         }
         let mut next = state.clone();

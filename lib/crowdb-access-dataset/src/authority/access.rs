@@ -191,6 +191,44 @@ impl DatasetAuthority {
         Ok(())
     }
 
+    /// Already-readable resources wait for deletion grace; sealed incomplete roots have no readers.
+    pub(crate) async fn require_legacy_scratch_reclaim_ready(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        cancel: &crate::ReadCancellation,
+    ) -> Result<(), AuthorityError> {
+        let stored = self
+            .store
+            .get_bounded(
+                &key::read_lease(identity, snapshot)?,
+                crate::MetadataScanBudget {
+                    items: 1,
+                    bytes: 256 * 1024,
+                    timeout: std::time::Duration::from_secs(2),
+                },
+                cancel,
+            )
+            .await?;
+        if let Some(value) = stored {
+            let access = decode_access(&value.bytes)?;
+            if access.retiring {
+                return if self.reclaim_time() < access.reclaim_after {
+                    Err(AuthorityError::ReclaimPending {
+                        reclaim_after: access.reclaim_after,
+                    })
+                } else {
+                    Ok(())
+                };
+            }
+        }
+        if self.seal_incomplete_snapshot(identity, snapshot).await? {
+            Err(AuthorityError::SnapshotProtected)
+        } else {
+            Ok(())
+        }
+    }
+
     // The per-authority clock override exists only in test builds.
     #[cfg_attr(not(feature = "test-util"), allow(clippy::unused_self))]
     fn reclaim_time(&self) -> u64 {

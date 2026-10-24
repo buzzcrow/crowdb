@@ -53,6 +53,8 @@ impl DatasetStore for TestReclaimStore {
             assert!(
                 ![
                     b"DS\0CD\0".as_slice(),
+                    b"DS\0SD\0",
+                    b"DS\0SCG\0",
                     b"DS\0CCP\0",
                     b"DS\0CCG\0",
                     b"DS\0CEG\0",
