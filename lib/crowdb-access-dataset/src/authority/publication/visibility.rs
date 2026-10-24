@@ -48,10 +48,10 @@ impl DatasetAuthority {
             }
             return Ok(true);
         }
-        if let Some(value) = work
+        let head = work
             .get(&crate::key::head(identity).map_err(AuthorityError::from)?, 8192)
-            .await?
-        {
+            .await?;
+        if let Some(value) = &head {
             if head_attempt(&value.bytes)?.is_some_and(|a| a.target == (CommitTarget::Snapshot { snapshot }))
             {
                 return Ok(true);
@@ -67,7 +67,21 @@ impl DatasetAuthority {
             super::legacy::validate_visibility(&value.bytes, snapshot)?;
             return Ok(true);
         }
-        Ok(false)
+        // A prepared modern candidate is not a legacy publication, even when
+        // a malformed old head happens to name it.
+        if work
+            .get(
+                &super::candidate::candidate_key(identity, snapshot).map_err(AuthorityError::from)?,
+                4096,
+            )
+            .await?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        Ok(self
+            .legacy_snapshot_visible(identity, snapshot, head.as_ref(), work)
+            .await?)
     }
 }
 

@@ -165,6 +165,28 @@ Dataset expiry 依赖 upload/part 记录，Iceberg discovery/write sweep 依赖 
 都不是“封口 chunk 范围减去全部存活引用”的独立扫描器。删除写前 intent 后，写出 payload
 而尚未保存结果就宕机会产生不可发现的范围。tree 内部 orphan 回收不能代替用户 payload GC。
 
+**继续核查（2026-10-24）**：生产 `chunkdb_rpc_service/mutations.rs::handle_delete_range`
+明确返回 `Unimplemented`，没有更新 used-range/bitmap；`reclaim_location` 将其当作 Deferred。
+因此测试替身返回 Reclaimed 不能证明实际范围已释放。底层依赖是
+[R95](../backlog/R95-chunkdb-chunk-range-delete.md)（范围资格与孤儿发现）及
+[R92](../backlog/R92-chunkdb-in-chunk-gc.md)（混存 strip 的物理回收，当前仅占位设计）。
+不能用“把 RPC 改为成功”或把共享 chunk 整块删除替代实现；R95 旧文档的 reader/session
+约束需按本计划已确认的删除 grace、part 期限重新整理。R168 的逐对象 cleanup record
+也不是本计划自动批准的新状态。涉及新持久化资源字段先列出用途、写入频率和替代方案。
+
+**需要 review 的物理资源事实（尚未实施）**：R95 若按范围逐步回收，需要在 chunk/strip
+元数据中保留已经判定死亡的精确区间及布局代际。它表示“哪些物理字节已经不可再引用”，
+不是 upload 的步骤、进度或 owner session；由后台 GC 按 chunk 合并写，前台上传不追加
+cleanup/journal RPC。现有 `usage_bitmap` 描述的粒度不能直接用于任意字节范围，不能把
+一个 frame 的删除向邻居取整。部分死亡 strip 暂时只记录死亡事实，释放整块分配或搬迁
+存活部分后才能报告物理 reclaimed；R92 负责后者及逻辑地址到新物理布局的映射。
+
+失败流程：GC 先完成发布隔离与活引用检查 → 以 chunk revision 条件更新死亡范围/布局 →
+物理释放。进程在二者间退出时，从资源事实重做释放；丢回复时重复操作不得伤及新代际。
+如果不保留死亡范围，每次必须重新从全部最终引用计算；可以先只释放完全无引用的整 chunk，
+但长期混存 chunk 的孤儿空间不会收敛，不能据此宣称 R4/R92 完成。这个容量与实现复杂度
+取舍需要用户确认后再扩充底层持久化结构；独立的 RPC/CAS 清理不受此决策影响。
+
 **已确认的期限与剩余工程证明**：未发布 part 过期后重传；不支持无限期稍后提交。
 仅在 Access 开始请求时检查期限仍有竞态：检查通过 → 发布 RPC 延迟 → GC 回收 → 迟到发布。
 必须在最终权威发布边界拒绝过期候选，或以资源代际/封口隔离迟到发布；等待若干分钟本身
@@ -308,8 +330,6 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 
 ### P11 — S3 object / bucket 发布
 
-- [ ] **P11.1 修复 bucket tombstone CAS 回路**：直接消费 observed active mapping/tombstone，
-  不接无意义 put-if-absent；保留名称唯一和删除重建代际。Files: S3 `bucket.rs`、`metadata/store.rs`。
 - [ ] **P11.2 锁定普通对象最小路径**：普通 PUT/DELETE 已为无条件 mutation，不加 GET/CAS；
   单独验证 conditional 请求和 multipart 发布，记录包括 bucket resolution 的端到端成本。Files: S3 `publication.rs`、`metadata/namespace.rs`、对象/桶测试。
 
@@ -404,6 +424,27 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P11.1**：bucket 首次 PutIfAbsent 后，tombstone 冲突直接沿 observed CAS；
+  active 直接返回，missing 才重新 PutIfAbsent。名称唯一、删除重建新代际和八次上限保留；
+  unknown 直接报错，无额外确认 GET。连续四次 tombstone 冲突总计五次 mutation，零 GET。
+  `bucket_cas_cost_test`、`bucket_namespace_test`、`publication_store_test` 共 12 项通过。
+- **2026-10-24，F2.1**：移除 bind、next、preview、非空 HTTP/native inspection batch 外层的
+  重复删除准入 GET；空/legacy batch 仍独立准入。bind 和 preview 各一次删除标记读取，
+  96 个并发 next 共 96 次；无 Split 的 HTTP next 加交付由四次降到两次，零 mutation。
+  selection→delivery 及大 group 多页复用尚未完成，仍由 F2/F3 跟踪。
+  Dataset `read_query_cost_test`、`read_query_edges_test`、`inspection_read_test`、`read_query_test`、
+  `split_read_query_test` 共 10 项；Access read-query/preview/batch cost 与 native read/payload
+  共 13 项通过，包含删除后拒绝 continuation 和跨实例重放。
+- **2026-10-24，P10.3**：旧 Snapshot 无 LC proof 时共用有界只读 ancestry 判断，不再读时补写。
+  现存 LC 继续验证；目标 Snapshot 身份/Published 状态必须正确，新候选不得走旧格式旁路。
+  inspection 共用调用者的总字节/时间/取消预算；已有 head 直接传入，不重复 GET。
+  `legacy_read_cost_test`、`legacy_publication_test`、`inspection_legacy_test`、
+  `candidate_publication_test`、`inspection_read_test` 共 17 项通过；覆盖重复/重建 authority
+  读取零写、Prepared/Aborted/身份损坏/循环拒绝、预算/取消和新候选不可见。
+- 上述测试均经 `pixi run cargo test`，HTTP/native 测试先执行 `pixi run clean-env`。
+  Dataset、S3、Access Server、native SDK 的 all-target/all-feature clippy、workspace fmt
+  通过；没有新增锁、unsafe、过程记录或 wire 字段。成本是逻辑调用数，不是 TPS 实测。
 
 - **2026-10-24，P1.1**：删除 TableLoader 持久化投影 GET、miss 填充和验证回执代码。
   冷读、重复读、32 个并发读取及 conditional GET 均无投影读取和 CAS；refs/all、ETag、

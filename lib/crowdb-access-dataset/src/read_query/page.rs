@@ -22,9 +22,6 @@ impl DatasetReads {
         cancel: &ReadCancellation,
     ) -> Result<ReadPage, AuthorityError> {
         let mut cursor = Continuation::decode(identity, token)?;
-        self.authority
-            .check_snapshot_readable(identity, cursor.snapshot)
-            .await?;
         let (mut ids, after) =
             tokio::time::timeout(Duration::from_secs(2), self.group(identity, &cursor, cancel))
                 .await

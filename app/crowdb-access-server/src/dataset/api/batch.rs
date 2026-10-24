@@ -82,7 +82,9 @@ impl DatasetHttpService {
         let id = snapshot(&request.snapshot)?;
         let ids = request.ids()?;
         let authority = self.reads.authority();
-        authority.check_snapshot_readable(identity, id).await?;
+        if ids.is_empty() || request.sample_id_limit.is_none() {
+            authority.check_snapshot_readable(identity, id).await?;
+        }
         let samples = if ids.is_empty() {
             Vec::new()
         } else if request.sample_id_limit.is_some() {

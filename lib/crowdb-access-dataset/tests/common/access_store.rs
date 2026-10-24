@@ -15,6 +15,7 @@ pub struct TestAccessStore {
     inner: dataset_store::TestDatasetStore,
     pub writes: AtomicU64,
     pub reads: AtomicU64,
+    pub admission_reads: AtomicU64,
     pub upload_conflicts: AtomicU64,
 }
 impl TestAccessStore {
@@ -26,6 +27,9 @@ impl TestAccessStore {
 impl DatasetStore for TestAccessStore {
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
         self.reads.fetch_add(1, Ordering::Relaxed);
+        if key.starts_with(b"DS\0L\0") {
+            self.admission_reads.fetch_add(1, Ordering::Relaxed);
+        }
         tokio::task::yield_now().await;
         self.inner.get(key).await
     }
@@ -35,6 +39,9 @@ impl DatasetStore for TestAccessStore {
         budget: MetadataScanBudget,
         cancel: &ReadCancellation,
     ) -> Result<Option<StoredValue>, StoreError> {
+        if key.starts_with(b"DS\0L\0") {
+            self.admission_reads.fetch_add(1, Ordering::Relaxed);
+        }
         self.inner.get_bounded(key, budget, cancel).await
     }
     async fn scan_page(

@@ -37,6 +37,27 @@ async fn split_read_continuation_replays_without_remote_progress_or_cleanup() {
     drop(client);
     test.stop().await;
 }
+
+#[tokio::test]
+async fn unsplit_delivery_has_no_outer_duplicate_admission_reads() {
+    use std::sync::atomic::Ordering;
+    let store = Arc::new(TestStore::default());
+    let test = TestDatasetHttp::start(store.clone()).await;
+    let client = Client::new();
+    let (root, _) = common::fixture(&client, &test.origin).await;
+    let mut request = plan();
+    request["split"] = Value::Null;
+    let binding = response(client.post(format!("{root}/reads/bind")).json(&request), 200).await;
+    let before = store.admission_reads.load(Ordering::Relaxed);
+    let writes = store.mutations.load(Ordering::Relaxed);
+    let page = batch(&client, &root, &binding["cursor"]).await;
+    assert_eq!(page["sample_ids"].as_array().unwrap().len(), 3);
+    // Selection and delivery still each own one bounded authority check.
+    assert_eq!(store.admission_reads.load(Ordering::Relaxed) - before, 2);
+    assert_eq!(store.mutations.load(Ordering::Relaxed), writes);
+    drop(client);
+    test.stop().await;
+}
 fn plan() -> Value {
     json!({"snapshot":"latest","selection":{"kind":"all"},"fields":["value"],"batch_size":3,
         "partition":{"worker":0,"workers":1,"rank":0,"world_size":1},"shuffle":null,

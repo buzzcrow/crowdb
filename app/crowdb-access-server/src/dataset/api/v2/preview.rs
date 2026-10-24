@@ -73,7 +73,6 @@ impl DatasetHttpService {
         }
         read_body(request, false).await?;
         let authority = self.reads.authority();
-        authority.check_snapshot_readable(identity, snapshot).await?;
         let mut rows = authority
             .resolve_inspection_batch_locators(
                 identity,

@@ -42,6 +42,12 @@ to stable identities, while object keys form an ordered namespace within a
 bucket identity. Object records select complete immutable data generations and
 carry the logical information needed for S3 reads and integrity checks.
 
+Bucket creation first attempts create-if-absent. A returned active mapping is
+the result; a tombstone is replaced with a fresh bucket identity through CAS.
+Definite conflicts reuse the returned mapping directly, with bounded attempts
+and no confirmation GET. Missing observations permit create-if-absent again.
+Transport errors propagate without treating an unknown result as a conflict.
+
 S3 is authoritative for bucket and object visibility, overwrite behavior,
 listing position, multipart publication, deletion, and S3 credentials. It
 stores opaque data references rather than physical storage topology.

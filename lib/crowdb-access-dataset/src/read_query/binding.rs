@@ -29,7 +29,6 @@ impl DatasetReads {
         self.authority
             .require_committed_snapshot(identity, snapshot)
             .await?;
-        self.authority.check_snapshot_readable(identity, snapshot).await?;
         let split = if let Some(request) = &mut spec.split {
             let revision = match request.revision {
                 Some(revision) => revision,

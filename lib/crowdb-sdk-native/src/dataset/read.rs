@@ -90,15 +90,15 @@ impl DatasetClient {
         next: Option<String>,
         end: bool,
     ) -> Result<ReadBatch> {
-        request
-            .run(async {
-                Ok(self
-                    .authority
-                    .check_snapshot_readable(&self.identity, batch.snapshot)
-                    .await?)
-            })
-            .await?;
         let samples = if batch.sample_ids.is_empty() {
+            request
+                .run(async {
+                    Ok(self
+                        .authority
+                        .check_snapshot_readable(&self.identity, batch.snapshot)
+                        .await?)
+                })
+                .await?;
             Vec::new()
         } else {
             request

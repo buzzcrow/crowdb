@@ -20,12 +20,16 @@ pub struct TestStore {
     values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
     pub reads: AtomicU64,
     pub upload_reads: AtomicU64,
+    pub admission_reads: AtomicU64,
     pub mutations: AtomicU64,
 }
 #[async_trait]
 impl DatasetStore for TestStore {
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
         self.reads.fetch_add(1, Ordering::Relaxed);
+        if key.starts_with(b"DS\0L\0") {
+            self.admission_reads.fetch_add(1, Ordering::Relaxed);
+        }
         if key.starts_with(b"DS\0U\0") {
             self.upload_reads.fetch_add(1, Ordering::Relaxed);
         }
@@ -37,6 +41,9 @@ impl DatasetStore for TestStore {
         budget: crowdb_access_dataset::MetadataScanBudget,
         cancel: &crowdb_access_dataset::ReadCancellation,
     ) -> Result<Option<StoredValue>, crowdb_access_dataset::StoreError> {
+        if key.starts_with(b"DS\0L\0") {
+            self.admission_reads.fetch_add(1, Ordering::Relaxed);
+        }
         budget.validate()?;
         if key.is_empty() || key.len() >= 64 * 1024 {
             return Err(crowdb_access_dataset::StoreError::Rejected);

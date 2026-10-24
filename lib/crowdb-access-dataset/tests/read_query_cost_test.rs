@@ -34,15 +34,19 @@ async fn binding_concurrent_fetch_and_cross_instance_replay_never_write() {
         shuffle: None,
         split: None,
     };
+    let admissions = store.admission_reads.load(Ordering::Relaxed);
     let bound = reads.bind(&identity, spec.clone()).await.unwrap();
+    assert_eq!(store.admission_reads.load(Ordering::Relaxed) - admissions, 1);
     let other = reads.bind(&identity, spec).await.unwrap();
     assert_eq!(bound.cursor, other.cursor);
     let cancel = ReadCancellation::new();
+    let admissions = store.admission_reads.load(Ordering::Relaxed);
     let pages =
         futures::future::join_all((0..96).map(|_| reads.next(&identity, &bound.cursor, &cancel))).await;
     for page in &pages {
         assert_eq!(page.as_ref().unwrap().ids, pages[0].as_ref().unwrap().ids);
     }
+    assert_eq!(store.admission_reads.load(Ordering::Relaxed) - admissions, 96);
     let restarted = DatasetReads::new(authority);
     restarted.next(&identity, &bound.cursor, &cancel).await.unwrap();
     assert_eq!(store.writes.load(Ordering::Relaxed), writes);

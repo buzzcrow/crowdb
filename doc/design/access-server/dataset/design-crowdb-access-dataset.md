@@ -292,6 +292,18 @@ perform admission, and reclaimed parts fail instead of producing successful EOF.
 The internal legacy scan adapter also returns a caller-owned cursor without
 loading or persisting progress. Requests have no shared inactivity TTL.
 
+Binding reuses its committed-Snapshot admission. Inspection-backed selection,
+preview and nonempty batch delivery perform admission inside their bounded
+resolver; wrappers do not repeat the same deletion lookup. Empty and legacy
+batch entry points retain independent admission. Selection and delivery remain
+separate bounded operations, each with its own admission.
+
+Legacy Snapshots without a stored visibility proof are checked against head and
+anchor ancestry using bounded, cancellable reads. The traversal validates the
+Snapshot identity and publication state, rejects cycles and never fills a
+persistent proof cache. Existing proofs remain readable; modern unpublished
+candidates cannot use legacy ancestry as evidence of publication.
+
 ### 10.3 Retention and reclaim flow
 
 Reclaim atomically fences new reads, invalidates stale head publishers with a

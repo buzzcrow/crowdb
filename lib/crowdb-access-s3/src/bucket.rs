@@ -52,6 +52,7 @@ pub async fn create_bucket(
     name: &[u8],
 ) -> Result<BucketId, BucketError> {
     let key = MetadataKey::bucket_name(tenant, name)?;
+    let mut expected = None;
     for _ in 0..8 {
         let record = BucketNameRecord {
             tenant: tenant.clone(),
@@ -59,20 +60,26 @@ pub async fn create_bucket(
             bucket_id: generator.next_id(),
             tombstone: false,
         };
-        match store.put_if_absent(key.clone(), record.encode()).await? {
-            PutIfAbsentOutcome::Inserted { .. } => return Ok(record.bucket_id),
-            PutIfAbsentOutcome::Existing(existing) => {
-                let observed = BucketNameRecord::decode(&existing.value)?;
-                if !observed.tombstone {
-                    return Ok(observed.bucket_id);
-                }
-                if store
-                    .compare_exchange(key.clone(), existing.value, record.encode())
-                    .await?
-                {
-                    return Ok(record.bucket_id);
-                }
+        let observed = if let Some(expected) = expected.take() {
+            let (applied, observed) = store
+                .compare_exchange_observed(key.clone(), expected, record.encode())
+                .await?;
+            if applied {
+                return Ok(record.bucket_id);
             }
+            observed
+        } else {
+            match store.put_if_absent(key.clone(), record.encode()).await? {
+                PutIfAbsentOutcome::Inserted { .. } => return Ok(record.bucket_id),
+                PutIfAbsentOutcome::Existing(existing) => Some(existing),
+            }
+        };
+        if let Some(existing) = observed {
+            let observed = BucketNameRecord::decode(&existing.value)?;
+            if !observed.tombstone {
+                return Ok(observed.bucket_id);
+            }
+            expected = Some(existing.value);
         }
     }
     Err(MetadataStoreError::Result("repeated bucket-name conflict").into())
