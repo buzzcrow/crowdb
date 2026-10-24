@@ -149,58 +149,29 @@ impl GcWorker {
             return Ok(true);
         }
         let key = crate::table::storage_head_key(table);
-        let slot = if let Some(value) = self
+        let current = self
             .repository
             .store
             .get(&key.encode()?)
             .await
-            .map_err(CatalogError::from)?
-        {
+            .map_err(CatalogError::from)?;
+        if task.kind == GcTaskKind::RetiredCatalog {
+            self.retire_table_slot(table, current.as_ref().map(|value| value.bytes.as_slice()))
+                .await?;
+            return Ok(false);
+        }
+        let slot = if let Some(value) = current {
             match StorageRecord::decode(&key, &value.bytes)? {
                 StorageRecord::RetiredTable(_) => crate::table::TableSlot::Retired,
-                StorageRecord::TableHead(_) if task.kind == GcTaskKind::RetiredCatalog => {
-                    return self.retire_legacy_head(&key, &value.bytes, table).await;
-                }
                 StorageRecord::TableHead(head) => crate::table::TableSlot::Existing(head),
                 _ => return Err(ValidationError::Record.into()),
             }
-        } else if task.kind == GcTaskKind::RetiredCatalog {
-            crate::table::retire_absent_table(self.repository.store.as_ref(), table).await?
         } else {
             return Ok(true);
         };
         // A final occupied head slot permanently excludes the old None-to-head write.
         Ok(matches!(slot, crate::table::TableSlot::Existing(head)
             if task.kind != GcTaskKind::RetiredCatalog && *head == operation.candidate))
-    }
-
-    async fn retire_legacy_head(
-        &self,
-        key: &crate::key::StorageKey,
-        expected: &[u8],
-        table: crate::file::TableLocation,
-    ) -> Result<bool, GcWorkError> {
-        let encoded = key.encode()?;
-        let bytes = StorageRecord::RetiredTable(table).encode()?;
-        match self
-            .repository
-            .store
-            .compare_exchange(
-                &encoded,
-                Some(expected),
-                &bytes,
-                crate::operation::mutation_identity(&encoded, Some(expected), &bytes),
-            )
-            .await
-            .map_err(CatalogError::from)?
-        {
-            crate::catalog::CasOutcome::Applied(_) => Ok(false),
-            crate::catalog::CasOutcome::Conflict(Some(observed)) => Ok(!matches!(
-                StorageRecord::decode(key, &observed.bytes)?,
-                StorageRecord::RetiredTable(_)
-            )),
-            crate::catalog::CasOutcome::Conflict(None) => Ok(true),
-        }
     }
 }
 

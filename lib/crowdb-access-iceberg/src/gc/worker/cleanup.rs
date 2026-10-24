@@ -154,15 +154,16 @@ impl GcWorker {
             match key.scope {
                 crate::key::TableStorageScope::Projection => {}
                 crate::key::TableStorageScope::Head => {
-                    if matches!(
-                        StorageRecord::decode_storage(
-                            &crate::key::StorageKey::NativeTable(key),
-                            &item.value
-                        )?,
-                        StorageRecord::RetiredTable(_)
-                    ) {
-                        continue;
+                    let storage = crate::key::StorageKey::NativeTable(key);
+                    match StorageRecord::decode_storage(&storage, &item.value)? {
+                        StorageRecord::TableHead(head) => {
+                            self.retire_table_slot(head.storage_location(), Some(&item.value))
+                                .await?;
+                        }
+                        StorageRecord::RetiredTable(_) => {}
+                        _ => return Err(ValidationError::Record.into()),
                     }
+                    continue;
                 }
                 crate::key::TableStorageScope::Operation => {
                     let StorageRecord::NativeInjection(receipt) = StorageRecord::decode_storage(
@@ -226,6 +227,15 @@ impl GcWorker {
         }
         match &record {
             StorageRecord::RetiredTable(_) => Ok(false),
+            StorageRecord::TableHead(head) => {
+                self.retire_table_slot(head.storage_location(), Some(bytes))
+                    .await?;
+                Ok(false)
+            }
+            StorageRecord::TableMapping(mapping) => {
+                self.retire_mapped_table(mapping.storage_location()).await?;
+                Ok(true)
+            }
             StorageRecord::File(_)
             | StorageRecord::DeletedFile(_)
             | StorageRecord::MultipartPart(_)

@@ -1015,6 +1015,18 @@ still retain their BlockIntent discovery facts. Both catalog cleanup layouts kee
 retirement records permanently and allow those terminal facts in their final empty
 proof; removing them would reopen a delayed expected-absent creation slot.
 
+Retired-catalog cleanup leaves a permanent retirement value at every discovered
+table head key. A scanned head uses an exact-value CAS with the scan bytes.
+Before removing a name mapping, cleanup reads its complete storage head key once
+and retires the absent slot or observed head. This is independent of creation
+journals, including a reserved name whose first head never won. One concurrent
+slot change can be consumed directly from the CAS observation; further changes
+leave the durable cleanup cursor unchanged. Unknown replies stop the step. A
+restarted worker recognizes the retirement value before removing the exact
+mapping. File authorities, range intents and GC candidates remain the physical
+discovery chain. Table purge keeps its tombstone head; this cleanup cannot retire
+a table in the current active catalog.
+
 An active catalog has a separate resource cleanup task for expired terminal parts,
 assembly checkpoints, explicit deleted-file records and unpublished initial
 metadata. It never infers missing snapshot references for other published files
@@ -1042,8 +1054,9 @@ owner are conservatively retained until that owner becomes unreachable.
 Final catalog cleanup verifies that all candidates are complete and that no owner
 is paused or quarantined. A durable retirement marker selects the cleanup owner
 and rejects stale GC mutations before bounded deletion of claims, candidates,
-proof pages, write fences and old tasks. Only the retired authority, winning task
-result and retirement marker remain. Late unfinished records stop cleanup.
+proof pages, write fences and old tasks. The retired authority, permanent table
+retirement values, winning task result and retirement marker remain. Late
+unfinished records stop cleanup.
 Uncertain progress responses are resolved by reading durable state; an unfenced
 live proof whose authority changed terminates without deleting files.
 
