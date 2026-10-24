@@ -8,8 +8,11 @@ mod common;
 mod fixture;
 
 use crowdb_access_iceberg::{
-    catalog::{CatalogRepository, ClearBounds},
+    catalog::{CatalogRepository, CatalogStore, ClearBounds},
     file::{FileGrantIssuer, FileOperation, TableLocation},
+    operation::mutation_identity,
+    record::StorageRecord,
+    table::storage_head_key,
     wire::BearerAuthenticator,
 };
 use fixture::TestTableHttp;
@@ -98,7 +101,37 @@ async fn draft(fixture: &TestTableHttp) -> Value {
 }
 
 #[tokio::test]
-async fn same_name_drafts_refresh_only_the_exact_original_writer_scope() {
+async fn unpublished_credentials_reject_a_storage_layout_different_from_catalog_authority() {
+    let fixture = TestTableHttp::vending().await;
+    let repository = CatalogRepository::new(fixture.store.clone(), ClearBounds::default()).unwrap();
+    assert_eq!(
+        repository.status().await.unwrap().1.storage_layout,
+        crowdb_access_iceberg::catalog::CatalogStorageLayout::Native
+    );
+    let staged = draft(&fixture).await;
+    let path = staged["config"]["client.refresh-credentials-endpoint"]
+        .as_str()
+        .unwrap();
+    let (route, query) = path.split_once('?').unwrap();
+    let wrong = format!(
+        "{route}?{}",
+        query
+            .split('&')
+            .filter(|field| !field.starts_with("storage-namespace-id="))
+            .collect::<Vec<_>>()
+            .join("&")
+    );
+    assert_ne!(wrong, path);
+    assert_eq!(fixture.request(Method::GET, path, "w", None).await.status(), 200);
+    let response = fixture.request(Method::GET, &wrong, "w", None).await;
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    assert_eq!(status, 404, "{body}");
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn client_prepared_tables_refresh_from_complete_identity_without_a_retained_draft() {
     let fixture = TestTableHttp::vending().await;
     let auth =
         BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap();
@@ -142,9 +175,10 @@ async fn same_name_drafts_refresh_only_the_exact_original_writer_scope() {
         assert_eq!(grant.grant().table, table.table);
         assert!(grant.grant().operations.allows(FileOperation::Put));
         let wrong = path.replace("/events/", "/other/");
+        // A table's storage identity is client-owned before first publication.
         assert_eq!(
             fixture.request(Method::GET, &wrong, "w", None).await.status(),
-            404
+            200
         );
         assert_eq!(
             fixture
@@ -171,22 +205,21 @@ async fn same_name_drafts_refresh_only_the_exact_original_writer_scope() {
             .status(),
         404
     );
-    expire_first(&fixture, &first, &second).await;
+    retire_first(&fixture, &first, &second).await;
     fixture.finish().await;
 }
 
-async fn expire_first(fixture: &TestTableHttp, first: &Value, second: &Value) {
+async fn retire_first(fixture: &TestTableHttp, first: &Value, second: &Value) {
     let first_table: TableLocation = format!("{}/", first["metadata"]["location"].as_str().unwrap())
         .parse()
         .unwrap();
-    let creator = crowdb_access_iceberg::commit::TableCreator::new(
-        fixture.store.clone(),
-        std::sync::Arc::new(blocks::TestFileBlocks::default()),
-    );
-    assert!(creator
-        .expire_stage(fixture.context, first_table.table, i64::MAX)
+    let key = storage_head_key(first_table).encode().unwrap();
+    let bytes = StorageRecord::RetiredTable(first_table).encode().unwrap();
+    fixture
+        .store
+        .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
         .await
-        .unwrap());
+        .unwrap();
     assert_eq!(
         fixture
             .request(

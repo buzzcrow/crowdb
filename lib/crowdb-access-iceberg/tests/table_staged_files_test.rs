@@ -26,12 +26,12 @@ mod snapshot;
 #[allow(dead_code)]
 mod staging;
 
-use crowdb_access_iceberg::{commit::TableCreatePhase, file::FileRepository, table::TableRepository};
+use crowdb_access_iceberg::{file::FileRepository, table::TableRepository};
 use serde_json::json;
 use staging::TestStaged;
 
 #[tokio::test]
-async fn staged_snapshot_publication_uses_client_prepared_files_without_deep_checks() {
+async fn initial_snapshot_uses_complete_client_material_without_stage_registration() {
     for rows in [10, 11] {
         let test = TestStaged::new().await;
         let mut request = test.commit_request().await;
@@ -52,6 +52,9 @@ async fn staged_snapshot_publication_uses_client_prepared_files_without_deep_che
             files.publish(test.namespace.context, file).await.unwrap();
         }
         let mut body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        // The complete input owns its storage identity; no retained stage binds it.
+        // Match the actual fixture files rather than the stage's fresh suggestion.
+        body["updates"][8]["location"] = json!(fixture::table().to_string().trim_end_matches('/'));
         body["updates"][2]["schema"] = json!({"type":"struct","schema-id":0,"fields":[
             {"id":3,"name":"value","required":false,"type":"long"}
         ]});
@@ -63,7 +66,6 @@ async fn staged_snapshot_publication_uses_client_prepared_files_without_deep_che
         ]);
         request.body = serde_json::to_vec(&body).unwrap();
         let outcome = test.creator().commit_staged(&request).await.unwrap();
-        let operation = test.operation().await;
         let selected = TableRepository::new(test.namespace.store.clone())
             .select(test.namespace.context, test.parent.namespace, "events")
             .await
@@ -71,9 +73,8 @@ async fn staged_snapshot_publication_uses_client_prepared_files_without_deep_che
         assert_eq!(outcome.status, 200);
         assert!(selected.is_some());
         assert_eq!(
-            test.response(&outcome).await["metadata"]["current-snapshot-id"],
+            TestStaged::response(&outcome)["metadata"]["current-snapshot-id"],
             99
         );
-        assert_eq!(operation.phase, TableCreatePhase::Complete);
     }
 }

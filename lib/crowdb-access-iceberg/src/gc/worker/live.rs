@@ -106,7 +106,7 @@ impl GcWorker {
                 continue;
             }
             let record = StorageRecord::decode(&key, &item.value)?;
-            if super::inactive::protects(task, &record, now_ms, grace_ms) {
+            if self.record_protected(task, &record, now_ms, grace_ms).await? {
                 next.stalled = GcStalledReason::Protected;
                 next.scan_after.clear();
                 if task.fenced {

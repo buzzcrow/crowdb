@@ -3,12 +3,11 @@ use std::sync::Arc;
 use crowdb_access_iceberg::{
     commit::{
         CandidateAuxiliaryLimits, CandidateSnapshotLimits, EvaluationLimits, RequirementLimits,
-        StagedCommitLimits, StagedCommitRequest, TableCommitOutcome, TableCreateJournal,
-        TableCreateOperation, TableCreationRequest, TableCreator,
+        StagedCommitLimits, StagedCommitRequest, TableCreationOutcome, TableCreationRequest, TableCreator,
     },
     key::OperationId,
     namespace::{NamespaceAuthority, NamespaceDropRequest},
-    operation::{PayloadStore, RequestIdentity},
+    operation::RequestIdentity,
 };
 use serde_json::{json, Value};
 
@@ -68,31 +67,21 @@ impl TestStaged {
         TableCreator::new(self.namespace.store.clone(), self.blocks.clone()).with_staged_limits(limits())
     }
 
-    pub async fn stage(&self) -> TableCommitOutcome {
-        self.creator().stage(&self.request, 2000).await.unwrap()
+    pub async fn stage(&self) -> TableCreationOutcome {
+        self.creator().stage(&self.request).await.unwrap()
     }
 
-    pub async fn operation(&self) -> TableCreateOperation {
-        TableCreateJournal::new(self.namespace.store.clone())
-            .load(self.namespace.context, self.request.identity.operation)
-            .await
-            .unwrap()
-            .unwrap()
-    }
-
-    pub async fn response(&self, outcome: &TableCommitOutcome) -> Value {
-        serde_json::from_slice(
-            &PayloadStore::new(self.namespace.store.clone())
-                .get(&outcome.body)
-                .await
-                .unwrap(),
-        )
-        .unwrap()
+    pub fn response(outcome: &TableCreationOutcome) -> Value {
+        serde_json::from_slice(&outcome.body).unwrap()
     }
 
     pub async fn commit_request(&self) -> StagedCommitRequest {
         let staged = self.stage().await;
-        let response = self.response(&staged).await;
+        self.commit_from(&staged)
+    }
+
+    pub fn commit_from(&self, staged: &TableCreationOutcome) -> StagedCommitRequest {
+        let response = Self::response(staged);
         let value = &response["metadata"];
         let body = json!({"requirements":[{"type":"assert-create"}],"updates":[
             {"action":"assign-uuid","uuid":value["table-uuid"]},

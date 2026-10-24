@@ -221,7 +221,7 @@ impl GcWorker {
             return Ok(false);
         }
         let record = StorageRecord::decode(key, bytes)?;
-        if super::inactive::protects(task, &record, now_ms, grace_ms) {
+        if self.record_protected(task, &record, now_ms, grace_ms).await? {
             return Err(CatalogError::Busy.into());
         }
         match &record {

@@ -189,8 +189,9 @@ async fn staged_create_is_invisible_until_standard_assert_create_commit() {
     let identity = key();
     let committed = value(fixture.post(TABLE, "w", Some(&identity), &body).await, 200).await;
     assert_eq!(committed["metadata"]["table-uuid"], metadata["table-uuid"]);
+    value(fixture.post(TABLE, "w", Some(&identity), &body).await, 409).await;
     assert_eq!(
-        value(fixture.post(TABLE, "w", Some(&identity), &body).await, 200).await,
+        value(fixture.request(Method::GET, TABLE, "r", None).await, 200).await,
         committed
     );
     assert_eq!(

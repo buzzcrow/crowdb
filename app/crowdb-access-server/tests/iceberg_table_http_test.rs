@@ -270,8 +270,8 @@ async fn corrupt_authority_cannot_become_not_modified() {
     let fixture = TestTableHttp::new().await;
     let (mut head, _) = fixture.install("events").await;
     head.metadata_digest[0] ^= 1;
-    fixture.put(
-        &crowdb_access_iceberg::table::head_key(head.catalog, head.table),
+    fixture.put_storage(
+        &crowdb_access_iceberg::table::storage_head_key(head.storage_location()),
         &crowdb_access_iceberg::record::StorageRecord::TableHead(Box::new(head)),
     );
     assert_eq!(

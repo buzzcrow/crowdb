@@ -1,5 +1,5 @@
 use super::{
-    Arc, CatalogContext, CatalogError, CatalogStore, Error, NamespaceStore, OperationId, Phase, TableCreator,
+    Arc, CatalogContext, CatalogError, CatalogStore, Error, NamespaceStore, OperationId, TableCreator,
 };
 use crate::{
     error::ValidationError,
@@ -23,7 +23,9 @@ impl TableCreator {
             staged_limits: None,
             response_reserve: 0,
         };
-        let operation = creator.journal().load(context, identity).await?;
+        let operation = super::TableCreateJournal::new(creator.store.clone())
+            .load(context, identity)
+            .await?;
         let Some(operation) = operation else {
             return Box::pin(
                 crate::table::TableLifecycles::from_parts(creator.store, creator.names)
@@ -31,22 +33,11 @@ impl TableCreator {
             )
             .await;
         };
-        if operation.candidate.namespace != holder
-            || !matches!(
-                operation.phase,
-                Phase::Admitting
-                    | Phase::Admitted
-                    | Phase::Publishing
-                    | Phase::Published
-                    | Phase::Complete
-                    | Phase::Aborting
-                    | Phase::Aborted
-            )
-        {
+        if operation.candidate.namespace != holder {
             return Err(ValidationError::IdentityMismatch.into());
         }
         creator
-            .resume_with_budget(context, identity, budget)
+            .reconcile_legacy(&operation)
             .await
             .map_err(catalog_error)?;
         Ok(())
@@ -66,7 +57,9 @@ impl TableCreator {
             staged_limits: None,
             response_reserve: 0,
         };
-        let operation = creator.journal().load(context, mapping.operation).await?;
+        let operation = super::TableCreateJournal::new(creator.store.clone())
+            .load(context, mapping.operation)
+            .await?;
         let Some(operation) = operation else {
             return Box::pin(
                 crate::table::TableLifecycles::from_parts(creator.store, creator.names)
@@ -78,7 +71,7 @@ impl TableCreator {
             return Err(ValidationError::IdentityMismatch.into());
         }
         creator
-            .resume_with_budget(context, mapping.operation, budget)
+            .reconcile_legacy(&operation)
             .await
             .map_err(catalog_error)?;
         Ok(())

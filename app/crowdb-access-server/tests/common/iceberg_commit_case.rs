@@ -105,7 +105,10 @@ impl TestCommitCase {
     }
 
     pub async fn replay(&self, endpoint: &str) -> Value {
-        if self.path == "/v1/namespaces/analytics/tables" && !self.staged {
+        if self.staged {
+            return self.retry_client_stage(endpoint).await;
+        }
+        if self.generation == 1 {
             return self.retry_complete_creation(endpoint).await;
         }
 
@@ -135,17 +138,11 @@ impl TestCommitCase {
             .unwrap();
         let status = loaded.status();
         let loaded = loaded.text().await.unwrap();
-        if self.staged {
-            assert_eq!(status, 404, "{loaded}");
-        } else {
-            assert_eq!(status, 200, "{loaded}");
-            let loaded: Value = serde_json::from_str(&loaded).unwrap();
-            let result: Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(loaded["metadata-location"], result["metadata-location"]);
-            if self.generation == 2 {
-                assert_eq!(loaded["metadata"]["properties"]["owner"], "after");
-            }
-        }
+        assert_eq!(status, 200, "{loaded}");
+        let loaded: Value = serde_json::from_str(&loaded).unwrap();
+        let result: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(loaded["metadata-location"], result["metadata-location"]);
+        assert_eq!(loaded["metadata"]["properties"]["owner"], "after");
         serde_json::from_slice(&bytes).unwrap()
     }
     async fn retry_complete_creation(&self, endpoint: &str) -> Value {
@@ -183,13 +180,26 @@ impl TestCommitCase {
         if let Some(first) = first {
             assert_eq!(loaded["metadata-location"], first["metadata-location"]);
         }
-        let mut input: Value = serde_json::from_str(&self.body).unwrap();
-        input["properties"]
-            .as_object_mut()
-            .unwrap()
+        let input: Value = serde_json::from_str(&self.body).unwrap();
+        let mut properties = input
+            .get("properties")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(updates) = input.get("updates").and_then(Value::as_array) {
+            for update in updates
+                .iter()
+                .filter(|update| update["action"] == "set-properties")
+            {
+                properties.extend(update["updates"].as_object().unwrap().clone());
+            }
+            assert_eq!(loaded["metadata"]["location"], input["updates"][8]["location"]);
+            assert_eq!(loaded["metadata"]["table-uuid"], input["updates"][0]["uuid"]);
+        }
+        properties
             .entry("write.parquet.compression-codec")
             .or_insert(json!("zstd"));
-        assert_eq!(loaded["metadata"]["properties"], input["properties"]);
+        assert_eq!(loaded["metadata"]["properties"], Value::Object(properties));
         let duplicate = post(endpoint, &self.path, &self.identity, &self.body)
             .await
             .unwrap();
@@ -197,6 +207,34 @@ impl TestCommitCase {
         let bytes = duplicate.bytes().await.unwrap();
         assert_eq!(status, 409, "{}", String::from_utf8_lossy(&bytes));
         loaded
+    }
+
+    async fn retry_client_stage(&self, endpoint: &str) -> Value {
+        let first = post(endpoint, &self.path, &self.identity, &self.body)
+            .await
+            .unwrap();
+        let status = first.status();
+        let body = first.text().await.unwrap();
+        assert_eq!(status, 200, "{body}");
+        let first: Value = serde_json::from_str(&body).unwrap();
+        let retry = post(endpoint, &self.path, &self.identity, &self.body)
+            .await
+            .unwrap();
+        let status = retry.status();
+        let body = retry.text().await.unwrap();
+        assert_eq!(status, 200, "{body}");
+        let retry: Value = serde_json::from_str(&body).unwrap();
+        assert_ne!(first["metadata"]["location"], retry["metadata"]["location"]);
+        assert_ne!(first["metadata"]["table-uuid"], retry["metadata"]["table-uuid"]);
+        assert_eq!(first["metadata"]["schemas"], retry["metadata"]["schemas"]);
+        let loaded = Client::new()
+            .get(format!("{endpoint}/v1/namespaces/analytics/tables/{}", self.name))
+            .bearer_auth("r".repeat(32))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(loaded.status(), 404, "{}", loaded.text().await.unwrap());
+        first
     }
 }
 

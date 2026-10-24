@@ -104,7 +104,7 @@ async fn table_publication_recovers_before_and_after_every_durable_write() {
             );
             // The native tree persists data and its owner-bound directory before publication.
             assert_eq!(count, 6);
-        } else if kind == "create" {
+        } else if matches!(kind, "create" | "publish-stage") {
             assert_eq!(
                 labels,
                 BTreeSet::from([
@@ -118,7 +118,8 @@ async fn table_publication_recovers_before_and_after_every_durable_write() {
             );
             assert_eq!(count, 8);
         } else {
-            assert!(labels.iter().any(|label| label.starts_with("create-")));
+            assert_eq!(count, 0, "stage must not create process or resource records");
+            assert!(labels.is_empty());
         }
         if kind != "stage" {
             assert!(
@@ -160,6 +161,14 @@ async fn baseline(stack: &common::TestCommitFixture, directory: &Path, kind: &st
     let status = response.status();
     let body = response.text().await.unwrap();
     assert_eq!(status, 200, "{body}");
+    if kind == "stage" {
+        assert!(
+            !child.marker.exists(),
+            "pure stage must not perform durable writes"
+        );
+        case.replay(&format!("http://{}", child.address)).await;
+        return 0;
+    }
     let marker: Value = serde_json::from_slice(&std::fs::read(&child.marker).unwrap()).unwrap();
     usize::try_from(marker["index"].as_u64().unwrap()).unwrap()
 }

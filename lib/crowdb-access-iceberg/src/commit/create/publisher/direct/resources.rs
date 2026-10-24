@@ -10,11 +10,12 @@ use crate::{
 };
 
 impl TableCreator {
-    pub(super) async fn publish_direct_creation(
+    pub(in crate::commit::create::publisher) async fn publish_direct_creation(
         &self,
         context: CatalogContext,
         parent: &NamespaceAuthority,
         head: TableHead,
+        reservation: OperationId,
     ) -> Result<(), Error> {
         let mapping = TableMapping {
             catalog: head.catalog,
@@ -23,7 +24,7 @@ impl TableCreator {
             name: head.name.clone(),
             table: head.table,
             name_epoch: head.name_epoch,
-            operation: OperationId::random(),
+            operation: reservation,
             state: TableMappingState::Reserved,
         };
         self.reserve_direct(context, &mapping).await?;
@@ -46,7 +47,9 @@ impl TableCreator {
                 .await?;
             return Err(Error::NamespaceMissing);
         }
-        let key = storage_head_key(head.storage_location()).encode()?;
+        let head_key = storage_head_key(head.storage_location());
+        let key = head_key.encode()?;
+        let uuid = head.table_uuid;
         let bytes = StorageRecord::TableHead(Box::new(head)).encode()?;
         match self
             .store
@@ -56,6 +59,16 @@ impl TableCreator {
         {
             CasOutcome::Applied(_) => {}
             CasOutcome::Conflict(Some(current)) if current.bytes == bytes => {}
+            CasOutcome::Conflict(Some(current)) => {
+                let mut published = mapping.clone();
+                published.state = TableMappingState::Published;
+                if matches!(StorageRecord::decode(&head_key, &current.bytes)?, StorageRecord::TableHead(head) if published.resolves(&head) && head.table_uuid == uuid)
+                {
+                    self.publish_direct_name(&mapping).await?;
+                    return Err(Error::TableExists);
+                }
+                return Err(CatalogError::Conflict.into());
+            }
             CasOutcome::Conflict(_) => return Err(CatalogError::Conflict.into()),
         }
         self.publish_direct_name(&mapping).await

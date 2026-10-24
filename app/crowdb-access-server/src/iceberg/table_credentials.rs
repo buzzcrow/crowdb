@@ -5,9 +5,8 @@ use crowdb_access_iceberg::{
         CatalogAuthority, CatalogContext, CatalogLifecycle, CatalogRepository, CatalogStore, FormatAction,
         RootState,
     },
-    commit::{TableCreateJournal, TableCreatePhase},
     file::FileGrantIssuer,
-    key::{NamespaceId, OperationId, TableId},
+    key::{NamespaceId, TableId},
     namespace::{NamespaceIdentifier, NamespaceRepository, NamespaceStore},
     table::{storage_head_key, TableLifecycle, TableRepository},
     wire::{
@@ -76,6 +75,12 @@ impl TableFileConfig {
                     .ok_or_else(service_unavailable)?;
                 write!(endpoint, "&storage-namespace-id={namespace}").expect("string writes do not fail");
             }
+        }
+        if target.staged {
+            let endpoint = properties
+                .get_mut("client.refresh-credentials-endpoint")
+                .ok_or_else(service_unavailable)?;
+            write!(endpoint, "&format-version={}", target.version).expect("string writes do not fail");
         }
         let credentials = FileDelegationLimits {
             ttl_ms: 900_000,
@@ -197,7 +202,12 @@ impl TableCredentials {
         request: &Request<hyper::body::Incoming>,
     ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
         let (namespace, name) = credential_target(request)?;
-        let (selector, storage_namespace, cleanup) = selector(request.uri().query())?;
+        let FileCredentialSelector {
+            table: selector,
+            namespace: storage_namespace,
+            cleanup,
+            version,
+        } = selector(request.uri().query())?;
         let now = now_ms()?;
         if let (Some(table), Some(namespace)) = (selector, storage_namespace) {
             if let Some(target) = self.native_target(context, table, namespace, cleanup).await? {
@@ -217,7 +227,7 @@ impl TableCredentials {
             .select(context, parent.namespace, &name)
             .await
             .map_err(|_| service_unavailable())?;
-        let mut ttl_ms = 900_000;
+        let ttl_ms = 900_000;
         let (table, version, staged, storage_namespace) = if let Some(selected) =
             selected.filter(|selected| selector.map_or(true, |table| table == selected.head.table))
         {
@@ -233,49 +243,37 @@ impl TableCredentials {
             )
         } else {
             let table = selector.ok_or_else(missing_table)?;
-            let identity = OperationId::from_bytes(table.as_bytes()).map_err(|_| bad_request())?;
-            let journal = TableCreateJournal::new(self.store.clone());
-            let operation = journal
-                .load(context, identity)
-                .await
-                .map_err(|_| service_unavailable())?
-                .ok_or_else(missing_table)?;
-            let stage = operation.stage.as_ref().ok_or_else(missing_table)?;
+            let version = version.ok_or_else(bad_request)?;
             if !principal.namespace_write
-                || operation.principal != principal.name
-                || operation.namespace != namespace
-                || operation.candidate.namespace != parent.namespace
-                || operation.candidate.name != name
-                || operation.candidate.table != table
-                || operation.phase != TableCreatePhase::Staged
-                || storage_namespace.is_some_and(|namespace| {
-                    operation.candidate.storage_location().storage_namespace != Some(namespace)
-                })
+                || cleanup
+                || parent.lifecycle != crowdb_access_iceberg::namespace::NamespaceLifecycle::Ready
+                || storage_namespace.is_some_and(|identity| identity != parent.namespace)
             {
                 return Err(missing_table());
             }
-            let expires = u64::try_from(stage.expires_ms).map_err(|_| service_unavailable())?;
-            ttl_ms = ttl_ms.min(
-                expires
-                    .checked_sub(now)
-                    .filter(|remaining| *remaining > 0)
-                    .ok_or_else(missing_table)?,
-            );
-            if journal
-                .load(context, identity)
+            let location = crowdb_access_iceberg::file::TableLocation {
+                catalog: context.catalog,
+                storage_namespace,
+                table,
+            };
+            let key = storage_head_key(location);
+            if let Some(value) = self
+                .store
+                .get(&key.encode().map_err(|_| bad_request())?)
                 .await
                 .map_err(|_| service_unavailable())?
-                .as_ref()
-                != Some(&operation)
             {
-                return Err(service_unavailable());
+                match crowdb_access_iceberg::record::StorageRecord::decode(&key, &value.bytes)
+                    .map_err(|_| service_unavailable())?
+                {
+                    crowdb_access_iceberg::record::StorageRecord::TableHead(_)
+                    | crowdb_access_iceberg::record::StorageRecord::RetiredTable(_) => {
+                        return Err(missing_table())
+                    }
+                    _ => return Err(service_unavailable()),
+                }
             }
-            (
-                table,
-                operation.candidate.format_version,
-                true,
-                operation.candidate.metadata_location.table().storage_namespace,
-            )
+            (table, version, true, storage_namespace)
         };
         self.issue_response(
             repository,
@@ -352,6 +350,11 @@ impl TableCredentials {
         {
             return Err(service_unavailable());
         }
+        if target.storage_namespace.is_some()
+            != (authority.storage_layout == crowdb_access_iceberg::catalog::CatalogStorageLayout::Native)
+        {
+            return Err(missing_table());
+        }
         if !authority
             .capabilities
             .supports(target.format_version, FormatAction::Read)
@@ -377,12 +380,18 @@ impl TableCredentials {
     }
 }
 
-fn selector(
-    query: Option<&str>,
-) -> Result<(Option<TableId>, Option<NamespaceId>, bool), IcebergErrorResponse> {
+struct FileCredentialSelector {
+    table: Option<TableId>,
+    namespace: Option<NamespaceId>,
+    cleanup: bool,
+    version: Option<u8>,
+}
+
+fn selector(query: Option<&str>) -> Result<FileCredentialSelector, IcebergErrorResponse> {
     let mut selector = None;
     let mut namespace = None;
     let mut cleanup = false;
+    let mut version = None;
     for pair in query
         .unwrap_or_default()
         .split('&')
@@ -396,14 +405,26 @@ fn selector(
             "storage-namespace-id" if namespace.is_none() => {
                 namespace = Some(decode_query(value)?.parse().map_err(|_| bad_request())?);
             }
+            "format-version" if version.is_none() => {
+                let value = decode_query(value)?.parse::<u8>().map_err(|_| bad_request())?;
+                if !(1..=3).contains(&value) {
+                    return Err(bad_request());
+                }
+                version = Some(value);
+            }
             "cleanup" if !cleanup && decode_query(value)? == "true" => cleanup = true,
             _ => return Err(bad_request()),
         }
     }
-    if namespace.is_some() && selector.is_none() {
+    if (namespace.is_some() || version.is_some()) && selector.is_none() {
         return Err(bad_request());
     }
-    Ok((selector, namespace, cleanup))
+    Ok(FileCredentialSelector {
+        table: selector,
+        namespace,
+        cleanup,
+        version,
+    })
 }
 
 fn credential_target(

@@ -13,7 +13,7 @@ use crowdb_access_iceberg::{
     catalog::StoredValue,
     key::{CatalogScope, IcebergKey, OperationId, StorageKey, TableId, TableStorageKey, TableStorageScope},
     record::StorageRecord,
-    table::{head_key, name_key, TableHead, TableLifecycle, TableMapping, TableMappingState},
+    table::{name_key, storage_head_key, TableHead, TableLifecycle, TableMapping, TableMappingState},
 };
 use fixture::TestTableHttp;
 use reqwest::Method;
@@ -95,7 +95,7 @@ fn mapping(test: &TestTableHttp, head: &TableHead, name: &str, state: TableMappi
     test.put(
         &name_key(head.catalog, head.namespace, name).unwrap(),
         &StorageRecord::TableMapping(TableMapping {
-            storage_namespace: None,
+            storage_namespace: head.storage_location().storage_namespace,
             catalog: head.catalog,
             namespace: head.namespace,
             name: name.into(),
@@ -119,8 +119,8 @@ async fn mixed_mapping_pages_and_exists_expose_only_current_table_heads() {
     let (mut dropped, _) = test.install("dropped").await;
     dropped.lifecycle = TableLifecycle::Tombstone;
     dropped.pending_operation = Some(OperationId::random());
-    test.put(
-        &head_key(dropped.catalog, dropped.table),
+    test.put_storage(
+        &storage_head_key(dropped.storage_location()),
         &StorageRecord::TableHead(Box::new(dropped)),
     );
     let mut token = String::new();

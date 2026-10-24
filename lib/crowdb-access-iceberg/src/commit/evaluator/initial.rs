@@ -36,7 +36,6 @@ pub fn evaluate_table_create_commit(
     if target.generation != 1
         || target.operation_fence != 1
         || target.name_epoch != 1
-        || target.pending_operation.is_none()
         || target.lifecycle != TableLifecycle::Ready
         || target.table_uuid.is_none()
         || timestamp_ms < 0

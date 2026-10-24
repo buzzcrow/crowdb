@@ -1,11 +1,14 @@
-use super::{Error, Phase, TableCreateOperation, TableCreationRequest, TableCreator};
+use super::{limits, Error, TableCreationOutcome, TableCreationRequest, TableCreator};
 use crate::{
     catalog::{check_context, CatalogContext, CatalogError},
-    commit::{CandidateAuxiliaryLimits, CandidateSnapshotLimits, EvaluationLimits, TableCommitOutcome},
+    commit::{
+        evaluate_table_creation, CandidateAuxiliaryLimits, CandidateSnapshotLimits, CreateTableRequest,
+        EvaluationLimits,
+    },
     error::ValidationError,
-    key::{OperationId, TableId},
     namespace::NamespaceIdentifier,
     operation::{RequestIdentity, MAX_PAYLOAD_BYTES},
+    table::TableRepository,
 };
 
 mod binding;
@@ -35,84 +38,48 @@ impl TableCreator {
         self
     }
 
-    /// Retains a draft and exact metadata-only response without publishing a name or head.
-    /// The server supplies the expiry; it is not a nonstandard field required from the SDK.
+    /// Returns complete client-owned initialization material without storing a draft.
     /// # Errors
-    /// Rejects unsupported staging, invalid input, existing tables and changed retry input.
-    pub async fn stage(
-        &self,
-        request: &TableCreationRequest,
-        expires_ms: i64,
-    ) -> Result<TableCommitOutcome, Error> {
+    /// Rejects invalid input, missing namespace admission, existing tables and response overflow.
+    pub async fn stage(&self, request: &TableCreationRequest) -> Result<TableCreationOutcome, Error> {
         if self.staged_limits.is_none() {
             return Err(Error::Unsupported("staged commit file limits"));
         }
-        if request.principal.is_empty() || request.principal.len() > 256 || request.principal.contains('\0') {
-            return Err(ValidationError::Text.into());
+        super::direct::validate_principal(&request.principal)?;
+        let mut decoded = CreateTableRequest::decode(&request.body, limits())?;
+        if !decoded.stage_create() {
+            return Err(Error::Unsupported("staged table creation"));
         }
-        let journal = self.journal();
-        let operation =
-            if let Some(existing) = journal.load(request.context, request.identity.operation).await? {
-                if existing.identity != request.identity
-                    || existing.principal != request.principal
-                    || existing.namespace != request.namespace
-                    || self.payloads().get(&existing.input).await? != request.body
-                {
-                    return Err(CatalogError::Conflict.into());
-                }
-                existing
-            } else {
-                journal
-                    .begin(self.prepare(request, Some(expires_ms)).await?)
-                    .await?
-            };
-        let stage = operation.stage.ok_or(CatalogError::Conflict)?;
-        self.payloads().get(&stage.response).await?;
-        check_context(self.store.as_ref(), request.context).await?;
-        Ok(TableCommitOutcome {
-            status: 200,
-            body: stage.response,
-        })
-    }
-
-    /// Expires only an unbound draft by phase CAS; bound publication is never deleted by time.
-    /// # Errors
-    /// Storage uncertainty remains retryable and cannot be interpreted as an expired publisher.
-    pub async fn expire_stage(
-        &self,
-        context: CatalogContext,
-        table: TableId,
-        now_ms: i64,
-    ) -> Result<bool, Error> {
-        let identity = OperationId::from_bytes(table.as_bytes())?;
-        let operation = self
-            .journal()
-            .load(context, identity)
+        let layout = self.storage_layout(request.context).await?;
+        let parent = self.direct_parent(request, layout).await?;
+        if TableRepository::new(self.store.clone())
+            .select(request.context, parent.namespace, decoded.name())
             .await?
-            .ok_or(CatalogError::Conflict)?;
-        let stage = operation.stage.as_ref().ok_or(CatalogError::Conflict)?;
-        if operation.candidate.table != table || now_ms < 0 {
-            return Err(ValidationError::IdentityMismatch.into());
+            .is_some()
+        {
+            return Err(CatalogError::Conflict.into());
         }
-        if operation.phase != Phase::Staged || stage.expires_ms > now_ms {
-            return Ok(false);
+        let created = chrono::DateTime::from_timestamp_millis(request.timestamp_ms)
+            .ok_or(ValidationError::Record)?
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        if !decoded.fields["properties"].is_object() {
+            decoded.fields["properties"] = serde_json::json!({});
         }
-        let mut next = operation.next(Phase::Aborted)?;
-        let body = self
-            .payloads()
-            .put(
-                context.catalog,
-                identity,
-                br#"{"error":{"code":404,"type":"NoSuchTableException","message":"Staged table expired"}}"#,
-            )
-            .await?;
-        next.outcome = Some(TableCommitOutcome { status: 404, body });
-        self.journal().advance(&operation, &next).await?;
-        Ok(true)
+        decoded.fields["properties"]
+            .as_object_mut()
+            .ok_or(ValidationError::Record)?
+            .entry("created-at")
+            .or_insert(serde_json::Value::String(created));
+        let target = super::direct::target(request, parent.namespace, decoded.name(), layout)?;
+        let initial = evaluate_table_creation(&decoded, target, request.timestamp_ms, limits())?;
+        let body = stage_response(initial.document.canonical())?;
+        self.validate_response_size(&body)?;
+        check_context(self.store.as_ref(), request.context).await?;
+        Ok(TableCreationOutcome { status: 200, body })
     }
 }
 
-pub(super) fn stage_response(canonical: &[u8]) -> Result<Vec<u8>, ValidationError> {
+fn stage_response(canonical: &[u8]) -> Result<Vec<u8>, ValidationError> {
     let length = canonical
         .len()
         .checked_add(b"{\"metadata\":}".len())

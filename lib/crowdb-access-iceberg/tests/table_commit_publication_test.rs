@@ -5,6 +5,8 @@ mod common;
 #[path = "common/manifest_entry.rs"]
 #[allow(dead_code)]
 mod fixture;
+#[path = "common/gc_store.rs"]
+mod gc_store;
 #[path = "common/manifest_list.rs"]
 #[allow(dead_code)]
 mod list_fixture;

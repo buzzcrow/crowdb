@@ -35,8 +35,13 @@ impl TableCreator {
             &initial.document,
         )
         .await?;
-        self.publish_direct_creation(request.context, &parent, initial.head)
-            .await?;
+        self.publish_direct_creation(
+            request.context,
+            &parent,
+            initial.head,
+            crate::key::OperationId::random(),
+        )
+        .await?;
         check_context(self.store.as_ref(), request.context).await?;
         Ok(TableCreationOutcome {
             status: 200,
@@ -44,7 +49,30 @@ impl TableCreator {
         })
     }
 
-    async fn direct_parent(
+    pub(super) async fn storage_layout(
+        &self,
+        context: crate::catalog::CatalogContext,
+    ) -> Result<CatalogStorageLayout, Error> {
+        let key = crate::key::IcebergKey::Catalog {
+            catalog: context.catalog,
+            scope: crate::key::CatalogScope::Authority,
+            suffix: Vec::new(),
+        };
+        let value = self
+            .store
+            .get(&key.encode()?)
+            .await
+            .map_err(crate::catalog::CatalogError::from)?
+            .ok_or(crate::catalog::CatalogError::Uninitialized)?;
+        let crate::record::StorageRecord::Authority(authority) =
+            crate::record::StorageRecord::decode(&key, &value.bytes)?
+        else {
+            return Err(ValidationError::Record.into());
+        };
+        Ok(authority.storage_layout)
+    }
+
+    pub(super) async fn direct_parent(
         &self,
         request: &TableCreationRequest,
         layout: CatalogStorageLayout,
@@ -68,14 +96,14 @@ impl TableCreator {
     }
 }
 
-fn validate_principal(principal: &str) -> Result<(), ValidationError> {
+pub(super) fn validate_principal(principal: &str) -> Result<(), ValidationError> {
     if principal.is_empty() || principal.len() > 256 || principal.contains('\0') {
         return Err(ValidationError::Text);
     }
     Ok(())
 }
 
-fn target(
+pub(super) fn target(
     request: &TableCreationRequest,
     namespace: NamespaceId,
     name: &str,

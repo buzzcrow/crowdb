@@ -9,11 +9,15 @@ use super::{
     TableCreator,
 };
 use crate::{
-    catalog::{check_context, CatalogContext, CatalogError, CatalogStore, RoutedCatalogStore, StoreError},
+    catalog::{
+        check_context, CasOutcome, CatalogContext, CatalogError, CatalogStore, RoutedCatalogStore, StoreError,
+    },
     error::ValidationError,
     file::FileBlockStore,
+    gc::GcStore,
     key::{CatalogId, CatalogScope, IcebergKey, OperationId},
     namespace::NamespaceStore,
+    operation::mutation_identity,
     record::{StorageRecord, MAX_RECORD_BYTES},
 };
 
@@ -66,7 +70,7 @@ impl TableRecoveryScan {
 }
 
 #[async_trait]
-pub trait TableRecoveryStore: NamespaceStore {
+pub trait TableRecoveryStore: NamespaceStore + GcStore {
     async fn scan_table_operations(&self, scan: TableRecoveryScan) -> Result<MultiScanPage, StoreError>;
 }
 
@@ -213,14 +217,7 @@ impl TableRecovery {
             }
             StorageRecord::TableCreateOperation(operation) => {
                 let identity = operation.identity.operation;
-                let result = if operation.phase == TableCreatePhase::Staged {
-                    self.creator
-                        .expire_stage(context, operation.candidate.table, now_ms)
-                        .await
-                } else {
-                    self.creator.resume(context, identity).await.map(|_| true)
-                };
-                (identity, result)
+                (identity, self.cleanup_creation(&operation, now_ms).await)
             }
             StorageRecord::TableCommitOperation(operation) => {
                 let identity = operation.identity.operation;
@@ -240,5 +237,32 @@ impl TableRecovery {
             _ => return Err(ValidationError::Record.into()),
         };
         Ok(result)
+    }
+
+    async fn cleanup_creation(
+        &self,
+        operation: &super::TableCreateOperation,
+        now_ms: i64,
+    ) -> Result<bool, CommitPublicationError> {
+        if operation.phase == TableCreatePhase::Staged
+            && operation
+                .stage
+                .as_ref()
+                .is_some_and(|stage| stage.expires_ms > now_ms)
+        {
+            return Ok(false);
+        }
+        self.creator.reconcile_legacy(operation).await?;
+        let key = operation.key().encode()?;
+        let expected = StorageRecord::TableCreateOperation(Box::new(operation.clone())).encode()?;
+        match self
+            .scanner
+            .delete_gc_record(&key, &expected, mutation_identity(&key, Some(&expected), &[]))
+            .await
+            .map_err(CatalogError::from)?
+        {
+            CasOutcome::Applied(_) | CasOutcome::Conflict(None) => Ok(true),
+            CasOutcome::Conflict(_) => Err(CatalogError::Busy.into()),
+        }
     }
 }

@@ -111,22 +111,7 @@ impl TableWrites {
                 timestamp_ms,
             };
             if staged {
-                let expiry = timestamp_ms
-                    .checked_add(24 * 60 * 60 * 1000)
-                    .ok_or_else(service_unavailable)?;
-                let outcome = self
-                    .creator
-                    .stage(&request, expiry)
-                    .await
-                    .map_err(creation_error)?;
-                return Ok(TableCreationOutcome {
-                    status: outcome.status,
-                    body: self
-                        .payloads
-                        .get(&outcome.body)
-                        .await
-                        .map_err(|_| service_unavailable())?,
-                });
+                return self.creator.stage(&request).await.map_err(creation_error);
             }
             return self.creator.create(&request).await.map_err(creation_error);
         };
@@ -143,7 +128,7 @@ impl TableWrites {
             if !capabilities.supports(parsed.create_version(), FormatAction::Create) {
                 return Err(super::super::table_read::unsupported());
             }
-            let outcome = self
+            return self
                 .creator
                 .commit_staged(&StagedCommitRequest {
                     context: record.context,
@@ -155,15 +140,7 @@ impl TableWrites {
                     timestamp_ms,
                 })
                 .await
-                .map_err(creation_error)?;
-            return Ok(TableCreationOutcome {
-                status: outcome.status,
-                body: self
-                    .payloads
-                    .get(&outcome.body)
-                    .await
-                    .map_err(|_| service_unavailable())?,
-            });
+                .map_err(creation_error);
         }
         Err(bad_request())
     }

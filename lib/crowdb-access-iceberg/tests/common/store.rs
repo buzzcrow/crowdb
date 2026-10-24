@@ -16,6 +16,7 @@ pub struct TestStore {
     pub values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
     pub fail_after: AtomicUsize,
     pub file_record_reply_loss: AtomicBool,
+    pub retirement_reply_loss: AtomicBool,
     pub gc_workspace_denied: AtomicBool,
     #[allow(dead_code)]
     pub gc_delete_reply_loss: AtomicBool,
@@ -39,8 +40,6 @@ pub struct TestStore {
     pub file_mapping_release: tokio::sync::Notify,
     pub table_reservation_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub table_reservation_visits: AtomicUsize,
-    pub stage_transition_barrier: Option<Arc<tokio::sync::Barrier>>,
-    pub stage_transition_visits: AtomicUsize,
     pub table_head_pause_before: AtomicBool,
     pub table_head_pause_after: AtomicBool,
     pub table_head_entered: tokio::sync::Notify,
@@ -149,21 +148,6 @@ impl TestStore {
             }
         }
     }
-
-    async fn pause_stage_transition(&self, key: &[u8], expected: Option<&[u8]>) {
-        if let (Some(barrier), Some(expected)) = (&self.stage_transition_barrier, expected) {
-            if let Ok(crowdb_access_iceberg::record::StorageRecord::TableCreateOperation(operation)) =
-                crowdb_access_iceberg::key::IcebergKey::decode(key)
-                    .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, expected))
-            {
-                if operation.phase == crowdb_access_iceberg::commit::TableCreatePhase::Staged
-                    && self.stage_transition_visits.fetch_add(1, Ordering::SeqCst) < 2
-                {
-                    barrier.wait().await;
-                }
-            }
-        }
-    }
 }
 
 #[async_trait]
@@ -263,7 +247,6 @@ impl CatalogStore for TestStore {
             return Err(StoreError::Budget);
         }
         self.pause_table_head(key, expected, value, false).await;
-        self.pause_stage_transition(key, expected).await;
         self.pause_file_location(key).await;
         if expected.is_none() {
             if let Ok(crowdb_access_iceberg::record::StorageRecord::TableMapping(mapping)) =
@@ -328,6 +311,17 @@ impl CatalogStore for TestStore {
                     return Err(StoreError::Response);
                 }
                 if self.lose_file_reply(key) {
+                    return Err(StoreError::Response);
+                }
+                if self.retirement_reply_loss.load(Ordering::SeqCst)
+                    && matches!(
+                        StorageKey::decode(key).and_then(|key| {
+                            crowdb_access_iceberg::record::StorageRecord::decode(&key, value)
+                        }),
+                        Ok(crowdb_access_iceberg::record::StorageRecord::RetiredTable(_))
+                    )
+                    && self.retirement_reply_loss.swap(false, Ordering::SeqCst)
+                {
                     return Err(StoreError::Response);
                 }
                 self.pause_table_head(key, expected, value, true).await;
