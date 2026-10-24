@@ -40,6 +40,11 @@ pub struct TestMutationGate {
     pub entered: tokio::sync::Semaphore,
     pub permits: tokio::sync::Semaphore,
     pub calls: std::sync::atomic::AtomicUsize,
+    pub reads: std::sync::atomic::AtomicUsize,
+    pub bounded_reads: std::sync::atomic::AtomicUsize,
+    pub writes: std::sync::atomic::AtomicUsize,
+    pub head_reads: std::sync::atomic::AtomicUsize,
+    pub reject_workflow_writes: AtomicBool,
 }
 
 impl Default for TestMutationGate {
@@ -49,6 +54,11 @@ impl Default for TestMutationGate {
             entered: tokio::sync::Semaphore::new(0),
             permits: tokio::sync::Semaphore::new(0),
             calls: std::sync::atomic::AtomicUsize::new(0),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+            bounded_reads: std::sync::atomic::AtomicUsize::new(0),
+            writes: std::sync::atomic::AtomicUsize::new(0),
+            head_reads: std::sync::atomic::AtomicUsize::new(0),
+            reject_workflow_writes: AtomicBool::new(false),
         }
     }
 }
@@ -66,14 +76,51 @@ pub struct TestMutationBlackout {
     pub blocked: AtomicBool,
 }
 
-#[async_trait]
-impl ChunkKvTransport for TestMetadataTransport {
-    async fn point(&self, endpoint: &str, request: &PointRequest) -> Result<ChunkKvResponse> {
+impl TestMutationGate {
+    fn record(&self, operation: &PointOperation) {
+        let key = operation.key();
+        if matches!(operation, PointOperation::Get { .. }) {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            if key.starts_with(b"DS\0H\0") {
+                self.head_reads.fetch_add(1, Ordering::Relaxed);
+            }
+        } else {
+            self.writes.fetch_add(1, Ordering::Relaxed);
+            if self.reject_workflow_writes.load(Ordering::Relaxed) {
+                for prefix in [
+                    b"CBG".as_slice(),
+                    b"CD",
+                    b"CE",
+                    b"CX",
+                    b"CW",
+                    b"CM",
+                    b"O",
+                    b"SB",
+                    b"SD",
+                    b"SX",
+                    b"SW",
+                    b"CA",
+                    b"CR",
+                    b"SC",
+                    b"SRC",
+                ] {
+                    let mut forbidden = b"DS\0".to_vec();
+                    forbidden.extend_from_slice(prefix);
+                    forbidden.push(0);
+                    assert!(!key.starts_with(&forbidden), "workflow write: {key:?}");
+                }
+            }
+        }
+    }
+}
+
+impl TestMetadataTransport {
+    fn reject_route(&self, endpoint: &str, routing: &RequestRouting) -> Option<ChunkKvResponse> {
         if let Some(route) = &self.route {
             let generation = route.generation.load(Ordering::Acquire);
-            if endpoint != format!("test-owner-{generation}") || request.routing.owner_epoch != generation {
+            if endpoint != format!("test-owner-{generation}") || routing.owner_epoch != generation {
                 route.rejected.fetch_add(1, Ordering::Relaxed);
-                return Ok(ChunkKvResponse {
+                return Some(ChunkKvResponse {
                     map_revision: generation,
                     journal_position: None,
                     result: Err(RpcFailure {
@@ -86,6 +133,19 @@ impl ChunkKvTransport for TestMetadataTransport {
                 });
             }
             route.accepted.store(generation, Ordering::Release);
+        }
+        None
+    }
+}
+
+#[async_trait]
+impl ChunkKvTransport for TestMetadataTransport {
+    async fn point(&self, endpoint: &str, request: &PointRequest) -> Result<ChunkKvResponse> {
+        if let Some(stats) = &self.gate {
+            stats.record(&request.operation);
+        }
+        if let Some(response) = self.reject_route(endpoint, &request.routing) {
+            return Ok(response);
         }
         if self
             .blackout
@@ -141,7 +201,10 @@ impl ChunkKvTransport for TestMetadataTransport {
         panic!("unexpected seek")
     }
 
-    async fn scan(&self, _: &str, request: &ScanRequest) -> Result<ChunkKvResponse> {
+    async fn scan(&self, endpoint: &str, request: &ScanRequest) -> Result<ChunkKvResponse> {
+        if let Some(response) = self.reject_route(endpoint, &request.routing) {
+            return Ok(response);
+        }
         let (sender, receiver) = oneshot::channel();
         self.sender
             .send(TestCommand::Scan(request.clone(), sender))
@@ -156,6 +219,9 @@ impl ChunkKvTransport for TestMetadataTransport {
         request: &ScanRequest,
         max_bytes: usize,
     ) -> Result<ChunkKvResponse> {
+        if let Some(stats) = &self.gate {
+            stats.bounded_reads.fetch_add(1, Ordering::Relaxed);
+        }
         let response = self.scan(endpoint, request).await?;
         if let Ok(OperationResult::Scan { items, .. }) = &response.result {
             if items
@@ -367,6 +433,26 @@ pub async fn client_with_gate(gate: Arc<TestMutationGate>) -> Arc<ChunkKvClient>
         Arc::new(TestCatalog(head, pages)),
         Arc::new(AtomicBool::new(false)),
         ClientConfig::default(),
+        None,
+        None,
+        Some(gate),
+    )
+    .await
+}
+
+#[allow(dead_code)] // Used by resource publication uncertainty acceptance.
+pub async fn client_with_loss_and_gate(
+    loss: Arc<AtomicBool>,
+    gate: Arc<TestMutationGate>,
+) -> Arc<ChunkKvClient> {
+    let (head, pages) = catalog(1, 1);
+    client_with_options(
+        Arc::new(TestCatalog(head, pages)),
+        loss,
+        ClientConfig {
+            max_attempts: 1,
+            ..ClientConfig::default()
+        },
         None,
         None,
         Some(gate),

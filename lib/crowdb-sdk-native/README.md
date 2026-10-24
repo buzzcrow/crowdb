@@ -112,15 +112,20 @@ async fn read_object(seeds: Vec<String>) -> Result<(), Box<dyn std::error::Error
   request credits without a remote cleanup wait. Caller-held buffers remain
   valid and charged independently.
 - Upload parts accept runtime-owned `BufferLease` or `FrozenObjectBuffer`.
-  Complete verifies stored parts before publication. Use `begin_composition`,
-  `edit_composition`, bounded evaluate/prepare, publish and cleanup: these
-  enroll and maintain shared upload owners before publishing a candidate.
-  Inspect `uploads.publication_ready` before publishing with a durable attempt.
-- Advanced authority operations, including Split revision management and
-  inspection, run through `control(context, callback)`. Its scoped authority,
-  uploads and identity use the existing Dataset contracts. Prefer the composed
-  helpers for publication so payload ownership is not omitted. Uncertain
-  writes require inspecting the same operation/attempt identity.
+  Complete verifies stored parts before resource preparation. `prepare_snapshot`
+  accepts a client-selected Snapshot ID and complete `CompositionRequest`, writes
+  the immutable result and claims its final upload owners. `prepare_split_revision`
+  accepts complete frozen definitions. Repeat the same ID/input after an uncertain
+  outcome; no editing or evaluation progress is stored by these helpers.
+- `update_snapshot_head` and `update_split_head` publish pointers separately with
+  explicit base conditions. A complete resource is readable by ID before it becomes
+  a head. `Error::SnapshotHeadConflict` and `Error::SplitHeadConflict` preserve the
+  observed pointer and generation; use that observation for a deliberate retry
+  without another head query. Helpers never rebase or retry automatically.
+- Advanced authority operations and inspection run through
+  `control(context, callback)`. Its scoped authority, uploads and identity share
+  the same admission and typed contracts. Keep the complete input, resource ID
+  and original publication conditions when a write's outcome is uncertain.
 - The optional [native Python extension](../crowdb-sdk-native-python/README.md)
   calls this same data plane. It is separate from the portable HTTP package.
 

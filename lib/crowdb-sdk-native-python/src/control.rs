@@ -2,13 +2,11 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_access_dataset::{
-    composition::{CompositionEdit, CompositionInput},
-    CommitAttempt, DatasetUploads, OperationId, ReadSpec, SnapshotId,
+    composition::CompositionRequest,
+    split::{SplitHeadUpdate, SplitPreparation},
+    CommitGeneration, DatasetUploads, OperationId, ReadSpec, SnapshotHeadUpdate, SnapshotId, SplitRevisionId,
 };
-use crowdb_sdk_native::{
-    dataset::{CompositionStatus, DatasetClient},
-    Error, OperationContext, Result,
-};
+use crowdb_sdk_native::{dataset::DatasetClient, Error, OperationContext, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -24,36 +22,26 @@ pub enum Command {
     CommitStatus {
         attempt: OperationId,
     },
-    BeginComposition {
-        operation: OperationId,
-        input: CompositionInput,
+    PrepareSnapshot {
+        snapshot: SnapshotId,
+        input: CompositionRequest,
     },
-    CompositionStatus {
-        operation: OperationId,
+    UpdateSnapshotHead {
+        snapshot: SnapshotId,
+        #[serde(deserialize_with = "Deserialize::deserialize")]
+        expected_head: Option<CommitGeneration>,
     },
-    EditComposition {
-        operation: OperationId,
-        edit: CompositionEdit,
+    PrepareSplitRevision {
+        snapshot: SnapshotId,
+        input: SplitPreparation,
     },
-    EvaluateComposition {
-        operation: OperationId,
-        revision: u64,
-        page: u64,
-    },
-    PrepareComposition {
-        operation: OperationId,
-        revision: u64,
-    },
-    PublishComposition {
-        operation: OperationId,
-        attempt: CommitAttempt,
-    },
-    AbandonComposition {
-        operation: OperationId,
-        revision: u64,
-    },
-    CleanupComposition {
-        operation: OperationId,
+    UpdateSplitHead {
+        snapshot: SnapshotId,
+        revision: SplitRevisionId,
+        #[serde(deserialize_with = "Deserialize::deserialize")]
+        expected_revision: Option<SplitRevisionId>,
+        #[serde(deserialize_with = "Deserialize::deserialize")]
+        expected_head: Option<CommitGeneration>,
     },
     BindRead {
         spec: ReadSpec,
@@ -82,10 +70,6 @@ pub enum Command {
 fn encoded(value: impl Serialize) -> Result<Value> {
     serde_json::to_value(value).map_err(|e| Error::Storage(e.to_string()))
 }
-fn composition(status: &CompositionStatus) -> Value {
-    json!({"draft":status.draft,"uploads":status.uploads})
-}
-
 pub async fn execute(client: &DatasetClient, context: OperationContext, command: Command) -> Result<Value> {
     match command {
         Command::UploadLocation { upload } => encoded(DatasetUploads::location(client.identity(), upload)?),
@@ -97,7 +81,7 @@ pub async fn execute(client: &DatasetClient, context: OperationContext, command:
                 .control(context, |s| async move {
                     {
                         let head = s.authority.inspect_head(&s.identity).await?;
-                        Ok(json!({"latest":head.latest,"generation":head.generation}))
+                        Ok(json!({"latest":head.latest,"stable":head.stable,"generation":head.generation}))
                     }
                 })
                 .await
@@ -109,40 +93,45 @@ pub async fn execute(client: &DatasetClient, context: OperationContext, command:
                 })
                 .await
         }
-        Command::BeginComposition { operation, input } => Ok(composition(
-            &client.begin_composition(context, operation, &input).await?,
-        )),
-        Command::CompositionStatus { operation } => {
-            Ok(composition(&client.composition_status(context, operation).await?))
+        Command::PrepareSnapshot { snapshot, input } => {
+            encoded(client.prepare_snapshot(context, snapshot, &input).await?)
         }
-        Command::EditComposition { operation, edit } => Ok(composition(
-            &client.edit_composition(context, operation, &edit).await?,
-        )),
-        Command::EvaluateComposition {
-            operation,
+        Command::UpdateSnapshotHead {
+            snapshot,
+            expected_head,
+        } => {
+            let head = client
+                .update_snapshot_head(
+                    context,
+                    &SnapshotHeadUpdate {
+                        snapshot,
+                        expected_head,
+                    },
+                )
+                .await?;
+            Ok(json!({"latest":head.latest,"stable":head.stable,"generation":head.generation}))
+        }
+        Command::PrepareSplitRevision { snapshot, input } => {
+            encoded(client.prepare_split_revision(context, snapshot, &input).await?)
+        }
+        Command::UpdateSplitHead {
+            snapshot,
             revision,
-            page,
+            expected_revision,
+            expected_head,
         } => encoded(
             client
-                .evaluate_composition(context, operation, revision, page)
+                .update_split_head(
+                    context,
+                    snapshot,
+                    &SplitHeadUpdate {
+                        revision,
+                        expected_revision,
+                        expected_head,
+                    },
+                )
                 .await?,
         ),
-        Command::PrepareComposition { operation, revision } => Ok(composition(
-            &client.prepare_composition(context, operation, revision).await?,
-        )),
-        Command::PublishComposition { operation, attempt } => {
-            encoded(client.publish_composition(context, operation, &attempt).await?)
-        }
-        Command::AbandonComposition { operation, revision } => Ok(composition(
-            &client.abandon_composition(context, operation, revision).await?,
-        )),
-        Command::CleanupComposition { operation } => {
-            let status = client.cleanup_composition(context, operation).await?;
-            Ok(
-                json!({"complete":status.complete,"retired_upload_owners":status.retired_upload_owners,
-                "physical_cleanup_deferred":status.physical_cleanup_deferred}),
-            )
-        }
         Command::BindRead { spec } => encoded(client.bind_read(context, spec).await?),
         Command::CreateUpload {
             upload,

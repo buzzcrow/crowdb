@@ -356,23 +356,14 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 
 - [ ] **P2.1 分清输入、计算进度与候选内容**：逐项列出 draft/edit receipt/work page/row/candidate/
   cleanup seal 的用途、写入次数和调用者；按 D1 更新 API/SDK 合同，移除服务端续算接口。Files: Dataset `composition/{begin,edit,state,evaluation,evaluate_step,prepare,cleanup}.rs`。
-- [~] **P2.2b 无状态 Composition REST/SDK**：新增资源 `PUT snapshots/{snapshot}` 与独立
-  `composition-preparation` capability，完整输入/明确 body 与计算边界；Rust/Python sync/async
-  SDK 以同一 Snapshot ID/完整请求重试，不查询草稿或降级。upload 字段直传已有完整结果
-  的 id/length/md5，转换不再为补 descriptor 额外查询；原生校验真实元数据后 claim 最终 owner。
-  source/继承 revision 显式固定，移除隐式 currentSplit 续算。迁移 HTTP/SDK/容器的全部
-  Composition 写调用者后关闭 begin/edit/evaluate/prepare/publish；保留必要 legacy decoder/GC
-  到 P13，不能用包装旧方法代替删除工作状态。补成本、鉴权、错误、丢回复与重启验收。
-  REST/SDK、调用者迁移和旧写入口关闭已实现；11 项 HTTP/Rust consumer、36 项独立源码
-  包测试、12 项 installed Python 单测及真实 sync/async consumer 通过；已移除 SDK
-  workflow DTO/方法；OpenAPI 294 个本地引用有效。单 sample+
-  初始 Split 的 HTTP 准备为 12G/16C；同一 upload 在两个字段出现仍只读两次 U 元数据
-  （一次唯一 descriptor 校验，一次 claim），无 DTO 补查。错误 descriptor 返回 409、零写。
-  修复声明过大 body 提前拒绝时未读 body 导致 413 JSON 被连接 reset 截断，复用现有有界
-  drain，不放宽 body/存储限制。Dataset/Access/e2e-test 与独立 SDK all-target clippy、fmt、
-  boundary、diff 通过，均经 pixi；wheel 为 `.crowdb-runtime/artifacts/sdk-composition-preparation-20261024`。
-  当前镜像尚未更新到此批，待新镜像验收后关闭；Native 旧 forward driver 与 legacy GC/
-  decoder 的最终删除仍在 P2.2/P3.2/P13。
+- [~] **P2.2d 控制台迁移 Snapshot/Split 完整资源 API**：删除服务端草稿、编辑/计算进度、
+  attempt/receipt reconciliation；完整输入、资源 ID、显式 expected base 和 pending 请求由
+  客户端保存。上传完成返回已有 descriptor，显式冻结 Source/继承 revision；丢回复重试原
+  请求，409 使用 observed head 审阅后更新。迁移 import/Split/recovery/capability 组件与
+  五项浏览器 case，保留 binary ID、MPU、继承/历史成员和冲突检查。当前精确 import 基线
+  在新镜像上失败（3.6s，入口依赖已删除 composition capability，按钮 disabled）；不是既有
+  通过结果。基线 artifact `run-d463ff78dac94b26b59a028f52b9d565`。Files: console Dataset
+  UI、browser Dataset fixtures/flows、proxy 测试。
 - [ ] **P2.2 删除服务端编辑/计算过程**：删除 durable 编辑/进度阶段，客户端失败重新请求；
   保持发布前不可见、expected head 及源 Snapshot 被删时的明确错误。孤儿清理通过 R4 验证，例外封口记录先 review。Files: `composition/`、Access v2 composition、SDK 和恢复测试。
 
@@ -555,6 +546,44 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P2.2c**：native Rust/Python SDK 删除 Composition 的 begin/edit/evaluate/
+  prepare/publish/abandon/cleanup 包装，提供完整 Snapshot/Split 准备和独立显式 head 更新。
+  两种 head 冲突保留结构化 observation；Python `ConflictError.observed_head` 为原生 JSON
+  数组身份/generation，不转成字符串，不额外 GET、不自动 rebase。Python head 条件必须
+  显式提供（可 null），旧流程 command 拒绝；完整资源按同 ID/输入重做。
+  新 Native 回归拒绝所有工作状态/attempt/receipt 写，准备不查 head，完整重试零写；
+  Snapshot head 成功 3G/1C，连续四次 stale 各 3G/0C，复用观察值后仍 3G/1C；Split
+  stale 4G/0C，沿观察值更新 4G/1C。未知成功回复为 UncertainMutation、无确认 GET，
+  同原条件重试 3G/0C。这是逻辑元数据操作，bounded GET 的单 key scan 计一次，非 TPS。
+  66 项 native 全目标测试、两 crate all-target/all-feature clippy、fmt/diff 通过，均经 pixi。
+  修复测试 transport 仅对 point 注入 stale route、漏掉 bounded scan 的缺口，保留原拓扑断言。
+  installed wheel 真实 TCP consumer 验证同资源重试、完整未发布 ID 可读、四次 stale 返回
+  原生观察值直接重试、Split 条件、共享 upload owner、MPU、65 秒闲置无 reader TTL、取消/
+  held buffer 与存储重启均通过；未执行性能 trials。artifact
+  `.crowdb-runtime/artifacts/dataset-workload/12ca47dd8df242349847ddef31baf124`。
+  新镜像 `crowdb-node:access-cleanup-native-preparation-20261024` 在提交前完整源码快照
+  tree `79249259d7bcbbdfa187d447c1209ba72cf852ad` 构建，server source 校验通过；
+  OCI `sha256:807498a58c20c93e05c7b5126a50019fada38bf243e462c599acd091a5e9ba99`。
+  控制台和旧 authority forward driver/legacy GC 仍按 P2.2d/P2.2/P3.2/P13 继续。
+
+- **2026-10-24，P2.2b**：REST/portable Rust/Python sync/async SDK 改为完整 Snapshot
+  `PUT` 与独立 `composition-preparation` capability，关闭旧 begin/edit/evaluate/prepare/publish
+  写入口（501、零存储访问），删除 portable workflow DTO/方法。上传字段直传 id/length/md5，
+  不为补 descriptor 查询；固定 source/继承 revision。完整输入/Manifest 各 8 MiB、30 秒。
+  单 sample+初始 Split HTTP 准备 12G/16C；共享 descriptor 两字段仍仅两次 U GET；重试
+  完整资源零写，错误 descriptor 409/零写。修复提前拒绝超限 body 时连接 reset 截断 413
+  JSON，复用有界 drain。11 项 HTTP/Rust consumer、36 项独立源码包、12 项 installed
+  Python 单测、真实 sync/async consumer、相关 all-target clippy/fmt/boundary/diff 通过；
+  OpenAPI 294 个本地引用有效，wheel `sdk-composition-preparation-20261024`。
+  源码 `6546daa9d0e757ad1bcf3dfc768da691989f220c` 新镜像五项 Dataset 容器验收全通过，
+  覆盖完整资源按 ID 使用、同 ID 重试、独立 head、冲突观察和存储重启。artifact
+  `.crowdb-runtime/artifacts/container-e2e/run-6b9c1857a5e14a01a6d2f98486605cab`，
+  tree `83ccbe4d0822351dcf6a9895f805bcd44fed02bd`，server_sources_match=true；
+  OCI `sha256:01ebd67706b3345da2d1342ea841e6ea5054f45dc4d39090669fca1e83fd0abe`，
+  Docker `sha256:dbb49ee288b4cec45ffd93370b3e2b3c40da7f3d91df3c049fb27c3f6f3bc470`。
+  此证据只覆盖 REST/portable SDK；native RPC SDK 和控制台仍调用旧流程，分别 P2.2c/d；
+  forward driver/legacy decoder/GC 删除由 P2.2/P3.2/P13 跟踪，未声称 TPS 提升。
 
 - **2026-10-24，P2.2a**：新增原生 `CompositionRequest` / `prepare_composition_resource`，
   客户端指定 Snapshot ID 与完整源/修改/规则；直接构造最终 Manifest、索引、初始 Split 和

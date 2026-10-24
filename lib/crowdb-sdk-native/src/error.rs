@@ -75,6 +75,15 @@ pub enum Error {
         kind: crate::dataset::FailureKind,
         detail: String,
     },
+    #[error("Snapshot head precondition changed")]
+    SnapshotHeadConflict {
+        observed: Box<crowdb_access_dataset::DatasetHead>,
+    },
+    #[error("Split head precondition changed")]
+    SplitHeadConflict {
+        snapshot: crowdb_access_dataset::SnapshotId,
+        observed: Box<crowdb_access_dataset::split::SplitReference>,
+    },
     #[error("object was not modified")]
     NotModified,
     #[error("object checksum does not match its published metadata")]

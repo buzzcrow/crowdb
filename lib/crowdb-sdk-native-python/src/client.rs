@@ -61,8 +61,8 @@ impl Dataset {
     #[pyo3(signature=(command, timeout=30.0))]
     fn call(&self, py: Python<'_>, command: &str, timeout: f64) -> PyResult<String> {
         let context = self.context(timeout)?;
-        if command.len() > 1024 * 1024 {
-            return Err(NativeError::new_err("control input exceeds 1 MiB"));
+        if command.len() > 8 * 1024 * 1024 + 64 * 1024 {
+            return Err(NativeError::new_err("control input exceeds 8 MiB + 64 KiB"));
         }
         let command: control::Command =
             serde_json::from_str(command).map_err(|e| NativeError::new_err(e.to_string()))?;

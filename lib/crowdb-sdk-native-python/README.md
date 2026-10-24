@@ -61,11 +61,17 @@ runtime.close()
   compatibility-copy bytes. `runtime.topology(refresh=True)` observes metadata
   and data transport state; these hints cannot override routing authority.
 - `dataset.call(json, timeout=30)` uses a tagged `op` command and the existing
-  Rust Dataset JSON schema. Commands cover create/open/snapshot/head/commit
-  status, composition begin/status/edit/evaluate/prepare/publish/abandon/cleanup,
-  stateless read binding, and upload create/complete/status/abort.
-  `upload_location` returns the authority's opaque location for a composition
-  field. No command is retried automatically.
+  Rust Dataset JSON schema. Commands cover create/open/snapshot/head, complete
+  Snapshot/Split preparation, explicit head updates, stateless read binding,
+  upload create/complete/status/abort and read-only legacy commit status.
+  `prepare_snapshot` takes `snapshot` and a complete `input: CompositionRequest`;
+  `prepare_split_revision` takes `snapshot` and `input: SplitPreparation`.
+  `update_snapshot_head` requires `snapshot` and `expected_head` (nullable).
+  `update_split_head` requires `snapshot`, `revision`, `expected_revision` and
+  `expected_head` (both conditions nullable). The JSON envelope is bounded to
+  8 MiB + 64 KiB; native preparation independently bounds content and work.
+  `upload_location` returns the authority's opaque field location.
+  No command is retried automatically.
 - `bind_read` accepts `spec: ReadSpec` and returns a `cursor`. Call
   `next_batch(cursor)` to fetch; retrying the same cursor replays its batch.
   Save `Batch.header.next` after successful processing. There is no remote
@@ -73,11 +79,14 @@ runtime.close()
   identical in Rust and HTTP.
 - `upload_part(upload_id, index, bytes)` copies Python input once into final
   transport frame slots across allocations of at most 1 MiB and freezes them
-  before submission. A logical upload part can still contain 4 MiB. Publication uses
-  upload-managed compositions and preserves durable attempt identity.
+  before submission. A logical upload part can still contain 4 MiB.
+  Snapshot preparation claims final upload owners before marking the resource complete;
+  pointer publication is a separate conditional update.
 - Typed exceptions include capacity, integrity, cancellation, closed runtime,
-  deadline, conflict and uncertain mutation. An uncertain mutation does not
-  authorize replay with a new operation identity.
+  deadline, conflict and uncertain mutation. Head `ConflictError` carries
+  `observed_head`, with native JSON ID/generation arrays and the current pointer.
+  Use it directly for a deliberate retry without another GET. Unknown outcomes
+  retain the original resource ID, full input and publication conditions.
 
 `tests/real_consumer.py` validates the installed binding against real services;
 `tests/workload.py` includes explicit Python byte-copy costs. The comparison is

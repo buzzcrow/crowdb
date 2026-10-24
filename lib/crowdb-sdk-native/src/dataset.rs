@@ -3,14 +3,13 @@
 
 //! Trusted Dataset access over the shared native runtime and existing authority.
 
-mod composition;
 mod control;
 mod error;
+mod preparation;
 mod query;
 mod read;
 mod upload;
 
-pub use composition::{CompositionCleanup, CompositionStatus};
 pub use control::DatasetControl;
 pub use error::FailureKind;
 pub use read::{BatchBody, BatchField, BatchHeader, BatchRequest, FieldBuffer, FieldState, ReadBatch};

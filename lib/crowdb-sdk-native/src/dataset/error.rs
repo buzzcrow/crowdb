@@ -35,6 +35,9 @@ impl From<AuthorityError> for Error {
     fn from(value: AuthorityError) -> Self {
         let kind = match value {
             AuthorityError::Invalid(value) => return value.into(),
+            AuthorityError::SnapshotHeadConflict { observed } => {
+                return Self::SnapshotHeadConflict { observed }
+            }
             AuthorityError::NotFound | AuthorityError::SnapshotNotFound => FailureKind::NotFound,
             AuthorityError::AncestryCycle | AuthorityError::Corrupt => FailureKind::Integrity,
             AuthorityError::Store(_) => FailureKind::Storage,
@@ -82,6 +85,7 @@ impl From<crowdb_access_dataset::split::SplitLifecycleError> for Error {
         let kind = match value {
             E::Authority(value) => return value.into(),
             E::Inspection(value) => return value.into(),
+            E::HeadConflict { snapshot, observed } => return Self::SplitHeadConflict { snapshot, observed },
             E::NotFound => FailureKind::NotFound,
             E::Conflict | E::Frozen => FailureKind::Conflict,
             E::Limit => FailureKind::Capacity,

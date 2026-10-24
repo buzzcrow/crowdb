@@ -39,10 +39,14 @@ Copy captures a source generation. Multipart completion binds an exact selected
 part set; a repeated completed request returns its recorded outcome.
 
 `DatasetClient` attaches `DatasetAuthority`, `DatasetUploads` and
-`DatasetReads` to these same clients. Shared composition helpers enroll
-upload ownership before edits and bind candidate ownership before publication.
-Snapshot/Read Plan/Split selection, worker partition, CAS, durable intent
-recovery and cleanup remain in the existing Dataset services.
+`DatasetReads` to these same clients. Complete Snapshot/Split preparation takes
+caller-owned immutable inputs and resource identities. Snapshot completion follows
+final upload-owner claims; it stores no editing or evaluation progress. Mutable
+head updates use explicit expected bases and preserve structured conflict
+observations. Complete results remain readable by ID independently of head
+selection. Unknown mutations retain their resource identity, full input and base;
+the SDK never retries or rebases automatically. Read selection, worker partition,
+resource CAS and cleanup remain in the Dataset authority.
 
 ## 2. Shared runtime
 

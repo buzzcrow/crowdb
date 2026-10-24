@@ -103,7 +103,16 @@ def pressure_and_idle_replay(client, snapshot):
 def publish_native(runtime, root):
     client = runtime.dataset("native-python-write")
     call(client, "create")
-    upload, operation = identity(), identity()
+    for command in [dict(op="begin_composition", operation=identity(), input={}),
+                    dict(op="update_snapshot_head", snapshot=identity()),
+                    dict(op="update_split_head", snapshot=identity(), revision=identity(), expected_head=None)]:
+        try:
+            client.call(json.dumps(command))
+        except native.NativeError:
+            pass
+        else:
+            raise AssertionError("removed workflow or missing explicit condition was accepted")
+    upload, snapshot = identity(), identity()
     data = native_data()
     digest = list(hashlib.md5(data).digest())
     call(client, "create_upload", upload=upload, length=len(data), part_size=4 << 20,
@@ -112,39 +121,22 @@ def publish_native(runtime, root):
         client.upload_part(bytes(upload), index, data[offset:offset + (4 << 20)])
     call(client, "complete_upload", upload=upload)
     location = call(client, "upload_location", upload=upload)
-    begin = {"parent": None, "source": "All", "schema": {"version": 1,
-             "fields": [{"name": "value", "required": True}]},
-             "inherit_parent_splits": False, "parent_split_revision": None,
-             "splits": [{"name": "train", "definition": {"Selection": {"Explicit": [list(b"one")]}},
-                         "origin": "Evaluated"}], "policy": None}
-    call(client, "begin_composition", operation=operation, input=begin)
-    edit = {"id": identity(), "expected_revision": 1, "schema": None, "splits": None, "policy": None,
-            "samples": [{"Upsert": {"sample_id": list(b"one"), "fields": [{"name": "value",
-                "value": {"Chunk": {"location": location, "length": len(data), "md5": digest}}}]}}]}
-    call(client, "edit_composition", operation=operation, edit=edit)
-    for page in range(32):
-        if call(client, "evaluate_composition", operation=operation, revision=2, page=page)["complete"]:
-            break
-    else:
-        raise AssertionError("composition evaluation did not complete")
-    for _ in range(32):
-        state = call(client, "prepare_composition", operation=operation, revision=2)
-        if state["uploads"]["publication_ready"]:
-            break
-    else:
-        raise AssertionError("composition ownership did not complete")
-    snapshot = state["uploads"]["candidate"]
-    call(client, "publish_composition", operation=operation, attempt={"version": 1, "id": identity(),
-         "target": {"Snapshot": {"snapshot": snapshot}}, "expected_head": None})
+    request = {"parent": None, "source": "All", "schema": {"version": 1,
+               "fields": [{"name": "value", "required": True}]},
+               "samples": [{"Upsert": {"sample_id": list(b"one"), "fields": [{"name": "value",
+                   "value": {"Chunk": {"location": location, "length": len(data), "md5": digest}}}]}}],
+               "splits": [{"name": "train", "definition": {"Selection": {"Explicit": [list(b"one")]}},
+                           "origin": "Evaluated"}], "policy": {"overlap": "AllowOverlap", "coverage": "AllowUnassigned"}}
+    prepared = call(client, "prepare_snapshot", snapshot=snapshot, input=request)
+    assert prepared["snapshot"] == snapshot and prepared["sample_count"] == 1
+    assert call(client, "prepare_snapshot", snapshot=snapshot, input=request) == prepared
+    head = call(client, "update_snapshot_head", snapshot=snapshot, expected_head=None)
+    assert head["latest"] == snapshot and head["stable"] is None
+    check_head_conflicts(client, snapshot, request, head)
     split_binding = bind(client, bytes(snapshot).hex(), ids=[b"one"], split={"revision": None, "name": "train"})
     split_batch = client.next_batch(split_binding["cursor"])
     assert json.loads(split_batch.header)["sample_ids"] == [list(b"one")]
     assert drain(split_batch)[0] == data
-    for _ in range(32):
-        if call(client, "cleanup_composition", operation=operation)["complete"]:
-            break
-    else:
-        raise AssertionError("composition cleanup did not complete")
     try:
         call(client, "abort_upload", upload=upload)
     except native.ConflictError:
@@ -153,6 +145,40 @@ def publish_native(runtime, root):
         raise AssertionError("published payload lost its durable owner")
     root.joinpath("python-snapshot.json").write_text(json.dumps(snapshot))
     verify_native(runtime, root)
+
+
+def check_head_conflicts(client, snapshot, request, head):
+    # A losing complete result remains readable; only explicit new conditions retry publication.
+    next_snapshot = identity()
+    request = dict(request, parent=snapshot, source="All", schema=None, samples=[])
+    call(client, "prepare_snapshot", snapshot=next_snapshot, input=request)
+    assert call(client, "snapshot", snapshot=next_snapshot)
+    assert drain(client.read_batch(bytes(next_snapshot), [list(b"one")], ["value"]))[0] == native_data()
+    for _ in range(4):
+        try:
+            call(client, "update_snapshot_head", snapshot=next_snapshot, expected_head=None)
+        except native.ConflictError as error:
+            assert error.observed_head == head
+            observed = error.observed_head
+        else:
+            raise AssertionError("stale explicit base unexpectedly published")
+    head = call(client, "update_snapshot_head", snapshot=next_snapshot, expected_head=observed["generation"])
+    assert head["latest"] == next_snapshot
+    revision = identity()
+    preparation = {"revision": revision, "policy": request["policy"], "splits": request["splits"]}
+    prepared = call(client, "prepare_split_revision", snapshot=snapshot, input=preparation)
+    assert call(client, "prepare_split_revision", snapshot=snapshot, input=preparation) == prepared
+    try:
+        call(client, "update_split_head", snapshot=snapshot, revision=revision,
+             expected_revision=None, expected_head=None)
+    except native.ConflictError as error:
+        observed = error.observed_head
+        assert observed["snapshot"] == snapshot and observed["revision"] is not None
+    else:
+        raise AssertionError("stale Split base unexpectedly published")
+    updated = call(client, "update_split_head", snapshot=snapshot, revision=revision,
+                   expected_revision=observed["revision"], expected_head=observed["generation"])
+    assert updated["revision"] == revision
 
 
 def verify_native(runtime, root):

@@ -9,7 +9,7 @@ use crowdb_access_dataset::{
 use std::{future::Future, sync::Arc};
 
 /// Existing authority services scoped by an explicitly supplied trusted identity.
-/// Composition, Split and cleanup use their original typed contracts and CAS rules.
+/// Complete resources and mutable pointers retain the authority's typed CAS rules.
 pub struct DatasetControl {
     pub authority: Arc<DatasetAuthority>,
     pub uploads: Arc<DatasetUploads>,
@@ -18,8 +18,8 @@ pub struct DatasetControl {
 
 impl DatasetClient {
     /// Runs one caller-selected control operation under shared request admission.
-    /// Use original authority operation/attempt IDs to inspect uncertain outcomes;
-    /// this method never retries the callback or switches to HTTP.
+    /// Retain resource IDs, complete inputs and explicit bases for uncertain outcomes.
+    /// This method never retries the callback, rebases a condition or switches to HTTP.
     /// # Errors
     /// Returns admission, domain failures or interrupted mutation uncertainty.
     pub async fn control<T, F, R>(&self, context: OperationContext, operation: F) -> Result<T>
