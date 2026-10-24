@@ -53,15 +53,7 @@ async fn split_commit_restart_preserves_candidates_receipts_and_historical_membe
     );
     let prepared = prepare(&client, &draft).await;
     let snapshot = prepared["preparation"]["snapshot"].as_str().unwrap();
-    call(
-        &client,
-        Method::GET,
-        &format!("/snapshots/{snapshot}/summary"),
-        None,
-        404,
-    )
-    .await;
-    restart().await;
+    complete_result_survives_restart(&client, snapshot).await;
     let publish =
         json!({"attempt":"23232323232323232323232323232323","snapshot":snapshot,"expected_head":null});
     let receipt = call(
@@ -117,6 +109,35 @@ async fn split_commit_restart_preserves_candidates_receipts_and_historical_membe
         )
         .await["data"],
         "ZGF0YQ=="
+    );
+}
+
+async fn complete_result_survives_restart(client: &Client, snapshot: &str) {
+    let summary = call(
+        client,
+        Method::GET,
+        &format!("/snapshots/{snapshot}/summary"),
+        None,
+        200,
+    )
+    .await;
+    assert_eq!(summary["sample_count"], "1");
+    assert_eq!(summary["inspection"], "ready");
+    assert_eq!(
+        call(client, Method::GET, "/head", None, 200).await["latest"],
+        Value::Null
+    );
+    restart().await;
+    assert_eq!(
+        call(
+            client,
+            Method::GET,
+            &format!("/snapshots/{snapshot}/summary"),
+            None,
+            200
+        )
+        .await,
+        summary
     );
 }
 

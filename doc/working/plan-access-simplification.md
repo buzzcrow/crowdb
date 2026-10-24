@@ -360,6 +360,21 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 
 ### P6 — Iceberg 旧 multipart / 全局 credits
 
+**补充 review（2026-10-24）**：`reserve_for_tests`/`initialize_for_tests` 仅由兼容 fixture
+调用，生产新上传没有全局硬配额入口。仍活跃的 `MultipartRecovery` 却在每页扫描前调用
+`MultipartAdmission::load`（context 前后检查加 policy，共 3G），旧终态 upload 又通过
+`release` 写 session snapshot、共享 pending 和 released receipt。其作用只是结算已停止
+使用的计数器，不决定 part、已发布 FileId 或 GC 的物理引用资格。
+
+移除方案：删生产 reserve/release/settle driver 和恢复中的 policy 步骤；已存在的 session
+继续按自身期限、part/publish 资源事实处理，忽略 legacy credit。仅有 pending Reserve、
+还没有 session 的旧记录不再凭 after payload 重新创建 upload：旧 reserve 的顺序是在
+session 准入前，没有该 session 就没有合法 part 写入。pending Release 的 after 只修改
+credit/revision，不改变已发布文件，故也无需回放。旧 policy、payload、credit 字段保留
+只读格式识别，不将旧计数器归零冒充业务数据清理；其旧 key 的清理归 P13 的 legacy
+metadata 扫描。没有活跃硬配额需求，不触发 D4。测试覆盖遗留/损坏 policy 对空页与已存在
+上传零影响、过期与终态资源不丢失，恢复总读取由空页 5G 降至 2G，零 policy GET/写。
+
 - [ ] **P6.2 删除确证无用的协调**：没有调用/恢复义务的代码可删；有旧记录则给出迁移/结算方案。
   只有仍有全局硬配额需求才触发 D4。Files: `file/multipart_admission.rs`、`file/multipart_credits/settle.rs` 及恢复测试。
 
@@ -489,6 +504,21 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，V2.3**：当前 Snapshot 源码镜像
+  `crowdb-node:access-cleanup-snapshot-head-20261024` 的 Dataset 全部五项容器用例通过，
+  包含 JSON 发布/持久化重启、鉴权、Split 历史、真实 Rust/installed Python SDK 数据与
+  直接 head API。首轮四项通过，Split fixture 仍要求完整但未发布 Snapshot 返回 404；
+  按已确认的合同改为 summary 200、latest 仍 absent，重启后完整内容相同，再发布。
+  第二轮五项全通过，artifact 为
+  `.crowdb-runtime/artifacts/container-e2e/run-542c939cb0b24685b432f4c1e5412dc6`；
+  失败首轮 `run-248a6a5222644cca983da2ca5bf7f5de` 保留，未掩盖失败。
+  image/client revision `ed9fa01a54b92447749f7a77f9c2a2b42a58b7ce`、
+  source tree `b5571cd807daed143af91ff0a724e9c60efb59a2`，server_sources_match=true；
+  OCI digest `sha256:1f632c08a0cb09a9dcfb0c17fb1d50ead4672b85cb857d3cb07b4a8320979e30`，
+  Docker identity `sha256:50fbad326aa9764cf0a3b8f0b717cc2780532c99e65f586a8e6909a196c45fa2`。
+  仅客户端断言调整，服务端源码保持同源；e2e-client all-target clippy、fmt、diff 通过。
+  此为本机 TCP 功能/重启验证，未测 TPS/HCA 或完整孤儿 GC，V4 和 R4 仍未完成。
 
 - **2026-10-24，R2.2d**：新增 `PUT .../datasets/{dataset}/head`、
   `snapshot-head-update` 能力、Rust/Python `update_snapshot_head`；只接收完整 Snapshot ID
