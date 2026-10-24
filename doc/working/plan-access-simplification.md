@@ -356,6 +356,15 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 
 - [ ] **P2.1 分清输入、计算进度与候选内容**：逐项列出 draft/edit receipt/work page/row/candidate/
   cleanup seal 的用途、写入次数和调用者；按 D1 更新 API/SDK 合同，移除服务端续算接口。Files: Dataset `composition/{begin,edit,state,evaluation,evaluate_step,prepare,cleanup}.rs`。
+- [~] **P2.2a 原生无状态 Composition 准备**：完整 parent/source/schema/changes/Split 输入，
+  source 和继承 revision 均显式固定，不在重试时重新解析 currentSplit。每次有界重算，
+  直接生成最终 Manifest/index/初始 SM/SRI/SR 和 payload owners；完整根最后安装。资源
+  Snapshot ID 由客户端指定，不另写 operation→随机 Snapshot 的过程索引，不写 CBG/CD/
+  CE/CX/CW/CM 或 staging owner/进度。已有最终资源键的条件隔离保留；中途失败输出由
+  Snapshot/成员前缀发现，R4/P13 仍需补独立过期/迟到写扫描。输入/输出均以既有 8 MiB
+  Manifest 上限约束，窗口二十个 sample、外层 30 秒；大输入最终页合同仍在 P2.2。
+  比较总 GET/scan/mutation，验证新路径写集合、部分结果不可读、丢回复重算、冻结继承、
+  owner 与回收竞争；REST/SDK 和所有旧调用者随后迁移，不能仅新增入口后关闭整个 P2。
 - [ ] **P2.2 删除服务端编辑/计算过程**：删除 durable 编辑/进度阶段，客户端失败重新请求；
   保持发布前不可见、expected head 及源 Snapshot 被删时的明确错误。孤儿清理通过 R4 验证，例外封口记录先 review。Files: `composition/`、Access v2 composition、SDK 和恢复测试。
 
@@ -372,16 +381,6 @@ SB/SD/SX/SW 和 SCG 清理游标描述编辑与计算过程，按 D1 删除。`s
 继续使用已有观察值 CAS；随后迁移 REST/SDK 并停止旧续算写入口。源 revision 固定，重试
 不得用当前 Split 重算历史成员；partial SM 的发现和迟到写隔离与 R4/P13 一起验证。
 
-- [~] **P3.2b 无状态 Split REST/SDK**：以完整资源 `PUT snapshots/{snapshot}/split-revisions/{revision}`
-  提交 policy/definitions，不使用 operation/draft/expected page。补能力、鉴权、1 MiB body
-  限制、错误、Rust/Python SDK 和真实 consumer；相同请求重试不新建 revision，不降级旧
-  draft 流程。迁移 standalone Split 示例/容器流程后关闭旧续算写入口；initial Split 的
-  内部工作状态与 Composition 一起清理，不能仅新增 API 后保留全部旧生产写路径。
-  REST/SDK、旧写入口关闭和 HTTP/consumer 迁移已实现；14 项 HTTP/Rust consumer、35 项
-  独立 SDK 源码包测试、11 项 installed Python 单测及真实 sync/async Python consumer 通过。
-  Dataset/Access/e2e-test 和独立 SDK all-target clippy、fmt、boundary、OpenAPI 322 个本地
-  引用通过；wheel 位于 `.crowdb-runtime/artifacts/sdk-split-preparation-20261024`。
-  新镜像与五项 Dataset 重启用例尚待验证，本项暂不关闭。
 - [ ] **P3.2 实现选定 Split 流程**：按 D1 删除辅助进度与检查点，客户端重试，保留 currentSplit
   发布 CAS、覆盖/重叠校验和旧 revision 读取。Files: `split/{publication,recovery,cleanup}.rs`、v2/SDK Split 和恢复测试。
 
@@ -548,6 +547,24 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P3.2b**：新增 `split-preparation` capability 与完整资源 PUT，严格 policy/
+  definitions、鉴权、1 MiB body/30 秒计算边界；Rust/Python sync/async SDK 保存 revision
+  身份并以同一输入重试，不查 draft/status，不降级。删除 standalone Split SDK 流程方法，
+  HTTP begin/edit/evaluate/prepare/publish 返回 501 且零存储访问；旧记录只保留观察、废弃和
+  cleanup。14 项 HTTP/Rust consumer、35 项独立源码包、11 项 installed Python 单测与真实
+  sync/async consumer 通过；Dataset/Access/e2e-test、SDK all-target clippy、fmt、boundary、
+  OpenAPI 322 个本地引用通过，均经 pixi。45 sample 准备 14G/8C，同完整结果重试 3G/0C；
+  不包含 scan 和 routed RPC。wheel `.crowdb-runtime/artifacts/sdk-split-preparation-20261024`。
+  从 `7f54415e780fd202745a4ca54e8b2de3a8444d48` 构建镜像
+  `crowdb-node:access-cleanup-split-preparation-20261024`，五项 Dataset 容器用例全部通过；
+  包含完整结果未发布读取、相同资源跨重启 PUT、currentSplit CAS 重试和历史成员保持。
+  artifact `.crowdb-runtime/artifacts/container-e2e/run-cff52437c80847cfa1ef2ddd7b9535bd`，
+  source tree `43245f37763b5a45057078640917de46cd62986a`，
+  OCI `sha256:7f1af28e9cc85a2d96f8354e550858793449b37d5bc7eb385db5636296b32033`，
+  Docker `sha256:6f0a6f533a9d475b2d852806315b70b40554b614b2d2cb6ce23164ae910c76e9`。
+  此为本机 TCP 功能/重启证明，未声称 TPS/HCA 提升。Composition 初始 Split 仍用内部
+  工作状态，由 P2/P3.2 继续删除；独立孤儿/迟到新页重扫仍归 R4/P13。
 
 - **2026-10-24，P3.1/P3.2a**：完成 Composition/Split 过程记录与最终资源边界盘点，见
   P2/P3；新增原生 `SplitPreparation` / `prepare_split_revision`。每次接收完整客户端输入，
