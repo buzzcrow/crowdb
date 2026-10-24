@@ -49,7 +49,9 @@ pub use cleanup::SplitScratchCleanup;
 pub(crate) use cleanup::SEALED as RETIRED_RECORD;
 pub use evaluation::SplitPreview;
 
+mod preparation;
 mod prepare;
+pub use preparation::SplitPreparation;
 
 mod head;
 pub use head::{SplitHeadUpdate, SplitReference};

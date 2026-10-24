@@ -20,6 +20,7 @@ pub(super) struct TestDraftStore {
     pub revision_reads: AtomicUsize,
     pub bounded_reads: AtomicUsize,
     pub unbounded_reads: AtomicUsize,
+    pub metadata_scans: AtomicUsize,
     pub mutations: AtomicUsize,
     pub split_head_reads: AtomicUsize,
     pub candidate_reads: AtomicUsize,
@@ -33,7 +34,21 @@ pub(super) struct TestDraftStore {
     pub reject_publishing_ledgers: AtomicBool,
     pub hide_revision_once: AtomicBool,
     pub lose_revision_reply: AtomicBool,
+    pub lose_member_reply: AtomicBool,
     pub reject_split_proof_reads: AtomicBool,
+    pub reject_draft_writes: AtomicBool,
+}
+impl TestDraftStore {
+    fn check_result_write(&self, key: &[u8]) {
+        if self.reject_draft_writes.load(Ordering::Relaxed) {
+            assert!(
+                [b"DS\0SR\0".as_slice(), b"DS\0SRI\0", b"DS\0SM\0"]
+                    .iter()
+                    .any(|prefix| key.starts_with(prefix)),
+                "stateless preparation wrote workflow state"
+            );
+        }
+    }
 }
 #[async_trait::async_trait]
 impl DatasetStore for TestDraftStore {
@@ -98,6 +113,7 @@ impl DatasetStore for TestDraftStore {
         request: &MetadataScan,
         cancel: &ReadCancellation,
     ) -> Result<MetadataPage, StoreError> {
+        self.metadata_scans.fetch_add(1, Ordering::Relaxed);
         if self.cancel_scan.swap(false, Ordering::Relaxed) {
             cancel.cancel();
         }
@@ -113,6 +129,7 @@ impl DatasetStore for TestDraftStore {
         value: &[u8],
     ) -> Result<CasOutcome, StoreError> {
         self.mutations.fetch_add(1, Ordering::Relaxed);
+        self.check_result_write(key);
         if self.reject_publishing_ledgers.load(Ordering::Relaxed) {
             assert!(
                 ![b"DS\0CA\0".as_slice(), b"DS\0CR\0", b"DS\0SC\0", b"DS\0SRC\0"]
@@ -189,6 +206,12 @@ impl DatasetStore for TestDraftStore {
         if key.starts_with(b"DS\0SH\0")
             && matches!(result, CasOutcome::Applied(_))
             && self.lose_split_reply.swap(false, Ordering::Relaxed)
+        {
+            return Err(StoreError::Rejected);
+        }
+        if key.starts_with(b"DS\0SM\0")
+            && matches!(result, CasOutcome::Applied(_))
+            && self.lose_member_reply.swap(false, Ordering::Relaxed)
         {
             return Err(StoreError::Rejected);
         }

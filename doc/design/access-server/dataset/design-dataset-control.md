@@ -124,6 +124,19 @@ not a promise of exact cardinality. Overlap/coverage validation remains independ
 Membership pages are immutable and checksum-bound. Preparation persists the whole
 revision before currentSplit CAS. A conflict preserves the candidate and caller
 inputs; retry never silently rebases definitions or overwrites another revision.
+The native `prepare_split_revision` alternative accepts caller-owned revision ID,
+policy and complete definitions. It recomputes incomplete work from those inputs,
+writing only final member pages, the resource enumeration index and complete
+revision root. The index precedes pages; the root is installed last. No draft,
+edit receipt, window intent or phase cursor is written. Input and final bindings
+are capped at 1 MiB; computation uses twenty-Sample windows within a 30-second
+request deadline. It retains one window and the bounded bindings, encodes each
+member page once, and tracks binding size incrementally. An identical complete
+resource is reusable without recomputation; different input at that ID conflicts.
+Unknown writes propagate without confirmation reads. Frozen inherited sources use
+the supplied revision, regardless of later head changes. Snapshot retirement
+finds both complete and partial output through resource prefixes without drafts;
+independent unused-revision expiry and delayed-write resweeps remain separate work.
 The complete `SplitRevisionRecord` is the final result: an explicit revision ID
 can be read, listed or used as an inherited source without winning currentSplit.
 Read admission still checks the owning Snapshot. Reads load that immutable record

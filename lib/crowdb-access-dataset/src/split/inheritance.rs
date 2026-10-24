@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    key, MembershipOrigin, MembershipPage, SplitDraftRecord, SplitLifecycleError, SplitName,
+    key, DraftSplit, MembershipOrigin, MembershipPage, SplitDraftRecord, SplitLifecycleError, SplitName,
     SplitRevisionRecord,
 };
 use crate::{
@@ -30,7 +30,19 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         record: &SplitDraftRecord,
     ) -> Result<(), SplitLifecycleError> {
-        if source_owners(record).is_empty() {
+        self.validate_split_definitions(identity, record.snapshot, &record.splits)
+            .await
+    }
+    pub(super) async fn validate_split_definitions(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        splits: &[DraftSplit],
+    ) -> Result<(), SplitLifecycleError> {
+        if !splits
+            .iter()
+            .any(|split| matches!(split.origin, MembershipOrigin::Inherited(_)))
+        {
             return Ok(());
         }
         let budget = MetadataScanBudget {
@@ -40,11 +52,11 @@ impl DatasetAuthority {
         };
         let cancel = ReadCancellation::new();
         let owner = self
-            .snapshot_inspection_summary(identity, record.snapshot, budget, &cancel)
+            .snapshot_inspection_summary(identity, snapshot, budget, &cancel)
             .await?;
         let mut work = InspectionWork::new(self.store.as_ref(), &cancel, budget)?;
         let mut revisions = BTreeMap::new();
-        for split in &record.splits {
+        for split in splits {
             if let MembershipOrigin::Inherited(source) = &split.origin {
                 if owner.parent != Some(source.snapshot) {
                     return Err(SplitLifecycleError::Conflict);

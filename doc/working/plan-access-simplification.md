@@ -372,18 +372,11 @@ SB/SD/SX/SW 和 SCG 清理游标描述编辑与计算过程，按 D1 删除。`s
 继续使用已有观察值 CAS；随后迁移 REST/SDK 并停止旧续算写入口。源 revision 固定，重试
 不得用当前 Split 重算历史成员；partial SM 的发现和迟到写隔离与 R4/P13 一起验证。
 
-- [ ] **P3.1 分开临时评估和已发布成员**：盘点 edits/evaluation/overlap examples/work pages；
-  保留历史 revision 和冻结成员，不能重算时偷偷改变既有 train/test。Files: Dataset `split/{lifecycle,state,work,evaluation,prepare,initial}.rs`。
-- [~] **P3.2a 原生无状态 Split 准备**：新增 `SplitPreparation { revision, policy, splits }`
-  和 `prepare_split_revision(identity, snapshot, request, cancellation)`，输入由客户端完整保存，
-  每次从固定 Snapshot/继承 revision 重算，内存只保留一个有界窗口与最多 1 MiB 的最终绑定。
-  外层 30 秒 deadline；最多 64 个定义，继续使用既有条件与覆盖/重叠校验。只写最终
-  SM/SR/SRI，禁止 SB/SD/SX/SW 和阶段/进度写入；SRI 在成员前记录可枚举资源身份，
-  SR 最后安装完整根。相同 ID 完整结果按输入身份复用，异内容冲突；unknown 不确认查询。
-  partial SM 可从 SRI 或所属 Snapshot 的 SM prefix 发现，Snapshot 回收覆盖无草稿的
-  输出；独立未引用 revision 期限和迟到元数据重扫仍由 R4/P13 完成，不能掩盖该缺口。
-  先交付 native/cost/取消/丢回复/回收回归，再迁移 REST/SDK 和关闭旧入口；不使用旧
-  durable evaluator 的外层循环冒充无状态。Files: `split/preparation.rs`、共享定义/源校验、tests。
+- [ ] **P3.2b 无状态 Split REST/SDK**：以完整资源 `PUT snapshots/{snapshot}/split-revisions/{revision}`
+  提交 policy/definitions，不使用 operation/draft/expected page。补能力、鉴权、1 MiB body
+  限制、错误、Rust/Python SDK 和真实 consumer；相同请求重试不新建 revision，不降级旧
+  draft 流程。迁移 standalone Split 示例/容器流程后关闭旧续算写入口；initial Split 的
+  内部工作状态与 Composition 一起清理，不能仅新增 API 后保留全部旧生产写路径。
 - [ ] **P3.2 实现选定 Split 流程**：按 D1 删除辅助进度与检查点，客户端重试，保留 currentSplit
   发布 CAS、覆盖/重叠校验和旧 revision 读取。Files: `split/{publication,recovery,cleanup}.rs`、v2/SDK Split 和恢复测试。
 
@@ -550,6 +543,20 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P3.1/P3.2a**：完成 Composition/Split 过程记录与最终资源边界盘点，见
+  P2/P3；新增原生 `SplitPreparation` / `prepare_split_revision`。每次接收完整客户端输入，
+  从固定 Snapshot 和继承 revision 重算；只写 SM/SRI/SR，不生成 SB/SD/SX/SW 或进度。
+  SRI 在成员页前写，完整根最后安装；相同 ID 完整结果复用，异内容冲突；成员页或最终根
+  丢回复直接传播，跨实例重试不续算、不确认查询。输入与最终绑定各限 1 MiB，单窗口
+  二十个 sample、外层 30 秒；每个成员页只编码一次，绑定长度增量计算，避免每页重编码
+  越来越大的完整根。45 sample / 两个 Split 的 native 全流程实测从 32G + 6S + 17C
+  降为 14G + 6S + 8C，总逻辑调用 55→28，其中 6C 为相同的最终成员页；不是 routed
+  RPC 或 TPS 测量。新路径写集合回归禁止任何工作状态 key。26 项准备、取消、非法输入、
+  头发布、冻结继承、丢回复、重算、完整/部分输出无草稿回收和 Composition 兼容测试通过；
+  Dataset/Access all-target/all-feature clippy、fmt、diff 通过，均经 pixi。
+  所属 Snapshot 回收能发现并封口已有成员页；独立未引用 revision 期限、迟到未见 key 的
+  重扫仍归 R4/P13。REST/SDK 和旧入口关闭由 P3.2b 跟进，不能视为 P3 全部完成。
 
 - **2026-10-24，R2.2e**：Composition/Split status 只读已存草稿；删除 Committing 的
   attempt/receipt/head 查询、二次确认、Prepared/Published 帮助写入，以及专用
