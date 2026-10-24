@@ -45,7 +45,7 @@ pub async fn verify(stack: &TestNativeStorage, context: CatalogContext, table: T
     };
     let admission = MultipartAdmission::new(store.clone());
     let policy = admission
-        .initialize(
+        .initialize_for_tests(
             context,
             MultipartAdmissionLimits {
                 max_sessions: 2,
@@ -54,7 +54,7 @@ pub async fn verify(stack: &TestNativeStorage, context: CatalogContext, table: T
         )
         .await
         .unwrap();
-    assert!(admission.reserve(&policy, &initial, 1).await.unwrap());
+    assert!(admission.reserve_for_tests(&policy, &initial, 1).await.unwrap());
     let repository = MultipartRepository::new(store);
     let admitted = repository.load(context, initial.upload).await.unwrap().unwrap();
     let part = MultipartPart {

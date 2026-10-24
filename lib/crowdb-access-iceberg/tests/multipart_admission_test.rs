@@ -25,7 +25,7 @@ async fn setup() -> (file::TestFile, MultipartSession, MultipartAdmissionRecord)
     initial.owner.file = fixture.record("file", b"{}").file;
     initial.location = fixture.table.file("file").unwrap();
     let record = MultipartAdmission::new(fixture.store.clone())
-        .initialize(
+        .initialize_for_tests(
             fixture.context,
             MultipartAdmissionLimits {
                 max_sessions: 2,
@@ -58,7 +58,7 @@ async fn reservation_reply_loss_recovers_once_across_instances_at_every_write() 
             fixture.store.writes.load(Ordering::SeqCst) + lost,
             Ordering::SeqCst,
         );
-        assert!(admission.reserve(&record, &initial, 100).await.is_err());
+        assert!(admission.reserve_for_tests(&record, &initial, 100).await.is_err());
         fixture.store.fail_after.store(0, Ordering::SeqCst);
         let admission = MultipartAdmission::new(fixture.store.clone());
         let record = policy(&admission, &initial).await;
@@ -66,7 +66,7 @@ async fn reservation_reply_loss_recovers_once_across_instances_at_every_write() 
             assert!(admission.settle(&record).await.unwrap());
         }
         let record = policy(&admission, &initial).await;
-        assert!(admission.reserve(&record, &initial, 100).await.unwrap());
+        assert!(admission.reserve_for_tests(&record, &initial, 100).await.unwrap());
         let record = policy(&admission, &initial).await;
         assert_eq!((record.sessions, record.reserved_bytes), (1, 1500));
         assert!(record.pending.is_none());
@@ -75,7 +75,10 @@ async fn reservation_reply_loss_recovers_once_across_instances_at_every_write() 
         assert_eq!(admitted.credit.unwrap().policy, record.policy);
         assert!(!admitted.credit.unwrap().released);
         let writes = fixture.store.writes.load(Ordering::SeqCst);
-        assert!(admission.reserve(&record, &initial, 5000).await.unwrap());
+        assert!(admission
+            .reserve_for_tests(&record, &initial, 5000)
+            .await
+            .unwrap());
         assert_eq!(fixture.store.writes.load(Ordering::SeqCst), writes);
     }
 }
@@ -86,7 +89,7 @@ async fn terminal_release_reply_loss_never_returns_credits_twice() {
         let (fixture, initial, record) = setup().await;
         let admission = MultipartAdmission::new(fixture.store.clone());
         let repository = MultipartRepository::new(fixture.store.clone());
-        assert!(admission.reserve(&record, &initial, 100).await.unwrap());
+        assert!(admission.reserve_for_tests(&record, &initial, 100).await.unwrap());
         let active = session(&repository, &initial).await;
         let record = policy(&admission, &initial).await;
         assert!(matches!(
@@ -127,19 +130,22 @@ async fn admission_fences_competing_reservations_and_persisted_policy_changes() 
     let mut other = initial.clone();
     other.upload = OperationId::random();
     let (left, right) = tokio::join!(
-        first.reserve(&record, &initial, 100),
-        second.reserve(&record, &other, 100)
+        first.reserve_for_tests(&record, &initial, 100),
+        second.reserve_for_tests(&record, &other, 100)
     );
     assert_ne!(left.unwrap(), right.unwrap());
     let current = policy(&first, &initial).await;
     assert_eq!(current.sessions, 1);
     assert_eq!(
-        first.initialize(initial.context, record.limits).await.unwrap(),
+        first
+            .initialize_for_tests(initial.context, record.limits)
+            .await
+            .unwrap(),
         current
     );
     assert!(matches!(
         first
-            .initialize(
+            .initialize_for_tests(
                 initial.context,
                 MultipartAdmissionLimits {
                     max_sessions: 3,
@@ -160,11 +166,11 @@ async fn admission_fences_competing_reservations_and_persisted_policy_changes() 
     } else {
         &other
     };
-    assert!(first.reserve(&current, missing, 100).await.unwrap());
+    assert!(first.reserve_for_tests(&current, missing, 100).await.unwrap());
     let mut overflow = initial.clone();
     overflow.upload = OperationId::random();
     assert!(first
-        .reserve(&policy(&first, &initial).await, &overflow, 100)
+        .reserve_for_tests(&policy(&first, &initial).await, &overflow, 100)
         .await
         .is_err());
     assert!(repository
@@ -182,7 +188,7 @@ async fn sweep_recovers_precreation_credit_then_expires_and_releases_without_del
         .store
         .fail_after
         .store(fixture.store.writes.load(Ordering::SeqCst) + 2, Ordering::SeqCst);
-    assert!(admission.reserve(&record, &initial, 100).await.is_err());
+    assert!(admission.reserve_for_tests(&record, &initial, 100).await.is_err());
     fixture.store.fail_after.store(0, Ordering::SeqCst);
     let repository = MultipartRepository::new(fixture.store.clone());
     assert!(repository
@@ -234,7 +240,7 @@ async fn superseded_helpers_cannot_recreate_released_sessions_or_change_new_cred
         .store
         .fail_after
         .store(fixture.store.writes.load(Ordering::SeqCst) + 2, Ordering::SeqCst);
-    assert!(admission.reserve(&record, &initial, 100).await.is_err());
+    assert!(admission.reserve_for_tests(&record, &initial, 100).await.is_err());
     fixture.store.fail_after.store(0, Ordering::SeqCst);
     let reserved = policy(&admission, &initial).await;
     assert!(admission.settle(&reserved).await.unwrap());
@@ -256,7 +262,7 @@ async fn superseded_helpers_cannot_recreate_released_sessions_or_change_new_cred
     let mut other = initial.clone();
     other.upload = OperationId::random();
     let current = policy(&admission, &initial).await;
-    assert!(admission.reserve(&current, &other, 100).await.unwrap());
+    assert!(admission.reserve_for_tests(&current, &other, 100).await.unwrap());
     let current = policy(&admission, &initial).await;
     let writes = fixture.store.writes.load(Ordering::SeqCst);
     assert!(!admission.settle(&reserved).await.unwrap());

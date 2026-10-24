@@ -86,7 +86,12 @@ fn stream_part(session: &MultipartSession, number: u16, chunk_low: u64) -> Multi
 async fn streamed_parts_commit_independently_without_session_mutations() {
     let (fixture, initial) = setup().await;
     let repository = MultipartRepository::new(fixture.store.clone());
-    repository.begin(&initial, 100).await.unwrap();
+    let writes = fixture.store.writes.load(Ordering::SeqCst);
+    let reads = fixture.store.reads.load(Ordering::SeqCst);
+    let created = repository.begin(&initial, 100).await.unwrap();
+    assert!(created.credit.is_none());
+    assert_eq!(fixture.store.writes.load(Ordering::SeqCst) - writes, 1);
+    assert_eq!(fixture.store.reads.load(Ordering::SeqCst) - reads, 1);
     let writes = fixture.store.writes.load(Ordering::SeqCst);
     let reads = fixture.store.reads.load(Ordering::SeqCst);
     let first_input = stream_part(&initial, 1, 1);
@@ -101,6 +106,14 @@ async fn streamed_parts_commit_independently_without_session_mutations() {
     assert_eq!(second.revision, 1);
     assert_eq!(fixture.store.writes.load(Ordering::SeqCst) - writes, 2);
     assert_eq!(fixture.store.reads.load(Ordering::SeqCst) - reads, 2);
+    assert!(!fixture.store.values.load().keys().any(|key| matches!(
+        crowdb_access_iceberg::key::IcebergKey::decode(key),
+        Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
+            scope: crowdb_access_iceberg::key::CatalogScope::MultipartAdmission
+                | crowdb_access_iceberg::key::CatalogScope::OperationPayload,
+            ..
+        })
+    )));
     assert_eq!(load(&repository, &initial).await, initial);
     let replacement = repository
         .put_stream_part(&initial, &stream_part(&initial, 1, 3), 102)

@@ -2,13 +2,17 @@ use std::sync::Arc;
 
 use crate::catalog::{check_context, CasOutcome, CatalogContext, CatalogError, CatalogStore};
 use crate::error::ValidationError;
-use crate::key::{CatalogScope, IcebergKey, OperationId};
+#[cfg(feature = "test-util")]
+use crate::key::OperationId;
+use crate::key::{CatalogScope, IcebergKey};
 use crate::operation::{mutation_identity, PayloadStore};
 use crate::record::StorageRecord;
 
+#[cfg(feature = "test-util")]
+use super::MultipartAdmissionLimits;
 use super::{
-    MultipartAdmissionLimits, MultipartAdmissionRecord, MultipartCredit, MultipartCreditAction,
-    MultipartCreditMutation, MultipartPhase, MultipartRepository, MultipartSession,
+    MultipartAdmissionRecord, MultipartCredit, MultipartCreditAction, MultipartCreditMutation,
+    MultipartPhase, MultipartRepository, MultipartSession,
 };
 
 mod settle;
@@ -27,10 +31,11 @@ impl MultipartAdmission {
         }
     }
 
-    /// Installs immutable catalog-wide admission limits or checks the existing policy.
+    /// Reproduces a legacy policy for compatibility and recovery tests.
     /// # Errors
     /// Rejects invalid bounds, conflicting policy, retired contexts and storage failures.
-    pub async fn initialize(
+    #[cfg(feature = "test-util")]
+    pub async fn initialize_for_tests(
         &self,
         context: CatalogContext,
         limits: MultipartAdmissionLimits,
@@ -95,10 +100,11 @@ impl MultipartAdmission {
         Ok(record)
     }
 
-    /// Reserves the session's complete staged-byte ceiling before creating its authority.
+    /// Reproduces legacy reservation writes, including interrupted journals, for recovery tests.
     /// # Errors
     /// Rejects stale or occupied policies, expired requests, exhausted credits and identity reuse.
-    pub async fn reserve(
+    #[cfg(feature = "test-util")]
+    pub async fn reserve_for_tests(
         &self,
         record: &MultipartAdmissionRecord,
         session: &MultipartSession,

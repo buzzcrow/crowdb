@@ -562,6 +562,8 @@ New multipart sessions publish their own authority without a catalog-wide
 credit reserve or release. Persisted per-session limits bound staged bytes and
 part count. Legacy admission journals and credit receipts remain recoverable in
 the background; ordinary new sessions never contend on those shared records.
+Creating or reserving a legacy global credit policy is available only through
+explicit compatibility test hooks. Production admission exposes no such path.
 The legacy tree multipart repository reserves one part mutation in the session before
 changing its part authority. A bounded before/after snapshot and monotonically
 increasing revisions make the write and fence release recoverable across servers.

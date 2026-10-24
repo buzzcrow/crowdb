@@ -349,8 +349,6 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 
 ### P6 — Iceberg 旧 multipart / 全局 credits
 
-- [ ] **P6.1 追踪活跃与恢复入口**：新 part 前台已是准入后 `1G + 1C`，旧 `part` helper 可有
-  `5G`；分别计数。列出旧记录兼容/结算责任，不能把“无前台调用”当成“可以删”。Files: Iceberg `file/multipart{,_credits,_recovery,_repository}.rs` 及子模块、Access file 路由。
 - [ ] **P6.2 删除确证无用的协调**：没有调用/恢复义务的代码可删；有旧记录则给出迁移/结算方案。
   只有仍有全局硬配额需求才触发 D4。Files: `file/multipart_admission.rs`、`file/multipart_credits/settle.rs` 及恢复测试。
 
@@ -480,6 +478,16 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **P6.1（2026-10-24）**：核实新前台上传不调用全局 credits；旧 `initialize/reserve` 创建
+  接口限于 test-util 并命名 `*_for_tests`，生产仅保留历史资源的 load/settle/release。
+  不删除未结算的旧 pending reserve：该记录可能是尚未建立 MultipartSession 的唯一恢复入口；
+  旧 terminal release 仍需防止计数重复返还。它们不再由新上传创建，后续迁移继续由 P6.2 审查。
+  旧 `part` 前后各 load（root+session）总计 5G，仍服务 legacy tree completion/publication；
+  新 admitted streamed part 为 1G+1C。正常 begin 新增断言 1G+1C/无 credit，两条 streamed
+  part 为 2G+2C，key 集合没有 policy/OperationPayload。六项旧 admission、三项 record、
+  八项 repository、六项 recovery/budget 测试通过；prod-only clippy 与 Iceberg/E2E
+  all-target/all-feature clippy、fmt、diff check 通过。没有引入替代配额或放宽业务资源边界。
 
 - **F6.1（2026-10-24）**：delivery 按最多 16 个 sample-field cell 分窗，同层 field/祖先和
   value 分阶段并发，membership 独立分窗；相同祖先只准入一次。每条 bounded read 发起前
