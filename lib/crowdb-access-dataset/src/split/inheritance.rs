@@ -25,14 +25,6 @@ pub(super) fn source_owners(record: &SplitDraftRecord) -> BTreeSet<SnapshotId> {
         .collect()
 }
 impl DatasetAuthority {
-    pub(super) async fn validate_split_sources(
-        &self,
-        identity: &DatasetIdentity,
-        record: &SplitDraftRecord,
-    ) -> Result<(), SplitLifecycleError> {
-        self.validate_split_definitions(identity, record.snapshot, &record.splits)
-            .await
-    }
     pub(super) async fn validate_split_definitions(
         &self,
         identity: &DatasetIdentity,

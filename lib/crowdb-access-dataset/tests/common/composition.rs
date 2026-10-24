@@ -3,27 +3,6 @@
 
 use crowdb_access_dataset::{composition::*, *};
 use md5::{Digest, Md5};
-pub(super) fn input(parent: SnapshotId) -> CompositionInput {
-    CompositionInput {
-        parent: Some(parent),
-        source: CompositionSource::All,
-        schema: None,
-        inherit_parent_splits: false,
-        parent_split_revision: None,
-        splits: vec![],
-        policy: None,
-    }
-}
-pub(super) fn edit(revision: u64, samples: Vec<SampleChange>) -> CompositionEdit {
-    CompositionEdit {
-        id: OperationId::random(),
-        expected_revision: revision,
-        samples,
-        schema: None,
-        splits: None,
-        policy: None,
-    }
-}
 pub(super) fn sample(id: &[u8], value: u8) -> SampleRecord {
     SampleRecord {
         sample_id: id.to_vec(),
@@ -35,41 +14,6 @@ pub(super) fn sample(id: &[u8], value: u8) -> SampleRecord {
             },
         }],
     }
-}
-pub(super) async fn evaluate(
-    authority: &DatasetAuthority,
-    identity: &DatasetIdentity,
-    operation: OperationId,
-    revision: u64,
-) -> CompositionPreview {
-    for page in 0..100 {
-        let preview = authority
-            .evaluate_composition(identity, operation, revision, page, &ReadCancellation::new())
-            .await
-            .unwrap();
-        if preview.complete {
-            return preview;
-        }
-    }
-    panic!("composition evaluation did not complete")
-}
-#[allow(dead_code)]
-pub(super) async fn prepare(
-    authority: &DatasetAuthority,
-    identity: &DatasetIdentity,
-    operation: OperationId,
-    revision: u64,
-) -> CompositionDraft {
-    for _ in 0..100 {
-        let draft = authority
-            .prepare_composition(identity, operation, revision, &ReadCancellation::new())
-            .await
-            .unwrap();
-        if matches!(draft.record.progress, DraftProgress::Prepared { .. }) {
-            return draft;
-        }
-    }
-    panic!("composition preparation did not complete")
 }
 #[allow(dead_code)]
 pub(super) fn budget() -> MetadataScanBudget {
@@ -94,16 +38,13 @@ pub(super) async fn attempt(
     }
 }
 
-#[allow(dead_code)]
-pub(super) async fn begin_evaluated(
-    authority: &DatasetAuthority,
-    identity: &DatasetIdentity,
-    operation: OperationId,
-    input: &CompositionInput,
-) {
-    authority
-        .begin_composition(identity, operation, input)
-        .await
-        .unwrap();
-    evaluate(authority, identity, operation, 1).await;
+pub(super) fn request(parent: SnapshotId) -> CompositionRequest {
+    CompositionRequest {
+        parent: Some(parent),
+        source: CompositionSource::All,
+        schema: None,
+        samples: vec![],
+        splits: vec![],
+        policy: crowdb_access_dataset::split::SplitPolicy::default(),
+    }
 }

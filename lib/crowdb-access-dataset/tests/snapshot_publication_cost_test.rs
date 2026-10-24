@@ -157,29 +157,3 @@ async fn four_explicit_retries_use_each_returned_generation_without_a_head_query
     );
     assert_eq!(delta(&store, before), (15, 5, 5));
 }
-
-#[tokio::test]
-async fn composition_publication_keeps_prepared_state_and_adds_only_its_draft_read() {
-    let (store, authority, identity, parent) = split_store::fixture().await;
-    let operation = OperationId::random();
-    common::begin_evaluated(&authority, &identity, operation, &common::input(parent)).await;
-    let draft = common::prepare(&authority, &identity, operation, 1).await;
-    let snapshot = draft.preparation.as_ref().unwrap().candidate;
-    let attempt = common::attempt(&authority, &identity, snapshot).await;
-    store.reject_publishing_ledgers.store(true, Ordering::Relaxed);
-    let before = counts(&store);
-    authority
-        .publish_composition(&identity, operation, &attempt)
-        .await
-        .unwrap();
-    assert_eq!(delta(&store, before), (4, 1, 1));
-    assert_eq!(
-        authority.composition_status(&identity, operation).await.unwrap(),
-        draft
-    );
-    authority
-        .abandon_composition(&identity, operation, 1)
-        .await
-        .unwrap();
-    assert!(authority.get_snapshot(&identity, snapshot).await.is_ok());
-}

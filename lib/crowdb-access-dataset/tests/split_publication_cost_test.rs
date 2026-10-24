@@ -1,9 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#[path = "common/composition.rs"]
-#[allow(dead_code)]
-mod common;
 #[path = "common/publication.rs"]
 mod publication;
 #[path = "common/split_store.rs"]
@@ -28,7 +25,7 @@ async fn keys(store: &split_store::TestDraftStore) -> BTreeSet<Vec<u8>> {
             &MetadataScan {
                 prefix: b"DS\0".to_vec(),
                 after: None,
-                budget: common::budget(),
+                budget: split_store::budget(),
             },
             &ReadCancellation::new(),
         )
@@ -178,10 +175,7 @@ async fn reclaim_reuses_four_split_head_observations_without_reloading_or_helpin
             )
             .await
             .unwrap();
-        authority
-            .publish_snapshot_candidate(&identity, &common::attempt(&authority, &identity, root).await)
-            .await
-            .unwrap();
+        split_store::publish_snapshot_head(&authority, &identity, root).await;
         store.split_head_conflicts.store(4, Ordering::Relaxed);
         let gets = store.split_head_reads.load(Ordering::Relaxed);
         let cas = store.split_head_mutations.load(Ordering::Relaxed);

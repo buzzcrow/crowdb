@@ -3,6 +3,11 @@
 #[path = "common/composition.rs"]
 #[allow(dead_code)]
 mod common;
+#[path = "common/legacy_drafts.rs"]
+#[allow(dead_code)]
+mod legacy;
+#[path = "common/legacy_split.rs"]
+mod legacy_split;
 #[path = "common/publication.rs"]
 mod publication;
 #[path = "common/split_store.rs"]
@@ -31,12 +36,9 @@ async fn finish(authority: &DatasetAuthority, identity: &DatasetIdentity, operat
 }
 #[tokio::test]
 async fn abandoned_draft_fences_preparation_that_has_not_started() {
-    let (_, authority, identity, parent) = split_store::fixture().await;
+    let (store, authority, identity, parent) = split_store::fixture().await;
     let operation = OperationId::random();
-    authority
-        .begin_composition(&identity, operation, &common::input(parent))
-        .await
-        .unwrap();
+    legacy::editing_composition(store.as_ref(), &authority, &identity, operation, parent).await;
     authority
         .abandon_composition(&identity, operation, 1)
         .await
@@ -60,10 +62,7 @@ async fn abandoned_draft_fences_preparation_that_has_not_started() {
 async fn cleanup_finds_prepared_candidate_without_a_draft_preparation_pointer() {
     let (store, authority, identity, parent) = split_store::fixture().await;
     let operation = OperationId::random();
-    authority
-        .begin_composition(&identity, operation, &common::input(parent))
-        .await
-        .unwrap();
+    legacy::editing_composition(store.as_ref(), &authority, &identity, operation, parent).await;
     let snapshot = authority
         .prepare_snapshot_candidate(
             &identity,
@@ -118,12 +117,9 @@ async fn cleanup_finds_prepared_candidate_without_a_draft_preparation_pointer() 
 }
 #[tokio::test]
 async fn obsolete_candidate_cleanup_preserves_a_successful_historical_publication() {
-    let (_, authority, identity, parent) = split_store::fixture().await;
+    let (store, authority, identity, parent) = split_store::fixture().await;
     let operation = OperationId::random();
-    authority
-        .begin_composition(&identity, operation, &common::input(parent))
-        .await
-        .unwrap();
+    legacy::editing_composition(store.as_ref(), &authority, &identity, operation, parent).await;
     let snapshot = authority
         .prepare_snapshot_candidate(
             &identity,
@@ -138,10 +134,7 @@ async fn obsolete_candidate_cleanup_preserves_a_successful_historical_publicatio
         .publish_snapshot_candidate(&identity, &attempt)
         .await
         .unwrap();
-    authority
-        .edit_composition(&identity, operation, &common::edit(1, vec![]))
-        .await
-        .unwrap();
+    legacy::composition_edit(store.as_ref(), &identity, operation, vec![], true).await;
     finish(&authority, &identity, operation).await;
     assert!(authority.get_manifest(&identity, snapshot).await.is_ok());
     assert_eq!(
@@ -152,45 +145,99 @@ async fn obsolete_candidate_cleanup_preserves_a_successful_historical_publicatio
 
 #[tokio::test]
 async fn superseding_partial_initial_split_preparation_retires_the_old_candidate() {
-    let (_, authority, identity, parent) = split_store::fixture().await;
+    let (store, authority, identity, parent) = split_store::fixture().await;
     let parent = split_store::publish_binary_samples(&authority, &identity, parent).await;
     let operation = OperationId::random();
-    let input = crowdb_access_dataset::composition::CompositionInput {
-        splits: split_store::partition_splits(),
-        ..common::input(parent)
+    legacy::editing_composition(store.as_ref(), &authority, &identity, operation, parent).await;
+    let old = authority
+        .prepare_snapshot_candidate(
+            &identity,
+            Some(parent),
+            bincode::serialize(&authority.get_manifest(&identity, parent).await.unwrap()).unwrap(),
+            candidate(operation, 1),
+        )
+        .await
+        .unwrap();
+    let split_operation = candidate(candidate(operation, 1), 1);
+    let revision = legacy_split::revision(split_operation, 1);
+    let cb = [b"DS\0CB\0".as_slice(), &identity.key().unwrap(), old.as_bytes()].concat();
+    let stored = store.get(&cb).await.unwrap().unwrap();
+    let mut binding: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
+    binding["version"] = 3.into();
+    binding["initial_split"] = serde_json::json!(revision);
+    legacy::replace(store.as_ref(), &cb, &stored.bytes, &binding).await;
+    let splits = split_store::partition_splits();
+    let record = split::SplitDraftRecord {
+        version: 1,
+        operation: split_operation,
+        snapshot: old,
+        expected_revision: None,
+        revision: 1,
+        policy: split::SplitPolicy::default(),
+        splits: splits.clone(),
+        progress: composition::DraftProgress::Editing,
     };
-    authority
-        .begin_composition(&identity, operation, &input)
-        .await
-        .unwrap();
-    common::evaluate(&authority, &identity, operation, 1).await;
-    let draft = authority
-        .prepare_composition(&identity, operation, 1, &ReadCancellation::new())
-        .await
-        .unwrap();
-    assert!(matches!(
-        draft.record.progress,
-        crowdb_access_dataset::composition::DraftProgress::Evaluated { .. }
-    ));
-    let old = draft.preparation.unwrap().candidate;
+    legacy_split::state(store.as_ref(), &identity, &record).await;
+    let sd = legacy::key(b"DS\0SD\0", &identity, split_operation);
+    let stored = store.get(&sd).await.unwrap().unwrap();
+    let mut draft: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
+    draft["initial"] = true.into();
+    legacy::replace(store.as_ref(), &sd, &stored.bytes, &draft).await;
+    let membership = split::MembershipPage {
+        version: 1,
+        snapshot: old,
+        revision,
+        name: splits[0].name.clone(),
+        page: 0,
+        members: vec![b"sample-1".to_vec()],
+    };
+    let member_key = split::key::membership_page(&identity, old, revision, &membership.name, 0).unwrap();
+    let bytes = membership.encode().unwrap();
+    legacy::install(store.as_ref(), &member_key, &bytes).await;
+    let mut sw = legacy::key(b"DS\0SW\0", &identity, split_operation);
+    sw.extend(1u64.to_be_bytes());
+    sw.extend(0u64.to_be_bytes());
+    legacy::install(
+        store.as_ref(),
+        &sw,
+        &serde_json::to_vec(&serde_json::json!({
+            "version": 1, "pages": [{"key": member_key, "digest": <[u8;32]>::from(Sha256::digest(&bytes))}],
+        }))
+        .unwrap(),
+    )
+    .await;
+    assert!(authority.get_snapshot(&identity, old).await.is_err());
     let attempt = common::attempt(&authority, &identity, old).await;
-    authority
-        .edit_composition(&identity, operation, &common::edit(1, vec![]))
-        .await
-        .unwrap();
+    legacy::composition_edit(store.as_ref(), &identity, operation, vec![], true).await;
     finish(&authority, &identity, operation).await;
     assert!(authority
         .publish_snapshot_candidate(&identity, &attempt)
         .await
         .is_err());
-    assert_eq!(
-        common::evaluate(&authority, &identity, operation, 2)
+    assert!(matches!(
+        store.compare_exchange(&member_key, None, &bytes).await.unwrap(),
+        CasOutcome::Conflict(_)
+    ));
+    assert!(matches!(
+        store
+            .compare_exchange(&member_key, Some(&bytes), &bytes)
             .await
-            .members,
-        45
-    );
-    assert!(common::prepare(&authority, &identity, operation, 2)
+            .unwrap(),
+        CasOutcome::Conflict(_)
+    ));
+    let result = authority
+        .prepare_composition_resource(
+            &identity,
+            SnapshotId::random(),
+            &composition::CompositionRequest {
+                splits,
+                ..common::request(parent)
+            },
+            None,
+            &ReadCancellation::new(),
+        )
         .await
-        .preparation
-        .is_some());
+        .unwrap();
+    assert_eq!(result.sample_count, 45);
+    assert!(result.initial_split.is_some());
 }

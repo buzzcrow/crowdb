@@ -268,3 +268,39 @@ async fn invalid_cancelled_and_oversized_inputs_cannot_write_a_resource() {
     ));
     assert_eq!(counts(&store), before);
 }
+
+#[tokio::test]
+async fn removing_schema_fields_and_incomplete_new_samples_cannot_create_a_resource() {
+    let (store, authority, identity, parent) = split_store::fixture().await;
+    store.reject_workflow_writes.store(true, Ordering::Relaxed);
+    let before = counts(&store);
+    let mut input = request(parent);
+    input.splits.clear();
+    input.schema = Some(SchemaRecord {
+        version: 2,
+        fields: vec![],
+    });
+    let removed = SnapshotId::random();
+    assert!(authority
+        .prepare_composition_resource(&identity, removed, &input, None, &ReadCancellation::new(),)
+        .await
+        .is_err());
+    assert_eq!(counts(&store).2, before.2);
+    input.schema = None;
+    input.samples = vec![SampleChange::Upsert(SampleRecord {
+        sample_id: b"new".to_vec(),
+        fields: vec![],
+    })];
+    let incomplete = SnapshotId::random();
+    assert!(authority
+        .prepare_composition_resource(&identity, incomplete, &input, None, &ReadCancellation::new(),)
+        .await
+        .is_err());
+    assert_eq!(counts(&store).2, before.2);
+    for snapshot in [removed, incomplete] {
+        assert!(matches!(
+            authority.get_snapshot(&identity, snapshot).await,
+            Err(AuthorityError::SnapshotNotFound)
+        ));
+    }
+}

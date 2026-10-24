@@ -53,31 +53,6 @@ impl DatasetAuthority {
         Ok(snapshot)
     }
 
-    pub(crate) async fn prepare_candidate_with_split(
-        &self,
-        identity: &DatasetIdentity,
-        parent: Option<SnapshotId>,
-        manifest: Vec<u8>,
-        operation: OperationId,
-        initial: Option<SplitRevisionId>,
-    ) -> Result<SnapshotId, AuthorityError> {
-        if manifest.len() > 8 * 1024 * 1024 {
-            return Err(DatasetError::ReadLimitExceeded.into());
-        }
-        decode_manifest(&manifest)?.validate()?;
-        if let Some(parent) = parent {
-            self.require_committed_snapshot(identity, parent).await?;
-        }
-        self.write_publication(
-            identity,
-            parent,
-            manifest,
-            operation,
-            PublicationMode::Candidate(initial),
-        )
-        .await
-    }
-
     pub(crate) async fn prepare_composition_content(
         &self,
         identity: &DatasetIdentity,

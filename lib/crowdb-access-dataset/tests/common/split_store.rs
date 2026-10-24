@@ -431,3 +431,31 @@ pub(super) async fn publish_revision(
         committed_head: head.generation.unwrap(),
     }
 }
+
+#[allow(dead_code)]
+pub(super) fn budget() -> MetadataScanBudget {
+    MetadataScanBudget {
+        items: 20,
+        bytes: 1024 * 1024,
+        timeout: std::time::Duration::from_secs(2),
+    }
+}
+
+#[allow(dead_code)]
+pub(super) async fn publish_snapshot_head(
+    authority: &DatasetAuthority,
+    identity: &DatasetIdentity,
+    snapshot: SnapshotId,
+) {
+    let head = authority.inspect_head(identity).await.unwrap();
+    authority
+        .update_snapshot_head(
+            identity,
+            &SnapshotHeadUpdate {
+                snapshot,
+                expected_head: head.generation,
+            },
+        )
+        .await
+        .unwrap();
+}

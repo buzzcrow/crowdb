@@ -29,13 +29,6 @@ pub(super) struct DraftState {
     #[serde(default)]
     pub source_leases: Vec<crate::SnapshotId>,
 }
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct EditReceipt {
-    pub marker: EditMarker,
-    pub record: SplitDraftRecord,
-}
-
 impl DraftState {
     pub(super) fn encode(&self) -> Result<Vec<u8>, SplitLifecycleError> {
         self.record.validate()?;
@@ -114,28 +107,6 @@ impl DatasetAuthority {
             CasOutcome::Conflict(_) => Err(SplitLifecycleError::Conflict),
         }
     }
-    pub(super) async fn help_split_edit(
-        &self,
-        identity: &DatasetIdentity,
-        state: &DraftState,
-    ) -> Result<(), SplitLifecycleError> {
-        if let Some(marker) = &state.edit {
-            let receipt = EditReceipt {
-                marker: marker.clone(),
-                record: state.record.clone(),
-            };
-            let key = state_key(b"DS\0SX\0", identity, state.record.operation, Some(marker.id))?;
-            let bytes = codec::encode(&receipt)?;
-            if let Some(existing) = self.split_state_get(&key).await? {
-                if existing.bytes != bytes {
-                    return Err(SplitLifecycleError::Conflict);
-                }
-            } else {
-                self.put_split_state(&key, &bytes).await?;
-            }
-        }
-        Ok(())
-    }
     pub(super) async fn replace_split_draft(
         &self,
         identity: &DatasetIdentity,
@@ -143,15 +114,7 @@ impl DatasetAuthority {
         state: &DraftState,
         next: &DraftState,
     ) -> Result<(), SplitLifecycleError> {
-        self.help_split_edit(identity, state).await?;
         let bytes = next.encode()?;
-        // Validate receipt serialization before making the edit observable.
-        if let Some(marker) = &next.edit {
-            codec::encode(&EditReceipt {
-                marker: marker.clone(),
-                record: next.record.clone(),
-            })?;
-        }
         match self
             .store
             .compare_exchange(
@@ -161,31 +124,10 @@ impl DatasetAuthority {
             )
             .await?
         {
-            CasOutcome::Applied(_) => self.help_split_edit(identity, next).await,
-            CasOutcome::Conflict(Some(value)) if value.bytes == bytes => {
-                self.help_split_edit(identity, next).await
-            }
+            CasOutcome::Applied(_) => Ok(()),
+            CasOutcome::Conflict(Some(value)) if value.bytes == bytes => Ok(()),
             CasOutcome::Conflict(_) => Err(SplitLifecycleError::Conflict),
         }
-    }
-    pub(super) async fn check_split_draft_sources(
-        &self,
-        identity: &DatasetIdentity,
-        state: &DraftState,
-    ) -> Result<(), SplitLifecycleError> {
-        let record = &state.record;
-        if state.initial {
-            self.require_initial_split_owner(identity, record.snapshot, record.operation)
-                .await?;
-        } else {
-            self.require_committed_snapshot(identity, record.snapshot).await?;
-            self.validate_split_sources(identity, record).await?;
-        }
-        for source in super::inheritance::source_owners(record) {
-            self.check_snapshot_readable(identity, source).await?;
-        }
-        self.check_snapshot_readable(identity, record.snapshot).await?;
-        Ok(())
     }
 }
 pub(super) fn state_key(

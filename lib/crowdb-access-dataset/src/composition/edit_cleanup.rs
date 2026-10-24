@@ -1,10 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{key, state::CompositionState, CompositionError, DraftProgress};
+use super::{key, CompositionError, DraftProgress};
 use crate::{
     inspection::work::InspectionWork, CasOutcome, DatasetAuthority, DatasetIdentity, MetadataScanBudget,
-    OperationId, ReadCancellation, StoredValue,
+    OperationId, ReadCancellation,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, time::Duration};
@@ -16,34 +16,6 @@ pub struct CompositionEditCleanup {
     pub complete: bool,
 }
 impl DatasetAuthority {
-    pub(super) async fn register_composition_edit(
-        &self,
-        identity: &DatasetIdentity,
-        old: &StoredValue,
-        state: &CompositionState,
-        edit: OperationId,
-    ) -> Result<(StoredValue, CompositionState), CompositionError> {
-        if state.registered_edits.contains(&edit) {
-            return Ok((old.clone(), state.clone()));
-        }
-        let mut next = state.clone();
-        next.edit = None;
-        next.draft.record.version = 3;
-        let mut ids: BTreeSet<_> = state
-            .registered_edits
-            .iter()
-            .chain(&state.journal)
-            .copied()
-            .collect();
-        ids.insert(edit);
-        if ids.len() > 4096 {
-            return Err(CompositionError::Limit);
-        }
-        next.registered_edits = ids.into_iter().collect();
-        self.replace_composition(identity, old, state, &next).await?;
-        self.load_composition(identity, state.draft.record.operation)
-            .await
-    }
     /// Retires registered edit payloads after the draft becomes terminal, retaining edit receipts.
     /// # Errors
     /// Rejects active drafts, corrupt progress, cancelled work and unavailable storage.
@@ -73,7 +45,6 @@ impl DatasetAuthority {
         ) {
             return Err(CompositionError::Frozen);
         }
-        self.help_composition_edit(identity, &state).await?;
         let ids: BTreeSet<_> = state
             .registered_edits
             .iter()

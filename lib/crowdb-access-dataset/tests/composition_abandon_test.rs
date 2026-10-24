@@ -1,8 +1,14 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+
 #[path = "common/composition.rs"]
 #[allow(dead_code)]
 mod common;
+#[path = "common/legacy_drafts.rs"]
+#[allow(dead_code)]
+mod legacy;
+#[path = "common/legacy_split.rs"]
+mod legacy_split;
 #[path = "common/publication.rs"]
 mod publication;
 #[path = "common/split_store.rs"]
@@ -11,44 +17,56 @@ use crowdb_access_dataset::{composition::*, *};
 
 #[tokio::test]
 async fn abandoned_complete_composition_preserves_raw_candidate_and_initial_split() {
-    let (_, authority, identity, parent) = split_store::fixture().await;
+    let (store, authority, identity, parent) = split_store::fixture().await;
     let operation = OperationId::random();
-    common::begin_evaluated(
-        &authority,
-        &identity,
-        operation,
-        &CompositionInput {
-            splits: split_store::partition_splits(),
-            ..common::input(parent)
-        },
-    )
-    .await;
-    let prepared = common::prepare(&authority, &identity, operation, 1).await;
-    let preparation = prepared.preparation.unwrap();
-    let attempt = common::attempt(&authority, &identity, preparation.candidate).await;
-    assert_eq!(
-        authority
-            .abandon_composition(&identity, operation, 1)
-            .await
-            .unwrap()
-            .record
-            .progress,
-        DraftProgress::Abandoned
-    );
-    assert!(authority
-        .prepare_split_draft(&identity, preparation.split_operation.unwrap(), 1)
+    legacy::editing_composition(store.as_ref(), &authority, &identity, operation, parent).await;
+    let snapshot = SnapshotId::random();
+    let input = CompositionRequest {
+        splits: split_store::partition_splits(),
+        ..common::request(parent)
+    };
+    let result = authority
+        .prepare_composition_resource(&identity, snapshot, &input, None, &ReadCancellation::new())
         .await
-        .is_ok());
+        .unwrap();
+    let revision = authority
+        .get_split_revision(
+            &identity,
+            snapshot,
+            result.initial_split.unwrap(),
+            common::budget(),
+            &ReadCancellation::new(),
+        )
+        .await
+        .unwrap();
+    let split_operation = OperationId::from_bytes(snapshot.as_bytes()).unwrap();
+    legacy_split::install(store.as_ref(), &identity, split_operation, 1, None, &revision).await;
+    let split_key = legacy::key(b"DS\0SD\0", &identity, split_operation);
+    let old = store.get(&split_key).await.unwrap().unwrap();
+    let mut state: serde_json::Value = serde_json::from_slice(&old.bytes).unwrap();
+    state["initial"] = true.into();
+    legacy::replace(store.as_ref(), &split_key, &old.bytes, &state).await;
+    legacy::prepared_composition(store.as_ref(), &identity, operation, snapshot).await;
+    let update = SnapshotHeadUpdate {
+        snapshot,
+        expected_head: authority.inspect_head(&identity).await.unwrap().generation,
+    };
+    for _ in 0..2 {
+        assert_eq!(
+            authority
+                .abandon_composition(&identity, operation, 1)
+                .await
+                .unwrap()
+                .record
+                .progress,
+            DraftProgress::Abandoned
+        );
+    }
     assert_eq!(
         authority.inspect_head(&identity).await.unwrap().latest,
         Some(parent)
     );
-    authority
-        .abandon_composition(&identity, operation, 1)
-        .await
-        .unwrap();
-    let split_operation = preparation.split_operation.unwrap();
-    let mut split_cleaned = false;
+    let mut complete = false;
     for _ in 0..100 {
         if authority
             .cleanup_split_scratch_step(&identity, split_operation, &ReadCancellation::new())
@@ -56,37 +74,62 @@ async fn abandoned_complete_composition_preserves_raw_candidate_and_initial_spli
             .unwrap()
             .complete
         {
-            split_cleaned = true;
+            complete = true;
             break;
         }
     }
-    assert!(split_cleaned);
-    authority
-        .get_snapshot(&identity, preparation.candidate)
-        .await
-        .unwrap();
-    assert!(authority
-        .inspect_split_head(&identity, preparation.candidate)
-        .await
-        .unwrap()
-        .revision
-        .is_some());
-    authority
-        .publish_snapshot_candidate(&identity, &attempt)
-        .await
-        .unwrap();
+    assert!(complete);
+    assert!(authority.get_snapshot(&identity, snapshot).await.is_ok());
+    assert_eq!(
+        authority
+            .get_split_revision(
+                &identity,
+                snapshot,
+                result.initial_split.unwrap(),
+                common::budget(),
+                &ReadCancellation::new(),
+            )
+            .await
+            .unwrap()
+            .splits,
+        revision.splits
+    );
+    assert_eq!(
+        authority
+            .inspect_split_head(&identity, snapshot)
+            .await
+            .unwrap()
+            .revision,
+        result.initial_split
+    );
+    authority.update_snapshot_head(&identity, &update).await.unwrap();
 }
 
 #[tokio::test]
 async fn abandon_recognizes_a_successful_historical_candidate_without_deleting_it() {
-    let (_, authority, identity, parent) = split_store::fixture().await;
+    let (store, authority, identity, parent) = split_store::fixture().await;
     let operation = OperationId::random();
-    common::begin_evaluated(&authority, &identity, operation, &common::input(parent)).await;
-    let prepared = common::prepare(&authority, &identity, operation, 1).await;
-    let snapshot = prepared.preparation.unwrap().candidate;
-    let attempt = common::attempt(&authority, &identity, snapshot).await;
+    legacy::editing_composition(store.as_ref(), &authority, &identity, operation, parent).await;
+    let snapshot = SnapshotId::random();
     authority
-        .publish_snapshot_candidate(&identity, &attempt)
+        .prepare_composition_resource(
+            &identity,
+            snapshot,
+            &common::request(parent),
+            None,
+            &ReadCancellation::new(),
+        )
+        .await
+        .unwrap();
+    legacy::prepared_composition(store.as_ref(), &identity, operation, snapshot).await;
+    authority
+        .update_snapshot_head(
+            &identity,
+            &SnapshotHeadUpdate {
+                snapshot,
+                expected_head: authority.inspect_head(&identity).await.unwrap().generation,
+            },
+        )
         .await
         .unwrap();
     let root = authority
@@ -99,7 +142,13 @@ async fn abandon_recognizes_a_successful_historical_candidate_without_deleting_i
         .await
         .unwrap();
     authority
-        .publish_snapshot_candidate(&identity, &common::attempt(&authority, &identity, root).await)
+        .update_snapshot_head(
+            &identity,
+            &SnapshotHeadUpdate {
+                snapshot: root,
+                expected_head: authority.inspect_head(&identity).await.unwrap().generation,
+            },
+        )
         .await
         .unwrap();
     authority

@@ -1,8 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-#[path = "common/composition.rs"]
-#[allow(dead_code)]
-mod common;
+#[path = "common/legacy_split.rs"]
+mod legacy;
 #[path = "common/publication.rs"]
 mod publication;
 #[path = "common/split_store.rs"]
@@ -15,7 +14,7 @@ async fn retired_owner_recovers_all_draft_work_without_touching_other_snapshots(
     let clock = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1000));
     let authority = authority.with_reclaim_clock_for_tests(clock.clone());
     let snapshot = split_store::publish_binary_samples(&authority, &identity, parent).await;
-    let record = split_store::prepared(&authority, &identity, snapshot, None).await;
+    let record = legacy::prepared(store.as_ref(), &authority, &identity, snapshot, None).await;
     assert!(matches!(
         authority
             .cleanup_snapshot_split_drafts_step(&identity, snapshot, &ReadCancellation::new())
@@ -36,11 +35,8 @@ async fn retired_owner_recovers_all_draft_work_without_touching_other_snapshots(
         )
         .await
         .unwrap();
-    authority
-        .publish_snapshot_candidate(&identity, &common::attempt(&authority, &identity, root).await)
-        .await
-        .unwrap();
-    let foreign = split_store::prepared(&authority, &identity, root, None).await;
+    split_store::publish_snapshot_head(&authority, &identity, root).await;
+    let foreign = legacy::prepared(store.as_ref(), &authority, &identity, root, None).await;
     split_store::publish_revision(&authority, &identity, &foreign).await;
     authority.begin_reclaim(&identity, snapshot).await.unwrap();
     clock.store(1300, std::sync::atomic::Ordering::Release);
@@ -72,7 +68,7 @@ async fn retired_owner_recovers_all_draft_work_without_touching_other_snapshots(
                 &identity,
                 root,
                 foreign.revision,
-                common::budget(),
+                split_store::budget(),
                 &ReadCancellation::new()
             )
             .await

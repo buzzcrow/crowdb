@@ -6,6 +6,9 @@ mod complete;
 #[path = "common/composition.rs"]
 #[allow(dead_code)]
 mod composition;
+#[path = "common/legacy_drafts.rs"]
+#[allow(dead_code)]
+mod legacy;
 #[path = "common/publication.rs"]
 mod publication;
 
@@ -20,10 +23,7 @@ use std::{
 async fn lost_final_reply_keeps_the_complete_result_without_confirmation_or_draft_pointer() {
     let (store, authority, identity, parent) = fixture().await;
     let operation = OperationId::random();
-    authority
-        .begin_composition(&identity, operation, &composition::input(parent))
-        .await
-        .unwrap();
+    legacy::editing_composition(store.storage(), &authority, &identity, operation, parent).await;
     store.lose_final_reply.store(true, Ordering::Relaxed);
     assert!(matches!(
         authority
@@ -79,10 +79,7 @@ async fn lost_final_reply_keeps_the_complete_result_without_confirmation_or_draf
 async fn cleanup_seals_the_same_root_before_a_delayed_finalizer_can_publish() {
     let (store, authority, identity, parent) = fixture().await;
     let operation = OperationId::random();
-    authority
-        .begin_composition(&identity, operation, &composition::input(parent))
-        .await
-        .unwrap();
+    legacy::editing_composition(store.storage(), &authority, &identity, operation, parent).await;
     store.gate.store(1, Ordering::Relaxed);
     let client = authority.clone();
     let scope = identity.clone();
@@ -138,10 +135,7 @@ async fn cleanup_seals_the_same_root_before_a_delayed_finalizer_can_publish() {
 async fn cleanup_uses_a_completed_cas_winner_without_reloading_or_retiring_content() {
     let (store, authority, identity, parent) = fixture().await;
     let operation = OperationId::random();
-    authority
-        .begin_composition(&identity, operation, &composition::input(parent))
-        .await
-        .unwrap();
+    legacy::editing_composition(store.storage(), &authority, &identity, operation, parent).await;
     let snapshot = authority
         .prepare_snapshot_candidate(
             &identity,

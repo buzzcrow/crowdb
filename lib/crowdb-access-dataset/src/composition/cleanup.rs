@@ -53,7 +53,6 @@ impl DatasetAuthority {
         cancel: &ReadCancellation,
     ) -> Result<CompositionScratchCleanup, CompositionError> {
         let (_, mut state) = self.load_composition(identity, operation).await?;
-        self.help_composition_edit(identity, &state).await?;
         let end = state.draft.record.revision
             + u64::from(matches!(
                 state.draft.record.progress,

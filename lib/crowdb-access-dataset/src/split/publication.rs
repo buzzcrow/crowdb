@@ -3,43 +3,11 @@
 
 use super::{key, SplitHead, SplitHeadUpdate, SplitLifecycleError, SplitReference, SplitRevisionRecord};
 use crate::{
-    composition::DraftProgress, CasOutcome, CommitAttempt, CommitGeneration, CommitTarget, DatasetAuthority,
-    DatasetIdentity, OperationId, SnapshotId, SplitRevisionId, StoredValue, SuccessfulCommit,
+    CasOutcome, CommitAttempt, CommitGeneration, CommitTarget, DatasetAuthority, DatasetIdentity,
+    OperationId, SnapshotId, SplitRevisionId, StoredValue, SuccessfulCommit,
 };
 
 impl DatasetAuthority {
-    /// Compatibility adapter for callers that prepared a complete result through a draft.
-    /// # Errors
-    /// Rejects mismatched targets, initial Split drafts and unavailable results.
-    pub async fn publish_split_draft(
-        &self,
-        identity: &DatasetIdentity,
-        operation: OperationId,
-        attempt: &CommitAttempt,
-    ) -> Result<SuccessfulCommit, SplitLifecycleError> {
-        attempt.validate()?;
-        let (_, state) = self.load_split_draft(identity, operation).await?;
-        if state.initial {
-            return Err(SplitLifecycleError::Frozen);
-        }
-        let (DraftProgress::Prepared { target }
-        | DraftProgress::Committing { target, .. }
-        | DraftProgress::Published { target, .. }) = state.record.progress
-        else {
-            return Err(SplitLifecycleError::Frozen);
-        };
-        if target != attempt.target {
-            return Err(SplitLifecycleError::Conflict);
-        }
-        let (snapshot, update) = attempt_update(attempt, state.record.expected_revision)?;
-        confirmed_commit(
-            attempt,
-            &self
-                .commit_split_revision(identity, snapshot, &update, Some(operation))
-                .await?,
-        )
-    }
-
     /// Updates currentSplit from a complete immutable result and caller-owned preconditions.
     /// Success describes the current effect, without persisting request or response records.
     /// # Errors
@@ -66,7 +34,7 @@ impl DatasetAuthority {
         snapshot: SnapshotId,
         update: &SplitHeadUpdate,
     ) -> Result<SplitReference, SplitLifecycleError> {
-        self.commit_split_revision(identity, snapshot, update, None).await
+        self.commit_split_revision(identity, snapshot, update).await
     }
 
     async fn commit_split_revision(
@@ -74,7 +42,6 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
         update: &SplitHeadUpdate,
-        operation: Option<OperationId>,
     ) -> Result<SplitReference, SplitLifecycleError> {
         let revision = update.revision;
         CommitTarget::SplitRevision { snapshot, revision }.validate()?;
@@ -91,10 +58,7 @@ impl DatasetAuthority {
             return Err(SplitLifecycleError::NotFound);
         }
         let candidate = SplitRevisionRecord::decode(&stored.bytes)?;
-        if candidate.snapshot != snapshot
-            || candidate.revision != revision
-            || operation.is_some_and(|operation| candidate.operation != operation)
-        {
+        if candidate.snapshot != snapshot || candidate.revision != revision {
             return Err(SplitLifecycleError::Corrupt);
         }
         let key = key::head(identity, snapshot).map_err(crate::AuthorityError::from)?;

@@ -28,9 +28,8 @@ mod materialize;
 mod matrix;
 mod read;
 mod read_fields;
-pub(crate) use read::PreparedInspectionRead;
-mod uploads;
 pub use matrix::InspectionSample;
+pub(crate) use read::PreparedInspectionRead;
 
 pub(crate) mod cursor;
 

@@ -1,14 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{
-    state::{state_key, DraftState},
-    DraftSplit, MembershipOrigin, SplitDraftRecord, SplitLifecycleError, SplitPolicy, SplitRevisionRecord,
-};
-use crate::{
-    composition::DraftProgress, AuthorityError, DatasetAuthority, DatasetIdentity, OperationId, SnapshotId,
-    SplitRevisionId,
-};
+use super::{state::state_key, SplitLifecycleError, SplitRevisionRecord};
+use crate::{AuthorityError, DatasetAuthority, DatasetIdentity, OperationId, SnapshotId, SplitRevisionId};
 use std::time::Duration;
 
 impl DatasetAuthority {
@@ -51,95 +45,24 @@ impl DatasetAuthority {
         }
     }
 
-    pub(crate) async fn begin_initial_split(
-        &self,
-        identity: &DatasetIdentity,
-        operation: OperationId,
-        snapshot: SnapshotId,
-        policy: SplitPolicy,
-        splits: Vec<DraftSplit>,
-    ) -> Result<SplitDraftRecord, SplitLifecycleError> {
-        self.require_initial_split_owner(identity, snapshot, operation)
-            .await?;
-        let record = SplitDraftRecord {
-            version: 1,
-            operation,
-            snapshot,
-            expected_revision: None,
-            revision: 1,
-            policy,
-            splits,
-            progress: DraftProgress::Editing,
-        };
-        let initial = record.encode()?;
-        let candidate = self
-            .snapshot_candidate(identity, snapshot)
-            .await?
-            .ok_or(SplitLifecycleError::NotFound)?;
-        for split in &record.splits {
-            if let MembershipOrigin::Inherited(source) = &split.origin {
-                if candidate.parent != Some(source.snapshot) {
-                    return Err(SplitLifecycleError::Conflict);
-                }
-                let source_record = self
-                    .get_split_revision(
-                        identity,
-                        source.snapshot,
-                        source.revision,
-                        crate::MetadataScanBudget {
-                            items: 1,
-                            bytes: 1024 * 1024,
-                            timeout: Duration::from_secs(2),
-                        },
-                        &crate::ReadCancellation::new(),
-                    )
-                    .await?;
-                if !source_record.splits.iter().any(|s| s.name == source.name) {
-                    return Err(SplitLifecycleError::NotFound);
-                }
-            }
-        }
-        self.put_split_state(&state_key(b"DS\0SB\0", identity, operation, None)?, &initial)
-            .await?;
-        let state = DraftState {
-            work_version: Some(1),
-            source_leases: super::inheritance::source_owners(&record).into_iter().collect(),
-            record,
-            initial: true,
-            edit: None,
-            evaluation: None,
-        };
-        let key = state_key(b"DS\0SD\0", identity, operation, None)?;
-        if self.split_state_get(&key).await?.is_none() {
-            match self.put_split_state(&key, &state.encode()?).await {
-                Ok(()) | Err(SplitLifecycleError::Conflict) => {}
-                Err(error) => return Err(error),
-            }
-        }
-        let (_, current) = self.load_split_draft(identity, operation).await?;
-        if !current.initial {
-            return Err(SplitLifecycleError::Conflict);
-        }
-        self.check_split_draft_sources(identity, &current).await?;
-        Ok(current.record)
-    }
     pub(crate) async fn require_initial_split_owner(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
-        operation: OperationId,
-    ) -> Result<(), AuthorityError> {
+        revision: SplitRevisionId,
+    ) -> Result<Option<SnapshotId>, SplitLifecycleError> {
         let candidate = self
             .snapshot_candidate(identity, snapshot)
             .await?
-            .ok_or(AuthorityError::SnapshotNotFound)?;
-        if candidate.initial_split != Some(super::candidate_revision(operation, 1)?) {
-            return Err(AuthorityError::AlreadyExists);
+            .ok_or(SplitLifecycleError::NotFound)?;
+        if candidate.initial_split != Some(revision) {
+            return Err(SplitLifecycleError::Conflict);
         }
         if let Some(parent) = candidate.parent {
             self.require_committed_snapshot(identity, parent).await?;
         }
-        self.check_snapshot_readable(identity, snapshot).await
+        self.check_snapshot_readable(identity, snapshot).await?;
+        Ok(candidate.parent)
     }
     pub(crate) async fn validate_initial_split(
         &self,

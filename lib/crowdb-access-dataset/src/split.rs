@@ -38,7 +38,7 @@ pub use policy::SplitValidation;
 
 mod lifecycle;
 mod state;
-pub use lifecycle::{SplitDraftEdit, SplitLifecycleError};
+pub use lifecycle::SplitLifecycleError;
 
 mod cleanup;
 mod snapshot_cleanup;
@@ -50,7 +50,6 @@ pub(crate) use cleanup::SEALED as RETIRED_RECORD;
 pub use evaluation::SplitPreview;
 
 mod preparation;
-mod prepare;
 pub use preparation::SplitPreparation;
 
 mod head;

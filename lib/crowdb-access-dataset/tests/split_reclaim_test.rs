@@ -1,8 +1,5 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-#[path = "common/composition.rs"]
-#[allow(dead_code)]
-mod common;
 #[path = "common/publication.rs"]
 mod publication;
 #[path = "common/split_store.rs"]
@@ -28,10 +25,7 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
         )
         .await
         .unwrap();
-    authority
-        .publish_snapshot_candidate(&identity, &common::attempt(&authority, &identity, root).await)
-        .await
-        .unwrap();
+    split_store::publish_snapshot_head(&authority, &identity, root).await;
     let foreign = split_store::prepared(&authority, &identity, root, None).await;
     split_store::publish_revision(&authority, &identity, &foreign).await;
     authority.begin_reclaim(&identity, snapshot).await.unwrap();
@@ -90,7 +84,7 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
         }
     }
     assert!(restarted
-        .get_split_revision(&identity, root, foreign.revision, common::budget(), &cancel)
+        .get_split_revision(&identity, root, foreign.revision, split_store::budget(), &cancel)
         .await
         .is_ok());
     assert!(restarted
@@ -116,10 +110,7 @@ async fn cleanup_completion_is_helped_after_final_status_write_failure() {
         )
         .await
         .unwrap();
-    authority
-        .publish_snapshot_candidate(&identity, &common::attempt(&authority, &identity, root).await)
-        .await
-        .unwrap();
+    split_store::publish_snapshot_head(&authority, &identity, root).await;
     authority.begin_reclaim(&identity, snapshot).await.unwrap();
     clock.store(1300, std::sync::atomic::Ordering::Release);
     store

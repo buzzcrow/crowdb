@@ -34,7 +34,8 @@ async fn preparation_writes_only_final_resources_without_draft_or_head_state() {
     store.reject_draft_writes.store(true, Ordering::Relaxed);
     let before = store.mutations.load(Ordering::Relaxed);
     let previous_reads = reads(&store);
-    let input = request();
+    let mut input = request();
+    input.policy.coverage = CoveragePolicy::RequireComplete;
     let result = authority
         .prepare_split_revision(&identity, snapshot, &input, &ReadCancellation::new())
         .await
@@ -289,4 +290,34 @@ async fn inherited_members_use_the_requested_revision_after_the_parent_head_chan
         .await
         .unwrap();
     assert_eq!(evaluated.splits[0].count, 2);
+}
+
+#[tokio::test]
+async fn required_coverage_rejects_unassigned_samples_without_a_complete_root() {
+    let (store, authority, identity, snapshot) = split_store::fixture().await;
+    store.reject_draft_writes.store(true, Ordering::Relaxed);
+    let input = SplitPreparation {
+        revision: SplitRevisionId::random(),
+        policy: SplitPolicy {
+            overlap: OverlapPolicy::Disjoint,
+            coverage: CoveragePolicy::RequireComplete,
+        },
+        splits: vec![],
+    };
+    assert!(matches!(
+        authority
+            .prepare_split_revision(&identity, snapshot, &input, &ReadCancellation::new())
+            .await,
+        Err(SplitLifecycleError::PolicyViolation)
+    ));
+    assert!(store
+        .get(&key::revision(&identity, snapshot, input.revision).unwrap())
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get(&key::revision_summary(&identity, snapshot, input.revision).unwrap())
+        .await
+        .unwrap()
+        .is_some());
 }

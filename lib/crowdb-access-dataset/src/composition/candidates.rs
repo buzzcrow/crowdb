@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{key, prepare::candidate_operation, CompositionError, DraftProgress};
+use super::{identity::candidate_operation, key, CompositionError, DraftProgress};
 use crate::{CasOutcome, DatasetAuthority, DatasetIdentity, OperationId, ReadCancellation};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;

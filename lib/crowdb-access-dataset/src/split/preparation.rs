@@ -121,18 +121,8 @@ impl DatasetAuthority {
             self.require_committed_snapshot(identity, snapshot).await?;
             return Ok(None);
         }
-        let candidate = self
-            .snapshot_candidate(identity, snapshot)
-            .await?
-            .ok_or(SplitLifecycleError::NotFound)?;
-        if candidate.initial_split != Some(revision) {
-            return Err(SplitLifecycleError::Conflict);
-        }
-        if let Some(parent) = candidate.parent {
-            self.require_committed_snapshot(identity, parent).await?;
-        }
-        self.check_snapshot_readable(identity, snapshot).await?;
-        Ok(candidate.parent)
+        self.require_initial_split_owner(identity, snapshot, revision)
+            .await
     }
 
     async fn compute_split_members(
