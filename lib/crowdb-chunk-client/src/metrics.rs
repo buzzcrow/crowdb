@@ -353,7 +353,11 @@ pub struct LargeWriteBufferMetricsSnapshot {
     pub framed_owners: u64,
     pub framed_views: u64,
     pub framed_payload_bytes: u64,
+    /// Explicit payload-copy calls in ordinary input assembly and framing,
+    /// including work repeated before a chunk rotation accepts the batch.
     pub payload_copy_operations: u64,
+    /// Payload bytes copied by those calls. Excludes headers, footers,
+    /// allocator growth, EC encoding, transport staging and source reception.
     pub payload_copy_bytes: u64,
 }
 

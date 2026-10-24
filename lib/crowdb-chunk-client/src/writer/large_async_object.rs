@@ -17,7 +17,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
 use crowdb_protocol::frame::{
-    encode_frame, FrameMagic, FRAME_FOOTER_BYTES, FRAME_V2_HEADER_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES,
+    encode_frame, encode_frame_regions, FrameMagic, FRAME_FOOTER_BYTES, FRAME_V2_HEADER_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -686,10 +686,7 @@ impl LargeAsyncObjectWriter {
             for payload in self.frame_tail[..frame_count * MAX_FRAME_V2_PAYLOAD_BYTES]
                 .chunks_exact(MAX_FRAME_V2_PAYLOAD_BYTES)
             {
-                framed.extend_from_slice(
-                    &encode_frame(FrameMagic::RepoLargeV2, chunk_id, payload, write_time_ms)
-                        .map_err(|error| IoError::WriteFailed(error.to_string()))?,
-                );
+                append_payload_frame(&mut framed, chunk_id, payload, write_time_ms)?;
             }
             self.buffer_metrics
                 .payload_copy_operations
@@ -760,6 +757,29 @@ impl LargeAsyncObjectWriter {
             return Ok(());
         }
     }
+}
+
+fn append_payload_frame(
+    output: &mut Vec<u8>,
+    chunk_id: crowdb_protocol::common::ChunkId,
+    payload: &[u8],
+    write_time_ms: u64,
+) -> Result<()> {
+    let mut header = [0; FRAME_V2_HEADER_BYTES];
+    let mut footer = [0; FRAME_FOOTER_BYTES];
+    encode_frame_regions(
+        FrameMagic::RepoLargeV2,
+        chunk_id,
+        payload,
+        write_time_ms,
+        &mut header,
+        &mut footer,
+    )
+    .map_err(|error| IoError::WriteFailed(error.to_string()))?;
+    output.extend_from_slice(&header);
+    output.extend_from_slice(payload);
+    output.extend_from_slice(&footer);
+    Ok(())
 }
 
 fn validate_framed_owner(buffer: &dyn FramedWriteBuffer) -> Result<()> {
