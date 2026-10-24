@@ -149,6 +149,33 @@ CAS 不再满足只证明“本次条件不成立”，不能谎称“第一次�
   新请求如何处理和无 journal 替代方案；有保留中间记录的需求时单独确认。
   Files: Iceberg `table/lifecycle/{operation,completion,reservation}.rs`、`namespace/`。
 
+**rename 的具体持久化例外，待用户 review（2026-10-24）**：不能仅删除 journal 后依次改
+三个 key。设父 namespace P 中已有 A，rename A→B 先预放 B mapping，再 CAS TableHead。
+如果 P 的删除已经标记 Dropping，空目录探测先经过尚未可见的 B，随后 head 切到 B，
+探测再经过已失效的 A，就可能误判为空；改名线程此时退出，P 被删，已有表丢失可达名称。
+跨 namespace rename 的目标父目录被删也有相同问题。读取前后各 GET 一次父目录不能弥补
+线程在 head CAS 后退出的窗口；增加等待时间也不能消除它。
+
+最小候选方案是在参与 rename 的父 namespace 中保留有界准入占位，内容仅为稳定 TableId、
+受影响的目标名称与预期 head 代际，持有期间删除返回可重试 busy。目标 mapping 仍通过
+CAS 保证名称唯一；TableHead CAS 是名称切换点；mapping 只在与 head 的 ID/name epoch
+一致时可见。完成后条件清除占位；进程退出后从 head/mapping 的最终事实完成名称发布，
+或先推进 head fence 使迟到 CAS 失效，再取消占位。两边父目录按稳定 ID 顺序占用，
+拿不到第二个时释放第一个并返回 busy，不能等待形成环。
+这仍是服务端持久化协调状态，不能把它改名后声称“没有状态”。它只服务 rename 与严格
+非空删除，不保存输入/输出 body、进度页或 HTTP 响应；预计每个参与父目录增加占用/清除
+两次 CAS，替代当前完整 journal/payload 阶段，实际成本与竞争须回归计数。同父目录改名
+存在共享 CAS 竞争，普通读取不登记也不争用该记录。不新增进程锁。
+
+替代方案是实现底层跨 key 原子条件提交，或暂不提供 rename。当前 CatalogStore 只暴露
+单 key CAS；Chunk-KV 的 batch_mutate 明确不提供跨 key/partition 原子性，不能冒充事务。
+新建 child 可以在发布后校验父身份并把失败的新资源交给 GC；rename 移动的是既有表，
+不能接受线程退出后把原表变成无名称孤儿。准入占位是否允许必须先确认，再改资源格式。
+
+- [ ] **R3.1 rename 最小协调合同**：用户 review 上述持久化例外后，实现 namespace 准入
+  占位、head/name 的可见性与取消 fence；删除生命周期输入/输出 journal。验证同父目录
+  扫描跨过旧/新名称、跨 namespace drop、占位后各失败点、反向并发 rename 和迟到 CAS。
+
 #### R4 — 去掉过程状态后，GC 是否还能发现所有孤儿？这是实现前置检查
 
 **具体流程**：物理文件已写出 → 尚未保存 part/最终引用时进程退出。若 GC 只扫描 upload
@@ -372,9 +399,10 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
 - [ ] **F1 请求级成本计数**：记录 GET/bounded GET/scan/CAS/PUT/delete、重复 key、冲突与
   unknown、真实 routed RPC、串行阶段和复制字节；用测试 wrapper/已有 metrics，不加生产
   每 RPC 日志或 profiling 锁。Files: Dataset/S3/Iceberg 测试 store、现有指标、`tools/sdk/`。
-- [ ] **F2 合并一次请求的删除准入**：`DatasetReads::next`、HTTP/native batch 和 inspection
-  仍可重复查询删除/提交状态。建立 snapshot-bound 请求内结果，独立入口仍需准入；不跨请求
-  缓存删除许可。Files: Dataset `read_query/`、`inspection/`、Access `dataset/api/batch.rs`、native `dataset/read.rs`。
+- [ ] **F2 复核 legacy/多源读取的重复准入**：现代 continuation 的 selection→HTTP/native
+  delivery 已共用请求局部的 Snapshot/schema/membership，Split 同 Snapshot 也复用准入。
+  剩余复核 legacy `DatasetReadService`、多源/祖先元数据，独立入口和不同 Snapshot 仍各自准入；
+  不跨请求缓存删除许可。Files: Dataset `transport.rs`、`inspection/`、`split/`。
 - [ ] **F3 避免无状态读取重复规划**：大 shuffle group + 小 batch 会反复重建同一 group；
   selection 窗口还重复加载 schema/membership。比较有界客户端 group 缓存、请求内规划复用
   与 token 大小；不恢复持久化 session。Files: Dataset `read_query/page.rs`、`inspection/evaluate.rs`、SDK iterable。
@@ -436,6 +464,18 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，F2.2 / F8.2**：增加 `next_with_locators`，HTTP/native continuation 在同一
+  调用内复用 Snapshot 准入、schema 和已扫描成员。私有准备结果绑定 authority/identity/
+  Snapshot，不向调用者暴露可复用 admission；普通 next/显式 batch 仍独立检查。
+  81 个候选、shuffle 取 7 个 sample：两次独立操作实测 27 bounded GET + 2 schema scan，
+  组合操作为 17 bounded GET + 1 schema scan，member scan 都是五次，零 mutation。
+  HTTP 无 Split/有 Split 每 next 均仅一次删除准入；旧 continuation 在后续请求仍被删除拒绝。
+  Split 初始 revision 复用已完成的 Snapshot 可见性证明，没有降低 revision 绑定检查。
+  HTTP 不再把 ID encode→decode，locator→body 使用移交 Vec，删除两次 inline payload 复制。
+  Dataset `--all-targets`、HTTP batch/read-query 四项、native payload/read 七项和三 crate
+  all-target/all-feature clippy、fmt、diff 检查通过。保留短尾 part、digest、held buffer、
+  cancel/drop、空 Split、二进制 ID、未知字段/成员和跨实例重放回归。没有新增持久化/缓存。
 
 - **2026-10-24，P12.1a / F8.1**：新建索引同时推进最多 16 条 immutable row CAS、
   队列最多 2 MiB 编码 key/value，另有一条正在编码的有界 row；没有额外拼接或复制批次。

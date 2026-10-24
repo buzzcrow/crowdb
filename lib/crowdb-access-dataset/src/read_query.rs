@@ -53,6 +53,12 @@ pub struct ReadPage {
     pub fields: Vec<String>,
     pub next: Option<String>,
 }
+
+/// One request's selected IDs and delivery locators, resolved under the same admission.
+pub struct ResolvedReadPage {
+    pub page: ReadPage,
+    pub samples: Vec<crate::SampleView>,
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Continuation {

@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{batch::BatchRequest, json, read_json, ApiError, ApiResult, DatasetHttpService};
+use super::{json, read_json, ApiError, ApiResult, DatasetHttpService};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use crowdb_access_dataset::{
     DatasetIdentity, DatasetReads, ReadCancellation, ReadPartition, ReadShuffle, ReadSpec, Selection,
@@ -129,21 +129,8 @@ impl DatasetHttpService {
             .clone();
         let input: NextRead = read_json(request).await?;
         let page = DatasetReads::new(self.reads.authority())
-            .next(identity, &input.cursor, &ReadCancellation::new())
+            .next_with_locators(identity, &input.cursor, &ReadCancellation::new())
             .await?;
-        let end = page.next.is_none();
-        self.batch(
-            identity,
-            BatchRequest {
-                snapshot: page.snapshot.to_string(),
-                sample_ids: page.ids.iter().map(|id| STANDARD.encode(id)).collect(),
-                fields: page.fields,
-                sample_id_limit: Some(16 * 1024),
-            },
-            page.next,
-            end,
-            request_id,
-        )
-        .await
+        self.render_batch(page, request_id)
     }
 }

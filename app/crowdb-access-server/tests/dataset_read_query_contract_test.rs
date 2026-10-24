@@ -12,14 +12,18 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn split_read_continuation_replays_without_remote_progress_or_cleanup() {
-    let test = TestDatasetHttp::start(Arc::new(TestStore::default())).await;
+    use std::sync::atomic::Ordering;
+    let store = Arc::new(TestStore::default());
+    let test = TestDatasetHttp::start(store.clone()).await;
     let client = Client::new();
     let (root, snapshot) = common::fixture(&client, &test.origin).await;
     let revision = published_split(&client, &root, &snapshot).await;
     let binding = response(client.post(format!("{root}/reads/bind")).json(&plan()), 200).await;
     assert_eq!(binding["snapshot"], snapshot);
     assert_eq!(binding["split"]["revision"], revision);
+    let before = store.admission_reads.load(Ordering::Relaxed);
     let first = batch(&client, &root, &binding["cursor"]).await;
+    assert_eq!(store.admission_reads.load(Ordering::Relaxed) - before, 1);
     assert!(!first["sample_ids"].as_array().unwrap().is_empty());
     let independent = Client::new();
     assert_eq!(batch(&independent, &root, &binding["cursor"]).await, first);
@@ -52,8 +56,8 @@ async fn unsplit_delivery_has_no_outer_duplicate_admission_reads() {
     let writes = store.mutations.load(Ordering::Relaxed);
     let page = batch(&client, &root, &binding["cursor"]).await;
     assert_eq!(page["sample_ids"].as_array().unwrap().len(), 3);
-    // Selection and delivery still each own one bounded authority check.
-    assert_eq!(store.admission_reads.load(Ordering::Relaxed) - before, 2);
+    // Selection and delivery share one request-local authority check.
+    assert_eq!(store.admission_reads.load(Ordering::Relaxed) - before, 1);
     assert_eq!(store.mutations.load(Ordering::Relaxed), writes);
     drop(client);
     test.stop().await;

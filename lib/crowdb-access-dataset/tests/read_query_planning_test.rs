@@ -68,6 +68,46 @@ fn delta(store: &access_store::TestAccessStore, before: [u64; 5]) -> [u64; 5] {
 }
 
 #[tokio::test]
+async fn selection_and_delivery_share_one_admission_schema_and_membership_scan() {
+    let (store, authority, identity) = fixture().await;
+    let reads = DatasetReads::new(authority.clone());
+    let bound = reads
+        .bind(&identity, spec(Selection::Prefix(b"sample-".to_vec())))
+        .await
+        .unwrap();
+    let cancel = ReadCancellation::new();
+    let before = costs(&store);
+    let page = reads.next(&identity, &bound.cursor, &cancel).await.unwrap();
+    let reference = authority
+        .resolve_inspection_batch_locators(&identity, page.snapshot, &page.ids, &page.fields, &cancel)
+        .await
+        .unwrap();
+    let independent = delta(&store, before);
+    assert_eq!(independent, [2, 27, 2, 5, 0]);
+    let before = costs(&store);
+    let combined = reads
+        .next_with_locators(&identity, &bound.cursor, &cancel)
+        .await
+        .unwrap();
+    assert_eq!(combined.page.ids, page.ids);
+    assert_eq!(combined.page.next, page.next);
+    assert_eq!(combined.samples, reference);
+    assert_eq!(delta(&store, before), [1, 17, 1, 5, 0]);
+    // A separate request must read the deletion mark again.
+    let before = costs(&store);
+    DatasetReads::new(authority)
+        .next_with_locators(&identity, &bound.cursor, &cancel)
+        .await
+        .unwrap();
+    assert_eq!(delta(&store, before), [1, 17, 1, 5, 0]);
+    cancel.cancel();
+    assert!(reads
+        .next_with_locators(&identity, &bound.cursor, &cancel)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
 async fn multi_window_shuffle_prepares_once_and_new_requests_recheck() {
     let (store, authority, identity) = fixture().await;
     let reads = DatasetReads::new(authority.clone());

@@ -27,6 +27,7 @@ mod exact;
 mod materialize;
 mod matrix;
 mod read;
+pub(crate) use read::PreparedInspectionRead;
 mod uploads;
 pub use matrix::InspectionSample;
 

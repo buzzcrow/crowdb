@@ -4,7 +4,9 @@
 use super::{error::ApiError, read_json, snapshot, ApiResult};
 use crate::dataset::{DatasetBody, DatasetHttpService};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use crowdb_access_dataset::{DatasetIdentity, FieldLocator, SampleView, SnapshotId, UploadReadDescriptor};
+use crowdb_access_dataset::{
+    DatasetIdentity, FieldLocator, ReadPage, ResolvedReadPage, SampleView, SnapshotId, UploadReadDescriptor,
+};
 use futures::stream;
 use http_body_util::{BodyExt, StreamBody};
 use hyper::{
@@ -19,8 +21,6 @@ pub(super) struct BatchRequest {
     pub snapshot: String,
     pub sample_ids: Vec<String>,
     pub fields: Vec<String>,
-    #[serde(skip)]
-    pub sample_id_limit: Option<usize>,
 }
 impl BatchRequest {
     fn ids(&self) -> Result<Vec<Vec<u8>>, ApiError> {
@@ -28,10 +28,7 @@ impl BatchRequest {
             .iter()
             .map(|value| {
                 let bytes = STANDARD.decode(value).map_err(|_| ApiError::invalid())?;
-                if bytes.is_empty()
-                    || bytes.len() > self.sample_id_limit.unwrap_or(1024)
-                    || STANDARD.encode(&bytes) != *value
-                {
+                if bytes.is_empty() || bytes.len() > 1024 || STANDARD.encode(&bytes) != *value {
                     return Err(ApiError::invalid());
                 }
                 Ok(bytes)
@@ -69,40 +66,52 @@ impl DatasetHttpService {
             .0
             .clone();
         let request: BatchRequest = read_json(request).await?;
-        self.batch(identity, request, None, true, request_id).await
+        self.batch(identity, request, request_id).await
     }
     pub(super) async fn batch(
         &self,
         identity: &DatasetIdentity,
         request: BatchRequest,
-        next: Option<String>,
-        end: bool,
         request_id: String,
     ) -> ApiResult {
         let id = snapshot(&request.snapshot)?;
         let ids = request.ids()?;
         let authority = self.reads.authority();
-        if ids.is_empty() || request.sample_id_limit.is_none() {
-            authority.check_snapshot_readable(identity, id).await?;
-        }
+        authority.check_snapshot_readable(identity, id).await?;
         let samples = if ids.is_empty() {
             Vec::new()
-        } else if request.sample_id_limit.is_some() {
-            authority
-                .resolve_inspection_batch_locators(
-                    identity,
-                    id,
-                    &ids,
-                    &request.fields,
-                    &crowdb_access_dataset::ReadCancellation::new(),
-                )
-                .await?
         } else {
             authority
                 .resolve_batch_locators(identity, id, &ids, &request.fields)
                 .await?
         };
-        let header = make_header(id, &request.sample_ids, &request.fields, &samples, next, end);
+        self.render_batch(
+            ResolvedReadPage {
+                page: ReadPage {
+                    snapshot: id,
+                    ids,
+                    fields: request.fields,
+                    next: None,
+                },
+                samples,
+            },
+            request_id,
+        )
+    }
+
+    pub(super) fn render_batch(&self, resolved: ResolvedReadPage, request_id: String) -> ApiResult {
+        let request = resolved.page;
+        let samples = resolved.samples;
+        let ids: Vec<_> = request.ids.iter().map(|id| STANDARD.encode(id)).collect();
+        let end = request.next.is_none();
+        let header = make_header(
+            request.snapshot,
+            &ids,
+            &request.fields,
+            &samples,
+            request.next,
+            end,
+        );
         let encoded = serde_json::to_vec(&header).map_err(|_| ApiError::integrity())?;
         if encoded.len() > 8 * 1024 * 1024 {
             return Err(ApiError::too_large());
@@ -111,11 +120,11 @@ impl DatasetHttpService {
         prefix.extend_from_slice(&frame(1, &Bytes::from(encoded))?);
         let locators = samples
             .into_iter()
-            .flat_map(|sample| {
+            .flat_map(|mut sample| {
                 request
                     .fields
                     .iter()
-                    .filter_map(move |name| sample.fields.get(name).cloned())
+                    .filter_map(move |name| sample.fields.remove(name))
                     .filter(|v| !matches!(v, FieldLocator::Tombstone))
             })
             .collect();
@@ -204,7 +213,7 @@ impl BatchState {
         if let Some(bytes) = self.pending.take() {
             return Ok(bytes);
         }
-        let Some(locator) = self.locators.get(self.index) else {
+        let Some(locator) = self.locators.get_mut(self.index) else {
             self.finished = true;
             return frame(0, &Bytes::new());
         };
@@ -216,7 +225,7 @@ impl BatchState {
                 if value.is_empty() {
                     return self.end_field();
                 }
-                let bytes = Bytes::copy_from_slice(value);
+                let bytes = Bytes::from(std::mem::take(value));
                 let digest = *md5;
                 self.part = 1;
                 self.data_frame(bytes, digest)

@@ -88,6 +88,18 @@ impl DatasetAuthority {
         work: &mut InspectionWork<'_>,
     ) -> Result<SplitRevisionRecord, SplitLifecycleError> {
         self.require_split_reader(identity, snapshot, work).await?;
+        self.read_admitted_split_revision(identity, snapshot, revision, work)
+            .await
+    }
+
+    /// The same request must already have admitted this exact Snapshot.
+    pub(crate) async fn read_admitted_split_revision(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        revision: SplitRevisionId,
+        work: &mut InspectionWork<'_>,
+    ) -> Result<SplitRevisionRecord, SplitLifecycleError> {
         if !self
             .split_revision_visible(identity, snapshot, revision, work)
             .await?
@@ -129,10 +141,7 @@ impl DatasetAuthority {
         work: &mut InspectionWork<'_>,
     ) -> Result<bool, SplitLifecycleError> {
         if self.inspection_initial_split(identity, snapshot, work).await? == Some(revision) {
-            return self
-                .inspection_snapshot_committed(identity, snapshot, work)
-                .await
-                .map_err(Into::into);
+            return Ok(true);
         }
         let target = CommitTarget::SplitRevision { snapshot, revision };
         if let Some(value) = work

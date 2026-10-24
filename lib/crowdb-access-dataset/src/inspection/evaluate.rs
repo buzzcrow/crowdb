@@ -34,13 +34,13 @@ impl DatasetAuthority {
             .await
     }
 
-    pub(crate) async fn prepare_inspection_selection<'a>(
+    pub(crate) async fn prepare_inspection_selection<'a, 'selection>(
         &'a self,
         identity: &'a DatasetIdentity,
         snapshot: SnapshotId,
-        selection: &'a Selection,
+        selection: &'selection Selection,
         work: &mut InspectionWork<'_>,
-    ) -> Result<PreparedInspectionSelection<'a>, InspectionError> {
+    ) -> Result<PreparedInspectionSelection<'a, 'selection>, InspectionError> {
         let summary = self.ready_inspection(identity, snapshot, work).await?;
         let schema = self
             .inspection_schema_definitions(identity, &summary, work)
@@ -69,6 +69,7 @@ impl DatasetAuthority {
             compiled,
             cursor,
             summaries: BTreeMap::from([(snapshot, summary)]),
+            schema,
         })
     }
 
@@ -103,15 +104,26 @@ impl DatasetAuthority {
 }
 
 /// Local to one bounded request; its authority and immutable query cannot be replaced.
-pub(crate) struct PreparedInspectionSelection<'a> {
+pub(crate) struct PreparedInspectionSelection<'a, 'selection> {
     authority: &'a DatasetAuthority,
     identity: &'a DatasetIdentity,
     snapshot: SnapshotId,
-    compiled: EffectiveSelection<'a>,
+    compiled: EffectiveSelection<'selection>,
     cursor: CursorScope,
     summaries: BTreeMap<SnapshotId, SnapshotSummary>,
+    schema: Vec<crate::FieldDefinition>,
 }
-impl PreparedInspectionSelection<'_> {
+impl<'a> PreparedInspectionSelection<'a, '_> {
+    pub(crate) fn into_delivery(self) -> super::read::PreparedInspectionRead<'a> {
+        super::read::PreparedInspectionRead {
+            authority: self.authority,
+            identity: self.identity,
+            snapshot: self.snapshot,
+            summaries: self.summaries,
+            schema: self.schema,
+        }
+    }
+
     pub(crate) async fn page(
         &mut self,
         after: Option<Vec<u8>>,

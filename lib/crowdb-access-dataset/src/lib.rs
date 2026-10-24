@@ -83,4 +83,6 @@ pub use store::{
 };
 
 mod read_query;
-pub use read_query::{DatasetReads, ReadBinding, ReadPage, ReadPartition, ReadShuffle, ReadSpec, ReadSplit};
+pub use read_query::{
+    DatasetReads, ReadBinding, ReadPage, ReadPartition, ReadShuffle, ReadSpec, ReadSplit, ResolvedReadPage,
+};

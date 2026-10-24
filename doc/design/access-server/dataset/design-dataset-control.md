@@ -111,6 +111,14 @@ of binary data; Schema admits up to 256 fields with names up to 1024 bytes. Proj
 and selection use aggregate byte/deadline/cancellation budgets. Native bounded reads
 reject oversized external values before materializing their contents.
 
+Continuation delivery resolves selection and field locators within one request.
+It reuses that request's Snapshot admission, schema and already scanned membership;
+Split visibility checks reuse admission for the same Snapshot. No admission handle
+is returned to callers. A separate request checks deletion again, including empty
+results. Explicit batch reads remain independent admitted requests. HTTP delivery
+moves inline payload owners from resolved locators into output buffers without
+cloning the payload.
+
 Old snapshots without projections require explicit resumable inspection preparation.
 Unsupported or oversized legacy state is reported, never represented as an empty
 Snapshot. Field preview is explicit and capped at 64 KiB after read-only admission; it

@@ -65,22 +65,22 @@ impl DatasetClient {
         let batch = request
             .run(async {
                 Ok(reads
-                    .next(&self.identity, cursor, &ReadCancellation::new())
+                    .next_with_locators(&self.identity, cursor, &ReadCancellation::new())
                     .await?)
             })
             .await?;
-        let end = batch.next.is_none();
-        self.batch(
+        let end = batch.page.next.is_none();
+        Ok(self.finish_batch(
             request,
             BatchRequest {
-                snapshot: batch.snapshot,
-                sample_ids: batch.ids,
-                fields: batch.fields,
+                snapshot: batch.page.snapshot,
+                sample_ids: batch.page.ids,
+                fields: batch.page.fields,
             },
-            batch.next,
+            batch.samples,
+            batch.page.next,
             end,
-        )
-        .await
+        ))
     }
 
     async fn batch(
@@ -116,6 +116,17 @@ impl DatasetClient {
                 })
                 .await?
         };
+        Ok(self.finish_batch(request, batch, samples, next, end))
+    }
+
+    fn finish_batch(
+        &self,
+        request: RequestLease,
+        batch: BatchRequest,
+        samples: Vec<SampleView>,
+        next: Option<String>,
+        end: bool,
+    ) -> ReadBatch {
         let (fields, locators) = descriptors(&batch, samples);
         let header = Arc::new(BatchHeader {
             snapshot: batch.snapshot,
@@ -131,7 +142,7 @@ impl DatasetClient {
             Arc::clone(&self.runtime.resources),
             Arc::clone(&self.uploads),
         );
-        Ok(ReadBatch { header, body })
+        ReadBatch { header, body }
     }
 }
 

@@ -3,12 +3,21 @@
 
 use super::{
     binding::{budget, inspection_error, split_error},
-    AuthorityError, Continuation, DatasetError, DatasetIdentity, DatasetReads, ReadPage,
+    AuthorityError, Continuation, DatasetError, DatasetIdentity, DatasetReads, ReadPage, ResolvedReadPage,
 };
-use crate::{inspection::work::InspectionWork, ReadCancellation};
+use crate::{
+    inspection::{work::InspectionWork, PreparedInspectionRead},
+    MetadataScanBudget, ReadCancellation,
+};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use md5::{Digest, Md5};
 use std::time::{Duration, Instant};
+
+struct SelectedGroup<'a> {
+    ids: Vec<Vec<u8>>,
+    after: Option<Vec<u8>>,
+    delivery: PreparedInspectionRead<'a>,
+}
 
 impl DatasetReads {
     /// Replays the caller's position. No read record, heartbeat or acknowledgement is written.
@@ -21,11 +30,37 @@ impl DatasetReads {
         token: &str,
         cancel: &ReadCancellation,
     ) -> Result<ReadPage, AuthorityError> {
+        Ok(self.next_page(identity, token, cancel, false).await?.page)
+    }
+
+    /// Resolves selection and delivery metadata in the same bounded request.
+    /// No reusable admission permit or server-side read state escapes the call.
+    /// # Errors
+    /// Rejects invalid continuations, deletion, projection, corruption and work limits.
+    pub async fn next_with_locators(
+        &self,
+        identity: &DatasetIdentity,
+        token: &str,
+        cancel: &ReadCancellation,
+    ) -> Result<ResolvedReadPage, AuthorityError> {
+        self.next_page(identity, token, cancel, true).await
+    }
+
+    async fn next_page(
+        &self,
+        identity: &DatasetIdentity,
+        token: &str,
+        cancel: &ReadCancellation,
+        resolve: bool,
+    ) -> Result<ResolvedReadPage, AuthorityError> {
         let mut cursor = Continuation::decode(identity, token)?;
-        let (mut ids, after) =
-            tokio::time::timeout(Duration::from_secs(2), self.group(identity, &cursor, cancel))
-                .await
-                .map_err(|_| DatasetError::ReadLimitExceeded)??;
+        let SelectedGroup {
+            mut ids,
+            after,
+            mut delivery,
+        } = tokio::time::timeout(Duration::from_secs(2), self.group(identity, &cursor, cancel))
+            .await
+            .map_err(|_| DatasetError::ReadLimitExceeded)??;
         let count = ids.len();
         if let Some(shuffle) = &cursor.spec.shuffle {
             ids.sort_by_cached_key(|id| {
@@ -52,6 +87,24 @@ impl DatasetReads {
             .saturating_add(cursor.spec.batch_size)
             .min(ids.len());
         let batch = ids[cursor.offset..end].to_vec();
+        let samples = if resolve {
+            let mut work = InspectionWork::new(
+                self.authority.store.as_ref(),
+                cancel,
+                MetadataScanBudget {
+                    items: 100,
+                    bytes: 16 * 1024 * 1024,
+                    timeout: Duration::from_secs(2),
+                },
+            )
+            .map_err(inspection_error)?;
+            delivery
+                .resolve(&batch, &cursor.spec.fields, &mut work, true)
+                .await
+                .map_err(inspection_error)?
+        } else {
+            Vec::new()
+        };
         let finished = end == ids.len();
         let next = if finished && after.is_none() {
             None
@@ -68,20 +121,23 @@ impl DatasetReads {
             }
             Some(cursor.encode()?)
         };
-        Ok(ReadPage {
-            snapshot: cursor.snapshot,
-            ids: batch,
-            fields: cursor.spec.fields,
-            next,
+        Ok(ResolvedReadPage {
+            page: ReadPage {
+                snapshot: cursor.snapshot,
+                ids: batch,
+                fields: cursor.spec.fields,
+                next,
+            },
+            samples,
         })
     }
 
-    async fn group(
-        &self,
-        identity: &DatasetIdentity,
+    async fn group<'a>(
+        &'a self,
+        identity: &'a DatasetIdentity,
         cursor: &Continuation,
         cancel: &ReadCancellation,
-    ) -> Result<(Vec<Vec<u8>>, Option<Vec<u8>>), AuthorityError> {
+    ) -> Result<SelectedGroup<'a>, AuthorityError> {
         let p = &cursor.spec.partition;
         let size = cursor.spec.shuffle.as_ref().map_or_else(
             || {
@@ -103,16 +159,6 @@ impl DatasetReads {
             .map_err(|_| DatasetError::CursorMismatch)?;
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut bytes = 0usize;
-        let revision = if let Some(source) = &cursor.split {
-            Some(
-                self.authority
-                    .get_split_revision(identity, cursor.snapshot, source.revision, budget(), cancel)
-                    .await
-                    .map_err(split_error)?,
-            )
-        } else {
-            None
-        };
         let mut selection_work =
             InspectionWork::new(self.authority.store.as_ref(), cancel, budget()).map_err(inspection_error)?;
         let mut selection = self
@@ -125,6 +171,18 @@ impl DatasetReads {
             )
             .await
             .map_err(inspection_error)?;
+        let revision = if let Some(source) = &cursor.split {
+            let mut split_work = InspectionWork::new(self.authority.store.as_ref(), cancel, budget())
+                .map_err(inspection_error)?;
+            Some(
+                self.authority
+                    .read_admitted_split_revision(identity, cursor.snapshot, source.revision, &mut split_work)
+                    .await
+                    .map_err(split_error)?,
+            )
+        } else {
+            None
+        };
         for _ in 0..5000 {
             if cancel.is_cancelled() {
                 return Err(DatasetError::ReadCancelled.into());
@@ -162,7 +220,11 @@ impl DatasetReads {
             }
             after = page.after;
             if ids.len() == size || after.is_none() {
-                return Ok((ids, after));
+                return Ok(SelectedGroup {
+                    ids,
+                    after,
+                    delivery: selection.into_delivery(),
+                });
             }
             selection_work = InspectionWork::new(self.authority.store.as_ref(), cancel, limits)
                 .map_err(inspection_error)?;
