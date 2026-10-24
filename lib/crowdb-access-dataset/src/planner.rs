@@ -297,3 +297,20 @@ pub(crate) fn batch_range(
     }
     Ok(start + offset..end)
 }
+
+/// Select an already-validated ordinal range without sorting discarded IDs.
+pub(crate) fn sorted_window<T: Ord>(mut values: Vec<T>, range: std::ops::Range<usize>) -> Vec<T> {
+    if range.is_empty() {
+        return Vec::new();
+    }
+    if range.end < values.len() {
+        values.select_nth_unstable(range.end);
+        values.truncate(range.end);
+    }
+    if range.start > 0 {
+        values.select_nth_unstable(range.start);
+    }
+    let mut selected: Vec<_> = values.drain(range).collect();
+    selected.sort_unstable();
+    selected
+}

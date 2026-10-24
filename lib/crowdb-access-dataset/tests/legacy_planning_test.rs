@@ -171,7 +171,16 @@ async fn legacy_scan_delivers_only_the_current_window_and_preserves_cursor_edges
     let manifest = authority.get_manifest(&identity, snapshot).await.unwrap();
     let plan = plan(snapshot);
     let service = DatasetReadService::new(authority, identity, 1).unwrap();
-    for shuffle in [None, Some(ShuffleSpec::default())] {
+    for shuffle in [
+        None,
+        Some(ShuffleSpec::default()),
+        Some(ShuffleSpec {
+            seed: 17,
+            epoch: 3,
+            max_shuffle_objects: 16,
+            max_shuffle_bytes: 280,
+        }),
+    ] {
         let windows = if let Some(spec) = &shuffle {
             SampleShuffle::execute_windows(&plan, &manifest, spec).unwrap()
         } else {

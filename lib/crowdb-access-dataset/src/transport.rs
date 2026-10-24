@@ -105,39 +105,34 @@ impl DatasetReadService {
         let permit = WindowPermit(Arc::clone(&self.window));
         let cursor = request.cursor.unwrap_or_else(|| ReadCursor::start(&request.plan));
         cursor.validate_for(&request.plan)?;
-        let planned = match request.shuffle.as_ref() {
-            Some(spec) => {
-                let manifest = self
-                    .authority
-                    .get_manifest(&self.identity, request.plan.snapshot)
-                    .await?;
-                SampleShuffle::execute(&request.plan, &manifest, spec)?
-            }
-            None => {
-                self.authority
-                    .plan_ids(
-                        &self.identity,
-                        &request.plan,
-                        crate::ReadLimits {
-                            max_samples: 1_000_000,
-                            max_metadata_bytes: 256 * 1024 * 1024,
-                            max_batches: 100_000,
-                            prefetch: 1,
-                            in_flight: 1,
-                        },
-                    )
-                    .await?
-            }
+        let (ids, total) = if let Some(spec) = request.shuffle.as_ref() {
+            let manifest = self
+                .authority
+                .get_manifest(&self.identity, request.plan.snapshot)
+                .await?;
+            SampleShuffle::execute_window(&request.plan, &manifest, spec, &cursor)?
+        } else {
+            let planned = self
+                .authority
+                .selected_ids(
+                    &self.identity,
+                    &request.plan,
+                    crate::ReadLimits {
+                        max_samples: 1_000_000,
+                        max_metadata_bytes: 256 * 1024 * 1024,
+                        max_batches: 100_000,
+                        prefetch: 1,
+                        in_flight: 1,
+                    },
+                )
+                .await?;
+            let total = planned.len();
+            let range =
+                crate::planner::batch_range(total, request.plan.batch_size, cursor.group, cursor.offset)?;
+            (crate::planner::sorted_window(planned, range), total)
         };
-        let windows = planned.len().div_ceil(request.plan.batch_size);
+        let windows = total.div_ceil(request.plan.batch_size);
         let group = usize::try_from(cursor.group).map_err(|_| DatasetError::CursorMismatch)?;
-        let range = crate::planner::batch_range(
-            planned.len(),
-            request.plan.batch_size,
-            cursor.group,
-            cursor.offset,
-        )?;
-        let ids: Vec<_> = planned.into_iter().skip(range.start).take(range.len()).collect();
         let fields: Vec<&str> = request.plan.projection.iter().map(String::as_str).collect();
         let samples = if ids.is_empty() {
             self.authority

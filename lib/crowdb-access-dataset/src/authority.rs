@@ -504,13 +504,12 @@ impl DatasetAuthority {
         plan: &crate::ReadPlan,
         limits: crate::ReadLimits,
     ) -> Result<Vec<Vec<Vec<u8>>>, AuthorityError> {
-        Ok(crate::planner::into_batches(
-            self.plan_ids(identity, plan, limits).await?,
-            plan.batch_size,
-        ))
+        let mut ids = self.selected_ids(identity, plan, limits).await?;
+        ids.sort();
+        Ok(crate::planner::into_batches(ids, plan.batch_size))
     }
 
-    pub(crate) async fn plan_ids(
+    pub(crate) async fn selected_ids(
         &self,
         identity: &DatasetIdentity,
         plan: &crate::ReadPlan,
@@ -551,7 +550,6 @@ impl DatasetAuthority {
                 ids.push(sample.sample_id);
             }
         }
-        ids.sort();
         if ids.len().div_ceil(plan.batch_size) > limits.max_batches {
             return Err(DatasetError::ReadLimitExceeded.into());
         }
