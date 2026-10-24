@@ -31,8 +31,9 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
     authority.begin_reclaim(&identity, snapshot).await.unwrap();
     clock.store(1300, std::sync::atomic::Ordering::Release);
     let cancel = ReadCancellation::new();
+    let mut metadata_cursor = MetadataCleanupProgress::new(snapshot);
     let partial = authority
-        .reclaim_snapshot_metadata_step(&identity, snapshot, &cancel)
+        .reclaim_snapshot_metadata_step_for_tests(&identity, snapshot, &mut metadata_cursor, &cancel)
         .await
         .unwrap();
     assert!(!partial.complete);
@@ -41,7 +42,7 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
     let mut completed = false;
     for _ in 0..100 {
         if restarted
-            .reclaim_snapshot_metadata_step(&identity, snapshot, &cancel)
+            .reclaim_snapshot_metadata_step_for_tests(&identity, snapshot, &mut metadata_cursor, &cancel)
             .await
             .unwrap()
             .complete
@@ -117,9 +118,15 @@ async fn cleanup_completion_is_helped_after_final_status_write_failure() {
         .reject_cleanup_finish
         .store(true, std::sync::atomic::Ordering::Relaxed);
     let mut failed = false;
+    let mut metadata_cursor = MetadataCleanupProgress::new(snapshot);
     for _ in 0..20 {
         if authority
-            .reclaim_snapshot_metadata_step(&identity, snapshot, &ReadCancellation::new())
+            .reclaim_snapshot_metadata_step_for_tests(
+                &identity,
+                snapshot,
+                &mut metadata_cursor,
+                &ReadCancellation::new(),
+            )
             .await
             .is_err()
         {
@@ -139,7 +146,12 @@ async fn cleanup_completion_is_helped_after_final_status_write_failure() {
     let restarted = DatasetAuthority::new(store).with_reclaim_clock_for_tests(clock);
     assert!(
         restarted
-            .reclaim_snapshot_metadata_step(&identity, snapshot, &ReadCancellation::new())
+            .reclaim_snapshot_metadata_step_for_tests(
+                &identity,
+                snapshot,
+                &mut metadata_cursor,
+                &ReadCancellation::new()
+            )
             .await
             .unwrap()
             .complete

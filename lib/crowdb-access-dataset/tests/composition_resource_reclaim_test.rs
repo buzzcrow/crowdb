@@ -56,9 +56,15 @@ async fn interrupted_resource_is_discoverable_and_retirement_blocks_recomputatio
     clock.store(1300, Ordering::Release);
     let restarted = DatasetAuthority::new(store.clone()).with_reclaim_clock_for_tests(clock);
     let mut complete = false;
+    let mut metadata_cursor = MetadataCleanupProgress::new(snapshot);
     for _ in 0..100 {
         if restarted
-            .reclaim_snapshot_metadata_step(&identity, snapshot, &ReadCancellation::new())
+            .reclaim_snapshot_metadata_step_for_tests(
+                &identity,
+                snapshot,
+                &mut metadata_cursor,
+                &ReadCancellation::new(),
+            )
             .await
             .unwrap()
             .complete

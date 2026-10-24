@@ -90,7 +90,7 @@ async fn cleanup_finds_prepared_candidate_without_a_draft_preparation_pointer() 
         .unwrap();
     finish(&authority, &identity, operation).await;
     authority
-        .reclaim_snapshot_metadata(&identity, snapshot)
+        .reclaim_snapshot_metadata_for_tests(&identity, snapshot)
         .await
         .unwrap();
     assert!(matches!(

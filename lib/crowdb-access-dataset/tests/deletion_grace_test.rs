@@ -162,9 +162,15 @@ async fn deletion_rejects_new_reads_and_keeps_the_grace_deadline_across_restarts
         )
         .await
         .unwrap();
+    let mut metadata_cursor = MetadataCleanupProgress::new(snapshot);
     assert!(matches!(
         restarted
-            .reclaim_snapshot_metadata_step(&identity, snapshot, &ReadCancellation::new())
+            .reclaim_snapshot_metadata_step_for_tests(
+                &identity,
+                snapshot,
+                &mut metadata_cursor,
+                &ReadCancellation::new()
+            )
             .await,
         Err(AuthorityError::ReclaimPending { reclaim_after: 1300 })
     ));
@@ -172,7 +178,12 @@ async fn deletion_rejects_new_reads_and_keeps_the_grace_deadline_across_restarts
     clock.store(1300, Ordering::Release);
     loop {
         if restarted
-            .reclaim_snapshot_metadata_step(&identity, snapshot, &ReadCancellation::new())
+            .reclaim_snapshot_metadata_step_for_tests(
+                &identity,
+                snapshot,
+                &mut metadata_cursor,
+                &ReadCancellation::new(),
+            )
             .await
             .unwrap()
             .complete

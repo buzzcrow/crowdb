@@ -179,3 +179,37 @@ async fn worker_cursor_survives_cancel_and_can_be_lost_between_cleanup_windows()
     }
     panic!("cleanup did not finish after local cursor loss and concurrent workers");
 }
+
+#[tokio::test]
+async fn index_and_metadata_positions_can_be_lost_between_cleanup_windows() {
+    let test = TestCleanup::new().await;
+    let mut cursor = SnapshotReclaimCursor::new(test.identity.clone(), test.snapshot);
+    let mut lost_indexes = false;
+    let mut lost_metadata = false;
+    for _ in 0..100 {
+        let status = test
+            .authority
+            .advance_snapshot_reclaim(&test.uploads, &mut cursor, &ReadCancellation::new())
+            .await
+            .unwrap();
+        if status.complete {
+            assert!(lost_indexes && lost_metadata);
+            for prefix in [b"DS\0GUP\0".as_slice(), b"DS\0GMC\0", b"DS\0GSD\0", b"DS\0CGF\0"] {
+                let mut key = prefix.to_vec();
+                key.extend(test.identity.key().unwrap());
+                key.extend(test.snapshot.as_bytes());
+                assert!(test.store.get(&key).await.unwrap().is_none());
+            }
+            return;
+        }
+        if status.phase == SnapshotReclaimPhase::IndexFences && !lost_indexes {
+            lost_indexes = true;
+            cursor = SnapshotReclaimCursor::new(test.identity.clone(), test.snapshot);
+        }
+        if status.phase == SnapshotReclaimPhase::Metadata && !lost_metadata {
+            lost_metadata = true;
+            cursor = SnapshotReclaimCursor::new(test.identity.clone(), test.snapshot);
+        }
+    }
+    panic!("lost index and metadata positions prevented cleanup completion");
+}

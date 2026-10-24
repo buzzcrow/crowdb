@@ -3,6 +3,7 @@
 
 use super::{decode, DatasetAuthority, VersionedRecord};
 mod cleanup;
+mod legacy_progress;
 mod lifecycle;
 mod observation;
 pub use lifecycle::{

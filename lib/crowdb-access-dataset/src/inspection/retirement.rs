@@ -10,18 +10,20 @@ use super::{
 };
 use crate::{
     AuthorityError, CasOutcome, DatasetAuthority, DatasetIdentity, ManifestRecord, MetadataScanBudget,
-    ReadCancellation, SnapshotRecord,
+    ReadCancellation, SnapshotId, SnapshotRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 pub(crate) const RETIRED_RECORD: &[u8] = b"snapshot-metadata-retired-v1";
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Cursor {
+pub(crate) struct CandidateRetirementCursor {
     partition: u32,
     rows: IndexPosition,
     complete: bool,
+    #[serde(skip)]
+    target: Option<(DatasetIdentity, SnapshotId)>,
 }
 impl DatasetAuthority {
     /// Seals all possible immutable writes, including keys not reached by a failed preparation.
@@ -29,6 +31,7 @@ impl DatasetAuthority {
         &self,
         identity: &DatasetIdentity,
         record: &SnapshotRecord,
+        cursor: &mut CandidateRetirementCursor,
         cancel: &ReadCancellation,
     ) -> Result<bool, InspectionError> {
         if record.publication.state != crate::PublicationState::Aborted
@@ -49,14 +52,11 @@ impl DatasetAuthority {
                 timeout: Duration::from_secs(2),
             },
         )?;
-        let mut cursor_key = b"DS\0CGF\0".to_vec();
-        cursor_key.extend(identity.key().map_err(AuthorityError::from)?);
-        cursor_key.extend(manifest.snapshot.as_bytes());
-        let stored = work.get(&cursor_key, 4096).await?;
-        let mut cursor: Cursor = stored
-            .as_ref()
-            .map_or_else(|| Ok(Cursor::default()), |v| serde_json::from_slice(&v.bytes))
-            .map_err(|_| InspectionError::Corrupt)?;
+        let target = (identity.clone(), manifest.snapshot);
+        if cursor.target.as_ref().is_some_and(|bound| bound != &target) {
+            return Err(InspectionError::Corrupt);
+        }
+        cursor.target = Some(target);
         cursor.rows.validate(&manifest)?;
         let partitions =
             u32::try_from(manifest.samples.len().div_ceil(1024)).map_err(|_| InspectionError::Limit)?;
@@ -79,28 +79,65 @@ impl DatasetAuthority {
             left -= 1;
         }
         while left > 0 {
-            let Some(row) = next_row(identity, &manifest, &mut cursor.rows)? else {
+            let mut next = cursor.rows.clone();
+            let Some(row) = next_row(identity, &manifest, &mut next)? else {
                 self.finish_candidate_retirement(identity, record, &manifest, &mut work)
                     .await?;
+                cursor.rows = next;
                 cursor.complete = true;
                 break;
             };
             self.seal_candidate_key(&row.key, RETIRED_RECORD, &mut work)
                 .await?;
+            cursor.rows = next;
             left -= 1;
-        }
-        let bytes = serde_json::to_vec(&cursor).map_err(|_| InspectionError::Corrupt)?;
-        match self
-            .store
-            .compare_exchange(&cursor_key, stored.as_ref().map(|v| v.bytes.as_slice()), &bytes)
-            .await?
-        {
-            CasOutcome::Applied(_) => {}
-            CasOutcome::Conflict(Some(value)) if value.bytes == bytes => {}
-            CasOutcome::Conflict(_) => return Err(AuthorityError::HeadConflict.into()),
         }
         Ok(cursor.complete)
     }
+    /// Compatibility adapter for legacy CD/CCP cleanup; modern Snapshot workers keep this cursor locally.
+    pub(crate) async fn retire_candidate_metadata_legacy_step(
+        &self,
+        identity: &DatasetIdentity,
+        record: &SnapshotRecord,
+        cancel: &ReadCancellation,
+    ) -> Result<bool, InspectionError> {
+        let mut key = b"DS\0CGF\0".to_vec();
+        key.extend(identity.key().map_err(AuthorityError::from)?);
+        key.extend(record.publication.snapshot.as_bytes());
+        let stored = self
+            .store
+            .get_bounded(
+                &key,
+                MetadataScanBudget {
+                    items: 1,
+                    bytes: 4096,
+                    timeout: Duration::from_secs(2),
+                },
+                cancel,
+            )
+            .await?;
+        let mut cursor: CandidateRetirementCursor = stored
+            .as_ref()
+            .map_or_else(
+                || Ok(CandidateRetirementCursor::default()),
+                |v| serde_json::from_slice(&v.bytes),
+            )
+            .map_err(|_| InspectionError::Corrupt)?;
+        let complete = self
+            .retire_candidate_metadata_step(identity, record, &mut cursor, cancel)
+            .await?;
+        let bytes = serde_json::to_vec(&cursor).map_err(|_| InspectionError::Corrupt)?;
+        match self
+            .store
+            .compare_exchange(&key, stored.as_ref().map(|v| v.bytes.as_slice()), &bytes)
+            .await?
+        {
+            CasOutcome::Applied(_) => Ok(complete),
+            CasOutcome::Conflict(Some(value)) if value.bytes == bytes => Ok(complete),
+            CasOutcome::Conflict(_) => Err(AuthorityError::HeadConflict.into()),
+        }
+    }
+
     async fn finish_candidate_retirement(
         &self,
         identity: &DatasetIdentity,

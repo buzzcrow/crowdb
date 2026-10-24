@@ -353,9 +353,9 @@ the original Manifest while payload cleanup is pending and prevents publication 
 REST and bincode deletion requests only establish this mark and observe durable
 completion; repeated requests do not drive metadata deletion or accept a client
 cleanup cursor. Background workers release upload ownership for that operation
-only; other Snapshot owners preserve shared bytes. Owner scan positions are
-local, bound to one Dataset/Snapshot, and lost positions repeat idempotent
-retirement without a stored progress record.
+only; other Snapshot owners preserve shared bytes. Owner, legacy Split-draft,
+index-fence and metadata scan positions are local, bound to one Dataset/Snapshot.
+Lost positions repeat idempotent retirement without a stored progress record.
 
 Background discovery reads at most twenty deletion marks / 512 KiB and keeps
 at most 32 local cleanup hints. Each window has a two-second deadline. Pending
@@ -366,12 +366,20 @@ owner cursor completes; clients cannot skip that boundary. Accepted range
 notifications end Access responsibility without waiting for physical capacity
 recovery. Shared range retirement does not count as a reclaimed whole chunk.
 
-`reclaim_snapshot_metadata_step` persists phase and continuation while deleting
-at most twenty metadata keys per step. It removes Manifest storage and inspection
-projections. Snapshot-owned Split revision/member records become small permanent
-CAS fences so delayed immutable writes cannot restore removed contents. Commit
+Metadata cleanup deletes at most twenty keys per local window. It removes
+obsolete Manifest storage and inspection projections while retaining small
+permanent CAS fences for all possible immutable index and Split revision/member
+writes. A failed fence write does not advance the local row position. Commit
 receipts, head fences and terminal retirement evidence remain. A retry helps the
-final status marker if cleanup completed before the response or status write failed.
+final status marker if cleanup completed before the response or status write
+failed. Old upload, metadata, Split-discovery and index checkpoint keys are swept
+in pages of twenty only after authoritative Snapshot completion. The sweep reads
+no checkpoint payload and never deletes the completion or immutable-write fences;
+its scan position is also local. Empty legacy scans wait fifteen seconds.
+
+Legacy Composition draft cleanup temporarily retains its separate checkpoint
+adapter so existing draft-owned orphan resources remain discoverable. Modern
+Snapshot cleanup does not read or write that adapter.
 
 Composition evaluation work pages record their possible row writes before applying
 those writes. Obsolete-window cleanup seals rows before sealing their work page,

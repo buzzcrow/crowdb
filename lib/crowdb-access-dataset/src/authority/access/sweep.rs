@@ -16,11 +16,12 @@ const DISCOVERY_ITEMS: usize = 20;
 pub struct SnapshotReclaimSweep {
     after: Option<Vec<u8>>,
     pending: VecDeque<SnapshotReclaimCursor>,
+    legacy: super::legacy_progress::LegacyProgressSweep,
 }
 impl SnapshotReclaimSweep {
     #[must_use]
     pub fn has_more(&self) -> bool {
-        self.after.is_some() || !self.pending.is_empty()
+        self.after.is_some() || !self.pending.is_empty() || self.legacy.has_more()
     }
     #[must_use]
     pub fn pending_snapshots(&self) -> usize {
@@ -63,16 +64,16 @@ impl DatasetAuthority {
         if cursor.pending.len() <= QUEUE_LIMIT - DISCOVERY_ITEMS {
             self.discover_reclaims(cursor, cancel).await?;
         }
-        let Some(work) = cursor.pending.front_mut() else {
-            return Ok(());
-        };
-        let result = self.advance_snapshot_reclaim(uploads, work, cancel).await;
-        if result.as_ref().is_ok_and(|status| status.complete) {
-            cursor.pending.pop_front();
-        } else {
-            cursor.pending.rotate_left(1);
+        if let Some(work) = cursor.pending.front_mut() {
+            let result = self.advance_snapshot_reclaim(uploads, work, cancel).await;
+            if result.as_ref().is_ok_and(|status| status.complete) {
+                cursor.pending.pop_front();
+            } else {
+                cursor.pending.rotate_left(1);
+            }
+            result?;
         }
-        result.map(|_| ())
+        self.sweep_legacy_progress(&mut cursor.legacy, cancel).await
     }
 
     async fn discover_reclaims(

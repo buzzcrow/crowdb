@@ -113,7 +113,7 @@ impl DatasetAuthority {
         let mut retired = record;
         retired.publication.state = crate::PublicationState::Aborted;
         if !self
-            .retire_candidate_metadata_step(identity, &retired, cancel)
+            .retire_candidate_metadata_legacy_step(identity, &retired, cancel)
             .await?
         {
             return Ok(false);

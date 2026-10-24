@@ -1004,14 +1004,18 @@ async fn retention_stable_and_reclaim_protect_live_snapshots() {
         .await
         .unwrap();
     assert!(matches!(
-        authority.reclaim_snapshot_metadata(&identity, snapshot).await,
+        authority
+            .reclaim_snapshot_metadata_for_tests(&identity, snapshot)
+            .await,
         Err(AuthorityError::SnapshotProtected)
     ));
     authority.retain_snapshot(&identity, snapshot).await.unwrap();
     authority.release_snapshot(&identity, snapshot).await.unwrap();
     authority.set_stable(&identity, snapshot).await.unwrap();
     assert!(matches!(
-        authority.reclaim_snapshot_metadata(&identity, snapshot).await,
+        authority
+            .reclaim_snapshot_metadata_for_tests(&identity, snapshot)
+            .await,
         Err(AuthorityError::SnapshotProtected)
     ));
 }

@@ -47,6 +47,9 @@ pub struct SnapshotReclaimCursor {
     pub(super) identity: DatasetIdentity,
     pub(super) snapshot: SnapshotId,
     uploads: SnapshotUploadCleanup,
+    metadata: super::MetadataCleanupProgress,
+    splits: crate::split::SnapshotSplitCleanup,
+    indexes: crate::inspection::CandidateRetirementCursor,
 }
 impl SnapshotReclaimCursor {
     #[must_use]
@@ -55,6 +58,9 @@ impl SnapshotReclaimCursor {
             identity,
             snapshot,
             uploads: SnapshotUploadCleanup::default(),
+            metadata: super::MetadataCleanupProgress::new(snapshot),
+            splits: crate::split::SnapshotSplitCleanup::new(snapshot),
+            indexes: crate::inspection::CandidateRetirementCursor::default(),
         }
     }
 }
@@ -130,7 +136,7 @@ impl DatasetAuthority {
         }
         status.phase = SnapshotReclaimPhase::SplitDrafts;
         if !self
-            .cleanup_snapshot_split_drafts_step(identity, snapshot, cancel)
+            .cleanup_snapshot_split_drafts_step(identity, snapshot, &mut cursor.splits, cancel)
             .await?
             .complete
         {
@@ -152,14 +158,14 @@ impl DatasetAuthority {
         let record: SnapshotRecord = crate::authority::decode(&stored.bytes)?;
         status.phase = SnapshotReclaimPhase::IndexFences;
         if !self
-            .retire_candidate_metadata_step(identity, &record, cancel)
+            .retire_candidate_metadata_step(identity, &record, &mut cursor.indexes, cancel)
             .await?
         {
             return Ok(status);
         }
         status.phase = SnapshotReclaimPhase::Metadata;
         if self
-            .reclaim_snapshot_metadata_step(identity, snapshot, cancel)
+            .reclaim_snapshot_metadata_step(identity, snapshot, &mut cursor.metadata, cancel)
             .await?
             .complete
         {

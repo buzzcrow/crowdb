@@ -76,9 +76,15 @@ async fn owner_reclaim_finds_complete_and_partial_resources_without_any_draft() 
     clock.store(1300, Ordering::Release);
     let restarted = DatasetAuthority::new(store.clone()).with_reclaim_clock_for_tests(clock);
     let mut finished = false;
+    let mut metadata_cursor = MetadataCleanupProgress::new(snapshot);
     for _ in 0..100 {
         if restarted
-            .reclaim_snapshot_metadata_step(&identity, snapshot, &ReadCancellation::new())
+            .reclaim_snapshot_metadata_step_for_tests(
+                &identity,
+                snapshot,
+                &mut metadata_cursor,
+                &ReadCancellation::new(),
+            )
             .await
             .unwrap()
             .complete

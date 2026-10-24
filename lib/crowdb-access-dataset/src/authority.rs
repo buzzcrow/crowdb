@@ -563,16 +563,18 @@ impl DatasetAuthority {
     ///
     /// # Errors
     /// Returns storage failures or malformed manifest bindings.
-    pub async fn reclaim_snapshot_metadata(
+    #[cfg(feature = "test-util")]
+    pub async fn reclaim_snapshot_metadata_for_tests(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
         let cancel = ReadCancellation::new();
+        let mut progress = MetadataCleanupProgress::new(snapshot);
         let work = async {
             for _ in 0..64 {
                 if self
-                    .reclaim_snapshot_metadata_step(identity, snapshot, &cancel)
+                    .reclaim_snapshot_metadata_step(identity, snapshot, &mut progress, &cancel)
                     .await?
                     .complete
                 {
