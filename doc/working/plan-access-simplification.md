@@ -19,8 +19,8 @@ Upstream: [Dataset SDK](../backlog/R220-dataset-fat-client-plan.md)、
   静态发现、提出方案、代码完成、性能验收不能互相代替。
 - 当前实施基线为 `489ae507`；旧性能审查来自 `878ee901`，
   涉及已删除 session 的结论已移除。下面的成本数字只描述注明的函数路径，需动态复核。
-- 用户要求暂时离开后继续。交接时 46 个未完成 checkbox，
-  包含条件决策、交叉审查和总体验收，不代表 46 个独立功能；没有正在运行的实施步骤。
+- 用户已恢复工作；本地交接已读入并按要求删除。交接时 46 个未完成 checkbox，
+  包含条件决策、交叉审查和总体验收，不代表 46 个独立功能。
 
 ## 已确定的约束
 
@@ -473,7 +473,7 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   记录 p50/p99、TPS、CPU/RSS、RPC、复制/摘要、清理积压，不缩小负载掩盖失败。
   Files: `tools/sdk/dataset_workload.py`、相关 examples、`e2e-test/`、本机 HCA runner。
   物理多主机验证继续留在独立计划，不并回此处。
-- [ ] **V4.2 验证并发 metadata 与单块 owner 移交的真实链路**：由 `acd25325` 生产源码重新
+- [~] **V4.2 验证并发 metadata 与单块 owner 移交的真实链路**：由 `acd25325` 生产源码重新
   构建独立本地镜像，运行 Dataset 全部容器用例与同参数 TCP workload。与 V4.1 使用相同
   client/server CPU、metadata 内存、size 集合、并发和校验，保留精确 artifact/source 身份；
   不把单 sample-field 的当前 workload 当作宽投影并发性能证明，后者继续由 F6/F1 验证。
