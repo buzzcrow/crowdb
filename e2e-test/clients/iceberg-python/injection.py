@@ -21,39 +21,69 @@ from pyiceberg.types import LongType, NestedField
 import requests
 
 
+def file_request(properties, method, location, data=b"", query=""):
+    url = properties["s3.endpoint"].rstrip("/") + "/" + location.removeprefix("s3://")
+    credentials = Credentials(properties["s3.access-key-id"], properties["s3.secret-access-key"],
+                              properties["s3.session-token"])
+    request = AWSRequest(method=method, url=url + query, data=data,
+                         headers={"x-amz-content-sha256": hashlib.sha256(data).hexdigest()})
+    S3SigV4Auth(credentials, "s3", "us-east-1").add_auth(request)
+    response = requests.request(method, url + query, data=data, headers=dict(request.headers), timeout=60)
+    response.raise_for_status()
+    return response
+
+
+def verify_file(table, location, stem, data):
+    prefix = table.location() + f"/f/v1/{stem}."
+    assert location.startswith(prefix) and location.endswith(".parquet"), location
+    locator = location[len(prefix):-len(".parquet")]
+    assert locator and locator.isascii(), location
+    assert all(character.isalnum() or character in "_-" for character in locator), location
+    digest = '"' + hashlib.sha256(data).hexdigest() + '"'
+    head = file_request(table.io.properties, "HEAD", location)
+    assert head.status_code == 200, head.status_code
+    assert int(head.headers["Content-Length"]) == len(data), head.headers
+    assert head.headers["ETag"] == digest, head.headers
+    response = file_request(table.io.properties, "GET", location)
+    assert response.status_code == 200, response.status_code
+    assert response.headers["ETag"] == digest, response.headers
+    assert int(response.headers["Content-Length"]) == len(data), response.headers
+    assert response.content == data, location
+    actual = pq.read_table(pa.BufferReader(response.content))
+    expected = pq.read_table(pa.BufferReader(data))
+    assert actual.equals(expected), (actual, expected)
+
+
 def upload(table, data):
+    locations = []
     if os.environ.get("CROWDB_E2E_NATIVE_LOADER") == "1":
         from crowdb_tpc_loader.native_upload import new_upload_id, upload as native_upload
 
-        uri = table.location() + f"/data/selected-{new_upload_id()}.parquet"
+        stem = f"selected-{new_upload_id()}"
+        uri = table.location() + f"/data/{stem}.parquet"
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "selected.parquet"
             path.write_bytes(data)
-            first = native_upload(table.io.properties, uri, path, len(data), 4096, lambda _: None)
-            second = native_upload(table.io.properties, uri, path, len(data), 4096, lambda _: None)
-        assert first[0] == second[0]
-        return first[0]
-    properties = table.io.properties
-    random = secrets.randbits(74)
-    identity = uuid.UUID(int=(int(time.time() * 1000) << 80) | (7 << 76)
-                         | ((random >> 62) << 64) | (2 << 62) | (random & ((1 << 62) - 1)))
-    uri = table.location() + f"/data/selected-{identity}.parquet"
-    url = properties["s3.endpoint"].rstrip("/") + "/" + uri.removeprefix("s3://")
-    url += f"?crowdb-native-upload={identity}"
-    credentials = Credentials(properties["s3.access-key-id"], properties["s3.secret-access-key"],
-                              properties["s3.session-token"])
-    selected = None
-    for _ in range(2):
-        request = AWSRequest(method="PUT", url=url, data=data,
-                             headers={"x-amz-content-sha256": hashlib.sha256(data).hexdigest()})
-        S3SigV4Auth(credentials, "s3", "us-east-1").add_auth(request)
-        response = requests.put(url, data=data, headers=dict(request.headers), timeout=60)
-        response.raise_for_status()
-        location = response.json()["location"]
-        assert location.startswith(table.location() + "/f/v1/"), location
-        assert selected is None or selected == location
-        selected = location
-    return selected
+            for _ in range(2):
+                result = native_upload(table.io.properties, uri, path, len(data), 4096, lambda _: None)
+                verify_file(table, result[0], stem, data)
+                locations.append(result[0])
+    else:
+        random = secrets.randbits(74)
+        identity = uuid.UUID(int=(int(time.time() * 1000) << 80) | (7 << 76)
+                             | ((random >> 62) << 64) | (2 << 62) | (random & ((1 << 62) - 1)))
+        stem = f"selected-{identity}"
+        uri = table.location() + f"/data/{stem}.parquet"
+        for _ in range(2):
+            response = file_request(table.io.properties, "PUT", uri, data,
+                                    f"?crowdb-native-upload={identity}")
+            location = response.json()["location"]
+            assert response.headers["ETag"] == '"' + hashlib.sha256(data).hexdigest() + '"', response.headers
+            verify_file(table, location, stem, data)
+            locations.append(location)
+    assert locations[0] != locations[1], locations
+    verify_file(table, locations[0], stem, data)
+    return locations[1]
 
 
 def verify(config):
