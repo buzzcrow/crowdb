@@ -5,7 +5,7 @@ use crowdb_protocol::chunk_kv::ScanDirection;
 
 use crate::catalog::{CatalogContext, CatalogError, StoreError};
 use crate::error::ValidationError;
-use crate::key::{CatalogScope, IcebergKey, NamespaceId};
+use crate::key::{CatalogScope, IcebergKey};
 use crate::record::StorageRecord;
 
 use super::list_token::ListTokens;
@@ -53,9 +53,16 @@ impl NamespaceLister {
             return Err(ValidationError::Text.into());
         }
         self.repository.check_context(context).await?;
-        let Some(parent_id) = self.parent(context, parent).await? else {
-            return Ok(None);
+        let selected = if let Some(parent) = parent {
+            self.repository.resolve(context, parent).await?
+        } else {
+            None
         };
+        if parent.is_some() && selected.is_none() {
+            self.repository.check_context(context).await?;
+            return Ok(None);
+        }
+        let parent_id = selected.as_ref().map(|authority| authority.namespace);
         let binding = ListTokens::binding(context, parent_id, parent, limit)?;
         let range = child_range(context.catalog, parent_id, CatalogScope::NamespaceName)?;
         let continuation = if token.is_empty() {
@@ -117,8 +124,10 @@ impl NamespaceLister {
         } else {
             None
         };
-        if self.parent(context, parent).await? != Some(parent_id) {
-            return Err(CatalogError::Conflict);
+        if let Some(selected) = selected {
+            self.repository
+                .ensure_current_in_context(context, &selected)
+                .await?;
         }
         self.repository.check_context(context).await?;
         Ok(Some(NamespaceListPage {
@@ -126,21 +135,6 @@ impl NamespaceLister {
             next_page_token,
             scanned,
         }))
-    }
-
-    async fn parent(
-        &self,
-        context: CatalogContext,
-        identifier: Option<&NamespaceIdentifier>,
-    ) -> Result<Option<Option<NamespaceId>>, CatalogError> {
-        match identifier {
-            None => Ok(Some(None)),
-            Some(identifier) => Ok(self
-                .repository
-                .load(context, identifier)
-                .await?
-                .map(|authority| Some(authority.namespace))),
-        }
     }
 
     async fn visible_child(

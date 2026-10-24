@@ -4,7 +4,7 @@ use crowdb_chunk_kv_client::MultiScanContinuation;
 use crowdb_protocol::chunk_kv::ScanDirection;
 
 use crate::{
-    catalog::{CatalogContext, CatalogError, CatalogStore, StoreError},
+    catalog::{check_context, CatalogContext, CatalogError, CatalogStore, StoreError},
     error::ValidationError,
     key::{CatalogScope, IcebergKey},
     namespace::{
@@ -71,7 +71,9 @@ impl TableLister {
         {
             return Err(ValidationError::RecordTooLarge.into());
         }
-        let Some(parent) = self.namespaces.load(context, namespace).await? else {
+        check_context(self.store.as_ref(), context).await?;
+        let Some(parent) = self.namespaces.resolve(context, namespace).await? else {
+            check_context(self.store.as_ref(), context).await?;
             return Ok(None);
         };
         let mut result = TableListPage {
@@ -113,12 +115,10 @@ impl TableLister {
             }
             cursor.clone_from(result.next_page_token.as_ref().ok_or(ValidationError::Key)?);
         }
-        let current = self.namespaces.load(context, namespace).await?;
-        if !current.is_some_and(|current| {
-            current.namespace == parent.namespace && current.name_epoch == parent.name_epoch
-        }) {
-            return Err(CatalogError::Conflict);
-        }
+        self.namespaces
+            .ensure_current_in_context(context, &parent)
+            .await?;
+        check_context(self.store.as_ref(), context).await?;
         Ok(Some(result))
     }
 
