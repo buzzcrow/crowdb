@@ -384,10 +384,6 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   义务/代际；即使重扫昂贵也先优化发现/预算；新增持久化信息必须 review，用途和额外前台写均写明。Files: Dataset `authority/access/`、Split/Composition cleanup、Iceberg `gc/`、S3 terminal cleanup。
 - [ ] **P13.3 量化回收滞后**：稀疏过期、大 upload、多 cleaner、频繁重启、损坏记录下测 backlog、
   前台 p99 和孤儿收敛；如需确定完成时限再讨论 D5。Files: 相关 cleanup 测试、负载工具。
-- [ ] **P13.4 Snapshot 回收复用 CAS observation**：`fence_reclaim` 与 `retire_snapshot_record`
-  当前在每次 definite conflict 后重新 GET；移到循环外初读，再使用返回的 head/Snapshot，
-  保留帮助已发布 head 的 commit evidence。前者只推进当前 head fence，不改变 latest/stable；
-  后者只退休固定 Snapshot，不能把显式 expected-base 发布改成 rebase。Files: authority/access/reclaim.rs。
 
 ### P14 — Catalog 与凭据
 
@@ -468,6 +464,14 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P13.4**：Snapshot 回收 head fence 与固定 Snapshot 退休都只初读一次，
+  CAS conflict 直接接 observed，不再循环 GET。四次实际 head nonce 竞争及一次竞争退休
+  中禁止读取对应 key，仍成功；合计省去五次逻辑 GET。fence 不改变 latest/stable，固定
+  Snapshot 不换目标；head 的未收尾 commit evidence 先保留，竞争后的新 nonce 仍有该证明。
+  missing 与 unknown 不额外查询或谎称成功；未知结果可由下一次独立请求恢复。
+  新增 observed 两项、candidate publication 六项、reclaim race 一项、deletion grace 三项、
+  branch reclaim 三项及 Dataset all-target/all-feature clippy、fmt/diff 通过。
 
 - **2026-10-24，P13.1**：删除旧整 upload expiry 入口；新的 `expire_step` 每次发现至多
   20 key/1 MiB，跳过 upload 子树；每个清理窗口只扫描实际存在的至多 32 part/1 MiB，

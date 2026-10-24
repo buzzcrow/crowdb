@@ -29,8 +29,8 @@ impl DatasetAuthority {
         self.fence_split_publication(identity, snapshot).await?;
         // Invalidate publishers that read the old head before checking the admission fence.
         let key = key::head(identity)?;
+        let mut old = self.store.get(&key).await?;
         for _ in 0..64 {
-            let old = self.store.get(&key).await?;
             if let Some(old) = &old {
                 self.help_head_commit(identity, old).await?;
             }
@@ -42,17 +42,17 @@ impl DatasetAuthority {
                     latest: None,
                     stable: None,
                 });
-            if matches!(
-                self.store
-                    .compare_exchange(
-                        &key,
-                        old.as_ref().map(|v| v.bytes.as_slice()),
-                        &encode_head(head)?
-                    )
-                    .await?,
-                CasOutcome::Applied(_)
-            ) {
-                return Ok(Some(owner));
+            match self
+                .store
+                .compare_exchange(
+                    &key,
+                    old.as_ref().map(|v| v.bytes.as_slice()),
+                    &encode_head(head)?,
+                )
+                .await?
+            {
+                CasOutcome::Applied(_) => return Ok(Some(owner)),
+                CasOutcome::Conflict(observed) => old = observed,
             }
         }
         Err(AuthorityError::HeadConflict)
@@ -151,26 +151,29 @@ impl DatasetAuthority {
         snapshot: SnapshotId,
     ) -> Result<crate::SnapshotRecord, AuthorityError> {
         let key = key::snapshot(identity, snapshot)?;
+        let mut old = self
+            .store
+            .get(&key)
+            .await?
+            .ok_or(AuthorityError::SnapshotNotFound)?;
         for _ in 0..64 {
-            let old = self
-                .store
-                .get(&key)
-                .await?
-                .ok_or(AuthorityError::SnapshotNotFound)?;
             let mut record: crate::SnapshotRecord = decode(&old.bytes)?;
             if record.publication.state == crate::PublicationState::Aborted {
                 self.mark_snapshot_retired(identity, snapshot).await?;
                 return Ok(record);
             }
             record.publication.state = crate::PublicationState::Aborted;
-            if matches!(
-                self.store
-                    .compare_exchange(&key, Some(&old.bytes), &crate::authority::encode(&record)?)
-                    .await?,
-                CasOutcome::Applied(_)
-            ) {
-                self.mark_snapshot_retired(identity, snapshot).await?;
-                return Ok(record);
+            match self
+                .store
+                .compare_exchange(&key, Some(&old.bytes), &crate::authority::encode(&record)?)
+                .await?
+            {
+                CasOutcome::Applied(_) => {
+                    self.mark_snapshot_retired(identity, snapshot).await?;
+                    return Ok(record);
+                }
+                CasOutcome::Conflict(Some(observed)) => old = observed,
+                CasOutcome::Conflict(None) => return Err(AuthorityError::SnapshotNotFound),
             }
         }
         Err(AuthorityError::HeadConflict)
