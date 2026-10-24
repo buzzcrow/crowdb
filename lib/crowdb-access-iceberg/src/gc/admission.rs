@@ -1,5 +1,5 @@
 use crate::{
-    catalog::{check_context, CatalogContext, CatalogError, CatalogLifecycle, RootState},
+    catalog::{check_context, CasOutcome, CatalogContext, CatalogError, CatalogLifecycle, RootState},
     error::ValidationError,
     file::DeletedFile,
     key::{CatalogScope, IcebergKey, OperationId, SystemScope},
@@ -65,23 +65,35 @@ impl GcRepository {
             next.discovery_scope = 0;
             next.scan_after.clear();
             next.sweep_round = 0;
-            self.update(&existing, &next).await?;
-            return Ok(next);
+            return self.exchange_multipart_task(Some(&existing), &next).await;
         }
         let mut task = GcTask::plan(context, identity, None, now_ms, limits)?;
         task.kind = GcTaskKind::MultipartCleanup;
         task.not_before_ms = now_ms;
         task.validate()?;
-        match self.create(&task).await {
-            Ok(()) => Ok(task),
-            Err(error) => match self.task(context.catalog, identity).await? {
-                Some(existing)
-                    if existing.context == context && existing.kind == GcTaskKind::MultipartCleanup =>
-                {
-                    Ok(existing)
+        self.exchange_multipart_task(None, &task).await
+    }
+
+    async fn exchange_multipart_task(
+        &self,
+        before: Option<&GcTask>,
+        task: &GcTask,
+    ) -> Result<GcTask, CatalogError> {
+        let key = task.key();
+        let before = before.map(|task| StorageRecord::GcTask(Box::new(task.clone())));
+        let after = StorageRecord::GcTask(Box::new(task.clone()));
+        match self.exchange(&key, before.as_ref(), &after).await? {
+            CasOutcome::Applied(_) => Ok(task.clone()),
+            CasOutcome::Conflict(Some(value)) => {
+                let StorageRecord::GcTask(current) = StorageRecord::decode(&key, &value.bytes)? else {
+                    return Err(ValidationError::Record.into());
+                };
+                if current.context != task.context || current.kind != GcTaskKind::MultipartCleanup {
+                    return Err(CatalogError::Conflict);
                 }
-                _ => Err(error),
-            },
+                Ok(*current)
+            }
+            CasOutcome::Conflict(None) => Err(CatalogError::Conflict),
         }
     }
 

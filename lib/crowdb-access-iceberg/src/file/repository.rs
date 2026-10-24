@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use crate::catalog::{check_context, CasOutcome, CatalogContext, CatalogError, CatalogStore};
 use crate::error::ValidationError;
-use crate::gc::GcCandidate;
 use crate::operation::mutation_identity;
 use crate::record::StorageRecord;
 
 use super::{canonical_file_key, file_key, DeletedFile, FileLocation, FileRecord};
+
+mod deletion;
 
 #[derive(Clone)]
 pub struct FileRepository {
@@ -182,17 +183,7 @@ impl FileRepository {
                     if candidate.file == deleted.file.file {
                         return Err(CatalogError::Conflict);
                     }
-                    let gc_key = GcCandidate::deleted_key(&deleted.file);
-                    let Some(claim) = self.store.get(&gc_key.encode()?).await? else {
-                        return Err(CatalogError::Busy);
-                    };
-                    let StorageRecord::GcCandidate(claim) = StorageRecord::decode(&gc_key, &claim.bytes)?
-                    else {
-                        return Err(ValidationError::Record.into());
-                    };
-                    if claim.file != deleted.file {
-                        return Err(CatalogError::Conflict);
-                    }
+                    self.retain_deleted(context, &deleted).await?;
                     match self
                         .store
                         .compare_exchange(

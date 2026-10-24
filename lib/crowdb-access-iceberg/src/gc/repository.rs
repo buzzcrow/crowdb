@@ -202,6 +202,31 @@ impl GcRepository {
         before: Option<&StorageRecord>,
         after: &StorageRecord,
     ) -> Result<(), CatalogError> {
+        let (outcome, expected) = self.exchange_storage(key, before, after).await?;
+        match outcome {
+            CasOutcome::Applied(_) => Ok(()),
+            CasOutcome::Conflict(Some(value)) if value.bytes == expected => Ok(()),
+            CasOutcome::Conflict(_) => Err(CatalogError::Conflict),
+        }
+    }
+
+    pub(super) async fn exchange(
+        &self,
+        key: &IcebergKey,
+        before: Option<&StorageRecord>,
+        after: &StorageRecord,
+    ) -> Result<CasOutcome, CatalogError> {
+        self.exchange_storage(&crate::key::StorageKey::Legacy(key.clone()), before, after)
+            .await
+            .map(|(outcome, _)| outcome)
+    }
+
+    async fn exchange_storage(
+        &self,
+        key: &crate::key::StorageKey,
+        before: Option<&StorageRecord>,
+        after: &StorageRecord,
+    ) -> Result<(CasOutcome, Vec<u8>), CatalogError> {
         match key {
             crate::key::StorageKey::Legacy(key) => self.check_retirement_mutation(key, after).await?,
             crate::key::StorageKey::NativeTable(key) => {
@@ -214,14 +239,10 @@ impl GcRepository {
         let after = after.encode()?;
         let before = before.map(StorageRecord::encode).transpose()?;
         let expected = before.as_deref();
-        match self
+        let outcome = self
             .store
             .compare_exchange(&key, expected, &after, mutation_identity(&key, expected, &after))
-            .await?
-        {
-            CasOutcome::Applied(_) => Ok(()),
-            CasOutcome::Conflict(Some(value)) if value.bytes == after => Ok(()),
-            CasOutcome::Conflict(_) => Err(CatalogError::Conflict),
-        }
+            .await?;
+        Ok((outcome, after))
     }
 }

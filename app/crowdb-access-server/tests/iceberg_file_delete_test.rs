@@ -83,7 +83,7 @@ async fn restart_discovers_only_deleted_file_and_observes_the_original_grace_per
 }
 
 #[tokio::test]
-async fn background_discovery_preserves_a_later_file_at_the_same_location() {
+async fn immediate_reupload_preserves_the_old_cleanup_without_background_discovery() {
     for native in [false, true] {
         let fixture = TestDeletion::new(native).await;
         fixture.mark(DELETED_MS).await.unwrap();
@@ -94,9 +94,13 @@ async fn background_discovery_preserves_a_later_file_at_the_same_location() {
             panic!("expected one physical range");
         };
         root.chunk.low = 8;
-        assert!(files.publish(fixture.context, &replacement).await.is_err());
-        let task = fixture.discover().await;
+        fixture.store.reset_counts();
         files.publish(fixture.context, &replacement).await.unwrap();
+        assert_eq!(fixture.store.counts(), (9, 5));
+        let candidate = fixture.candidate().await.unwrap();
+        assert_eq!(candidate.file, fixture.file);
+        assert_eq!(candidate.not_before_ms, DELETED_MS + GcTask::PURGE_DELAY_MS);
+        let task = fixture.discover().await;
         fixture.finish(task).await;
         assert_eq!(
             files.load(fixture.context, &replacement.location).await.unwrap(),

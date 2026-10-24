@@ -1,11 +1,16 @@
-use crate::{catalog::CatalogError, error::ValidationError, record::StorageRecord};
+use crate::{
+    catalog::{CasOutcome, CatalogError},
+    error::ValidationError,
+    key::IcebergKey,
+    record::StorageRecord,
+};
 
 use super::{CandidatePhase, GcCandidate, GcPhase, GcRepository, GcTask, GcTaskKind};
 
 impl GcRepository {
     /// Selects one immutable generation-indexed deletion cursor for a physical file.
     /// # Errors
-    /// Conflicting concurrent claims must be retried by reading their durable winner.
+    /// Rejects changed physical identity or an uncertain durable queue write.
     pub async fn claim_candidate(&self, proposed: &GcCandidate) -> Result<GcCandidate, CatalogError> {
         proposed.validate()?;
         if proposed.phase != CandidatePhase::Retained || proposed.revision != 1 {
@@ -19,13 +24,14 @@ impl GcRepository {
             };
             *selected
         } else {
-            self.change(
-                &claim_key,
-                None,
-                &StorageRecord::GcCandidate(Box::new(proposed.clone())),
-            )
-            .await?;
-            proposed.clone()
+            let outcome = self
+                .exchange(
+                    &claim_key,
+                    None,
+                    &StorageRecord::GcCandidate(Box::new(proposed.clone())),
+                )
+                .await?;
+            selected_candidate(&claim_key, outcome, proposed)?
         };
         if selected.file != proposed.file
             || selected.part != proposed.part
@@ -54,8 +60,21 @@ impl GcRepository {
             }
             return Ok(*current);
         }
-        self.candidate(None, &selected).await?;
-        Ok(selected)
+        let outcome = self
+            .exchange(
+                &key,
+                None,
+                &StorageRecord::GcCandidate(Box::new(selected.clone())),
+            )
+            .await?;
+        let current = selected_candidate(&key, outcome, &selected)?;
+        if current.file != selected.file
+            || current.part != selected.part
+            || current.assembly != selected.assembly
+        {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
+        Ok(current)
     }
 
     pub(super) async fn verify_claim(&self, candidate: &GcCandidate) -> Result<(), CatalogError> {
@@ -133,5 +152,22 @@ impl GcRepository {
             &StorageRecord::GcCandidate(Box::new(next)),
         )
         .await
+    }
+}
+
+fn selected_candidate(
+    key: &IcebergKey,
+    outcome: CasOutcome,
+    proposed: &GcCandidate,
+) -> Result<GcCandidate, CatalogError> {
+    match outcome {
+        CasOutcome::Applied(_) => Ok(proposed.clone()),
+        CasOutcome::Conflict(Some(value)) => {
+            let StorageRecord::GcCandidate(candidate) = StorageRecord::decode(key, &value.bytes)? else {
+                return Err(ValidationError::Record.into());
+            };
+            Ok(*candidate)
+        }
+        CasOutcome::Conflict(None) => Err(CatalogError::Conflict),
     }
 }

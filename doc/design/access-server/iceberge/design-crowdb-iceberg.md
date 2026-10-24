@@ -1141,12 +1141,16 @@ delete objects. The server scans retained table metadata and refuses a path
 that is referenced or whose reference status is uncertain. Successful deletion
 records a logical tombstone and removes list visibility. The background worker
 discovers that final tombstone and durably claims its exact old file before
-physical reclamation after 20 minutes. The foreground writes no GC task or
-candidate; restart discovers the same DeletedFile. Direct URLs remain readable until their
+physical reclamation after 20 minutes. DELETE writes no GC task or candidate;
+restart discovers the same DeletedFile. Direct URLs remain readable until their
 bytes are reclaimed, subject to grant validity. Their FileIds/locators are never
-reused. A new logical-path PUT may reuse its path only after the old file's GC
-candidate is durable. Batch deletion returns individual errors inside HTTP 200, so callers
-must inspect every item.
+reused. A new logical-path PUT can immediately reuse its path: if the worker has
+not queued the old file, PUT first retains its exact resource in the existing
+GC claim and candidate records, then conditionally replaces the observed
+DeletedFile. An uncertain write stops without a confirmation read. Either the
+deletion marker or the independent GC candidate retains the old reclamation
+obligation across failure. Batch deletion returns individual errors inside
+HTTP 200, so callers must inspect every item.
 
 > **Warning:** Before deleting, the client must stop and resolve every writer
 > and retry that might still commit the path, including unpublished metadata.
