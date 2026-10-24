@@ -5,7 +5,7 @@ use super::{conversion, error::ApiError, json, models, operation, read_json, sna
 use crate::dataset::{unix_seconds, DatasetHttpService};
 use crowdb_access_dataset::{DatasetIdentity, FieldLocator, ManifestRecord, PublicationState, UploadState};
 use hyper::{body::Incoming, Request};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 impl DatasetHttpService {
     pub(super) async fn publication_route(
@@ -28,7 +28,7 @@ impl DatasetHttpService {
             .await?;
         if !locations.is_empty() {
             let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
-            for location in &locations {
+            for location in locations.keys() {
                 uploads.claim(location, operation, unix_seconds()).await?;
             }
         }
@@ -46,8 +46,11 @@ impl DatasetHttpService {
             authority.latest(identity).await?,
         ))
     }
-    async fn resolve_payloads(&self, manifest: &mut ManifestRecord) -> Result<BTreeSet<Vec<u8>>, ApiError> {
-        let mut locations = BTreeSet::new();
+    async fn resolve_payloads(
+        &self,
+        manifest: &mut ManifestRecord,
+    ) -> Result<BTreeMap<Vec<u8>, (u64, [u8; 16])>, ApiError> {
+        let mut locations = BTreeMap::new();
         for field in manifest.samples.iter_mut().flat_map(|s| &mut s.fields) {
             if let FieldLocator::Chunk {
                 location,
@@ -55,14 +58,20 @@ impl DatasetHttpService {
                 md5,
             } = &mut field.value
             {
-                let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
-                let record = uploads.metadata(location).await?;
-                if !matches!(record.state, UploadState::Complete | UploadState::Claimed) {
-                    return Err(ApiError::conflict());
-                }
-                *length = record.length;
-                *md5 = record.md5;
-                locations.insert(location.clone());
+                let (resolved_length, resolved_md5) = if let Some(metadata) = locations.get(location) {
+                    *metadata
+                } else {
+                    let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
+                    let record = uploads.metadata(location).await?;
+                    if !matches!(record.state, UploadState::Complete | UploadState::Claimed) {
+                        return Err(ApiError::conflict());
+                    }
+                    let metadata = (record.length, record.md5);
+                    locations.insert(location.clone(), metadata);
+                    metadata
+                };
+                *length = resolved_length;
+                *md5 = resolved_md5;
             }
         }
         manifest.validate().map_err(|_| ApiError::invalid())?;
