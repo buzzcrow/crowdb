@@ -206,7 +206,7 @@ permission or promise that a redeployed endpoint still supports the operation.
   `prepare_composition` are resumable bounded steps. Keep operation/edit IDs and
   input revisions. Preparation is ready to publish only when
   `uploads.publication_ready` is true. Initial Splits publish with the Snapshot.
-- `publish_composition` advances latest; `publish_split` updates only currentSplit
+- `publish_composition` advances latest; `update_split_head` updates only currentSplit
   on its owning Snapshot. Null expected heads/revisions are explicit. On an
   unknown outcome, retry the exact request. `commit_status` exposes only legacy
   receipts; new Snapshot/Split publication saves no request ledger. A retry
@@ -223,6 +223,17 @@ permission or promise that a redeployed endpoint still supports the operation.
 - Complete Split revisions can be read or used as frozen sources before updating
   currentSplit, after a head conflict, or after abandoning their draft. Each new
   read still checks Snapshot availability; incomplete revisions remain unavailable.
+- `prepare_split_revision(snapshot, revision, request)` submits the complete policy
+  and definitions to an immutable resource PUT. Keep the revision ID and exact
+  input for retries. It requires `split-preparation`; different input at a complete
+  ID conflicts. There is no draft or evaluation cursor, and incomplete work is
+  recomputed. Input and final bindings are bounded to 1 MiB; computation has a
+  30-second deadline. The complete result is readable before head publication.
+  Capture the intended head base before preparation. Rust uses
+  `PrepareSplitRevision`; synchronous and async Python expose the same operation.
+  Standalone Split workflow SDK methods are removed; their old HTTP write routes
+  return 501, with no fallback. Composition initial Splits still use composition
+  preparation until its workflow replacement is complete.
 - `update_split_head(snapshot, request)` updates a complete revision directly with
   `revision`, `expected_revision` and `expected_head`; both expected values must be
   supplied, including null. It requires `split-head-update`, takes no attempt ID

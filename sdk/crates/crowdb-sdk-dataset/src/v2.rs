@@ -14,6 +14,7 @@ mod requests;
 mod snapshot_head;
 mod split;
 mod split_head;
+mod split_preparation;
 mod state;
 mod transfer;
 mod upload;
@@ -27,6 +28,7 @@ pub use read::*;
 pub use snapshot_head::UpdateSnapshotHead;
 pub use split::*;
 pub use split_head::UpdateSplitHead;
+pub use split_preparation::PrepareSplitRevision;
 pub use state::*;
 pub use upload::*;
 

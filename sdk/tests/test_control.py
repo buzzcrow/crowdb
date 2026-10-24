@@ -61,6 +61,22 @@ class TestControlPeer:
 
 
 class TestControl(unittest.TestCase):
+    def test_split_preparation_uses_the_resource_path_and_preserves_its_identity(self):
+        snapshot, revision = new_id(), new_id()
+        request = {"policy": {"overlap": "disjoint", "coverage": "allow_unassigned"}, "splits": []}
+        prepared = dict(request, snapshot=snapshot, revision=revision, operation=revision, evaluator_version=1)
+        error = {"code": "conflict", "message": "resource ID has different input", "request_id": "test", "retryable": False}
+        with TestControlPeer(["split-preparation"], head_replies=[(409, error), (200, prepared)]) as peer, DatasetClient(peer.endpoint, "test") as owner:
+            control = owner.control()
+            with self.assertRaises(ConflictError) as failure: control.prepare_split_revision(snapshot, revision, request)
+            self.assertEqual(failure.exception.identity, revision)
+            self.assertEqual(control.prepare_split_revision(snapshot, revision, request), prepared)
+            self.assertTrue(peer.requests.get(timeout=10).endswith("/capabilities"))
+            path = f"/api/dataset/v2/namespaces/dataset-ns/datasets/test/snapshots/{snapshot}/split-revisions/{revision}"
+            self.assertEqual(peer.requests.get(timeout=10), (path, request))
+            self.assertEqual(peer.requests.get(timeout=10), (path, request))
+            self.assertTrue(peer.requests.empty())
+
     def test_snapshot_head_conflict_uses_the_observation_without_a_head_get(self):
         snapshot = new_id()
         observed = {"latest": new_id(), "stable": None, "generation": "11" * 32}

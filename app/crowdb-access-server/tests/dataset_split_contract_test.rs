@@ -8,7 +8,10 @@ use common::response;
 use dataset::{TestDatasetHttp, TestStore};
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    sync::{atomic::Ordering, Arc},
+};
 
 #[tokio::test]
 async fn split_revision_flow_preserves_data_head_and_historical_members() {
@@ -17,11 +20,14 @@ async fn split_revision_flow_preserves_data_head_and_historical_members() {
     let (root, snapshot) = common::fixture(&client, &test.origin).await;
     let base = format!("{root}/snapshots/{snapshot}");
     let head = response(client.get(format!("{root}/head")), 200).await;
-    let operation = "02020202020202020202020202020202";
-    let draft = format!("{root}/split-drafts/{operation}");
-    let begin = common::begin(operation, &Value::Null);
-    response(client.post(format!("{base}/split-drafts")).json(&begin), 200).await;
-    let prepared = common::prepare(&client, &draft, "1").await;
+    let prepared = common::prepare(
+        &client,
+        &root,
+        &snapshot,
+        "02020202020202020202020202020202",
+        false,
+    )
+    .await;
     let revision = prepared["revision"].as_str().unwrap();
     assert_eq!(
         response(client.get(format!("{base}/split-revisions/{revision}")), 200).await,
@@ -36,41 +42,15 @@ async fn split_revision_flow_preserves_data_head_and_historical_members() {
         &format!("{base}/split-revisions/{revision}/splits/train%2Fa%20b/members"),
     )
     .await;
-    let receipt = common::publish(
-        &client,
-        &draft,
-        &prepared,
-        "03030303030303030303030303030303",
-        Value::Null,
-    )
-    .await;
+    let current = common::publish(&client, &root, &snapshot, &prepared, &Value::Null).await;
     assert_eq!(
-        common::publish(
-            &client,
-            &draft,
-            &prepared,
-            "03030303030303030303030303030303",
-            Value::Null
-        )
-        .await,
-        receipt
+        common::publish(&client, &root, &snapshot, &prepared, &Value::Null).await,
+        current
     );
     assert_eq!(response(client.get(format!("{root}/head")), 200).await, head);
     assert_eq!(
         response(client.get(format!("{base}/split-revisions/{revision}")), 200).await,
         prepared
-    );
-    assert_eq!(
-        response(client.get(&draft), 200).await["progress"]["state"],
-        "prepared"
-    );
-    assert_eq!(
-        response(
-            client.get(format!("{root}/commits/03030303030303030303030303030303")),
-            200
-        )
-        .await["receipt"],
-        Value::Null
     );
     let current = response(client.get(format!("{base}/split-head")), 200).await;
     assert_eq!(current["revision"], revision);
@@ -115,43 +95,36 @@ async fn members(client: &Client, url: &str) -> BTreeSet<String> {
 }
 
 #[tokio::test]
-async fn split_drafts_require_explicit_preconditions_and_reject_stale_edits() {
-    let test = TestDatasetHttp::start(Arc::new(TestStore::default())).await;
+async fn retired_split_workflow_writes_never_access_storage() {
+    let store = Arc::new(TestStore::default());
+    let test = TestDatasetHttp::start(store.clone()).await;
     let client = Client::new();
     let (root, snapshot) = common::fixture(&client, &test.origin).await;
-    let url = format!("{root}/snapshots/{snapshot}/split-drafts");
-    let operation = "04040404040404040404040404040404";
-    let mut begin = common::begin(operation, &Value::Null);
-    begin.as_object_mut().unwrap().remove("expected_revision");
-    response(client.post(&url).json(&begin), 400).await;
-    begin["expected_revision"] = Value::Null;
-    begin["unsupported"] = json!(true);
-    response(client.post(&url).json(&begin), 400).await;
-    begin.as_object_mut().unwrap().remove("unsupported");
-    response(client.post(&url).json(&begin), 200).await;
-    let draft = format!("{root}/split-drafts/{operation}");
-    let mut edit = json!({"edit":"05050505050505050505050505050505", "expected_revision":"1", "policy":begin["policy"], "splits":begin["splits"]});
-    let edited = response(client.put(&draft).json(&edit), 200).await;
-    assert_eq!(edited["revision"], "2");
-    assert_eq!(response(client.put(&draft).json(&edit), 200).await, edited);
-    edit["edit"] = json!("06060606060606060606060606060606");
-    response(client.put(&draft).json(&edit), 409).await;
+    let before = (
+        store.reads.load(Ordering::Relaxed),
+        store.bounded_reads.load(Ordering::Relaxed),
+        store.mutations.load(Ordering::Relaxed),
+    );
     response(
         client
-            .post(format!("{draft}/prepare"))
-            .json(&json!({"expected_revision":"2"})),
-        409,
+            .post(format!("{root}/snapshots/{snapshot}/split-drafts"))
+            .json(&json!({})),
+        501,
     )
     .await;
-    let prepared = common::prepare(&client, &draft, "2").await;
-    let publish = json!({"attempt":"07070707070707070707070707070707", "revision":prepared["revision"]});
-    response(client.post(format!("{draft}/publish")).json(&publish), 400).await;
+    let draft = format!("{root}/split-drafts/04040404040404040404040404040404");
+    response(client.put(&draft).json(&json!({})), 501).await;
+    for suffix in ["evaluate", "prepare", "publish"] {
+        response(client.post(format!("{draft}/{suffix}")).json(&json!({})), 501).await;
+    }
     assert_eq!(
-        response(client.delete(&draft).json(&json!({"expected_revision":"2"})), 200).await["progress"]
-            ["state"],
-        "abandoned"
+        (
+            store.reads.load(Ordering::Relaxed),
+            store.bounded_reads.load(Ordering::Relaxed),
+            store.mutations.load(Ordering::Relaxed)
+        ),
+        before
     );
-    response(client.put(&draft).json(&edit), 409).await;
     drop(client);
     test.stop().await;
 }

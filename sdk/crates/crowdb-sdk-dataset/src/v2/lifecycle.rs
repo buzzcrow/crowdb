@@ -1,9 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 use super::{
-    BeginComposition, BeginSplit, CommitReceipt, CompositionCleanup, CompositionDraft, CompositionPreview,
-    ControlClient, DraftRevision, EditComposition, EditSplit, EvaluateDraft, OpaqueId, PublishComposition,
-    PublishSplit, SplitCleanup, SplitDraft, SplitHead, SplitPreview, SplitRevision,
+    BeginComposition, CommitReceipt, CompositionCleanup, CompositionDraft, CompositionPreview, ControlClient,
+    DraftRevision, EditComposition, EvaluateDraft, OpaqueId, PublishComposition, SplitHead, SplitRevision,
 };
 use crate::Error;
 
@@ -116,125 +115,6 @@ impl ControlClient {
             "composition",
             "POST",
             &["compositions", operation.as_str(), "cleanup"],
-            None,
-        )
-        .await
-        .map_err(|error| error.with_identity(operation.as_str()))
-    }
-    /// Executes one bounded operation; retain request IDs for exact retries.
-    /// # Errors
-    /// Returns capability, conflict, invalid input, transport or service errors.
-    pub async fn begin_split(&self, snapshot: &OpaqueId, request: &BeginSplit) -> Result<SplitDraft, Error> {
-        self.call(
-            "split-revisions",
-            "POST",
-            &["snapshots", snapshot.as_str(), "split-drafts"],
-            Some(request),
-        )
-        .await
-        .map_err(|error| error.with_identity(request.operation.as_str()))
-    }
-    /// Executes one bounded operation; retain request IDs for exact retries.
-    /// # Errors
-    /// Returns capability, conflict, invalid input, transport or service errors.
-    pub async fn split_draft(&self, operation: &OpaqueId) -> Result<SplitDraft, Error> {
-        self.call::<(), _>(
-            "split-revisions",
-            "GET",
-            &["split-drafts", operation.as_str()],
-            None,
-        )
-        .await
-    }
-    /// Executes one bounded operation; retain request IDs for exact retries.
-    /// # Errors
-    /// Returns capability, conflict, invalid input, transport or service errors.
-    pub async fn edit_split(&self, operation: &OpaqueId, request: &EditSplit) -> Result<SplitDraft, Error> {
-        self.call(
-            "split-revisions",
-            "PUT",
-            &["split-drafts", operation.as_str()],
-            Some(request),
-        )
-        .await
-        .map_err(|error| error.with_identity(request.edit.as_str()))
-    }
-    /// Executes one bounded operation; retain request IDs for exact retries.
-    /// # Errors
-    /// Returns capability, conflict, invalid input, transport or service errors.
-    pub async fn abandon_split(
-        &self,
-        operation: &OpaqueId,
-        request: &DraftRevision,
-    ) -> Result<SplitDraft, Error> {
-        self.call(
-            "split-revisions",
-            "DELETE",
-            &["split-drafts", operation.as_str()],
-            Some(request),
-        )
-        .await
-        .map_err(|error| error.with_identity(operation.as_str()))
-    }
-    /// Executes one bounded operation; retain request IDs for exact retries.
-    /// # Errors
-    /// Returns capability, conflict, invalid input, transport or service errors.
-    pub async fn evaluate_split(
-        &self,
-        operation: &OpaqueId,
-        request: &EvaluateDraft,
-    ) -> Result<SplitPreview, Error> {
-        self.call(
-            "split-revisions",
-            "POST",
-            &["split-drafts", operation.as_str(), "evaluate"],
-            Some(request),
-        )
-        .await
-        .map_err(|error| error.with_identity(operation.as_str()))
-    }
-    /// Executes one bounded operation; retain request IDs for exact retries.
-    /// # Errors
-    /// Returns capability, conflict, invalid input, transport or service errors.
-    pub async fn prepare_split(
-        &self,
-        operation: &OpaqueId,
-        request: &DraftRevision,
-    ) -> Result<SplitRevision, Error> {
-        self.call(
-            "split-revisions",
-            "POST",
-            &["split-drafts", operation.as_str(), "prepare"],
-            Some(request),
-        )
-        .await
-        .map_err(|error| error.with_identity(operation.as_str()))
-    }
-    /// Executes one bounded operation; retain request IDs for exact retries.
-    /// # Errors
-    /// Returns capability, conflict, invalid input, transport or service errors.
-    pub async fn publish_split(
-        &self,
-        operation: &OpaqueId,
-        request: &PublishSplit,
-    ) -> Result<CommitReceipt, Error> {
-        self.call(
-            "split-revisions",
-            "POST",
-            &["split-drafts", operation.as_str(), "publish"],
-            Some(request),
-        )
-        .await
-        .map_err(|error| error.with_identity(request.attempt.as_str()))
-    }
-    /// Executes one bounded operation; retain request IDs for exact retries.
-    /// # Errors
-    /// Returns capability, conflict, invalid input, transport or service errors.
-    pub async fn cleanup_split(&self, operation: &OpaqueId) -> Result<SplitCleanup, Error> {
-        self.call::<(), _>(
-            "split-revisions",
-            "POST",
-            &["split-drafts", operation.as_str(), "cleanup"],
             None,
         )
         .await

@@ -186,61 +186,23 @@ async fn revise(client: &Client, snapshot: &str) {
     )
     .await;
     let old = head["revision"].as_str().unwrap();
-    let operation = "24242424242424242424242424242424";
-    let draft = format!("/split-drafts/{operation}");
-    let begin = json!({"operation":operation,"expected_revision":old,"policy":{"overlap":"disjoint","coverage":"allow_unassigned"},"splits":[]});
-    call(
-        client,
-        Method::POST,
-        &format!("/snapshots/{snapshot}/split-drafts"),
-        Some(&begin),
-        200,
-    )
-    .await;
-    evaluate_split(client, &draft).await;
-    let prepared = call(
-        client,
-        Method::POST,
-        &format!("{draft}/prepare"),
-        Some(&json!({"expected_revision":"1"})),
-        200,
-    )
-    .await;
+    let revision = "24242424242424242424242424242424";
+    let resource = format!("/snapshots/{snapshot}/split-revisions/{revision}");
+    let input = json!({"policy":{"overlap":"disjoint","coverage":"allow_unassigned"},"splits":[]});
+    let prepared = call(client, Method::PUT, &resource, Some(&input), 200).await;
+    assert_eq!(call(client, Method::GET, &resource, None, 200).await, prepared);
+    restart().await;
     assert_eq!(
-        call(
-            client,
-            Method::GET,
-            &format!(
-                "/snapshots/{snapshot}/split-revisions/{}",
-                prepared["revision"].as_str().unwrap()
-            ),
-            None,
-            200
-        )
-        .await,
+        call(client, Method::PUT, &resource, Some(&input), 200).await,
         prepared
     );
-    restart().await;
-    let publish = json!({"attempt":"25252525252525252525252525252525","revision":prepared["revision"],"expected_head":head["generation"]});
-    let receipt = call(
-        client,
-        Method::POST,
-        &format!("{draft}/publish"),
-        Some(&publish),
-        200,
-    )
-    .await;
+    let update = json!({"revision":revision,"expected_revision":old,"expected_head":head["generation"]});
+    let head_url = format!("/snapshots/{snapshot}/split-head");
+    let current = call(client, Method::PUT, &head_url, Some(&update), 200).await;
     restart().await;
     assert_eq!(
-        call(
-            client,
-            Method::POST,
-            &format!("{draft}/publish"),
-            Some(&publish),
-            200
-        )
-        .await,
-        receipt
+        call(client, Method::PUT, &head_url, Some(&update), 200).await,
+        current
     );
     assert_eq!(call(client, Method::GET, "/head", None, 200).await, data_head);
     assert_eq!(
@@ -265,26 +227,4 @@ async fn revise(client: &Client, snapshot: &str) {
         .await["entries"],
         json!(["AAH/"])
     );
-}
-
-async fn evaluate_split(client: &Client, draft: &str) {
-    let mut page = json!("0");
-    for _ in 0..100 {
-        let preview = call(
-            client,
-            Method::POST,
-            &format!("{draft}/evaluate"),
-            Some(&json!({"expected_revision":"1","expected_page":page})),
-            200,
-        )
-        .await;
-        if preview["complete"] == true {
-            assert_eq!(preview["validation"]["scanned"], "1");
-            assert_eq!(preview["validation"]["unassigned"], "1");
-            return;
-        }
-        assert_ne!(preview["next_page"], page, "evaluation must advance");
-        page = preview["next_page"].clone();
-    }
-    panic!("Split evaluation did not finish");
 }

@@ -17,6 +17,7 @@ mod query;
 mod read_models;
 mod reads;
 mod split_models;
+mod split_preparation;
 mod split_requests;
 mod split_responses;
 mod splits;
@@ -48,6 +49,7 @@ impl DatasetHttpService {
                 "inspection-preparation",
                 "dataset-management",
                 "split-revisions",
+                "split-preparation",
                 "split-head-update",
                 "stateless-reads",
             ];

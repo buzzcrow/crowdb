@@ -203,40 +203,21 @@ async fn revise_splits(
 ) -> Result<()> {
     let head = client.head().await?;
     let split_head = client.split_head(snapshot).await?;
-    let begin = v2::BeginSplit {
-        operation: v2::OpaqueId::random(),
-        expected_revision: Some(previous.clone()),
+    let revision_id = v2::OpaqueId::random();
+    let prepare = v2::PrepareSplitRevision {
         policy: v2::SplitPolicy::default(),
-        splits: vec![],
+        splits: Vec::new(),
     };
-    client.begin_split(snapshot, &begin).await?;
-    let mut page = 0.into();
-    let mut done = false;
-    for _ in 0..100 {
-        let p = client
-            .evaluate_split(
-                &begin.operation,
-                &v2::EvaluateDraft {
-                    expected_revision: 1.into(),
-                    expected_page: page,
-                },
-            )
-            .await?;
-        if p.complete {
-            done = true;
-            break;
-        }
-        page = p.next_page;
-    }
-    assert!(done);
     let revision = client
-        .prepare_split(
-            &begin.operation,
-            &v2::DraftRevision {
-                expected_revision: 1.into(),
-            },
-        )
+        .prepare_split_revision(snapshot, &revision_id, &prepare)
         .await?;
+    assert_eq!(
+        client
+            .prepare_split_revision(snapshot, &revision_id, &prepare)
+            .await?
+            .revision,
+        revision.revision
+    );
     assert_eq!(
         client
             .split_revision(snapshot, &revision.revision)

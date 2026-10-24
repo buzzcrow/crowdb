@@ -61,10 +61,13 @@ def upload_source(client, source, upload_id, length, md5, part_size=1024*1024):
     return client.complete_upload(upload_id)
 
 
-async def verify_async(endpoint, name, token, snapshot, revision):
+async def verify_async(endpoint, name, token, snapshot, revision, prepared_revision):
     async with AsyncDatasetClient(endpoint, name, token) as owner:
         client = owner.control()
         assert (await client.lifecycle(snapshot))["snapshot"] == snapshot
+        prepared = await client.prepare_split_revision(snapshot, prepared_revision, {
+            "policy": {"overlap": "disjoint", "coverage": "allow_unassigned"}, "splits": []})
+        assert prepared["revision"] == prepared_revision
         try:
             await client.update_snapshot_head({"snapshot": snapshot, "expected_head": None})
         except ConflictError as error:
@@ -120,16 +123,10 @@ def main():
         revision = head["revision"]
         assert client.matrix(snapshot, [sample], ["value"])["entries"][0]["fields"][0]["length"] == str(len(data))
         assert client.preview(snapshot, sample, "value")["data"] == sample_id(data)
-        split_op = new_id()
-        client.begin_split(snapshot, {"operation": split_op, "expected_revision": revision,
-            "policy": {"overlap": "disjoint", "coverage": "allow_unassigned"}, "splits": []})
-        page = "0"
-        for _ in range(100):
-            preview = client.evaluate_split(split_op, "1", page)
-            if preview["complete"]: break
-            page = preview["next_page"]
-        else: raise AssertionError("Split evaluation budget")
-        candidate = client.prepare_split(split_op, "1")
+        revision_id = new_id()
+        split_input = {"policy": {"overlap": "disjoint", "coverage": "allow_unassigned"}, "splits": []}
+        candidate = client.prepare_split_revision(snapshot, revision_id, split_input)
+        assert client.prepare_split_revision(snapshot, revision_id, split_input) == candidate
         update = {"revision": candidate["revision"], "expected_revision": revision, "expected_head": head["generation"]}
         changed = client.update_split_head(snapshot, update)
         try:
@@ -155,7 +152,7 @@ def main():
             raise AssertionError("stale Snapshot update must conflict")
         cleanup(client, child)
         assert client.summary(child_snapshot)["parent"] == snapshot
-    asyncio.run(verify_async(endpoint, name, token, snapshot, revision))
+    asyncio.run(verify_async(endpoint, name, token, snapshot, revision, candidate["revision"]))
     print("installed Python Split SDK round trip passed", flush=True)
 
 

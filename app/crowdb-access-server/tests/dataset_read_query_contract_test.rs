@@ -68,24 +68,8 @@ fn plan() -> Value {
         "split":{"revision":null,"name":"train/a b"}})
 }
 async fn published_split(client: &Client, root: &str, snapshot: &str) -> String {
-    let op = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    response(
-        client
-            .post(format!("{root}/snapshots/{snapshot}/split-drafts"))
-            .json(&common::begin(op, &Value::Null)),
-        200,
-    )
-    .await;
-    let draft = format!("{root}/split-drafts/{op}");
-    let prepared = common::prepare(client, &draft, "1").await;
-    common::publish(
-        client,
-        &draft,
-        &prepared,
-        "cccccccccccccccccccccccccccccccc",
-        Value::Null,
-    )
-    .await;
+    let prepared = common::prepare(client, root, snapshot, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", false).await;
+    common::publish(client, root, snapshot, &prepared, &Value::Null).await;
     prepared["revision"].as_str().unwrap().into()
 }
 async fn batch(client: &Client, url: &str, cursor: &Value) -> Value {

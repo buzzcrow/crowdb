@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-use super::{required_option, Decimal, DraftProgress, Generation, OpaqueId, SampleId};
+use super::{required_option, Decimal, Generation, OpaqueId, SampleId};
 use serde::{Deserialize, Serialize};
 
 /// Binary operands use canonical base64; explicit IDs retain binary identity.
@@ -76,34 +76,6 @@ pub struct DraftSplit {
     pub origin: SplitOrigin,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BeginSplit {
-    pub operation: OpaqueId,
-    #[serde(deserialize_with = "required_option")]
-    pub expected_revision: Option<OpaqueId>,
-    pub policy: SplitPolicy,
-    pub splits: Vec<DraftSplit>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EditSplit {
-    pub edit: OpaqueId,
-    pub expected_revision: Decimal,
-    pub policy: SplitPolicy,
-    pub splits: Vec<DraftSplit>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SplitDraft {
-    pub operation: OpaqueId,
-    pub snapshot: OpaqueId,
-    #[serde(deserialize_with = "required_option")]
-    pub expected_revision: Option<OpaqueId>,
-    pub revision: Decimal,
-    pub policy: SplitPolicy,
-    pub splits: Vec<DraftSplit>,
-    pub progress: DraftProgress,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PublishedSplit {
     pub name: String,
     pub definition: SplitDefinition,
@@ -135,14 +107,6 @@ pub struct SplitPreview {
     pub complete: bool,
     pub member_counts: Vec<Decimal>,
     pub validation: SplitValidation,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PublishSplit {
-    pub attempt: OpaqueId,
-    pub revision: OpaqueId,
-    #[serde(deserialize_with = "required_option")]
-    pub expected_head: Option<Generation>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SplitHead {

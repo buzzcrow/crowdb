@@ -13,11 +13,14 @@ info:
     bounded-inspection; explicit POST inspection preparation requires
     inspection-preparation. Dataset creation, stable/retention changes and receipts
     require dataset-management; direct Snapshot head updates require snapshot-head-update;
-    Split lifecycle requires split-revisions; direct Split head updates require split-head-update; versioned
+    Split reads require split-revisions; complete Split preparation requires split-preparation;
+    direct Split head updates require split-head-update; versioned
     stateless reads require stateless-reads. Upload, composition and Snapshot retirement
     require uploads, composition and snapshot-reclaim respectively, advertised only
     when the upload service is configured. Query parameters are strict and duplicate
-    keys fail. Composition JSON bodies are limited to 1 MiB.
+    keys fail. Composition and Split preparation JSON bodies are limited to 1 MiB.
+    Standalone Split begin/edit/evaluate/prepare/publish workflow routes return 501;
+    legacy draft reads, abandonment and cleanup remain available for old records.
 servers:
   - url: /api/dataset/v2
 security:
@@ -369,6 +372,44 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-revisions/{revision}:
+    put:
+      operationId: prepareSplitRevision
+      summary: Prepare complete immutable membership from caller-owned inputs
+      description: >-
+        Requires split-preparation. The caller retains revision ID, policy and
+        complete definitions. No operation, edit or evaluation cursor is accepted.
+        Computation is bounded to 30 seconds and 1 MiB input/final bindings.
+        Retry the same ID and input after an unknown outcome; incomplete work is
+        recomputed, while an identical complete result is reused. Different input
+        at a complete ID conflicts. Frozen sources retain their supplied revision.
+        This operation does not update currentSplit; capture its intended base
+        before computation and update split-head separately. No draft fallback.
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+        - in: path
+          name: revision
+          required: true
+          schema: {$ref: '#/components/schemas/OpaqueId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PrepareSplitRevision'}
+      responses:
+        '200':
+          description: Complete immutable resource, readable before head publication
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SplitRevision'}
+        '409':
+          description: Resource ID already has different input, or validation conflicts
+          $ref: '#/components/responses/InspectionError'
+        '413':
+          description: Request body exceeds 1 MiB
+          $ref: '#/components/responses/InspectionError'
+        default:
+          $ref: '#/components/responses/InspectionError'
     get:
       operationId: splitRevision
       description: Reads a complete immutable revision by ID without requiring currentSplit publication. Snapshot read admission applies.
@@ -423,33 +464,10 @@ paths:
               schema: {$ref: '#/components/schemas/SamplePage'}
         default:
           $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-drafts:
-    post:
-      operationId: beginSplitDraft
-      parameters:
-        - in: path
-          name: dataset
-          required: true
-          schema: {type: string}
-        - in: path
-          name: snapshot
-          required: true
-          schema: {type: string}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/BeginSplit'}
-      responses:
-        '200':
-          description: Revision-bound operation result
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/SplitDraft'}
-        default:
-          $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}:
     get:
+      deprecated: true
+      description: Read-only observation of an existing legacy draft; never resumes work.
       operationId: splitDraft
       parameters:
         - in: path
@@ -468,31 +486,9 @@ paths:
               schema: {$ref: '#/components/schemas/SplitDraft'}
         default:
           $ref: '#/components/responses/InspectionError'
-    put:
-      operationId: editSplitDraft
-      parameters:
-        - in: path
-          name: dataset
-          required: true
-          schema: {type: string}
-        - in: path
-          name: operation
-          required: true
-          schema: {type: string}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/EditSplit'}
-      responses:
-        '200':
-          description: Revision-bound operation result
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/SplitDraft'}
-        default:
-          $ref: '#/components/responses/InspectionError'
     delete:
+      deprecated: true
+      description: Abandon an existing legacy draft for cleanup.
       operationId: abandonSplitDraft
       parameters:
         - in: path
@@ -514,82 +510,6 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/SplitDraft'}
-        default:
-          $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}/evaluate:
-    post:
-      operationId: evaluateSplitDraft
-      parameters:
-        - in: path
-          name: dataset
-          required: true
-          schema: {type: string}
-        - in: path
-          name: operation
-          required: true
-          schema: {type: string}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/EvaluateDraft'}
-      responses:
-        '200':
-          description: Revision-bound operation result
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/SplitPreview'}
-        default:
-          $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}/prepare:
-    post:
-      operationId: prepareSplitDraft
-      parameters:
-        - in: path
-          name: dataset
-          required: true
-          schema: {type: string}
-        - in: path
-          name: operation
-          required: true
-          schema: {type: string}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/DraftRevision'}
-      responses:
-        '200':
-          description: Revision-bound operation result
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/SplitRevision'}
-        default:
-          $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}/publish:
-    post:
-      operationId: publishSplitDraft
-      description: Conditionally updates currentSplit without a request ledger or draft publication progress. The same current revision confirms the current effect; a later revision makes a stale retry conflict. Unknown outcomes propagate without a confirmation query.
-      parameters:
-        - in: path
-          name: dataset
-          required: true
-          schema: {type: string}
-        - in: path
-          name: operation
-          required: true
-          schema: {type: string}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/PublishSplit'}
-      responses:
-        '200':
-          description: Revision-bound operation result
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CommitReceipt'}
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/reads/bind:
@@ -820,6 +740,7 @@ paths:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}/cleanup:
     post:
+      deprecated: true
       operationId: cleanupSplitDraft
       summary: Retire obsolete Split work
       parameters:
@@ -1449,22 +1370,11 @@ components:
         name: {type: string}
         definition: {$ref: '#/components/schemas/SplitDefinition'}
         origin: {$ref: '#/components/schemas/SplitOrigin'}
-    BeginSplit:
+    PrepareSplitRevision:
       type: object
       additionalProperties: false
-      required: [operation, expected_revision, policy, splits]
+      required: [policy, splits]
       properties:
-        operation: {$ref: '#/components/schemas/OpaqueId'}
-        expected_revision: {$ref: '#/components/schemas/NullableRevision'}
-        policy: {$ref: '#/components/schemas/SplitPolicy'}
-        splits: {type: array, items: {$ref: '#/components/schemas/DraftSplit'}}
-    EditSplit:
-      type: object
-      additionalProperties: false
-      required: [edit, expected_revision, policy, splits]
-      properties:
-        edit: {$ref: '#/components/schemas/OpaqueId'}
-        expected_revision: {$ref: '#/components/schemas/Decimal'}
         policy: {$ref: '#/components/schemas/SplitPolicy'}
         splits: {type: array, items: {$ref: '#/components/schemas/DraftSplit'}}
     DraftRevision:
@@ -1488,15 +1398,6 @@ components:
         revision: {$ref: '#/components/schemas/OpaqueId'}
         expected_revision: {$ref: '#/components/schemas/NullableRevision'}
         expected_head: {$ref: '#/components/schemas/NullableGeneration'}
-    PublishSplit:
-      type: object
-      additionalProperties: false
-      required: [attempt, revision, expected_head]
-      properties:
-        attempt: {$ref: '#/components/schemas/OpaqueId'}
-        revision: {$ref: '#/components/schemas/OpaqueId'}
-        expected_head: {$ref: '#/components/schemas/NullableGeneration'}
-      description: Expected revision was pinned by BeginSplit. Null head is explicit; omission is invalid. A conflict retains the candidate.
     CommitTarget:
       oneOf:
         - type: object

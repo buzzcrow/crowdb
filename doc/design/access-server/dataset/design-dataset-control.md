@@ -104,11 +104,13 @@ independent data head transition selects that resource as latest.
 
 ## 3. Split evaluation and publication
 
-Standalone Split drafts pin owner Snapshot and expected current revision at begin.
-Preparation checks source availability; deletion may interrupt unfinished work. Whole-set edits invalidate
-evaluation; prepare requires complete membership and valid overlap/coverage policy.
-Defaults are disjoint and allow-unassigned. Frozen inherited membership is explicit;
-reevaluation is a deliberate definition change.
+Standalone Split preparation accepts an owner Snapshot, caller-owned revision ID,
+policy and complete definitions in one resource PUT. Preparation checks source
+availability; deletion may interrupt unfinished work. It requires valid overlap/
+coverage policy. Defaults are disjoint and allow-unassigned. Frozen inherited
+membership is explicit; reevaluation is a deliberate definition change. The caller
+captures the intended currentSplit revision/generation before computation and keeps
+that base separate from the immutable result.
 
 Predicates support all, explicit IDs, prefix, range, keyword, inline field match and
 boolean composition over the selected universe. Effective optional inheritance and
@@ -124,7 +126,7 @@ not a promise of exact cardinality. Overlap/coverage validation remains independ
 Membership pages are immutable and checksum-bound. Preparation persists the whole
 revision before currentSplit CAS. A conflict preserves the candidate and caller
 inputs; retry never silently rebases definitions or overwrites another revision.
-The native `prepare_split_revision` alternative accepts caller-owned revision ID,
+The native `prepare_split_revision` operation accepts caller-owned revision ID,
 policy and complete definitions. It recomputes incomplete work from those inputs,
 writing only final member pages, the resource enumeration index and complete
 revision root. The index precedes pages; the root is installed last. No draft,
@@ -148,9 +150,15 @@ after a later revision replaces it, the stale request returns a precondition
 conflict without replaying historical success or rewinding the pointer. A definite
 CAS conflict uses its returned head; a transport error remains unknown. Legacy
 receipts and attempt-bearing heads remain readable without backfilling receipts.
-The draft publication route is a compatibility adapter for its prepared target and
-expected revision; `publish_split_revision` accepts these caller-owned inputs
-directly. New draft status remains Prepared after publication.
+`PUT snapshots/{snapshot}/split-revisions/{revision}` exposes preparation with the
+`split-preparation` capability. Rust `PrepareSplitRevision` and synchronous/async
+Python `prepare_split_revision` retain the exact resource ID and complete input on
+retry; an error carries the revision identity. Missing capability never invokes a
+draft or v1 mutation. Standalone begin/edit/evaluate/prepare/publish workflow routes
+return 501 before storage access; SDK workflow methods are removed. Only legacy
+draft observation, abandonment and cleanup remain for existing records. Composition
+initial Split computation still uses its internal work records until that flow is
+replaced; the standalone route never invokes it.
 `PUT snapshots/{snapshot}/split-head` accepts the target revision and both explicit
 nullable expected revision/generation. It requires the `split-head-update`
 capability and has no draft or attempt identity. The failed head condition is

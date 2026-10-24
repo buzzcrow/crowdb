@@ -18,23 +18,7 @@ async fn retirement_respects_retention_and_finishes_split_and_composition_cleanu
     let test = TestDatasetHttp::start_payload(Arc::new(TestStore::default())).await;
     let client = Client::new();
     let (root, old) = common::fixture(&client, &test.origin).await;
-    let split_op = "16161616161616161616161616161616";
-    let split = format!("{root}/split-drafts/{split_op}");
-    response(
-        client
-            .post(format!("{root}/snapshots/{old}/split-drafts"))
-            .json(&common::begin(split_op, &Value::Null)),
-        200,
-    )
-    .await;
-    common::prepare(&client, &split, "1").await;
-    response(client.delete(&split).json(&json!({"expected_revision":"1"})), 200).await;
-    for step in 0..100 {
-        if response(client.post(format!("{split}/cleanup")), 200).await["complete"] == true {
-            break;
-        }
-        assert!(step < 99, "Split cleanup did not terminate");
-    }
+    let revision = common::prepare(&client, &root, &old, "16161616161616161616161616161616", false).await;
     let operation = "17171717171717171717171717171717";
     let draft = format!("{root}/compositions/{operation}");
     response(
@@ -74,6 +58,14 @@ async fn retirement_respects_retention_and_finishes_split_and_composition_cleanu
         }
         assert!(step < 99, "Snapshot retirement did not terminate");
     }
+    response(
+        client.get(format!(
+            "{snapshot}/split-revisions/{}",
+            revision["revision"].as_str().unwrap()
+        )),
+        404,
+    )
+    .await;
     response(client.get(format!("{snapshot}/summary")), 404).await;
     assert_eq!(
         response(client.get(format!("{root}/head")), 200).await["latest"],

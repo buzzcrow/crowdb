@@ -372,11 +372,16 @@ SB/SD/SX/SW 和 SCG 清理游标描述编辑与计算过程，按 D1 删除。`s
 继续使用已有观察值 CAS；随后迁移 REST/SDK 并停止旧续算写入口。源 revision 固定，重试
 不得用当前 Split 重算历史成员；partial SM 的发现和迟到写隔离与 R4/P13 一起验证。
 
-- [ ] **P3.2b 无状态 Split REST/SDK**：以完整资源 `PUT snapshots/{snapshot}/split-revisions/{revision}`
+- [~] **P3.2b 无状态 Split REST/SDK**：以完整资源 `PUT snapshots/{snapshot}/split-revisions/{revision}`
   提交 policy/definitions，不使用 operation/draft/expected page。补能力、鉴权、1 MiB body
   限制、错误、Rust/Python SDK 和真实 consumer；相同请求重试不新建 revision，不降级旧
   draft 流程。迁移 standalone Split 示例/容器流程后关闭旧续算写入口；initial Split 的
   内部工作状态与 Composition 一起清理，不能仅新增 API 后保留全部旧生产写路径。
+  REST/SDK、旧写入口关闭和 HTTP/consumer 迁移已实现；14 项 HTTP/Rust consumer、35 项
+  独立 SDK 源码包测试、11 项 installed Python 单测及真实 sync/async Python consumer 通过。
+  Dataset/Access/e2e-test 和独立 SDK all-target clippy、fmt、boundary、OpenAPI 322 个本地
+  引用通过；wheel 位于 `.crowdb-runtime/artifacts/sdk-split-preparation-20261024`。
+  新镜像与五项 Dataset 重启用例尚待验证，本项暂不关闭。
 - [ ] **P3.2 实现选定 Split 流程**：按 D1 删除辅助进度与检查点，客户端重试，保留 currentSplit
   发布 CAS、覆盖/重叠校验和旧 revision 读取。Files: `split/{publication,recovery,cleanup}.rs`、v2/SDK Split 和恢复测试。
 

@@ -70,15 +70,12 @@ async fn lifecycle(client: &v2::ControlClient, name: &str, value: &Value) -> Res
         "publish_composition" => encode(&client.publish_composition(&id()?, &request(value)?).await?),
         "abandon_composition" => encode(&client.abandon_composition(&id()?, &request(value)?).await?),
         "cleanup_composition" => encode(&client.cleanup_composition(&id()?).await?),
-        "begin_split" => encode(&client.begin_split(&id()?, &request(value)?).await?),
-        "split_draft" => encode(&client.split_draft(&id()?).await?),
-        "edit_split" => encode(&client.edit_split(&id()?, &request(value)?).await?),
-        "evaluate_split" => encode(&client.evaluate_split(&id()?, &request(value)?).await?),
-        "prepare_split" => encode(&client.prepare_split(&id()?, &request(value)?).await?),
-        "publish_split" => encode(&client.publish_split(&id()?, &request(value)?).await?),
+        "prepare_split_revision" => encode(
+            &client
+                .prepare_split_revision(&id()?, &self::id(value, "revision")?, &request(value)?)
+                .await?,
+        ),
         "update_split_head" => encode(&client.update_split_head(&id()?, &request(value)?).await?),
-        "abandon_split" => encode(&client.abandon_split(&id()?, &request(value)?).await?),
-        "cleanup_split" => encode(&client.cleanup_split(&id()?).await?),
         "split_head" => encode(&client.split_head(&id()?).await?),
         "split_revision" => encode(
             &client

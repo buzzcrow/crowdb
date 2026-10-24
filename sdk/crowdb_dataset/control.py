@@ -26,7 +26,7 @@ class SplitSource:
 
 def _identity(arguments):
     request = arguments.get("request") or {}
-    return request.get("attempt", request.get("edit", request.get("operation", request.get("id", request.get("snapshot", arguments.get("id"))))))
+    return request.get("attempt", request.get("edit", request.get("operation", request.get("id", request.get("snapshot", arguments.get("revision", arguments.get("id")))))))
 
 
 class ControlClient:
@@ -72,18 +72,9 @@ class ControlClient:
         return self._call("abandon_composition", {"id": operation, "request": {"expected_revision": expected_revision}})
     def cleanup_composition(self, operation): return self._call("cleanup_composition", {"id": operation})
 
-    def begin_split(self, snapshot, request): return self._call("begin_split", {"id": snapshot, "request": request})
-    def split_draft(self, operation): return self._call("split_draft", {"id": operation})
-    def edit_split(self, operation, request): return self._call("edit_split", {"id": operation, "request": request})
-    def evaluate_split(self, operation, expected_revision, expected_page):
-        return self._call("evaluate_split", {"id": operation, "request": {"expected_revision": expected_revision, "expected_page": expected_page}})
-    def prepare_split(self, operation, expected_revision):
-        return self._call("prepare_split", {"id": operation, "request": {"expected_revision": expected_revision}})
-    def publish_split(self, operation, request): return self._call("publish_split", {"id": operation, "request": request})
+    def prepare_split_revision(self, snapshot, revision, request):
+        return self._call("prepare_split_revision", {"id": snapshot, "revision": revision, "request": request})
     def update_split_head(self, snapshot, request): return self._call("update_split_head", {"id": snapshot, "request": request})
-    def abandon_split(self, operation, expected_revision):
-        return self._call("abandon_split", {"id": operation, "request": {"expected_revision": expected_revision}})
-    def cleanup_split(self, operation): return self._call("cleanup_split", {"id": operation})
     def split_head(self, snapshot): return self._call("split_head", {"id": snapshot})
     def split_revision(self, snapshot, revision): return self._call("split_revision", {"id": snapshot, "revision": revision})
 

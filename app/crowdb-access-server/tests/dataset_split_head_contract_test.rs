@@ -10,7 +10,7 @@ mod dataset;
 use crowdb_access_dataset::{DatasetIdentity, DatasetStore, NamespacePath};
 use dataset::{TestDatasetHttp, TestStore};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::sync::{atomic::Ordering, Arc};
 
 fn counts(store: &TestStore) -> (u64, u64) {
@@ -31,24 +31,17 @@ async fn update_uses_only_complete_results_and_returns_the_failed_head_condition
     let client = Client::new();
     let (root, snapshot) = common::fixture(&client, &test.origin).await;
     let mut prepared = Vec::new();
-    for operation in ["22".repeat(16), "33".repeat(16)] {
-        common::response(
-            client
-                .post(format!("{root}/snapshots/{snapshot}/split-drafts"))
-                .json(&common::begin(&operation, &Value::Null)),
-            200,
-        )
-        .await;
-        let draft = format!("{root}/split-drafts/{operation}");
-        prepared.push(common::prepare(&client, &draft, "1").await);
+    for revision in ["22".repeat(16), "33".repeat(16)] {
+        prepared.push(common::prepare(&client, &root, &snapshot, &revision, false).await);
     }
-    // Remove the editing identity; the final result and its members are independent.
+    // Preparing a complete result creates no editing identity.
     let identity = DatasetIdentity::new(NamespacePath::root(), "splits").unwrap();
     for prefix in [b"DS\0SD\0".as_slice(), b"DS\0SB\0"] {
-        store
-            .delete(&[prefix, &identity.key().unwrap(), &[0x22; 16]].concat())
+        assert!(store
+            .get(&[prefix, &identity.key().unwrap(), &[0x22; 16]].concat())
             .await
-            .unwrap();
+            .unwrap()
+            .is_none());
     }
     let url = format!("{root}/snapshots/{snapshot}/split-head");
     let first = json!({"revision":prepared[0]["revision"], "expected_revision":null, "expected_head":null});
