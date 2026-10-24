@@ -217,10 +217,7 @@ impl SmallWriteIntent for PartIntent {
 }
 impl PartIntent {
     async fn persist(&self, location: &Location) -> Result<(), UploadError> {
-        if location.logical_offset != 0
-            || location.logical_length != self.pending.part.length
-            || self.uploads.session(&self.session).await?.state != UploadState::Open
-        {
+        if location.logical_offset != 0 || location.logical_length != self.pending.part.length {
             return Err(UploadError::Conflict);
         }
         let mut intent = self.pending.clone();

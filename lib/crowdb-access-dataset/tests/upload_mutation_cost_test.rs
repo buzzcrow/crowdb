@@ -91,7 +91,7 @@ async fn successful_part_uses_its_known_write_intent_without_confirmation_get() 
         .put_part(&key, 0, Bytes::from_static(b"data"), 1)
         .await
         .unwrap();
-    assert_eq!(store.reads.load(Ordering::Relaxed) - reads, 5);
+    assert_eq!(store.reads.load(Ordering::Relaxed) - reads, 4);
     assert_eq!(store.mutations.load(Ordering::Relaxed) - writes, 3);
     assert_eq!(uploads.complete(&key, 2).await.unwrap().parts, vec![part]);
 }
