@@ -17,8 +17,10 @@ pub struct TestExpiryStore {
     pub started: tokio::sync::Notify,
     pub resume: tokio::sync::Notify,
     pub lose_mark: AtomicBool,
+    pub lose_owner_retirement: AtomicBool,
     pub unknown: AtomicBool,
     pub reads_after_unknown: AtomicU64,
+    pub writes_after_unknown: AtomicU64,
 }
 impl TestExpiryStore {
     pub fn writes(&self) -> u64 {
@@ -59,8 +61,22 @@ impl DatasetStore for TestExpiryStore {
         expected: Option<&[u8]>,
         value: &[u8],
     ) -> Result<CasOutcome, StoreError> {
+        if self.unknown.load(Ordering::Relaxed) {
+            self.writes_after_unknown.fetch_add(1, Ordering::Relaxed);
+        }
         let gate = self.gate.load(Ordering::Relaxed);
-        if ((gate == 1 && key.starts_with(b"DS\0H\0")) || (gate == 2 && key.starts_with(b"DS\0L\0")))
+        let pause = match gate {
+            1 => key.starts_with(b"DS\0H\0"),
+            2 => key.starts_with(b"DS\0L\0"),
+            3 => {
+                key.starts_with(b"DS\0U\0")
+                    && serde_json::from_slice::<serde_json::Value>(value)
+                        .is_ok_and(|value| value["state"] == "claimed")
+            }
+            4 => key.starts_with(b"DS\0I\0"),
+            _ => false,
+        };
+        if pause
             && self
                 .gate
                 .compare_exchange(gate, 0, Ordering::Relaxed, Ordering::Relaxed)
@@ -77,9 +93,25 @@ impl DatasetStore for TestExpiryStore {
             self.unknown.store(true, Ordering::Relaxed);
             return Err(StoreError::Rejected);
         }
+        if key.starts_with(b"DS\0U\0")
+            && matches!(result, CasOutcome::Applied(_))
+            && self.lose_owner_retirement.load(Ordering::Relaxed)
+            && serde_json::from_slice::<serde_json::Value>(value).is_ok_and(|value| {
+                value["retired_owners"]
+                    .as_array()
+                    .is_some_and(|owners| !owners.is_empty())
+            })
+        {
+            self.lose_owner_retirement.store(false, Ordering::Relaxed);
+            self.unknown.store(true, Ordering::Relaxed);
+            return Err(StoreError::Rejected);
+        }
         Ok(result)
     }
     async fn delete(&self, key: &[u8]) -> Result<(), StoreError> {
+        if self.unknown.load(Ordering::Relaxed) {
+            self.writes_after_unknown.fetch_add(1, Ordering::Relaxed);
+        }
         self.inner.delete(key).await
     }
 }

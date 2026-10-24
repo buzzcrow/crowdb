@@ -21,7 +21,7 @@ impl SnapshotExpirySweep {
 }
 
 impl DatasetAuthority {
-    /// Marks expired complete resources for ordinary delayed reclamation.
+    /// Marks expired content bindings for ordinary delayed reclamation.
     /// Heads, retained resources and live ancestry remain protected.
     /// # Errors
     /// Returns malformed resources, cancellation, bounded-work or storage failures.
@@ -70,7 +70,9 @@ impl DatasetAuthority {
                 continue;
             }
             let candidate = decode_candidate(&value.bytes, snapshot)?;
-            if candidate.version != 2
+            // Both modern bindings follow all immutable metadata. A staged binding
+            // can outlive a failed dependency/owner step without ever becoming complete.
+            if !matches!(candidate.version, 2 | 3)
                 || !candidate
                     .expires_at
                     .is_some_and(|time| time <= self.reclaim_time())
