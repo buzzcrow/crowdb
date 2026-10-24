@@ -751,6 +751,14 @@ cannot overwrite published files or bypass its operation-specific authorization.
 
 ## 4. Commit and lifecycle
 
+Table reads resolve the complete namespace ancestry at admission. Namespace
+identities cannot move, and strict nonempty deletion protects every ancestor
+while its child remains live. Before returning, the same request rechecks the
+selected leaf mapping, authority identity/name epoch and lifecycle, then the
+active catalog context. Property updates do not invalidate this binding;
+Dropping remains visible until Tombstone. Each new request resolves its ancestry
+again, without a cached deletion permit or reader registration.
+
 A table commit validates requirements against one selected table generation,
 constructs a complete new metadata state, writes immutable candidate files, and
 atomically publishes one new table head. Concurrent commits either publish from

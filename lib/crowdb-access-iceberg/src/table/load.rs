@@ -156,7 +156,7 @@ impl TableLoader {
             super::metadata::read_table_metadata_bytes(self.blocks.clone(), &selected, self.limits).await?;
         let etag = etag(&selected.head, mode);
         let document = TableMetadataDocument::parse(canonical, &selected.head, self.limits)?;
-        let metadata = representation(&document, mode)?;
+        let metadata = representation(document, mode)?;
         if metadata.len() > self.limits.bytes {
             return Err(TableMetadataError::Bounds.into());
         }
@@ -193,14 +193,15 @@ fn etag(head: &TableHead, mode: SnapshotLoadingMode) -> String {
 }
 
 fn representation(
-    document: &TableMetadataDocument,
+    document: TableMetadataDocument,
     mode: SnapshotLoadingMode,
 ) -> Result<Vec<u8>, TableMetadataError> {
+    let canonical = document.into_canonical();
     if mode == SnapshotLoadingMode::All {
-        return Ok(document.canonical().to_vec());
+        return Ok(canonical);
     }
-    let fields: BTreeMap<&str, &RawValue> = serde_json::from_slice(document.canonical())?;
-    refs_representation(fields, document.canonical())
+    let fields: BTreeMap<&str, &RawValue> = serde_json::from_slice(&canonical)?;
+    refs_representation(fields, &canonical)
 }
 
 fn refs_representation(
