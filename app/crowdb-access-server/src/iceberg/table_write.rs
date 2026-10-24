@@ -153,7 +153,7 @@ impl TableWrites {
             Ok(target) => Box::pin(self.mutate(&record, capabilities, target, bytes, now)).await,
             Err(error) => Err(error),
         };
-        let (status, body) = self.outcome_response(result).await?;
+        let (status, body) = Self::outcome_response(result)?;
         let body = self.decorate_response(
             status,
             body,
@@ -166,18 +166,11 @@ impl TableWrites {
         Ok(response(status, body))
     }
 
-    async fn outcome_response(
-        &self,
-        result: Result<crowdb_access_iceberg::commit::TableCommitOutcome, IcebergErrorResponse>,
+    fn outcome_response(
+        result: Result<crowdb_access_iceberg::commit::TableCreationOutcome, IcebergErrorResponse>,
     ) -> Result<(u16, Vec<u8>), IcebergErrorResponse> {
         let (status, body) = match result {
-            Ok(outcome) => (
-                outcome.status,
-                self.payloads
-                    .get(&outcome.body)
-                    .await
-                    .map_err(|_| service_unavailable())?,
-            ),
+            Ok(outcome) => (outcome.status, outcome.body),
             Err(error) if error.error.code < 500 => (
                 error.error.code,
                 serde_json::to_vec(&error).map_err(|_| service_unavailable())?,

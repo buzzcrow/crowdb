@@ -104,6 +104,19 @@ async fn table_publication_recovers_before_and_after_every_durable_write() {
             );
             // The native tree persists data and its owner-bound directory before publication.
             assert_eq!(count, 6);
+        } else if kind == "create" {
+            assert_eq!(
+                labels,
+                BTreeSet::from([
+                    "file-block".to_owned(),
+                    "journal-or-fence".to_owned(),
+                    "file-location-authority".to_owned(),
+                    "head-1".to_owned(),
+                    "name-Reserved".to_owned(),
+                    "name-Published".to_owned(),
+                ])
+            );
+            assert_eq!(count, 8);
         } else {
             assert!(labels.iter().any(|label| label.starts_with("create-")));
         }

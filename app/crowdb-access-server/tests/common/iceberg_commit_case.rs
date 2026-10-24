@@ -105,6 +105,10 @@ impl TestCommitCase {
     }
 
     pub async fn replay(&self, endpoint: &str) -> Value {
+        if self.path == "/v1/namespaces/analytics/tables" && !self.staged {
+            return self.retry_complete_creation(endpoint).await;
+        }
+
         let first = post(endpoint, &self.path, &self.identity, &self.body)
             .await
             .unwrap();
@@ -143,6 +147,56 @@ impl TestCommitCase {
             }
         }
         serde_json::from_slice(&bytes).unwrap()
+    }
+    async fn retry_complete_creation(&self, endpoint: &str) -> Value {
+        let mut first = None;
+        // Complete client requests may reconcile a reserved resource before retrying.
+        for _ in 0..4 {
+            let response = post(endpoint, &self.path, &self.identity, &self.body)
+                .await
+                .unwrap();
+            let status = response.status().as_u16();
+            let bytes = response.bytes().await.unwrap();
+            assert!(
+                matches!(status, 200 | 409 | 503),
+                "{status}: {}",
+                String::from_utf8_lossy(&bytes)
+            );
+            if status == 200 {
+                first = Some(serde_json::from_slice::<Value>(&bytes).unwrap());
+                break;
+            }
+            if status == 409 {
+                break;
+            }
+        }
+        let loaded = Client::new()
+            .get(format!("{endpoint}/v1/namespaces/analytics/tables/{}", self.name))
+            .bearer_auth("r".repeat(32))
+            .send()
+            .await
+            .unwrap();
+        let status = loaded.status();
+        let bytes = loaded.bytes().await.unwrap();
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
+        let loaded: Value = serde_json::from_slice(&bytes).unwrap();
+        if let Some(first) = first {
+            assert_eq!(loaded["metadata-location"], first["metadata-location"]);
+        }
+        let mut input: Value = serde_json::from_str(&self.body).unwrap();
+        input["properties"]
+            .as_object_mut()
+            .unwrap()
+            .entry("write.parquet.compression-codec")
+            .or_insert(json!("zstd"));
+        assert_eq!(loaded["metadata"]["properties"], input["properties"]);
+        let duplicate = post(endpoint, &self.path, &self.identity, &self.body)
+            .await
+            .unwrap();
+        let status = duplicate.status();
+        let bytes = duplicate.bytes().await.unwrap();
+        assert_eq!(status, 409, "{}", String::from_utf8_lossy(&bytes));
+        loaded
     }
 }
 

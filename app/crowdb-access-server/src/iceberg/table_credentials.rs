@@ -314,11 +314,12 @@ impl TableCredentials {
         else {
             return Ok(None);
         };
-        let crowdb_access_iceberg::record::StorageRecord::TableHead(head) =
-            crowdb_access_iceberg::record::StorageRecord::decode(&key, &value.bytes)
-                .map_err(|_| service_unavailable())?
-        else {
-            return Err(service_unavailable());
+        let head = match crowdb_access_iceberg::record::StorageRecord::decode(&key, &value.bytes)
+            .map_err(|_| service_unavailable())?
+        {
+            crowdb_access_iceberg::record::StorageRecord::TableHead(head) => head,
+            crowdb_access_iceberg::record::StorageRecord::RetiredTable(_) => return Err(missing_table()),
+            _ => return Err(service_unavailable()),
         };
         if head.lifecycle != TableLifecycle::Ready
             && !(cleanup && head.lifecycle == TableLifecycle::Tombstone)

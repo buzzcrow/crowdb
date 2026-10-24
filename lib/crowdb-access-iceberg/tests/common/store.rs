@@ -99,12 +99,8 @@ impl TestStore {
     }
 
     async fn pause_table_head(&self, key: &[u8], expected: Option<&[u8]>, value: &[u8], after: bool) {
-        if expected.is_none() {
-            return;
-        }
-        let Ok(crowdb_access_iceberg::record::StorageRecord::TableHead(head)) =
-            crowdb_access_iceberg::key::IcebergKey::decode(key)
-                .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
+        let Ok(crowdb_access_iceberg::record::StorageRecord::TableHead(head)) = StorageKey::decode(key)
+            .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
         else {
             return;
         };
@@ -113,7 +109,7 @@ impl TestStore {
         } else {
             &self.table_head_pause_before
         };
-        if (head.pending_operation.is_some() || expected.is_some_and(|bytes| {
+        if (expected.is_none() || head.pending_operation.is_some() || expected.is_some_and(|bytes| {
             crowdb_access_iceberg::key::IcebergKey::decode(key).ok()
                 .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, bytes).ok())
                 .is_some_and(|record| matches!(record, crowdb_access_iceberg::record::StorageRecord::TableHead(before) if before.name_epoch < head.name_epoch))

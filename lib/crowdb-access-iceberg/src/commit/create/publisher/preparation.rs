@@ -5,7 +5,7 @@ use super::{
 };
 
 impl TableCreator {
-    async fn storage_layout(
+    pub(super) async fn storage_layout(
         &self,
         context: crate::catalog::CatalogContext,
     ) -> Result<crate::catalog::CatalogStorageLayout, Error> {

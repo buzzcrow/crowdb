@@ -6,17 +6,11 @@ use super::{request::Target, TableWrites};
 use crowdb_access_iceberg::{
     catalog::{Capabilities, CatalogError, FormatAction},
     commit::{
-        publish_direct_commit, recover_table_commit, CommitPublicationError, CommitRequest,
-        CreateTableRequest, DirectCommitError, StagedCommitRequest, TableCommitJournal, TableCommitOperation,
-        TableCommitOutcome, TableCommitPhase, TableCreationRequest, TableRequirement,
+        publish_direct_commit, CommitPublicationError, CommitRequest, CreateTableRequest, DirectCommitError,
+        StagedCommitRequest, TableCreationOutcome, TableCreationRequest, TableRequirement,
     },
     wire::IcebergErrorResponse,
 };
-
-struct CommitInput<'input> {
-    parsed: &'input CommitRequest,
-    body: &'input [u8],
-}
 
 impl TableWrites {
     pub(super) async fn try_direct_update(
@@ -94,7 +88,7 @@ impl TableWrites {
         target: Target,
         body: Vec<u8>,
         now: u64,
-    ) -> Result<TableCommitOutcome, IcebergErrorResponse> {
+    ) -> Result<TableCreationOutcome, IcebergErrorResponse> {
         let timestamp_ms = i64::try_from(now).map_err(|_| service_unavailable())?;
         let Some(name) = target.name else {
             let parsed = CreateTableRequest::decode(&body, self.limits.preparation.request.json)
@@ -116,15 +110,25 @@ impl TableWrites {
                 body,
                 timestamp_ms,
             };
-            return if staged {
+            if staged {
                 let expiry = timestamp_ms
                     .checked_add(24 * 60 * 60 * 1000)
                     .ok_or_else(service_unavailable)?;
-                self.creator.stage(&request, expiry).await
-            } else {
-                self.creator.create(&request).await
+                let outcome = self
+                    .creator
+                    .stage(&request, expiry)
+                    .await
+                    .map_err(creation_error)?;
+                return Ok(TableCreationOutcome {
+                    status: outcome.status,
+                    body: self
+                        .payloads
+                        .get(&outcome.body)
+                        .await
+                        .map_err(|_| service_unavailable())?,
+                });
             }
-            .map_err(creation_error);
+            return self.creator.create(&request).await.map_err(creation_error);
         };
         let parsed =
             CommitRequest::decode(&body, self.limits.preparation.request).map_err(|_| bad_request())?;
@@ -139,7 +143,7 @@ impl TableWrites {
             if !capabilities.supports(parsed.create_version(), FormatAction::Create) {
                 return Err(super::super::table_read::unsupported());
             }
-            return self
+            let outcome = self
                 .creator
                 .commit_staged(&StagedCommitRequest {
                     context: record.context,
@@ -151,120 +155,17 @@ impl TableWrites {
                     timestamp_ms,
                 })
                 .await
-                .map_err(creation_error);
-        }
-        Box::pin(self.update(
-            record,
-            capabilities,
-            &target.namespace,
-            &name,
-            CommitInput {
-                parsed: &parsed,
-                body: &body,
-            },
-            timestamp_ms,
-        ))
-        .await
-    }
-
-    async fn update(
-        &self,
-        record: &super::TableMutation,
-        capabilities: Capabilities,
-        namespace: &crowdb_access_iceberg::namespace::NamespaceIdentifier,
-        name: &str,
-        input: CommitInput<'_>,
-        timestamp_ms: i64,
-    ) -> Result<TableCommitOutcome, IcebergErrorResponse> {
-        let journal = TableCommitJournal::new(self.store.clone());
-        let operation = if let Some(operation) = journal
-            .load(record.context, record.identity.operation)
-            .await
-            .map_err(|error| storage_error(&error))?
-        {
-            operation
-        } else {
-            let namespace = self
-                .namespaces
-                .load(record.context, namespace)
-                .await
-                .map_err(|error| storage_error(&error))?
-                .ok_or_else(missing_table)?;
-            let selected = self
-                .tables
-                .select(record.context, namespace.namespace, name)
-                .await
-                .map_err(|error| storage_error(&error))?
-                .ok_or_else(missing_table)?;
-            if selected.head.pending_operation.is_some() {
-                return Err(service_unavailable());
-            }
-            let mut version = selected.head.format_version;
-            let mut upgrades = input.parsed.upgrade_targets().peekable();
-            if upgrades.peek().is_none() && !capabilities.supports(version, FormatAction::Write) {
-                return Err(super::super::table_read::unsupported());
-            }
-            for target in upgrades {
-                if !capabilities.supports_upgrade(version, target) {
-                    return Err(super::super::table_read::unsupported());
-                }
-                version = target;
-            }
-            let input = self
-                .payloads
-                .put(record.context.catalog, record.identity.operation, input.body)
-                .await
-                .map_err(|error| storage_error(&error))?;
-            let initial = TableCommitOperation {
-                context: record.context,
-                identity: record.identity,
-                principal: record.principal.clone(),
-                revision: 1,
-                timestamp_ms,
-                phase: TableCommitPhase::Prepared,
-                input,
-                before: selected.head,
-                candidate: None,
-                outcome: None,
-            };
-            match journal.begin(initial).await {
-                Ok(operation) => operation,
-                Err(CatalogError::Conflict) => journal
-                    .load(record.context, record.identity.operation)
+                .map_err(creation_error)?;
+            return Ok(TableCreationOutcome {
+                status: outcome.status,
+                body: self
+                    .payloads
+                    .get(&outcome.body)
                     .await
-                    .map_err(|error| storage_error(&error))?
-                    .ok_or_else(service_unavailable)?,
-                Err(error) => return Err(storage_error(&error)),
-            }
-        };
-        if operation.identity != record.identity
-            || operation.principal != record.principal
-            || operation.before.name != name
-            || self
-                .payloads
-                .get(&operation.input)
-                .await
-                .map_err(|error| storage_error(&error))?
-                != input.body
-        {
-            return Err(IcebergErrorResponse::new(
-                409,
-                "CommitFailedException",
-                "Commit identity conflicts",
-            ));
+                    .map_err(|_| service_unavailable())?,
+            });
         }
-        recover_table_commit(
-            self.store.clone(),
-            self.blocks.clone(),
-            record.context,
-            record.identity.operation,
-            self.limits,
-        )
-        .await
-        .map_err(|error| {
-            tracing::error!(%error, "table commit remains recoverable; retry with the same request key");
-            service_unavailable()
-        })
+        Err(bad_request())
     }
 }
 
@@ -299,6 +200,9 @@ fn creation_error(error: CommitPublicationError) -> IcebergErrorResponse {
         CommitPublicationError::NamespaceMissing => {
             IcebergErrorResponse::new(404, "NoSuchNamespaceException", "Namespace does not exist")
         }
+        CommitPublicationError::TableExists => {
+            IcebergErrorResponse::new(409, "AlreadyExistsException", "Table already exists")
+        }
         CommitPublicationError::Unsupported(_) => super::super::table_read::unsupported(),
         CommitPublicationError::Catalog(CatalogError::Conflict) => {
             IcebergErrorResponse::new(409, "CommitFailedException", "Table creation conflicts")
@@ -313,7 +217,7 @@ fn creation_error(error: CommitPublicationError) -> IcebergErrorResponse {
             | crowdb_access_iceberg::table::TableMetadataError::Bounds,
         ) => bad_request(),
         error => {
-            tracing::error!(%error, "table creation remains recoverable; retry with the same request key");
+            tracing::error!(%error, "table creation failed; retry complete input or reload the table");
             service_unavailable()
         }
     }

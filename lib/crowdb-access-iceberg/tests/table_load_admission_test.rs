@@ -55,7 +55,7 @@ async fn table_requests_resolve_ancestors_once_and_recheck_the_bound_leaf() {
             .unwrap());
         assert_eq!(
             test.fixture.store.reads.load(Ordering::SeqCst) - reads,
-            14 + 2 * depth
+            8 + 2 * depth
         );
         assert_eq!(test.fixture.store.cas_attempts.load(Ordering::SeqCst), mutations);
     }

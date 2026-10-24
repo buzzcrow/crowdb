@@ -103,8 +103,8 @@ native catalog. They are not file lookup indexes and cannot produce an object
 listing. The service must discover abandoned work before a table head exists
 and after a table has disappeared, without a table-ID reverse index:
 
-- Create, legacy commit and drop journals and payload pages are keyed by operation
-  identity; creation can precede name/head publication. Their selected heads carry
+- Staged-create, legacy commit and drop journals and payload pages are keyed by
+  operation identity; staging can precede name/head publication. Their selected heads carry
   the frozen storage identity. Name moves use bounded namespace occupancy instead
   of request journals; existing rename journals remain recoverable.
 - Multipart sessions and parts are keyed by upload identity/part number. Catalog
@@ -282,11 +282,14 @@ the proof. A live child restores Ready without changing the name epoch or proper
 revision. Only completion of both ranges permits the fenced tombstone CAS.
 Terminal replay and conditional cleanup cannot delete a recreated NamespaceId.
 Table-child probes resolve published mappings against the selected table head.
-Unpublished table reservations are helped through their creation journal,
-namespace name-move occupancy or a legacy lifecycle journal. Ordinary table creation does not modify the namespace authority. A
-concurrent drop scan may miss a creator; later mapping reconciliation resolves
-the leftover state. Stable namespace identity prevents that state from becoming
-visible under a recreated namespace. Name moves occupy both participating parent
+Ordinary table creation leaves only a reserved name and its final head slot.
+Probes retire an absent slot before clearing that exact reservation, or settle
+the matching Ready head and reject deletion as nonempty. A creator reserves its
+name before its last Ready-parent check, so a concurrent drop cannot both miss
+the reservation and permit a later first head. Retained staged operations and
+legacy lifecycle journals remain recoverable through their exact markers.
+Stable namespace identity prevents old state from becoming visible under a
+recreated namespace. Name moves occupy both participating parent
 authorities before reserving the destination; deletion helps settle or fence the
 move and returns retryable busy before taking a fresh emptiness proof. Corrupt
 table authority blocks the emptiness proof.
@@ -714,12 +717,12 @@ expiry remains exact even when signature timestamps allow clock skew. Table
 credential issuance requires a matching Ready catalog authority and rejects
 lifetimes above its persisted delegated-access bound, independently of the
 signer's configured maximum. A zero persisted delegation bound disables issuance.
-Credential-issuance callers must freshly authorize the root and exact live table or draft;
-the serialization primitive does not perform those reads. The credential endpoint
-checks the current namespace and published table or exact unbound draft. Draft
-vending requires its original writer principal and a table-ID query selector;
-same-name drafts cannot authorize each other. Expired drafts cannot refresh. Grants
-last at most fifteen minutes and never outlive a draft. Published readers receive
+Credential-issuance callers freshly authorize the root and exact live table or
+retained staged draft; serialization performs no storage reads. The credential
+endpoint checks the current namespace and published table or exact unbound draft.
+Draft grants require their original writer principal and an exact table-ID
+selector. Expired drafts and retired head slots cannot refresh. Grants last at
+most fifteen minutes and never outlive a retained draft. Published readers receive
 read-only grants; only writers receive upload and multipart rights. Responses
 configure the native S3 origin and SDK credential-refresh endpoint without embedding
 long-lived secrets or changing canonical metadata bytes. Table-load ETags include
@@ -742,13 +745,18 @@ cannot overwrite published files or bypass its operation-specific authorization.
 
 ## 4. Commit and lifecycle
 
-Table reads resolve the complete namespace ancestry at admission. Namespace
-identities cannot move, and strict nonempty deletion protects every ancestor
-while its child remains live. Before returning, the same request rechecks the
-selected leaf mapping, authority identity/name epoch and lifecycle, then the
-active catalog context. Property updates do not invalidate this binding;
-Dropping remains visible until Tombstone. Each new request resolves its ancestry
-again, without a cached deletion permit or reader registration.
+A composite table read checks CatalogContext at entry and before returning.
+Inside that request it reuses context-bound namespace, table and file resolution
+without repeating root reads. Admission resolves complete namespace ancestry:
+namespace identities cannot move, and strict nonempty deletion protects every
+ancestor while its child remains live. The final checks revalidate the selected
+head generation, leaf mapping, authority identity/name epoch and lifecycle.
+Property updates do not invalidate this binding; Dropping remains visible until
+Tombstone. Public standalone repository methods retain their own context guards.
+There is no cross-request permission cache or reader registration. The same
+context permits capability additions only; catalog replacement advances its epoch.
+Capability revocation or authority-only retirement would require revisiting this
+request-local admission contract.
 
 A table commit validates requirements against one selected table generation,
 constructs a complete new metadata state, writes immutable candidate files, and
@@ -765,16 +773,43 @@ metadata; changed input conflicts and old heads without this binding remain
 uncertain. After a later generation hides that result,
 an old request may return uncertain rather than silently reapplying its update.
 
-The library's immediate table creator records its immutable input, candidate
-identity, canonical metadata and response before reserving the namespace/name.
-It writes initial metadata before selecting the initial head and replacing the
-name reservation with a published mapping. Creation does not acquire a parent
-admission marker or modify the namespace authority. The durable terminal result
-precedes conditional cleanup of table markers. REST write admission
-binds the principal, route and exact body in the shared retry ledger before invoking
-these operations. Recovery reloads an existing operation before resolving the name
-or current head and never rebases an uncertain request. Response headroom is checked
-before publication so credential configuration fits the durable replay budget.
+Table creation retains its complete input, evaluated metadata and response only
+inside the request. It writes the final metadata `FileRecord`, reserves the exact
+namespace/name, checks that the same parent is Ready, creates the final table head
+with an expected-absent CAS, and conditionally publishes the reserved name. This
+order is required: a reservation precedes the last parent check, so namespace
+deletion either sees it or prevents that check from succeeding. The head contains
+no pending request identity. Cancellation discards request-local work; complete
+client retries may create new unowned resources and never replay a stored response.
+Response headroom is checked before any resource publication.
+
+A `RetiredTable` record occupies the same storage head key as a published table.
+It binds the immutable catalog, TableId and optional storage namespace: 32 raw ID
+bytes in the legacy layout, 48 in the native layout, plus a bounded envelope. It
+contains no request, owner, schema, input, response, phase or continuation. It is a
+permanent terminal resource fact and never returns to an absent or Ready slot.
+Name resolution treats it as missing; credential issuance, initial publication
+and physical write admission reject it. GC never interprets it as a live head.
+
+When namespace deletion or reservation cleanup encounters a reserved table whose
+head is absent, it creates this retirement record by CAS before removing the
+exact reservation. A conflict supplies the current head or retirement value;
+cleanup uses that value without a confirmation GET. If a Ready head won, cleanup
+can publish its matching reserved name and strict nonempty namespace deletion
+fails. If retirement won, the delayed initial-head CAS fails permanently. Removing
+only the reservation is unsafe: a delayed expected-absent head creation could
+otherwise expose an object after the namespace's empty proof. Exact name bytes and
+a fresh reservation identity prevent delayed cleanup from removing a later table.
+An uncertain CAS reply stops that request; a later full retry reconciles final
+resource facts.
+
+For inline metadata, a successful immediate create performs four conditional
+resource writes: metadata authority, name reservation, initial head and published
+name. It creates no operation, input-page or response-page keys. Chunked metadata
+adds only the existing per-range physical write intents. Ordinary creation does
+not modify the parent namespace authority. Retiring an absent head adds one CAS
+only on cancellation or GC; its retained metadata has fixed size independent of
+table schema or request size.
 
 New-table requests may carry unique provisional field IDs starting at zero,
 as produced by Spark. Creation assigns positive durable IDs before validating
@@ -785,25 +820,24 @@ Existing-table commits and stored metadata still require their durable IDs.
 Staged creation retains an invisible durable draft and metadata-only response.
 Its native table location resolves the draft without a client-specific token.
 The final assert-create request initializes an empty metadata builder using the
-retained UUID, preserving the field IDs already used by staged files. One journal
-CAS binds its request identity, input bytes, evaluation clock and candidate before
-the ordinary name-reservation sequence begins. Publication evaluates initial
-table metadata and requirements, then writes canonical metadata; it does not
-scan staged data files or client manifest chains.
+retained UUID and preserves field IDs already used by staged files. A journal CAS
+binds its request identity, complete input, evaluation clock and candidate before
+the name-reservation sequence begins. Publication evaluates initial table metadata
+and requirements, then writes canonical metadata without scanning staged data
+files or client manifest chains.
 
 Draft expiry and final binding compete on the same phase CAS. Only an unbound
-draft may expire; bound operations recover their original publication outcome
-regardless of elapsed time. Known semantic file failures retain a terminal client
-error and release their reservation. Uncertain storage outcomes remain recoverable.
-The draft response and final commit response are retained separately for exact
-replay.
+draft may expire; bound operations recover their original publication outcome.
+Known semantic failures retain a terminal client error and release the exact
+reservation. Uncertain storage outcomes remain recoverable. The draft response
+and final commit response are retained separately for exact replay. Normal
+immediate creation never consults or produces these draft records.
 
 Bounded background scans rotate creation, legacy update and lifecycle journals,
-four records per page, with independent continuations reset on catalog activation changes. Recovery
-expires only unbound drafts, reconstructs fixed candidate proofs, settles published
-markers and retains uncertain storage errors. Known semantic validation failures
-become durable client outcomes before any candidate is published. Recovery deadlines
-preserve journal evidence rather than canceling the logical operation.
+four records per page. Independent continuations reset on catalog activation
+changes. Recovery expires unbound drafts, reconstructs fixed candidate proofs,
+settles published markers and retains uncertain storage errors. The request-local
+immediate creator leaves only resource facts for reservation cleanup and GC.
 
 Logical drop uses a bounded `TableLifecycleOperation` journal. It fixes the original
 head, exact source mapping, request identity, principal, input and candidate before
@@ -914,9 +948,30 @@ candidates. Assembly checkpoints have separate claims and a durable frontier-roo
 index. Abandoned frontiers are authenticated before traversal; a conflicted final
 tree is traversed once instead of revisiting its shared frontier. Published
 sessions reclaim only the checkpoint block, preserving the assembled data tree.
-An active catalog has a separate multipart cleanup task that scans only expired,
-terminal parts and assembly checkpoints. It does not scan published file records
-for missing snapshot references or fence a Ready table. Candidate progress is
+Unpublished server-generated initial metadata is identified by Metadata/JSON
+resource type and the exact generation-one metadata filename bound to its FileId.
+Its storage table must match the absent or retired final head slot; metadata for
+another table cannot select that resource as its canonical head metadata.
+The active resource sweep may discover this candidate when its final head is
+absent or retired. Its first observation and existing safety retention remain
+persisted in the GC candidate; restart never restarts or shortens that interval.
+Immediately before reclaiming it, GC creates the same final-head retirement fact
+if still absent. A Ready head returned by the CAS conflict preserves the file;
+retirement winning prevents all delayed initial publishers. Only then may the
+existing exact-range deletion cursor notify ChunkDB. Acceptance of DeleteRange is
+the access server's completion boundary; it does not poll physical release.
+
+This proof does not authorize deleting data, manifests or inherited references
+merely because their owner head is absent. Their existing final-resource reference
+proof remains required. Physical ranges written before a final metadata authority
+still retain their BlockIntent discovery facts. Both catalog cleanup layouts keep
+retirement records permanently and allow those terminal facts in their final empty
+proof; removing them would reopen a delayed expected-absent creation slot.
+
+An active catalog has a separate resource cleanup task for expired terminal parts,
+assembly checkpoints, explicit deleted-file records and unpublished initial
+metadata. It never infers missing snapshot references for other published files
+or fences a Ready table. Candidate progress is
 durable across restarts. After every part and checkpoint is reclaimed, it removes
 the terminal session's payload pages and session record; pending part settlement
 or unreleased multipart credit keeps that session available for recovery.
@@ -1024,8 +1079,10 @@ The native file endpoint exposes separately authorized S3 `DeleteObject` and
 credentials endpoint with `cleanup=true`; ordinary FileIO credentials cannot
 delete objects. The server scans retained table metadata and refuses a path
 that is referenced or whose reference status is uncertain. Successful deletion
-records a logical tombstone and removes list visibility, then queues bounded
-physical reclamation after 20 minutes. Direct URLs remain readable until their
+records a logical tombstone and removes list visibility. The background worker
+discovers that final tombstone and durably claims its exact old file before
+physical reclamation after 20 minutes. The foreground writes no GC task or
+candidate; restart discovers the same DeletedFile. Direct URLs remain readable until their
 bytes are reclaimed, subject to grant validity. Their FileIds/locators are never
 reused. A new logical-path PUT may reuse its path only after the old file's GC
 candidate is durable. Batch deletion returns individual errors inside HTTP 200, so callers

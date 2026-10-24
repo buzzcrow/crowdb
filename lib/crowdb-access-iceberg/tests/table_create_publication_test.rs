@@ -13,17 +13,16 @@ use std::sync::atomic::Ordering;
 
 use creation::TestCreation;
 use crowdb_access_iceberg::{
-    catalog::{CatalogError, CatalogStore, RootState},
-    commit::{CommitPublicationError, TableCreateJournal, TableCreatePhase},
+    catalog::{CatalogError, RootState},
+    commit::CommitPublicationError,
     key::{CatalogId, OperationId},
     namespace::{NamespaceDropper, NamespaceRepository},
-    operation::PayloadStore,
     record::StorageRecord,
     table::{read_table_metadata_document, TableMetadataLimits, TableRepository},
 };
 
 #[tokio::test]
-async fn native_catalog_creation_freezes_namespace_in_storage_identity_and_replays() {
+async fn native_catalog_creation_freezes_namespace_in_storage_identity() {
     use crowdb_access_iceberg::catalog::{CatalogAuthority, CatalogStorageLayout};
     use crowdb_access_iceberg::key::{CatalogScope, IcebergKey, StorageKey, TableStorageScope};
     let test = TestCreation::new().await;
@@ -39,8 +38,7 @@ async fn native_catalog_creation_freezes_namespace_in_storage_identity_and_repla
         )
         .await;
     let creator = test.creator();
-    let result = creator.create(&test.request).await.unwrap();
-    assert_eq!(creator.create(&test.request).await.unwrap(), result);
+    assert_eq!(creator.create(&test.request).await.unwrap().status, 200);
     let selected = TableRepository::new(test.fixture.store.clone())
         .select(test.fixture.context, test.parent.namespace, "events")
         .await
@@ -77,6 +75,11 @@ async fn native_catalog_creation_freezes_namespace_in_storage_identity_and_repla
         1
     );
     assert!(native.iter().all(|key| key.table == path));
+    assert!(matches!(
+        creator.create(&test.request).await,
+        Err(CommitPublicationError::TableExists)
+    ));
+
     assert_eq!(
         authority.renamed("renamed".into()).unwrap().storage_layout,
         CatalogStorageLayout::Native
@@ -85,8 +88,11 @@ async fn native_catalog_creation_freezes_namespace_in_storage_identity_and_repla
     default.namespace =
         crowdb_access_iceberg::namespace::NamespaceIdentifier::new(vec!["default".into()]).unwrap();
     default.identity.operation = OperationId::random();
-    let created = creator.create(&default).await.unwrap();
-    assert_eq!(creator.create(&default).await.unwrap(), created);
+    assert_eq!(creator.create(&default).await.unwrap().status, 200);
+    assert!(matches!(
+        creator.create(&default).await,
+        Err(CommitPublicationError::TableExists)
+    ));
     let namespace = NamespaceRepository::new(test.fixture.store.clone())
         .load(test.fixture.context, &default.namespace)
         .await
@@ -122,11 +128,16 @@ async fn response_reserve_rejects_before_durable_creation() {
 }
 
 #[tokio::test]
-async fn immediate_create_publishes_one_table_and_replays_exact_result() {
+async fn immediate_create_publishes_one_table_with_only_final_resource_writes() {
     let test = TestCreation::new().await;
     let creator = test.creator();
+    let writes = test.fixture.store.writes.load(Ordering::SeqCst);
+    let reads = test.fixture.store.reads.load(Ordering::SeqCst);
     let result = creator.create(&test.request).await.unwrap();
     assert_eq!(result.status, 200);
+    assert_eq!(test.fixture.store.reads.load(Ordering::SeqCst) - reads, 8);
+    assert_eq!(test.fixture.store.writes.load(Ordering::SeqCst) - writes, 4);
+    assert_no_creation_process(&test);
     let selected = TableRepository::new(test.fixture.store.clone())
         .select(test.fixture.context, test.parent.namespace, "events")
         .await
@@ -147,13 +158,7 @@ async fn immediate_create_publishes_one_table_and_replays_exact_result() {
     )
     .await
     .unwrap();
-    let response: serde_json::Value = serde_json::from_slice(
-        &PayloadStore::new(test.fixture.store.clone())
-            .get(&result.body)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
+    let response: serde_json::Value = serde_json::from_slice(&result.body).unwrap();
     assert_eq!(
         response["metadata"],
         serde_json::Value::Object(document.fields().clone())
@@ -162,7 +167,10 @@ async fn immediate_create_publishes_one_table_and_replays_exact_result() {
         response["metadata-location"],
         selected.head.metadata_location.to_string()
     );
-    assert_eq!(creator.create(&test.request).await.unwrap(), result);
+    assert!(matches!(
+        creator.create(&test.request).await,
+        Err(CommitPublicationError::TableExists)
+    ));
     let parent = NamespaceRepository::new(test.fixture.store.clone())
         .load(test.fixture.context, &test.parent.identifier)
         .await
@@ -180,58 +188,79 @@ async fn immediate_create_publishes_one_table_and_replays_exact_result() {
 }
 
 #[tokio::test]
-async fn duplicate_name_and_changed_retry_have_durable_conflict_without_replacing_head() {
+async fn duplicate_name_and_changed_input_do_not_replace_a_published_head() {
     let test = TestCreation::new().await;
     let creator = test.creator();
-    let first = creator.create(&test.request).await.unwrap();
-    let mut duplicate = test.request.clone();
-    duplicate.identity.operation = OperationId::random();
-    let result = creator.create(&duplicate).await.unwrap();
-    assert_eq!(result.status, 409);
-    assert_eq!(creator.create(&duplicate).await.unwrap(), result);
-    let mut altered = test.request.clone();
-    altered.body.push(b' ');
-    assert!(matches!(
-        creator.create(&altered).await,
-        Err(CommitPublicationError::Catalog(CatalogError::Conflict))
-    ));
-    assert_eq!(creator.create(&test.request).await.unwrap(), first);
+    creator.create(&test.request).await.unwrap();
+    let tables = TableRepository::new(test.fixture.store.clone());
+    let before = tables
+        .select(test.fixture.context, test.parent.namespace, "events")
+        .await
+        .unwrap()
+        .unwrap();
+    for changed in 0..3 {
+        let mut duplicate = test.request.clone();
+        if changed == 0 {
+            duplicate.identity.operation = OperationId::random();
+        }
+        if changed == 1 {
+            duplicate.body.push(b' ');
+        }
+        if changed == 2 {
+            duplicate.principal = "another writer".into();
+        }
+        assert!(matches!(
+            creator.create(&duplicate).await,
+            Err(CommitPublicationError::TableExists)
+        ));
+        assert_eq!(
+            tables
+                .select(test.fixture.context, test.parent.namespace, "events")
+                .await
+                .unwrap()
+                .unwrap(),
+            before
+        );
+    }
+    assert_no_creation_process(&test);
+}
+
+fn assert_no_creation_process(test: &TestCreation) {
+    use crowdb_access_iceberg::key::{CatalogScope, IcebergKey};
+    for key in test.fixture.store.values.load().keys() {
+        if let Ok(IcebergKey::Catalog { scope, .. }) = IcebergKey::decode(key) {
+            assert!(!matches!(
+                scope,
+                CatalogScope::TableCreateOperation | CatalogScope::OperationPayload
+            ));
+        }
+    }
 }
 
 #[tokio::test]
-async fn every_creation_write_reply_loss_recovers_original_identity_and_result() {
-    let baseline = TestCreation::new().await;
-    let before = baseline.fixture.store.writes.load(Ordering::SeqCst);
-    baseline.creator().create(&baseline.request).await.unwrap();
-    let writes = baseline.fixture.store.writes.load(Ordering::SeqCst) - before;
-    assert!(writes > 0);
-    for offset in 1..=writes {
+async fn lost_creation_replies_require_complete_client_retry_and_reconcile_final_resources() {
+    for boundary in 1..=4 {
         let test = TestCreation::new().await;
         let store = test.fixture.store.clone();
         store
             .fail_after
-            .store(store.writes.load(Ordering::SeqCst) + offset, Ordering::SeqCst);
+            .store(store.writes.load(Ordering::SeqCst) + boundary, Ordering::SeqCst);
         assert!(
             test.creator().create(&test.request).await.is_err(),
-            "offset {offset}"
+            "boundary {boundary}"
         );
         store.fail_after.store(0, Ordering::SeqCst);
-        let journal = TableCreateJournal::new(store.clone());
-        let interrupted = journal
-            .load(test.fixture.context, test.request.identity.operation)
-            .await
-            .unwrap();
-        let result = test.creator().create(&test.request).await.unwrap();
-        assert_eq!(result.status, 200, "offset {offset}");
-        let completed = journal
-            .load(test.fixture.context, test.request.identity.operation)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(completed.phase, TableCreatePhase::Complete);
-        if let Some(interrupted) = interrupted {
-            assert_eq!(interrupted.candidate, completed.candidate);
-            assert_eq!(interrupted.document, completed.document);
+        // This loop is the client, submitting its complete input on a new request.
+        for _ in 0..2 {
+            match test.creator().create(&test.request).await {
+                Ok(result) => {
+                    assert_eq!(result.status, 200);
+                    break;
+                }
+                Err(CommitPublicationError::TableExists) => break,
+                Err(CommitPublicationError::Catalog(CatalogError::Busy)) => {}
+                result => panic!("boundary {boundary}: {result:?}"),
+            }
         }
         let selected = TableRepository::new(store.clone())
             .select(test.fixture.context, test.parent.namespace, "events")
@@ -240,13 +269,7 @@ async fn every_creation_write_reply_loss_recovers_original_identity_and_result()
             .unwrap();
         assert_eq!(selected.head.generation, 1);
         assert_eq!(selected.head.pending_operation, None);
-        let key = completed.key();
-        let bytes = store.get(&key.encode().unwrap()).await.unwrap().unwrap().bytes;
-        assert_eq!(
-            StorageRecord::decode(&key, &bytes).unwrap(),
-            StorageRecord::TableCreateOperation(Box::new(completed))
-        );
-        assert_eq!(test.creator().create(&test.request).await.unwrap(), result);
+        assert_no_creation_process(&test);
     }
 }
 

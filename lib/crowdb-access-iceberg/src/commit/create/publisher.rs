@@ -17,6 +17,7 @@ use crate::{
 
 mod admission;
 mod completion;
+mod direct;
 mod helping;
 mod preparation;
 mod reservation;
@@ -31,6 +32,12 @@ pub struct TableCreationRequest {
     pub namespace: NamespaceIdentifier,
     pub body: Vec<u8>,
     pub timestamp_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TableCreationOutcome {
+    pub status: u16,
+    pub body: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -69,28 +76,6 @@ impl TableCreator {
             return Err(crate::table::TableMetadataError::Bounds.into());
         }
         Ok(())
-    }
-
-    /// # Errors
-    /// Rejects invalid requests before durable mutation and preserves uncertain creation for recovery.
-    pub async fn create(&self, request: &TableCreationRequest) -> Result<TableCommitOutcome, Error> {
-        if request.principal.is_empty() || request.principal.len() > 256 || request.principal.contains('\0') {
-            return Err(ValidationError::Text.into());
-        }
-        let journal = self.journal();
-        if let Some(existing) = journal.load(request.context, request.identity.operation).await? {
-            if existing.identity != request.identity
-                || existing.principal != request.principal
-                || existing.namespace != request.namespace
-                || self.payloads().get(&existing.input).await? != request.body
-            {
-                return Err(CatalogError::Conflict.into());
-            }
-        } else {
-            let operation = self.prepare(request, None).await?;
-            journal.begin(operation).await?;
-        }
-        self.resume(request.context, request.identity.operation).await
     }
 
     /// # Errors

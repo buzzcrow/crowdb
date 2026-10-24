@@ -21,6 +21,8 @@ pub(super) use candidate::{response as metadata_response, write_metadata_file};
 pub enum CommitPublicationError {
     #[error("namespace does not exist")]
     NamespaceMissing,
+    #[error("table already exists")]
+    TableExists,
     #[error("commit operation is not enabled: {0}")]
     Unsupported(&'static str),
     #[error(transparent)]

@@ -135,6 +135,7 @@ impl<Store: NamespaceStore + GcStore + MultipartPartStore> CatalogStore for Test
             }
             StorageRecord::File(_) => "file-record".into(),
             StorageRecord::FileMapping(_) => "file-mapping".into(),
+            StorageRecord::TableMapping(mapping) => format!("name-{:?}", mapping.state),
             StorageRecord::MultipartSession(session) => format!("multipart-{:?}", session.phase),
             _ => "journal-or-fence".into(),
         };

@@ -77,7 +77,7 @@ async fn direct_v1_to_v3_upgrade_requires_both_persisted_edges() {
 }
 
 #[tokio::test]
-async fn create_and_update_replay_exact_results_and_enforce_independent_writer() {
+async fn create_retries_resolve_by_name_and_updates_enforce_independent_writer() {
     let fixture = TestTableHttp::writable().await;
     for role in ["r", "m", "c"] {
         value(fixture.post(TABLES, role, None, &create(false)).await, 403).await;
@@ -89,17 +89,27 @@ async fn create_and_update_replay_exact_results_and_enforce_independent_writer()
     )
     .await;
     assert_eq!(created["metadata"]["schemas"][0]["fields"][0]["id"], 1);
+    value(
+        fixture.post(TABLES, "w", Some(&identity), &create(false)).await,
+        409,
+    )
+    .await;
     assert_eq!(
-        value(
-            fixture.post(TABLES, "w", Some(&identity), &create(false)).await,
-            200
-        )
-        .await,
+        value(fixture.request(Method::GET, TABLE, "r", None).await, 200).await,
         created
     );
     let mut changed = create(false);
     changed["name"] = json!("other");
-    value(fixture.post(TABLES, "w", Some(&identity), &changed).await, 409).await;
+    let other = value(fixture.post(TABLES, "w", Some(&identity), &changed).await, 200).await;
+    assert_ne!(other["metadata"]["table-uuid"], created["metadata"]["table-uuid"]);
+    let operation: crowdb_access_iceberg::key::OperationId = identity.parse().unwrap();
+    assert!(
+        crowdb_access_iceberg::commit::TableCreateJournal::new(fixture.store.clone())
+            .load(fixture.context, operation)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let identity = key();
     let update = json!({"requirements":[{"type":"assert-table-uuid","uuid":created["metadata"]["table-uuid"]}],
         "updates":[{"action":"set-properties","updates":{"owner":"writer"}}]});
@@ -232,7 +242,7 @@ async fn concurrent_identical_commit_keys_cannot_rebase_or_finalize_a_transient_
 }
 
 #[tokio::test]
-async fn foreign_create_location_is_a_replayable_client_error() {
+async fn foreign_create_location_fails_each_complete_request_without_publication() {
     let fixture = TestTableHttp::writable().await;
     let mut body = create(false);
     body["location"] = json!("s3://external/table");
