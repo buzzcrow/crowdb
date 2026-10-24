@@ -223,6 +223,15 @@ pub fn tcp_delta(before: &Value, after: &Value) -> Value {
     for class in ["metadata", "aggregate"] {
         assert!(before[class]["transport"]["rdma"].is_null());
         assert!(after[class]["transport"]["rdma"].is_null());
+        let connections_before = before[class]["connection_count"].as_u64().unwrap();
+        let connections_after = after[class]["connection_count"].as_u64().unwrap();
+        result[class]["pooled_connections_before"] = json!(connections_before);
+        result[class]["pooled_connections_after"] = json!(connections_after);
+        // TCP sends one capability handshake before the first RPC on each
+        // connection. The raw frame counter includes that one-way frame.
+        result[class]["connection_setup_frames"] = json!(connections_after
+            .checked_sub(connections_before)
+            .expect("comparison connections must not disappear"));
         for (native, report) in [
             ("wire_bytes_sent", "tcp_protocol_bytes_sent"),
             ("rpc_frames_sent", "completed_rpc_frames_sent"),

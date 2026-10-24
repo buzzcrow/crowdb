@@ -133,7 +133,12 @@ impl TestRoutedBatch {
         )
     }
 
-    pub async fn trial(&self, rows: TestRows, mode: TestMode) -> Result<TestTrial, TestFailure> {
+    pub async fn trial(
+        &self,
+        rows: TestRows,
+        mode: TestMode,
+        warmup: bool,
+    ) -> Result<TestTrial, TestFailure> {
         let routes_before = self.routes(&rows)?;
         let native_before = self.native_status()?;
         let attempts_before = self.transport.counts();
@@ -152,10 +157,17 @@ impl TestRoutedBatch {
             + tcp["aggregate"]["completed_rpc_frames_sent"].as_u64().unwrap();
         let calls = attempts["point_rpc_attempts"].as_u64().unwrap()
             + attempts["batch_rpc_attempts"].as_u64().unwrap();
-        let valid = outcomes.clean() && outcomes.applied == rows.profile.rows() && frames == calls;
+        let setup = tcp["metadata"]["connection_setup_frames"].as_u64().unwrap()
+            + tcp["aggregate"]["connection_setup_frames"].as_u64().unwrap();
+        let frames_match = frames == calls + setup;
+        let valid = outcomes.clean()
+            && outcomes.applied == rows.profile.rows()
+            && frames_match
+            && (warmup || setup == 0);
         let report = json!({"profile":rows.profile.name(), "path":mode.name(), "elapsed_ns":elapsed_ns,
             "requested_rows":rows.profile.rows(), "outcomes":outcomes.json(), "transport_attempts":attempts,
-            "tcp_protocol_counters":tcp, "rpc_frame_counter_matches_attempts":frames == calls,
+            "tcp_protocol_counters":tcp,"protocol_frame_counter_matches_rpc_plus_setup":frames_match,
+            "connection_setup_frames":setup,"warmup":warmup,
             "process_resources":process_before.delta(&process_after)?,
             "catalog_source_loads":self.catalog.loads.load(Ordering::Relaxed) - catalog_loads,
             "routes_before":routes_before, "routes_after":self.routes(&rows)?,

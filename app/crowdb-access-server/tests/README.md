@@ -142,12 +142,53 @@ and 64-KiB inline payloads with their actual JSON encoding. The test records typ
 results, routes, owner RPC attempts, completed TCP frames and protocol bytes,
 client CPU ticks and RSS. Artifacts include the image/source identity, client
 binary/source hashes, original output and `comparison.json`.
+Cold warmups account for one capability-handshake frame per new pooled TCP
+connection. Measured trials require no new connections and exact equality
+between owner RPC attempts and completed protocol frames.
 
 This comparison does not publish a Dataset head. Logical admission bytes exclude
 transport copies; TCP protocol bytes exclude IP/retransmissions. Allocation and
 copied-byte counts are unmeasured. Process memory peaks are cumulative, and
 short trials can report zero CPU ticks without having zero CPU cost. Report
 the measured routing scope rather than assuming multiple partitions or owners.
+
+The comparison passes in
+`write-batch-comparison/acd38136ec0943aeac3aaa9d849c0a5c` with
+`crowdb-node:access-cleanup-20261025` from source `7b2c61aa`, tree `aecf740c`.
+Its manifest retains the exact imported image and client binary/source hashes.
+All warmup and measured creates return typed Applied results. The actual route
+is one partition, one owner and catalog generation 1; it is not a multi-partition
+measurement. Each measured trial keeps both connections open and has no setup
+frames or failed owner attempts.
+
+| Rows                   | Path           | Min / median / max (ms) | Owner RPCs | Sent protocol bytes |
+| ---------------------- | -------------- | ----------------------- | ---------- | ------------------- |
+| 256 metadata rows      | Sliding points | 371.3 / 469.4 / 470.0    | 256        | 80,680              |
+| 256 metadata rows      | Routed batch   | 2913.6 / 3708.7 / 4102.8 | 16         | 167,864             |
+| 16 inline 64-KiB rows  | Sliding points | 286.7 / 318.0 / 320.5    | 16         | 4,199,136           |
+| 16 inline 64-KiB rows  | Routed batch   | 545.6 / 550.9 / 561.5    | 3          | 12,593,170          |
+
+Keep the existing bounded sliding point writes for inspection preparation:
+the current batch reduces RPC count but is slower in both profiles. Inline
+values already encode bytes as JSON numbers in the Dataset row; the group
+envelope JSON-encodes that row again, increasing protocol bytes to about three
+times the point path. Both large-value paths actually admit seven rows at a
+time because the logical byte bound wins before the row-count bound.
+
+Across the three large-value trials, client CPU is 4 ticks for points and
+21 ticks for batch at 100 Hz. Small-row CPU totals are only 3 and 2 ticks and
+cannot establish a useful CPU advantage. The lifetime HWM reaches 60,116 KiB
+during warmup and is shared by subsequent paths; it is not a per-path memory
+comparison. Automatic catalog source refresh occurs twice in measured small
+batches and once in measured large points; those calls remain included in
+elapsed time and separately reported from owner RPCs.
+
+The service processes each batch's items sequentially, while the point window
+can overlap row completion. This and encoding/copying are concrete differences;
+their individual contributions were not profiled. Alternating trials do not
+reset accumulated persistent state, and three rounds give no stable latency
+SLO. Reconsider grouped writes after improving the wire/processing path and
+repeating this comparison, without relaxing ordering or publication barriers.
 
 ## Verification and execution notes
 

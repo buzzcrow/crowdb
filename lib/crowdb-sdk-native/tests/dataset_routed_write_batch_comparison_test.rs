@@ -29,8 +29,7 @@ async fn compare_bounded_immutable_point_and_routed_batch_writes() -> Result<(),
             };
             for mode in order {
                 let rows = TestRows::new(profile, &run, trial, mode.key());
-                let mut result = client.trial(rows, mode).await?;
-                result.report["warmup"] = json!(!measured);
+                let mut result = client.trial(rows, mode, !measured).await?;
                 result.report["round"] = json!(round);
                 println!("{}", result.report);
                 valid &= result.valid;
@@ -55,8 +54,8 @@ async fn compare_bounded_immutable_point_and_routed_batch_writes() -> Result<(),
     let report = json!({"schema_version":1,"run":run,"transport":"tcp",
         "scope":"real routed Chunk-KV typed write acknowledgements; no Dataset publication",
         "warmup_rounds_per_path":3,"measurement_rounds_per_path":3,"valid":valid,
-        "byte_semantics":"TCP protocol bytes accepted by writev, including RPC framing; not NIC bytes, RDMA WRs or doorbells",
-        "rpc_scope":"owner RPC attempts and completed TCP frames; catalog source loads are separate and not called RPC counts",
+        "byte_semantics":"TCP protocol bytes accepted by writev, including framing and warmup capability handshakes; not NIC bytes, RDMA WRs or doorbells",
+        "rpc_scope":"owner RPC attempts; raw TCP frames equal attempts plus one handshake per newly pooled connection; measured trials forbid new connections; catalog source loads are separate",
         "budget_semantics":"logical pending key/value owners plus one prepared row; transport copies and encoding are additional",
         "implicit_confirmation_gets":false,"cleanup":"isolated keys remain in the externally owned disposable fixture",
         "trials":reports,"summaries":summaries});
