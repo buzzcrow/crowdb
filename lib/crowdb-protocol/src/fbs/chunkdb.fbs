@@ -429,6 +429,7 @@ table FBDeleteChunkRangeRequest {
     chunk_id:crowdb.rpc.proto.FBInt128;
     chunk_offset:uint32;
     chunk_size:uint32;
+    expected_modify_ts:uint64;
 }
 
 table FBDeleteChunkRangeResponse {
@@ -438,6 +439,7 @@ table FBDeleteChunkRangeResponse {
     error_msg:string;
     range_start:uint32;
     range_end:uint32;
+    reclaimed:bool = false;
 }
 
 // ── Replacement Allocation + Fenced Range Swap ─────────────────

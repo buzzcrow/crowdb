@@ -948,10 +948,25 @@ mutating RPC acquires the per-chunk lock before its RMW cycle:
   with segments as cleanup intent → free segments → clear the segment list
   and persist the tombstone → `guard.refresh(chunk)`.
 - `delete_chunk_range`: offset and length are independent u32 byte values,
-  describing an exact half-open object range without KiB rounding. The RPC
-  returns `Unimplemented` without changing storage until shared-object range
-  reclamation is supported. An intersecting strip is not permission to free
-  its blocks while neighbouring objects remain live.
+  describing an exact half-open object range without KiB rounding. A qualified
+  request includes the observed layout revision and targets a sealed shared
+  user-data chunk. The caller must already establish absence of live and future
+  references. The server atomically records merged exact dead ranges in a
+  co-located resource record, guarded by the chunk's KV revision; the unchanged
+  chunk participates in that conditional batch without changing its layout.
+  Resource identity includes the writer epoch and sealed extent. Existing
+  retirement replays without another mutation; a new stale-layout range fails.
+  Records are bounded to 4096 intervals and decoded within 128 KiB. Foreground
+  QueryChunk does not load or return this resource metadata. Conflict or unknown
+  write results do not trigger confirmation GETs inside the retirement handler.
+  `reclaimed=false` means the exact range is retired but physical space remains
+  allocated, so callers keep it Deferred. Only a completed physical deletion
+  reports `reclaimed=true`. Missing qualification revisions are rejected, and
+  old responses default to unreclaimed. An intersecting strip is never permission
+  to free blocks containing live neighbours. Mixed-strip physical compaction and
+  independent orphan qualification are not implemented by range retirement.
+- `update_chunk_strip`: compatibility wrapper over the one-strip form of
+  `replace_chunk_strip_range`.
 - `replace_chunk_strip_range`: `check_range` → `acquire` → validate Active or
   Sealed state, expected revision, exact old range, contiguous capacity,
   monotonic sequences, segment ownership, and mirror/EC geometry → commit only

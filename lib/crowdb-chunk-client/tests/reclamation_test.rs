@@ -14,6 +14,7 @@ struct TestAllocator {
     range_calls: AtomicUsize,
     chunk_calls: AtomicUsize,
     range_supported: bool,
+    range_reclaimed: bool,
     delete_failed: bool,
     expected_range: (u32, u32),
 }
@@ -24,6 +25,8 @@ impl TestAllocator {
             chunk: Chunk {
                 id: Some(ChunkId { high: 1, low: 2 }),
                 state: ChunkState::Sealed as i32,
+                modify_ts: 4,
+                acknowledged_cursor: 4096,
                 sealed_length: 4,
                 writer_epoch: u64::from(shared),
                 ..Chunk::default()
@@ -31,6 +34,7 @@ impl TestAllocator {
             range_calls: AtomicUsize::new(0),
             chunk_calls: AtomicUsize::new(0),
             range_supported: false,
+            range_reclaimed: true,
             delete_failed: false,
             expected_range: (1024, 2048),
         }
@@ -86,11 +90,14 @@ impl ChunkAllocator for TestAllocator {
     async fn delete_chunk_range(&self, request: DeleteChunkRangeRequest) -> Result<DeleteChunkRangeResponse> {
         assert_eq!(request.chunk_id, self.chunk.id);
         assert_eq!((request.chunk_offset, request.chunk_size), self.expected_range);
+        assert_eq!(request.expected_modify_ts, self.chunk.modify_ts);
         self.range_calls.fetch_add(1, Ordering::Relaxed);
         if !self.range_supported {
             return Err(IoError::Unsupported("shared ranges pending".into()));
         }
-        Ok(DeleteChunkRangeResponse::default())
+        Ok(DeleteChunkRangeResponse {
+            reclaimed: self.range_reclaimed,
+        })
     }
 }
 
@@ -125,16 +132,22 @@ async fn shared_range_remains_deferred_until_storage_supports_it() {
         ReclaimOutcome::Deferred
     );
     allocator.range_supported = true;
+    allocator.range_reclaimed = false;
+    assert_eq!(
+        reclaim_location(&allocator, &location).await.unwrap(),
+        ReclaimOutcome::Deferred
+    );
+    allocator.range_reclaimed = true;
     assert_eq!(
         reclaim_location(&allocator, &location).await.unwrap(),
         ReclaimOutcome::Reclaimed
     );
-    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 3);
     assert_eq!(allocator.chunk_calls.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
-async fn uncertain_shared_write_waits_for_readable_cursor_or_terminal_chunk() {
+async fn shared_retirement_requires_a_sealed_writer_and_readable_range() {
     let mut allocator = TestAllocator::new(true);
     allocator.range_supported = true;
     allocator.expected_range = (0, 4096);
@@ -149,15 +162,20 @@ async fn uncertain_shared_write_waits_for_readable_cursor_or_terminal_chunk() {
     allocator.chunk.acknowledged_cursor = 4096;
     assert_eq!(
         reclaim_location(&allocator, &location).await.unwrap(),
-        ReclaimOutcome::Reclaimed
+        ReclaimOutcome::Deferred
     );
     allocator.chunk.acknowledged_cursor = 0;
     allocator.chunk.state = ChunkState::Sealed as i32;
     assert_eq!(
         reclaim_location(&allocator, &location).await.unwrap(),
+        ReclaimOutcome::Deferred
+    );
+    allocator.chunk.acknowledged_cursor = 4096;
+    assert_eq!(
+        reclaim_location(&allocator, &location).await.unwrap(),
         ReclaimOutcome::Reclaimed
     );
-    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
@@ -187,6 +205,7 @@ async fn shared_byte_ranges_are_never_rounded_into_neighbouring_objects() {
         (1024 * 1024 * 1024 - 1, 1),
     ] {
         allocator.expected_range = (offset, length);
+        allocator.chunk.acknowledged_cursor = u64::from(offset) + u64::from(length);
         let mut location = allocator.location();
         location.offset = u64::from(offset);
         location.length = u64::from(length);

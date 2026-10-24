@@ -280,6 +280,9 @@ pub struct FBDeleteChunkRangeResponseRef<'a> {
 }
 
 impl<'a> FBDeleteChunkRangeResponseRef<'a> {
+    pub fn reclaimed(&self) -> bool {
+        self.root.is_some_and(|r| r.reclaimed())
+    }
     pub fn new(buf: &'a [u8]) -> Self {
         Self {
             root: parse_root::<FBDeleteChunkRangeResponse>(buf),

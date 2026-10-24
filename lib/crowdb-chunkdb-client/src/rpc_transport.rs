@@ -586,6 +586,7 @@ impl ChunkdbRpcTransport {
             chunk_id: chunk_id_off.as_ref(),
             chunk_offset: req.chunk_offset,
             chunk_size: req.chunk_size,
+            expected_modify_ts: req.expected_modify_ts,
         };
         let fb_req = FBDeleteChunkRangeRequest::create(&mut builder, &args);
         builder.finish(fb_req, None);
@@ -599,7 +600,9 @@ impl ChunkdbRpcTransport {
             ));
         }
         check_ret_code(r.ret_code(), r.error_msg())?;
-        Ok(DeleteChunkRangeResponse {})
+        Ok(DeleteChunkRangeResponse {
+            reclaimed: r.reclaimed(),
+        })
     }
 
     pub async fn send_allocate_replacement_segment(

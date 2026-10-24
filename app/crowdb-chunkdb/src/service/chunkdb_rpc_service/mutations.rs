@@ -994,13 +994,14 @@ impl ChunkdbRpcService {
         &self,
         req: ServerRequest,
         server: &Arc<RpcServer>,
-        _request: RequestGuard,
+        mut request: RequestGuard,
     ) {
         let req_id = req.request_id;
         let create_nano = req.rpc_create_nano;
         let msg_type = FBMsgType::EDeleteChunkRangeResponse.0 as u16;
         let conn_handle_usize = req.conn_handle as usize;
 
+        let handler = Arc::clone(&self.handler);
         let server = Arc::clone(server);
         self.spawn(async move {
             let Ok(fb_req) = flatbuffers::root::<FBDeleteChunkRangeRequest>(req.control()) else {
@@ -1031,16 +1032,32 @@ impl ChunkdbRpcService {
                 );
                 return;
             };
-            let _ = (chunk_id, fb_req.chunk_offset(), fb_req.chunk_size());
-            // The used-range lifecycle must exist before this RPC can safely
-            // reclaim data. Until then it must never mutate data.
+            let result = handler
+                .delete_chunk_range(&crowdb_protocol::chunkdb::rpc::DeleteChunkRangeRequest {
+                    chunk_id: Some(chunk_id),
+                    chunk_offset: fb_req.chunk_offset(),
+                    chunk_size: fb_req.chunk_size(),
+                    expected_modify_ts: fb_req.expected_modify_ts(),
+                })
+                .await;
+            let (code, message, range_start, range_end, reclaimed) = match result {
+                Ok(result) => {
+                    request.mark_success();
+                    (FBChunkdbRetCode::Success, None, 0, 0, result.reclaimed)
+                }
+                Err(error) => {
+                    let (code, message, start, end) = map_error(&error);
+                    (code, Some(message), start, end, false)
+                }
+            };
             let ctrl = build_delete_range_response(
                 req_id,
                 create_nano,
-                FBChunkdbRetCode::Unimplemented,
-                Some("chunk range deletion is not implemented"),
-                0,
-                0,
+                code,
+                message.as_deref(),
+                range_start,
+                range_end,
+                reclaimed,
             );
             submit_fb_response(
                 &server,

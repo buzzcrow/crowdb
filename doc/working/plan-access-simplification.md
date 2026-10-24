@@ -165,8 +165,9 @@ Dataset expiry 依赖 upload/part 记录，Iceberg discovery/write sweep 依赖 
 都不是“封口 chunk 范围减去全部存活引用”的独立扫描器。删除写前 intent 后，写出 payload
 而尚未保存结果就宕机会产生不可发现的范围。tree 内部 orphan 回收不能代替用户 payload GC。
 
-**继续核查（2026-10-24）**：生产 `chunkdb_rpc_service/mutations.rs::handle_delete_range`
-明确返回 `Unimplemented`，没有更新 used-range/bitmap；`reclaim_location` 将其当作 Deferred。
+**初始核查（2026-10-24）**：生产 `chunkdb_rpc_service/mutations.rs::handle_delete_range`
+当时返回 `Unimplemented`，没有更新 used-range/bitmap。R4.3 已补精确退休，
+但物理回收仍由 R4.4 跟踪，`reclaim_location` 在未物理释放时仍为 Deferred。
 因此测试替身返回 Reclaimed 不能证明实际范围已释放。底层依赖是
 [R95](../backlog/R95-chunkdb-chunk-range-delete.md)（范围资格与孤儿发现）及
 [R92](../backlog/R92-chunkdb-in-chunk-gc.md)（混存 strip 的物理回收，当前仅占位设计）。
@@ -208,6 +209,15 @@ S3 普通对象是直接 PUT，不能未经设计就套用 Dataset head 机制�
 - [ ] **R4.2 实现提交期限和回收隔离**：part 结果携带期限，提交权威边界验证；覆盖期限前准入
   但期限后落地的 RPC、GC 与最终引用并发、成功发布后的长期存活。若需新增持久化资源事实，
   先列出最小字段和每请求 RPC 成本供 review。Files: Dataset publication/upload、Iceberg file、GC。
+- [ ] **R4.4 补齐物理释放和资格扫描**：在 R4.3 基础上实现死亡 strip 释放/混存搬迁、布局
+  grace 与迟到 IO 拒绝，再接 R4.1/R4.2 的全引用资格检查。不得仅因 RPC Success 计入物理 reclaimed。
+  后续补按 chunk 批量提交候选，避免逐 part 单独退休；4096 区间达到上限时需有界分块/归并，
+  不能把超额候选静默丢弃。初始退休接口允许单范围调用，不声称批量扫描已完成。
+  已核实 reader 的 strip 布局检查允许非重叠空洞，但现有 replacement 要求非空、等 capacity，
+  不能直接拿通用 replacement 删除 strip。`reconcile_pending_chunks` 目前仅 startup 调用，
+  不能据此承诺运行中的 grace 到期清理；需独立有界周期扫描，不为每个上传新增任务。
+  底层 `crowdb-kv-client::put_cas` 目前冲突只返回 revision，未返回 value；本批不做冲突后
+  GET 重试，返回冲突由下一轮扫描重新评估。补全 raw KV observed 协议的缺口需单独跟踪。
 
 ### D4 — 全局硬配额，还是每台 Access 的资源准入？仅在发现活跃需求后讨论
 
@@ -425,6 +435,18 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 
 ## 已完成与验证记录
 
+- **2026-10-24，R4.3**：生产 DeleteChunkRange 支持 expected layout revision、封口用户共享
+  chunk 的精确区间；在相同 KV group 以 chunk KV revision 条件批量更新
+  `/chunk-ranges/<id>` 和原样 chunk。资源包含 writer/封口身份、布局代际、有界合并区间；
+  不改变 QueryChunk 内容，不新增锁或上传 journal。重复退休零写，新范围遇 stale revision
+  返回冲突，unknown 不确认 GET。RPC 资源退休返回 `reclaimed=false`，客户端仍 Deferred；
+  旧请求无 qualification revision 被拒绝，旧响应缺物理完成字段按 false 解释。
+  `range_retirement_test` 7 项（真实 KV 与生产 RPC）、`reclamation_test` 6 项、
+  `chunkdb_wrappers_test` 10 项通过；覆盖精确相邻/重叠、live gap、重启重放、并发、stale、
+  物理身份复用、4096 上限/合并、Active/system/非法范围和未释放不误报完成。
+  均经 pixi，真实服务测试先 clean-env；四 crate all-target/all-feature clippy 和 fmt 通过。
+  尚未完成混存物理释放、无过程状态孤儿扫描和提交期限隔离；R4/R95/R92 未完成。
+
 - **2026-10-24，F3.1**：同一 next 多窗口使用请求局部的 selection 准备结果，绑定
   authority/Dataset/Snapshot/规则，复用准入、summary、schema 和 explicit-ID 校验。
   81 个候选、五个窗口、两个 explicit ID：独立逐页调用实测 25 bounded GET + 10 scan，
@@ -476,7 +498,8 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
   workspace fmt 和 `git diff --check`。无新锁、无 unsafe 例外、无 HTTP wire 协议变化。
   测试辅助代码的依赖/格式 lint 已修正；HTTP 测试释放客户端后再关闭 listener。
 - **R4 未完成**：已定位物理孤儿发现缺口，并记录用户确认的未发布 part 有效期。
-  尚未新增范围 GC 或删除上传/Composition/Split 的过程状态，不能将本批读取优化算作该清理完成。
+  已补精确范围退休，尚未完成物理释放/独立孤儿扫描，也尚未删除上传/Composition/Split
+  的过程状态；不能将读取优化或退休记录算作无过程状态 GC 已完成。
   尚无当前源码的 HCA/TPS 对比，不声称吞吐提升比例。
 
 
