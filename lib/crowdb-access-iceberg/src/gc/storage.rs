@@ -8,6 +8,9 @@ use crate::{
     key::{CatalogId, CatalogScope, IcebergKey, StorageKey, StorageTablePath, SystemScope},
 };
 
+mod local;
+pub use local::GcLocalScan;
+
 #[derive(Clone, Debug)]
 pub struct GcScan {
     pub native: bool,
@@ -219,6 +222,12 @@ impl GcScan {
 
 #[async_trait]
 pub trait GcStore: CatalogStore {
+    /// Scans local discovery positions without interpreting them as resource keys.
+    /// # Errors
+    /// Stores must explicitly support this read-only raw-position contract.
+    async fn scan_gc_local(&self, _scan: GcLocalScan) -> Result<MultiScanPage, StoreError> {
+        Err(StoreError::Response)
+    }
     async fn scan_gc(&self, request: GcScan) -> Result<MultiScanPage, StoreError>;
     async fn scan_gc_system(&self, request: GcSystemScan) -> Result<MultiScanPage, StoreError>;
     async fn delete_gc_record(
@@ -231,6 +240,9 @@ pub trait GcStore: CatalogStore {
 
 #[async_trait]
 impl GcStore for RoutedCatalogStore {
+    async fn scan_gc_local(&self, scan: GcLocalScan) -> Result<MultiScanPage, StoreError> {
+        self.scan_local_gc(scan).await
+    }
     async fn scan_gc(&self, request: GcScan) -> Result<MultiScanPage, StoreError> {
         let page = self.scan(request.request()?).await?;
         request.validate_page(&page)?;

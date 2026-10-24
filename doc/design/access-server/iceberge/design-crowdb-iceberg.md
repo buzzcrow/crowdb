@@ -938,6 +938,27 @@ or adjust validated resource limits. It scans once at startup, then every
 30 minutes by default. A purge becomes eligible 20 minutes after the drop;
 the next scan may start its work up to one scan interval later.
 
+Scheduler discovery positions are discardable, per-catalog memory. Purge,
+multipart admission, retired-catalog admission and task lanes rotate their first
+turn before awaiting storage. A failed lane reports its original error and leaves
+other lanes eligible. A validated raw row advances its local position before key
+or value decoding and before any admission or worker action. An error, deadline
+or cancellation therefore retains that observed position; an empty page starts
+the next discovery round. Restart loses these hints and rescans the unchanged
+durable markers, ledgers and tasks. These hints grant no deletion authority and
+do not replace task proof, permanent retirement fences or retry state.
+
+The dedicated read-only local scan retains validated catalog/scope/prefix bounds,
+strict ordering, positive revisions and item/byte limits while allowing an
+undecodable raw key as its continuation. It uses the native exclusive continuation
+and an actual routed catalog generation, including for keys longer than the
+Iceberg record format permits. Generic scans and persisted GC task continuations
+keep their existing format validation. This path still uses the legacy scan
+transport: its byte limit is checked after materialization. A transport failure
+or an oversized response without an observed key cannot advance this position;
+it remains an explicit error, with no claim of a wire memory bound or universal
+poison-row recovery.
+
 Provisioned disk capacity is the allocation boundary for both foreground files
 and GC durable workspace. A failed GC workspace write retains the last durable
 continuation and defers retry; it never substitutes an incomplete proof or

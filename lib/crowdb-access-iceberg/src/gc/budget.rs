@@ -160,6 +160,10 @@ impl CatalogStore for BudgetedGcStore {
 
 #[async_trait]
 impl GcStore for BudgetedGcStore {
+    async fn scan_gc_local(&self, request: super::GcLocalScan) -> Result<MultiScanPage, StoreError> {
+        self.budget.reserve_kv(request.byte_budget())?;
+        self.inner.scan_gc_local(request).await
+    }
     async fn scan_gc(&self, request: GcScan) -> Result<MultiScanPage, StoreError> {
         self.budget.reserve_kv(request.bytes)?;
         self.inner.scan_gc(request).await
