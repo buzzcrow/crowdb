@@ -356,7 +356,7 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 
 - [ ] **P2.1 分清输入、计算进度与候选内容**：逐项列出 draft/edit receipt/work page/row/candidate/
   cleanup seal 的用途、写入次数和调用者；按 D1 更新 API/SDK 合同，移除服务端续算接口。Files: Dataset `composition/{begin,edit,state,evaluation,evaluate_step,prepare,cleanup}.rs`。
-- [~] **P2.2e 删除旧 Composition/Split forward driver**：所有生产调用者已迁移；删除
+- [ ] **P2.2e 删除旧 Composition/Split forward driver**：所有生产调用者已迁移；删除
   authority begin/edit/evaluate/prepare/publish 与 staging-owner 登记/续算写路径，不只关闭
   HTTP 或加 test-util 开关。先抽取新资源仍复用的 parent schema、source sample 读取、
   validation 和确定性 revision ID；保留现存 CD/CE/CW/CM/SB/SD/SW 的 decoder、旧 owner
@@ -366,6 +366,12 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
   旧路径与新路径的运行时成本对照改为记录历史基线并锁定新成本，不能为比较保留生产旧驱动。
   Files: `composition/{begin,edit,evaluation,evaluate_step,prepare,publication,uploads}.rs`、
   `split/{lifecycle,evaluation,prepare,initial,publication}.rs`、相关 test/common。
+- [~] **P2.2e.2 迁移业务和 legacy 测试 fixture**：common Split/Composition 生产者改完整
+  资源；历史 GC 测试在 tests/common 直接安装原格式 bytes。移除只验证已退休编辑/续算的
+  case，保留 schema/selection/frozen inheritance/owner/完整根隔离与历史读取断言。
+- [ ] **P2.2e.3 删除生产旧写驱动**：删除不再使用的 begin/edit/evaluation/prepare/publish
+  及 staging-owner 获取、window/row 写，保留必要 legacy decoder、abort/release/fence。
+  all-target 编译不可通过测试 feature 重新开启生产驱动；新路径禁止 workflow 写回归继续有效。
 - [ ] **P2.2 删除服务端编辑/计算过程**：删除 durable 编辑/进度阶段，客户端失败重新请求；
   保持完整前不可见、完整结果可按 ID 使用、显式 expected head 及源 Snapshot 被删时的明确错误。孤儿清理通过 R4 验证，例外封口记录先 review。Files: `composition/`、Access v2 composition、SDK 和恢复测试。
 
@@ -548,6 +554,14 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P2.2e.1**：parent schema 装载/required 字段延伸校验移入
+  `composition/resource/schema.rs`，Split 确定性 ID 移入 `split/identity.rs`；移除新资源
+  对旧 begin/edit/evaluation 的这些依赖。source samples 原本归 inspection，无重复抽取。
+  Hash domain/字节序/ID 和所有 storage 调用保持原样，没有新增持久化、锁、wire 字段。
+  Dataset `--all-targets` 全部测试、all-target/all-feature clippy、workspace fmt/diff 通过，
+  均经 pixi；包含新资源成本、Schema/继承、完整根/unknown/CAS、旧记录 GC/迟到写隔离。
+  旧驱动仍未删除，继续迁移测试 fixture；此批没有吞吐结论。
 
 - **2026-10-24，P2.2d**：控制台导入/Split 改为完整资源 PUT 与独立 head 更新；移除
   server draft/edit/evaluate/prepare/status、attempt/receipt reconciliation、abandon/cleanup UI

@@ -4,7 +4,9 @@
 //! Complete caller-owned composition inputs and final immutable resources.
 
 mod input;
+mod schema;
 mod source;
+pub(super) use schema::validate_schema_extension;
 
 use super::{CompositionError, CompositionSource, SampleChange};
 use crate::{
@@ -123,7 +125,7 @@ impl DatasetAuthority {
             .ok_or(CompositionError::Conflict)?;
         super::state::validate_schema(schema)?;
         if let Some(parent) = &parent {
-            super::edit::validate_schema_extension(parent, schema)?;
+            validate_schema_extension(parent, schema)?;
         }
         Ok(schema.clone())
     }

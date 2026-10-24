@@ -65,5 +65,6 @@ pub use read::SplitRevisionSummary;
 
 mod inheritance;
 
+mod identity;
 mod initial;
-pub(crate) use evaluation::candidate_revision;
+pub(crate) use identity::candidate_revision;

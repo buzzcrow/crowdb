@@ -61,7 +61,7 @@ impl DatasetAuthority {
         }
         let mut next = edited_state(&state, edit, marker.clone())?;
         if let Some(parent) = next.draft.record.parent {
-            validate_schema_extension(
+            super::resource::validate_schema_extension(
                 &self.composition_parent_schema(identity, parent).await?,
                 &next.draft.schema,
             )?;
@@ -164,21 +164,6 @@ fn edited_state(
     next.evaluation = None;
     next.draft.preparation = None;
     Ok(next)
-}
-pub(super) fn validate_schema_extension(
-    parent: &SchemaRecord,
-    schema: &SchemaRecord,
-) -> Result<(), CompositionError> {
-    super::state::validate_schema(schema)?;
-    if parent
-        .fields
-        .iter()
-        .filter(|f| f.required)
-        .any(|p| !schema.fields.iter().any(|f| f.name == p.name && f.required))
-    {
-        return Err(CompositionError::Conflict);
-    }
-    Ok(())
 }
 fn validate_changes(schema: &SchemaRecord, changes: &[SampleChange]) -> Result<(), CompositionError> {
     if changes.len() > 20 {

@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     split::{DraftSplit, MembershipOrigin, SplitSource},
-    DatasetAuthority, DatasetIdentity, OperationId, ReadCancellation, SchemaRecord, SnapshotId,
+    DatasetAuthority, DatasetIdentity, OperationId, ReadCancellation,
 };
 use serde::{Deserialize, Serialize};
 
@@ -90,7 +90,7 @@ impl DatasetAuthority {
             .or_else(|| parent_schema.clone())
             .ok_or(CompositionError::Conflict)?;
         if let Some(parent_schema) = &parent_schema {
-            super::edit::validate_schema_extension(parent_schema, &schema)?;
+            super::resource::validate_schema_extension(parent_schema, &schema)?;
         }
         let revision = match &input.source {
             CompositionSource::Split { source, .. } => {
@@ -166,35 +166,6 @@ impl DatasetAuthority {
         };
         state.encode()?;
         Ok(state)
-    }
-    pub(super) async fn composition_parent_schema(
-        &self,
-        identity: &DatasetIdentity,
-        parent: SnapshotId,
-    ) -> Result<SchemaRecord, CompositionError> {
-        let cancel = ReadCancellation::new();
-        let summary = self
-            .snapshot_inspection_summary(identity, parent, budget(), &cancel)
-            .await?;
-        let mut schema = SchemaRecord {
-            version: summary.schema_version,
-            fields: vec![],
-        };
-        let mut after = None;
-        loop {
-            let page = self
-                .inspection_schema_page(identity, parent, after, budget(), &cancel)
-                .await?;
-            schema.fields.extend(page.entries);
-            if schema.fields.len() > 256 {
-                return Err(CompositionError::Limit);
-            }
-            after = page.after;
-            if after.is_none() {
-                break;
-            }
-        }
-        Ok(schema)
     }
     pub(super) async fn validate_composition_splits(
         &self,
