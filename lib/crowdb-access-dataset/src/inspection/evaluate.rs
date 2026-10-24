@@ -2,12 +2,13 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    content::validate_page_budget, cursor::CursorScope, key, work::InspectionWork, FieldMetadata,
-    FieldStorageKind, InspectionError, InspectionPage, SnapshotSummary,
+    content::validate_page_budget, cursor::CursorScope, key, read::PreparedInspectionRead,
+    read_fields::FieldRequest, work::InspectionWork, FieldMetadata, FieldStorageKind, InspectionError,
+    InspectionPage,
 };
 use crate::{
-    selection::EffectiveSelection, AuthorityError, DatasetAuthority, DatasetError, DatasetIdentity,
-    FieldLocator, MetadataScanBudget, ReadCancellation, Selection, SnapshotId,
+    selection::EffectiveSelection, AuthorityError, DatasetAuthority, DatasetIdentity, FieldLocator,
+    MetadataScanBudget, ReadCancellation, Selection, SnapshotId,
 };
 use std::collections::BTreeMap;
 
@@ -49,27 +50,19 @@ impl DatasetAuthority {
         let prefix = key::scope(identity, snapshot, b'M').map_err(AuthorityError::from)?;
         let query = serde_json::to_vec(selection).map_err(|_| InspectionError::Corrupt)?;
         let cursor = CursorScope::new(&prefix, &query);
-        for id in &compiled.explicit_ids {
-            let mut key = prefix.clone();
-            key::component(&mut key, id);
-            let value = work
-                .get(&key, 128 * 1024)
-                .await?
-                .ok_or(AuthorityError::Invalid(DatasetError::SampleNotFound))?;
-            let stored: Vec<u8> =
-                serde_json::from_slice(&value.bytes).map_err(|_| InspectionError::Corrupt)?;
-            if stored != *id {
-                return Err(InspectionError::Corrupt);
-            }
-        }
-        Ok(PreparedInspectionSelection {
+        let delivery = PreparedInspectionRead {
             authority: self,
             identity,
             snapshot,
-            compiled,
-            cursor,
             summaries: BTreeMap::from([(snapshot, summary)]),
             schema,
+        };
+        let ids: Vec<_> = compiled.explicit_ids.iter().cloned().collect();
+        delivery.members(&ids, work).await?;
+        Ok(PreparedInspectionSelection {
+            compiled,
+            cursor,
+            delivery,
         })
     }
 
@@ -96,23 +89,13 @@ impl DatasetAuthority {
 
 /// Local to one bounded request; its authority and immutable query cannot be replaced.
 pub(crate) struct PreparedInspectionSelection<'a, 'selection> {
-    authority: &'a DatasetAuthority,
-    identity: &'a DatasetIdentity,
-    snapshot: SnapshotId,
     compiled: EffectiveSelection<'selection>,
     cursor: CursorScope,
-    summaries: BTreeMap<SnapshotId, SnapshotSummary>,
-    schema: Vec<crate::FieldDefinition>,
+    delivery: PreparedInspectionRead<'a>,
 }
 impl<'a> PreparedInspectionSelection<'a, '_> {
     pub(crate) fn into_delivery(self) -> super::read::PreparedInspectionRead<'a> {
-        super::read::PreparedInspectionRead {
-            authority: self.authority,
-            identity: self.identity,
-            snapshot: self.snapshot,
-            summaries: self.summaries,
-            schema: self.schema,
-        }
+        self.delivery
     }
 
     pub(crate) async fn page(
@@ -122,45 +105,39 @@ impl<'a> PreparedInspectionSelection<'a, '_> {
         work: &mut InspectionWork<'_>,
     ) -> Result<InspectionPage<Vec<u8>>, InspectionError> {
         let members = self
+            .delivery
             .authority
             .inspection_member_window(
-                self.identity,
-                self.snapshot,
+                self.delivery.identity,
+                self.delivery.snapshot,
                 self.cursor.decode(after)?,
                 items,
                 work,
             )
             .await?;
-        let mut entries = Vec::new();
-        for id in members.entries {
-            let mut values = BTreeMap::new();
-            for field in &self.compiled.fields {
-                if let Some(metadata) = self
-                    .authority
-                    .effective_field_metadata(
-                        self.identity,
-                        self.snapshot,
-                        &id,
-                        field,
-                        &mut self.summaries,
-                        work,
-                    )
-                    .await?
-                {
-                    if metadata.storage == FieldStorageKind::Inline {
-                        values.insert(
-                            field.clone(),
-                            self.authority
-                                .inspection_inline_value(self.identity, &id, &metadata, work)
-                                .await?,
-                        );
-                    }
+        let fields = &self.compiled.fields;
+        let mut values = vec![BTreeMap::new(); members.entries.len()];
+        for start in (0..members.entries.len() * fields.len()).step_by(16) {
+            let end = (start + 16).min(members.entries.len() * fields.len());
+            let requests: Vec<_> = (start..end)
+                .map(|index| FieldRequest {
+                    sample: &members.entries[index / fields.len()],
+                    field: &fields[index % fields.len()],
+                })
+                .collect();
+            let locators = self.delivery.inline_fields(&requests, work).await?;
+            for (index, locator) in (start..end).zip(locators) {
+                if let Some(locator) = locator {
+                    values[index / fields.len()].insert(fields[index % fields.len()].clone(), locator);
                 }
             }
-            if self.compiled.matches(&id, &values) {
-                entries.push(id);
-            }
         }
+        let entries = members
+            .entries
+            .into_iter()
+            .zip(values)
+            .filter_map(|(id, values)| self.compiled.matches(&id, &values).then_some(id))
+            .collect();
         Ok(InspectionPage {
             entries,
             after: self.cursor.encode(members.after)?,

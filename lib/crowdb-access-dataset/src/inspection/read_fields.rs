@@ -21,10 +21,29 @@ impl PreparedInspectionRead<'_> {
         requests: &[FieldRequest<'_>],
         work: &mut InspectionWork<'_>,
     ) -> Result<Vec<Option<FieldLocator>>, InspectionError> {
+        self.field_values(requests, work, false).await
+    }
+
+    /// Predicate evaluation reads inline values only, never chunk locators or payloads.
+    pub(super) async fn inline_fields(
+        &mut self,
+        requests: &[FieldRequest<'_>],
+        work: &mut InspectionWork<'_>,
+    ) -> Result<Vec<Option<FieldLocator>>, InspectionError> {
+        self.field_values(requests, work, true).await
+    }
+
+    async fn field_values(
+        &mut self,
+        requests: &[FieldRequest<'_>],
+        work: &mut InspectionWork<'_>,
+        inline_only: bool,
+    ) -> Result<Vec<Option<FieldLocator>>, InspectionError> {
         let metadata = self.metadata(requests, work).await?;
         let keys = requests.iter().zip(&metadata).filter_map(|(request, metadata)| {
             metadata.as_ref().and_then(|metadata| {
-                (metadata.storage != FieldStorageKind::Tombstone)
+                (metadata.storage == FieldStorageKind::Inline
+                    || (!inline_only && metadata.storage != FieldStorageKind::Tombstone))
                     .then(|| field_key(self.identity, metadata.source_snapshot, b'V', request))
             })
         });
@@ -35,6 +54,7 @@ impl PreparedInspectionRead<'_> {
             .into_iter()
             .map(|metadata| {
                 metadata
+                    .filter(|metadata| !inline_only || metadata.storage == FieldStorageKind::Inline)
                     .map(|metadata| {
                         if metadata.storage == FieldStorageKind::Tombstone {
                             return Ok(FieldLocator::Tombstone);
