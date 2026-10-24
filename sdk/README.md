@@ -229,6 +229,14 @@ permission or promise that a redeployed endpoint still supports the operation.
   and does not read a draft. Rust's `SplitHead::from_conflict` and Python's
   `ConflictError.observed_head` return the failed condition's observation. Review
   that base before retrying; the SDK does not rebase automatically.
+- `update_snapshot_head(request)` selects an existing complete Snapshot with
+  `snapshot` and explicit nullable `expected_head`; it requires
+  `snapshot-head-update`, preserves stable and reads no draft or attempt ID.
+  Rust uses `UpdateSnapshotHead` and `Head::from_conflict`; synchronous and async
+  Python clients expose `ConflictError.observed_head`. A conflict supplies the
+  observed latest/stable/generation without an extra head GET. The caller reviews
+  the new base and may need to rebuild content from it; the SDK never rebases or
+  falls back to a legacy publication route.
 - `bind_read` pins Snapshot and optional Split revision without writes;
   `next_batch(cursor)` uses verified streaming framing. Save the next cursor after
   successful processing. The required capability is `stateless-reads`; old session

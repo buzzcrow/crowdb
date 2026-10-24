@@ -107,20 +107,18 @@ async fn import(client: &v2::ControlClient) -> Result<(v2::OpaqueId, v2::OpaqueI
     );
     let prepared = prepare(client, &operation, edited.revision).await?;
     let snapshot = prepared.preparation.unwrap().snapshot;
-    let request = v2::PublishComposition {
-        attempt: v2::OpaqueId::random(),
+    let request = v2::UpdateSnapshotHead {
         snapshot: snapshot.clone(),
-        expected_head: client.head().await?.generation,
+        expected_head: None,
     };
-    let receipt = client.publish_composition(&operation, &request).await?;
+    let head = client.update_snapshot_head(&request).await?;
     let lifecycle = client.lifecycle(&snapshot).await?;
     assert_eq!(lifecycle.snapshot, snapshot);
     assert!(lifecycle.latest);
     assert!(!lifecycle.retained);
-    assert!(client.commit_status(&request.attempt).await?.is_none());
     assert_eq!(
-        client.publish_composition(&operation, &request).await?.attempt,
-        receipt.attempt
+        client.update_snapshot_head(&request).await?.generation,
+        head.generation
     );
     cleanup(client, &operation).await?;
     let revision = client.split_head(&snapshot).await?.revision.unwrap();
@@ -284,6 +282,7 @@ async fn revise_splits(
     Ok(())
 }
 async fn branch(client: &v2::ControlClient, source: v2::SplitSource) -> Result<v2::OpaqueId> {
+    let expected_head = client.head().await?.generation;
     let operation = v2::OpaqueId::random();
     client
         .begin_composition(&v2::BeginComposition {
@@ -306,15 +305,22 @@ async fn branch(client: &v2::ControlClient, source: v2::SplitSource) -> Result<v
         .unwrap()
         .snapshot;
     client
-        .publish_composition(
-            &operation,
-            &v2::PublishComposition {
-                attempt: v2::OpaqueId::random(),
-                snapshot: snapshot.clone(),
-                expected_head: client.head().await?.generation,
-            },
-        )
+        .update_snapshot_head(&v2::UpdateSnapshotHead {
+            snapshot: snapshot.clone(),
+            expected_head,
+        })
         .await?;
+    let error = client
+        .update_snapshot_head(&v2::UpdateSnapshotHead {
+            snapshot: source.snapshot,
+            expected_head: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        v2::Head::from_conflict(&error).unwrap().latest,
+        Some(snapshot.clone())
+    );
     cleanup(client, &operation).await?;
     Ok(snapshot)
 }

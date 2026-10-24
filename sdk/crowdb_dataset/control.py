@@ -26,7 +26,7 @@ class SplitSource:
 
 def _identity(arguments):
     request = arguments.get("request") or {}
-    return request.get("attempt", request.get("edit", request.get("operation", request.get("id", arguments.get("id")))))
+    return request.get("attempt", request.get("edit", request.get("operation", request.get("id", request.get("snapshot", arguments.get("id"))))))
 
 
 class ControlClient:
@@ -44,6 +44,7 @@ class ControlClient:
     def create(self): return self._call("create", {})
     def open(self): return self._call("open", {})
     def head(self): return self._call("head", {})
+    def update_snapshot_head(self, request): return self._call("update_snapshot_head", {"request": request})
     def commit_status(self, attempt): return self._call("commit_status", {"id": attempt})
     def summary(self, snapshot): return self._call("summary", {"id": snapshot})
     def retain(self, snapshot): return self._call("retain", {"id": snapshot})

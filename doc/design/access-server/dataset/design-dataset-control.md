@@ -54,6 +54,15 @@ old operation/head preflight. Responses use the known immutable metadata plus on
 latest observation, without rereading operation/Snapshot records or copying the
 Manifest for a second preparation.
 
+`PUT .../datasets/{dataset}/head` selects an existing complete Snapshot from
+`snapshot` and explicit nullable `expected_head`, under `snapshot-head-update`.
+It reads no draft or attempt and returns the same latest/stable/generation shape
+as GET head. Stable is preserved; failed conditions include `observed_head` in that
+shape. GET head reads Dataset identity and head once each. Rust exposes
+`ControlClient::update_snapshot_head` and `Head::from_conflict`; Python exposes
+`update_snapshot_head` and `ConflictError.observed_head` for synchronous and async
+clients. Missing capability never invokes a composition or v1 publication fallback.
+
 Each Snapshot owns immutable Split-set revisions and an independently fenced
 currentSplit pointer. Names are scoped to Dataset/Snapshot/revision. Publishing a
 new revision replaces the complete set, including rename/removal; old revisions

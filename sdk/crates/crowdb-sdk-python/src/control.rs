@@ -24,6 +24,7 @@ pub(super) async fn dispatch(client: DatasetClient, name: &str, args: &str) -> R
         "create" => encode(&client.create().await?),
         "open" => encode(&client.open().await?),
         "head" => encode(&client.head().await?),
+        "update_snapshot_head" => encode(&client.update_snapshot_head(&request(&value)?).await?),
         "commit_status" => encode(&client.commit_status(&id()?).await?),
         "summary" => encode(&client.summary(&id()?).await?),
         "retain" => encode(&client.retain(&id()?).await?),

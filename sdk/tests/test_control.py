@@ -7,16 +7,29 @@ import queue
 import threading
 import unittest
 from crowdb_dataset import DatasetClient, AsyncDatasetClient, DatasetError, decimal, new_id
+from crowdb_dataset.client import ConflictError
 
 
 class TestControlPeer:
-    def __init__(self, capabilities=(), gated=False):
+    def __init__(self, capabilities=(), gated=False, head_replies=()):
         self.capabilities, self.gated = list(capabilities), gated
         self.requests, self.release = queue.Queue(), threading.Event()
+        self.head_replies = queue.Queue()
+        for reply in head_replies: self.head_replies.put(reply)
 
     def __enter__(self):
         owner = self
         class Handler(http.server.BaseHTTPRequestHandler):
+            def do_PUT(self):
+                request = json.loads(self.rfile.read(int(self.headers["content-length"])))
+                owner.requests.put((self.path, request))
+                status, value = owner.head_replies.get(timeout=10)
+                body = json.dumps(value).encode()
+                self.send_response(status)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             def do_GET(self):
                 owner.requests.put(self.path)
                 if self.path.endswith("capabilities"):
@@ -48,6 +61,24 @@ class TestControlPeer:
 
 
 class TestControl(unittest.TestCase):
+    def test_snapshot_head_conflict_uses_the_observation_without_a_head_get(self):
+        snapshot = new_id()
+        observed = {"latest": new_id(), "stable": None, "generation": "11" * 32}
+        selected = dict(observed, latest=snapshot, generation="22" * 32)
+        error = {"code": "conflict", "message": "conflict", "request_id": "test", "retryable": False, "observed_head": observed}
+        with TestControlPeer(["snapshot-head-update"], head_replies=[(409, error), (200, selected)]) as peer, DatasetClient(peer.endpoint, "test") as owner:
+            control = owner.control()
+            request = {"snapshot": snapshot, "expected_head": None}
+            with self.assertRaises(ConflictError) as failure: control.update_snapshot_head(request)
+            self.assertEqual(failure.exception.identity, snapshot)
+            self.assertEqual(failure.exception.observed_head, observed)
+            reviewed = dict(request, expected_head=observed["generation"])
+            self.assertEqual(control.update_snapshot_head(reviewed), selected)
+            self.assertTrue(peer.requests.get(timeout=10).endswith("/capabilities"))
+            self.assertEqual(peer.requests.get(timeout=10), ("/api/dataset/v2/namespaces/dataset-ns/datasets/test/head", request))
+            self.assertEqual(peer.requests.get(timeout=10), ("/api/dataset/v2/namespaces/dataset-ns/datasets/test/head", reviewed))
+            self.assertTrue(peer.requests.empty())
+
     def test_successful_capabilities_are_reused_across_control_wrappers(self):
         with TestControlPeer(["head-inspection"]) as peer, DatasetClient(peer.endpoint, "test") as owner:
             owner.control().head()

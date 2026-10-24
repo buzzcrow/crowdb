@@ -30,12 +30,12 @@ def cleanup(client, operation):
     raise AssertionError("cleanup budget")
 
 
-def publish(client, operation, snapshot):
-    request = {"attempt": new_id(), "snapshot": snapshot, "expected_head": client.head()["generation"]}
-    receipt = client.publish_composition(operation, request)
-    assert client.publish_composition(operation, request) == receipt
-    assert client.commit_status(request["attempt"]) is None
-    return receipt
+def publish(client, snapshot, expected_head):
+    request = {"snapshot": snapshot, "expected_head": expected_head}
+    head = client.update_snapshot_head(request)
+    assert head["latest"] == snapshot
+    assert client.update_snapshot_head(request) == head
+    return head
 
 
 def upload_source(client, source, upload_id, length, md5, part_size=1024*1024):
@@ -65,6 +65,13 @@ async def verify_async(endpoint, name, token, snapshot, revision):
     async with AsyncDatasetClient(endpoint, name, token) as owner:
         client = owner.control()
         assert (await client.lifecycle(snapshot))["snapshot"] == snapshot
+        try:
+            await client.update_snapshot_head({"snapshot": snapshot, "expected_head": None})
+        except ConflictError as error:
+            assert error.observed_head["latest"] != snapshot
+            assert error.identity == snapshot
+        else:
+            raise AssertionError("async stale Snapshot update must conflict")
         plan = {"snapshot": snapshot, "selection": {"kind": "all"},
                 "fields": ["value"], "batch_size": 1,
                 "partition": {"worker": 0, "workers": 1, "rank": 0, "world_size": 1},
@@ -105,7 +112,7 @@ def main():
         client.edit_composition(operation, {"edit": new_id(), "expected_revision": "1", "schema": None,
             "samples": [{"kind": "upsert", "id": sample, "fields": [{"name": "value", "value": {"kind": "upload", "id": upload}}]}], "splits": None, "policy": None})
         snapshot = prepare(client, operation, "2")
-        publish(client, operation, snapshot)
+        published_head = publish(client, snapshot, None)
         lifecycle = client.lifecycle(snapshot)
         assert lifecycle["snapshot"] == snapshot and lifecycle["latest"] and not lifecycle["retained"]
         cleanup(client, operation)
@@ -139,7 +146,13 @@ def main():
             "source": {"kind": "split", "source": source.record(), "selection": None}, "schema": None,
             "inherit_parent_splits": True, "parent_split_revision": revision, "splits": [], "policy": None})
         child_snapshot = prepare(client, child, "1")
-        publish(client, child, child_snapshot)
+        child_head = publish(client, child_snapshot, published_head["generation"])
+        try:
+            client.update_snapshot_head({"snapshot": snapshot, "expected_head": None})
+        except ConflictError as error:
+            assert error.observed_head == child_head
+        else:
+            raise AssertionError("stale Snapshot update must conflict")
         cleanup(client, child)
         assert client.summary(child_snapshot)["parent"] == snapshot
     asyncio.run(verify_async(endpoint, name, token, snapshot, revision))

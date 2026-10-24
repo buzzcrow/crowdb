@@ -204,6 +204,11 @@ latest. A head conflict MUST return the observed latest/stable/generation withou
 a confirmation query. A reviewed retry uses that observation with caller-chosen
 content; the server MUST NOT rebase. Unknown storage outcomes MUST propagate.
 Existing legacy receipts remain readable without backfill.
+Direct Snapshot head updates MUST accept the complete Snapshot ID and explicit
+nullable expected generation without an operation or draft identity. They MUST
+preserve stable and require the `snapshot-head-update` capability in portable SDKs.
+Their response and conflict observation use the latest/stable/generation head
+shape. Unsupported direct updates MUST NOT fall back to composition or v1 writes.
 
 Publishing an independent Split revision MUST update only its Snapshot's currentSplit
 pointer with an expected revision/head CAS. It MUST NOT create a data Snapshot or

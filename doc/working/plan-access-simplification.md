@@ -156,10 +156,6 @@ CAS 不再满足只证明“本次条件不成立”，不能谎称“第一次�
   历史回复查询；Composition/Split 的 Committing 恢复与 P2/P3 一起删除，客户端保留完整输入。
   旧记录只作为兼容解码/GC 输入，不让旧账本控制新请求。head 保留 expected base；同一
   candidate 的当前结果可判断相同，已被后续 head 遮住时不保证历史请求结果重放。
-- [ ] **R2.2d Snapshot 直接 REST/SDK 发布入口**：提供只接收完整 Snapshot ID 与显式 nullable
-  expected head 的 head 更新 API、能力和 Rust/Python SDK；不读草稿或使用 attempt ID。
-  SDK 提供 typed observed head，正常/冲突/unknown 请求计数和真实 installed consumer 验证，
-  迁移示例与容器流程；保留父内容不可隐式 rebase、鉴权、删除与不支持时无降级。
 
 - [ ] **R2 审查条件发布的回复丢失窗口**：用 H0→H1→H2 测试区分条件失败、相同结果与历史未知；
   列出确实依赖历史精确结果的调用者，没有这种需求就移除相应 ledger/response replay。
@@ -493,6 +489,21 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，R2.2d**：新增 `PUT .../datasets/{dataset}/head`、
+  `snapshot-head-update` 能力、Rust/Python `update_snapshot_head`；只接收完整 Snapshot ID
+  和必填 nullable expected head，body 上限 4096 字节。不读取草稿、使用 attempt 或写请求
+  账本；不支持能力时 SDK 拒绝写入，不降级。409 提供 typed observed head，Python 同步和
+  异步均保留 Snapshot identity，重试由调用者明确决定。GET head 删除重复读取，由 3G
+  降至 2G；PUT 正常 3G + 1C，相同当前结果/过期条件 3G + 0C。真实 listener 覆盖显式
+  复用观察值、删除资源、缺失、鉴权、错误条件和超限 body，非法输入零存储调用。
+  示例在开始计算前固定 head 条件，新 Dataset 直接使用已知 absent；不会计算后刷新
+  base 强行覆盖并发结果。13 项 native Snapshot/legacy/cost 测试、6 项 listener/consumer
+  测试、独立 SDK 32 项测试和 installed wheel 10 项 Python 测试通过；真实 Rust 和 Python
+  Split consumer 均已改为直接 Snapshot 发布，包含同步/异步冲突。最终 sdist/wheel 位于
+  `.crowdb-runtime/artifacts/sdk-snapshot-head-20261024`。三 crate all-target/all-feature
+  clippy、SDK all-target clippy、两个 workspace fmt、SDK boundary、diff 检查通过，均经
+  pixi。OpenAPI 解析及 338 个本地引用校验通过。新源码容器复验仍由 V2/V4 跟踪。
 
 - **2026-10-24，R2.2c/R1.1**：Snapshot 新发布只写 version 4 fenced head，删除 CA/CR/SC
   写入、head 成功补写和新 Composition Committing/Published 转换。当前同目标确认效果，

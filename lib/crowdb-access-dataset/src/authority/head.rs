@@ -3,8 +3,8 @@
 
 use super::{decode, AuthorityError, VersionedRecord};
 use crate::{
-    key, CommitAttempt, CommitGeneration, DatasetAuthority, DatasetIdentity, HeadRecord, OperationId,
-    SnapshotId, StoredValue,
+    key, CommitAttempt, CommitGeneration, DatasetAuthority, DatasetIdentity, DatasetRecord, HeadRecord,
+    OperationId, SnapshotId, StoredValue,
 };
 use serde::{Deserialize, Serialize};
 
@@ -54,20 +54,14 @@ impl DatasetAuthority {
     /// # Errors
     /// Rejects missing Datasets and malformed or unavailable head records.
     pub async fn inspect_head(&self, identity: &DatasetIdentity) -> Result<DatasetHead, AuthorityError> {
-        self.get_dataset(identity).await?;
-        let Some(stored) = self.store.get(&key::head(identity)?).await? else {
-            return Ok(DatasetHead {
-                latest: None,
-                stable: None,
-                generation: None,
-            });
-        };
-        let head = decode_head(&stored.bytes)?;
-        Ok(DatasetHead {
-            latest: head.latest,
-            stable: head.stable,
-            generation: Some(CommitGeneration::from_head(&stored.bytes)),
-        })
+        let dataset = self
+            .store
+            .get(&key::dataset(identity)?)
+            .await?
+            .ok_or(AuthorityError::NotFound)?;
+        let _: DatasetRecord = decode(&dataset.bytes)?;
+        let stored = self.store.get(&key::head(identity)?).await?;
+        reference(stored.as_ref())
     }
 }
 pub(super) fn decode_head(bytes: &[u8]) -> Result<HeadRecord, AuthorityError> {

@@ -12,7 +12,8 @@ info:
     available under their original routes. Metadata GET routes require
     bounded-inspection; explicit POST inspection preparation requires
     inspection-preparation. Dataset creation, stable/retention changes and receipts
-    require dataset-management; Split lifecycle requires split-revisions; direct Split head updates require split-head-update; versioned
+    require dataset-management; direct Snapshot head updates require snapshot-head-update;
+    Split lifecycle requires split-revisions; direct Split head updates require split-head-update; versioned
     stateless reads require stateless-reads. Upload, composition and Snapshot retirement
     require uploads, composition and snapshot-reclaim respectively, advertised only
     when the upload service is configured. Query parameters are strict and duplicate
@@ -44,6 +45,31 @@ paths:
               schema: {$ref: '#/components/schemas/Head'}
         '404':
           description: Dataset or namespace is unavailable
+    put:
+      operationId: updateSnapshotHead
+      summary: Select a complete Snapshot using an explicit head condition
+      description: >-
+        Requires snapshot-head-update. The input contains only the complete resource ID
+        and explicit nullable expected_head; no draft or attempt identity is read.
+        Stable is preserved. Same-current-target retries confirm the current effect;
+        stale conditions after another publication return observed_head without
+        a confirmation query or implicit content rebase. Unknown outcomes do not
+        create response history. The JSON body is limited to 4096 bytes.
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateSnapshotHead'}
+      responses:
+        '200':
+          description: Current effect confirmed without a historical response receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Head'}
+        default:
+          $ref: '#/components/responses/InspectionError'
   /capabilities:
     get:
       operationId: datasetCapabilities
@@ -1171,6 +1197,15 @@ components:
           type: [string, 'null']
           pattern: '^[0-9a-f]{32}$'
         generation:
+          type: [string, 'null']
+          pattern: '^[0-9a-f]{64}$'
+    UpdateSnapshotHead:
+      type: object
+      additionalProperties: false
+      required: [snapshot, expected_head]
+      properties:
+        snapshot: {$ref: '#/components/schemas/OpaqueId'}
+        expected_head:
           type: [string, 'null']
           pattern: '^[0-9a-f]{64}$'
     Capabilities:

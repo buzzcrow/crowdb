@@ -34,6 +34,7 @@ async fn capabilities_use_existing_auth_and_match_configured_operations() {
         value["capabilities"],
         serde_json::json!([
             "head-inspection",
+            "snapshot-head-update",
             "bounded-inspection",
             "inspection-preparation",
             "dataset-management",
