@@ -4,9 +4,9 @@ use std::sync::Arc;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use crowdb_access_iceberg::catalog::CatalogContext;
 use crowdb_access_iceberg::catalog::{CatalogLifecycle, CatalogRepository, RootState};
-use crowdb_access_iceberg::file::{FileLocation, FileOperation, FileReader, TableLocation};
+use crowdb_access_iceberg::file::{FileLocation, FileOperation, FileReader, FileRepository, TableLocation};
 use crowdb_access_iceberg::gc::{
-    avro_links, metadata_links, AvroMarkCursor, AvroMarkLimits, GcLimits, ReachableFile, ReachableKind,
+    avro_links, metadata_links, AvroMarkCursor, AvroMarkLimits, ReachableFile, ReachableKind,
 };
 use crowdb_access_iceberg::record::StorageRecord;
 use crowdb_access_iceberg::table::storage_head_key;
@@ -38,6 +38,22 @@ struct DeleteEntry {
     key: String,
     #[serde(rename = "VersionId")]
     version_id: Option<String>,
+}
+
+/// Executes the file deletion path with a caller-supplied reference inventory.
+///
+/// # Errors
+/// Rejects retained paths, unavailable reference inventories and unconfirmed marks.
+#[cfg(feature = "test-util")]
+pub async fn mark_unreferenced_file_for_tests(
+    repository: &FileRepository,
+    context: CatalogContext,
+    location: &FileLocation,
+    now_ms: u64,
+    references: Option<&[FileLocation]>,
+) -> Result<(), FileS3ErrorCode> {
+    let references = references.map(|locations| locations.iter().cloned().collect());
+    FileHttp::delete_location(repository, context, location, now_ms, references.as_ref()).await
 }
 
 impl FileHttp {
@@ -126,9 +142,14 @@ impl FileHttp {
             let result = if entry.version_id.is_some() {
                 Err(("InvalidArgument", "Versioned deletion is not supported"))
             } else if let Some(location) = location {
-                match self
-                    .delete_location(root.context, &location, now, references.as_ref().ok())
-                    .await
+                match Self::delete_location(
+                    &self.repository,
+                    root.context,
+                    &location,
+                    now,
+                    references.as_ref().ok(),
+                )
+                .await
                 {
                     Ok(()) => Ok(()),
                     Err(FileS3ErrorCode::Conflict) => {
@@ -172,8 +193,7 @@ impl FileHttp {
         now_ms: u64,
     ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
         let references = self.retained_references(context, location.table()).await?;
-        self.delete_location(context, location, now_ms, Some(&references))
-            .await?;
+        Self::delete_location(&self.repository, context, location, now_ms, Some(&references)).await?;
         Response::builder()
             .status(StatusCode::NO_CONTENT)
             .body(IcebergBody::new(Vec::new()))
@@ -181,39 +201,19 @@ impl FileHttp {
     }
 
     async fn delete_location(
-        &self,
+        repository: &FileRepository,
         context: CatalogContext,
         location: &FileLocation,
         now_ms: u64,
         references: Option<&HashSet<FileLocation>>,
     ) -> Result<(), FileS3ErrorCode> {
-        if let Some(file) = self
-            .repository
-            .load(context, location)
-            .await
-            .map_err(catalog_error)?
-        {
+        if let Some(file) = repository.load(context, location).await.map_err(catalog_error)? {
             let references = references.ok_or(FileS3ErrorCode::SlowDown)?;
             if references.contains(location) {
                 return Err(FileS3ErrorCode::Conflict);
             }
-            let deleted = self
-                .repository
+            repository
                 .mark_deleted(context, &file, now_ms)
-                .await
-                .map_err(catalog_error)?;
-            self.gc
-                .claim_deleted_file(context, &deleted, now_ms, GcLimits::default())
-                .await
-                .map_err(catalog_error)?;
-        } else if let Some(deleted) = self
-            .repository
-            .deleted(context, location)
-            .await
-            .map_err(catalog_error)?
-        {
-            self.gc
-                .claim_deleted_file(context, &deleted, now_ms, GcLimits::default())
                 .await
                 .map_err(catalog_error)?;
         }
