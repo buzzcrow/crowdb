@@ -239,29 +239,56 @@ async fn upload_paging_abort_and_reattachment_preserve_exact_identity() {
 }
 
 #[tokio::test]
-async fn confirmed_lost_multipart_replies_do_not_repeat_data_writes() {
+async fn lost_multipart_mutations_return_uncertain_and_explicit_completion_retry_keeps_data() {
     let loss = Arc::new(AtomicBool::new(false));
-    let (runtime, client, backend) = fixture(Some(loss.clone())).await;
+    let gate = Arc::new(metadata::TestMutationGate::default());
+    let (runtime, client, backend) =
+        fixture::fixture_with_metadata(metadata::client_with_loss_and_gate(loss.clone(), gate.clone()).await)
+            .await;
+    let reads = gate.reads.load(Ordering::Acquire);
+    let mutations = gate.writes.load(Ordering::Acquire);
     loss.store(true, Ordering::Release);
+    assert!(matches!(
+        client
+            .begin_multipart(context(10), b"bucket", b"uncertain-create", attributes())
+            .await,
+        Err(Error::UncertainMutation { request_id: 10, .. })
+    ));
+    // The first index write lost its reply. No confirmation read or second
+    // creation mutation follows that unknown outcome.
+    assert_eq!(gate.reads.load(Ordering::Acquire) - reads, 1);
+    assert_eq!(gate.writes.load(Ordering::Acquire) - mutations, 1);
+    assert_eq!(backend.writes.load(Ordering::Acquire), 0);
+    assert_eq!(runtime.resources().status().requests, 0);
+    loss.store(false, Ordering::Release);
     let upload = client
-        .begin_multipart(context(10), b"bucket", b"confirmed", attributes())
+        .begin_multipart(context(11), b"bucket", b"confirmed", attributes())
         .await
         .unwrap();
-    let saved = part(&runtime, &client, &upload, 1, b"retained".to_vec(), 11).await;
+    let saved = part(&runtime, &client, &upload, 1, b"retained".to_vec(), 12).await;
     let writes = backend.writes.load(Ordering::Acquire);
+    loss.store(true, Ordering::Release);
+    assert!(matches!(
+        client
+            .complete_multipart(context(13), &upload, &[selection(&saved)])
+            .await,
+        Err(Error::UncertainMutation { request_id: 13, .. })
+    ));
+    assert_eq!(backend.writes.load(Ordering::Acquire), writes);
+    assert_eq!(runtime.resources().status().requests, 0);
+    loss.store(false, Ordering::Release);
     let completed = client
-        .complete_multipart(context(12), &upload, &[selection(&saved)])
+        .complete_multipart(context(14), &upload, &[selection(&saved)])
         .await
         .unwrap();
     assert_eq!(
         client
-            .complete_multipart(context(13), &upload, &[selection(&saved)])
+            .complete_multipart(context(15), &upload, &[selection(&saved)])
             .await
             .unwrap(),
         completed
     );
     assert_eq!(backend.writes.load(Ordering::Acquire), writes);
-    loss.store(false, Ordering::Release);
     assert_eq!(read(&client, b"confirmed").await, b"retained");
     assert_eq!(runtime.resources().status().requests, 0);
     runtime.shutdown().await.unwrap();
