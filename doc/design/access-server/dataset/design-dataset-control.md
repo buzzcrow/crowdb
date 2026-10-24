@@ -100,18 +100,26 @@ new chunk patches must be valid managed upload locators.
 Resource prefixes and the immutable Snapshot record expose interrupted output to
 owner retirement. Existing member pages are sealed after the grace period, and
 recomputation cannot complete a retired Snapshot. Independent unused-resource
-expiry and discovery of arbitrarily late unseen keys remain separate work. The
-REST/SDK Composition workflow below still uses the legacy path until migration;
-the new native operation does not call it.
+expiry and discovery of arbitrarily late unseen keys remain separate work.
+`PUT snapshots/{snapshot}` exposes this operation with `composition-preparation`,
+when an upload service is configured. Rust `PrepareSnapshot` and sync/async Python
+`prepare_snapshot` preserve the same ID/input and never query workflow status or
+downgrade. Explicit nullable parent/schema and strict DTOs reject process IDs.
+Upload values carry id/length/md5, converted to locators without a metadata query;
+the authority checks each unique upload before claiming it. Descriptor mismatches
+return conflict. HTTP body/input/Manifest are bounded to 8 MiB. Declared oversized
+bodies use the existing bounded discard before response, avoiding an unread-body
+reset that can truncate the 413 JSON. Composition and standalone Split workflow
+writes return 501 before storage access, and the workflow SDK methods are removed.
+Only legacy HTTP observation, abandonment and cleanup remain for existing records.
 
-`CompositionRecord` persists the operation, input revision, source, pinned parent
-Split revision, edits, evaluation progress, candidate and ownership state. Edits
-use expected-revision CAS and immutable edit receipts. Historical retries return
-their original draft result; current status is a separate read.
-Status reads load only the stored draft and never help edit receipts, query commit
-ledgers or advance publication state. A legacy Committing phase is returned as
-Prepared for an explicit caller retry; the stored bytes remain unchanged. A status
-response does not establish whether that historical request selected the head.
+Legacy `CompositionRecord` stores old input revisions, source IDs, edits, work
+progress, candidate and ownership lists. These formats remain cleanup inputs;
+current routes neither append edits nor resume them. Status only reads the stored
+draft and never helps receipts, queries commit ledgers or advances publication.
+Legacy Committing is presented as Prepared without changing stored bytes. A caller
+may select an already complete resource with a direct head update; the status does
+not prove that a historical request selected the head.
 
 The default source is all parent Samples. Selection filters and a frozen named
 Split can restrict the source, with their intersection when both are present.
@@ -129,12 +137,11 @@ fields from an ancestor and report that ancestor as the source. An unchanged
 required field must remain represented in the final complete membership. Tombstone, missing and empty inline
 value remain distinct. The current Schema contains only version/name/requiredness.
 
-Evaluation advances revision-bound windows of at most twenty Samples. Durable
-redo windows precede row writes; CAS progress and content bindings prevent stale
-work from becoming the accepted result. Preparation validates the server-assembled
-Manifest, initial Split set and all candidate upload claims before publication.
-The complete resource root makes data and initial Splits available together; the
-independent data head transition selects that resource as latest.
+Computation reads windows of at most twenty Samples into a bounded request-local
+Manifest builder. It writes final content directly; no redo window or working row
+precedes it. Final resource keys reject conflicting immutable content. The complete
+root makes data and initial Splits available together, and the independent data
+head transition selects that resource as latest.
 
 ## 3. Split evaluation and publication
 
@@ -190,9 +197,10 @@ Python `prepare_split_revision` retain the exact resource ID and complete input 
 retry; an error carries the revision identity. Missing capability never invokes a
 draft or v1 mutation. Standalone begin/edit/evaluate/prepare/publish workflow routes
 return 501 before storage access; SDK workflow methods are removed. Only legacy
-draft observation, abandonment and cleanup remain for existing records. Composition
-initial Split computation still uses its internal work records until that flow is
-replaced; the standalone route never invokes it.
+draft observation, abandonment and cleanup remain for existing records. Initial Split computation in `prepare_snapshot` shares the same pure result
+preparation against its fixed incomplete owner; it writes no draft or progress.
+Legacy internal draft drivers remain for migration/cleanup and are not called by
+the resource preparation routes.
 `PUT snapshots/{snapshot}/split-head` accepts the target revision and both explicit
 nullable expected revision/generation. It requires the `split-head-update`
 capability and has no draft or attempt identity. The failed head condition is
@@ -280,31 +288,27 @@ protects any indexed child without terminal retirement, including an incomplete
 child awaiting cleanup. Thus deletion either observes the child or the child's
 last parent check rejects completion. Readers never register in this protocol.
 
-Uploads are Dataset-scoped and content-verified. Composition registers staging and
-candidate upload IDs durably before claims. Publication is gated on complete ownership
-preparation, including unchanged shared parent uploads. Retiring one owner never
-releases a different owner; permanent owner revocation rejects delayed claims.
+Uploads are Dataset-scoped and content-verified. Resource preparation claims only
+the final Snapshot owner for each unique managed upload in its final Manifest,
+including unchanged parent uploads. Completion requires all those owners. The
+Manifest supplies cleanup's owner references without a second process list.
+Retiring one owner preserves other owners; permanent revocation rejects delayed
+claims. Legacy staging/candidate lists remain cleanup inputs for old records.
 
-Abandonment first fences the draft, then cleanup proceeds in bounded resumable steps.
-Obsolete evaluation pages and candidates use durable cursors. Cleanup seals possible
-late write keys, including currently absent keys, rather than deleting a value and
-allowing a stale CAS(None) writer to recreate it. Edit IDs are registered before
-payload writes so failed admissions can also be retired. Small receipt/fence records
-remain after bulk cleanup to preserve replay and non-resurrection guarantees.
-Split publication does not create those replay records; existing records and
-editing/evaluation cleanup remain compatibility inputs.
-Helping an already stored edit receipt only reads and validates it; retries do not
-submit a doomed CAS for the same bytes. Evaluation journals and cleanup cursors
-are scoped to one draft, not to unrelated readers. They retain exact partial-work
-recovery and prevent a delayed writer from reviving cleaned candidate data.
+Legacy draft abandonment and cleanup use their existing bounded cursors and seals
+for old work, including keys that could still receive delayed writes. Stored edit
+receipts and progress can be decoded and reclaimed, but resource preparation never
+creates or resumes them. Their independent discovery and replacement remain part
+of migration work; removing the last discovery path would lose owned garbage.
+
 Split cleanup competes with preparation on the final revision key. If the complete
 root already exists, including a root returned by a failed cleanup CAS, cleanup
 preserves its member pages and summary while retiring evaluation intents. If
 cleanup seals an absent root first, a delayed preparation cannot publish it.
 Abandoning the draft does not delete an already complete revision. Retiring the
 owning Snapshot still permits revision cleanup and closes new read admission.
-Sources use read-only availability checks. The compatibility
-`source_lease_deadline` field is zero for new drafts and edits.
+Sources use read-only availability checks. Legacy `source_lease_deadline` is only
+a compatibility field; resource preparation has no reader lease or draft.
 
 Snapshot reclaim checks latest/stable, retained Snapshots, live children, candidate
 ownership under a terminal owner fence. A durable five-minute grace deadline

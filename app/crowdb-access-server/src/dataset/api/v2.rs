@@ -4,8 +4,8 @@
 //! Capability-gated control API. Unsupported operations never fall back to v1.
 
 mod auxiliary;
-mod composition_fields;
 mod composition_models;
+mod composition_preparation;
 mod composition_responses;
 mod compositions;
 mod heads;
@@ -54,7 +54,7 @@ impl DatasetHttpService {
                 "stateless-reads",
             ];
             if self.uploads.is_some() {
-                capabilities.extend(["uploads", "composition", "snapshot-reclaim"]);
+                capabilities.extend(["uploads", "composition-preparation", "snapshot-reclaim"]);
             }
             return json(&Capabilities {
                 api_version: 2,
@@ -89,6 +89,11 @@ impl DatasetHttpService {
                     return self
                         .v2_exact_matrix(&identity, super::snapshot(id)?, request)
                         .await;
+                }
+            }
+            if let ["snapshots", id] = tail.as_slice() {
+                if request.method() == Method::PUT {
+                    return self.v2_prepare_snapshot(&identity, id, request).await;
                 }
             }
             if tail.first() == Some(&"compositions") {

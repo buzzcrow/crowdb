@@ -363,6 +363,16 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
   source/继承 revision 显式固定，移除隐式 currentSplit 续算。迁移 HTTP/SDK/容器的全部
   Composition 写调用者后关闭 begin/edit/evaluate/prepare/publish；保留必要 legacy decoder/GC
   到 P13，不能用包装旧方法代替删除工作状态。补成本、鉴权、错误、丢回复与重启验收。
+  REST/SDK、调用者迁移和旧写入口关闭已实现；11 项 HTTP/Rust consumer、36 项独立源码
+  包测试、12 项 installed Python 单测及真实 sync/async consumer 通过；已移除 SDK
+  workflow DTO/方法；OpenAPI 294 个本地引用有效。单 sample+
+  初始 Split 的 HTTP 准备为 12G/16C；同一 upload 在两个字段出现仍只读两次 U 元数据
+  （一次唯一 descriptor 校验，一次 claim），无 DTO 补查。错误 descriptor 返回 409、零写。
+  修复声明过大 body 提前拒绝时未读 body 导致 413 JSON 被连接 reset 截断，复用现有有界
+  drain，不放宽 body/存储限制。Dataset/Access/e2e-test 与独立 SDK all-target clippy、fmt、
+  boundary、diff 通过，均经 pixi；wheel 为 `.crowdb-runtime/artifacts/sdk-composition-preparation-20261024`。
+  当前镜像尚未更新到此批，待新镜像验收后关闭；Native 旧 forward driver 与 legacy GC/
+  decoder 的最终删除仍在 P2.2/P3.2/P13。
 - [ ] **P2.2 删除服务端编辑/计算过程**：删除 durable 编辑/进度阶段，客户端失败重新请求；
   保持发布前不可见、expected head 及源 Snapshot 被删时的明确错误。孤儿清理通过 R4 验证，例外封口记录先 review。Files: `composition/`、Access v2 composition、SDK 和恢复测试。
 

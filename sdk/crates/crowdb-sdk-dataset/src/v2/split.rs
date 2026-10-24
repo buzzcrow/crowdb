@@ -92,36 +92,12 @@ pub struct SplitRevision {
     pub splits: Vec<PublishedSplit>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SplitValidation {
-    pub scanned: Decimal,
-    pub assigned: Decimal,
-    pub unassigned: Decimal,
-    pub overlapping: Decimal,
-    pub unassigned_examples: Vec<SampleId>,
-    pub overlap_examples: Vec<SampleId>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SplitPreview {
-    pub input_revision: Decimal,
-    pub next_page: Decimal,
-    pub complete: bool,
-    pub member_counts: Vec<Decimal>,
-    pub validation: SplitValidation,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SplitHead {
     #[serde(deserialize_with = "required_option")]
     pub revision: Option<OpaqueId>,
     #[serde(deserialize_with = "required_option")]
     pub generation: Option<Generation>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SplitCleanup {
-    pub input_revision: Decimal,
-    pub next_page: Decimal,
-    pub complete: bool,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SplitRevisionSummary {
     pub snapshot: OpaqueId,

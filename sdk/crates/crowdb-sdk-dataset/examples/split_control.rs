@@ -58,18 +58,8 @@ async fn import(client: &v2::ControlClient) -> Result<(v2::OpaqueId, v2::OpaqueI
     client.upload_reader(&mut &b"data"[..], &upload).await?;
     assert!(client.upload_reader(&mut &b"date"[..], &upload).await.is_err());
     let sample = v2::SampleId::new(vec![0, 255, 128])?;
-    let operation = v2::OpaqueId::random();
-    let splits = vec![v2::DraftSplit {
-        name: "train/a b".into(),
-        definition: v2::SplitDefinition::Selection {
-            predicate: v2::Predicate::Explicit {
-                ids: vec![sample.clone()],
-            },
-        },
-        origin: v2::SplitOrigin::Evaluated,
-    }];
-    let begin = v2::BeginComposition {
-        operation: operation.clone(),
+    let snapshot = v2::OpaqueId::random();
+    let prepare = v2::PrepareSnapshot {
         parent: None,
         source: v2::CompositionSource::All,
         schema: Some(v2::Schema {
@@ -79,34 +69,33 @@ async fn import(client: &v2::ControlClient) -> Result<(v2::OpaqueId, v2::OpaqueI
                 required: true,
             }],
         }),
-        inherit_parent_splits: false,
-        parent_split_revision: None,
-        splits,
-        policy: None,
-    };
-    client.begin_composition(&begin).await?;
-    let edit = v2::EditComposition {
-        edit: v2::OpaqueId::random(),
-        expected_revision: 1.into(),
-        schema: None,
-        samples: vec![v2::SampleChange::Upsert {
+        samples: vec![v2::SnapshotChange::Upsert {
             id: sample.clone(),
-            fields: vec![v2::Field {
+            fields: vec![v2::SnapshotField {
                 name: "value".into(),
-                value: v2::FieldValue::Upload { id: upload.id },
+                value: v2::SnapshotValue::Upload {
+                    id: upload.id.clone(),
+                    length: upload.length,
+                    md5: upload.md5.clone(),
+                },
             }],
         }],
-        splits: None,
-        policy: None,
+        splits: vec![v2::DraftSplit {
+            name: "train/a b".into(),
+            definition: v2::SplitDefinition::Selection {
+                predicate: v2::Predicate::Explicit {
+                    ids: vec![sample.clone()],
+                },
+            },
+            origin: v2::SplitOrigin::Evaluated,
+        }],
+        policy: v2::SplitPolicy::default(),
     };
-    let edited = client.edit_composition(&operation, &edit).await?;
-    assert_eq!(edited.revision, 2.into());
+    let prepared = client.prepare_snapshot(&snapshot, &prepare).await?;
     assert_eq!(
-        client.edit_composition(&operation, &edit).await?.revision,
-        edited.revision
+        client.prepare_snapshot(&snapshot, &prepare).await?.snapshot,
+        snapshot
     );
-    let prepared = prepare(client, &operation, edited.revision).await?;
-    let snapshot = prepared.preparation.unwrap().snapshot;
     let request = v2::UpdateSnapshotHead {
         snapshot: snapshot.clone(),
         expected_head: None,
@@ -120,58 +109,10 @@ async fn import(client: &v2::ControlClient) -> Result<(v2::OpaqueId, v2::OpaqueI
         client.update_snapshot_head(&request).await?.generation,
         head.generation
     );
-    cleanup(client, &operation).await?;
-    let revision = client.split_head(&snapshot).await?.revision.unwrap();
+    let revision = prepared.initial_split.unwrap();
     Ok((snapshot, revision, sample))
 }
 
-async fn prepare(
-    client: &v2::ControlClient,
-    operation: &v2::OpaqueId,
-    revision: v2::Decimal,
-) -> Result<v2::CompositionDraft> {
-    let mut page = 0.into();
-    let mut done = false;
-    for _ in 0..100 {
-        let preview = client
-            .evaluate_composition(
-                operation,
-                &v2::EvaluateDraft {
-                    expected_revision: revision,
-                    expected_page: page,
-                },
-            )
-            .await?;
-        if preview.complete {
-            done = true;
-            break;
-        }
-        page = preview.next_page;
-    }
-    assert!(done, "composition evaluation exceeded the example's work budget");
-    for _ in 0..100 {
-        let draft = client
-            .prepare_composition(
-                operation,
-                &v2::DraftRevision {
-                    expected_revision: revision,
-                },
-            )
-            .await?;
-        if draft.uploads.publication_ready {
-            return Ok(draft);
-        }
-    }
-    Err("composition preparation exceeded the example's work budget".into())
-}
-async fn cleanup(client: &v2::ControlClient, operation: &v2::OpaqueId) -> Result<()> {
-    for _ in 0..100 {
-        if client.cleanup_composition(operation).await?.complete {
-            return Ok(());
-        }
-    }
-    Err("cleanup exceeded the example's work budget".into())
-}
 async fn inspect(client: &v2::ControlClient, snapshot: &v2::OpaqueId, sample: &v2::SampleId) -> Result<()> {
     assert_eq!(client.summary(snapshot).await?.sample_count, 1.into());
     assert!(client.contains(snapshot, sample).await?);
@@ -264,27 +205,39 @@ async fn revise_splits(
 }
 async fn branch(client: &v2::ControlClient, source: v2::SplitSource) -> Result<v2::OpaqueId> {
     let expected_head = client.head().await?.generation;
-    let operation = v2::OpaqueId::random();
-    client
-        .begin_composition(&v2::BeginComposition {
-            operation: operation.clone(),
-            parent: Some(source.snapshot.clone()),
-            source: v2::CompositionSource::Split {
-                source: source.clone(),
-                selection: None,
+    let snapshot = v2::OpaqueId::random();
+    let inherited = client.split_revision(&source.snapshot, &source.revision).await?;
+    let policy = inherited.policy;
+    let splits = inherited
+        .splits
+        .into_iter()
+        .map(|split| v2::DraftSplit {
+            origin: v2::SplitOrigin::Inherited {
+                source: v2::SplitSource {
+                    name: split.name.clone(),
+                    ..source.clone()
+                },
             },
-            schema: None,
-            inherit_parent_splits: true,
-            parent_split_revision: Some(source.revision),
-            splits: vec![],
-            policy: None,
+            name: split.name,
+            definition: split.definition,
         })
+        .collect();
+    client
+        .prepare_snapshot(
+            &snapshot,
+            &v2::PrepareSnapshot {
+                parent: Some(source.snapshot.clone()),
+                source: v2::CompositionSource::Split {
+                    source: source.clone(),
+                    selection: None,
+                },
+                schema: None,
+                samples: Vec::new(),
+                splits,
+                policy,
+            },
+        )
         .await?;
-    let snapshot = prepare(client, &operation, 1.into())
-        .await?
-        .preparation
-        .unwrap()
-        .snapshot;
     client
         .update_snapshot_head(&v2::UpdateSnapshotHead {
             snapshot: snapshot.clone(),
@@ -302,7 +255,6 @@ async fn branch(client: &v2::ControlClient, source: v2::SplitSource) -> Result<v
         v2::Head::from_conflict(&error).unwrap().latest,
         Some(snapshot.clone())
     );
-    cleanup(client, &operation).await?;
     Ok(snapshot)
 }
 async fn read_split(

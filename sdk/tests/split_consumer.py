@@ -11,25 +11,6 @@ from crowdb_dataset import DatasetClient, AsyncDatasetClient, SplitSource, new_i
 from crowdb_dataset.client import ConflictError
 
 
-def prepare(client, operation, revision):
-    page = "0"
-    for _ in range(100):
-        preview = client.evaluate_composition(operation, revision, page)
-        if preview["complete"]: break
-        page = preview["next_page"]
-    else: raise AssertionError("composition evaluation budget")
-    for _ in range(100):
-        draft = client.prepare_composition(operation, revision)
-        if draft["uploads"]["publication_ready"]: return draft["preparation"]["snapshot"]
-    raise AssertionError("composition preparation budget")
-
-
-def cleanup(client, operation):
-    for _ in range(100):
-        if client.cleanup_composition(operation)["complete"]: return
-    raise AssertionError("cleanup budget")
-
-
 def publish(client, snapshot, expected_head):
     request = {"snapshot": snapshot, "expected_head": expected_head}
     head = client.update_snapshot_head(request)
@@ -61,9 +42,10 @@ def upload_source(client, source, upload_id, length, md5, part_size=1024*1024):
     return client.complete_upload(upload_id)
 
 
-async def verify_async(endpoint, name, token, snapshot, revision, prepared_revision):
+async def verify_async(endpoint, name, token, snapshot, revision, prepared_revision, snapshot_input):
     async with AsyncDatasetClient(endpoint, name, token) as owner:
         client = owner.control()
+        assert (await client.prepare_snapshot(snapshot, snapshot_input))["snapshot"] == snapshot
         assert (await client.lifecycle(snapshot))["snapshot"] == snapshot
         prepared = await client.prepare_split_revision(snapshot, prepared_revision, {
             "policy": {"overlap": "disjoint", "coverage": "allow_unassigned"}, "splits": []})
@@ -107,18 +89,19 @@ def main():
         upload, data = new_id(), b"external source"
         for _ in range(2):
             upload_source(client, io.BytesIO(data), upload, len(data), hashlib.md5(data).hexdigest(), 4)
-        operation, sample = new_id(), sample_id(b"\x00\xff\x80")
+        snapshot, sample = new_id(), sample_id(b"\x00\xff\x80")
         split = {"name": "train/a b", "definition": {"kind": "selection", "predicate": {"kind": "all"}}, "origin": {"kind": "evaluated"}}
-        client.begin_composition({"operation": operation, "parent": None, "source": {"kind": "all"},
+        snapshot_input = {"parent": None, "source": {"kind": "all"},
             "schema": {"version": 1, "fields": [{"name": "value", "required": True}]},
-            "inherit_parent_splits": False, "parent_split_revision": None, "splits": [split], "policy": None})
-        client.edit_composition(operation, {"edit": new_id(), "expected_revision": "1", "schema": None,
-            "samples": [{"kind": "upsert", "id": sample, "fields": [{"name": "value", "value": {"kind": "upload", "id": upload}}]}], "splits": None, "policy": None})
-        snapshot = prepare(client, operation, "2")
+            "samples": [{"kind": "upsert", "id": sample, "fields": [{"name": "value", "value": {
+                "kind": "upload", "id": upload, "length": str(len(data)), "md5": hashlib.md5(data).hexdigest()}}]}],
+            "splits": [split], "policy": {"overlap": "disjoint", "coverage": "allow_unassigned"}}
+        prepared = client.prepare_snapshot(snapshot, snapshot_input)
+        assert prepared["snapshot"] == snapshot
+        assert client.prepare_snapshot(snapshot, snapshot_input) == prepared
         published_head = publish(client, snapshot, None)
         lifecycle = client.lifecycle(snapshot)
         assert lifecycle["snapshot"] == snapshot and lifecycle["latest"] and not lifecycle["retained"]
-        cleanup(client, operation)
         head = client.split_head(snapshot)
         revision = head["revision"]
         assert client.matrix(snapshot, [sample], ["value"])["entries"][0]["fields"][0]["length"] == str(len(data))
@@ -138,11 +121,13 @@ def main():
         assert client.head()["latest"] == snapshot
         source = SplitSource(snapshot, revision, "train/a b")
         assert next(client.pages("split_members", source=source))["entries"] == [sample]
-        child = new_id()
-        client.begin_composition({"operation": child, "parent": snapshot,
+        child_snapshot = new_id()
+        frozen = client.split_revision(snapshot, revision)
+        inherited = [{"name": item["name"], "definition": item["definition"], "origin": {
+            "kind": "inherited", "source": SplitSource(snapshot, revision, item["name"]).record()}} for item in frozen["splits"]]
+        client.prepare_snapshot(child_snapshot, {"parent": snapshot,
             "source": {"kind": "split", "source": source.record(), "selection": None}, "schema": None,
-            "inherit_parent_splits": True, "parent_split_revision": revision, "splits": [], "policy": None})
-        child_snapshot = prepare(client, child, "1")
+            "samples": [], "splits": inherited, "policy": frozen["policy"]})
         child_head = publish(client, child_snapshot, published_head["generation"])
         try:
             client.update_snapshot_head({"snapshot": snapshot, "expected_head": None})
@@ -150,9 +135,8 @@ def main():
             assert error.observed_head == child_head
         else:
             raise AssertionError("stale Snapshot update must conflict")
-        cleanup(client, child)
         assert client.summary(child_snapshot)["parent"] == snapshot
-    asyncio.run(verify_async(endpoint, name, token, snapshot, revision, candidate["revision"]))
+    asyncio.run(verify_async(endpoint, name, token, snapshot, revision, candidate["revision"], snapshot_input))
     print("installed Python Split SDK round trip passed", flush=True)
 
 

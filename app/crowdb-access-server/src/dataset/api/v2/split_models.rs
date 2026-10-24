@@ -20,7 +20,9 @@ pub(super) fn decimal(value: &str) -> Result<u64, ApiError> {
     }
     value.parse().map_err(|_| ApiError::invalid())
 }
-pub(super) fn required_option<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+pub(super) fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
     Option::deserialize(d)
 }
 

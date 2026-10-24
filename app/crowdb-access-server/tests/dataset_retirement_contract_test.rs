@@ -19,26 +19,11 @@ async fn retirement_respects_retention_and_finishes_split_and_composition_cleanu
     let client = Client::new();
     let (root, old) = common::fixture(&client, &test.origin).await;
     let revision = common::prepare(&client, &root, &old, "16161616161616161616161616161616", false).await;
-    let operation = "17171717171717171717171717171717";
-    let draft = format!("{root}/compositions/{operation}");
-    response(
-        client
-            .post(format!("{root}/compositions"))
-            .json(&composition::begin(operation, &Value::Null)),
-        200,
-    )
-    .await;
-    response(client.put(&draft).json(&json!({"edit":"18181818181818181818181818181818","expected_revision":"1","samples":[{"kind":"upsert","id":"YQ==","fields":[{"name":"value","value":{"kind":"inline","data":"Yg=="}}]}]})),200).await;
-    let prepared = composition::prepare(&client, &draft, "2", "1").await;
-    composition::publish(
-        &client,
-        &root,
-        &draft,
-        &prepared,
-        "19191919191919191919191919191919",
-    )
-    .await;
-    composition::cleanup(&client, &draft).await;
+    let head = response(client.get(format!("{root}/head")), 200).await;
+    let mut input = composition::input(&Value::Null);
+    input["samples"] = json!([{"kind":"upsert","id":"YQ==","fields":[{"name":"value","value":{"kind":"inline","data":"Yg=="}}]}]);
+    let prepared = composition::prepare(&client, &root, "17171717171717171717171717171717", &input).await;
+    composition::publish(&client, &root, &prepared, &head["generation"]).await;
     let snapshot = format!("{root}/snapshots/{old}");
     response(client.post(format!("{snapshot}/retain")), 200).await;
     response(client.post(format!("{snapshot}/reclaim")), 409).await;
@@ -69,7 +54,7 @@ async fn retirement_respects_retention_and_finishes_split_and_composition_cleanu
     response(client.get(format!("{snapshot}/summary")), 404).await;
     assert_eq!(
         response(client.get(format!("{root}/head")), 200).await["latest"],
-        prepared["preparation"]["snapshot"]
+        prepared["snapshot"]
     );
     drop(client);
     test.stop().await;

@@ -8,7 +8,7 @@ use super::{
     split_responses,
 };
 use crowdb_access_dataset::{
-    composition::{CompositionDraft, CompositionError, CompositionPreview, CompositionUploadStatus},
+    composition::{CompositionDraft, CompositionError, CompositionUploadStatus},
     SnapshotReclaimError, UploadReclaimError,
 };
 use hyper::StatusCode;
@@ -21,9 +21,7 @@ pub(super) fn draft(d: CompositionDraft, uploads: &CompositionUploadStatus) -> V
         "preparation":d.preparation.map(|p| json!({"snapshot":p.candidate.to_string(), "split_preview":p.split_preview.map(split_responses::preview)})),
         "uploads":{"publication_ready":uploads.publication_ready, "staged_uploads":uploads.staged_uploads.to_string(), "candidate_uploads":uploads.candidate_uploads.to_string()}})
 }
-pub(super) fn preview(p: &CompositionPreview) -> Value {
-    json!({"input_revision":p.input_revision.to_string(), "next_page":p.next_page.to_string(), "members":p.members.to_string(), "complete":p.complete, "binding":hex::encode(p.binding)})
-}
+
 impl From<CompositionError> for ApiError {
     fn from(error: CompositionError) -> Self {
         match error {

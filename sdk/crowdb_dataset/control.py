@@ -60,18 +60,7 @@ class ControlClient:
     def preview(self, snapshot, sample, field, max_bytes=65536):
         return self._call("preview", {"id": snapshot, "sample": sample, "field": field, "max_bytes": max_bytes})
 
-    def begin_composition(self, request): return self._call("begin_composition", {"request": request})
-    def composition(self, operation): return self._call("composition", {"id": operation})
-    def edit_composition(self, operation, request): return self._call("edit_composition", {"id": operation, "request": request})
-    def evaluate_composition(self, operation, expected_revision, expected_page):
-        return self._call("evaluate_composition", {"id": operation, "request": {"expected_revision": expected_revision, "expected_page": expected_page}})
-    def prepare_composition(self, operation, expected_revision):
-        return self._call("prepare_composition", {"id": operation, "request": {"expected_revision": expected_revision}})
-    def publish_composition(self, operation, request): return self._call("publish_composition", {"id": operation, "request": request})
-    def abandon_composition(self, operation, expected_revision):
-        return self._call("abandon_composition", {"id": operation, "request": {"expected_revision": expected_revision}})
-    def cleanup_composition(self, operation): return self._call("cleanup_composition", {"id": operation})
-
+    def prepare_snapshot(self, snapshot, request): return self._call("prepare_snapshot", {"id": snapshot, "request": request})
     def prepare_split_revision(self, snapshot, revision, request):
         return self._call("prepare_split_revision", {"id": snapshot, "revision": revision, "request": request})
     def update_split_head(self, snapshot, request): return self._call("update_split_head", {"id": snapshot, "request": request})

@@ -5,7 +5,12 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
 pub(super) async fn dispatch(client: DatasetClient, name: &str, args: &str) -> Result<String, Error> {
-    if args.len() > 1024 * 1024 {
+    let max_bytes = if name == "prepare_snapshot" {
+        8 * 1024 * 1024 + 64 * 1024
+    } else {
+        1024 * 1024
+    };
+    if args.len() > max_bytes {
         return Err(Error::Limit);
     }
     if name == "capabilities" {
@@ -62,14 +67,7 @@ pub(super) async fn dispatch(client: DatasetClient, name: &str, args: &str) -> R
 async fn lifecycle(client: &v2::ControlClient, name: &str, value: &Value) -> Result<Option<String>, Error> {
     let id = || id(value, "id");
     let result = match name {
-        "begin_composition" => encode(&client.begin_composition(&request(value)?).await?),
-        "composition" => encode(&client.composition(&id()?).await?),
-        "edit_composition" => encode(&client.edit_composition(&id()?, &request(value)?).await?),
-        "evaluate_composition" => encode(&client.evaluate_composition(&id()?, &request(value)?).await?),
-        "prepare_composition" => encode(&client.prepare_composition(&id()?, &request(value)?).await?),
-        "publish_composition" => encode(&client.publish_composition(&id()?, &request(value)?).await?),
-        "abandon_composition" => encode(&client.abandon_composition(&id()?, &request(value)?).await?),
-        "cleanup_composition" => encode(&client.cleanup_composition(&id()?).await?),
+        "prepare_snapshot" => encode(&client.prepare_snapshot(&id()?, &request(value)?).await?),
         "prepare_split_revision" => encode(
             &client
                 .prepare_split_revision(&id()?, &self::id(value, "revision")?, &request(value)?)

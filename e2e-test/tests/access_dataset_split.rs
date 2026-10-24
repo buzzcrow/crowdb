@@ -39,42 +39,25 @@ async fn split_commit_restart_preserves_candidates_receipts_and_historical_membe
         .build()
         .unwrap();
     call(&client, Method::PUT, "", None, 200).await;
-    let operation = "21212121212121212121212121212121";
-    let draft = format!("/compositions/{operation}");
-    let definitions = json!([{"name":"train","definition":{"kind":"selection","predicate":{"kind":"all"}},"origin":{"kind":"evaluated"}}]);
-    let begin = json!({"operation":operation,"parent":null,"source":{"kind":"all"},"schema":{"version":1,"fields":[{"name":"value","required":true}]},"inherit_parent_splits":false,"parent_split_revision":null,"splits":definitions,"policy":null});
-    call(&client, Method::POST, "/compositions", Some(&begin), 200).await;
-    let edit = json!({"edit":"22222222222222222222222222222222","expected_revision":"1","samples":[{"kind":"upsert","id":"AAH/","fields":[{"name":"value","value":{"kind":"inline","data":"ZGF0YQ=="}}]}]});
-    call(&client, Method::PUT, &draft, Some(&edit), 200).await;
+    let snapshot = "21212121212121212121212121212121";
+    let resource = format!("/snapshots/{snapshot}");
+    let input = json!({"parent":null,"source":{"kind":"all"},"schema":{"version":1,"fields":[{"name":"value","required":true}]},
+        "samples":[{"kind":"upsert","id":"AAH/","fields":[{"name":"value","value":{"kind":"inline","data":"ZGF0YQ=="}}]}],
+        "splits":[{"name":"train","definition":{"kind":"selection","predicate":{"kind":"all"}},"origin":{"kind":"evaluated"}}],
+        "policy":{"overlap":"disjoint","coverage":"allow_unassigned"}});
+    let prepared = call(&client, Method::PUT, &resource, Some(&input), 200).await;
     restart().await;
     assert_eq!(
-        call(&client, Method::PUT, &draft, Some(&edit), 200).await["revision"],
-        "2"
+        call(&client, Method::PUT, &resource, Some(&input), 200).await,
+        prepared
     );
-    let prepared = prepare(&client, &draft).await;
-    let snapshot = prepared["preparation"]["snapshot"].as_str().unwrap();
     complete_result_survives_restart(&client, snapshot).await;
-    let publish =
-        json!({"attempt":"23232323232323232323232323232323","snapshot":snapshot,"expected_head":null});
-    let receipt = call(
-        &client,
-        Method::POST,
-        &format!("{draft}/publish"),
-        Some(&publish),
-        200,
-    )
-    .await;
+    let publish = json!({"snapshot":snapshot,"expected_head":null});
+    let current = call(&client, Method::PUT, "/head", Some(&publish), 200).await;
     restart().await;
     assert_eq!(
-        call(
-            &client,
-            Method::POST,
-            &format!("{draft}/publish"),
-            Some(&publish),
-            200
-        )
-        .await,
-        receipt
+        call(&client, Method::PUT, "/head", Some(&publish), 200).await,
+        current
     );
     assert_eq!(
         call(
@@ -141,40 +124,6 @@ async fn complete_result_survives_restart(client: &Client, snapshot: &str) {
     );
 }
 
-async fn prepare(client: &Client, draft: &str) -> Value {
-    let mut page = json!("0");
-    let mut done = false;
-    for _ in 0..100 {
-        let p = call(
-            client,
-            Method::POST,
-            &format!("{draft}/evaluate"),
-            Some(&json!({"expected_revision":"2","expected_page":page})),
-            200,
-        )
-        .await;
-        if p["complete"] == true {
-            done = true;
-            break;
-        }
-        page = p["next_page"].clone();
-    }
-    assert!(done, "evaluation did not finish");
-    for _ in 0..100 {
-        let p = call(
-            client,
-            Method::POST,
-            &format!("{draft}/prepare"),
-            Some(&json!({"expected_revision":"2"})),
-            200,
-        )
-        .await;
-        if p["uploads"]["publication_ready"] == true {
-            return p;
-        }
-    }
-    panic!("preparation did not finish")
-}
 async fn revise(client: &Client, snapshot: &str) {
     let data_head = call(client, Method::GET, "/head", None, 200).await;
     let head = call(

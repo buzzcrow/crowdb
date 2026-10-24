@@ -5,6 +5,7 @@
 
 mod client;
 mod composition;
+mod composition_preparation;
 mod identity;
 mod inspection;
 mod lifecycle;
@@ -21,6 +22,9 @@ mod upload;
 
 pub use client::ControlClient;
 pub use composition::*;
+pub use composition_preparation::{
+    PrepareSnapshot, PreparedSnapshot, SnapshotChange, SnapshotField, SnapshotValue,
+};
 pub use identity::{Decimal, Generation, OpaqueId, SampleId};
 pub use inspection::*;
 pub use paging::{PageCursor, PageKind};

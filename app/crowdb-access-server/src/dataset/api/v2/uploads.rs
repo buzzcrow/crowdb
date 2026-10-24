@@ -85,7 +85,7 @@ impl DatasetHttpService {
         }
     }
 }
-fn digest(value: &str) -> Result<[u8; 16], ApiError> {
+pub(super) fn digest(value: &str) -> Result<[u8; 16], ApiError> {
     if value.len() != 32
         || !value
             .bytes()

@@ -103,7 +103,7 @@ The Dataset authority provides these operations. Each operation is scoped by a
 Dataset identity; operations that take a Snapshot ID MUST use the immutable ID,
 not `latest` or `stable` as an implicit mutable reference.
 The table summarizes the legacy publication/read surface. Control v2 adds bounded
-catalog/tree inspection, composition drafts and independent Split revisions as
+catalog/tree inspection, immutable composition resources and independent Split revisions as
 specified below and in its versioned OpenAPI contract.
 
 | Operation | Input | Successful result |
@@ -212,13 +212,21 @@ and managed payload owners are ready; it MUST NOT move latest/stable. Input and
 final Manifest are bounded to 8 MiB and computation to 30 seconds. Incomplete
 computation is redone; identical complete content is reusable with zero writes.
 Different resource content, including its initial Split binding, MUST conflict.
-Unknown completion outcomes MUST NOT cause a confirmation query. This native
-contract does not imply that the legacy Composition REST workflow is migrated.
+Unknown completion outcomes MUST NOT cause a confirmation query. REST exposes
+this operation through `PUT snapshots/{snapshot}` with the
+`composition-preparation` capability when uploads are configured. The JSON body
+is also bounded to 8 MiB. Parent/schema are explicit nullable fields. Upload input
+MUST include completed id/length/md5; DTO conversion MUST NOT add metadata queries.
+The authority validates unique upload descriptors and returns conflict on mismatch.
+Rust/Python SDKs MUST retain the same ID/full input without status queries or a
+workflow fallback. Legacy Composition begin/edit/evaluate/prepare/publish routes
+return 501 before storage; only observation, abandonment and cleanup remain for
+old records.
 
 Composition and Split status reads MUST NOT reconstruct a publication request,
 help edit receipts or persist recovery state. Legacy Committing drafts are
 presented as Prepared without rewriting the stored draft or querying attempt,
-receipt or head records. This permits an explicit publication retry; it does not
+receipt or head records. A caller may select a complete resource with the direct head API; this does not
 prove that the historical request changed a head.
 Direct Snapshot head updates MUST accept the complete Snapshot ID and explicit
 nullable expected generation without an operation or draft identity. They MUST
@@ -339,11 +347,13 @@ Split-aware inputs to v1. Required nullable preconditions MUST be supplied expli
 Unsigned 64-bit control values use canonical decimal strings. Legacy routes and
 read-plan interpretations remain compatible; binary framing is unchanged.
 
-Composition is durable and revision-CAS edited. Parent data defaults to all Samples;
+Composition takes retained complete caller inputs and creates an immutable
+resource without edit/evaluation progress. Parent data defaults to all Samples;
 Selection, frozen named Split and their intersection can restrict it. Source
 S1/r2/train creates a child with parent S1 and frozen source membership. Inherited
 Splits intersect surviving IDs; new IDs are unassigned until explicit assignment or
-reevaluation. Defaults are disjoint/allow-unassigned/frozen inheritance. Weighted
+reevaluation. Defaults are disjoint/allow-unassigned; inheritance is explicit and
+frozen to the supplied revision. Weighted
 partition follows the versioned SHA-256 algorithm in the
 [control lifecycle](design-dataset-control.md#3-split-evaluation-and-publication).
 

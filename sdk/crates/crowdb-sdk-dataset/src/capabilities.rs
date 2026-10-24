@@ -16,10 +16,10 @@ const KNOWN_CAPABILITIES: [&str; 12] = [
     "split-head-update",
     "stateless-reads",
     "uploads",
-    "composition",
     "snapshot-reclaim",
     "snapshot-head-update",
     "split-preparation",
+    "composition-preparation",
 ];
 
 fn capability_bit(capability: &str) -> u64 {

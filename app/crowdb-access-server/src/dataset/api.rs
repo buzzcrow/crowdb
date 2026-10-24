@@ -208,6 +208,8 @@ async fn read_body_limit(
         .and_then(|v| v.parse::<u64>().ok())
         .is_some_and(|v| v > limit as u64)
     {
+        // Dropping an unread body can reset HTTP before its client receives the error.
+        admission::drain(request.into_body(), std::time::Duration::from_secs(5)).await;
         return Err(ApiError::too_large());
     }
     Limited::new(request.into_body(), limit)

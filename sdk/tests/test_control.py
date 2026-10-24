@@ -61,6 +61,23 @@ class TestControlPeer:
 
 
 class TestControl(unittest.TestCase):
+    def test_snapshot_preparation_keeps_resource_identity_and_exact_input(self):
+        snapshot = new_id()
+        request = {"parent": None, "source": {"kind": "all"}, "schema": None, "samples": [], "splits": [],
+                   "policy": {"overlap": "disjoint", "coverage": "allow_unassigned"}}
+        prepared = {"snapshot": snapshot, "initial_split": None, "sample_count": "1"}
+        error = {"code": "conflict", "message": "content conflicts", "request_id": "test", "retryable": False}
+        with TestControlPeer(["composition-preparation"], head_replies=[(409, error), (200, prepared)]) as peer, DatasetClient(peer.endpoint, "test") as owner:
+            control = owner.control()
+            with self.assertRaises(ConflictError) as failure: control.prepare_snapshot(snapshot, request)
+            self.assertEqual(failure.exception.identity, snapshot)
+            self.assertEqual(control.prepare_snapshot(snapshot, request), prepared)
+            self.assertTrue(peer.requests.get(timeout=10).endswith("/capabilities"))
+            path = f"/api/dataset/v2/namespaces/dataset-ns/datasets/test/snapshots/{snapshot}"
+            self.assertEqual(peer.requests.get(timeout=10), (path, request))
+            self.assertEqual(peer.requests.get(timeout=10), (path, request))
+            self.assertTrue(peer.requests.empty())
+
     def test_split_preparation_uses_the_resource_path_and_preserves_its_identity(self):
         snapshot, revision = new_id(), new_id()
         request = {"policy": {"overlap": "disjoint", "coverage": "allow_unassigned"}, "splits": []}
@@ -119,10 +136,12 @@ class TestControl(unittest.TestCase):
         for value in (True, 1.0, -1, 2**64):
             with self.assertRaises(ValueError): decimal(value)
         with TestControlPeer() as peer, DatasetClient(peer.endpoint, "test") as owner:
-            request = {"attempt": new_id(), "snapshot": new_id(), "expected_head": None}
+            snapshot = new_id()
+            request = {"parent": None, "source": {"kind": "all"}, "schema": None, "samples": [], "splits": [],
+                       "policy": {"overlap": "disjoint", "coverage": "allow_unassigned"}}
             with self.assertRaises(DatasetError) as error:
-                owner.control().publish_composition(new_id(), request)
-            self.assertEqual(error.exception.identity, request["attempt"])
+                owner.control().prepare_snapshot(snapshot, request)
+            self.assertEqual(error.exception.identity, snapshot)
             self.assertTrue(peer.requests.get(timeout=10).endswith("capabilities"))
             self.assertTrue(peer.requests.empty())
 

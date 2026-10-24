@@ -154,7 +154,7 @@ fn referenced_uploads<'a>(
                 };
                 if let Some(existing) = references.get(&id) {
                     if existing.length != *length || existing.md5 != *md5 {
-                        return Err(UploadError::Integrity.into());
+                        return Err(UploadError::Conflict.into());
                     }
                 } else {
                     references.insert(
@@ -184,7 +184,7 @@ async fn validate_uploads(
             .metadata(reference.location)
             .await?;
         if record.length != reference.length || record.md5 != reference.md5 {
-            return Err(UploadError::Integrity.into());
+            return Err(UploadError::Conflict.into());
         }
     }
     Ok(())

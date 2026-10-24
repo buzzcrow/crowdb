@@ -8,7 +8,13 @@ use serde_json::{json, Value};
 pub async fn response(request: reqwest::RequestBuilder, expected: u16) -> Value {
     let response = request.bearer_auth("secret").send().await.unwrap();
     let status = response.status().as_u16();
-    let body: Value = response.json().await.unwrap();
+    let url = response.url().to_string();
+    let bytes = response
+        .bytes()
+        .await
+        .unwrap_or_else(|error| panic!("{status} {url}: {error}"));
+    let body: Value = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|error| panic!("{status} {url}: {error}; {}", String::from_utf8_lossy(&bytes)));
     assert_eq!(status, expected, "{body}");
     body
 }

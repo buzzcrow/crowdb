@@ -122,7 +122,7 @@ async fn final_snapshot_owners_keep_shared_uploads_without_staging_or_cleanup_jo
                 &ReadCancellation::new()
             )
             .await,
-        Err(CompositionError::Upload(UploadError::Integrity))
+        Err(CompositionError::Upload(UploadError::Conflict))
     ));
     assert_eq!(store.mutations.load(Ordering::Relaxed), before);
     let a = SnapshotId::random();

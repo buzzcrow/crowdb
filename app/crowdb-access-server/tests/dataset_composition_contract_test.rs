@@ -11,10 +11,10 @@ use common::response;
 use dataset::{TestDatasetHttp, TestStore};
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::sync::{atomic::Ordering, Arc};
 
 #[tokio::test]
-async fn uploaded_composition_publishes_initial_splits_and_branches_from_a_frozen_split() {
+async fn uploaded_resources_publish_initial_splits_and_branch_from_a_frozen_split() {
     let test = TestDatasetHttp::start_payload(Arc::new(TestStore::default())).await;
     let client = Client::new();
     let capabilities = response(
@@ -22,12 +22,16 @@ async fn uploaded_composition_publishes_initial_splits_and_branches_from_a_froze
         200,
     )
     .await;
-    for name in ["composition", "uploads", "snapshot-reclaim"] {
+    for name in ["composition-preparation", "uploads", "snapshot-reclaim"] {
         assert!(capabilities["capabilities"]
             .as_array()
             .unwrap()
             .contains(&json!(name)));
     }
+    assert!(!capabilities["capabilities"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("composition")));
     let root = format!(
         "{}/api/dataset/v2/namespaces/dataset-ns/datasets/import",
         test.origin
@@ -36,38 +40,20 @@ async fn uploaded_composition_publishes_initial_splits_and_branches_from_a_froze
     response(client.put(&root), 409).await;
     let upload = "11111111111111111111111111111111";
     create_upload(&client, &root, upload).await;
-    let operation = "22222222222222222222222222222222";
-    let draft = format!("{root}/compositions/{operation}");
-    let mut begin = composition::begin(operation, &Value::Null);
-    begin["splits"] = common::definitions();
-    begin["policy"] = json!({"overlap":"disjoint","coverage":"require_complete"});
-    response(client.post(format!("{root}/compositions")).json(&begin), 200).await;
-    let edit = json!({"edit":"33333333333333333333333333333333","expected_revision":"1","samples":[{"kind":"upsert","id":"AAH/","fields":[{"name":"value","value":{"kind":"upload","id":upload}}]}]});
+    let snapshot = "22222222222222222222222222222222";
+    let mut input = composition::input(&Value::Null);
+    input["splits"] = common::definitions();
+    input["policy"]["coverage"] = json!("require_complete");
+    input["samples"] = json!([{"kind":"upsert","id":"AAH/","fields":[{"name":"value","value":{"kind":"upload","id":upload,"length":"4","md5":"8d777f385d3dfec8815d20f7496026dc"}}]}]);
+    let prepared = composition::prepare(&client, &root, snapshot, &input).await;
+    assert_eq!(prepared["sample_count"], "1");
     assert_eq!(
-        response(client.put(&draft).json(&edit), 200).await["revision"],
-        "2"
+        composition::prepare(&client, &root, snapshot, &input).await,
+        prepared
     );
     response(client.delete(format!("{root}/uploads/{upload}")), 409).await;
-    let prepared = composition::prepare(&client, &draft, "2", "1").await;
-    let snapshot = prepared["preparation"]["snapshot"].as_str().unwrap();
     response(client.get(format!("{root}/snapshots/{snapshot}/summary")), 200).await;
-    composition::publish(
-        &client,
-        &root,
-        &draft,
-        &prepared,
-        "44444444444444444444444444444444",
-    )
-    .await;
-    assert_eq!(
-        response(
-            client.get(format!("{root}/commits/44444444444444444444444444444444")),
-            200
-        )
-        .await["receipt"],
-        Value::Null
-    );
-    let head = response(client.get(format!("{root}/head")), 200).await;
+    let head = composition::publish(&client, &root, &prepared, &Value::Null).await;
     assert_eq!(head["latest"], snapshot);
     assert_eq!(head["stable"], Value::Null);
     let preview = response(
@@ -79,25 +65,17 @@ async fn uploaded_composition_publishes_initial_splits_and_branches_from_a_froze
     .await;
     assert_eq!(preview["data"], "ZGF0YQ==");
     let (revision, name) = populated_split(&client, &root, snapshot).await;
-    let child_op = "55555555555555555555555555555555";
-    let child = format!("{root}/compositions/{child_op}");
-    let mut begin = composition::begin(child_op, &json!(snapshot));
-    begin["source"] = json!({"kind":"split","source":{"snapshot":snapshot,"revision":revision,"name":name},"selection":null});
-    begin["inherit_parent_splits"] = json!(true);
-    begin["parent_split_revision"] = json!(revision);
-    response(client.post(format!("{root}/compositions")).json(&begin), 200).await;
-    let child_prepared = composition::prepare(&client, &child, "1", "1").await;
-    assert_eq!(child_prepared["uploads"]["candidate_uploads"], "1");
-    composition::publish(
-        &client,
-        &root,
-        &child,
-        &child_prepared,
-        "66666666666666666666666666666666",
-    )
-    .await;
-    composition::cleanup(&client, &draft).await;
-    composition::cleanup(&client, &child).await;
+    let mut child = composition::input(&json!(snapshot));
+    child["schema"] = Value::Null;
+    child["source"] = json!({"kind":"split","source":{"snapshot":snapshot,"revision":revision,"name":name},"selection":null});
+    child["splits"] = input["splits"].clone();
+    child["policy"] = input["policy"].clone();
+    for split in child["splits"].as_array_mut().unwrap() {
+        split["origin"] = json!({"kind":"inherited","source":{"snapshot":snapshot,"revision":revision,"name":split["name"]}});
+    }
+    let prepared = composition::prepare(&client, &root, "55555555555555555555555555555555", &child).await;
+    assert_eq!(prepared["sample_count"], "1");
+    composition::publish(&client, &root, &prepared, &head["generation"]).await;
     response(
         client
             .put(format!("{root}/names/stable"))
@@ -107,50 +85,39 @@ async fn uploaded_composition_publishes_initial_splits_and_branches_from_a_froze
     .await;
     assert_eq!(
         response(client.get(format!("{root}/head")), 200).await["latest"],
-        child_prepared["preparation"]["snapshot"]
+        prepared["snapshot"]
     );
     response(client.post(format!("{root}/snapshots/{snapshot}/reclaim")), 409).await;
+    drop(client);
     test.stop().await;
 }
 
 #[tokio::test]
-async fn composition_conflicts_and_cancellation_preserve_exact_retry_identity() {
-    let test = TestDatasetHttp::start_payload(Arc::new(TestStore::default())).await;
+async fn retired_composition_workflow_writes_never_access_storage() {
+    let store = Arc::new(TestStore::default());
+    let test = TestDatasetHttp::start_payload(store.clone()).await;
     let client = Client::new();
-    let (root, parent) = common::fixture(&client, &test.origin).await;
-    let operation = "77777777777777777777777777777777";
-    let draft = format!("{root}/compositions/{operation}");
-    let begin = composition::begin(operation, &json!(parent));
-    response(client.post(format!("{root}/compositions")).json(&begin), 200).await;
-    let edit = json!({"edit":"88888888888888888888888888888888","expected_revision":"1","samples":[]});
-    response(client.put(&draft).json(&edit), 200).await;
-    response(
-        client
-            .put(&draft)
-            .json(&json!({"edit":"99999999999999999999999999999999","expected_revision":"1","samples":[]})),
-        409,
-    )
-    .await;
-    response(client.put(&draft).json(&json!({"edit":"99999999999999999999999999999999","expected_revision":"2","samples":[{"kind":"upsert","id":"YQ==","fields":[{"name":"value","value":{"kind":"chunk","location":"arbitrary"}}]}]})),400).await;
-    response(client.delete(&draft).json(&json!({"expected_revision":"1"})), 409).await;
-    response(client.delete(&draft).json(&json!({"expected_revision":"2"})), 200).await;
-    composition::cleanup(&client, &draft).await;
-    assert_eq!(
-        response(client.put(&draft).json(&edit), 200).await["revision"],
-        "2"
+    let (root, _) = common::fixture(&client, &test.origin).await;
+    let before = (
+        store.reads.load(Ordering::Relaxed),
+        store.bounded_reads.load(Ordering::Relaxed),
+        store.mutations.load(Ordering::Relaxed),
     );
+    response(client.post(format!("{root}/compositions")).json(&json!({})), 501).await;
+    let draft = format!("{root}/compositions/77777777777777777777777777777777");
+    response(client.put(&draft).json(&json!({})), 501).await;
+    for suffix in ["evaluate", "prepare", "publish"] {
+        response(client.post(format!("{draft}/{suffix}")).json(&json!({})), 501).await;
+    }
     assert_eq!(
-        response(client.get(format!("{root}/head")), 200).await["latest"],
-        parent
+        (
+            store.reads.load(Ordering::Relaxed),
+            store.bounded_reads.load(Ordering::Relaxed),
+            store.mutations.load(Ordering::Relaxed)
+        ),
+        before
     );
-    response(client.get(format!("{root}/head?unexpected=1")), 400).await;
-    response(
-        client
-            .post(format!("{draft}/publish"))
-            .json(&json!({"attempt":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshot":parent})),
-        400,
-    )
-    .await;
+    drop(client);
     test.stop().await;
 }
 

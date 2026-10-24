@@ -7,12 +7,6 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Evaluate {
-    pub expected_revision: String,
-    pub expected_page: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct Prepare {
     pub expected_revision: String,
 }

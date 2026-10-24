@@ -202,20 +202,25 @@ permission or promise that a redeployed endpoint still supports the operation.
 - `OpaqueId` preserves operation/Snapshot/revision IDs; `Generation` is an opaque
   head precondition. `Decimal` encodes exact u64 values as JSON strings, and
   `SampleId` preserves binary IDs through canonical base64.
-- `begin_composition`, `edit_composition`, `evaluate_composition` and
-  `prepare_composition` are resumable bounded steps. Keep operation/edit IDs and
-  input revisions. Preparation is ready to publish only when
-  `uploads.publication_ready` is true. Initial Splits publish with the Snapshot.
-- `publish_composition` advances latest; `update_split_head` updates only currentSplit
-  on its owning Snapshot. Null expected heads/revisions are explicit. On an
-  unknown outcome, retry the exact request. `commit_status` exposes only legacy
-  receipts; new Snapshot/Split publication saves no request ledger. A retry
-  confirms the same current target or returns a condition conflict after a later
-  target replaces it. `observed_head` supplies the failed condition's observation,
-  without a confirmation GET. A deliberate retry uses reviewed inputs and that
-  generation; content is never silently rebased. New publication leaves the
-  compatibility draft Prepared. Completed resources are readable and retain
-  payload ownership even before publication or after draft abandonment.
+- `prepare_snapshot(snapshot, request)` submits complete parent/source/schema/
+  Sample patches/Split definitions to an immutable resource PUT. Retain the Snapshot
+  ID and full input for retries. It requires `composition-preparation`; body/input/
+  final Manifest are bounded to 8 MiB and computation to 30 seconds. Parent and
+  schema are explicitly nullable. Upsert patches specified fields and keeps other
+  effective parent fields; each Sample ID appears once. Frozen Split sources and
+  inherited definitions name exact revisions, so retries never resolve currentSplit.
+  Rust uses `PrepareSnapshot`, `SnapshotChange`, `SnapshotField` and `SnapshotValue`.
+  Upload values include the completed result's `id`, `length` and `md5`; conversion
+  adds no descriptor query. Synchronous and async Python expose the same operation.
+  Complete Snapshots and their initial Splits are readable before head publication.
+  Incomplete work is recomputed; matching final content is reused, while conflicting
+  content or initial Split binding is rejected. No workflow progress is saved.
+  Capture the intended Dataset head base before computation and publish separately.
+- Composition workflow methods and standalone Split workflow methods are removed.
+  Their old begin/edit/evaluate/prepare/publish HTTP routes return 501; SDKs never
+  fall back to them. Legacy draft observation/abandonment/cleanup remain HTTP
+  maintenance operations for existing records. `commit_status` reads only legacy
+  receipts; new pointer updates create no request ledger or historical replay.
 - `split_members`, `split_history`, `inventory`, `roots`, `children`, `schema` and
   `samples` return lazy `PageCursor`s. Each `next_page` fetches at most 100 items;
   it never eagerly collects the Dataset. Persist `continuation()` for scoped
@@ -232,8 +237,7 @@ permission or promise that a redeployed endpoint still supports the operation.
   Capture the intended head base before preparation. Rust uses
   `PrepareSplitRevision`; synchronous and async Python expose the same operation.
   Standalone Split workflow SDK methods are removed; their old HTTP write routes
-  return 501, with no fallback. Composition initial Splits still use composition
-  preparation until its workflow replacement is complete.
+  return 501, with no fallback. Initial Splits are prepared with `prepare_snapshot`.
 - `update_split_head(snapshot, request)` updates a complete revision directly with
   `revision`, `expected_revision` and `expected_head`; both expected values must be
   supplied, including null. It requires `split-head-update`, takes no attempt ID
