@@ -1,5 +1,8 @@
 use super::*;
-use crowdb_access_iceberg::gc::{GcPage, GcStalledReason};
+use crowdb_access_iceberg::{
+    catalog::{CatalogError, StoreError},
+    gc::{GcPage, GcStalledReason, GcWorkError},
+};
 
 async fn prepare(fixture: &TestWrites) -> (GcTask, GcTask) {
     fixture.intent.register(fixture.file.store.clone()).await.unwrap();
@@ -104,6 +107,7 @@ async fn final_cleanup_removes_gc_graph_and_old_owners_but_keeps_constant_retire
 
 #[tokio::test]
 async fn retirement_marker_and_cleanup_progress_recover_lost_replies_without_recreating_old_owners() {
+    let mut surfaced_unknowns = 0;
     for boundary in 1..=7 {
         let fixture = TestWrites::new().await;
         let (task, _) = prepare(&fixture).await;
@@ -117,10 +121,30 @@ async fn retirement_marker_and_cleanup_progress_recover_lost_replies_without_rec
             .store
             .gc_delete_reply_loss
             .store(true, Ordering::Relaxed);
-        let task = fixture.finish(task).await;
+        let mut task = task;
+        for _ in 0..150 {
+            let repository = GcRepository::new(fixture.file.store.clone());
+            let worker = GcWorker::new(repository.clone(), fixture.blocks.clone(), fixture.limits).unwrap();
+            match worker.run(&task, 1000.max(task.retry_at_ms)).await {
+                Ok(_) => {}
+                Err(GcWorkError::Catalog(CatalogError::Store(StoreError::Response))) => {
+                    surfaced_unknowns += 1;
+                }
+                Err(error) => panic!("boundary {boundary}: {error:?}"),
+            }
+            task = repository
+                .task(task.context.catalog, task.identity)
+                .await
+                .unwrap()
+                .unwrap();
+            if task.phase == GcPhase::Complete {
+                break;
+            }
+        }
         assert_eq!(task.phase, GcPhase::Complete, "boundary {boundary}");
         assert_terminal_records(&fixture, &task);
     }
+    assert!(surfaced_unknowns > 0);
 }
 
 #[tokio::test]

@@ -10,6 +10,8 @@ use crate::{
 
 use super::{GcCandidate, GcPage, GcStalledReason, GcStore, GcTask, GcTaskKind};
 
+mod progress;
+
 #[derive(Clone)]
 pub struct GcRepository {
     pub(super) store: Arc<dyn GcStore>,
@@ -129,23 +131,7 @@ impl GcRepository {
         now_ms: u64,
         limits: super::GcLimits,
     ) -> Result<GcTask, CatalogError> {
-        limits.validate()?;
-        let mut next = task.advance()?;
-        next.attempts = if task.stalled == reason {
-            task.attempts
-                .checked_add(1)
-                .ok_or(ValidationError::GenerationExhausted)?
-        } else {
-            1
-        };
-        next.stalled = reason;
-        next.retry_at_ms = now_ms
-            .checked_add(limits.retry_delay_ms(next.attempts))
-            .ok_or(ValidationError::Deadline)?;
-        if reason == GcStalledReason::Corruption && next.attempts >= u32::from(limits.corruption_attempts) {
-            next.phase = super::GcPhase::Quarantined;
-            next.quarantined_from = Some(task.phase);
-        }
+        let next = Self::deferred(task, reason, now_ms, limits)?;
         self.update(task, &next).await?;
         Ok(next)
     }
