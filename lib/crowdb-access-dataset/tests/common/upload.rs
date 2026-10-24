@@ -19,6 +19,7 @@ use std::{
 pub struct TestStore {
     values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
     pub reads: AtomicU64,
+    pub bounded_reads: AtomicU64,
     pub upload_reads: AtomicU64,
     pub admission_reads: AtomicU64,
     pub mutations: AtomicU64,
@@ -41,6 +42,7 @@ impl DatasetStore for TestStore {
         budget: crowdb_access_dataset::MetadataScanBudget,
         cancel: &crowdb_access_dataset::ReadCancellation,
     ) -> Result<Option<StoredValue>, crowdb_access_dataset::StoreError> {
+        self.bounded_reads.fetch_add(1, Ordering::Relaxed);
         if key.starts_with(b"DS\0L\0") {
             self.admission_reads.fetch_add(1, Ordering::Relaxed);
         }

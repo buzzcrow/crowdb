@@ -274,7 +274,11 @@ fn failure(error: &Error) -> String {
         Error::Io(_) => ("io", 0, false),
         _ => ("invalid", 0, false),
     };
-    serde_json::json!({"code":code,"status":status,"retryable":retryable,"message":error.to_string()})
+    let observed_head = match error {
+        Error::Service { error, .. } | Error::Stream { error } => error.observed_head.as_deref(),
+        _ => None,
+    };
+    serde_json::json!({"code":code,"status":status,"retryable":retryable,"message":error.to_string(),"observed_head":observed_head})
         .to_string()
 }
 #[pymodule]

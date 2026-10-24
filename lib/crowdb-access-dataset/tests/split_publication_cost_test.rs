@@ -78,7 +78,7 @@ async fn publication_uses_one_head_mutation_and_retries_current_facts_without_wr
     let before = counts(&store);
     assert!(matches!(
         authority.publish_split_revision(&identity, &attempt, None).await,
-        Err(SplitLifecycleError::Conflict)
+        Err(SplitLifecycleError::HeadConflict { .. })
     ));
     assert_eq!(delta(&store, before), (4, 0));
 }
@@ -109,7 +109,7 @@ async fn definite_cas_conflicts_use_the_observation_and_unknown_outcomes_do_not_
                     .unwrap()
             );
         } else {
-            assert!(matches!(result, Err(SplitLifecycleError::Conflict)));
+            assert!(matches!(result, Err(SplitLifecycleError::HeadConflict { .. })));
         }
     }
     let (store, authority, identity, snapshot) = split_store::fixture().await;
@@ -152,7 +152,7 @@ async fn lost_success_hidden_by_a_later_revision_is_a_conflict_without_replay() 
     let before = counts(&store);
     assert!(matches!(
         authority.publish_split_revision(&identity, &attempt, None).await,
-        Err(SplitLifecycleError::Conflict)
+        Err(SplitLifecycleError::HeadConflict { .. })
     ));
     assert_eq!(delta(&store, before), (4, 0));
     assert_eq!(

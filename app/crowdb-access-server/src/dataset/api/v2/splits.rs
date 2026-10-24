@@ -40,31 +40,17 @@ impl DatasetHttpService {
         let authority = self.reads.authority();
         match (request.method().clone(), tail) {
             (Method::POST, ["snapshots", owner, "split-drafts"]) => {
-                let input: input::Begin = read_json(request).await?;
-                let splits = input
-                    .splits
-                    .into_iter()
-                    .map(DraftSplit::native)
-                    .collect::<Result<_, _>>()?;
-                let record = authority
-                    .begin_split_draft(
-                        identity,
-                        operation(&input.operation)?,
-                        snapshot(owner)?,
-                        input.expected_revision.as_deref().map(revision).transpose()?,
-                        input.policy.into(),
-                        splits,
-                    )
-                    .await?;
-                json(&output::draft(record))
+                self.v2_begin_split(identity, owner, request).await
             }
             (_, ["split-drafts", ..]) => self.v2_split_draft(identity, tail, request).await,
             (Method::GET, ["snapshots", owner, "split-head"]) => {
                 read_body(request, false).await?;
-                let head = authority.inspect_split_head(identity, snapshot(owner)?).await?;
-                json(
-                    &serde_json::json!({"snapshot":owner, "revision":head.revision.map(|r|r.to_string()), "generation":head.generation.map(|h|hex::encode(h.as_bytes()))}),
-                )
+                let snapshot = snapshot(owner)?;
+                let head = authority.inspect_split_head(identity, snapshot).await?;
+                json(&output::head(snapshot, &head))
+            }
+            (Method::PUT, ["snapshots", owner, "split-head"]) => {
+                self.v2_update_split_head(identity, owner, request).await
             }
             (Method::GET, ["snapshots", owner, "split-revisions"]) => {
                 read_body(request, false).await?;
@@ -115,6 +101,54 @@ impl DatasetHttpService {
             _ => Err(ApiError::not_found()),
         }
     }
+    async fn v2_begin_split(
+        &self,
+        identity: &DatasetIdentity,
+        owner: &str,
+        request: Request<Incoming>,
+    ) -> ApiResult {
+        let input: input::Begin = read_json(request).await?;
+        let splits = input
+            .splits
+            .into_iter()
+            .map(DraftSplit::native)
+            .collect::<Result<_, _>>()?;
+        let record = self
+            .reads
+            .authority()
+            .begin_split_draft(
+                identity,
+                operation(&input.operation)?,
+                snapshot(owner)?,
+                input.expected_revision.as_deref().map(revision).transpose()?,
+                input.policy.into(),
+                splits,
+            )
+            .await?;
+        json(&output::draft(record))
+    }
+
+    async fn v2_update_split_head(
+        &self,
+        identity: &DatasetIdentity,
+        owner: &str,
+        request: Request<Incoming>,
+    ) -> ApiResult {
+        let input: input::UpdateHead = read_json(request).await?;
+        let snapshot = snapshot(owner)?;
+        let update = crowdb_access_dataset::split::SplitHeadUpdate {
+            revision: revision(&input.revision)?,
+            expected_revision: input.expected_revision.as_deref().map(revision).transpose()?,
+            expected_head: input::generation(input.expected_head.as_deref())?,
+        };
+        let head = self
+            .reads
+            .authority()
+            .update_split_head(identity, snapshot, &update)
+            .await?;
+        json(&output::head(snapshot, &head))
+    }
+
     async fn v2_split_draft(
         &self,
         identity: &DatasetIdentity,

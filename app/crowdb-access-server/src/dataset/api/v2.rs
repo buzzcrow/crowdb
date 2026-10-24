@@ -53,6 +53,7 @@ impl DatasetHttpService {
                 "inspection-preparation",
                 "dataset-management",
                 "split-revisions",
+                "split-head-update",
                 "stateless-reads",
             ];
             if self.uploads.is_some() {

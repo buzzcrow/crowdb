@@ -24,7 +24,7 @@ async fn independent_revision_cas_and_historical_conflicts_never_move_data_head(
         authority
             .publish_split_draft(&identity, competing.operation, &stale)
             .await,
-        Err(SplitLifecycleError::Conflict)
+        Err(SplitLifecycleError::HeadConflict { .. })
     ));
     assert!(matches!(
         authority
@@ -51,7 +51,7 @@ async fn independent_revision_cas_and_historical_conflicts_never_move_data_head(
         authority
             .publish_split_draft(&identity, first.operation, &first_attempt)
             .await,
-        Err(SplitLifecycleError::Conflict)
+        Err(SplitLifecycleError::HeadConflict { .. })
     ));
     assert_eq!(
         authority.inspect_split_head(&identity, snapshot).await.unwrap(),
@@ -165,7 +165,7 @@ async fn replacing_current_split_does_not_write_or_help_receipts() {
         authority
             .publish_split_draft(&identity, first.operation, &first_attempt)
             .await,
-        Err(SplitLifecycleError::Conflict)
+        Err(SplitLifecycleError::HeadConflict { .. })
     ));
     assert_eq!(
         authority

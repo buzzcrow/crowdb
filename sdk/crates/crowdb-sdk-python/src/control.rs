@@ -75,6 +75,7 @@ async fn lifecycle(client: &v2::ControlClient, name: &str, value: &Value) -> Res
         "evaluate_split" => encode(&client.evaluate_split(&id()?, &request(value)?).await?),
         "prepare_split" => encode(&client.prepare_split(&id()?, &request(value)?).await?),
         "publish_split" => encode(&client.publish_split(&id()?, &request(value)?).await?),
+        "update_split_head" => encode(&client.update_split_head(&id()?, &request(value)?).await?),
         "abandon_split" => encode(&client.abandon_split(&id()?, &request(value)?).await?),
         "cleanup_split" => encode(&client.cleanup_split(&id()?).await?),
         "split_head" => encode(&client.split_head(&id()?).await?),

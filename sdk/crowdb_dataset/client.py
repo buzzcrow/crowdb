@@ -24,6 +24,7 @@ class DatasetError(RuntimeError):
         self.status = record.get("status", 0)
         self.retryable = record.get("retryable", False)
         self.identity = record.get("identity", identity)
+        self.observed_head = record.get("observed_head")
 
 
 class ConflictError(DatasetError):

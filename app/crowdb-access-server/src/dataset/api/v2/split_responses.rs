@@ -65,6 +65,9 @@ pub(super) fn preview(p: split::SplitPreview) -> Value {
 pub(super) fn receipt(r: &SuccessfulCommit) -> Value {
     json!({"attempt":r.attempt.id.to_string(), "target":target(r.attempt.target), "expected_head":r.attempt.expected_head.map(|h|hex::encode(h.as_bytes())), "committed_head":hex::encode(r.committed_head.as_bytes())})
 }
+pub(super) fn head(snapshot: crowdb_access_dataset::SnapshotId, head: &split::SplitReference) -> Value {
+    json!({"snapshot":snapshot.to_string(),"revision":head.revision.map(|id|id.to_string()),"generation":head.generation.map(|g|hex::encode(g.as_bytes()))})
+}
 impl From<SplitLifecycleError> for ApiError {
     fn from(error: SplitLifecycleError) -> Self {
         use hyper::StatusCode;
@@ -74,6 +77,9 @@ impl From<SplitLifecycleError> for ApiError {
             SplitLifecycleError::Inspection(error) => error.into(),
             SplitLifecycleError::NotFound => Self::not_found(),
             SplitLifecycleError::Conflict => Self::conflict(),
+            SplitLifecycleError::HeadConflict { snapshot, observed } => {
+                Self::conflict().with_observed_head(head(snapshot, &observed))
+            }
             SplitLifecycleError::Corrupt => Self::integrity(),
             SplitLifecycleError::Limit | SplitLifecycleError::Split(split::SplitError::Limit) => {
                 Self::new(StatusCode::PAYLOAD_TOO_LARGE, "read_limit")

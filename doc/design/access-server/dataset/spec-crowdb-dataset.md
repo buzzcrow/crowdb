@@ -207,6 +207,12 @@ base MUST fail without rewinding currentSplit. It does not promise historical
 response replay. Unknown storage outcomes MUST propagate without a confirmation
 query. Existing legacy receipts remain readable; new Split attempts are absent
 from commit-status history.
+Direct Split head updates MUST accept the complete resource ID and explicit
+nullable expected revision and head generation without an operation/attempt ID or
+draft lookup. A failed head condition MUST return the observed revision/generation,
+including absence, without a confirmation query. The caller decides whether the
+observed base is suitable for another update; the SDK MUST NOT rebase automatically
+or fall back to a draft write when the direct-update capability is unavailable.
 
 ## 7. Selection, plans, and cursors
 

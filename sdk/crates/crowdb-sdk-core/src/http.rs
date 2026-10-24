@@ -304,6 +304,7 @@ impl HttpClient {
                 message: "service error body was not valid JSON".into(),
                 request_id: String::new(),
                 retryable: false,
+                observed_head: None,
             });
             return Err(Error::Service {
                 status: status.as_u16(),

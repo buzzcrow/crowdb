@@ -12,7 +12,7 @@ info:
     available under their original routes. Metadata GET routes require
     bounded-inspection; explicit POST inspection preparation requires
     inspection-preparation. Dataset creation, stable/retention changes and receipts
-    require dataset-management; Split lifecycle requires split-revisions; versioned
+    require dataset-management; Split lifecycle requires split-revisions; direct Split head updates require split-head-update; versioned
     stateless reads require stateless-reads. Upload, composition and Snapshot retirement
     require uploads, composition and snapshot-reclaim respectively, advertised only
     when the upload service is configured. Query parameters are strict and duplicate
@@ -280,6 +280,26 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-head:
+    put:
+      operationId: updateSplitHead
+      summary: Conditionally update currentSplit from a complete resource
+      description: Requires split-head-update. Caller supplies the target and both explicit nullable preconditions, without a draft or attempt ID. A conflict carries observed_head for caller review; the server does not rebase or query again to confirm a CAS outcome.
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateSplitHead'}
+      responses:
+        '200':
+          description: Current effect confirmed, without a historical response receipt.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SplitHead'}
+        default:
+          $ref: '#/components/responses/InspectionError'
     get:
       operationId: splitHead
       parameters:
@@ -1130,6 +1150,7 @@ components:
               message: {type: string}
               request_id: {type: string}
               retryable: {type: boolean}
+              observed_head: {$ref: '#/components/schemas/SplitHead'}
   securitySchemes:
     bearerAuth:
       type: http
@@ -1420,6 +1441,14 @@ components:
       properties:
         expected_revision: {$ref: '#/components/schemas/Decimal'}
         expected_page: {$ref: '#/components/schemas/Decimal'}
+    UpdateSplitHead:
+      type: object
+      additionalProperties: false
+      required: [revision, expected_revision, expected_head]
+      properties:
+        revision: {$ref: '#/components/schemas/OpaqueId'}
+        expected_revision: {$ref: '#/components/schemas/NullableRevision'}
+        expected_head: {$ref: '#/components/schemas/NullableGeneration'}
     PublishSplit:
       type: object
       additionalProperties: false

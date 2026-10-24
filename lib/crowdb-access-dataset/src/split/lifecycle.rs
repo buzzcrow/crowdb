@@ -27,6 +27,11 @@ pub enum SplitLifecycleError {
     NotFound,
     #[error("Split draft or publication precondition changed")]
     Conflict,
+    #[error("Split head precondition changed")]
+    HeadConflict {
+        snapshot: SnapshotId,
+        observed: Box<super::SplitReference>,
+    },
     #[error("Split operation metadata is corrupt")]
     Corrupt,
     #[error("Split operation exceeded its work limit")]

@@ -37,7 +37,7 @@ async fn losing_pointer_cas_keeps_result_readable_without_split_proofs_or_writes
         authority
             .publish_split_draft(&identity, candidate.operation, &attempt)
             .await,
-        Err(SplitLifecycleError::Conflict)
+        Err(SplitLifecycleError::HeadConflict { .. })
     ));
     let head = authority.inspect_split_head(&identity, snapshot).await.unwrap();
     assert_eq!(head.revision, Some(winner.revision));

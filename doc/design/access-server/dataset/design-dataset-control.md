@@ -103,6 +103,15 @@ receipts and attempt-bearing heads remain readable without backfilling receipts.
 The draft publication route is a compatibility adapter for its prepared target and
 expected revision; `publish_split_revision` accepts these caller-owned inputs
 directly. New draft status remains Prepared after publication.
+`PUT snapshots/{snapshot}/split-head` accepts the target revision and both explicit
+nullable expected revision/generation. It requires the `split-head-update`
+capability and has no draft or attempt identity. The failed head condition is
+returned as `observed_head`, including an observed absence. It is an observation,
+not a promise that another writer has not changed the head since. The caller may
+review the new base and use it in a new conditional request; no rebase is implicit.
+Rust exposes the observation through `SplitHead::from_conflict`; Python exposes
+`ConflictError.observed_head`. Missing legacy observations do not trigger an
+automatic head query or a mutation downgrade.
 
 ## 4. Bounded observation and reads
 

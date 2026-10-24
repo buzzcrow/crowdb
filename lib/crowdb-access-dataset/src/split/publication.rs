@@ -1,10 +1,13 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{key, state::DraftState, SplitHead, SplitLifecycleError, SplitRevisionRecord};
+use super::{
+    key, state::DraftState, SplitHead, SplitHeadUpdate, SplitLifecycleError, SplitReference,
+    SplitRevisionRecord,
+};
 use crate::{
     composition::DraftProgress, CasOutcome, CommitAttempt, CommitGeneration, CommitTarget, DatasetAuthority,
-    DatasetIdentity, OperationId, SplitRevisionId, StoredValue, SuccessfulCommit,
+    DatasetIdentity, OperationId, SnapshotId, SplitRevisionId, StoredValue, SuccessfulCommit,
 };
 
 impl DatasetAuthority {
@@ -31,8 +34,13 @@ impl DatasetAuthority {
         if target != attempt.target {
             return Err(SplitLifecycleError::Conflict);
         }
-        self.commit_split_revision(identity, attempt, state.record.expected_revision, Some(operation))
-            .await
+        let (snapshot, update) = attempt_update(attempt, state.record.expected_revision)?;
+        confirmed_commit(
+            attempt,
+            &self
+                .commit_split_revision(identity, snapshot, &update, Some(operation))
+                .await?,
+        )
     }
 
     /// Updates currentSplit from a complete immutable result and caller-owned preconditions.
@@ -45,21 +53,37 @@ impl DatasetAuthority {
         attempt: &CommitAttempt,
         expected_revision: Option<SplitRevisionId>,
     ) -> Result<SuccessfulCommit, SplitLifecycleError> {
-        self.commit_split_revision(identity, attempt, expected_revision, None)
-            .await
+        let (snapshot, update) = attempt_update(attempt, expected_revision)?;
+        confirmed_commit(
+            attempt,
+            &self.update_split_head(identity, snapshot, &update).await?,
+        )
+    }
+
+    /// Updates the resource pointer without a request identity or editing state.
+    /// # Errors
+    /// Rejects invalid or missing results, deletion admission, stale conditions and unknown outcomes.
+    pub async fn update_split_head(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        update: &SplitHeadUpdate,
+    ) -> Result<SplitReference, SplitLifecycleError> {
+        self.commit_split_revision(identity, snapshot, update, None).await
     }
 
     async fn commit_split_revision(
         &self,
         identity: &DatasetIdentity,
-        attempt: &CommitAttempt,
-        expected_revision: Option<SplitRevisionId>,
+        snapshot: SnapshotId,
+        update: &SplitHeadUpdate,
         operation: Option<OperationId>,
-    ) -> Result<SuccessfulCommit, SplitLifecycleError> {
-        attempt.validate()?;
-        let CommitTarget::SplitRevision { snapshot, revision } = attempt.target else {
-            return Err(SplitLifecycleError::Conflict);
-        };
+    ) -> Result<SplitReference, SplitLifecycleError> {
+        let revision = update.revision;
+        CommitTarget::SplitRevision { snapshot, revision }.validate()?;
+        if let Some(expected) = update.expected_revision {
+            SplitRevisionId::from_bytes(expected.as_bytes()).map_err(crate::AuthorityError::from)?;
+        }
         let stored = self
             .split_state_get(
                 &key::revision(identity, snapshot, revision).map_err(crate::AuthorityError::from)?,
@@ -84,10 +108,13 @@ impl DatasetAuthority {
             .resolve_split_reference(identity, current.as_ref(), snapshot)
             .await?;
         if observed.revision == Some(revision) && current.is_some() {
-            return current_success(attempt, current.as_ref());
+            return current_reference(revision, current.as_ref());
         }
-        if observed.generation != attempt.expected_head || observed.revision != expected_revision {
-            return Err(SplitLifecycleError::Conflict);
+        if observed.generation != update.expected_head || observed.revision != update.expected_revision {
+            return Err(SplitLifecycleError::HeadConflict {
+                snapshot,
+                observed: Box::new(observed),
+            });
         }
         let bytes = SplitHead {
             version: 1,
@@ -101,16 +128,19 @@ impl DatasetAuthority {
             .compare_exchange(&key, current.as_ref().map(|v| v.bytes.as_slice()), &bytes)
             .await?
         {
-            CasOutcome::Applied(_) => Ok(SuccessfulCommit {
-                version: 1,
-                attempt: attempt.clone(),
-                committed_head: CommitGeneration::from_head(&bytes),
+            CasOutcome::Applied(_) => Ok(SplitReference {
+                revision: Some(revision),
+                generation: Some(CommitGeneration::from_head(&bytes)),
             }),
             CasOutcome::Conflict(observed) => {
-                if super::head::reference(observed.as_ref(), snapshot)?.revision != Some(revision) {
-                    return Err(SplitLifecycleError::Conflict);
+                let head = super::head::reference(observed.as_ref(), snapshot)?;
+                if head.revision != Some(revision) {
+                    return Err(SplitLifecycleError::HeadConflict {
+                        snapshot,
+                        observed: Box::new(head),
+                    });
                 }
-                current_success(attempt, observed.as_ref())
+                current_reference(revision, observed.as_ref())
             }
         }
     }
@@ -145,14 +175,42 @@ impl DatasetAuthority {
     }
 }
 
-fn current_success(
-    attempt: &CommitAttempt,
+fn current_reference(
+    revision: SplitRevisionId,
     current: Option<&StoredValue>,
-) -> Result<SuccessfulCommit, SplitLifecycleError> {
+) -> Result<SplitReference, SplitLifecycleError> {
     let current = current.ok_or(SplitLifecycleError::Conflict)?;
+    Ok(SplitReference {
+        revision: Some(revision),
+        generation: Some(CommitGeneration::from_head(&current.bytes)),
+    })
+}
+
+fn attempt_update(
+    attempt: &CommitAttempt,
+    expected_revision: Option<SplitRevisionId>,
+) -> Result<(SnapshotId, SplitHeadUpdate), SplitLifecycleError> {
+    attempt.validate()?;
+    let CommitTarget::SplitRevision { snapshot, revision } = attempt.target else {
+        return Err(SplitLifecycleError::Conflict);
+    };
+    Ok((
+        snapshot,
+        SplitHeadUpdate {
+            revision,
+            expected_revision,
+            expected_head: attempt.expected_head,
+        },
+    ))
+}
+
+fn confirmed_commit(
+    attempt: &CommitAttempt,
+    head: &SplitReference,
+) -> Result<SuccessfulCommit, SplitLifecycleError> {
     Ok(SuccessfulCommit {
         version: 1,
         attempt: attempt.clone(),
-        committed_head: CommitGeneration::from_head(&current.bytes),
+        committed_head: head.generation.ok_or(SplitLifecycleError::Corrupt)?,
     })
 }

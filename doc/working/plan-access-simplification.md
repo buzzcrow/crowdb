@@ -161,10 +161,6 @@ CAS 不再满足只证明“本次条件不成立”，不能谎称“第一次�
   历史回复查询；Composition/Split 的 Committing 恢复与 P2/P3 一起删除，客户端保留完整输入。
   旧记录只作为兼容解码/GC 输入，不让旧账本控制新请求。head 保留 expected base；同一
   candidate 的当前结果可判断相同，已被后续 head 遮住时不保证历史请求结果重放。
-- [~] **R2.2b Split 发布直接接收资源与 precondition**：补无 draft 的 REST/SDK 入口，
-  消除当前兼容路由的两次 draft 读取；冲突返回已观察的 revision/generation，供客户端审阅后
-  直接组成下一次条件请求，不为取得相同 head 再 GET。不得自动 rebase；旧服务能力缺失时
-  明确失败。验证缺省/null、鉴权、冲突与丢回复、Rust/Python SDK、无账本与实际读写成本。
 
 - [ ] **R2 审查条件发布的回复丢失窗口**：用 H0→H1→H2 测试区分条件失败、相同结果与历史未知；
   列出确实依赖历史精确结果的调用者，没有这种需求就移除相应 ledger/response replay。
@@ -431,6 +427,18 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
 - [ ] **F1 请求级成本计数**：记录 GET/bounded GET/scan/CAS/PUT/delete、重复 key、冲突与
   unknown、真实 routed RPC、串行阶段和复制字节；用测试 wrapper/已有 metrics，不加生产
   每 RPC 日志或 profiling 锁。Files: Dataset/S3/Iceberg 测试 store、现有指标、`tools/sdk/`。
+- [ ] **F1.1 去掉 SDK 每次 control 调用的 capabilities GET**：R2.2b 抓到显式重试的请求
+  为 capabilities GET → PUT → capabilities GET → PUT；没有 head GET，但仍多一次 Access
+  往返。能力是版本化路由/配置发现，不是鉴权或资源准入；研究按 client 复用已确认能力，
+  保持服务端每次真实鉴权/条件检查、缺失能力不降级、重新发现/滚动升级的失效语义。
+  不增加热路径锁或 TTL 准入缓存。先写清语义，再补冷启动并发、服务失效和实际请求数。
+  Files: SDK `client.rs`、capabilities、v2 `client.rs`、native Python dispatch 与协议 fixture。
+  已核实 `DatasetHttpService` 的能力由版本化路由和构造时的 uploads 配置决定，鉴权与资源
+  条件每个真实请求仍独立检查。拟在同一 client/clone 中以固定有界 atomic bitset 复用成功
+  发现的能力，不缓存拒绝/缺失、不保存服务端状态；显式 capabilities() 仍重新发现并替换
+  提示。冷启动并发可重复有界发现，避免 single-flight 锁。服务端重启/能力变化时真实路由
+  仍拒绝不支持的操作，没有 v1 fallback；预先 GET 本来也不能消除发现与写之间的重启窗口。
+  不将该提示用于跳过鉴权、删除准入或 expected-base 检查；未知传输结果不解释成能力撤销。
 - [ ] **F2 复核 legacy/多源读取的重复准入**：现代 continuation 的 selection→HTTP/native
   delivery 已共用请求局部的 Snapshot/schema/membership，Split 同 Snapshot 也复用准入。
   剩余复核 legacy `DatasetReadService`、多源/祖先元数据，独立入口和不同 Snapshot 仍各自准入；
@@ -472,6 +480,9 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   无条件覆盖与 expected-base 重试测试。断言总 GET+写，不仅是零写。Files: Dataset `tests/*cost*`、`read_query*`、upload/Composition/Split/inspection；S3/Iceberg 对应 repository 测试。
 - [ ] **V2 HTTP/native/SDK 集成**：各受影响 route 的鉴权、错误、协议/SDK 一致性；保留删除准入、
   迟到写者、非空 namespace、共享 owner、held buffer、cancel/drop 和损坏内容测试。Files: Access/native tests、`sdk/tests/`、native Python consumer。
+- [~] **V2.2 Split 清理同源容器验收**：稳定树构建新镜像，运行全部五个 Dataset 容器用例，
+  包括真实 Chunk-KV/存储重启、Rust 与安装后 Python SDK 的直接 Split head 更新/观察值。
+  构建期间不改任何非忽略文件，保留 source guard；记录镜像、客户端与 artifact 身份。
 - [ ] **V3 工程门禁与文档**：每批执行适用 fmt/clippy/测试，全部经 `pixi run`；同步 owning
   design/spec/OpenAPI/SDK。只修改文档时检查 diff、引用和任务状态，不为此跑整套服务测试。
 - [ ] **V4 同源真实负载验收**：重新构建当前源码的镜像，运行现有 HTTP/native Rust/native Python
@@ -498,6 +509,23 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **R2.2b（2026-10-24）**：新增 `PUT snapshots/{snapshot}/split-head` 与
+  `split-head-update` 能力，Rust/Python SDK 提供 `update_split_head`。仅携带完整 revision
+  和两个必须显式提供的 nullable expected base，不携带 attempt ID，不查 draft，不保存过程。
+  Native 共用 `SplitHeadUpdate`；旧 attempt 入口仅适配响应。条件失败携带 boxed head
+  observation，早期 base 不符和真实 CAS loser 都不回读 head；观测值可能随后过期，客户端
+  审阅后显式组成下一次请求，SDK 不自动 rebase。旧服务无能力时不回退到 draft/v1。
+  Rust `SplitHead::from_conflict`、Python `ConflictError.observed_head` 完整保留观察值，
+  旧错误无该字段仍可解码。新增两个 HTTP 用例实际删除 draft 身份后发布，断言首次
+  5G+1C、重复确认 4G+0C、冲突 4G+0C、基于返回值再提交 4G+1C；鉴权/缺省字段失败
+  不接触 storage，缺失最终资源 1G+0C。读计数包含 bounded GET，不能只看旧 reads 字段。
+  Dataset 全 target、十一项 HTTP/Rust SDK、独立 SDK workspace、四 crate all-feature
+  clippy 和独立 SDK workspace clippy、fmt/diff/boundary 均通过。sdist 独立测试并打包的新
+  Python wheel 安装到 `.crowdb-runtime/artifacts/sdk-split-head-20261024/consumer/`，
+  显式运行安装后 Python HTTP consumer 验证更新与观察值通过。SDK 抓包同时发现每调用
+  都多 GET capabilities，已先登记 F1.1，未把当前两次 HTTP 往返称作单次。容器验证由 V2.2
+  继续，Snapshot 完整准入与 P2/P3/P4/R4 主线仍未完成。
 
 - **R2.2a（2026-10-24）**：新增直接接受完整 revision/显式 expected revision+generation
   的 `publish_split_revision`，旧 draft 发布仅作适配；新发布只 CAS currentSplit，不再写

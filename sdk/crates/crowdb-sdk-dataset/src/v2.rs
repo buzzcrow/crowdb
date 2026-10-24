@@ -12,6 +12,7 @@ mod paging;
 mod read;
 mod requests;
 mod split;
+mod split_head;
 mod state;
 mod transfer;
 mod upload;
@@ -23,6 +24,7 @@ pub use inspection::*;
 pub use paging::{PageCursor, PageKind};
 pub use read::*;
 pub use split::*;
+pub use split_head::UpdateSplitHead;
 pub use state::*;
 pub use upload::*;
 

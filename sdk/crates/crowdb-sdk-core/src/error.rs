@@ -9,6 +9,9 @@ pub struct ServiceError {
     pub message: String,
     pub request_id: String,
     pub retryable: bool,
+    /// The bounded observation attached to a failed conditional mutation, when supported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_head: Option<Box<serde_json::Value>>,
 }
 
 /// Transport details deliberately omit request URLs and credentials.

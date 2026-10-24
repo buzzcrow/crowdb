@@ -13,6 +13,13 @@ pub struct SplitReference {
     pub revision: Option<SplitRevisionId>,
     pub generation: Option<CommitGeneration>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SplitHeadUpdate {
+    pub revision: SplitRevisionId,
+    pub expected_revision: Option<SplitRevisionId>,
+    pub expected_head: Option<CommitGeneration>,
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CommittedSplitHead {

@@ -52,7 +52,7 @@ pub use evaluation::SplitPreview;
 mod prepare;
 
 mod head;
-pub use head::SplitReference;
+pub use head::{SplitHeadUpdate, SplitReference};
 
 mod publication;
 

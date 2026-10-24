@@ -253,16 +253,21 @@ async fn revise_splits(
         client.split_head(snapshot).await?.revision,
         Some(previous.clone())
     );
-    client
-        .publish_split(
-            &begin.operation,
-            &v2::PublishSplit {
-                attempt: v2::OpaqueId::random(),
-                revision: revision.revision.clone(),
-                expected_head: split_head.generation,
-            },
-        )
-        .await?;
+    let update = v2::UpdateSplitHead {
+        revision: revision.revision.clone(),
+        expected_revision: Some(previous.clone()),
+        expected_head: split_head.generation.clone(),
+    };
+    client.update_split_head(snapshot, &update).await?;
+    let stale = v2::UpdateSplitHead {
+        revision: previous.clone(),
+        ..update
+    };
+    let conflict = client.update_split_head(snapshot, &stale).await.unwrap_err();
+    assert_eq!(
+        v2::SplitHead::from_conflict(&conflict).unwrap().revision,
+        Some(revision.revision.clone())
+    );
     assert_eq!(client.head().await?.generation, head.generation);
     assert_eq!(
         client.split_head(snapshot).await?.revision,

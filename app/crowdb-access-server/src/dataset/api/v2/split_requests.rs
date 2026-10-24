@@ -44,6 +44,15 @@ pub(super) struct Publish {
     #[serde(deserialize_with = "required_option")]
     pub expected_head: Option<String>,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct UpdateHead {
+    pub revision: String,
+    #[serde(deserialize_with = "required_option")]
+    pub expected_revision: Option<String>,
+    #[serde(deserialize_with = "required_option")]
+    pub expected_head: Option<String>,
+}
 pub(super) fn generation(value: Option<&str>) -> Result<Option<CommitGeneration>, ApiError> {
     value
         .map(|value| {

@@ -8,6 +8,7 @@ import os
 import tempfile
 from pathlib import Path
 from crowdb_dataset import DatasetClient, AsyncDatasetClient, SplitSource, new_id, sample_id
+from crowdb_dataset.client import ConflictError
 
 
 def prepare(client, operation, revision):
@@ -122,7 +123,14 @@ def main():
             page = preview["next_page"]
         else: raise AssertionError("Split evaluation budget")
         candidate = client.prepare_split(split_op, "1")
-        client.publish_split(split_op, {"attempt": new_id(), "revision": candidate["revision"], "expected_head": head["generation"]})
+        update = {"revision": candidate["revision"], "expected_revision": revision, "expected_head": head["generation"]}
+        changed = client.update_split_head(snapshot, update)
+        try:
+            client.update_split_head(snapshot, dict(update, revision=revision))
+        except ConflictError as error:
+            assert error.observed_head == dict(changed, snapshot=snapshot)
+        else:
+            raise AssertionError("stale Split update must conflict")
         assert client.head()["latest"] == snapshot
         source = SplitSource(snapshot, revision, "train/a b")
         assert next(client.pages("split_members", source=source))["entries"] == [sample]

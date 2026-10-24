@@ -211,6 +211,12 @@ Existing `DatasetClient` methods retain their v1 contracts.
 - Complete Split revisions can be read or used as frozen sources before updating
   currentSplit, after a head conflict, or after abandoning their draft. Each new
   read still checks Snapshot availability; incomplete revisions remain unavailable.
+- `update_split_head(snapshot, request)` updates a complete revision directly with
+  `revision`, `expected_revision` and `expected_head`; both expected values must be
+  supplied, including null. It requires `split-head-update`, takes no attempt ID
+  and does not read a draft. Rust's `SplitHead::from_conflict` and Python's
+  `ConflictError.observed_head` return the failed condition's observation. Review
+  that base before retrying; the SDK does not rebase automatically.
 - `bind_read` pins Snapshot and optional Split revision without writes;
   `next_batch(cursor)` uses verified streaming framing. Save the next cursor after
   successful processing. The required capability is `stateless-reads`; old session

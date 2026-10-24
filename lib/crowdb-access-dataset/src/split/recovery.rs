@@ -108,7 +108,9 @@ fn authority_error(error: SplitLifecycleError) -> AuthorityError {
     match error {
         SplitLifecycleError::Authority(error) => error,
         SplitLifecycleError::Store(error) => error.into(),
-        SplitLifecycleError::Conflict => AuthorityError::HeadConflict,
+        SplitLifecycleError::Conflict | SplitLifecycleError::HeadConflict { .. } => {
+            AuthorityError::HeadConflict
+        }
         SplitLifecycleError::NotFound => AuthorityError::SnapshotNotFound,
         SplitLifecycleError::Limit => crate::DatasetError::ReadLimitExceeded.into(),
         _ => AuthorityError::Corrupt,
