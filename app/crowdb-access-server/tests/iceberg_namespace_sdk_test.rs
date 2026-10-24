@@ -58,6 +58,7 @@ fn install(test: &TestTableHttp, count: usize, padding: usize, stale: bool) {
                 mutation_revision: 1,
                 lifecycle: NamespaceLifecycle::Ready,
                 pending_operation: None,
+                rename: None,
                 properties: NamespaceProperties::default(),
             };
             values.insert(

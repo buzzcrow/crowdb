@@ -38,6 +38,12 @@ pub struct TableLifecycleRequest {
     pub action: TableLifecycleAction,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TableLifecycleOutcome {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
 pub struct TableLifecycles {
     store: Arc<dyn CatalogStore>,
     names: Arc<dyn NamespaceStore>,
@@ -62,14 +68,30 @@ impl TableLifecycles {
 
     /// # Errors
     /// Rejects changed request identities, retired catalogs and uncertain storage outcomes.
-    pub async fn execute(&self, request: &TableLifecycleRequest) -> Result<TableCommitOutcome, CatalogError> {
+    pub async fn execute(
+        &self,
+        request: &TableLifecycleRequest,
+    ) -> Result<TableLifecycleOutcome, CatalogError> {
         let input = preparation::input(request)?;
         if let Some(operation) = self.load(request.context, request.identity.operation).await? {
             self.match_request(request, &input, &operation).await?;
+        } else if matches!(request.action, TableLifecycleAction::Rename { .. }) {
+            let status = super::TableRenames::from_parts(self.store.clone(), self.names.clone())
+                .execute(request)
+                .await?;
+            return TableLifecycleOutcome::new(status);
         } else if let Some(outcome) = self.prepare(request, &input).await? {
-            return Ok(outcome);
+            return self.inline(outcome).await;
         }
-        self.resume(request.context, request.identity.operation).await
+        self.inline(self.resume(request.context, request.identity.operation).await?)
+            .await
+    }
+
+    async fn inline(&self, outcome: TableCommitOutcome) -> Result<TableLifecycleOutcome, CatalogError> {
+        Ok(TableLifecycleOutcome {
+            status: outcome.status,
+            body: self.payloads.get(&outcome.body).await?,
+        })
     }
 
     /// # Errors
@@ -118,5 +140,23 @@ impl TableLifecycles {
             }
         }
         Err(CatalogError::Busy)
+    }
+}
+
+impl TableLifecycleOutcome {
+    fn new(status: u16) -> Result<Self, CatalogError> {
+        let body = if status == 204 {
+            Vec::new()
+        } else {
+            let kind = if status == 404 {
+                "NoSuchTableException"
+            } else {
+                "CommitFailedException"
+            };
+            serde_json::to_vec(&serde_json::json!({"error": {"code": status, "type": kind,
+                "message": "Table lifecycle target conflicts with current authority"}}))
+            .map_err(|_| crate::error::ValidationError::Record)?
+        };
+        Ok(Self { status, body })
     }
 }

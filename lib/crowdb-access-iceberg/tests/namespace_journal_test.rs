@@ -276,6 +276,7 @@ async fn mutation_snapshots_are_key_bound_and_frozen_after_publication_starts() 
         mutation_revision: 1,
         lifecycle: NamespaceLifecycle::Ready,
         pending_operation: None,
+        rename: None,
         properties: NamespaceProperties::default(),
     };
     let before_bytes = StorageRecord::NamespaceAuthority(Box::new(authority.clone()))

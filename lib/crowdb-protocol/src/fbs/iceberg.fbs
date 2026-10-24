@@ -93,6 +93,16 @@ table FBNamespaceAuthority {
     lifecycle:ubyte = 255;
     pending_operation:[ubyte] (required);
     properties:[FBNamespaceProperty] (required);
+    rename:FBNameMove;
+}
+
+table FBNameMove {
+    source:FBTableMapping (required);
+    destination_namespace:[ubyte] (required);
+    destination_name:string (required);
+    operation:[ubyte] (required);
+    head_generation:ulong;
+    head_fence:ulong;
 }
 
 table FBNamespaceMapping {

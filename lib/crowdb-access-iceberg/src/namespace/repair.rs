@@ -113,6 +113,14 @@ impl NamespaceRecovery {
                 return Err(ValidationError::Record.into());
             };
             if mapping.resolves(&authority) {
+                if let Some(rename) = &authority.rename {
+                    crate::table::TableRenames::from_parts(
+                        self.creator.repository.store.clone(),
+                        self.creator.names.clone(),
+                    )
+                    .recover(context, rename)
+                    .await?;
+                }
                 return Ok(());
             }
         }

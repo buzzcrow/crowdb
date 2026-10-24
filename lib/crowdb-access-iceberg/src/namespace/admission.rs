@@ -28,6 +28,9 @@ impl NamespaceCreator {
         };
         let after = match StorageRecord::decode(&key, &value.bytes)? {
             StorageRecord::NamespaceAuthority(mut parent) => {
+                if parent.rename.is_some() {
+                    return Err(CatalogError::Busy);
+                }
                 if parent.lifecycle != NamespaceLifecycle::Ready
                     || Some(parent.identifier.clone()) != operation.identifier.parent()
                 {

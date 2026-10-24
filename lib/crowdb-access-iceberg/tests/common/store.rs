@@ -123,7 +123,11 @@ impl TestStore {
         } else {
             &self.table_head_pause_before
         };
-        if head.pending_operation.is_some() && enabled.swap(false, Ordering::SeqCst) {
+        if (head.pending_operation.is_some() || expected.is_some_and(|bytes| {
+            crowdb_access_iceberg::key::IcebergKey::decode(key).ok()
+                .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, bytes).ok())
+                .is_some_and(|record| matches!(record, crowdb_access_iceberg::record::StorageRecord::TableHead(before) if before.name_epoch < head.name_epoch))
+        })) && enabled.swap(false, Ordering::SeqCst) {
             self.table_head_entered.notify_one();
             self.table_head_release.notified().await;
         }
@@ -136,6 +140,7 @@ impl TestStore {
         {
             if expected.is_some()
                 && (authority.pending_operation.is_some()
+                    || authority.rename.is_some()
                     || expected
                         .and_then(|bytes| {
                             crowdb_access_iceberg::key::IcebergKey::decode(key)

@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use crowdb_protocol::iceberg_fb::{
-    FBNamespaceAuthority, FBNamespaceAuthorityArgs, FBNamespaceMapping, FBNamespaceMappingArgs,
-    FBNamespaceProperty, FBNamespacePropertyArgs,
+    FBNameMove, FBNameMoveArgs, FBNamespaceAuthority, FBNamespaceAuthorityArgs, FBNamespaceMapping,
+    FBNamespaceMappingArgs, FBNamespaceProperty, FBNamespacePropertyArgs,
 };
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 
@@ -42,6 +42,11 @@ pub(super) fn encode_authority<'buffer>(
         ));
     }
     let properties = builder.create_vector(&properties);
+    let rename = authority
+        .rename
+        .as_ref()
+        .map(|rename| encode_rename(builder, rename))
+        .transpose()?;
     Ok(FBNamespaceAuthority::create(
         builder,
         &FBNamespaceAuthorityArgs {
@@ -60,6 +65,7 @@ pub(super) fn encode_authority<'buffer>(
             },
             pending_operation,
             properties: Some(properties),
+            rename,
         },
     ))
 }
@@ -103,9 +109,45 @@ pub(super) fn decode_authority(
             Some(OperationId::from_bytes(value.pending_operation().bytes())?)
         },
         properties: NamespaceProperties::new(properties)?,
+        rename: value.rename().map(decode_rename).transpose()?.map(Box::new),
     };
     authority.validate()?;
     Ok(authority)
+}
+
+fn encode_rename<'buffer>(
+    builder: &mut FlatBufferBuilder<'buffer>,
+    rename: &crate::namespace::NamespaceRename,
+) -> Result<WIPOffset<FBNameMove<'buffer>>, ValidationError> {
+    rename.validate()?;
+    let source = super::table::encode_mapping(builder, &rename.source)?;
+    let destination_namespace = builder.create_vector(rename.destination_namespace.as_bytes());
+    let destination_name = builder.create_string(&rename.destination_name);
+    let operation = builder.create_vector(rename.operation.as_bytes());
+    Ok(FBNameMove::create(
+        builder,
+        &FBNameMoveArgs {
+            source: Some(source),
+            destination_namespace: Some(destination_namespace),
+            destination_name: Some(destination_name),
+            operation: Some(operation),
+            head_generation: rename.head_generation,
+            head_fence: rename.head_fence,
+        },
+    ))
+}
+
+fn decode_rename(value: FBNameMove<'_>) -> Result<crate::namespace::NamespaceRename, ValidationError> {
+    let rename = crate::namespace::NamespaceRename {
+        source: super::table::decode_mapping(value.source())?,
+        destination_namespace: NamespaceId::from_bytes(value.destination_namespace().bytes())?,
+        destination_name: value.destination_name().to_owned(),
+        operation: OperationId::from_bytes(value.operation().bytes())?,
+        head_generation: value.head_generation(),
+        head_fence: value.head_fence(),
+    };
+    rename.validate()?;
+    Ok(rename)
 }
 
 pub(super) fn encode_mapping<'buffer>(

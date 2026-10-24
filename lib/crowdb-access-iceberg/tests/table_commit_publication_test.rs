@@ -276,8 +276,10 @@ async fn commit_winning_head_cas_forces_pending_lifecycle_to_abort_without_rebas
                 .await
                 .unwrap()
                 .status,
-            409
+            if rename { 204 } else { 409 }
         );
+        assert_eq!(head(&fixture).await.generation, committed.generation);
+        assert_eq!(head(&fixture).await.metadata_digest, committed.metadata_digest);
     }
 }
 

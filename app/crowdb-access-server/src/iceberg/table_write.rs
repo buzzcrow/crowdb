@@ -143,11 +143,10 @@ impl TableWrites {
             }
         }
         if method == Method::DELETE || uri.path() == "/v1/tables/rename" {
-            let result = self
+            let outcome = self
                 .mutate_lifecycle(&record, capabilities, &method, &uri, &bytes)
-                .await;
-            let (status, body) = self.outcome_response(result).await?;
-            return Ok(response(status, body));
+                .await?;
+            return Ok(response(outcome.status, outcome.body));
         }
         let target = request::parse(&uri);
         let result = match target {

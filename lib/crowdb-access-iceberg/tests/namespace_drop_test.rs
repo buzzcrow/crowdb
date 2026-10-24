@@ -243,7 +243,10 @@ async fn creator_and_empty_drop_share_one_admission_boundary() {
     let creator = NamespaceCreator::new(fixture.store.clone());
     let dropper = NamespaceDropper::new(fixture.store.clone());
     let results = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        tokio::join!(creator.create(&child), dropper.drop_namespace(&request))
+        tokio::join!(
+            Box::pin(creator.create(&child)),
+            Box::pin(dropper.drop_namespace(&request))
+        )
     })
     .await
     .unwrap();

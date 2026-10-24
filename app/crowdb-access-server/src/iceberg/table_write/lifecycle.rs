@@ -4,10 +4,9 @@ use super::{
 };
 use crowdb_access_iceberg::{
     catalog::{Capabilities, FormatAction},
-    commit::TableCommitOutcome,
     key::NameSuffix,
     namespace::NamespaceIdentifier,
-    table::{TableLifecycleAction, TableLifecycleRequest},
+    table::{TableLifecycleAction, TableLifecycleOutcome, TableLifecycleRequest},
     wire::IcebergErrorResponse,
 };
 use hyper::{Method, Uri};
@@ -47,7 +46,7 @@ impl TableWrites {
         method: &Method,
         uri: &Uri,
         bytes: &[u8],
-    ) -> Result<TableCommitOutcome, IcebergErrorResponse> {
+    ) -> Result<TableLifecycleOutcome, IcebergErrorResponse> {
         let (namespace, name, action) = if uri.path() == "/v1/tables/rename" {
             if *method != Method::POST {
                 return Err(super::super::table_read::unsupported());

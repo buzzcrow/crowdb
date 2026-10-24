@@ -140,6 +140,7 @@ impl NamespaceCreator {
             mutation_revision: 1,
             lifecycle: NamespaceLifecycle::Ready,
             pending_operation: Some(operation.identity.operation),
+            rename: None,
             properties,
         }))
     }

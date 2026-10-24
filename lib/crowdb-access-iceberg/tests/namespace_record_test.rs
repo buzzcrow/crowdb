@@ -20,6 +20,7 @@ fn authority() -> NamespaceAuthority {
         mutation_revision: 1,
         lifecycle: NamespaceLifecycle::Ready,
         pending_operation: None,
+        rename: None,
         properties: NamespaceProperties::new(BTreeMap::from([("owner".into(), "数据库".into())])).unwrap(),
     }
 }

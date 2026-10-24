@@ -71,23 +71,7 @@ impl TableLifecycles {
                 candidate.lifecycle = TableLifecycle::Tombstone;
                 (None, *purge_requested)
             }
-            TableLifecycleAction::Rename { namespace, name } => {
-                if namespace == &request.namespace && name == &request.name {
-                    return self.initial_outcome(request, input, 204, "").await;
-                }
-                let Some(target) = self.namespaces.load(request.context, namespace).await? else {
-                    return self
-                        .initial_outcome(request, input, 404, "NoSuchNamespaceException")
-                        .await;
-                };
-                candidate.namespace = target.namespace;
-                candidate.name.clone_from(name);
-                candidate.name_epoch = candidate
-                    .name_epoch
-                    .checked_add(1)
-                    .ok_or(ValidationError::GenerationExhausted)?;
-                (Some(namespace.clone()), false)
-            }
+            TableLifecycleAction::Rename { .. } => return Err(ValidationError::Record.into()),
         };
         let operation = TableLifecycleOperation {
             context: request.context,

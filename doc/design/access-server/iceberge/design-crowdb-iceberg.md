@@ -104,9 +104,10 @@ native catalog. They are not file lookup indexes and cannot produce an object
 listing. The service must discover abandoned work before a table head exists
 and after a table has disappeared, without a table-ID reverse index:
 
-- Create, commit and lifecycle journals and payload pages are keyed by operation
-  identity; creation can precede name/head publication and rename spans two live
-  namespaces. Their selected heads carry the frozen storage identity.
+- Create, legacy commit and drop journals and payload pages are keyed by operation
+  identity; creation can precede name/head publication. Their selected heads carry
+  the frozen storage identity. Name moves use bounded namespace occupancy instead
+  of request journals; existing rename journals remain recoverable.
 - Multipart sessions and parts are keyed by upload identity/part number. Catalog
   admission records apply only to legacy credited sessions; new streamed sessions
   use independent per-session bounds.
@@ -282,12 +283,14 @@ the proof. A live child restores Ready without changing the name epoch or proper
 revision. Only completion of both ranges permits the fenced tombstone CAS.
 Terminal replay and conditional cleanup cannot delete a recreated NamespaceId.
 Table-child probes resolve published mappings against the selected table head.
-Unpublished table reservations are helped through their creation or lifecycle
-journal. Ordinary table creation does not modify the namespace authority. A
+Unpublished table reservations are helped through their creation journal,
+namespace name-move occupancy or a legacy lifecycle journal. Ordinary table creation does not modify the namespace authority. A
 concurrent drop scan may miss a creator; later mapping reconciliation resolves
 the leftover state. Stable namespace identity prevents that state from becoming
-visible under a recreated namespace. Rename retains its lifecycle admission
-protocol. Corrupt table authority blocks the emptiness proof.
+visible under a recreated namespace. Name moves occupy both participating parent
+authorities before reserving the destination; deletion helps settle or fence the
+move and returns retryable busy before taking a fresh emptiness proof. Corrupt
+table authority blocks the emptiness proof.
 Each listener runs a namespace-journal sweep with bounded pages, per-operation
 phase budgets and a wall-clock deadline. The sweep resumes abandoned operations
 and their conditional mapping cleanup without requiring a client retry. Catalog
@@ -794,18 +797,41 @@ markers and retains uncertain storage errors. Known semantic validation failures
 become durable client outcomes before any candidate is published. Recovery deadlines
 preserve journal evidence rather than canceling the logical operation.
 
-Logical drop and same/cross-namespace rename use a bounded `TableLifecycleOperation`
-journal. It fixes the original head and exact source mapping, request identity,
-principal, input and candidate before publication. A single head CAS arbitrates
-against metadata commits and other lifecycle operations. A losing operation keeps
-its terminal conflict instead of rebasing onto a new generation or recreated name.
-Rename changes the canonical identifier and name epoch, not table identity, UUID,
-metadata generation, digest or file location. Destination reservation precedes a
-namespace admission CAS. The admission marker remains until the head outcome and
-destination mapping are durable; namespace-drop helpers finish or abort that exact
-operation with a shared bounded work budget. The source stays head-qualified until
-the move publishes, and the old name never becomes an alias. Cleanup conditionally
-removes only the captured mapping, preserving names recreated with another identity.
+Logical drop uses a bounded `TableLifecycleOperation` journal. It fixes the original
+head, exact source mapping, request identity, principal, input and candidate before
+publication. A losing operation keeps its terminal conflict instead of rebasing
+onto a new generation or recreated name.
+
+Same/cross-namespace rename stores no new input, phase, response or lifecycle
+journal. A single bounded `NamespaceRename` occupancy in each affected parent
+contains the source mapping, target name, expected head generation/fence and a
+fresh per-attempt reservation identity. Parents are occupied in stable ID order;
+failure to acquire the second cancels and releases the first, without waiting on
+another rename. Definite parent CAS conflicts use the observed authority directly,
+preserving concurrent property changes. Ordinary readers do not acquire occupancy.
+
+The target name is reserved before one exact-head CAS switches the canonical
+identifier and name epoch. Table identity, UUID, metadata generation, digest and
+file location stay fixed. The destination is published before the captured source
+mapping and parent occupancies are conditionally cleared. A namespace cannot enter
+Dropping while occupied, including a same-parent move where a scan could otherwise
+miss both names across the switch. Mapping visibility remains qualified by the
+head, and the old name never becomes an alias.
+
+Recovery reads the head and name facts: a switched head completes the destination;
+an unchanged head is first conditionally fenced to invalidate delayed publication,
+then the reservation and occupancy can be removed. Conflicts use their returned
+head. Namespace mapping sweeps and name-reservation/deletion helpers recover
+abandoned occupancy. Every new attempt has a distinct reservation identity, even
+when an HTTP request key is reused, preventing delayed cleanup of a canceled
+attempt from deleting a later reservation. Cleanup never removes a recreated name
+with a different identity. Existing lifecycle journals still finish through their
+legacy recovery driver.
+
+Rename replies are generated directly from current resource state. After a
+completed move the source is missing; repeating that request can return 404.
+A recreated source with an occupied target conflicts. There is no historical
+response replay or implicit rebasing of an in-flight head CAS.
 
 Drop tombstones the selected head without traversing snapshots or deleting files.
 A purge request persists a `TablePurgeTask` containing the tombstoned head,
@@ -814,9 +840,8 @@ The purge task becomes eligible 20 minutes after that marker time; a delayed
 scheduler scan or restart does not restart the delay. A drop without an explicit
 purge request leaves the underlying files in place. Purge reclaims table-scoped
 files after the delay and owner checks, without snapshot reachability scans
-inside the dropped table. Success is
-retained before releasing rename head/namespace markers. Retrying after response
-loss returns the original result without mutating a replacement table. The REST
+inside the dropped table. Drop success is retained before releasing its markers.
+Drop retries return the retained result without mutating a replacement table. The REST
 drop/rename routes require independent writer credentials and return empty success
 responses; stale table names fail normal load, exists, commit and credential refresh.
 

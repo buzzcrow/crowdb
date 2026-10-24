@@ -22,6 +22,7 @@ pub struct NamespaceAuthority {
     pub mutation_revision: u64,
     pub lifecycle: NamespaceLifecycle,
     pub pending_operation: Option<OperationId>,
+    pub rename: Option<Box<super::NamespaceRename>>,
     pub properties: NamespaceProperties,
 }
 
@@ -38,6 +39,17 @@ impl NamespaceAuthority {
             || (self.lifecycle != NamespaceLifecycle::Ready && self.pending_operation.is_none())
         {
             return Err(ValidationError::Record);
+        }
+        if let Some(rename) = &self.rename {
+            rename.validate()?;
+            if self.lifecycle != NamespaceLifecycle::Ready
+                || self.pending_operation.is_some()
+                || rename.source.catalog != self.catalog
+                || (rename.source.namespace != self.namespace
+                    && rename.destination_namespace != self.namespace)
+            {
+                return Err(ValidationError::IdentityMismatch);
+            }
         }
         Ok(())
     }

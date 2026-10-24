@@ -26,6 +26,15 @@ impl NamespaceDropper {
         if authority.namespace != operation.namespace || authority.parent != operation.parent {
             return self.finish_outcome(operation, 404).await;
         }
+        if let Some(rename) = &authority.rename {
+            crate::table::TableRenames::from_parts(
+                self.creator.repository.store.clone(),
+                self.creator.names.clone(),
+            )
+            .recover(operation.context, rename)
+            .await?;
+            return Err(CatalogError::Busy);
+        }
         if let Some(pending) = authority.pending_operation {
             let owner = NamespaceJournal::new(self.creator.repository.store.clone())
                 .load(operation.context, pending)

@@ -29,6 +29,8 @@ Upstream: [Dataset SDK](../backlog/R220-dataset-fat-client-plan.md)、
   重试/重启不重置期限；已准入流可继续，过久的流允许失败，不能截断后报成功。
   Access Server 不登记读者、不互相确认删除、不异步写释放记录。
 - **非空 Iceberg namespace 删除必须失败**，已由用户决定，不再提出放宽选项。
+- **用户决定（2026-10-24）**：允许 rename 在参与父目录中保存最小有界占位，用于严格非空
+  删除和迟到 CAS 隔离；删除新 rename 的完整 journal、输入和响应。普通读取不登记。
 - definite CAS conflict 立即使用返回的 observed value 计算合法重试，无“三次后才更新”。
   返回值可能随后又变旧，因此仍需期限/重试上限；transport timeout 不等于 CAS 失败。
   明确 expected revision 的业务操作不能擅自改 base 重放。
@@ -149,7 +151,7 @@ CAS 不再满足只证明“本次条件不成立”，不能谎称“第一次�
   新请求如何处理和无 journal 替代方案；有保留中间记录的需求时单独确认。
   Files: Iceberg `table/lifecycle/{operation,completion,reservation}.rs`、`namespace/`。
 
-**rename 的具体持久化例外，待用户 review（2026-10-24）**：不能仅删除 journal 后依次改
+**rename 的具体持久化例外，用户已允许（2026-10-24）**：不能仅删除 journal 后依次改
 三个 key。设父 namespace P 中已有 A，rename A→B 先预放 B mapping，再 CAS TableHead。
 如果 P 的删除已经标记 Dropping，空目录探测先经过尚未可见的 B，随后 head 切到 B，
 探测再经过已失效的 A，就可能误判为空；改名线程此时退出，P 被删，已有表丢失可达名称。
@@ -170,11 +172,7 @@ CAS 保证名称唯一；TableHead CAS 是名称切换点；mapping 只在与 he
 替代方案是实现底层跨 key 原子条件提交，或暂不提供 rename。当前 CatalogStore 只暴露
 单 key CAS；Chunk-KV 的 batch_mutate 明确不提供跨 key/partition 原子性，不能冒充事务。
 新建 child 可以在发布后校验父身份并把失败的新资源交给 GC；rename 移动的是既有表，
-不能接受线程退出后把原表变成无名称孤儿。准入占位是否允许必须先确认，再改资源格式。
-
-- [ ] **R3.1 rename 最小协调合同**：用户 review 上述持久化例外后，实现 namespace 准入
-  占位、head/name 的可见性与取消 fence；删除生命周期输入/输出 journal。验证同父目录
-  扫描跨过旧/新名称、跨 namespace drop、占位后各失败点、反向并发 rename 和迟到 CAS。
+不能接受线程退出后把原表变成无名称孤儿。用户已确认允许最小占位，删除完整 journal。
 
 #### R4 — 去掉过程状态后，GC 是否还能发现所有孤儿？这是实现前置检查
 
@@ -464,6 +462,22 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，R3.1 / P9.2（rename 部分）**：新 rename 只在参与父 authority 中保存一个
+  `NamespaceRename`：原精确 mapping、目标 namespace/name、head generation/fence 和本次
+  reservation ID。父目录按稳定 ID 占用，不等待第二个；冲突直接使用 observed，四次真实
+  冲突中禁止额外 GET 的回归通过。名字 reservation 后一次原 head CAS 切换，发布目标名，
+  条件删除原 mapping，清父占位。同父目录为 6 次写入，跨目录 8 次（含 conditional delete）；
+  成功后 key 总数不变，只有一个新目标名 key，没有新 journal/input/output/response key。
+  未切换 head 的恢复先 CAS 推进 fence，再撤占位；已切换则补目标名。普通读不登记。
+  同请求重试使用新的 reservation ID，阻止旧取消请求迟到清理新 reservation 的 ABA。
+  namespace drop 遇占位先恢复再返回 Busy；下一次独立探测保持严格非空失败。反向跨目录
+  并发通过 barrier 同时占首父目录，不形成等待环。每个成功 mutation 的丢回复/进程重建、
+  head CAS 前后暂停、并发 commit/drop、重建源名及旧 journal 恢复均通过。
+  rename 不保留历史响应：源已移动可返回 404，重建源与已占目标冲突；进行中的旧 CAS
+  失败不隐式换 base，新独立请求可选择当前资源。drop/create 的旧 driver 仍在 P9.2。
+  Iceberg `--all-targets`、HTTP lifecycle/namespace 9 项、两 crate all-target/all-feature clippy、
+  workspace fmt 和 diff 检查通过。没有 TPS 提升实测；ChunkDB 物理回收仍独立。
 
 - **2026-10-24，F9.1**：单 part 完成仍读取并验证实际存储内容，但其长度/MD5 与整个 upload
   相同时不再重复哈希同一范围。VerifiedUploadPart 仅在成功 EOF 后给出长度＋MD5 证据；

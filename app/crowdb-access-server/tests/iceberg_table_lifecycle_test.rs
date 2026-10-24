@@ -117,7 +117,7 @@ async fn rename_preserves_metadata_supports_cross_namespace_and_never_aliases_ol
     )
     .await;
     value(test.post(TABLES, "w", None, &create()).await, 200).await;
-    empty(test.post(RENAME, "w", Some(&identity), &rename).await).await;
+    value(test.post(RENAME, "w", Some(&identity), &rename).await, 409).await;
     value(
         test.post("/v1/namespaces", "w", None, &json!({"namespace":["destination"]}))
             .await,

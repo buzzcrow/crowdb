@@ -20,6 +20,9 @@ impl TableLifecycles {
         let StorageRecord::NamespaceAuthority(mut parent) = StorageRecord::decode(&key, &value.bytes)? else {
             return Err(ValidationError::Record.into());
         };
+        if parent.rename.is_some() {
+            return Err(CatalogError::Busy);
+        }
         if parent.lifecycle != NamespaceLifecycle::Ready
             || Some(&parent.identifier) != operation.destination_namespace.as_ref()
         {

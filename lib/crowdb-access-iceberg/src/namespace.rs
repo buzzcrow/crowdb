@@ -18,6 +18,7 @@ mod properties;
 mod publication;
 mod recovery;
 mod recovery_scan;
+mod rename;
 mod repair;
 mod repository;
 mod reservation;
@@ -38,6 +39,7 @@ pub use operation::{
 pub use properties::{NamespaceProperties, PropertyChanges, PropertyUpdate, MAX_PROPERTIES};
 pub use recovery::{NamespaceRecovery, NamespaceRecoveryPage};
 pub use recovery_scan::{NamespaceRecoveryScan, NamespaceRecoveryStore};
+pub use rename::NamespaceRename;
 pub use repository::NamespaceRepository;
 pub use storage::{ChildScan, NamespaceStore};
 pub use update::NamespacePropertyRequest;
