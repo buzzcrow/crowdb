@@ -87,19 +87,10 @@ impl DatasetAuthority {
             .get(&key, 512 * 1024)
             .await?
             .ok_or(InspectionError::Corrupt)?;
-        let locator: FieldLocator =
-            serde_json::from_slice(&stored.bytes).map_err(|_| InspectionError::Corrupt)?;
-        let FieldLocator::Inline { value, md5 } = &locator else {
-            return Err(InspectionError::Corrupt);
-        };
-        if value.len() > crate::manifest::MAX_INLINE_BYTES
-            || value.len() as u64 != metadata.length
-            || Some(*md5) != metadata.md5
-        {
+        if metadata.storage != FieldStorageKind::Inline {
             return Err(InspectionError::Corrupt);
         }
-        locator.verify_payload(value).map_err(AuthorityError::from)?;
-        Ok(locator)
+        super::materialize::decode_locator(metadata, &stored.bytes)
     }
 }
 

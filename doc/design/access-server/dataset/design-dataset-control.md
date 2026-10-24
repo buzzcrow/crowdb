@@ -119,6 +119,17 @@ results. Explicit batch reads remain independent admitted requests. HTTP deliver
 moves inline payload owners from resolved locators into output buffers without
 cloning the payload.
 
+Delivery resolves membership and field bindings in windows of at most sixteen
+cells. Independent point reads overlap within one ancestry level; unresolved
+fields proceed to the parent only after its read-only admission. Ancestor summaries
+remain local to the request. Each read reserves its response cap before dispatch,
+with at most sixteen requests and 2 MiB of response capacity in flight. Completed
+rows consume the aggregate metadata budget, including responses waiting behind
+an earlier read. Unused reservations are released before admitting a smaller final
+read. Request order, missing fields, tombstones and locator integrity checks remain
+independent of completion order. All windows share the request deadline and
+cancellation; no reader state is persisted.
+
 Old snapshots without projections require explicit resumable inspection preparation.
 Unsupported or oversized legacy state is reported, never represented as an empty
 Snapshot. Field preview is explicit and capped at 64 KiB after read-only admission; it

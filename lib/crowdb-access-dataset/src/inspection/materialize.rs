@@ -91,24 +91,35 @@ impl DatasetAuthority {
             .get(&key, 512 * 1024)
             .await?
             .ok_or(InspectionError::Corrupt)?;
-        let locator: FieldLocator =
-            serde_json::from_slice(&stored.bytes).map_err(|_| InspectionError::Corrupt)?;
-        let FieldLocator::Chunk {
+        decode_locator(metadata, &stored.bytes)
+    }
+}
+
+pub(super) fn decode_locator(
+    metadata: &FieldMetadata,
+    bytes: &[u8],
+) -> Result<FieldLocator, InspectionError> {
+    let locator: FieldLocator = serde_json::from_slice(bytes).map_err(|_| InspectionError::Corrupt)?;
+    match &locator {
+        FieldLocator::Inline { value, md5 }
+            if metadata.storage == FieldStorageKind::Inline
+                && value.len() <= crate::manifest::MAX_INLINE_BYTES
+                && value.len() as u64 == metadata.length
+                && Some(*md5) == metadata.md5 =>
+        {
+            locator.verify_payload(value).map_err(AuthorityError::from)?;
+        }
+        FieldLocator::Chunk {
             location,
             length,
             md5,
-        } = &locator
-        else {
-            return Err(InspectionError::Corrupt);
-        };
-        if location.is_empty()
-            || location.len() > 64 * 1024
-            || *length == 0
-            || *length != metadata.length
-            || Some(*md5) != metadata.md5
-        {
-            return Err(InspectionError::Corrupt);
-        }
-        Ok(locator)
+        } if metadata.storage == FieldStorageKind::Chunk
+            && !location.is_empty()
+            && location.len() <= 64 * 1024
+            && *length != 0
+            && *length == metadata.length
+            && Some(*md5) == metadata.md5 => {}
+        _ => return Err(InspectionError::Corrupt),
     }
+    Ok(locator)
 }

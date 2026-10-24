@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{key, work::InspectionWork, InspectionError};
+use super::{key, read_fields::FieldRequest, work::InspectionWork, InspectionError};
 use crate::{
     AuthorityError, DatasetAuthority, DatasetError, DatasetIdentity, MetadataScanBudget, ReadCancellation,
     SampleView, SnapshotId,
@@ -89,52 +89,61 @@ impl PreparedInspectionRead<'_> {
         {
             return Err(AuthorityError::Invalid(DatasetError::InvalidManifest).into());
         }
-        let mut output = Vec::new();
-        for id in ids {
-            if id.is_empty() || id.len() > 16 * 1024 {
-                return Err(InspectionError::Limit);
+        if ids.iter().any(|id| id.is_empty() || id.len() > 16 * 1024) {
+            return Err(InspectionError::Limit);
+        }
+        if !known_members {
+            self.members(ids, work).await?;
+        }
+        let mut output: Vec<_> = ids
+            .iter()
+            .map(|id| SampleView {
+                sample_id: id.clone(),
+                fields: BTreeMap::new(),
+                values: BTreeMap::new(),
+            })
+            .collect();
+        for start in (0..ids.len() * fields.len()).step_by(16) {
+            let end = (start + 16).min(ids.len() * fields.len());
+            let requests: Vec<_> = (start..end)
+                .map(|index| FieldRequest {
+                    sample: &ids[index / fields.len()],
+                    field: &fields[index % fields.len()],
+                })
+                .collect();
+            let locators = self.fields(&requests, work).await?;
+            for (index, (request, locator)) in (start..end).zip(requests.into_iter().zip(locators)) {
+                if let Some(locator) = locator {
+                    output[index / fields.len()]
+                        .fields
+                        .insert(request.field.to_owned(), locator);
+                }
             }
-            if !known_members {
-                let mut member =
-                    key::scope(self.identity, self.snapshot, b'M').map_err(AuthorityError::from)?;
-                key::component(&mut member, id);
-                let value = work
-                    .get(&member, 128 * 1024)
-                    .await?
-                    .ok_or(AuthorityError::Invalid(DatasetError::SampleNotFound))?;
+        }
+        Ok(output)
+    }
+
+    async fn members(&self, ids: &[Vec<u8>], work: &mut InspectionWork<'_>) -> Result<(), InspectionError> {
+        let prefix = key::scope(self.identity, self.snapshot, b'M').map_err(AuthorityError::from)?;
+        for window in ids.chunks(16) {
+            let keys = window
+                .iter()
+                .map(|id| {
+                    let mut key = prefix.clone();
+                    key::component(&mut key, id);
+                    key
+                })
+                .collect();
+            let rows = work.get_many(keys, 128 * 1024).await?;
+            for (id, row) in window.iter().zip(rows) {
+                let row = row.ok_or(AuthorityError::Invalid(DatasetError::SampleNotFound))?;
                 let stored: Vec<u8> =
-                    serde_json::from_slice(&value.bytes).map_err(|_| InspectionError::Corrupt)?;
+                    serde_json::from_slice(&row.bytes).map_err(|_| InspectionError::Corrupt)?;
                 if stored != *id {
                     return Err(InspectionError::Corrupt);
                 }
             }
-            let mut sample = SampleView {
-                sample_id: id.clone(),
-                fields: BTreeMap::new(),
-                values: BTreeMap::new(),
-            };
-            for field in fields {
-                if let Some(metadata) = self
-                    .authority
-                    .effective_field_metadata(
-                        self.identity,
-                        self.snapshot,
-                        id,
-                        field,
-                        &mut self.summaries,
-                        work,
-                    )
-                    .await?
-                {
-                    let locator = self
-                        .authority
-                        .composition_field_locator(self.identity, id, &metadata, work)
-                        .await?;
-                    sample.fields.insert(field.clone(), locator);
-                }
-            }
-            output.push(sample);
         }
-        Ok(output)
+        Ok(())
     }
 }

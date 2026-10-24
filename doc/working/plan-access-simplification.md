@@ -422,9 +422,11 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   与 token 大小；不恢复持久化 session。Files: Dataset `read_query/page.rs`、`inspection/evaluate.rs`、SDK iterable。
 - [ ] **F4 替换 legacy scan 全量规划**：`scan_surface` 每页重建所有窗口，造成 CPU/内存放大；
   追踪调用者后迁移到有界 inspection 或增量 planner。Files: Dataset `transport.rs`、`planner/`、legacy API 和 scan 测试。
-- [ ] **F6 批量或并发 locator 读取**：membership + 每 sample/field/ancestor 元数据 + value
-  读取目前串行；bounded point read 在 chunk store 内还转成单 key scan。保留 materialize 前
-  字节/期限限制、结果顺序和 missing/tombstone。Files: Dataset `inspection/`、`chunk_store/metadata.rs`、相关 RPC 支持。
+- [ ] **F6 剩余 inspection 并发与 routed batch**：delivery 的 membership/field/locator 已有界
+  并发；matrix/selection/composition source 仍有串行步骤，bounded point read 在 chunk store
+  内还转成单 key scan。比较有字节界限的 routed batch，保留 materialize 前的聚合预算、
+  共同截止时间、结果顺序和 missing/tombstone；不可把并发当作 RPC 数下降。
+  Files: Dataset `inspection/`、`chunk_store/metadata.rs`、相关 RPC 支持。
 - [ ] **F7 比较预读与 create-CAS 总成本**：新 immutable 页的 GET+CAS 可能比直接 CAS 更贵，
   replay 则可能相反；比较新写/重放比例，复用本请求已知值，不能无证明改普通 PUT。Files: Dataset Composition/Split receipts、Iceberg `operation/payload.rs`、journal validation。
 - [ ] **F8 减少 payload 复制**：审查 HTTP 收整 part、`BytesMut` 拼接、inline copy、兼容
@@ -459,11 +461,6 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   记录 p50/p99、TPS、CPU/RSS、RPC、复制/摘要、清理积压，不缩小负载掩盖失败。
   Files: `tools/sdk/dataset_workload.py`、相关 examples、`e2e-test/`、本机 HCA runner。
   物理多主机验证继续留在独立计划，不并回此处。
-- [~] **V4.1 同源 TCP 混合负载与 native 绑定验收**：使用当前镜像运行
-  `tools/sdk/dataset_workload.py` 完整模式；client CPU 2、server CPU 4–15、metadata 节点
-  2 GiB，三条路径同 Snapshot、相同 0–4 MiB size 集合、并发 1/3、完整摘要校验及 restart。
-  保留原 trial 数与全部失败日志，记录延迟/CPU/RSS/复制及精确 image/source 身份；本机 HCA
-  和改动前后吞吐对比仍由 V4 跟踪，不把本项当作全部性能验收。
 
 ## 成本口径与集中代码索引
 
@@ -483,6 +480,33 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **F6.1（2026-10-24）**：delivery 按最多 16 个 sample-field cell 分窗，同层 field/祖先和
+  value 分阶段并发，membership 独立分窗；相同祖先只准入一次。每条 bounded read 发起前
+  预留 response cap，在途最多 16 条/2 MiB，已完成但等前序的响应仍占预留；释放未用额度后
+  才缩小最后一条读取的 cap，防止临时预留导致错误 Limit。全请求共用字节预算和绝对期限，
+  返回保持 ID/字段绑定；零长度 inline、Chunk 长度/摘要、墓碑及继承原有校验均保留。
+  没有增加 GET/写、跨请求缓存、session 或锁；32 sample/三字段/两代 fixture 仍为
+  32 membership + 160 field + 32 value GET，祖先 summary 各一次，并发峰值不超过 16。
+  新增五例验证乱序完成、预算前置、接近预算的合法前缀、缺失成员、错误摘要/Chunk 长度、
+  storage failure、取消/超时释放和 HTTP 所需 Send future。Dataset `--all-targets`、HTTP
+  batch/read-query/contract 七例、native digest/payload/read 八例通过；三个 crate 的
+  all-target/all-feature clippy、fmt、diff check 通过。新增测试先修正了父 Snapshot fixture，
+  集成编译发现跨 await 借用 iterator 的 Send 约束，已用有界具体窗口修复并加编译期断言。
+  本项未取得新镜像吞吐结果，V4.1 数字是本项之前的基线。
+
+- **V4.1（2026-10-24）**：`tools/sdk/dataset_workload.py` 完整模式退出 0，三条路径同一
+  Snapshot，size 为 0/128/513/4096/65535/262144/1048576/4194321 字节，每路径并发 1/3、
+  每档三次 128 请求，另有 warmup；全部校验且 errors=0，native Python parity/held lease/
+  cancellation 和存储重启后实际 payload 校验通过。client CPU 2、server CPU 4–15、metadata
+  每节点 2 GiB；镜像身份同 V2.1，客户端源码 `3992a23c`。完整 trial、安装 wheel、cgroup、
+  日志和 manifest 位于 `.crowdb-runtime/artifacts/dataset-workload/36ba3a8f4e84427db86f7761e4ddd67d/`。
+  每档三次中位吞吐（MiB/s），并发 1：HTTP 166.59 / native Rust 208.09 / native Python 208.83；
+  并发 3：260.96 / 274.56 / 265.55。client CPU 每完成请求约 2.19–2.52 ms，最大 RSS 分别
+  17/31/56 MiB；Python `bytes()` 复制包含在读耗时/CPU，runtime compatibility copy 为 0。
+  4 KiB 中位 p50（并发 1）为 586/790/727 µs；大消息占用和并发使小消息尾延迟明显增长，
+  继续按 F10 分析。各 size 每次仅 16 个延迟样本，p99 不作稳定生产结论。该运行是同主机
+  TCP 短负载，未得到历史版本对照、逐请求真实 RPC/复制数或 HCA 数据，V4/F1 仍待完成。
 
 - **V2.1（2026-10-24）**：迁移旧 RetryLedger/property journal fixture，不恢复生产请求账本。
   property 在实际 authority CAS 丢回复后检查资源已落地且 key 集合未增加，重启后重试返回
