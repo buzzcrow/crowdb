@@ -3,9 +3,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_protocol::chunk_stream::{
-    ActiveChunkDescriptor, StreamBinding, StreamExtentPage, StreamManifest, StreamName,
-};
+use crowdb_protocol::chunk_stream::{ActiveChunkDescriptor, StreamName, StreamRecord};
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::{parse_frame, FrameMagic};
 
@@ -58,8 +56,8 @@ pub struct StreamMirrorWrite<'a> {
 
 #[async_trait]
 pub trait StreamRegistry: Send + Sync {
-    async fn load(&self, stream_name: StreamName) -> Result<Option<StreamBinding>>;
-    async fn create(&self, binding: StreamBinding) -> Result<()>;
+    async fn load(&self, stream_name: StreamName) -> Result<Option<StreamRecord>>;
+    async fn create(&self, record: StreamRecord) -> Result<()>;
     async fn claim_writer(
         &self,
         name: StreamName,
@@ -70,28 +68,8 @@ pub trait StreamRegistry: Send + Sync {
 #[async_trait]
 pub trait StreamMetadataStore: Send + Sync {
     /// # Errors
-    /// Rejects a group that differs from the bound metadata.
-    fn directory_metadata(&self, metadata_group_id: u64) -> Result<crate::DirectoryMetadataStore>;
-    async fn load_current(&self, stream_name: StreamName) -> Result<Option<StreamManifest>>;
-    async fn load_extent_page(
-        &self,
-        stream_name: StreamName,
-        writer_epoch: u64,
-        generation: u64,
-        page_index: u64,
-    ) -> Result<Option<StreamExtentPage>>;
-    async fn publish(
-        &self,
-        expected: Option<(u64, u64)>,
-        manifest: StreamManifest,
-        extent_pages: Vec<StreamExtentPage>,
-    ) -> Result<()>;
-    async fn reclaim_extent_pages_before(
-        &self,
-        stream_name: StreamName,
-        retained_generation: u64,
-        max_pages: usize,
-    ) -> Result<u64>;
+    /// Rejects an invalid or mismatched nonzero metadata group.
+    fn record_store(&self, metadata_group_id: u64) -> Result<crate::StreamChunkRecordStore>;
 }
 
 #[async_trait]
@@ -159,12 +137,23 @@ pub trait StreamChunkStore: Send + Sync {
     /// In-memory and test stores use the default parser. Production overrides
     /// this to let `ChunkReader` retry a corrupt serving mirror or reconstruct
     /// an EC stripe before returning the frame.
+    /// The complete-group bound comes from this read view's validated mappings;
+    /// it does not update a cached chunk cursor or persistent metadata.
     async fn read_verified_frame(
         &self,
         chunk_id: ChunkId,
         physical_offset: u64,
         length: usize,
+        synchronized_end: u64,
     ) -> Result<Bytes> {
+        if physical_offset
+            .checked_add(length as u64)
+            .map_or(true, |end| end > synchronized_end)
+        {
+            return Err(crate::StreamError::Corruption(
+                "frame exceeds captured group boundary".into(),
+            ));
+        }
         let frame = self.read(chunk_id, physical_offset, length).await?;
         let parsed = parse_frame(&frame, chunk_id)
             .map_err(|error| crate::StreamError::Corruption(format!("invalid stream frame: {error}")))?;

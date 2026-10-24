@@ -17,7 +17,7 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, PartitionArtifact, SplitChildAssignment, SplitTransition, TailOverlayArtifact,
     TransferTransition,
 };
-use crowdb_protocol::chunk_stream::{StreamBinding, StreamBindingState};
+use crowdb_protocol::chunk_stream::{StreamRecord, StreamRecordState};
 use crowdb_tree_ffi::{
     ChunkPageStoreOptions, ChunkRootCatalog, ChunkTransport, OwnedChunkRpcTransportOptions, PageStore,
 };
@@ -30,6 +30,7 @@ mod root_catalog;
 use bootstrap::{initialize_bootstrap_root, recover_bootstrap_partition};
 mod split_handoff;
 mod split_recovery;
+mod streams;
 use root_catalog::KvRootCatalogStore;
 
 #[derive(Debug, Error)]
@@ -95,7 +96,6 @@ impl ChunkKvStorage {
             },
             StreamConfig {
                 chunk_capacity_bytes: config.storage.stream_chunk_capacity_bytes,
-                extent_page_entries: config.storage.stream_extent_page_entries,
                 ..StreamConfig::default()
             },
         )
@@ -256,7 +256,7 @@ impl ChunkKvStorage {
         )
     }
 
-    /// Initializes the stream selected by an Active catalog binding.
+    /// Initializes the stream selected by an Active catalog record.
     ///
     /// # Errors
     ///
@@ -293,29 +293,38 @@ impl ChunkKvStorage {
     ///
     /// # Errors
     ///
-    /// Returns an error when the stream binding is absent, either durable
+    /// Returns an error when the stream record is absent, either durable
     /// artifact cannot be reopened exactly, or WAL replay fails.
     pub async fn recover_partition(
         &self,
         entry: &ChunkKvRangeCatalogEntry,
     ) -> Result<Partition, StorageRuntimeError> {
         let stream_name = entry.artifact.stream_name;
-        let binding = self
+        let record = self
             .streams
             .registry()
             .load(stream_name)
             .await
             .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?
-            .ok_or_else(|| StorageRuntimeError::Stream("assigned stream binding does not exist".into()))?;
-        let stream = self
-            .open_stream(stream_name, entry.owner_epoch)
+            .ok_or_else(|| StorageRuntimeError::Stream("assigned stream record does not exist".into()))?;
+        let stream = if streams::is_transfer_target(entry) {
+            self.open_or_create_stream(
+                stream_name,
+                entry.partition_id,
+                entry.owner_epoch,
+                record.metadata_group_id,
+            )
             .await
-            .map_err(|error| {
-                StorageRuntimeError::Stream(format!(
-                    "target stream {stream_name:?} at owner epoch {}: {error}",
-                    entry.owner_epoch
-                ))
-            })?;
+            .map_err(|error| StorageRuntimeError::Stream(error.to_string()))
+        } else {
+            self.open_stream(stream_name, entry.owner_epoch).await
+        }
+        .map_err(|error| {
+            StorageRuntimeError::Stream(format!(
+                "target stream {stream_name:?} at owner epoch {}: {error}",
+                entry.owner_epoch
+            ))
+        })?;
         let open_generation = entry
             .artifact
             .tail_overlay
@@ -335,7 +344,7 @@ impl ChunkKvStorage {
         let catalog = KvRootCatalogStore::for_assignment(
             self.kv.clone(),
             self.metadata_store_id,
-            binding.metadata_group_id,
+            record.metadata_group_id,
             entry,
         )
         .await?;
@@ -409,7 +418,7 @@ impl ChunkKvStorage {
                 .load(entry.artifact.stream_name)
                 .await
                 .map_err(|error| storage_plan_error(&error.to_string()))?
-                .ok_or_else(|| storage_plan_error("target stream binding is absent"))?
+                .ok_or_else(|| storage_plan_error("target stream record is absent"))?
                 .metadata_group_id,
             entry,
         )
@@ -448,13 +457,18 @@ impl ChunkKvStorage {
         &self,
         config: &BootstrapPartitionConfig,
     ) -> Result<Partition, StorageRuntimeError> {
-        let binding = StreamBinding {
+        let record = StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name: config.stream_name,
             metadata_group_id: config.metadata_group_id,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: Some(format!(
+                "{:016x}{:016x}",
+                config.partition_id.high, config.partition_id.low
+            )),
+            created_at_ms: StreamRecord::creation_time_ms(),
         };
         let existing = self
             .streams
@@ -463,16 +477,16 @@ impl ChunkKvStorage {
             .await
             .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?;
         let fresh = match existing {
-            Some(observed) if observed != binding => {
+            Some(observed) if !observed.same_identity(&record) || observed.state != record.state => {
                 return Err(StorageRuntimeError::Stream(
-                    "bootstrap stream binding conflicts".into(),
+                    "bootstrap stream record conflicts".into(),
                 ));
             }
             Some(_) => false,
             None => {
                 self.streams
                     .registry()
-                    .create(binding)
+                    .create(record)
                     .await
                     .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?;
                 true
@@ -533,7 +547,7 @@ impl ChunkKvStorage {
     ///
     /// # Errors
     ///
-    /// Returns an error for conflicting stream bindings, stale tree authority,
+    /// Returns an error for conflicting Stream records, stale tree authority,
     /// invalid transition identity, or an incomplete R142 split preparation.
     pub async fn prepare_split(
         &self,
@@ -561,15 +575,15 @@ impl ChunkKvStorage {
             parent
                 .release_generation_pin(split_plan(transition).transition_id)
                 .map_err(|error| storage_plan_error(&error.to_string()))?;
-            let parent_binding = self
+            let parent_record = self
                 .streams
                 .registry()
                 .load(transition.parent_artifact.stream_name)
                 .await
                 .map_err(|error| storage_plan_error(&error.to_string()))?
-                .ok_or_else(|| storage_plan_error("split parent stream binding does not exist"))?;
+                .ok_or_else(|| storage_plan_error("split parent stream record does not exist"))?;
             let child = self
-                .split_target(&transition.child, parent_binding.metadata_group_id)
+                .split_target(&transition.child, parent_record.metadata_group_id)
                 .await?;
             if child.journal.tail() != 0 {
                 return Err(storage_plan_error(
@@ -594,11 +608,12 @@ impl ChunkKvStorage {
         Ok(prepared)
     }
 
-    /// Pins a live source checkpoint and creates the target-owned empty WAL.
+    /// Pins a live source checkpoint and registers the target WAL identity.
+    /// The target process initializes its WAL without a source-owned writer lease.
     ///
     /// # Errors
     ///
-    /// Returns an error for a missing source binding, checkpoint failure, or target stream conflict.
+    /// Returns an error for a missing source record, checkpoint failure, or target stream conflict.
     pub async fn prepare_transfer_source(
         &self,
         source: &Partition,
@@ -610,18 +625,17 @@ impl ChunkKvStorage {
                 low: transition.transition_id.low,
             })
             .map_err(|error| storage_plan_error(&error.to_string()))?;
-        let binding = self
+        let record = self
             .streams
             .registry()
             .load(transition.artifact.stream_name)
             .await
             .map_err(|error| storage_plan_error(&error.to_string()))?
-            .ok_or_else(|| storage_plan_error("transfer source stream binding does not exist"))?;
-        self.open_or_create_stream(
+            .ok_or_else(|| storage_plan_error("transfer source stream record does not exist"))?;
+        self.register_stream(
             transition.target_artifact.stream_name,
-            transition.target_epoch,
-            binding.metadata_group_id,
-            true,
+            transition.partition_id,
+            record.metadata_group_id,
         )
         .await?;
         let checkpoint = source
@@ -637,20 +651,23 @@ impl ChunkKvStorage {
                 checkpoint.root_manifest_generation,
             )
             .map_err(|error| storage_plan_error(&error.to_string()))?;
-        let snapshot = source.snapshot();
+        let frontier = source
+            .capture_journal_frontier(transition.source_epoch)
+            .await
+            .map_err(|error| storage_plan_error(&error.to_string()))?;
         let mut artifact = transition.target_artifact.clone();
         artifact.tail_overlay = Some(TailOverlayArtifact {
             source_partition_id: transition.partition_id,
             source_epoch: transition.source_epoch,
             source_stream_name: transition.artifact.stream_name,
-            source_stream_manifest_generation: checkpoint.stream_manifest_generation,
+            source_stream_generation: frontier.stream_generation,
             replay_offset: checkpoint.replay_offset,
-            cutover_offset: snapshot.journal_durable_offset,
+            cutover_offset: frontier.offset,
             base_tree_manifest: checkpoint.tree_manifest,
             base_root_manifest_generation: checkpoint.root_manifest_generation,
             base_applied_seq: checkpoint.applied_seq,
-            cutover_seq: snapshot.journal_durable_seq,
-            target_stream_start_seq: snapshot.journal_durable_seq.saturating_add(1),
+            cutover_seq: frontier.mutation_seq,
+            target_stream_start_seq: frontier.mutation_seq.saturating_add(1),
         });
         Ok(artifact)
     }
@@ -660,18 +677,24 @@ impl ChunkKvStorage {
         child: &SplitChildAssignment,
         metadata_group_id: u64,
     ) -> Result<SplitWriterTarget, crate::MonitorError> {
-        self.split_target_artifact(&child.artifact, child.owner_epoch, metadata_group_id)
-            .await
+        self.split_target_artifact(
+            &child.artifact,
+            child.partition_id,
+            child.owner_epoch,
+            metadata_group_id,
+        )
+        .await
     }
 
     async fn split_target_artifact(
         &self,
         artifact: &PartitionArtifact,
+        partition_id: crowdb_protocol::chunk_kv::Id128,
         owner_epoch: u64,
         metadata_group_id: u64,
     ) -> Result<SplitWriterTarget, crate::MonitorError> {
         let stream = self
-            .open_or_create_stream(artifact.stream_name, owner_epoch, metadata_group_id, false)
+            .open_or_create_stream(artifact.stream_name, partition_id, owner_epoch, metadata_group_id)
             .await?;
         let page_store = self
             .open_durable_tree_page_store(
@@ -702,56 +725,6 @@ impl ChunkKvStorage {
             ),
         })
     }
-
-    async fn open_or_create_stream(
-        &self,
-        stream_name: StreamName,
-        writer_epoch: u64,
-        metadata_group_id: u64,
-        require_empty: bool,
-    ) -> Result<ChunkStream, crate::MonitorError> {
-        let registry = self.streams.registry();
-        let expected = StreamBinding {
-            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
-            stream_name,
-            metadata_group_id,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
-        };
-        match registry
-            .load(stream_name)
-            .await
-            .map_err(|error| storage_plan_error(&error.to_string()))?
-        {
-            Some(observed) if observed != expected => {
-                return Err(storage_plan_error("split child stream binding conflicts"));
-            }
-            Some(_) => {}
-            None => {
-                if let Err(error) = registry.create(expected.clone()).await {
-                    let reconciled = registry
-                        .load(stream_name)
-                        .await
-                        .map_err(|error| storage_plan_error(&error.to_string()))?;
-                    if reconciled.as_ref() != Some(&expected) {
-                        return Err(storage_plan_error(&error.to_string()));
-                    }
-                }
-            }
-        }
-        let stream = match self.create_registered_stream(stream_name, writer_epoch).await {
-            Ok(stream) => stream,
-            Err(_) => self
-                .open_stream(stream_name, writer_epoch)
-                .await
-                .map_err(|error| storage_plan_error(&error.to_string()))?,
-        };
-        if require_empty && stream.tail() != 0 {
-            return Err(storage_plan_error("target WAL is not empty"));
-        }
-        Ok(stream)
-    }
 }
 
 fn prepared_overlay_artifact(
@@ -779,7 +752,7 @@ fn prepared_overlay_artifact(
         },
         parent_epoch: overlay.source_epoch,
         parent_stream_name: overlay.source_stream_name,
-        parent_stream_manifest_generation: overlay.source_stream_manifest_generation,
+        parent_stream_generation: overlay.source_stream_generation,
         parent_replay_offset: overlay.replay_offset,
         parent_cutover_offset: overlay.cutover_offset,
         applied_seq: overlay.cutover_seq,

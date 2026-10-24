@@ -333,7 +333,7 @@ fn validate_extension(
 ) -> Result<()> {
     let same_base = validate_artifact_extension(current, final_artifact).is_ok();
     let valid_journal = parent_journal.stream_name() == final_artifact.parent_stream_name
-        && parent_journal.manifest_generation() >= final_artifact.parent_stream_manifest_generation
+        && parent_journal.record_generation() >= final_artifact.parent_stream_generation
         && parent_journal.tail() >= final_artifact.parent_cutover_offset;
     if !same_base || !valid_journal {
         return Err(ChunkKvError::InvalidRequest(
@@ -358,7 +358,7 @@ fn validate_artifact_extension(
         && current.parent_id == final_artifact.parent_id
         && current.parent_epoch == final_artifact.parent_epoch
         && current.parent_stream_name == final_artifact.parent_stream_name
-        && current.parent_stream_manifest_generation == final_artifact.parent_stream_manifest_generation
+        && current.parent_stream_generation == final_artifact.parent_stream_generation
         && current.parent_replay_offset == final_artifact.parent_replay_offset;
     let valid_frontier = current.applied_seq <= final_artifact.applied_seq
         && current.parent_cutover_offset <= final_artifact.parent_cutover_offset

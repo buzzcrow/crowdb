@@ -213,7 +213,7 @@ fn preserves_handoff_base(handoff: &TailOverlayArtifact, ready: &TailOverlayArti
     handoff.source_partition_id == ready.source_partition_id
         && handoff.source_epoch == ready.source_epoch
         && handoff.source_stream_name == ready.source_stream_name
-        && handoff.source_stream_manifest_generation == ready.source_stream_manifest_generation
+        && handoff.source_stream_generation == ready.source_stream_generation
         && handoff.replay_offset == ready.replay_offset
         && handoff.base_root_manifest_generation == ready.base_root_manifest_generation
         && handoff.base_tree_manifest == ready.base_tree_manifest

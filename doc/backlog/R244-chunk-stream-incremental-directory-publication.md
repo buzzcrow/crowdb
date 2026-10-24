@@ -1,7 +1,7 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R244: chunk-stream/chunk-io/chunk-kv — Shared framing, mirrored append performance, and segmented directories
+### R244: chunk-stream/chunk-io/chunk-kv — Shared framing, mirrored append performance, and ordered chunk records
 
 #### Problem
 
@@ -68,7 +68,7 @@ Invariants I1–I10 are defined in the linked design. Unsettled choices are list
 under Open Questions instead of being selected here.
 
 1. **D01 — Compact large-payload extents; design sections 1, 3, 4, 6.**
-   Replace per-frame `Extent` generation in `write_batch`, the protocol directory
+   Replace per-frame `Extent` generation in `write_batch`, the chunk record
    representation, `resolve_extent`, and Stream reads with one compact location
    per append group. `ChunkLocation` already supplies framed-length and logical-
    subrange arithmetic; extend it for grouped geometry with checked lengths. A 4 MiB payload occupies 65
@@ -115,7 +115,7 @@ under Open Questions instead of being selected here.
    replica set, update the worker's in-memory cursor/tail/mappings, and complete
    requests. Three-copy configuration waits for three replicas; the current
    Chunk-KV default is two. Read-time availability does not reduce required
-   write protection. Remove ordinary append directory/head writes and do
+   write protection. Remove ordinary append chunk record writes and do
    not infer absence from an older persisted cursor. Preserve ordered ranges
    and explicit uncertain outcomes. This supersedes the previous design and
    previous R244 contract requiring every batch to commit a fenced ChunkDB
@@ -124,7 +124,7 @@ under Open Questions instead of being selected here.
 4. **D04 — Isolate `chunkinfo`; design sections 2, 3, 5.**
    Chunk IO/ChunkDB keep persisting their own internal growth, replica, layout,
    and repair transitions. `StreamChunkStore`, `ProductionStreamChunkStore`, and
-   capacity handling must not turn those changes into Stream manifest updates.
+   capacity handling must not turn those changes into Stream chunk record updates.
    Logical references use stable chunk IDs. Current capacity/layout comes from
    the chunk layer; cached checkpoint capacity cannot reject a valid newer
    layout. A layout refresh must not rewind synchronized in-memory progress to
@@ -134,9 +134,9 @@ under Open Questions instead of being selected here.
 5. **D05 — Publish chunk attachment before writing; design sections 3, 5.**
    Initial allocation and the Stream reference/logical start are durable before
    admitting bytes. At rollover, finish and seal the current chunk, persist its
-   complete logical mappings in the tail segment, then attach a successor with
-   a fenced head publication before writing it. Only the current chunk is sealed;
-   historical chunks and completed directory segments are unchanged. Interrupted
+   complete logical mappings in its chunk record, then attach a prepared successor
+   in the same fenced KV batch before writing it. Only the current chunk is sealed;
+   historical chunk records are unchanged. Interrupted
    seal/attach is restartable; an unattached allocation cannot contain
    acknowledged Stream bytes. Invariants I1, I3, I4.
 
@@ -162,29 +162,40 @@ under Open Questions instead of being selected here.
    a stale cursor cannot authorize shortening or deleting retained data.
    Invariants I1, I4, I7.
 
-7. **D07 — Segment history and update the tail; design sections 3, 5, 6.**
-   Replace generation-bound page identities and the flat fence list in
-   `StreamManifest`, `StreamExtentPage`, KV keys/adapters, and publication with
-   independently versioned pages and a bounded-fanout directory index. Append
-   mappings live in memory; seal/checkpoint changes the current tail segment
-   and necessary index paths. Full segments remain immutable. Trim separately
-   changes the retained prefix. Epoch adoption does not retag/copy history.
-   Opening and cache retention are lazy and bounded; reducing writes while
-   still reading or serializing the entire directory is insufficient. In-memory
-   tail snapshots must not copy the full active/history extent list per append.
-   A seal/checkpoint can flush several new segments without rewriting completed
-   history.
+7. **D07 — Ordered Stream chunk records; design sections 3, 5, 6.**
+   Replace the Stream-owned directory tree, versioned roots and page identities
+   with an immutable identity/consumer `StreamRecord` and ordered
+   `StreamChunkRecord` KV records. The Stream record key is its ID; its value
+   records purpose, stable consumer identity, creation time and metadata-group
+   routing. Chunk records have Stream-ID prefixes. Attached records sort by
+   logical start; candidates have a distinct ordered reservation range because
+   their final logical start is not known before activation. Use existing KV
+   forward/reverse scans for seek and bounded tail discovery. No append or
+   rollover updates the identity record or a separate active/tail pointer.
+   An attached chunk record stores explicit `[logical_start, logical_end)` bounds
+   and compact complete-append mappings. Validate key/start identity, contiguous
+   coverage, adjacent bounds and record checksum. Persist no Stream-wide physical
+   offset or duplicated chunk seal length. Derive chunk-local frame geometry
+   with the common codec; frame size does not determine mapping granularity.
+   Active progress stays in memory; its durable record describes a checkpoint.
+   Completed chunk mappings never change on later appends/epoch adoption.
+   Decode/cache work is bounded by one chunk and an explicit byte budget.
    Invariants I2, I7, I10.
 
-8. **D08 — Lifecycle/checkpoint publication; design sections 3, 5, 8.**
-   Persist fresh referenced pages before head CAS and preserve revision reuse,
-   immutable-page conflict checks, ambiguous-head reconciliation, purpose, and
-   stale-publisher fences. Initial attachment, rollover, trim, close, and owner
-   changes publish Stream state. Optional time/byte checkpoints only reduce
-   recovery work and are not append commit points. Do not trigger a checkpoint
-   per batch or rewrite historical segments. Disable optional checkpoints in
-   the strict append sentinel; retain initial-attachment-plus-rollover head
-   publication bounds during its measured workload. Invariants I1, I2, I3.
+8. **D08 — Atomic record transitions; design sections 3, 5, 8.**
+   Physically seal the current chunk, then atomically finalize its record,
+   remove the candidate reservation and attach the successor under its actual
+   logical start with an exact KV revision fence. Candidate allocation,
+   initialization and registration happen ahead of demand; no candidate accepts
+   data before attachment. Interrupted seal/publication and lost responses
+   reconcile the same transition without another Active or history rewrites.
+   Empty predecessors do not create two attached records at the same start.
+   Store trim watermark and closed status in the current tail chunk record;
+   activation inherits the watermark and publication counter. The identity
+   record stays fixed. An empty stream can have an empty attached tail record,
+   including on close. Checkpoints update only that chunk's captured prefix;
+   they reduce recovery work and are not append commit points. Disable optional
+   checkpoints in strict append measurements. Invariants I1, I2, I3.
 
 9. **D09 — Ownership without cursor-based fencing; design sections 1, 5, 9.**
    Keep epoch and ownership invariants, and never reuse the previous process's
@@ -212,10 +223,10 @@ under Open Questions instead of being selected here.
 10. **D10 — Finite views and WAL consumers; design sections 1, 5, 6.**
     Update `open_read_only`, reader snapshots, and `StreamPartitionJournal` for
     the selected Q4 rule. A reachable owner handles an ordered flush/checkpoint
-    barrier, persists the synchronized ChunkDB boundary and then the directory
-    checkpoint, and returns one finite view after root publication. A failed
+    barrier, persists the synchronized ChunkDB boundary and then the chunk record
+    checkpoint, and returns one finite view after record publication. A failed
     publication retains the older matching checkpoint; readers never combine a
-    raw newer ChunkDB cursor with an unrelated root/epoch. An unreachable owner
+    raw newer ChunkDB cursor with an unrelated chunk record/epoch. An unreachable owner
     yields the consistent persisted ChunkDB checkpoint prefix, explicitly allowing lag.
     The reader does not adopt or publish writer state; an owner checkpoint
     triggered by its request is allowed. This replaces the earlier requirement
@@ -225,15 +236,17 @@ under Open Questions instead of being selected here.
     acknowledged contents instead of treating fallback as final EOF. Preserve
     WAL retry/replay and split/transfer semantics. Invariants I1, I4, I6.
 
-11. **D11 — Reclaim shared history safely; design sections 6, 7.**
-    Replace generation-only page deletion and one-generation cache assumptions
-    with independent-page reachability and explicit retention budgets. Older
-    pages can be shared by newer roots. Trim publishes its watermark before
-    release and frees a chunk only when all retained mappings/pins permit it;
-    removing one frame extent cannot authorize releasing its whole chunk.
-    Protect in-flight publication pages until the head outcome is resolved.
-    Bound orphan/unreachable-page cleanup and preserve idempotent restart.
-    Invariants I2, I5, I10.
+11. **D11 — Retain logical intervals and whole chunks; design sections 6, 7.**
+    Replace root/page reachability with reader and consumer logical-interval
+    retention. Trim publishes its watermark in the tail record before bounded
+    reclamation, and never removes a partially retained chunk or the tail record
+    carrying Stream state. Leased finite readers enforce conservative local
+    deadlines; pin publication and reclamation share an exact KV revision fence.
+    Unexpired pins and conservative in-flight IO grace retain overlapping chunks.
+    Physical release uses the chunk layer's exact seal length, then removes the
+    old chunk record; a durable deleting state makes restart retryable. No
+    physical_end field duplicates the seal length in Stream records. Retain
+    ownership, purpose and complete-group validation. Invariants I2, I5, I10.
 
 12. **D12 — Measure the changed path; design sections 8, 9.**
     Update `stream_perf_metrics`, server perf registration, production bounds,
@@ -242,8 +255,8 @@ under Open Questions instead of being selected here.
     preserving existing regression floors/ceilings. Use matched `mem-block`,
     retained MemDisk, release artifacts, explicit mirror count/queue geometry,
     and no injected latency. Count synchronized write RPCs, Stream publications
-    separately from internal `chunkinfo` changes, compact extents, reused/written
-    pages, and recovery work. Report count/avg/p50/p99/max for standalone append
+    separately from internal `chunkinfo` changes, compact mappings, unchanged/written
+    chunk records, and recovery work. Report count/avg/p50/p99/max for standalone append
     and actual WAL/client mutations. Demonstrate lower matched latency and
     bounded growth without skipping synchronization responses or validation.
     Update the documentation/backlog navigation summaries to match this scope.
@@ -299,16 +312,16 @@ under Open Questions instead of being selected here.
 - A03 (D03): Given a referenced active chunk, configured mirror counts, and a
   slow/failed replica -> append within capacity -> assert acknowledgment only
   after required synchronized replica completion, exact ordered ranges, zero
-  per-batch ChunkDB cursor operations, zero Stream directory/head writes, and
+  per-batch ChunkDB cursor operations, zero Stream chunk record writes, and
   unresolved outcomes never classified using a stale cursor. Invariants I1,
   I3, I6. Integration test.
 - A04 (D04): Given a Stream and internal strip growth/replica replacement ->
   persist and reopen the chunk layout -> assert updated `chunkinfo`, readable
-  bytes, unchanged Stream generation/page identities, and no publication caused
+  bytes, unchanged Stream chunk record generation/identities, and no publication caused
   solely by the internal transition; synchronized local progress never regresses
   to the persisted checkpoint cursor. Invariants I1, I8. Integration test.
 - A05 (D05): Given failures or lease expiry after allocation, reference
-  publication, data sync, seal, page writes, and successor head CAS -> restart
+  publication, data sync, seal and atomic successor record publication -> restart
   and finalize at each point -> assert
   every acknowledged chunk is discoverable, successor writes require attachment,
   history is unchanged, and at most the last referenced chunk needs parsing;
@@ -333,18 +346,17 @@ under Open Questions instead of being selected here.
   Reject impossible/overflowing declared group lengths/counts and mismatched
   follower roles/head offsets/ordinals without unbounded allocation or reads.
   Invariants I1, I4, I6. Integration test.
-- A08 (D07/D08): Given histories of 1, 16, and 256 full directory segments ->
-  append identical suffixes, checkpoint, roll, open, and adopt a higher epoch
-  -> assert unchanged historical identities/bytes, no historical directory
-  reads/builds/writes for ordinary append, bounded root/fanout/changed paths,
-  no whole-active-index copy per append, lazy open, and bounded cache retention.
-  Invariants I2, I3, I7, I10.
+- A08 (D07/D08): Given histories of 1, 16, and 256 chunk records -> append
+  identical suffixes, checkpoint, roll, open, and adopt a higher epoch -> assert
+  unchanged historical keys/bytes, no historical reads/builds/writes for normal
+  append, a stable identity/consumer record, bounded reverse tail/offset seek,
+  and bounded decoding/cache retention. Invariants I2, I3, I7, I10.
   Integration test.
-- A09 (D08): Given competing publishers and failures between new-page writes
-  and head CAS, response loss, or conflicting immutable keys -> resolve/restart
-  -> assert a complete authoritative root, unchanged prior retained roots,
-  purpose/stale-publisher fences, and no duplicate completion. Invariants I1,
-  I2, I3. Integration test.
+- A09 (D08): Given competing publishers, interrupted seal/attachment, and lost
+  KV responses -> resolve/restart -> assert one authoritative tail, atomic
+  predecessor/Candidate/successor transitions, unchanged history, monotonic
+  purpose/ownership fences, and no duplicate completion. Invariants I1, I2, I3.
+  Integration test.
 - A10 (D09/Q3): Given an old writer paused across ownership/lease expiration
   and delayed old DiskIO requests -> take over, resolve the tail, and resume the
   old process -> assert Group-0 grant deadlines prevent stale acknowledgments,
@@ -360,16 +372,15 @@ under Open Questions instead of being selected here.
   captured ends/epochs; the reader never adopts/seals/allocates or publishes
   writer state, while owner-triggered checkpoint publication is allowed. Writer
   recovery retains newer acknowledged data. Interrupt between ChunkDB cursor
-  persistence and root publication: fallback keeps the prior matching complete-
-  group bound and never combines mismatched epochs/roots/cursors. Invariants I1,
+  persistence and chunk record publication: fallback keeps the prior matching complete-
+  group bound and never combines mismatched epochs/records/cursors. Invariants I1,
   I4, I6. Integration test.
-- A12 (D11): Given roots sharing old pages, reader/checkpoint/overlay pins,
-  in-flight candidate publications, and several extents in one chunk -> trim,
-  reclaim concurrently with publication, release pins, and restart cleanup ->
-  assert live shared pages and partially retained chunks survive,
-  in-flight candidate pages stay protected, only eligible whole chunks and
-  unreachable pages are freed, and pass budgets/idempotence hold. Invariants I2,
-  I5, I10. Integration test.
+- A12 (D11): Given finite reader/checkpoint/overlay intervals, registered
+  Candidates, and several appends per chunk -> trim and reclaim concurrently
+  with publication, release readers, and restart cleanup -> assert partially
+  retained/pinned chunks survive, Candidates accept no data before attachment,
+  Deleting remains retryable across physical release and record-delete failure,
+  and record/byte/pin budgets hold. Invariants I2, I5, I10. Integration test.
 - A13 (D03–D11): Given both Wal and Stream purposes and actual Chunk-KV mutation
   traffic -> crash/reopen, checkpoint/trim, split, and transfer around mirror
   completion/lifecycle publication -> assert retained acknowledged bytes,
@@ -380,12 +391,12 @@ under Open Questions instead of being selected here.
   `mem-block`, identical explicit mirror counts, and growing histories -> run
   one-/32-producer 4 KiB, large-payload, rollover, read/replay/trim, and actual
   WAL/client workloads -> assert unchanged regression minima, lower matched
-  append latency, zero errors/watchdogs, bounded RSS/queues/directory work,
+  append latency, zero errors/watchdogs, bounded RSS/queues/chunk-record work,
   one synchronized RPC per replica for an unsplit single-strip batch, no
-  ordinary append KV operations, and initial-attachment-plus-rollover head
+  ordinary append KV operations, and initial-attachment-plus-rollover publication
   counts with optional checkpoints off. Record binary/config identities,
   phase count/avg/p50/p99/max,
-  index/extent/recovery/cleanup counters, and checked cleanup receipts.
+  chunk-record/mapping/recovery/cleanup counters, and checked cleanup receipts.
   Invariants I1, I2, I4, I6, I8, I9, I10. E2E test.
 - A15 (D01/Q1): Given approved shared-format golden vectors and known-/unknown-
   length user data -> encode/parse with Rust and C++, use native and ordinary

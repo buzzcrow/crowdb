@@ -482,7 +482,7 @@ fn split_tail_overlay(
         },
         source_epoch: split.parent_epoch,
         source_stream_name: child.parent_stream_name,
-        source_stream_manifest_generation: child.parent_stream_manifest_generation,
+        source_stream_generation: child.parent_stream_generation,
         replay_offset: child.parent_replay_offset,
         cutover_offset: child.parent_cutover_offset,
         base_root_manifest_generation: child.root_manifest_generation,

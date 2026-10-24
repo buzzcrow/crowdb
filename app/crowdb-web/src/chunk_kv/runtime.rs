@@ -48,8 +48,10 @@ pub(crate) async fn runtime(
     if query.id.len() != 32 || !query.id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(err_400("Invalid partition identity"));
     }
-    if query.stream_offset > 0 && query.stream_generation.is_none() {
-        return Err(err_400("Extent continuation requires a stream generation"));
+    if query.stream_offset != 0 {
+        return Err(err_400(
+            "Tail stream chunk record observation requires offset zero",
+        ));
     }
     if query
         .page_path
@@ -121,10 +123,9 @@ async fn inspect(state: &AppState, query: &RuntimeQuery) -> Result<Json<Value>, 
     if query
         .stream_generation
         .is_some_and(|generation| integer(&observation["journal"]["generation"]) != Some(generation))
-        || (query.stream_offset > 0
-            && observation["journal"]["offset"].as_u64() != Some(query.stream_offset as u64))
+        || (observation["journal"].is_object() && observation["journal"]["offset"].as_u64() != Some(0))
     {
-        return Err(err_409("Stream manifest changed during observation"));
+        return Err(err_409("Stream chunk record changed during observation"));
     }
     let kv = state.kv_client().await;
     let current: ChunkKvRangeCatalogHead =

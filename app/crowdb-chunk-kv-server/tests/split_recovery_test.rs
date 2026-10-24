@@ -10,7 +10,7 @@ use crowdb_chunk_kv::{
 };
 use crowdb_chunk_kv_server::ChunkKvService;
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, StreamBinding, StreamBindingState, StreamConfig, StreamName,
+    memory::MemoryStreamStore, ChunkStream, StreamConfig, StreamName, StreamRecord, StreamRecordState,
 };
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
@@ -184,7 +184,7 @@ fn transition() -> SplitTransition {
         source_partition_id: parent_id,
         source_epoch: 1,
         source_stream_name: StreamName { high: 1, low: 1 },
-        source_stream_manifest_generation: 1,
+        source_stream_generation: 1,
         replay_offset: 0,
         cutover_offset: 0,
         base_root_manifest_generation: 1,
@@ -284,13 +284,15 @@ async fn recovered(entry: &ChunkKvRangeCatalogEntry) -> Partition {
     let store = Arc::new(MemoryStreamStore::new(4096));
     let name = entry.artifact.stream_name;
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name: name,
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         2,
         StreamConfig::default(),
@@ -340,7 +342,7 @@ async fn recovered(entry: &ChunkKvRangeCatalogEntry) -> Partition {
             },
             parent_epoch: 1,
             parent_stream_name: overlay.source_stream_name,
-            parent_stream_manifest_generation: 1,
+            parent_stream_generation: 1,
             parent_replay_offset: 0,
             parent_cutover_offset: 0,
             applied_seq: 1,
@@ -352,7 +354,7 @@ async fn recovered(entry: &ChunkKvRangeCatalogEntry) -> Partition {
             root_manifest_generation: 1,
             applied_seq: 1,
             stream_name: name,
-            stream_manifest_generation: 1,
+            stream_generation: 1,
             replay_offset: 0,
         },
         PartitionConfig::default(),
@@ -384,7 +386,7 @@ async fn recover_plain(
             root_manifest_generation: 1,
             applied_seq: 1,
             stream_name: entry.artifact.stream_name,
-            stream_manifest_generation: 1,
+            stream_generation: 1,
             replay_offset: 0,
         },
         PartitionConfig::default(),

@@ -18,7 +18,7 @@ pub(super) struct CapacityPreparation {
 }
 
 pub(super) fn start(state: &mut WorkerState, batch_bytes: usize) {
-    let Some(active) = state.manifest.active.as_ref() else {
+    let Some(active) = state.progress.active.as_ref() else {
         return;
     };
     if state.capacity_preparation.is_some()
@@ -65,7 +65,7 @@ pub(super) async fn poll_ready(state: &mut WorkerState) -> Result<()> {
     // initialized prefix remains usable unless authority itself was lost.
     if let Some((id, StreamError::StaleWriter)) = &state.capacity_failure {
         if state
-            .manifest
+            .progress
             .active
             .as_ref()
             .is_some_and(|active| active.chunk_id == *id)
@@ -85,7 +85,7 @@ pub(super) async fn drain(state: &mut WorkerState) -> Result<()> {
     }
     if let Some((id, error)) = &state.capacity_failure {
         if state
-            .manifest
+            .progress
             .active
             .as_ref()
             .is_some_and(|active| active.chunk_id == *id)
@@ -122,7 +122,7 @@ fn install(
     result: Result<Option<ActiveChunkDescriptor>>,
 ) -> Result<()> {
     let active = state
-        .manifest
+        .progress
         .active
         .as_mut()
         .filter(|active| active.chunk_id == chunk_id)

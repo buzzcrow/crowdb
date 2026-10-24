@@ -4,9 +4,7 @@
 //! Fenced, mirrored logical byte streams assembled from finite chunks.
 
 mod authority;
-mod directory;
 mod error;
-mod extent_cache;
 mod kv;
 mod metadata;
 mod metrics;
@@ -14,6 +12,8 @@ mod mirror_shadow;
 mod perf;
 mod production;
 mod production_chunk;
+mod records;
+pub use records::{StreamChunkRecordSnapshot, StreamChunkRecordStore, StreamCollectionResult, StreamReadPin};
 mod storage;
 mod stream;
 
@@ -21,18 +21,9 @@ mod stream;
 pub mod memory;
 
 pub use authority::{StreamOwnerAuthority, StreamWriteContext, StreamWriterSession};
-pub use directory::DirectoryMetadataStore;
-pub use directory::{
-    DirectoryChunkRelease, DirectoryCollection, DirectoryCollectionStep, DirectoryIndex, DirectoryKeyScan,
-    DirectoryMutation, DirectoryPublicationRetirement, DirectoryRecord, DirectoryRootPinSnapshot,
-    DirectoryScan, StreamDirectoryStore, MAX_DIRECTORY_MUTATION_EXTENTS, MAX_DIRECTORY_SCAN_KEYS,
-};
 pub use error::{Result, StreamError};
-pub use kv::{
-    DirectoryCacheSnapshot, DirectoryHeadSnapshot, KvStreamMetadataStore, KvStreamRegistry,
-    DIRECTORY_PAGE_CACHE_SLOTS,
-};
-pub use metadata::{resolve_extent, validate_manifest, ExtentLocation};
+pub use kv::{KvStreamMetadataStore, KvStreamRegistry};
+pub use metadata::ExtentLocation;
 pub use metrics::{StreamMetrics, StreamMetricsSnapshot};
 pub use perf::{register_stream_perf_metrics, stream_perf_metrics};
 pub use production::ProductionStreamRuntime;
@@ -49,7 +40,7 @@ pub use stream::{
 };
 
 pub use crowdb_protocol::chunk_stream::{
-    ActiveChunkDescriptor, StreamBinding, StreamBindingState, StreamExtentPage, StreamExtentPageFence,
-    StreamManifest, StreamName, StreamPurpose, DEFAULT_STREAM_METADATA_GROUP_ID,
+    ActiveChunkDescriptor, StreamName, StreamPurpose, StreamRecord, StreamRecordState,
+    DEFAULT_STREAM_METADATA_GROUP_ID,
 };
 pub use crowdb_protocol::common::ChunkId;

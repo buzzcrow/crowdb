@@ -104,7 +104,7 @@ async fn write_batch(
         request.authority.check_io().map_err(BatchFailure::Other)?;
     }
     let active = state
-        .manifest
+        .progress
         .active
         .as_ref()
         .ok_or_else(|| BatchFailure::Other(StreamError::Internal("append has no active chunk".into())))?
@@ -153,7 +153,7 @@ async fn write_batch(
     }
     state
         .capacity_plan
-        .record_write(new_cursor - expected_cursor, mirror_started.elapsed());
+        .record_get(new_cursor - expected_cursor, mirror_started.elapsed());
     state.metrics.physical_append_bytes.fetch_add(
         physical_bytes.saturating_mul(u64::from(state.chunks.mirror_copies())),
         Ordering::Relaxed,
@@ -172,12 +172,12 @@ async fn write_batch(
     let _view_timer = PhaseTimer::start(&perf().local_view);
     state.read_view.load().append(&encoded.extents, logical_cursor);
     state.extents.extend(encoded.extents);
-    if let Some(active) = &mut state.manifest.active {
+    if let Some(active) = &mut state.progress.active {
         active.acknowledged_cursor = new_cursor;
         active.physical_start = new_cursor;
         active.logical_start = logical_cursor;
     }
-    state.manifest.sealed_tail = logical_cursor;
+    state.progress.logical_tail = logical_cursor;
     state.tail_view.store(logical_cursor, Ordering::Release);
     Ok(encoded.ranges)
 }

@@ -28,7 +28,7 @@ async fn mixed_units_reject_consumers_without_starting_services() {
         body["rpc_port"] = json!(rpc);
         if kind == "chunk-kv" {
             body["metadata_store_id"] = json!(0);
-            body["bootstrap_group_id"] = json!(1);
+            body["bootstrap_group_id"] = json!(2);
         }
         let response = context
             .http

@@ -50,7 +50,7 @@ impl PartitionJournal for FailedJournal {
         StreamName { high: 1, low: 1 }
     }
 
-    fn manifest_generation(&self) -> u64 {
+    fn record_generation(&self) -> u64 {
         1
     }
 

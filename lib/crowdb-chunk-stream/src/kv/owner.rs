@@ -143,7 +143,7 @@ impl KvStreamRegistry {
         if let Some((owner, _)) = &previous {
             if owner.process.purpose != purpose {
                 return Err(StreamError::Corruption(
-                    "owner purpose differs from stream binding".into(),
+                    "owner purpose differs from stream record".into(),
                 ));
             }
             if epoch < owner.writer_epoch || (!owner.released && owner.process == context.identity()) {
@@ -245,7 +245,7 @@ async fn read_owner(kv: &CrowdbKvClient, name: StreamName) -> Result<Option<(Str
     match kv
         .get(0, 0, key.as_bytes(), ReadMode::Linearizable, None)
         .await
-        .map_err(kv_error)?
+        .map_err(|error| kv_error(&error))?
     {
         GetOutcome::NotFound => Ok(None),
         GetOutcome::Found { value, revision } => {
@@ -275,7 +275,7 @@ async fn write_owner(kv: &CrowdbKvClient, owner: &StreamWriterOwner, revision: u
             {
                 Ok(())
             } else {
-                Err(kv_error(error))
+                Err(kv_error(&error))
             }
         }
     }

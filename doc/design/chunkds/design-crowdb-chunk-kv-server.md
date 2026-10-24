@@ -435,10 +435,16 @@ phase, release proof, initial readiness proof, final catch-up proof, and
 failure. The live-source phases and actions are:
 
 1. `Planned` → `SourcePreparing`: the source remains `Serving`, checkpoints a
-   pinned base, creates the target-owned empty WAL, and records the initial
-   source cursor in the target overlay.
+   pinned base, registers the target WAL's stable `StreamRecord`, and records
+   the initial source cursor in the target overlay. It acquires no writer lease
+   and allocates no chunks for the target WAL.
+   After pinning the base, an ordered mutation-worker command publishes and
+   captures the WAL sequence, byte offset and Stream generation together.
+   Independently sampled counters cannot define a replay cutover: concurrent
+   mutations may be newer than the previously published Stream prefix.
 2. `TargetPreparing`: the remote target validates the range, page-root and
-   stream identities, opens the exact immutable tree-manifest generation named
+   stream identities, initializes or recovers the target WAL under its own
+   process lease, opens the exact immutable tree-manifest generation named
    by the source-base proof rather than the latest root, and starts one shared
    async initialization coroutine that replays the source suffix into a
    `Prepared` overlay. The source remains writable. The live target handle and
@@ -658,7 +664,7 @@ explicit; UI refresh does not bypass stale cursor rejection.
 ## 9. Lifecycle and Observability
 
 Startup ensures the monitor, registers the instance, loads a complete catalog,
-opens each assignment's latest tree root and stream manifest as `Prepared`,
+opens each assignment's latest tree root and Stream chunk record as `Prepared`,
 reads the applied sequence and WAL replay offset from that tree root, replays
 through the stream's current durable tail, reports readiness, and serves only
 after installing a matching grant. Shutdown

@@ -15,7 +15,7 @@ pub(super) async fn start(context: &TestNativeContext) {
     start_with_geometry(context, None).await;
 }
 
-pub(super) async fn start_with_geometry(context: &TestNativeContext, geometry: Option<(u64, u32)>) {
+pub(super) async fn start_with_geometry(context: &TestNativeContext, geometry: Option<u64>) {
     start_through(context, geometry, "access-server").await;
 }
 
@@ -23,7 +23,7 @@ pub(super) async fn start_prerequisites(context: &TestNativeContext) {
     start_through(context, None, "chunkdb").await;
 }
 
-async fn start_through(context: &TestNativeContext, geometry: Option<(u64, u32)>, last: &str) {
+async fn start_through(context: &TestNativeContext, geometry: Option<u64>, last: &str) {
     start_diskdb(context, [128 * 1024; 3]).await;
     for (kind, http, rpc) in [
         ("diskio", None, Some(7200)),
@@ -69,6 +69,7 @@ pub(super) async fn start_diskdb(context: &TestNativeContext, units: [u64; 3]) {
 }
 
 async fn groups(context: &TestNativeContext) {
+    retire_default_metadata(context).await;
     context
         .api(
             Method::POST,
@@ -77,12 +78,12 @@ async fn groups(context: &TestNativeContext) {
             201,
         )
         .await;
-    for (store, replica) in [(1, 10), (0, 20)] {
+    for (store, group, replica) in [(1, 1, 10), (0, 2, 20)] {
         context
             .api(
                 Method::POST,
                 &format!("/api/stores/{store}/groups"),
-                json!({"group_id":1,"replica_id":replica,"nodes":[1,2,3]}),
+                json!({"group_id":group,"replica_id":replica,"nodes":[1,2,3]}),
                 201,
             )
             .await;
@@ -103,12 +104,45 @@ async fn groups(context: &TestNativeContext) {
     }
 }
 
+async fn retire_default_metadata(context: &TestNativeContext) {
+    // This fixture builds explicit storage geometry. Retire the accepted default
+    // preparation through its public deletion path, then use a fresh metadata ID.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let response = context
+                .http
+                .get(format!("{}/api/stores/0/groups/1", context.base))
+                .send()
+                .await
+                .unwrap();
+            if response.status().is_success() {
+                let group: Value = response.json().await.unwrap();
+                if group["replicas"].as_array().is_some_and(|replicas| {
+                    replicas.len() == 3
+                        && replicas
+                            .iter()
+                            .all(|replica| matches!(replica["role"].as_str(), Some("leader" | "follower")))
+                }) {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("default metadata group becomes ready before explicit retirement");
+    context
+        .api(Method::DELETE, "/api/stores/0/groups/1", Value::Null, 204)
+        .await;
+}
+
 async fn disk_group(context: &TestNativeContext, node: u64) {
     context
         .api(
             Method::POST,
             &format!("/api/nodes/{node}/disk-groups"),
-            json!({"id":node,"store_id":u64::from(node == 1),"group_id":1,"name":"storage"}),
+            json!({"id":node,"store_id":u64::from(node == 1),
+                "group_id":if node == 1 { 1 } else { 2 },"name":"storage"}),
             201,
         )
         .await;
@@ -160,7 +194,7 @@ async fn deploy(
     kind: &str,
     http: Option<u16>,
     rpc: Option<u16>,
-    geometry: Option<(u64, u32)>,
+    geometry: Option<u64>,
 ) {
     let mut body = context
         .api(
@@ -184,10 +218,9 @@ async fn deploy(
         "diskio" => body["disk_group_id"] = json!(node),
         "chunk-kv" => {
             body["metadata_store_id"] = json!(0);
-            body["bootstrap_group_id"] = json!(1);
-            if let Some((bytes, entries)) = geometry {
+            body["bootstrap_group_id"] = json!(2);
+            if let Some(bytes) = geometry {
                 body["stream_chunk_capacity_bytes"] = json!(bytes);
-                body["stream_extent_page_entries"] = json!(entries);
             }
         }
         "access-server" => {

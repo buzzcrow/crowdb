@@ -10,8 +10,8 @@ use crowdb_chunk_kv::{
 use crowdb_chunk_kv_server::ChunkKvService;
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamMetadataStore,
-    StreamName, StreamRegistry,
+    ChunkStream, StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName, StreamRecord,
+    StreamRecordState, StreamRegistry,
 };
 use crowdb_protocol::chunk_kv::{
     BatchMutationItem, BatchMutationRequest, Id128, PartitionRouting, PointOperation, ServingAssignment,
@@ -30,13 +30,15 @@ impl TestServingLease {
         let stream_name = StreamName { high: 30, low: 31 };
         let store = Arc::new(MemoryStreamStore::new(4_096));
         let stream = ChunkStream::create(
-            StreamBinding {
+            StreamRecord {
                 purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
                 stream_name,
                 metadata_group_id: 7,
-                binding_generation: 1,
-                state: StreamBindingState::Active,
-                owner_kind: Some("chunk-kv-partition".into()),
+                record_version: 1,
+                state: StreamRecordState::Active,
+                consumer_kind: Some("chunk-kv-partition".into()),
+                consumer_id: None,
+                created_at_ms: StreamRecord::creation_time_ms(),
             },
             EPOCH,
             StreamConfig::default(),

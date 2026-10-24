@@ -4,10 +4,10 @@
 //! Creation and ownership-fenced recovery of writer handles.
 
 use super::{
-    build_extent_pages, collect_extents, fences_for, load_extent_pages, recovery, validate_manifest, Arc,
-    ChunkStream, Ordering, Result, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig,
-    StreamError, StreamManifest, StreamMetadataStore, StreamName, StreamRegistry,
+    Arc, ChunkStream, Result, StreamChunkStore, StreamConfig, StreamError, StreamMetadataStore, StreamName,
+    StreamRecord, StreamRecordState, StreamRegistry,
 };
+use crate::perf::{perf, PhaseTimer};
 
 impl ChunkStream {
     /// Creates and publishes a new registered stream.
@@ -16,7 +16,7 @@ impl ChunkStream {
     ///
     /// Returns a typed storage, validation, fencing, or duplicate-name error.
     pub async fn create(
-        binding: StreamBinding,
+        record: StreamRecord,
         writer_epoch: u64,
         config: StreamConfig,
         registry: Arc<dyn StreamRegistry>,
@@ -24,28 +24,29 @@ impl ChunkStream {
         chunks: Arc<dyn StreamChunkStore>,
     ) -> Result<Self> {
         config.validate()?;
-        if binding.state != StreamBindingState::Active
-            || binding.metadata_group_id == 0
-            || binding.binding_generation == 0
+        if record.state != StreamRecordState::Active
+            || record.metadata_group_id == 0
+            || record.record_version != 1
+            || record.created_at_ms == 0
             || writer_epoch == 0
         {
             return Err(StreamError::InvalidRequest(
-                "stream binding or writer epoch is invalid".into(),
+                "stream record or writer epoch is invalid".into(),
             ));
         }
-        if registry.load(binding.stream_name).await?.is_some() {
+        if registry.load(record.stream_name).await?.is_some() {
             return Err(StreamError::InvalidRequest("stream already exists".into()));
         }
-        registry.create(binding.clone()).await?;
-        Self::initialize(binding, writer_epoch, config, registry, metadata, chunks).await
+        registry.create(record.clone()).await?;
+        Self::initialize(record, writer_epoch, config, registry, metadata, chunks).await
     }
 
-    /// Initializes stream metadata for an active binding already published by
+    /// Initializes stream metadata for an active record already published by
     /// the control plane.
     ///
     /// # Errors
     ///
-    /// Returns a typed error if the binding is absent or inactive, metadata
+    /// Returns a typed error if the record is absent or inactive, metadata
     /// already exists, or initial metadata publication fails.
     pub async fn create_registered(
         stream_name: StreamName,
@@ -56,60 +57,74 @@ impl ChunkStream {
         chunks: Arc<dyn StreamChunkStore>,
     ) -> Result<Self> {
         config.validate()?;
-        let binding = registry
+        let record = registry
             .load(stream_name)
             .await?
-            .ok_or_else(|| StreamError::InvalidRequest("stream binding does not exist".into()))?;
-        if binding.state != StreamBindingState::Active
-            || binding.metadata_group_id == 0
-            || binding.binding_generation == 0
+            .ok_or_else(|| StreamError::InvalidRequest("stream record does not exist".into()))?;
+        if record.state != StreamRecordState::Active
+            || record.metadata_group_id == 0
+            || record.record_version != 1
+            || record.created_at_ms == 0
             || writer_epoch == 0
         {
             return Err(StreamError::InvalidRequest(
-                "stream binding or writer epoch is invalid".into(),
+                "stream record or writer epoch is invalid".into(),
             ));
         }
-        if metadata.load_current(stream_name).await?.is_some() {
+        if metadata
+            .record_store(record.metadata_group_id)?
+            .load_tail(stream_name)
+            .await?
+            .is_some()
+        {
             return Err(StreamError::InvalidRequest(
                 "stream metadata already exists".into(),
             ));
         }
-        Self::initialize(binding, writer_epoch, config, registry, metadata, chunks).await
+        Self::initialize(record, writer_epoch, config, registry, metadata, chunks).await
     }
 
     async fn initialize(
-        binding: StreamBinding,
+        record: StreamRecord,
         writer_epoch: u64,
         config: StreamConfig,
         registry: Arc<dyn StreamRegistry>,
         metadata: Arc<dyn StreamMetadataStore>,
         chunks: Arc<dyn StreamChunkStore>,
     ) -> Result<Self> {
-        let authority = registry.claim_writer(binding.stream_name, writer_epoch).await?;
-        chunks.bind_writer(binding.stream_name, writer_epoch, authority.clone());
-        let manifest = StreamManifest {
-            purpose: binding.purpose,
-            stream_name: binding.stream_name,
-            metadata_group_id: binding.metadata_group_id,
+        let authority = registry.claim_writer(record.stream_name, writer_epoch).await?;
+        chunks.bind_writer(record.stream_name, writer_epoch, authority.clone());
+        let metadata = metadata.record_store(record.metadata_group_id)?;
+        let active = chunks
+            .allocate_mirrored(record.stream_name, writer_epoch, record.purpose)
+            .await?;
+        authority.check()?;
+        let record = crowdb_protocol::chunk_stream::StreamChunkRecord {
+            stream_id: record.stream_name,
+            purpose: record.purpose,
+            chunk_id: active.chunk_id,
+            state: crowdb_protocol::chunk_stream::StreamChunkState::Active,
+            logical_start: Some(0),
+            logical_end: Some(0),
+            sequence: 0,
             writer_epoch,
             generation: 1,
+            owner_session: owner_session()?,
             trim_offset: 0,
-            sealed_tail: 0,
-            active: None,
-            extent_pages: Vec::new(),
-            previous_generation: None,
             closed: false,
+            mappings: crowdb_protocol::chunk_stream::StreamMappings::default(),
         };
-        metadata.publish(None, manifest.clone(), Vec::new()).await?;
-        Self::start(
-            config,
-            metadata,
-            chunks,
-            manifest,
-            Vec::new(),
-            &[],
-            Some(authority),
-        )
+        let _publication = PhaseTimer::start(&perf().publish);
+        let mut candidate = record.clone();
+        candidate.state = crowdb_protocol::chunk_stream::StreamChunkState::Candidate;
+        candidate.logical_start = None;
+        candidate.logical_end = None;
+        candidate.generation = 0;
+        let candidate = metadata.reserve_initial(&candidate).await?;
+        authority.check()?;
+        let snapshot = metadata.publish(None, record, None, Some(&candidate)).await?;
+        authority.check()?;
+        Self::start(config, metadata, chunks, snapshot, Some(active), Some(authority)).await
     }
 
     /// Opens an existing stream and recovers its durable active cursor.
@@ -126,84 +141,93 @@ impl ChunkStream {
         chunks: Arc<dyn StreamChunkStore>,
     ) -> Result<Self> {
         config.validate()?;
-        let binding = registry
+        let record = registry
             .load(stream_name)
             .await?
-            .ok_or_else(|| StreamError::InvalidRequest("stream binding does not exist".into()))?;
-        if binding.state != StreamBindingState::Active {
-            return Err(StreamError::InvalidRequest("stream binding is not active".into()));
+            .ok_or_else(|| StreamError::InvalidRequest("stream record does not exist".into()))?;
+        if record.state != StreamRecordState::Active {
+            return Err(StreamError::InvalidRequest("stream record is not active".into()));
         }
-        let mut manifest = metadata
-            .load_current(stream_name)
+        let metadata = metadata.record_store(record.metadata_group_id)?;
+        let snapshot = metadata
+            .load_tail(stream_name)
             .await?
-            .ok_or_else(|| StreamError::Corruption("stream manifest does not exist".into()))?;
-        if manifest.purpose != binding.purpose {
+            .ok_or_else(|| StreamError::Corruption("Stream tail record does not exist".into()))?;
+        let base = snapshot.record();
+        if base.purpose != record.purpose {
             return Err(StreamError::Corruption(
-                "stream binding purpose differs from manifest".into(),
+                "Stream purpose differs from identity record".into(),
             ));
         }
-        if manifest.metadata_group_id != binding.metadata_group_id || manifest.writer_epoch > writer_epoch {
+        if base.writer_epoch > writer_epoch {
             return Err(StreamError::StaleWriter);
         }
-        let pages = load_extent_pages(metadata.as_ref(), &manifest).await?;
-        validate_manifest(&manifest, &pages)?;
         let authority = registry.claim_writer(stream_name, writer_epoch).await?;
         chunks.bind_writer(stream_name, writer_epoch, authority.clone());
-        let expected = (manifest.writer_epoch, manifest.generation);
-        let mut needs_publish = manifest.writer_epoch < writer_epoch;
-        let mut rotate_active = false;
-        let mut extents = collect_extents(&pages);
-        let mut tail = manifest.sealed_tail;
-        if let Some(active) = &mut manifest.active {
-            let recovered = chunks.recover_tail(stream_name, writer_epoch, active).await?;
-            tail = recovered.logical_end;
-            recovery::append_recovered(active.chunk_id, recovered.extents, &mut extents)?;
+        let session = owner_session()?;
+        let mut completed = base.clone();
+        let mut active = super::state::load_active(&snapshot, chunks.as_ref()).await?;
+        let mut previous = None;
+        if let Some(descriptor) = active.take() {
+            let recovered = chunks
+                .recover_tail(stream_name, writer_epoch, &descriptor)
+                .await?;
+            let mut lengths = base
+                .mappings
+                .lengths()
+                .map_err(|error| StreamError::Corruption(error.to_string()))?;
+            for extent in recovered.extents {
+                lengths.push(
+                    u32::try_from(extent.logical_length)
+                        .map_err(|_| StreamError::Corruption("recovered append length".into()))?,
+                );
+            }
             chunks
-                .seal(active.chunk_id, writer_epoch, recovered.physical_end)
+                .seal(descriptor.chunk_id, writer_epoch, recovered.physical_end)
                 .await?;
-            active.acknowledged_cursor = recovered.physical_end;
-            rotate_active = true;
-        }
-        manifest.writer_epoch = writer_epoch;
-        if rotate_active {
-            manifest.active.take();
-            manifest.sealed_tail = tail;
+            completed.logical_end = Some(recovered.logical_end);
+            completed.mappings = crowdb_protocol::chunk_stream::StreamMappings::new(&lengths)
+                .map_err(|error| StreamError::Corruption(error.to_string()))?;
+            completed.state = crowdb_protocol::chunk_stream::StreamChunkState::Sealed;
+            completed.writer_epoch = writer_epoch;
+            completed.owner_session = session;
             let mut successor = chunks
-                .allocate_mirrored(stream_name, writer_epoch, manifest.purpose)
+                .allocate_mirrored(stream_name, writer_epoch, base.purpose)
                 .await?;
-            successor.logical_start = tail;
-            manifest.active = Some(successor);
-            needs_publish = true;
-        }
-        if needs_publish {
-            manifest.previous_generation = Some(manifest.generation);
-            manifest.generation = manifest
-                .generation
+            successor.logical_start = recovered.logical_end;
+            let mut next = completed.clone();
+            next.chunk_id = successor.chunk_id;
+            next.state = crowdb_protocol::chunk_stream::StreamChunkState::Active;
+            next.logical_start = Some(recovered.logical_end);
+            next.sequence = base
+                .sequence
                 .checked_add(1)
-                .ok_or_else(|| StreamError::Corruption("manifest generation overflows".into()))?;
-            let adopted_pages = build_extent_pages(
-                &extents,
-                manifest.stream_name,
-                writer_epoch,
-                manifest.generation,
-                config.extent_page_entries,
-            );
-            manifest.extent_pages = fences_for(&adopted_pages);
-            validate_manifest(&manifest, &adopted_pages)?;
-            metadata
-                .publish(Some(expected), manifest.clone(), adopted_pages)
-                .await?;
+                .ok_or_else(|| StreamError::Corruption("chunk sequence overflow".into()))?;
+            next.mappings = crowdb_protocol::chunk_stream::StreamMappings::default();
+            previous = Some(completed);
+            completed = next;
+            active = Some(successor);
         }
-        let stream = Self::start(
-            config,
-            metadata,
-            chunks,
-            manifest,
-            extents,
-            &pages,
-            Some(authority),
-        )?;
-        stream.tail.store(tail, Ordering::Release);
-        Ok(stream)
+        completed.writer_epoch = writer_epoch;
+        completed.owner_session = session;
+        completed.generation = base
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| StreamError::Corruption("Stream generation overflow".into()))?;
+        if let Some(previous) = &mut previous {
+            previous.generation = completed.generation;
+        }
+        authority.check()?;
+        let _publication = PhaseTimer::start(&perf().publish);
+        let snapshot = metadata
+            .publish(Some(&snapshot), completed, previous, None)
+            .await?;
+        super::successor::reclaim_excluded(&metadata, chunks.as_ref(), stream_name, writer_epoch).await?;
+        Self::start(config, metadata, chunks, snapshot, active, Some(authority)).await
     }
+}
+
+fn owner_session() -> Result<[u8; 16]> {
+    crowdb_protocol::chunk_stream::StreamProcessLease::generate_boot_nonce()
+        .map_err(|error| StreamError::Internal(error.to_string()))
 }

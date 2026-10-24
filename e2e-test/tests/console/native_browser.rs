@@ -53,10 +53,10 @@ async fn page_layout_and_iceberg_inspection() {
 }
 
 #[tokio::test]
-#[ignore = "requires actual stream extent directories and a host browser"]
-async fn large_journal_pagination_and_restart() {
+#[ignore = "requires actual Stream chunk records and a host browser"]
+async fn large_journal_records_and_restart() {
     let context = TestNativeContext::connect().await;
-    super::native_storage::start_with_geometry(&context, Some((1024 * 1024, 1))).await;
+    super::native_storage::start_with_geometry(&context, Some(1024 * 1024)).await;
     super::native_journal::TestNativeJournal::seed(&context).await;
     let result = crate::common::control::native_browser().await;
     assert_eq!(result["passed"], true);

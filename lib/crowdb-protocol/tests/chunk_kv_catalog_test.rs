@@ -235,7 +235,7 @@ fn split_transition_requires_retained_parent_and_exact_child_cutover() {
         source_partition_id: transition.parent_id,
         source_epoch: transition.parent_epoch,
         source_stream_name: transition.parent_artifact.stream_name,
-        source_stream_manifest_generation: 1,
+        source_stream_generation: 1,
         replay_offset: 0,
         cutover_offset: 11,
         base_root_manifest_generation: 1,

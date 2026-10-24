@@ -31,6 +31,7 @@ use crate::{
 mod activation;
 mod assignments;
 mod authority;
+mod drain;
 mod group;
 use assignments::{local_partition_for_entry, partition_matches_entry};
 mod load_sampling;
@@ -690,13 +691,12 @@ impl ChunkKvService {
             retained_applied_seq = artifact.retained_parent.applied_seq,
             retained_tree_manifest = artifact.retained_parent.tree_manifest,
             retained_root_manifest_generation = artifact.retained_parent.root_manifest_generation,
-            retained_parent_stream_manifest_generation =
-                artifact.retained_parent.parent_stream_manifest_generation,
+            retained_parent_stream_generation = artifact.retained_parent.parent_stream_generation,
             child_base_seq = artifact.child.base_applied_seq,
             child_applied_seq = artifact.child.applied_seq,
             child_tree_manifest = artifact.child.tree_manifest,
             child_root_manifest_generation = artifact.child.root_manifest_generation,
-            child_parent_stream_manifest_generation = artifact.child.parent_stream_manifest_generation,
+            child_parent_stream_generation = artifact.child.parent_stream_generation,
             "local split writers installed"
         );
         Ok(())
@@ -1458,7 +1458,7 @@ fn final_transfer_artifact(
         && artifact.parent_id.low == overlay.source_partition_id.low
         && artifact.parent_epoch == overlay.source_epoch
         && artifact.parent_stream_name == overlay.source_stream_name
-        && artifact.parent_stream_manifest_generation == overlay.source_stream_manifest_generation
+        && artifact.parent_stream_generation == overlay.source_stream_generation
         && artifact.parent_replay_offset == overlay.replay_offset
         && overlay.target_stream_start_seq == overlay.cutover_seq.checked_add(1)?;
     if !exact_base {

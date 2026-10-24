@@ -14,7 +14,7 @@ it('keeps inherited and current journal identities and recovery dependencies sep
     state: 'Serving', transition_id: 'transition-1', artifact: {
       tree_id: '9007199254740995', stream_name: stream, tail_overlay: {
         source_partition_id: { ...stream, low: '1' }, source_epoch: '9007199254740991',
-        source_stream_name: { ...stream, low: '3' }, source_stream_manifest_generation: '15',
+        source_stream_name: { ...stream, low: '3' }, source_stream_generation: '15',
         replay_offset: '4096', cutover_offset: '8192', cutover_seq: '50',
         base_root_manifest_generation: '7', base_tree_manifest: '6', base_applied_seq: '40', target_stream_start_seq: '51',
       },
@@ -22,7 +22,7 @@ it('keeps inherited and current journal identities and recovery dependencies sep
   };
   const props = { partition, generation: '9007199254740997', currentGeneration: '9007199254740997', active: false,
     catalogPage: 0, catalogOffset: 0, onBack: vi.fn(), onChunk: vi.fn(), propertyHost: null,
-    query: { tab: 'Journal', stream: { offset: 0 }, extent: null }, onQuery: vi.fn() };
+    query: { tab: 'Journal', stream: { offset: 0 }, chunkRecord: null }, onQuery: vi.fn() };
   const { rerender } = render(<PartitionDetail {...props} />);
   const inherited = screen.getByRole('heading', { name: 'Inherited parent stream' }).parentElement!;
   expect(inherited).toHaveTextContent('ffffffffffffffff0000000000000003');

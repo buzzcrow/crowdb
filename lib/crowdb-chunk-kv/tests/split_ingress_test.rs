@@ -216,6 +216,9 @@ async fn retained_parent_can_complete_a_second_split_on_the_original_worker() {
         parent.release_generation_pin(plan.transition_id).unwrap();
         parent = parent.split_ingress().unwrap().retained_parent();
         assert_eq!(parent.snapshot().stream_name, original_stream);
+        let frontier = parent.capture_journal_frontier(epoch + 1).await.unwrap();
+        assert_eq!(frontier.mutation_seq, parent.snapshot().journal_durable_seq);
+        assert_eq!(frontier.offset, parent.snapshot().journal_durable_offset);
         assert_eq!(
             parent.get(epoch + 1, b"b", None).await.unwrap().unwrap().value,
             b"left"

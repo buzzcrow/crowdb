@@ -16,7 +16,7 @@ use crowdb_chunk_kv::{
 };
 use crowdb_chunk_kv_server::{management_router, ChunkKvService, ManagementState};
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, StreamBinding, StreamBindingState, StreamConfig,
+    memory::MemoryStreamStore, ChunkStream, StreamConfig, StreamRecord, StreamRecordState,
 };
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
@@ -35,13 +35,15 @@ async fn journal() -> StreamPartitionJournal {
     let store = Arc::new(MemoryStreamStore::new(4096));
     let stream_name = StreamName { high: 2, low: 3 };
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
+            record_version: 1,
+            state: StreamRecordState::Active,
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
-            owner_kind: Some("chunk-kv-partition".into()),
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         u64::MAX,
         StreamConfig::default(),
@@ -173,9 +175,13 @@ async fn observation_keeps_exact_fences_and_does_not_confuse_serving_with_live_a
     assert_eq!(advanced["journal_durable_seq"], "1");
     assert_eq!(advanced["applied_seq"], "1");
     assert_eq!(advanced["tree"]["checkpoint_applied_seq"], "1");
-    assert_eq!(advanced["journal"]["extent_pages"].as_array().unwrap().len(), 0);
-    assert_eq!(advanced["journal"]["sealed_tail"], "0");
-    assert!(advanced["journal"]["active"]["chunk_id"].is_string());
+    assert_eq!(advanced["journal"]["chunk_record"]["state"], "Active");
+    assert_eq!(advanced["journal"]["published_tail"], "0");
+    assert_eq!(
+        advanced["journal"]["generation"], body["journal"]["generation"],
+        "append keeps the persisted chunk record unchanged"
+    );
+    assert!(advanced["journal"]["chunk_record"]["chunk_id"].is_string());
     assert_eq!(advanced["data_pages_read"], 0);
     let stale = app
         .clone()
@@ -183,7 +189,12 @@ async fn observation_keeps_exact_fences_and_does_not_confuse_serving_with_live_a
             Request::get(format!(
                 "/partitions/{id}/observation?generation=9&epoch={}&stream_generation={}",
                 u64::MAX,
-                body["journal"]["generation"].as_str().unwrap()
+                body["journal"]["generation"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap()
+                    + 1
             ))
             .body(Body::empty())
             .unwrap(),

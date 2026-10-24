@@ -1,6 +1,6 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
-"""Normal manual release nodes with public SSH admission and fixed ports."""
+"""Production-policy release nodes with explicit admission and fixed ports."""
 
 import json
 import urllib.request
@@ -16,6 +16,7 @@ from console_native_storage import unbound_file_rejected, verify_file_preparatio
 from console_native_candidates import prepare as prepare_candidates, verify as verify_candidates
 from profiles.setup_choices import diskless_setup
 from profiles.node_resources import capture as capture_resources
+from console_native_policy import accept as accept_policy
 
 
 class NativeConsoleCluster(ShellBrowserCluster):
@@ -82,7 +83,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
         if not isinstance(host, str) or not host:
             raise AssertionError("Docker physical host identity is absent")
         for index in range(self.node_count):
-            data = node_data(self, index)
+            data = node_data(self, index, prepare_logs=False)
+            environment, mounts = accept_policy(self, index, data, host)
             disks = data / "disks"
             disks.mkdir()
             disk = disks / f"disk-{index + 1}.img"
@@ -103,12 +105,12 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 "-R", "crowdb:crowdb", "/opt/crowdb/data")
             self.addresses.append(start_node(self, index, data, (), memory="2048m", pids_limit=512,
                 address=str(subnet.network_address + index + 2),
-                environment=("CROWDB_STARTUP_MODE=manual", f"CROWDB_PHYSICAL_HOST_ID={host}",
+                mounts=mounts, environment=(*environment,
                     "CROWDB_DISK_INPUTS=" + json.dumps(self.candidate_inputs if index == 0 else []))))
         self.ready()
         for address in self.addresses:
             with HTTP.open(f"http://{address}:9090/api/node/auto-join", timeout=5) as response:
-                assert json.load(response)["enabled"] is True
+                assert json.load(response)["enabled"] is False
             request = urllib.request.Request(f"http://{address}:9090/api/node/auto-join",
                 data=json.dumps({"enabled": False}).encode(),
                 headers={"Content-Type": "application/json"})
@@ -220,9 +222,9 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 self.browser("native diagnostics: production split displays actual inherited and current journals",
                     config="native.config.ts", extra_env={"CROWDB_NATIVE_TRANSITION_ACCEPTANCE": "1"})
                 return {"passed": True}
-            if self.case_name == "console::native_browser::large_journal_pagination_and_restart":
+            if self.case_name == "console::native_browser::large_journal_records_and_restart":
                 self.browser_timeout = 180
-                self.browser("native diagnostics: large Journal replaces 100 extent fences with its remainder",
+                self.browser("native diagnostics: large Journal exposes a bounded tail chunk record across restart",
                     config="native.config.ts", extra_env={"CROWDB_NATIVE_JOURNAL_WINDOWS": "1"})
                 return {"passed": True}
             if self.case_name == "console::native_browser::auxiliary_process_menus":

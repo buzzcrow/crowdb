@@ -32,7 +32,7 @@ impl SplitHandoffStore for SplitHandoffCommit {
             source_partition_id: current.parent_id,
             source_epoch: current.parent_epoch,
             source_stream_name: artifact.parent_stream_name,
-            source_stream_manifest_generation: artifact.parent_stream_manifest_generation,
+            source_stream_generation: artifact.parent_stream_generation,
             replay_offset: artifact.parent_replay_offset,
             cutover_offset: artifact.parent_cutover_offset,
             base_tree_manifest: artifact.tree_manifest,

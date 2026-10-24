@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_stream::{
     memory::MemoryStreamStore, ActiveChunkDescriptor, ChunkStream, CursorAdvance, DurableCursor, Result,
-    StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamManifest, StreamMetadataStore,
-    StreamName, StreamPurpose, StreamRegistry, TrimmedChunk,
+    StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName, StreamPurpose, StreamRecord,
+    StreamRecordState, StreamRegistry, TrimmedChunk,
 };
 use crowdb_protocol::common::ChunkId;
 
@@ -131,13 +131,15 @@ async fn rollover_grows_a_fresh_successor_before_admitting_the_waiting_append() 
         ..StreamConfig::default()
     };
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: StreamPurpose::Stream,
             stream_name: name,
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("test".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("test".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         1,
         config.clone(),
@@ -155,8 +157,8 @@ async fn rollover_grows_a_fresh_successor_before_admitting_the_waiting_append() 
     assert_eq!(stream.metrics().rollovers, 1);
     assert_eq!(
         store.metadata_publish_count(),
-        3,
-        "only the initial head and two chunk attachments publish metadata"
+        2,
+        "only initial attachment and rollover publish chunk records"
     );
     stream.checkpoint().await.unwrap();
     let reopened = ChunkStream::open_read_only(name, 1, config, store.clone(), store, chunks)
@@ -182,13 +184,15 @@ async fn stale_stream_capacity_does_not_reject_a_newer_durable_chunk_layout() {
     };
     StreamRegistry::create(
         store.as_ref(),
-        StreamBinding {
+        StreamRecord {
             purpose: StreamPurpose::Stream,
             stream_name: name,
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("test".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("test".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
     )
     .await
@@ -197,15 +201,32 @@ async fn stale_stream_capacity_does_not_reject_a_newer_durable_chunk_layout() {
         .allocate_mirrored(name, 1, StreamPurpose::Stream)
         .await
         .unwrap();
-    let manifest = StreamManifest {
-        stream_name: name,
-        metadata_group_id: 1,
+    let record = crowdb_protocol::chunk_stream::StreamChunkRecord {
+        stream_id: name,
+        purpose: StreamPurpose::Stream,
+        chunk_id: active.chunk_id,
+        state: crowdb_protocol::chunk_stream::StreamChunkState::Active,
+        logical_start: Some(0),
+        logical_end: Some(0),
+        sequence: 0,
         writer_epoch: 1,
         generation: 1,
-        active: Some(active.clone()),
-        ..StreamManifest::default()
+        owner_session: [1; 16],
+        trim_offset: 0,
+        closed: false,
+        mappings: crowdb_protocol::chunk_stream::StreamMappings::default(),
     };
-    store.publish(None, manifest.clone(), vec![]).await.unwrap();
+    let metadata = store.record_store(1).unwrap();
+    let mut reservation = record.clone();
+    reservation.state = crowdb_protocol::chunk_stream::StreamChunkState::Candidate;
+    reservation.logical_start = None;
+    reservation.logical_end = None;
+    reservation.generation = 0;
+    let reservation = metadata.reserve_initial(&reservation).await.unwrap();
+    metadata
+        .publish(None, record.clone(), None, Some(&reservation))
+        .await
+        .unwrap();
     let payload = Bytes::from(vec![0x5a; usize::try_from(INITIAL + INITIAL / 2).unwrap()]);
     let frames = crowdb_protocol::frame::encode_append_group_views(active.chunk_id, 0, &payload, 1).unwrap();
     let data = Bytes::from(frames.concat());
@@ -225,7 +246,10 @@ async fn stale_stream_capacity_does_not_reject_a_newer_durable_chunk_layout() {
         .advance_cursor(name, 1, active.chunk_id, 0, end, crc32fast::hash(&data))
         .await
         .unwrap();
-    assert_eq!(store.load_current(name).await.unwrap(), Some(manifest));
+    assert_eq!(
+        store.load_tail_for_tests(name).await.unwrap().unwrap().record(),
+        &record
+    );
     let reader = ChunkStream::open_read_only(
         name,
         1,
@@ -239,7 +263,7 @@ async fn stale_stream_capacity_does_not_reject_a_newer_durable_chunk_layout() {
     assert_eq!(
         reader.tail(),
         0,
-        "the captured directory remains the finite read boundary"
+        "the captured record view remains the finite read boundary"
     );
     let reopened = ChunkStream::open(name, 2, config, store.clone(), store.clone(), chunks)
         .await

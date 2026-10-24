@@ -79,8 +79,6 @@ pub(super) struct Deploy {
     #[serde(default)]
     stream_chunk_capacity_bytes: Option<u64>,
     #[serde(default)]
-    stream_extent_page_entries: Option<std::num::NonZeroU32>,
-    #[serde(default)]
     local_deployment: Option<bool>,
     #[serde(default)]
     local_mirror_copies: Option<u32>,
@@ -215,8 +213,7 @@ fn validate(body: &Deploy) -> Result<(), Failure> {
         || (!matches!(body.kind, Kind::ChunkKv)
             && (body.metadata_store_id.is_some()
                 || body.bootstrap_group_id.is_some()
-                || body.stream_chunk_capacity_bytes.is_some()
-                || body.stream_extent_page_entries.is_some()))
+                || body.stream_chunk_capacity_bytes.is_some()))
         || (!matches!(body.kind, Kind::AccessServer) && body.s3_port.is_some())
         || (!matches!(body.kind, Kind::AccessServer) && body.dataset_port.is_some())
         || (!matches!(body.kind, Kind::AccessServer) && body.health_port.is_some())

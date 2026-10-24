@@ -10,8 +10,8 @@ use bytes::Bytes;
 use crowdb_chunk_client::{ChunkAllocator, ChunkIoClient, ChunkReadPolicy, DiskWriter, IoError};
 use crowdb_chunk_stream::{
     memory::MemoryStreamStore, ChunkStream, CursorAdvance, MirrorStripImage, ProductionStreamChunkStore,
-    ProductionStreamRuntime, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig,
-    StreamMetadataStore, StreamName, StreamRegistry,
+    ProductionStreamRuntime, StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName, StreamRecord,
+    StreamRecordState, StreamRegistry,
 };
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
 use crowdb_protocol::chunkdb::rpc::{
@@ -55,6 +55,9 @@ use grouped_write::TestGroupedStrip;
 
 #[path = "production_chunk_test/allocated.rs"]
 mod allocated;
+
+#[path = "production_chunk_test/sealing.rs"]
+mod sealing;
 
 struct Allocator {
     chunk: Mutex<Option<Chunk>>,
@@ -416,6 +419,10 @@ struct Disks {
     pause_initialization: AtomicBool,
     initialization_started: tokio::sync::Notify,
     initialization_resume: tokio::sync::Notify,
+    drain_delay_ms: AtomicU64,
+    active_drains: AtomicUsize,
+    max_active_drains: AtomicUsize,
+    completed_drains: AtomicUsize,
 }
 
 #[test]
@@ -448,7 +455,16 @@ impl DiskWriter for Disks {
         _unit_bytes: u64,
         _deadline: std::time::Instant,
     ) -> crowdb_chunk_client::Result<()> {
-        self.fsync(segment).await
+        let active = self.active_drains.fetch_add(1, Ordering::AcqRel) + 1;
+        self.max_active_drains.fetch_max(active, Ordering::AcqRel);
+        let delay = self.drain_delay_ms.load(Ordering::Acquire);
+        if delay != 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
+        let result = self.fsync(segment).await;
+        self.active_drains.fetch_sub(1, Ordering::AcqRel);
+        self.completed_drains.fetch_add(1, Ordering::AcqRel);
+        result
     }
     async fn initialize_synchronized_at_byte_offset(
         &self,
@@ -706,13 +722,15 @@ async fn chunk_stream_runs_end_to_end_over_the_production_chunk_adapter() {
     let metadata_store: Arc<dyn StreamMetadataStore> = metadata;
     let stream_name = StreamName { high: 40, low: 41 };
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("test".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("test".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
         StreamConfig::default(),
@@ -752,13 +770,15 @@ async fn stream_replaces_failed_mirrors_from_retained_strip_image() {
     );
     let metadata = Arc::new(MemoryStreamStore::new(1));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name: StreamName { high: 50, low: 51 },
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("test".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("test".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
         StreamConfig::default(),
@@ -815,13 +835,15 @@ async fn stream_repair_preserves_a_batch_crossing_mirror_strips() {
     );
     let metadata = Arc::new(MemoryStreamStore::new(1));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name: StreamName { high: 52, low: 53 },
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("test".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("test".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
         StreamConfig::default(),

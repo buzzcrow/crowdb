@@ -863,7 +863,6 @@ version = "0.3.0"
 dependencies = [
  "arc-swap",
  "async-trait",
- "bincode",
  "bytes",
  "crc32fast",
  "crossbeam-skiplist",

@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Persist one ordered prefix only when publishing a directory checkpoint.
+//! Persist one ordered prefix only when publishing a chunk record checkpoint.
 
 use super::WorkerState;
 use crate::perf::{perf, PhaseTimer};

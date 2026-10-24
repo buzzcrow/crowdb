@@ -55,6 +55,15 @@ pub(super) async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Recei
             Command::Release(completion) => {
                 let _ = completion.send(process_release(&mut state).await);
             }
+            Command::Reclaim {
+                retained_generation,
+                max_records,
+                completion,
+            } => {
+                let _ = completion.send(
+                    super::collection::reclaim_metadata(&mut state, retained_generation, max_records).await,
+                );
+            }
             Command::Close(completion) => {
                 let result = process_close(&mut state).await;
                 let _ = completion.send(result);
@@ -85,15 +94,22 @@ async fn process_capture(state: &mut WorkerState) -> Result<Arc<ReadView>> {
         .as_ref()
         .ok_or(StreamError::WriteStalled)?
         .check()?;
-    if state.manifest.sealed_tail != state.manifest_view.load().sealed_tail {
+    if state.progress.logical_tail != state.published_view.load().published_tail {
         publish_state(state).await?;
-    } else if state.metadata.load_current(state.stream_name).await?.as_ref()
-        != Some(state.manifest_view.load().as_ref())
+    } else if state
+        .metadata
+        .load_tail(state.stream_name)
+        .await?
+        .as_ref()
+        .map(crate::StreamChunkRecordSnapshot::record)
+        != Some(state.snapshot.record())
     {
         state.stalled = true;
         return Err(StreamError::StaleWriter);
     }
-    Ok(Arc::new(ReadView::new(state.manifest_view.load_full())))
+    Ok(Arc::new(
+        ReadView::new(state.metadata.clone(), state.published_view.load_full()).await?,
+    ))
 }
 
 async fn process_append_batch(
@@ -103,7 +119,7 @@ async fn process_append_batch(
     pending: &mut Option<Command>,
 ) {
     liveness::maintain(state).await;
-    if state.stalled || state.manifest.closed {
+    if state.stalled || state.progress.closed {
         finish_failed(state, vec![first], &StreamError::WriteStalled);
         return;
     }
@@ -200,7 +216,7 @@ impl WorkerState {
 
 pub(super) async fn rotate_externally_sealed_active(state: &mut WorkerState) -> Result<bool> {
     preparation::drain(state).await?;
-    let Some(active) = state.manifest.active.clone() else {
+    let Some(active) = state.progress.active.clone() else {
         return Ok(false);
     };
     let durable = state
@@ -218,11 +234,11 @@ pub(super) async fn rotate_externally_sealed_active(state: &mut WorkerState) -> 
 
     let tail = state.tail_view.load(Ordering::Acquire);
     state.checkpoint = None;
-    state.manifest.active = None;
-    state.manifest.sealed_tail = tail;
+    state.progress.active = None;
+    state.progress.logical_tail = tail;
     let mut successor = successor::take(state).await?;
     successor.logical_start = tail;
-    state.manifest.active = Some(successor);
+    state.progress.active = Some(successor);
     publish_state(state).await?;
     successor::start(state);
     state.stalled = false;
@@ -236,7 +252,7 @@ async fn process_trim(state: &mut WorkerState, offset: u64) -> Result<u64> {
         .as_ref()
         .is_some_and(|authority| authority.is_released())
     {
-        return if offset == state.manifest.trim_offset {
+        return if offset == state.progress.trim_offset {
             Ok(0)
         } else {
             Err(StreamError::StaleWriter)
@@ -251,56 +267,16 @@ async fn process_trim(state: &mut WorkerState, offset: u64) -> Result<u64> {
         .ok_or(StreamError::WriteStalled)?
         .check()?;
     let tail = state.tail_view.load(Ordering::Acquire);
-    if offset < state.manifest.trim_offset || offset > tail {
+    if offset < state.progress.trim_offset || offset > tail {
         return Err(StreamError::InvalidRequest(
             "trim offset regresses or exceeds durable tail".into(),
         ));
     }
-    if offset != state.manifest.trim_offset {
-        state.manifest.trim_offset = offset;
+    if offset != state.progress.trim_offset {
+        state.progress.trim_offset = offset;
         publish_state(state).await?;
     }
-    let mut reclaimed = 0_u64;
-    let mut removed = 0_usize;
-    while removed < state.extents.len() {
-        if removed > 0 && reclaimed >= state.config.gc_bytes_per_pass {
-            break;
-        }
-        let remaining = &state.extents[removed..];
-        let chunk_id = remaining[0].chunk_id;
-        if state
-            .manifest
-            .active
-            .as_ref()
-            .is_some_and(|active| active.chunk_id == chunk_id)
-        {
-            break;
-        }
-        let count = remaining
-            .iter()
-            .take_while(|extent| extent.chunk_id == chunk_id)
-            .count();
-        let last = &remaining[count - 1];
-        if last.logical_end > offset {
-            break;
-        }
-        let physical_end = last
-            .frame_start
-            .checked_add(u64::from(last.frame_length))
-            .ok_or_else(|| StreamError::Corruption("trimmed chunk physical end overflows".into()))?;
-        reclaimed = reclaimed.saturating_add(
-            state
-                .chunks
-                .release_trimmed(chunk_id, last.logical_end, physical_end)
-                .await?
-                .reclaimed_bytes,
-        );
-        removed += count;
-    }
-    if removed > 0 {
-        state.extents.drain(..removed);
-        publish_state(state).await?;
-    }
+    let reclaimed = super::collection::reclaim_chunks(state).await?;
     state
         .metrics
         .reclaimed_bytes
@@ -317,21 +293,21 @@ async fn process_close(state: &mut WorkerState) -> Result<()> {
         .as_ref()
         .ok_or(StreamError::WriteStalled)?
         .check()?;
-    if state.manifest.closed {
+    if state.progress.closed {
         return Ok(());
     }
     preparation::drain(state).await?;
     successor::discard(state).await?;
-    if let Some(active) = state.manifest.active.take() {
+    if let Some(active) = state.progress.active.take() {
         state
             .chunks
             .seal(active.chunk_id, state.writer_epoch, active.acknowledged_cursor)
             .await?;
         let tail = state.tail_view.load(Ordering::Acquire);
-        state.manifest.sealed_tail = tail;
+        state.progress.logical_tail = tail;
     }
     state.checkpoint = None;
-    state.manifest.closed = true;
+    state.progress.closed = true;
     publish_state(state).await?;
     if let Some(authority) = &state.authority {
         authority.release().await?;
@@ -346,7 +322,7 @@ async fn process_release(state: &mut WorkerState) -> Result<()> {
     }
     preparation::drain(state).await?;
     successor::discard(state).await?;
-    if state.manifest.sealed_tail != state.manifest_view.load().sealed_tail {
+    if state.progress.logical_tail != state.published_view.load().published_tail {
         publish_state(state).await?;
     }
     state

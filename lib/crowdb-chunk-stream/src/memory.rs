@@ -9,17 +9,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_protocol::chunk_stream::{
-    ActiveChunkDescriptor, StreamBinding, StreamExtentPage, StreamManifest, StreamName,
-};
+use crowdb_protocol::chunk_stream::{ActiveChunkDescriptor, StreamName, StreamRecord};
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::FrameLayout;
 use tokio::sync::{Mutex, Notify};
 
 mod allocation;
 mod authority;
-mod directory_records;
 mod metadata;
+mod record_backend;
 mod recovery;
 
 use crate::{
@@ -55,15 +53,13 @@ struct Chunk {
 
 #[derive(Debug, Default)]
 struct MemoryState {
-    bindings: HashMap<StreamName, StreamBinding>,
+    stream_records: HashMap<StreamName, StreamRecord>,
     owners: HashMap<StreamName, (u64, Arc<crate::StreamWriterSession>)>,
-    manifests: HashMap<StreamName, StreamManifest>,
-    pages: HashMap<(StreamName, u64, u64, u64), StreamExtentPage>,
     chunks: HashMap<ChunkId, Chunk>,
     cursor_faults: VecDeque<CursorFault>,
-    metadata_records: BTreeMap<(u64, Vec<u8>), directory_records::MemoryRecord>,
+    metadata_records: BTreeMap<(u64, Vec<u8>), record_backend::MemoryRecord>,
     metadata_revision: u64,
-    metadata_heads: HashMap<StreamName, u64>,
+    metadata_groups: HashMap<StreamName, u64>,
 }
 
 /// Test-only implementation of all three injected storage contracts.
@@ -76,8 +72,7 @@ pub struct MemoryStreamStore {
     fail_allocation_number: AtomicU64,
     allocation_started: Notify,
     allocation_resume: Notify,
-    metadata_publishes: Arc<AtomicU64>,
-    extent_page_loads: AtomicU64,
+    record_faults: Arc<record_backend::RecordFaults>,
     chunk_writes: AtomicU64,
     cursor_advances: AtomicU64,
     liveness_renews: AtomicU64,
@@ -86,8 +81,8 @@ pub struct MemoryStreamStore {
     pause_reads: AtomicBool,
     active_reads: AtomicUsize,
     max_active_reads: AtomicUsize,
-    fail_next_publish: Arc<AtomicBool>,
     fail_next_writes: AtomicUsize,
+    fail_next_release: AtomicBool,
     fail_next_renewals: AtomicUsize,
     fail_chunk_renewal: AtomicU64,
     write_started: Notify,
@@ -122,8 +117,7 @@ impl MemoryStreamStore {
             fail_allocation_number: AtomicU64::new(0),
             allocation_started: Notify::new(),
             allocation_resume: Notify::new(),
-            metadata_publishes: Arc::new(AtomicU64::new(0)),
-            extent_page_loads: AtomicU64::new(0),
+            record_faults: Arc::new(record_backend::RecordFaults::default()),
             chunk_writes: AtomicU64::new(0),
             cursor_advances: AtomicU64::new(0),
             liveness_renews: AtomicU64::new(0),
@@ -132,8 +126,8 @@ impl MemoryStreamStore {
             pause_reads: AtomicBool::new(false),
             active_reads: AtomicUsize::new(0),
             max_active_reads: AtomicUsize::new(0),
-            fail_next_publish: Arc::new(AtomicBool::new(false)),
             fail_next_writes: AtomicUsize::new(0),
+            fail_next_release: AtomicBool::new(false),
             fail_next_renewals: AtomicUsize::new(0),
             fail_chunk_renewal: AtomicU64::new(0),
             write_started: Notify::new(),
@@ -182,8 +176,35 @@ impl MemoryStreamStore {
         chunks
     }
 
+    pub fn pause_publication_for_tests(&self) {
+        self.record_faults.pause.store(true, Ordering::Release);
+    }
+    pub async fn wait_for_publication_for_tests(&self) {
+        self.record_faults.entered.notified().await;
+    }
+    pub fn resume_publication_for_tests(&self) {
+        self.record_faults.resume.notify_one();
+    }
+    pub fn lose_publication_response_for_tests(&self) {
+        self.record_faults.lose_response.store(true, Ordering::Release);
+    }
+    pub fn fail_pin_renewals_for_tests(&self, count: u64) {
+        self.record_faults
+            .renewals_to_fail
+            .store(count, Ordering::Release);
+    }
+    pub fn pin_renewal_count_for_tests(&self) -> u64 {
+        self.record_faults.renewals.load(Ordering::Acquire)
+    }
+
     pub fn fail_next_publish(&self) {
-        self.fail_next_publish.store(true, Ordering::Release);
+        self.record_faults.fail.store(true, Ordering::Release);
+    }
+    pub fn fail_record_delete_for_tests(&self) {
+        self.record_faults.fail_delete.store(true, Ordering::Release);
+    }
+    pub fn fail_release_for_tests(&self) {
+        self.fail_next_release.store(true, Ordering::Release);
     }
 
     pub fn fail_next_write(&self) {
@@ -237,16 +258,12 @@ impl MemoryStreamStore {
 
     #[must_use]
     pub fn metadata_publish_count(&self) -> u64 {
-        self.metadata_publishes.load(Ordering::Acquire)
+        self.record_faults.publications.load(Ordering::Acquire)
     }
 
     #[must_use]
-    pub fn extent_page_load_count(&self) -> u64 {
-        self.extent_page_loads.load(Ordering::Acquire)
-    }
-
-    pub async fn extent_page_count(&self) -> usize {
-        self.state.lock().await.pages.len()
+    pub fn record_load_count(&self) -> u64 {
+        self.record_faults.loads.load(Ordering::Acquire)
     }
 
     /// Returns retained physical bytes independently of the metadata checkpoint.
@@ -356,17 +373,16 @@ impl StreamRegistry for MemoryStreamStore {
     async fn claim_writer(&self, name: StreamName, epoch: u64) -> Result<Arc<crate::StreamWriterSession>> {
         self.claim_memory_writer(name, epoch).await
     }
-    async fn load(&self, stream_name: StreamName) -> Result<Option<StreamBinding>> {
-        Ok(self.state.lock().await.bindings.get(&stream_name).cloned())
+    async fn load(&self, stream_name: StreamName) -> Result<Option<StreamRecord>> {
+        Ok(self.state.lock().await.stream_records.get(&stream_name).cloned())
     }
 
-    async fn create(&self, binding: StreamBinding) -> Result<()> {
+    async fn create(&self, record: StreamRecord) -> Result<()> {
         let mut state = self.state.lock().await;
-        if state.bindings.insert(binding.stream_name, binding).is_some() {
-            return Err(StreamError::InvalidRequest(
-                "stream binding already exists".into(),
-            ));
+        if state.stream_records.contains_key(&record.stream_name) {
+            return Err(StreamError::InvalidRequest("stream record already exists".into()));
         }
+        state.stream_records.insert(record.stream_name, record);
         Ok(())
     }
 }
@@ -618,6 +634,11 @@ impl StreamChunkStore for MemoryStreamStore {
         _logical_end: u64,
         physical_end: u64,
     ) -> Result<TrimmedChunk> {
+        if physical_end > 0 && self.fail_next_release.swap(false, Ordering::AcqRel) {
+            return Err(StreamError::ReadUnavailable(
+                "injected chunk release failure".into(),
+            ));
+        }
         let mut state = self.state.lock().await;
         let chunk = state
             .chunks

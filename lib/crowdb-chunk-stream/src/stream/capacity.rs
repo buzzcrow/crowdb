@@ -16,7 +16,7 @@ pub(super) async fn prepare_active_for_append(state: &mut WorkerState, first_len
     let _wait = PhaseTimer::start(&perf().capacity_wait);
     preparation::drain(state).await?;
     loop {
-        if state.manifest.active.is_none() {
+        if state.progress.active.is_none() {
             match ensure_active(state).await {
                 Ok(()) => {}
                 Err(
@@ -59,12 +59,12 @@ pub(super) async fn prepare_active_for_append(state: &mut WorkerState, first_len
 }
 
 async fn ensure_active(state: &mut WorkerState) -> Result<()> {
-    if state.manifest.active.is_some() {
+    if state.progress.active.is_some() {
         return Ok(());
     }
     let mut active = state
         .chunks
-        .allocate_mirrored(state.stream_name, state.writer_epoch, state.manifest.purpose)
+        .allocate_mirrored(state.stream_name, state.writer_epoch, state.progress.purpose)
         .await?;
     active.logical_start = state.tail_view.load(Ordering::Acquire);
     if active.acknowledged_cursor < active.physical_start || active.acknowledged_cursor > active.capacity {
@@ -72,7 +72,7 @@ async fn ensure_active(state: &mut WorkerState) -> Result<()> {
             "allocated chunk cursor is invalid".into(),
         ));
     }
-    state.manifest.active = Some(active);
+    state.progress.active = Some(active);
     publish_state(state).await?;
     successor::start(state);
     Ok(())
@@ -81,7 +81,7 @@ async fn ensure_active(state: &mut WorkerState) -> Result<()> {
 pub(super) async fn rollover(state: &mut WorkerState) -> Result<()> {
     preparation::drain(state).await?;
     let active = state
-        .manifest
+        .progress
         .active
         .as_ref()
         .ok_or_else(|| StreamError::Internal("rollover has no active chunk".into()))?;
@@ -92,10 +92,10 @@ pub(super) async fn rollover(state: &mut WorkerState) -> Result<()> {
         .await?;
     state.checkpoint = None;
     let tail = state.tail_view.load(Ordering::Acquire);
-    state.manifest.sealed_tail = tail;
+    state.progress.logical_tail = tail;
     let mut successor = successor::take(state).await?;
     successor.logical_start = tail;
-    state.manifest.active = Some(successor);
+    state.progress.active = Some(successor);
     publish_state(state).await?;
     successor::start(state);
     state.metrics.rollovers.fetch_add(1, Ordering::Relaxed);
@@ -117,7 +117,7 @@ async fn grow_or_rollover(state: &mut WorkerState, bytes: usize) -> Result<()> {
 
 async fn grow_active(state: &mut WorkerState, bytes: usize) -> Result<bool> {
     let active = state
-        .manifest
+        .progress
         .active
         .as_ref()
         .ok_or_else(|| StreamError::Internal("active chunk is missing".into()))?;
@@ -150,14 +150,14 @@ async fn grow_active(state: &mut WorkerState, bytes: usize) -> Result<bool> {
                 "grown chunk capacity does not cover the requested append".into(),
             ));
         }
-        state.manifest.active = Some(grown);
+        state.progress.active = Some(grown);
         return Ok(true);
     }
     Ok(false)
 }
 
 pub(super) fn fits_active(state: &WorkerState, bytes: usize) -> bool {
-    state.manifest.active.as_ref().is_some_and(|active| {
+    state.progress.active.as_ref().is_some_and(|active| {
         active
             .acknowledged_cursor
             .checked_add(bytes as u64)

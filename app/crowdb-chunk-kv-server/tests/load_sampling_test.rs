@@ -10,7 +10,7 @@ use crowdb_chunk_kv::{
 };
 use crowdb_chunk_kv_server::ChunkKvService;
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, StreamBinding, StreamBindingState, StreamConfig, StreamName,
+    memory::MemoryStreamStore, ChunkStream, StreamConfig, StreamName, StreamRecord, StreamRecordState,
 };
 use std::{
     sync::Arc,
@@ -27,13 +27,15 @@ async fn partition_with_value_size(id: u64, count: u64, value_size: usize) -> Pa
     ));
     let name = StreamName { high: 1, low: id };
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name: name,
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         1,
         StreamConfig::default(),

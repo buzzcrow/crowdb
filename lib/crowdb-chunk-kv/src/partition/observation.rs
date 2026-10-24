@@ -43,7 +43,7 @@ impl Partition {
         })
     }
 
-    /// Copies a bounded journal extent index from its published manifest.
+    /// Copies the journal's published tail Stream chunk record.
     ///
     /// # Errors
     /// Returns a stale-generation or invalid-continuation error.

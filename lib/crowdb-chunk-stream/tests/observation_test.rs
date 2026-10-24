@@ -5,24 +5,25 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, StreamBinding, StreamBindingState, StreamConfig, StreamName,
+    memory::MemoryStreamStore, ChunkStream, StreamConfig, StreamName, StreamRecord, StreamRecordState,
 };
 
 #[tokio::test]
-async fn published_extent_index_is_bounded_fenced_and_reads_no_data() {
-    let store = Arc::new(MemoryStreamStore::new(4096));
+async fn published_chunk_record_summary_is_bounded_fenced_and_reads_no_data() {
+    let store = Arc::new(MemoryStreamStore::new(65536));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             stream_name: StreamName { high: 1, low: 2 },
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: None,
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: None,
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         u64::MAX,
         StreamConfig {
-            extent_page_entries: 1,
             ..StreamConfig::default()
         },
         store.clone(),
@@ -39,12 +40,10 @@ async fn published_extent_index_is_bounded_fenced_and_reads_no_data() {
     let publications = store.metadata_publish_count();
     let first = stream.observe_metadata(None, 0).unwrap();
     assert_eq!(first.writer_epoch, u64::MAX);
-    assert_eq!(first.extent_pages.len(), 100);
-    assert_eq!(first.next_offset, Some(100));
-    let second = stream.observe_metadata(Some(first.generation), 100).unwrap();
-    assert_eq!(second.extent_pages.len(), 5);
-    assert_eq!(second.extent_pages[0].first_logical, 100);
-    assert_eq!(second.next_offset, None);
+    assert_eq!(first.chunk.mapping_count, 105);
+    assert_eq!(first.chunk.logical_start, 0);
+    assert_eq!(first.chunk.logical_end, 105);
+    assert_eq!(first.next_offset, None);
     assert!(stream.observe_metadata(None, 100).is_err());
     assert!(stream
         .observe_metadata(Some(first.generation), usize::MAX)
@@ -60,10 +59,16 @@ async fn published_extent_index_is_bounded_fenced_and_reads_no_data() {
     assert!(stream.observe_metadata(Some(first.generation), 100).is_err());
     let current = stream.observe_metadata(None, 0).unwrap();
     assert!(current.generation > first.generation);
-    assert!(current.active.is_some());
+    assert_eq!(
+        current.chunk.state,
+        crowdb_protocol::chunk_stream::StreamChunkState::Active
+    );
     stream.close().await.unwrap();
     let closed = stream.observe_metadata(None, 0).unwrap();
     assert!(closed.closed);
-    assert!(closed.active.is_none());
-    assert_eq!(closed.sealed_tail, 106);
+    assert_eq!(
+        closed.chunk.state,
+        crowdb_protocol::chunk_stream::StreamChunkState::Sealed
+    );
+    assert_eq!(closed.published_tail, 106);
 }

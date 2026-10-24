@@ -5,16 +5,16 @@ use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, StreamBinding, StreamBindingState, StreamConfig, StreamName,
-    StreamPurpose,
+    memory::MemoryStreamStore, ChunkStream, StreamConfig, StreamName, StreamPurpose, StreamRecord,
+    StreamRecordState,
 };
 use tokio::time::timeout;
 
 async fn stream(store: Arc<MemoryStreamStore>, interval: Duration) -> ChunkStream {
     ChunkStream::create(
-        StreamBinding {
-            state: StreamBindingState::Active,
-            ..StreamBinding::creating(StreamName::generate(), None, StreamPurpose::Stream)
+        StreamRecord {
+            state: StreamRecordState::Active,
+            ..StreamRecord::creating(StreamName::generate(), None, StreamPurpose::Stream)
         },
         1,
         StreamConfig {
@@ -114,8 +114,8 @@ async fn close_drains_candidate_initialization_and_reclaims_it_without_publicati
         .unwrap();
     assert_eq!(
         store.metadata_publish_count(),
-        2,
-        "preparing a candidate must not publish a stream head"
+        1,
+        "preparing a candidate must not publish a new tail checkpoint"
     );
     let mut closing = tokio::spawn(async move { stream.close().await });
     assert!(timeout(Duration::from_millis(20), &mut closing).await.is_err());
@@ -129,7 +129,7 @@ async fn close_drains_candidate_initialization_and_reclaims_it_without_publicati
     assert_eq!(chunks.len(), 2);
     assert!(chunks[1].2 && chunks[1].3);
     assert_eq!(chunks[1].1, 0);
-    assert_eq!(store.metadata_publish_count(), 3);
+    assert_eq!(store.metadata_publish_count(), 2);
 }
 
 #[tokio::test(start_paused = true)]

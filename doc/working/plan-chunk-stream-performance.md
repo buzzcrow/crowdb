@@ -7,40 +7,243 @@ Upstream: [R244](../backlog/R244-chunk-stream-incremental-directory-publication.
 and [Chunk-Stream design](../design/chunkds/design-crowdb-chunk-stream.md).
 
 Goal: make synchronized mirror writes complete ordinary append without Stream
-KV work, with compact locations, incremental directories, and bounded recovery.
+KV work, with compact mappings, ordered chunk records, and bounded recovery.
+
+## Current contract — ordered Stream chunk records
+
+- The 2026-10-24 user decision supersedes the Stream-owned directory tree in
+  historical notes below. Current terms are `StreamRecord` and
+  `StreamChunkRecord`. Tree/index/root/page APIs and obsolete fixtures are
+  removed; Btree storage retains its own independent page terminology.
+- The typed identity key contains the Stream ID. Its stable value includes
+  purpose, consumer kind/ID, creation time and metadata routing. Chunk-KV
+  supplies the owning partition ID and reconciles creation without changing
+  the original timestamp. Append/rollover/close/owner adoption do not update it.
+- Ordered chunk keys are namespace + Stream ID + kind + big-endian order.
+  Attached records order by logical start; registered Candidates order by
+  reservation sequence and have no logical range until activation. Reverse
+  attached-prefix scan finds the tail; reverse seek finds a logical offset.
+- The tail chunk record persists trim/closed state, writer epoch/session and
+  publication generation. An empty stream has an empty Active record; close
+  persists a Sealed/closed record. No mutable Stream head is introduced.
+- Each attached record has explicit `[logical_start, logical_end)` bounds and
+  one mapping per complete append group. Store append lengths; derive physical
+  increments as `L + 47 * ceil(L/65489)`. No global physical cursor or duplicated
+  physical seal length is persisted in the record.
+- The selected codec uses 256-entry constant-run/varint/raw-u32 blocks, chosen
+  by encoded size, plus RAM seek samples. A seek decodes at most 256 lengths.
+  Strict current envelopes protect identity, bounds and mapping bytes with
+  CRC32C. The physical frame maximum does not change the append maximum.
+- Rollover seals the predecessor, then atomically finalizes its record, deletes
+  its Candidate and inserts Active. Exact tail-revision CAS orders publication,
+  Candidate lifecycle, interval pins and GC. Unknown responses reconcile the
+  complete proposed tail. Keep adaptive capacity preparation and ready successor.
+- Finite readers hold logical interval leases plus their exact local-tail
+  chunk. Collection checks trim, whole chunks, horizon and leases; Deleting
+  persists until physical release and record deletion complete. No page/root
+  reachability or historical metadata rewrites remain.
+- Protocol samples: 4,096 equal 4-KiB append groups encode to a 247-byte full
+  record; twenty 4-MiB groups use 142 bytes; 3,073 mixed groups use 6,298 bytes.
+  These are codec sizes, not measured throughput gains.
+
+## Ordered record implementation
+
+- [x] **S01 — Define ordered records and compact mapping codec**: introduce
+  `StreamRecord`, `StreamChunkRecord`, ordered typed keys, strict checksummed
+  codecs and bounded seek samples. Keep one mapping per complete append group;
+  select constant-run/varint/raw lengths by encoded size and derive physical
+  geometry. Files: protocol `chunk_stream/chunk_record*`, `key/chunk_stream*`,
+  record/key/codec tests.
+- [x] **S02 — Replace metadata runtime**: implement shared conditional record
+  storage, bounded forward/reverse seek, tail-revision transitions, candidates,
+  finite interval pins and whole-chunk retryable collection. Remove all Stream
+  directory-tree/page/root APIs and their superseded fixtures.
+- [x] **S03 — Wire worker and consumers**: create/reopen/read/append/capture,
+  candidate registration and handoff, trim/close/release, observations and WAL
+  retention use only ordered records. Store trim/closed/publication progress on
+  the tail chunk record. Identity/consumer record is not a moving head.
+- [x] **S04 — Verify and measure**: replace obsolete tree-geometry tests with
+  record correctness/failure coverage, run affected suites/fmt/strict clippy,
+  then matched retained-MemDisk one-/32-producer release benchmarks and actual
+  WAL acceptance. Preserve original floors and separate measured from proposed.
 
 ## Status and scope
 
-- Deployment requirement R243 is complete at `c3d7d64d`; R244 is in progress.
-- T01/T02/T03/T05–T07 foundations and T20a's measured hot-path changes are
-  verified. T20b/T20c capacity preparation is verified; T09 indexed worker
-  integration is active; T18 remains unfinished. Ordinary
-  append now completes at synchronized mirrors with local owner checks; cursor
-  persistence occurs only at checkpoints. Production recovery scans complete
-  grouped frames past the checkpoint after process exclusion and ordered drains.
-  The affected suite, strict lint and unchanged two-case performance gates
-  pass, including a second measurement of the exact final source.
-  T13's indexed retention primitives are committed; expiry/read-IO grace and
-  runtime/consumer wiring remain. Directory, shared-codec, ordinary writer and local-progress
-  foundations exist; the main Stream worker still needs indexed wiring,
-  safe ownership/recovery, bounded retention and production acceptance.
+- All current implementation/acceptance work is complete. Final workspace
+  `rs-fmt-check` and strict `rs-lint` pass. Focused DiskIO tree-lint exits zero
+  with existing style warnings in unchanged C++ lines; no C++ edits or fix-its
+  are included in this rewrite. Prepare the implementation commit, then archive
+  the unrelated uncommitted C6 evidence before deleting this completed plan.
+- Complete-service file-backed Chunk-KV restart now passes the routed native
+  record/update/tombstone, seek and forward/reverse scan assertions. Receipt:
+  `container-e2e/run-abe75788fb784cafb856c7c3baa64600`. The 196 fixture unit
+  cases and workspace Rust formatting pass after final client/fixture changes.
+- Complete-service restart initially failed only at the fixture's generic
+  30-s startup probe: all processes remained running, but ungraceful owner
+  exclusion precedes endpoint binding. The production catalog recovery already
+  has a 60-s deadline, including the prior lease and 31-s late-IO ceiling.
+  Only this crash-recovery probe now uses that existing service deadline;
+  ordinary startup keeps 30 s and all data/tombstone assertions remain intact.
+  Failed receipt: `container-e2e/run-2232aca6d4204d479d4bdb469323fe6d`.
+- Current-image Stream container acceptance passes all four owners: explicit
+  released-owner transfer (0.69 s), file-backed restart with exact acknowledged
+  bytes (38.71-s reader phase, including ungraceful owner exclusion), all DiskIO
+  processes offline, and live DiskIO initialization failures. Receipt:
+  `container-e2e/run-6c39593cf0414b06a82fdcd7be717c00`. Offline segments cannot
+  drain/seal, so failure retains the old record/generation/tail, completes no
+  handoff and fences subsequent writes. Initialization failure attaches no tail.
+- The large-Journal browser owner also passes on the final production image
+  `b605e645eeded507599e40a5f0e3ed9778c3ff41699385a094b4d469f22ea7f8`,
+  source tree `0b27153dea4ad79f37bfaf972513f8267682dc1e`. Its small geometry
+  creates multiple real chunk records, validates exact data, restarts the owner,
+  and checks bounded record inspection, Chunk navigation and stale-generation
+  rejection. Browser time is 3.9 s; native flow is 48.03 s. Receipt:
+  `container-e2e/run-36eed341bf854b5c9e600260db052ff4`.
+- Final actual WAL/client acceptance passes: 30,000 mixed operations, 32
+  producers, 512-byte values, 25% reads, zero errors, 16,639 ops/s and 3,300-us
+  p99. Automatic split, remote-owner placement and restart/replay all pass the
+  unchanged script bounds. Receipt:
+  `.crowdb-runtime/artifacts/bench/chunk-kv-regression-20261024-124407/results.tsv`.
+  The retained-parent logical epoch is checked on the calling partition before
+  and after ordered capture, independently of its reused physical sequencer;
+  the consecutive-split regression reproduces and verifies that distinction.
+- Remote read capture also reproduced stale physical cursor caching: a reader
+  opened at zero, then observed a newer published record, but the adapter used
+  its old cached cursor. Verified reads now receive this view's validated complete-
+  group end explicitly, without promoting shared cached/persistent cursors.
+  The previously failing production-adapter case, all forty adapter cases and
+  the full Stream suite pass; strict affected-crate clippy passes. Earlier failed
+  WAL receipts remain under `chunk-kv-regression-20261024-{121701,122807,123453}`.
+- Final matched 60-s comparison (`run-20261024T035320Z`, same four-core
+  affinity/32-worker fixture as the first comparison): one producer changes
+  6,080.67 → 6,144.79 ops/s, 163 → 162 us mean, 335 → 345 us p99.
+  Thirty-two producers change 38,444.66 → 52,426.26 ops/s (+36.4%),
+  831 → 609 us mean and 3,965 → 3,533 us p99. Capacity wait averages
+  307.98 → 16.95 ms; publication 275.41 → 5.88 ms; peak RSS
+  680,468 → 125,404 KiB. New publications are exactly initial plus rollovers:
+  6/5 and 49/48. Cursor checkpoints/errors/watchdogs are zero; cleanup passes.
+  Final concurrent seal/drain averages are 11.00/9.33 ms; successor waits
+  average 6.42 us. Source/binary/config identities and full phase distributions
+  are retained with `summary.json` in that evidence root.
+- Final default-placement bounds pass all seven unchanged minima and p99
+  ceilings using the rebuilt benchmark (`f822f6d7deee1ef1`), 32 Tokio workers,
+  fresh serial retained-MemDisk fixtures and synchronized two-copy writes.
+  Results: 4-KiB one/32-producer 1,476.19/15,654.35 ops/s; 1-MiB/4-MiB
+  writes 262.39/302.44 MiB/s; random 4-KiB reads 41,500.62 ops/s; replay
+  476.40 MiB/s; trim 7,839.33 MiB/s. All errors/watchdogs are zero and
+  request/byte queue and RSS-growth bounds pass. Machine-readable checks:
+  `/home/cj/.cache/crowdb-r244-ordered-records/default-bounds-20261024T034821Z/gates.json`.
+  Default placement and affinity diagnostics remain separate comparisons.
+- First matched ordered-record run: retained MemDisk, two synchronized mirrors,
+  `mem-block`, CPUs 0–3, 32 Tokio workers, four fresh serial 60-s cases. Evidence
+  is `/home/cj/.cache/crowdb-r244-ordered-records/run-20261024T032913Z`.
+  One producer changes 6,126.85 → 6,181.27 ops/s (162 → 161 us mean);
+  32 producers change 38,620.59 → 50,758.54 ops/s (827 → 629 us mean,
+  4,103 → 3,653 us p99). Concurrent publication averages 275.49 → 6.58 ms,
+  with 10.47 → 0.31 s cumulative publication time despite more rollovers.
+  Client peak RSS changes 623,584 → 128,360 KiB. All cases have zero errors,
+  watchdogs and cursor-checkpoint samples; cleanup receipts pass.
+- CPU-limited remaining bounds: 1-MiB writes reach 488.43 MiB/s, 4-MiB writes
+  464.53 MiB/s, 320-MiB replay 1,020.25 MiB/s, and trim 10,313.10 MiB/s,
+  all within their p99 bounds. Four-core random reads reach 21,171.76 ops/s,
+  below 30,000. A matched old-binary control gives 21,139.14 ops/s; default
+  CPU placement gives the new implementation 43,224.60 ops/s and 1,857-us p99.
+  Evidence roots are `bounds-20261024T033355Z` and
+  `read-controls-20261024T033638Z` in the same cache directory. Affinity remains
+  diagnostic; the final default-placement run above verifies all minima.
+- Those first samples omitted initial attachment from per-handle publication
+  counters and the publish histogram. Both now include successful attachment
+  and writer adoption; read-only opening remains zero. Counter/phase tests pass.
+- The remaining rollover path drained every segment serially before sealing.
+  It now allows eight independent segment drains in flight, waits for all
+  submitted completions even after failure, and seals only on total success.
+  A paused-clock fault test verifies the bound, no early seal and no dropped
+  peer drain. Forty production-adapter cases and the mirror/candidate/fault
+  suites pass. Added `stream.chunk.seal{,_drain}.lh`; the final rebuilt-binary
+  comparison above includes this change and complete publication accounting.
+
+- R243 is complete at `c3d7d64d`; R244 acceptance is complete. The ordered-record
+  implementation replaces the superseded indexed worker and retention code.
+- Verified on 2026-10-24: full workspace/all-target check; 277 UI tests and
+  TypeScript; new protocol codec/key tests; actual KV reverse seek and unchanged
+  history; publication lost-response and paused-publication boundaries; retained
+  reader interval; Candidate allocation/cleanup; Stream production adapter.
+- Final affected component run passes across protocol, Stream, Chunk-KV,
+  Chunk-KV server, Group-0 domain monitor and Web. This includes ten ordered
+  record fault cases, two actual KV cases, seven protocol/codec cases, and the
+  existing production adapter, WAL/retry, native split/transfer and observation
+  tests. The Stream full suite also passes. Workspace strict `rs-lint` and
+  formatting pass; the old observation assertion now explicitly verifies that
+  normal append does not change the published record generation.
+- Record sizes at full 256-MiB physical geometry: 64,792 complete 4-KiB appends
+  use 1,913 encoded bytes and 6,144 bytes of RAM seek samples; 5,592,405 one-byte
+  appends use 153,057 encoded bytes and 786,432 sample bytes. Maximum-count,
+  malformed block/count, CRC and seek-boundary cases pass.
+- Whole-chunk collection survives both physical-release failure and record
+  deletion failure across owner recovery, retaining Deleting until confirmed
+  cleanup. Read expiry is independent of the observation watchdog; a revision
+  conflict retries pin renewal before its next regular lease interval.
+- Initialization also uses a registered Candidate at sequence zero and its
+  nonzero revision as the first-attachment fence. A paused excluded initializer
+  cannot reinsert logical-start zero after rollover and trim delete that key;
+  the deterministic race test passes alongside actual-KV and takeover tests.
+- Browser execution now reaches the real Journal record and Chunk navigation
+  assertions. The native fixture used removed startup inputs and populated an
+  unaccepted fresh root; it now accepts the diskless production policy before
+  preparing owned candidate media. The first browser run then exposed missing
+  graceful WAL writer release: service shutdown stopped admission but left the
+  old assignment live, so restart waited for lease exclusion. Shutdown now
+  drains hosted WAL writers after stopping background assignment changes. A
+  paused-write test verifies ordered completion, complete-prefix publication,
+  Candidate cleanup and idempotent draining. The Journal browser owner now passes
+  including actual owner stop/restart and stale generation rejection; evidence:
+  `container-e2e/run-38cb3af2f0c54d24afcecd33d4a674ab`. Native explicit geometry
+  retires default preparation through its public deletion path and uses a fresh
+  metadata group instead of racing or reusing the reserved default identity.
+- OCI image `fa913f16333b71886b341a01527a33e9994b197200ffa49efbc159414f30ee5a`
+  contains initialization fencing and graceful writer draining; source tree
+  `d70c81754a0c14e68e22a28c52dfb050e731a294`. Container fixture suite: 196 pass.
+- Multi-chunk Journal diagnosis: increasing placement wait from 60 to 120 s did
+  not help. Live Group-0 reads show a committed split and a transfer stuck in
+  TargetPreparing; the target WAL assignment belongs to the live source process.
+  Source preparation initialized and cached that empty writer, so the target
+  correctly waited forever for source process exclusion. Source preparation now
+  registers only the stable Stream identity; the prepared target initializes its
+  own WAL. Initialization is limited to exact transition-named Prepared/Target-
+  CatchingUp artifacts with a source overlay; Serving recovery cannot fabricate
+  an absent tail. Bootstrap, split recovery, transfer and worker suites: 17 pass.
+  Removed temporary diagnostic polling and restored the original 60-s wait.
+  Failed receipts: `run-a7c385f1cb22475d86a919afd9b4e15e` and
+  `run-a8b51da578ad48848fd418ede420bcf1`; rebuild OCI and rerun the owner.
+- The real 30,000-operation WAL load has zero errors (16,615 ops/s, 3,996-us
+  p99), but its first placement acceptance fails after progressing beyond the
+  lease wait. Source preparation sampled a newer cutover than the published
+  Stream prefix; the target correctly rejects that finite overlay. Capture
+  sequence/offset/generation in one ordered mutation-worker command that flushes
+  the WAL. A paused-publication regression verifies a queued later mutation
+  remains beyond the captured prefix and remote read-only opening matches it.
+  Receipt: `bench/chunk-kv-regression-20261024-121701`; rerun remains required.
+- Remaining: commit the implementation and remove the completed requirement,
+  backlog entry and plan. Matched release performance, actual WAL/client,
+  current-image Stream/Chunk-KV crash recovery, both Journal browser owners and
+  final gates have passed. Historical notes below describe earlier implementations.
 - User instruction: this product has never shipped. Support only the chosen
   current format and matched service contract. Do not add old-format migration,
   old-service fallback or capability negotiation. Remove compatibility code and
   its fixtures. Existing development runtime artifacts remain preserved; a test
   fixture creates data in its current format.
-- The matched retained-MemDisk baseline and intermediate rerun at `377870bb`
+- Historical matched retained-MemDisk baseline and intermediate rerun at `377870bb`
   fail six performance gates. The final hot-path run passes four of seven gates;
   the three remaining failures are concurrent small-append p99 and large-append
   throughput. All cases have zero errors/watchdogs, and directory publication,
-  queue and RSS bounds pass. Performance acceptance is still incomplete.
+  queue and RSS bounds pass. The final ordered-record bounds above supersede
+  that intermediate performance result.
 - The two pre-existing unrelated user edits stay outside this requirement.
 
 - The main worker now uses current grouped frames and one location per append.
   No revision-1 Stream codec, raw-write mode or frame-version negotiation remains.
-  Indexed directory wiring and the remaining ownership/recovery acceptance
-  work remain separate implementation tasks. Per-batch cursor work is removed
-  by the current integration, pending the gates recorded below.
+  Ordered records replace the intermediate indexed implementation. Per-batch
+  cursor work is removed; current verification is recorded above.
 
 ## Synchronized-mirror latency investigation
 
@@ -1986,7 +2189,7 @@ adaptation rather than a new transport or storage engine.
   `lib/crowdb-tree/src/backend/chunk/chunk_page_store.cpp`, and their existing
   frame/native-buffer/object/tree test suites.
 
-- [~] **T09 — Introduce versioned directory records**: replace the flat head
+- [ ] **T09 — Replace superseded indexed record foundation**: replace the flat head
   fence list with a bounded root and independent page references. Represent
   multi-frame extents with logical intervals and `ChunkLocation` geometry;
   keep page identity independent of owner epoch/head generation. Implement

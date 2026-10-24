@@ -244,10 +244,10 @@ CHUNKDB_CASES = (
     Case("chunkdb.allocation", "chunkdb::allocation::allocation_connect_failure_reroutes_but_lost_reply_does_not"),
 )
 CHUNK_STREAM_CASES = (
-    Case("chunk-stream.objects", "chunk_stream::production_idle_writer_stops_after_ownership_takeover", chunkdb_storage=True),
+    Case("chunk-stream.objects", "chunk_stream::production_released_idle_writer_stops_after_owner_transfer", chunkdb_storage=True),
     Case("chunk-stream.recovery", "chunk_stream::production_stream_recovers_exact_bytes_after_service_restarts", chunkdb_storage=True, storage_backend="file", restart=True),
     Case("chunk-stream.errors", "chunk_stream::production_stream_write_returns_after_diskio_failure", chunkdb_storage=True, diskio_process_exit=True),
-    Case("chunk-stream.errors", "chunk_stream::production_stream_write_returns_after_live_diskio_errors", chunkdb_storage=True, diskio_fault_rate=1.0),
+    Case("chunk-stream.errors", "chunk_stream::production_stream_initialization_returns_after_live_diskio_errors", chunkdb_storage=True, diskio_fault_rate=1.0),
 )
 CHUNK_CLIENT_CASES = (
     Case("chunk-client.reader", "chunk_client::reader::data::ec_range_read_recovers_only_the_requested_bytes", chunkdb_storage=True, storage_backend="mem"),
@@ -405,7 +405,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.native.browser.prerequisites", "console::native_browser::waiting_plan_prerequisites", native_client=True, client_timeout=360),
     Case("console.native.browser.storage-windows", "console::native_browser::storage_windows_and_access_recovery", native_client=True, native_disk_gib=(80, 256, 256), client_timeout=360),
     Case("console.native.browser.scanner", "console::native_browser::scanner_and_scoped_recalc", native_client=True, client_timeout=360),
-    Case("console.native.browser.journal-windows", "console::native_browser::large_journal_pagination_and_restart", native_client=True, client_timeout=480),
+    Case("console.native.browser.journal-windows", "console::native_browser::large_journal_records_and_restart", native_client=True, client_timeout=480),
     Case("console.native.recovery", "console::native_recovery::all_typed_restarts_preserve_objects_and_keep_one_live_process", native_client=True),
     Case("console.native.load", "console::native_load::production_load_keeps_heartbeats_and_durable_bytes_across_owner_restart", native_client=True),
     Case("console.native.inspection", "console::native_browser::page_layout_and_iceberg_inspection", native_client=True, native_disk_gib=(80, 256, 256), client_timeout=3840),

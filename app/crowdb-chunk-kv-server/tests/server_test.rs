@@ -15,8 +15,8 @@ use crowdb_chunk_kv::{
 use crowdb_chunk_kv_server::{ChunkKvService, ServerLifecycle, TransferStateMachine};
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamMetadataStore,
-    StreamName, StreamRegistry,
+    ChunkStream, StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName, StreamRecord,
+    StreamRecordState, StreamRegistry,
 };
 use crowdb_protocol::chunk_kv::{
     AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
@@ -123,7 +123,7 @@ fn prepared_writer_artifact(writer: &Partition) -> PreparedSplitWriterArtifact {
         parent_id: PartitionId { high: 1, low: 2 },
         parent_epoch: EPOCH,
         parent_stream_name: StreamName { high: 30, low: 31 },
-        parent_stream_manifest_generation: 1,
+        parent_stream_generation: 1,
         parent_replay_offset: 0,
         parent_cutover_offset: 0,
         applied_seq: 0,
@@ -158,13 +158,15 @@ async fn prepared_partition_range(
 ) -> Partition {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         owner_epoch,
         StreamConfig::default(),
@@ -184,7 +186,7 @@ async fn prepared_partition_range(
             root_manifest_generation: 1,
             applied_seq: 0,
             stream_name,
-            stream_manifest_generation: 1,
+            stream_generation: 1,
             replay_offset: 0,
         },
         PartitionConfig::default(),
@@ -202,13 +204,15 @@ async fn pending_transfer_fixture() -> (Partition, PreparedSplitWriterArtifact, 
     let open_journal = |stream: ChunkStream, name| -> Arc<dyn PartitionJournal> {
         Arc::new(StreamPartitionJournal::new(stream, name).unwrap())
     };
-    let binding = |stream_name| StreamBinding {
+    let binding = |stream_name| StreamRecord {
         purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
         stream_name,
         metadata_group_id: 7,
-        binding_generation: 1,
-        state: StreamBindingState::Active,
-        owner_kind: Some("chunk-kv-partition".into()),
+        record_version: 1,
+        state: StreamRecordState::Active,
+        consumer_kind: Some("chunk-kv-partition".into()),
+        consumer_id: None,
+        created_at_ms: StreamRecord::creation_time_ms(),
     };
     let source = ChunkStream::create(
         binding(source_name),
@@ -245,7 +249,7 @@ async fn pending_transfer_fixture() -> (Partition, PreparedSplitWriterArtifact, 
         parent_id: PartitionId { high: 9, low: 9 },
         parent_epoch: EPOCH,
         parent_stream_name: source_name,
-        parent_stream_manifest_generation: 1,
+        parent_stream_generation: 1,
         parent_replay_offset: 0,
         parent_cutover_offset: 0,
         applied_seq: 0,
@@ -260,7 +264,7 @@ async fn pending_transfer_fixture() -> (Partition, PreparedSplitWriterArtifact, 
             root_manifest_generation: 1,
             applied_seq: 0,
             stream_name: target_name,
-            stream_manifest_generation: 1,
+            stream_generation: 1,
             replay_offset: 0,
         },
         PartitionConfig::default(),
@@ -293,7 +297,7 @@ fn committed_transfer(artifact: &PreparedSplitWriterArtifact) -> TransferTransit
             },
             source_epoch: artifact.parent_epoch,
             source_stream_name: artifact.parent_stream_name,
-            source_stream_manifest_generation: artifact.parent_stream_manifest_generation,
+            source_stream_generation: artifact.parent_stream_generation,
             replay_offset: artifact.parent_replay_offset,
             cutover_offset: artifact.parent_cutover_offset,
             base_root_manifest_generation: artifact.root_manifest_generation,
@@ -966,7 +970,7 @@ async fn catching_up_target_appends_unconditional_write_before_initialization() 
         },
         source_epoch: final_artifact.parent_epoch,
         source_stream_name: final_artifact.parent_stream_name,
-        source_stream_manifest_generation: final_artifact.parent_stream_manifest_generation,
+        source_stream_generation: final_artifact.parent_stream_generation,
         replay_offset: final_artifact.parent_replay_offset,
         cutover_offset: final_artifact.parent_cutover_offset,
         base_root_manifest_generation: final_artifact.root_manifest_generation,

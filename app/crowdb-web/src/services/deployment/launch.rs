@@ -188,9 +188,6 @@ pub(super) async fn chunk_kv_config(
     if let Some(bytes) = body.stream_chunk_capacity_bytes {
         config["storage"]["stream_chunk_capacity_bytes"] = json!(bytes);
     }
-    if let Some(entries) = body.stream_extent_page_entries {
-        config["storage"]["stream_extent_page_entries"] = json!(entries);
-    }
     if let Some(group) = body.bootstrap_group_id {
         let client =
             crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(seeds.to_vec()));

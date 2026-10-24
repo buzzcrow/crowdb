@@ -5,20 +5,19 @@ use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, StreamBinding, StreamBindingState, StreamConfig,
-    StreamMetadataStore, StreamName, StreamPurpose, StreamViewSource,
+    memory::MemoryStreamStore, ChunkStream, StreamConfig, StreamName, StreamPurpose, StreamRecord,
+    StreamRecordState, StreamViewSource,
 };
 
 async fn create() -> (Arc<MemoryStreamStore>, ChunkStream) {
     let store = Arc::new(MemoryStreamStore::new(1024 * 1024));
     let stream = ChunkStream::create(
-        StreamBinding {
-            state: StreamBindingState::Active,
-            ..StreamBinding::creating(StreamName::generate(), None, StreamPurpose::Stream)
+        StreamRecord {
+            state: StreamRecordState::Active,
+            ..StreamRecord::creating(StreamName::generate(), None, StreamPurpose::Stream)
         },
         1,
         StreamConfig {
-            extent_page_entries: 16,
             ..StreamConfig::default()
         },
         store.clone(),
@@ -31,7 +30,7 @@ async fn create() -> (Arc<MemoryStreamStore>, ChunkStream) {
 }
 
 #[tokio::test]
-async fn append_reads_and_recovery_do_not_require_per_batch_directory_publication() {
+async fn append_reads_and_recovery_do_not_require_per_batch_record_publication() {
     let (store, stream) = create().await;
     let mut expected = BytesMut::new();
     for value in 0_u64..2048 {
@@ -40,18 +39,22 @@ async fn append_reads_and_recovery_do_not_require_per_batch_directory_publicatio
         assert_eq!(range.begin, expected.len() as u64);
         expected.extend_from_slice(&payload);
     }
-    assert_eq!(
-        store.metadata_publish_count(),
-        2,
-        "head and initial attachment only"
-    );
+    assert_eq!(store.metadata_publish_count(), 1, "initial attached record only");
     assert_eq!(stream.metrics().metadata_publications, 1);
     assert_eq!(stream.tail(), expected.len() as u64);
     assert_eq!(stream.read_at(0, expected.len()).await.unwrap(), expected);
-    assert_eq!(store.extent_page_load_count(), 0, "local reads use live mappings");
-    let persisted = store.load_current(stream.stream_name()).await.unwrap().unwrap();
-    assert_eq!(persisted.sealed_tail, 0);
-    assert!(persisted.extent_pages.is_empty());
+    assert_eq!(
+        stream.metrics().record_cache_misses,
+        0,
+        "local reads use live mappings"
+    );
+    let persisted = store
+        .load_tail_for_tests(stream.stream_name())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.record().logical_end.unwrap(), 0);
+    assert_eq!(persisted.record().mappings.count(), 0);
 
     let recovered = ChunkStream::open(
         stream.stream_name(),

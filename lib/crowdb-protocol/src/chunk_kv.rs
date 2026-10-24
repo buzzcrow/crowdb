@@ -56,7 +56,7 @@ pub struct TailOverlayArtifact {
     pub source_partition_id: Id128,
     pub source_epoch: u64,
     pub source_stream_name: StreamName,
-    pub source_stream_manifest_generation: u64,
+    pub source_stream_generation: u64,
     pub replay_offset: u64,
     pub cutover_offset: u64,
     pub base_root_manifest_generation: u64,
@@ -975,7 +975,7 @@ fn valid_tail_overlay(overlay: &TailOverlayArtifact) -> bool {
     overlay.source_partition_id != Id128::default()
         && overlay.source_epoch != 0
         && overlay.source_stream_name != StreamName::default()
-        && overlay.source_stream_manifest_generation != 0
+        && overlay.source_stream_generation != 0
         && overlay.base_root_manifest_generation != 0
         && overlay.replay_offset <= overlay.cutover_offset
         && overlay.base_applied_seq <= overlay.cutover_seq
@@ -1046,7 +1046,7 @@ fn same_transfer_overlay_base(left: &TailOverlayArtifact, right: &TailOverlayArt
     left.source_partition_id == right.source_partition_id
         && left.source_epoch == right.source_epoch
         && left.source_stream_name == right.source_stream_name
-        && left.source_stream_manifest_generation == right.source_stream_manifest_generation
+        && left.source_stream_generation == right.source_stream_generation
         && left.replay_offset == right.replay_offset
         && left.base_root_manifest_generation == right.base_root_manifest_generation
         && left.base_tree_manifest == right.base_tree_manifest

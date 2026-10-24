@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Published directory plus append-only local mappings since that checkpoint.
+//! Published chunk record plus append-only local mappings since that checkpoint.
 
 use std::ops::Bound::Included;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -11,9 +11,11 @@ use arc_swap::ArcSwap;
 use crossbeam_skiplist::SkipMap;
 use tokio::sync::oneshot;
 
-use super::{durable_tail, ChunkStream, Command, Extent};
+use super::state::StreamViewState;
+use super::{ChunkStream, Command, Extent};
 use crate::metadata::resolve_group;
-use crate::{ExtentLocation, Result, StreamError, StreamManifest};
+use crate::{ExtentLocation, Result, StreamError};
+use crate::{StreamChunkRecordStore, StreamReadPin};
 
 /// The source of a handle's finite or live read boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,18 +26,21 @@ pub enum StreamViewSource {
 }
 
 pub(super) struct ReadView {
-    pub(super) manifest: Arc<StreamManifest>,
+    pub(super) state: Arc<StreamViewState>,
     extents: SkipMap<u64, Extent>,
     end: AtomicU64,
+    pub(super) pin: StreamReadPin,
 }
 
 impl ReadView {
-    pub(super) fn new(manifest: Arc<StreamManifest>) -> Self {
-        Self {
-            end: AtomicU64::new(durable_tail(&manifest).expect("validated checkpoint")),
-            manifest,
+    pub(super) async fn new(metadata: StreamChunkRecordStore, state: Arc<StreamViewState>) -> Result<Self> {
+        let pin = metadata.pin_read(&state.snapshot).await?;
+        Ok(Self {
+            pin,
+            end: AtomicU64::new(state.published_tail),
+            state,
             extents: SkipMap::new(),
-        }
+        })
     }
 
     pub(super) fn end(&self) -> u64 {
@@ -72,7 +77,7 @@ impl ChunkStream {
         self.view_source
     }
 
-    /// Orders a directory checkpoint after earlier queued appends and captures
+    /// Orders a chunk record checkpoint after earlier queued appends and captures
     /// that finite view. Later appends do not extend the returned handle.
     ///
     /// # Errors
@@ -83,7 +88,7 @@ impl ChunkStream {
         }
         if self.closed.load(Ordering::Acquire) {
             let view = self.read_view.load_full();
-            return if view.manifest.closed
+            return if view.state.closed
                 || self
                     .authority
                     .as_ref()
@@ -106,14 +111,14 @@ impl ChunkStream {
     fn captured(&self, view: Arc<ReadView>) -> Self {
         let mut reader = self.clone();
         reader.authority = None;
-        reader.manifest = Arc::new(ArcSwap::from(Arc::clone(&view.manifest)));
+        reader.state = Arc::new(ArcSwap::from(Arc::clone(&view.state)));
         reader.read_view = Arc::new(ArcSwap::from(view));
         reader.closed = Arc::new(AtomicBool::new(true));
         reader.view_source = StreamViewSource::OwnerCheckpoint;
         reader
     }
 
-    /// Persists the finite directory prefix captured by an ordered owner barrier.
+    /// Persists the finite chunk record prefix captured by an ordered owner barrier.
     /// # Errors
     /// Returns the same errors as `capture_read_only`.
     pub async fn checkpoint(&self) -> Result<u64> {

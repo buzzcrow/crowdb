@@ -15,7 +15,7 @@ pub(super) struct CapacityPlan {
 }
 
 impl CapacityPlan {
-    pub(super) fn record_write(&mut self, bytes: u64, elapsed: Duration) {
+    pub(super) fn record_get(&mut self, bytes: u64, elapsed: Duration) {
         let rate =
             u64::try_from(u128::from(bytes) * 1_000_000_000 / elapsed.as_nanos().max(1)).unwrap_or(u64::MAX);
         // React immediately to acceleration; decay gradually after a slow write.
@@ -68,7 +68,7 @@ pub fn capacity_target_for_tests(
 ) -> Option<u64> {
     let mut plan = CapacityPlan::default();
     for (bytes, elapsed) in writes {
-        plan.record_write(*bytes, *elapsed);
+        plan.record_get(*bytes, *elapsed);
     }
     plan.record_preparation(preparation);
     plan.target(cursor, capacity, limit, batch_bytes)

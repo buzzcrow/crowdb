@@ -145,13 +145,15 @@ async fn test_stream(allocator: Arc<Allocator>, disks: Arc<Disks>) -> ChunkStrea
         ProductionStreamChunkStore::new(allocator, disks, 30_000, ChunkReadPolicy::default()).unwrap(),
     );
     ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_chunk_stream::StreamPurpose::Stream,
             stream_name: StreamName { high: 211, low: 223 },
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("test".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("test".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
         StreamConfig::default(),

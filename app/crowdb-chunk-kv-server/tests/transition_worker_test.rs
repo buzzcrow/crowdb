@@ -21,8 +21,8 @@ use crowdb_chunk_kv_server::{
 };
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamMetadataStore,
-    StreamName, StreamRegistry,
+    ChunkStream, StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName, StreamRecord,
+    StreamRecordState, StreamRegistry,
 };
 use crowdb_protocol::chunk_kv::{
     AuthorityReleaseProof, ChunkKvRangeCatalogEntry, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
@@ -102,13 +102,15 @@ async fn partition(
 ) -> Partition {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name: artifact.stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         epoch,
         StreamConfig::default(),
@@ -139,7 +141,7 @@ async fn partition(
                 root_manifest_generation: 1,
                 applied_seq: 0,
                 stream_name: artifact.stream_name,
-                stream_manifest_generation: 1,
+                stream_generation: 1,
                 replay_offset: 0,
             },
             PartitionConfig::default(),
@@ -272,7 +274,7 @@ fn transfer(phase: TransferPhase) -> TransferTransition {
         source_partition_id: id(1),
         source_epoch: 3,
         source_stream_name: source_artifact.stream_name,
-        source_stream_manifest_generation: 1,
+        source_stream_generation: 1,
         replay_offset: 0,
         cutover_offset: 0,
         base_root_manifest_generation: 1,
@@ -365,7 +367,7 @@ fn split_artifact(transition: &SplitTransition) -> SplitArtifact {
         },
         parent_epoch: transition.parent_epoch,
         parent_stream_name: StreamName { high: 5, low: 11 },
-        parent_stream_manifest_generation: 1,
+        parent_stream_generation: 1,
         parent_replay_offset: 0,
         parent_cutover_offset: 8,
         applied_seq: 8,

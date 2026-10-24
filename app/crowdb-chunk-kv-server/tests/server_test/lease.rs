@@ -5,6 +5,55 @@ use super::*;
 use serving_fixture::TestServingLease;
 
 #[tokio::test]
+async fn graceful_drain_waits_for_wal_io_and_publishes_its_complete_prefix() {
+    let fixture = TestServingLease::start().await;
+    fixture.store.pause_writes();
+    let request = PointRequest {
+        routing: routing(1),
+        operation: PointOperation::Put {
+            key: b"key".to_vec(),
+            value: b"value".to_vec(),
+        },
+    };
+    let pending = fixture.service.handle_point(request, 1_000, 50_000);
+    tokio::pin!(pending);
+    fixture.wait_for_write(pending.as_mut()).await;
+    let draining = fixture.service.drain_writers();
+    tokio::pin!(draining);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), draining.as_mut())
+            .await
+            .is_err()
+    );
+    fixture.store.resume_writes();
+    let (_, drained) = tokio::join!(pending, draining);
+    drained.unwrap();
+    assert_eq!(
+        fixture.partition.lifecycle(),
+        PartitionLifecycle::TransferQuiesced
+    );
+    let name = fixture.partition.snapshot().stream_name;
+    let published = fixture.store.load_tail_for_tests(name).await.unwrap().unwrap();
+    assert_eq!(
+        published.record().logical_end,
+        Some(fixture.partition.snapshot().journal_durable_offset)
+    );
+    assert!(published.record().logical_end.unwrap() > 0);
+    assert_eq!(
+        fixture
+            .store
+            .record_store(7)
+            .unwrap()
+            .candidates(name)
+            .await
+            .unwrap()
+            .len(),
+        0
+    );
+    fixture.service.drain_writers().await.unwrap();
+}
+
+#[tokio::test]
 async fn process_revocation_during_wal_io_prevents_acknowledgment() {
     let fixture = TestServingLease::start().await;
     fixture.store.pause_writes();

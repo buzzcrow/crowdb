@@ -7,18 +7,20 @@ use std::time::Duration;
 use bytes::Bytes;
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkStream, CursorAdvance, ReadHint, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig,
-    StreamError, StreamMetadataStore, StreamName, StreamRegistry,
+    ChunkStream, CursorAdvance, ReadHint, StreamChunkStore, StreamConfig, StreamError, StreamMetadataStore,
+    StreamName, StreamRecord, StreamRecordState, StreamRegistry,
 };
 
-fn binding(name: StreamName) -> StreamBinding {
-    StreamBinding {
+fn stream_record(name: StreamName) -> StreamRecord {
+    StreamRecord {
         purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
         stream_name: name,
         metadata_group_id: 7,
-        binding_generation: 1,
-        state: StreamBindingState::Active,
-        owner_kind: Some("test".into()),
+        record_version: 1,
+        state: StreamRecordState::Active,
+        consumer_kind: Some("test".into()),
+        consumer_id: None,
+        created_at_ms: StreamRecord::creation_time_ms(),
     }
 }
 
@@ -27,7 +29,7 @@ async fn create_stream(store: &Arc<MemoryStreamStore>, capacity: u64, config: St
     let metadata: Arc<dyn StreamMetadataStore> = store.clone();
     let chunks: Arc<dyn StreamChunkStore> = store.clone();
     ChunkStream::create(
-        binding(StreamName {
+        stream_record(StreamName {
             high: 1,
             low: capacity,
         }),
@@ -57,7 +59,7 @@ async fn first_append_has_no_timer_and_publishes_only_chunk_attachment() {
     assert_eq!((range.begin, range.end), (0, 4));
     assert_eq!(store.chunk_write_count(), 1);
     assert_eq!(store.cursor_advance_count(), 0);
-    assert_eq!(store.metadata_publish_count(), 2);
+    assert_eq!(store.metadata_publish_count(), 1);
     assert_eq!(stream.read_at(0, 4).await.unwrap(), Bytes::from_static(b"abcd"));
 }
 
@@ -112,10 +114,11 @@ async fn idle_liveness_failures_rotate_without_fencing_the_stream() {
 }
 
 #[tokio::test]
-async fn registered_binding_initializes_metadata_without_recreating_registry_record() {
+async fn registered_stream_initializes_metadata_without_recreating_identity_record() {
     let store = Arc::new(MemoryStreamStore::new(64));
     let name = StreamName { high: 2, low: 1 };
-    store.create(binding(name)).await.unwrap();
+    let original = stream_record(name);
+    store.create(original.clone()).await.unwrap();
     let registry: Arc<dyn StreamRegistry> = store.clone();
     let metadata: Arc<dyn StreamMetadataStore> = store.clone();
     let chunks: Arc<dyn StreamChunkStore> = store.clone();
@@ -125,7 +128,7 @@ async fn registered_binding_initializes_metadata_without_recreating_registry_rec
         .unwrap();
     assert_eq!(stream.tail(), 0);
     assert_eq!(store.metadata_publish_count(), 1);
-    assert_eq!(store.load(name).await.unwrap(), Some(binding(name)));
+    assert_eq!(store.load(name).await.unwrap(), Some(original));
 }
 
 #[tokio::test]
@@ -269,22 +272,21 @@ async fn queued_requests_aggregate_after_an_inflight_batch() {
 }
 
 #[tokio::test]
-async fn extent_pages_are_cached_across_independent_reads() {
+async fn chunk_records_are_cached_across_independent_reads() {
     let store = Arc::new(MemoryStreamStore::new(2));
     let stream = create_stream(&store, 2, StreamConfig::default()).await;
     for bytes in [b"ab", b"cd", b"ef"] {
         stream.append(&[Bytes::copy_from_slice(bytes)]).await.unwrap();
     }
 
-    let loads = store.extent_page_load_count();
     assert_eq!(stream.read_at(0, 1).await.unwrap(), Bytes::from_static(b"a"));
-    assert_eq!(store.extent_page_load_count(), loads + 1);
+    assert_eq!(stream.metrics().record_cache_misses, 1);
     assert_eq!(stream.read_at(1, 1).await.unwrap(), Bytes::from_static(b"b"));
-    assert_eq!(store.extent_page_load_count(), loads + 1);
+    assert_eq!(stream.metrics().record_cache_misses, 1);
 
     let metrics = stream.metrics();
-    assert_eq!(metrics.extent_page_cache_misses, 1);
-    assert_eq!(metrics.extent_page_cache_hits, 1);
+    assert_eq!(metrics.record_cache_misses, 1);
+    assert_eq!(metrics.record_cache_hits, 1);
     assert_eq!(metrics.physical_read_requests, 2);
     assert_eq!(metrics.metadata_publications, 3);
 }
@@ -456,10 +458,9 @@ async fn trim_hides_prefix_before_reclaiming_complete_chunks() {
 }
 
 #[tokio::test]
-async fn near_tail_seek_loads_only_the_target_extent_page() {
+async fn near_tail_seek_loads_only_the_target_chunk_record() {
     let store = Arc::new(MemoryStreamStore::new(1));
     let config = StreamConfig {
-        extent_page_entries: 2,
         ..StreamConfig::default()
     };
     let stream = create_stream(&store, 1, config).await;
@@ -467,16 +468,15 @@ async fn near_tail_seek_loads_only_the_target_extent_page() {
         stream.append(&[Bytes::copy_from_slice(&[byte])]).await.unwrap();
     }
 
-    let before = store.extent_page_load_count();
+    let before = stream.metrics().record_cache_misses;
     assert_eq!(stream.read_at(3, 1).await.unwrap(), Bytes::from_static(b"d"));
-    assert_eq!(store.extent_page_load_count() - before, 1);
+    assert_eq!(stream.metrics().record_cache_misses - before, 1);
 }
 
 #[tokio::test]
-async fn trim_keeps_nonzero_extent_page_identity() {
+async fn trim_keeps_nonzero_chunk_record_identity() {
     let store = Arc::new(MemoryStreamStore::new(1));
     let config = StreamConfig {
-        extent_page_entries: 2,
         ..StreamConfig::default()
     };
     let stream = create_stream(&store, 1, config).await;
@@ -484,34 +484,30 @@ async fn trim_keeps_nonzero_extent_page_identity() {
         stream.append(&[Bytes::copy_from_slice(&[byte])]).await.unwrap();
     }
     stream.trim_prefix(2).await.unwrap();
-    let manifest = store
-        .load_current(StreamName { high: 1, low: 1 })
-        .await
+    let record = store
+        .record_store(7)
         .unwrap()
+        .locate(StreamName { high: 1, low: 1 }, 2)
+        .await
         .unwrap();
-    assert_eq!(manifest.extent_pages[0].page_index, 2);
+    assert_eq!(record.record().logical_start, Some(2));
     assert_eq!(stream.read_at(2, 3).await.unwrap(), Bytes::from_static(b"cde"));
 }
 
 #[tokio::test]
-async fn metadata_reclaim_is_watermark_driven_bounded_and_keeps_current_pages() {
+async fn metadata_reclaim_is_watermark_driven_bounded_and_keeps_retained_records() {
     let store = Arc::new(MemoryStreamStore::new(1));
-    let config = StreamConfig {
-        extent_page_entries: 2,
-        ..StreamConfig::default()
-    };
-    let stream = create_stream(&store, 1, config).await;
+    let stream = create_stream(&store, 1, StreamConfig::default()).await;
     for byte in *b"abcde" {
         stream.append(&[Bytes::copy_from_slice(&[byte])]).await.unwrap();
     }
-    let name = StreamName { high: 1, low: 1 };
-    let current = store.load_current(name).await.unwrap().unwrap().generation;
-    let before = store.extent_page_count().await;
-
-    assert_eq!(stream.reclaim_metadata_before(current, 1).await.unwrap(), 1);
-    assert_eq!(store.extent_page_count().await, before - 1);
-    while stream.reclaim_metadata_before(current, 64).await.unwrap() != 0 {}
-
+    let current = stream.record_generation();
+    let records = store.chunk_records_for_tests(stream.stream_name()).await.unwrap();
+    assert_eq!(stream.reclaim_metadata_before(current, 1).await.unwrap(), 0);
+    assert_eq!(
+        store.chunk_records_for_tests(stream.stream_name()).await.unwrap(),
+        records
+    );
     assert_eq!(stream.read_at(0, 5).await.unwrap(), Bytes::from_static(b"abcde"));
     assert!(matches!(
         stream.reclaim_metadata_before(current + 1, 1).await,
@@ -589,11 +585,8 @@ async fn append_rotates_an_active_chunk_sealed_by_its_writer_lease() {
     let first = stream.append(&[Bytes::from_static(b"old")]).await.unwrap();
     let active_chunk = first.chunk_id.unwrap();
     let active = store
-        .load_current(stream.stream_name())
+        .active_checkpoint_for_tests(stream.stream_name())
         .await
-        .unwrap()
-        .unwrap()
-        .active
         .unwrap();
     let physical_end = store
         .recover_tail(stream.stream_name(), 9, &active)
@@ -663,7 +656,7 @@ async fn higher_epoch_reopens_same_bytes_and_fences_old_writer() {
 }
 
 #[tokio::test]
-async fn rollover_retries_failed_manifest_publication_without_reopen() {
+async fn rollover_retries_failed_record_publication_without_reopen() {
     let store = Arc::new(MemoryStreamStore::new(4));
     let stream = create_stream(&store, 4, StreamConfig::default()).await;
     let name = StreamName { high: 1, low: 4 };
@@ -691,7 +684,7 @@ async fn rollover_retries_failed_manifest_publication_without_reopen() {
 }
 
 #[tokio::test]
-async fn reopen_repartitions_directory_and_reads_before_another_append() {
+async fn reopen_recovers_tail_record_and_reads_before_another_append() {
     let store = Arc::new(MemoryStreamStore::new(32));
     let stream = create_stream(&store, 32, StreamConfig::default()).await;
     for bytes in [b"one", b"two", b"end"] {
@@ -703,7 +696,6 @@ async fn reopen_repartitions_directory_and_reads_before_another_append() {
         StreamName { high: 1, low: 32 },
         9,
         StreamConfig {
-            extent_page_entries: 1,
             ..StreamConfig::default()
         },
         store.clone(),
@@ -717,5 +709,6 @@ async fn reopen_repartitions_directory_and_reads_before_another_append() {
         Bytes::from_static(b"onetwoend")
     );
     let observed = reopened.observe_metadata(None, 0).unwrap();
-    assert_eq!(observed.extent_pages.len(), 3);
+    assert_eq!(observed.chunk.logical_end, 9);
+    assert!(observed.chunk.mapping_count <= 3);
 }

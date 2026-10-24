@@ -40,7 +40,6 @@ pub(super) fn encode_requests(
             logical_start: logical,
             logical_end,
             frame_start: physical,
-            frame_length: physical_length,
         });
         ranges.push(AppendRange {
             stream_name,

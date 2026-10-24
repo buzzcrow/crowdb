@@ -6,10 +6,10 @@ use crowdb_console_shared::ops::OpContext;
 use crowdb_kv_client::{GetOutcome, ReadMode};
 use crowdb_protocol::{
     chunk_kv::{ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage},
-    chunk_stream::{StreamBinding, StreamManifest, StreamName},
+    chunk_stream::{decode_stream_chunk_record, StreamName, StreamRecord},
     key::{
-        BinaryKey, ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, StreamBindingKey,
-        StreamManifestHeadKey, TextKey,
+        BinaryKey, ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, StreamChunkRecordKey,
+        StreamRecordKey, TextKey,
     },
 };
 use serde_json::{json, Value};
@@ -74,27 +74,34 @@ pub async fn read(context: &OpContext) -> TestResult<Value> {
     let mut observations = Vec::new();
     for (high, low) in streams {
         let name = StreamName { high, low };
-        let binding = get(
-            context,
-            0,
-            StreamBindingKey { stream_name: name }.to_path().as_bytes(),
-        )
-        .await?;
-        let binding: Option<StreamBinding> =
+        let binding = get(context, 0, &StreamRecordKey { stream_name: name }.to_bytes()).await?;
+        let binding: Option<StreamRecord> =
             binding.map(|bytes| serde_json::from_slice(&bytes)).transpose()?;
-        let manifest = if let Some(binding) = &binding {
-            get(
-                context,
-                binding.metadata_group_id,
-                &StreamManifestHeadKey { stream_name: name }.to_bytes(),
-            )
-            .await?
-            .map(|bytes| bincode::deserialize::<StreamManifest>(&bytes))
-            .transpose()?
+        let chunk_record = if let Some(binding) = &binding {
+            let records = context
+                .kv()
+                .scan_reverse(
+                    0,
+                    binding.metadata_group_id,
+                    &StreamChunkRecordKey::attached_prefix(name),
+                    &[],
+                    &[],
+                    1,
+                    ReadMode::Linearizable,
+                    None,
+                    false,
+                    None,
+                )
+                .await?;
+            records
+                .items
+                .first()
+                .map(|(_, value)| decode_stream_chunk_record(value))
+                .transpose()?
         } else {
             None
         };
-        observations.push(json!({"stream": name, "binding": binding, "manifest": manifest}));
+        observations.push(json!({"stream": name, "record": binding, "chunk_record": chunk_record}));
     }
     Ok(
         json!({"catalog_head": head, "pages": pages, "streams": observations,

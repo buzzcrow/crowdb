@@ -45,8 +45,8 @@ live in the linked document; implementation follows
 ## Chunk, Chunk-KV, and recovery
 
 - **[R244](R244-chunk-stream-incremental-directory-publication.md)** — synchronized
-  mirror writes complete append without per-batch cursor/directory KV updates;
-  use compact extents, segmented history and last-chunk content recovery, with
+  mirror writes complete append without per-batch cursor/record KV updates;
+  use ordered Stream chunk records and last-chunk content recovery, with
   isolated chunkinfo updates and actual Chunk-KV WAL performance acceptance.
   **Area:** chunk-stream / chunk-kv / DiskIO / KV metadata. **Complexity:** High.
   **Status:** Verifiable frame groups, recovery, Group-0 ownership and live-tail

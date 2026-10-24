@@ -54,9 +54,9 @@ async fn runtime_captures_local_owner_and_identifies_older_remote_checkpoint() {
     let name = StreamName::generate();
     owner
         .registry()
-        .create(StreamBinding {
-            state: StreamBindingState::Active,
-            ..StreamBinding::creating(name, None, StreamPurpose::Stream)
+        .create(StreamRecord {
+            state: StreamRecordState::Active,
+            ..StreamRecord::creating(name, None, StreamPurpose::Stream)
         })
         .await
         .unwrap();
@@ -74,6 +74,10 @@ async fn runtime_captures_local_owner_and_identifies_older_remote_checkpoint() {
     writer.append(&[Bytes::from_static(b"second")]).await.unwrap();
     let fallback = remote.open_read_only_current(name, 0).await.unwrap();
     assert_eq!(fallback.tail(), 5);
+    assert_eq!(
+        fallback.read_at(0, 5).await.unwrap(),
+        Bytes::from_static(b"first")
+    );
     assert_eq!(captured.tail(), 5);
     assert_eq!(owner.open_read_only_current(name, 0).await.unwrap().tail(), 11);
     writer.close().await.unwrap();
@@ -90,9 +94,9 @@ async fn owner_claim_is_exclusive_and_an_old_release_cannot_release_its_successo
     let registry = crowdb_chunk_stream::KvStreamRegistry::new(kv);
     let name = StreamName::generate();
     registry
-        .create(StreamBinding {
-            state: StreamBindingState::Active,
-            ..StreamBinding::creating(name, None, StreamPurpose::Stream)
+        .create(StreamRecord {
+            state: StreamRecordState::Active,
+            ..StreamRecord::creating(name, None, StreamPurpose::Stream)
         })
         .await
         .unwrap();
@@ -128,9 +132,9 @@ async fn drained_release_allows_another_runtime_to_take_over_without_waiting_for
     let second = crowdb_chunk_stream::KvStreamRegistry::new(kv);
     let name = StreamName::generate();
     first
-        .create(StreamBinding {
-            state: StreamBindingState::Active,
-            ..StreamBinding::creating(name, None, StreamPurpose::Stream)
+        .create(StreamRecord {
+            state: StreamRecordState::Active,
+            ..StreamRecord::creating(name, None, StreamPurpose::Stream)
         })
         .await
         .unwrap();

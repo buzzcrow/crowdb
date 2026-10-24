@@ -5,13 +5,13 @@ use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, CursorAdvance, StreamBinding, StreamBindingState,
-    StreamChunkStore, StreamConfig, StreamError, StreamMetadataStore, StreamName, StreamPurpose,
+    memory::MemoryStreamStore, ChunkStream, CursorAdvance, StreamChunkStore, StreamConfig, StreamError,
+    StreamName, StreamPurpose, StreamRecord, StreamRecordState,
 };
 use crowdb_protocol::frame::encode_append_group_views;
 
 #[tokio::test]
-async fn durable_cursor_recovers_frames_without_a_new_directory_publication() {
+async fn durable_cursor_recovers_frames_without_a_new_record_publication() {
     check_tail(true, false).await;
 }
 
@@ -30,13 +30,15 @@ async fn initial_stream() -> (Arc<MemoryStreamStore>, ChunkStream, StreamName) {
     let name = StreamName { high: 51, low: 61 };
     let config = StreamConfig::default();
     let writer = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: StreamPurpose::Stream,
             stream_name: name,
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("test".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("test".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
         config.clone(),
@@ -53,8 +55,14 @@ async fn initial_stream() -> (Arc<MemoryStreamStore>, ChunkStream, StreamName) {
 
 async fn check_tail(advance: bool, corrupt: bool) {
     let (store, writer, name) = initial_stream().await;
-    let published = store.load_current(name).await.unwrap().unwrap();
-    let active = published.active.as_ref().unwrap();
+    let published = store
+        .load_tail_for_tests(name)
+        .await
+        .unwrap()
+        .unwrap()
+        .record()
+        .clone();
+    let active = &store.active_checkpoint_for_tests(name).await.unwrap();
     let publication_count = store.metadata_publish_count();
     let frames = encode_append_group_views(
         active.chunk_id,
@@ -99,7 +107,16 @@ async fn check_tail(advance: bool, corrupt: bool) {
             .await;
     }
     assert_eq!(store.metadata_publish_count(), publication_count);
-    assert_eq!(store.load_current(name).await.unwrap().unwrap(), published);
+    assert_eq!(
+        store
+            .load_tail_for_tests(name)
+            .await
+            .unwrap()
+            .unwrap()
+            .record()
+            .clone(),
+        published
+    );
     let observed = store.durable_cursor(active.chunk_id, 9).await.unwrap();
     assert_eq!(
         observed.offset,

@@ -36,9 +36,8 @@ pub use chunk_kv::{
     DomainMonitorKey, ServingGrantKey,
 };
 pub use chunk_stream::{
-    StreamBindingKey, StreamDirectoryControlKey, StreamDirectoryPageKey, StreamDirectoryRootKey,
-    StreamExtentPageKey, StreamManifestHeadKey, StreamManifestKey, StreamProcessLeaseKey,
-    StreamPublicationGuardKey, StreamRootPinKey, StreamSealedChunkSpanKey, StreamWriterOwnerKey,
+    StreamChunkRecordKey, StreamChunkRecordOrder, StreamProcessLeaseKey, StreamRecordKey,
+    StreamWriterOwnerKey,
 };
 pub use chunk_task::{ChunkTaskKey, FinalizeChunkTaskKey, LeasedChunkTaskKey, ReadyChunkTaskKey};
 pub use chunkdb::{ChunkdbRangeBindingKey, ChunkdbRangeMigrationKey};

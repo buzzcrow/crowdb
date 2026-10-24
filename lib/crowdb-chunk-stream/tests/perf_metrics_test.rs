@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, register_stream_perf_metrics, stream_perf_metrics, ChunkStream, StreamBinding,
-    StreamBindingState, StreamConfig, StreamName, StreamPurpose,
+    memory::MemoryStreamStore, register_stream_perf_metrics, stream_perf_metrics, ChunkStream, StreamConfig,
+    StreamName, StreamPurpose, StreamRecord, StreamRecordState,
 };
 use crowdb_common::metrics::{MetricPoint, MetricsRegistry};
 
@@ -18,9 +18,9 @@ async fn stream_stages_appear_in_perf_output_and_survive_window_flushes() {
     let store = Arc::new(MemoryStreamStore::new(1024));
     let name = StreamName::generate();
     let stream = ChunkStream::create(
-        StreamBinding {
-            state: StreamBindingState::Active,
-            ..StreamBinding::creating(name, None, StreamPurpose::Stream)
+        StreamRecord {
+            state: StreamRecordState::Active,
+            ..StreamRecord::creating(name, None, StreamPurpose::Stream)
         },
         1,
         StreamConfig::default(),
@@ -30,6 +30,11 @@ async fn stream_stages_appear_in_perf_output_and_survive_window_flushes() {
     )
     .await
     .unwrap();
+    assert_eq!(stream.metrics().metadata_publications, 1);
+    assert!(matches!(
+        registry.snapshot_named("stream.metadata.publish.lh", 1.0),
+        Some(MetricPoint::Histogram { count: 1, .. })
+    ));
     stream.append(&[Bytes::from_static(b"sample")]).await.unwrap();
     assert_eq!(stream.read_at(0, 6).await.unwrap(), Bytes::from_static(b"sample"));
     assert!(matches!(
@@ -40,7 +45,6 @@ async fn stream_stages_appear_in_perf_output_and_survive_window_flushes() {
     for name in [
         "stream.append.e2e.lh",
         "stream.append.queue.lh",
-        "stream.capacity.wait.lh",
         "stream.append.encode.lh",
         "stream.append.mirror.lh",
         "stream.checkpoint.cursor.lh",
@@ -57,6 +61,13 @@ async fn stream_stages_appear_in_perf_output_and_survive_window_flushes() {
             "missing phase: {name}"
         );
     }
+    assert!(
+        matches!(
+            registry.snapshot_named("stream.capacity.wait.lh", 1.0),
+            Some(MetricPoint::Histogram { count: 0, .. })
+        ),
+        "prepared initial capacity needs no foreground wait"
+    );
     stream.close().await.unwrap();
     assert!(matches!(
         registry.snapshot_named("stream.successor.prepare.lh", 1.0),

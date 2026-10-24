@@ -24,24 +24,25 @@ it('rejects a late old-owner observation and exposes stale runtime cursors', asy
   expect(result.current.value).toBeNull();
 });
 
-it('rejects inconsistent stream generations and oversized windows before publishing runtime data', async () => {
-  const journal = (generation: string, count: number) => ({ generation, offset: 100, extent_pages: Array.from({ length: count }, (_, index) => ({ page_index: String(index) })) });
+it('rejects inconsistent generations and malformed chunk records before publishing runtime data', async () => {
+  const record = { chunk_id: 'ffffffffffffffff0000000000000002', state: 'Active', logical_start: '0', logical_end: '9007199254740999', mapping_count: '8', mapping_bytes: '10' };
+  const journal = (generation: string) => ({ generation, offset: 0, chunk_record: record });
   const fetcher = vi.fn()
-    .mockResolvedValueOnce(new Response(JSON.stringify({ journal: journal('18', 5) })))
-    .mockResolvedValueOnce(new Response(JSON.stringify({ journal: journal('17', 101) })))
-    .mockResolvedValueOnce(new Response(JSON.stringify({ journal: { ...journal('17', 1), offset: 0 } })));
+    .mockResolvedValueOnce(new Response(JSON.stringify({ journal: journal('18') })))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ journal: { ...journal('17'), chunk_record: { ...record, logical_start: '9999999999999999999' } } })))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ journal: journal('17') })));
   vi.stubGlobal('fetch', fetcher);
   const props = { active: true, partition: { id: 'partition', epoch: '9007199254740993' } as Partition,
     generation: '9007199254740997', catalogPage: 0, catalogOffset: 0,
-    cursor: { generation: '17', offset: 100 }, onCursor: vi.fn() };
+    cursor: { generation: '17', offset: 0 }, onCursor: vi.fn() };
   const { result, rerender } = renderHook(useRuntimeObservation, { initialProps: props });
-  await waitFor(() => expect(result.current.error).toContain('Stream manifest changed'));
+  await waitFor(() => expect(result.current.error).toContain('Stream chunk record changed'));
   expect(result.current.value).toBeNull();
   rerender({ ...props, cursor: { generation: '17', offset: 0 } });
-  await waitFor(() => expect(result.current.error).toContain('Extent index exceeds 100'));
+  await waitFor(() => expect(result.current.error).toContain('Invalid stream chunk record'));
   expect(result.current.value).toBeNull();
   act(() => result.current.refresh());
   expect(props.onCursor).toHaveBeenCalledWith({ offset: 0 });
-  await waitFor(() => expect(result.current.value?.journal?.extent_pages).toHaveLength(1));
+  await waitFor(() => expect(result.current.value?.journal?.chunk_record.chunk_id).toBe(record.chunk_id));
   expect(new URL(fetcher.mock.calls[0][0], 'http://localhost').searchParams.get('epoch')).toBe('9007199254740993');
 });

@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, StreamBinding, StreamBindingState, StreamConfig,
-    StreamMetadataStore, StreamName, StreamPurpose,
+    memory::MemoryStreamStore, ChunkStream, StreamConfig, StreamName, StreamPurpose, StreamRecord,
+    StreamRecordState,
 };
 use crowdb_protocol::frame::{FrameLayout, MAX_FRAME_GROUP_PAYLOAD_BYTES};
 
@@ -15,13 +15,15 @@ async fn every_append_has_one_location_and_subranges_read_only_intersecting_fram
     let store = Arc::new(MemoryStreamStore::new(8 * 1024 * 1024));
     let name = StreamName::generate();
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: StreamPurpose::Stream,
             stream_name: name,
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("test".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("test".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         1,
         StreamConfig::default(),
@@ -47,10 +49,9 @@ async fn every_append_has_one_location_and_subranges_read_only_intersecting_fram
         );
         let range = stream.append(std::slice::from_ref(&payload)).await.unwrap();
         stream.checkpoint().await.unwrap();
-        let manifest = store.load_current(name).await.unwrap().unwrap();
-        let active = manifest.active.as_ref().unwrap();
+        let snapshot = store.load_tail_for_tests(name).await.unwrap().unwrap();
         physical += FrameLayout::StreamGroupV2.physical_length(size as u64).unwrap();
-        assert_eq!(active.acknowledged_cursor, physical);
+        assert_eq!(snapshot.index().physical_end(), physical);
         assert_eq!(stream.metrics().physical_append_bytes, physical);
         for offset in [0, size / 2, size - 1] {
             let count = (size - offset).min(101);
@@ -73,16 +74,8 @@ async fn every_append_has_one_location_and_subranges_read_only_intersecting_fram
             );
         }
     }
-    let manifest = store.load_current(name).await.unwrap().unwrap();
-    let mut locations = 0;
-    for fence in &manifest.extent_pages {
-        let page = store
-            .load_extent_page(name, 1, manifest.generation, fence.page_index)
-            .await
-            .unwrap()
-            .unwrap();
-        locations += page.chunk_ids.len();
-    }
+    let snapshot = store.load_tail_for_tests(name).await.unwrap().unwrap();
+    let locations = snapshot.record().mappings.count() as usize;
     assert_eq!(
         locations,
         sizes.len(),

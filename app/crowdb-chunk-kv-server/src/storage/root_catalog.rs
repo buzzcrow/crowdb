@@ -530,7 +530,7 @@ fn same_recovery_base(entry: &ChunkKvRangeCatalogEntry, prepared: &ChunkKvRangeC
             current.source_partition_id == base.source_partition_id
                 && current.source_epoch == base.source_epoch
                 && current.source_stream_name == base.source_stream_name
-                && current.source_stream_manifest_generation == base.source_stream_manifest_generation
+                && current.source_stream_generation == base.source_stream_generation
                 && current.replay_offset == base.replay_offset
                 && current.base_root_manifest_generation == base.base_root_manifest_generation
                 && current.base_tree_manifest == base.base_tree_manifest

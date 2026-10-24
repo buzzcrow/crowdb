@@ -4,9 +4,9 @@ import type { PageCursor } from './PageExplorer';
 export interface SplitQuery {
   tab: string;
   stream: { generation?: string; offset: number };
-  extent: string | null;
+  chunkRecord: string | null;
   page?: PageCursor;
 }
-export const initialSplitQuery = (): SplitQuery => ({ tab: 'Overview', stream: { offset: 0 }, extent: null });
+export const initialSplitQuery = (): SplitQuery => ({ tab: 'Overview', stream: { offset: 0 }, chunkRecord: null });
 export interface GraphQuery { serverPage: number; offsets: Record<string, number>; collapsed: string[] }
 export const initialGraphQuery = (): GraphQuery => ({ serverPage: 0, offsets: {}, collapsed: [] });

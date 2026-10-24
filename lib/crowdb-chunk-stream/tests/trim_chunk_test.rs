@@ -3,21 +3,23 @@
 
 use bytes::Bytes;
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore,
-    StreamConfig, StreamName, StreamPurpose,
+    memory::MemoryStreamStore, ChunkStream, StreamChunkStore, StreamConfig, StreamName, StreamPurpose,
+    StreamRecord, StreamRecordState,
 };
 use std::sync::Arc;
 
 async fn create(config: StreamConfig) -> (Arc<MemoryStreamStore>, ChunkStream) {
     let store = Arc::new(MemoryStreamStore::new(150_000));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: StreamPurpose::Stream,
             stream_name: StreamName { high: 97, low: 101 },
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("test".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("test".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
         config,

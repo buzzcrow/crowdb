@@ -8,8 +8,8 @@ use crowdb_chunk_kv::{
 };
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamMetadataStore,
-    StreamName, StreamPurpose, StreamRegistry,
+    ChunkStream, StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName, StreamPurpose,
+    StreamRecord, StreamRecordState, StreamRegistry,
 };
 use crowdb_tree_ffi::{ChunkPageStoreOptions, ChunkRootCatalog, PageStore};
 
@@ -124,13 +124,15 @@ fn operation(sequence: u64) -> MutationOperation {
 
 async fn create_stream(name: StreamName, store: &Arc<MemoryStreamStore>) -> ChunkStream {
     ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: StreamPurpose::Wal,
             stream_name: name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         4,
         StreamConfig::default(),

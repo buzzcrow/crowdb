@@ -169,13 +169,15 @@ async fn cross_strip_tail_header_survives_later_growth_and_the_next_append() {
     let metadata = Arc::new(MemoryStreamStore::new(1));
     let name = StreamName { high: 139, low: 149 };
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_chunk_stream::StreamPurpose::Stream,
             stream_name: name,
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("test".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("test".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
         StreamConfig::default(),

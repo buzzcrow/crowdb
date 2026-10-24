@@ -30,6 +30,7 @@ mod cursor;
 mod growth;
 mod progress;
 mod recovery;
+mod sealing;
 use progress::{admit_write, write_cursor};
 
 struct ChunkStateView {
@@ -482,6 +483,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
     }
 
     async fn seal(&self, chunk_id: ChunkId, writer_epoch: u64, cursor: u64) -> Result<()> {
+        let _timer = crate::perf::PhaseTimer::start(&crate::perf::perf().seal);
         let state = self.state(chunk_id).await?;
         if state.chunk.load().writer_epoch > writer_epoch || write_cursor(&state) != cursor {
             return Err(StreamError::StaleWriter);
@@ -490,21 +492,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         let name = StreamName::from_chunk_owner_key(&chunk.owner_key).ok_or(StreamError::StaleWriter)?;
         if let Some(context) = self.owner_context(name, writer_epoch)? {
             if chunk.state != ChunkState::Sealed as i32 {
-                for strip in &chunk.strips {
-                    let Some(crowdb_protocol::chunkdb::rpc::Strip::MirrorStrip(mirror)) = &strip.strip else {
-                        return Err(StreamError::Corruption(
-                            "stream seal has non-mirror layout".into(),
-                        ));
-                    };
-                    for segment in &mirror.segments {
-                        context.check_io()?;
-                        self.disk_writer
-                            .drain_segment(segment, u64::from(strip.unit_kb) * 1024, context.deadline())
-                            .await
-                            .map_err(io_error)?;
-                    }
-                }
-                context.check_io()?;
+                self.drain_for_seal(&chunk, &context).await?;
             }
         }
         let response = self
@@ -555,15 +543,15 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         chunk_id: ChunkId,
         physical_offset: u64,
         length: usize,
+        synchronized_end: u64,
     ) -> Result<Bytes> {
-        let state = self.state(chunk_id).await?;
         self.reader
             .read_synchronized_stream_frame(
                 chunk_id,
                 physical_offset,
                 u64::try_from(length)
                     .map_err(|_| StreamError::InvalidRequest("frame length exceeds u64".into()))?,
-                state.synchronized_cursor.load(Ordering::Acquire),
+                synchronized_end,
             )
             .await
             .map_err(read_error)

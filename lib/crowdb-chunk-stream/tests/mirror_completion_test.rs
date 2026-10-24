@@ -3,8 +3,8 @@
 
 use bytes::Bytes;
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore,
-    StreamConfig, StreamError, StreamMetadataStore, StreamName, StreamPurpose,
+    memory::MemoryStreamStore, ChunkStream, StreamChunkStore, StreamConfig, StreamError, StreamName,
+    StreamPurpose, StreamRecord, StreamRecordState,
 };
 use std::sync::Arc;
 
@@ -12,9 +12,9 @@ async fn setup() -> (Arc<MemoryStreamStore>, ChunkStream) {
     let store = Arc::new(MemoryStreamStore::new(8 * 1024 * 1024));
     let name = StreamName { high: 743, low: 9 };
     let stream = ChunkStream::create(
-        StreamBinding {
-            state: StreamBindingState::Active,
-            ..StreamBinding::creating(name, None, StreamPurpose::Stream)
+        StreamRecord {
+            state: StreamRecordState::Active,
+            ..StreamRecord::creating(name, None, StreamPurpose::Stream)
         },
         1,
         StreamConfig::default(),
@@ -36,8 +36,8 @@ async fn acknowledged_multiframe_writes_survive_reopen_without_any_cursor_commit
     assert_eq!(store.cursor_advance_count(), 0);
     assert_eq!(
         store.metadata_publish_count(),
-        2,
-        "initial head and first attachment only"
+        1,
+        "initial attached chunk record only"
     );
     assert_eq!(
         store
@@ -85,11 +85,8 @@ async fn checkpoint_commits_many_appends_once_and_recovery_discards_an_incomplet
     assert_eq!(stream.checkpoint().await.unwrap(), 400);
     assert_eq!(store.cursor_advance_count(), 1);
     let active = store
-        .load_current(stream.stream_name())
+        .active_checkpoint_for_tests(stream.stream_name())
         .await
-        .unwrap()
-        .unwrap()
-        .active
         .unwrap();
     let views = crowdb_protocol::frame::encode_append_group_views(
         active.chunk_id,
@@ -149,9 +146,9 @@ async fn chunk_liveness_renews_while_a_data_write_is_blocked() {
     let store = Arc::new(MemoryStreamStore::new(1024));
     let name = StreamName { high: 743, low: 10 };
     let stream = ChunkStream::create(
-        StreamBinding {
-            state: StreamBindingState::Active,
-            ..StreamBinding::creating(name, None, StreamPurpose::Stream)
+        StreamRecord {
+            state: StreamRecordState::Active,
+            ..StreamRecord::creating(name, None, StreamPurpose::Stream)
         },
         1,
         StreamConfig {

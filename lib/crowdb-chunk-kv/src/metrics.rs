@@ -24,7 +24,7 @@ pub struct PartitionMetrics {
     reclaimed_journal_bytes: AtomicU64,
     reclaimed_tree_bytes: AtomicU64,
     reclaimed_orphan_bytes: AtomicU64,
-    reclaimed_stream_metadata_pages: AtomicU64,
+    reclaimed_stream_metadata_records: AtomicU64,
     split_begins: AtomicU64,
     split_entries_examined: AtomicU64,
     split_entries_emitted: AtomicU64,
@@ -68,7 +68,7 @@ pub struct PartitionMetricsSnapshot {
     pub reclaimed_journal_bytes: u64,
     pub reclaimed_tree_bytes: u64,
     pub reclaimed_orphan_bytes: u64,
-    pub reclaimed_stream_metadata_pages: u64,
+    pub reclaimed_stream_metadata_records: u64,
     pub split_begins: u64,
     pub split_entries_examined: u64,
     pub split_entries_emitted: u64,
@@ -114,7 +114,7 @@ impl PartitionMetrics {
             reclaimed_journal_bytes: self.reclaimed_journal_bytes.load(Ordering::Relaxed),
             reclaimed_tree_bytes: self.reclaimed_tree_bytes.load(Ordering::Relaxed),
             reclaimed_orphan_bytes: self.reclaimed_orphan_bytes.load(Ordering::Relaxed),
-            reclaimed_stream_metadata_pages: self.reclaimed_stream_metadata_pages.load(Ordering::Relaxed),
+            reclaimed_stream_metadata_records: self.reclaimed_stream_metadata_records.load(Ordering::Relaxed),
             split_begins: self.split_begins.load(Ordering::Relaxed),
             split_entries_examined: self.split_entries_examined.load(Ordering::Relaxed),
             split_entries_emitted: self.split_entries_emitted.load(Ordering::Relaxed),
@@ -203,10 +203,10 @@ impl PartitionMetrics {
         self.checkpoints.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn reclaim(&self, journal: u64, metadata_pages: u64, tree: u64, orphans: u64) {
+    pub(crate) fn reclaim(&self, journal: u64, metadata_records: u64, tree: u64, orphans: u64) {
         self.reclaimed_journal_bytes.fetch_add(journal, Ordering::Relaxed);
-        self.reclaimed_stream_metadata_pages
-            .fetch_add(metadata_pages, Ordering::Relaxed);
+        self.reclaimed_stream_metadata_records
+            .fetch_add(metadata_records, Ordering::Relaxed);
         self.reclaimed_tree_bytes.fetch_add(tree, Ordering::Relaxed);
         self.reclaimed_orphan_bytes.fetch_add(orphans, Ordering::Relaxed);
     }

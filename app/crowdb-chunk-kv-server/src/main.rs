@@ -560,6 +560,9 @@ async fn main() -> std::process::ExitCode {
     materialization_task.abort();
     transition_task.abort();
     refresh_task.abort();
+    if let Err(error) = service.drain_writers().await {
+        warn!(%error, "WAL writer drain incomplete; restart must retain lease exclusion");
+    }
     if let Err(error) = process_lease.withdraw_observation().await {
         warn!(%error, "failed to unregister chunk KV instance");
     }

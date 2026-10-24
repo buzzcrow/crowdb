@@ -115,16 +115,24 @@ async fn catalog_windows_pin_generation_validate_checksums_and_keep_exact_ids() 
 }
 
 async fn runtime_get(app: axum::Router, query: &str) -> StatusCode {
-    app.oneshot(
-        Request::get(format!(
+    let response = app
+        .oneshot(
+            Request::get(format!(
             "/api/chunk-kv/runtime?page=0&offset=0&generation=9&id=ffffffffffffffff0000000000000001&{query}"
         ))
-        .body(Body::empty())
-        .unwrap(),
-    )
-    .await
-    .unwrap()
-    .status()
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    if status.is_server_error() {
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        eprintln!("runtime observation {status}: {}", String::from_utf8_lossy(&body));
+    }
+    status
 }
 
 async fn verify_runtime(state: &AppState, app: &axum::Router) {
@@ -146,12 +154,12 @@ async fn verify_runtime(state: &AppState, app: &axum::Router) {
                 let mut value = serde_json::json!({ "partition_id":"ffffffffffffffff0000000000000001",
             "catalog_generation":"9", "owner_epoch":u64::MAX.to_string(), "instance_id":u64::MAX.to_string(),
             "tree_id":"1", "stream_id":"ffffffffffffffff0000000000000001",
-            "journal":{"generation":"17", "offset":query.get("stream_offset").unwrap().parse::<usize>().unwrap(), "extent_pages":[]}});
+            "journal":{"generation":"17", "offset":query.get("stream_offset").unwrap().parse::<usize>().unwrap(), "chunk_record":{"chunk_id":"00000000000000000000000000000001","state":"Active","logical_start":"0","logical_end":"0","mapping_count":"0","mapping_bytes":"0"}}});
                 match mode.load(Ordering::Acquire) {
                     1 => value["instance_id"] = "wrong-owner".into(),
                     2 => value["stream_id"] = "wrong-stream".into(),
                     3 => value["oversized"] = "x".repeat(65_537).into(),
-                    4 => value["journal"]["offset"] = 0.into(),
+                    4 => value["journal"]["offset"] = 100.into(),
                     _ => (),
                 }
                 Json(value)
@@ -168,7 +176,7 @@ async fn verify_runtime(state: &AppState, app: &axum::Router) {
     entry.rpc_url = Some("127.0.0.1:41000".into());
     state.config.write().unwrap().add_server(entry).unwrap();
     assert_eq!(runtime_get(app.clone(), &query).await, StatusCode::OK);
-    let continuation = format!("{query}&stream_generation=17&stream_offset=100");
+    let continuation = format!("{query}&stream_generation=17&stream_offset=0");
     assert_eq!(runtime_get(app.clone(), &continuation).await, StatusCode::OK);
     assert_eq!(
         runtime_get(app.clone(), &format!("{query}&stream_offset=100")).await,
@@ -177,7 +185,7 @@ async fn verify_runtime(state: &AppState, app: &axum::Router) {
     assert_eq!(
         runtime_get(
             app.clone(),
-            &format!("{query}&stream_generation=16&stream_offset=100")
+            &format!("{query}&stream_generation=16&stream_offset=0")
         )
         .await,
         StatusCode::CONFLICT
@@ -210,8 +218,21 @@ async fn verify_discovered_runtime(state: &AppState, app: &axum::Router, query: 
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    let base = serde_json::json!({ "instance_id":u64::MAX, "rpc_endpoint":"127.0.0.1:41000", "last_heartbeat_ms":u64::try_from(now).unwrap(),
-        "extra":{"chunk_kv":{"node_id":7,"http_endpoint":origin,"capacity_bytes":0,"durable_bytes":0,"request_rate":0,"hosted":[]}} });
+    let base = serde_json::to_value(crowdb_protocol::common::InstanceValue {
+        instance_id: u64::MAX,
+        rpc_endpoint: "127.0.0.1:41000".into(),
+        last_heartbeat_ms: u64::try_from(now).unwrap(),
+        extra: Some(crowdb_protocol::common::ServiceExtra {
+            chunk_kv: Some(crowdb_protocol::common::ChunkKvExtra {
+                process_epoch: 1,
+                node_id: Some(7),
+                http_endpoint: Some(origin.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+    })
+    .unwrap();
     for (field, changed, expected) in [
         ("", Value::Null, StatusCode::OK),
         ("rpc_endpoint", "127.0.0.1:41001".into(), StatusCode::CONFLICT),

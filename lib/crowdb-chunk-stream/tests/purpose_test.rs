@@ -6,8 +6,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkStream, StreamBinding, StreamBindingState, StreamConfig, StreamMetadataStore, StreamName,
-    StreamPurpose,
+    ChunkStream, StreamConfig, StreamMetadataStore, StreamName, StreamPurpose, StreamRecord,
+    StreamRecordState,
 };
 
 #[tokio::test]
@@ -15,10 +15,10 @@ async fn purpose_survives_rollover_failed_write_and_cold_writer_recovery() {
     for purpose in [StreamPurpose::Wal, StreamPurpose::Stream] {
         let store = Arc::new(MemoryStreamStore::new(128));
         let name = StreamName::generate();
-        let binding = StreamBinding {
+        let binding = StreamRecord {
             stream_name: name,
-            state: StreamBindingState::Active,
-            ..StreamBinding::creating(name, None, purpose)
+            state: StreamRecordState::Active,
+            ..StreamRecord::creating(name, None, purpose)
         };
         let stream = ChunkStream::create(
             binding,
@@ -56,19 +56,18 @@ async fn purpose_survives_rollover_failed_write_and_cold_writer_recovery() {
         );
         let next = recovered.append(&[bytes]).await.unwrap();
         assert!(purpose.matches(next.chunk_id.unwrap()));
-        let manifest = store.load_current(name).await.unwrap().unwrap();
-        assert_eq!(manifest.purpose, purpose);
-        let mut changed = manifest.clone();
+        let snapshot = store.load_tail_for_tests(name).await.unwrap().unwrap();
+        assert_eq!(snapshot.record().purpose, purpose);
+        let mut changed = snapshot.record().clone();
         changed.purpose = match purpose {
             StreamPurpose::Wal => StreamPurpose::Stream,
             StreamPurpose::Stream => StreamPurpose::Wal,
         };
+        changed.generation += 1;
         assert!(store
-            .publish(
-                Some((manifest.writer_epoch, manifest.generation)),
-                changed,
-                Vec::new()
-            )
+            .record_store(1)
+            .unwrap()
+            .publish(Some(&snapshot), changed, None, None)
             .await
             .is_err());
     }

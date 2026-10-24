@@ -8,9 +8,8 @@ import type { Partition } from './catalog';
 
 export interface JournalObservation {
   generation: string; writer_epoch: string; metadata_group_id: string;
-  trim_offset: string; sealed_tail: string; closed: boolean;
-  active: { chunk_id: string; physical_start: string; logical_start: string; acknowledged_cursor: string; capacity: string } | null;
-  extent_pages: { page_index: string; first_logical: string; end_logical: string }[];
+  trim_offset: string; published_tail: string; closed: boolean;
+  chunk_record: { chunk_id: string; state: string; logical_start: string; logical_end: string; mapping_count: string; mapping_bytes: string };
   offset: number; next_offset: number | null;
 }
 export interface TreeObservation {
@@ -42,8 +41,8 @@ export function useRuntimeObservation({ active, partition, generation, catalogPa
     fetch(`${getApiBase()}/chunk-kv/runtime?${query}`, { signal: abort.signal, headers: token ? { Authorization: `Bearer ${token}` } : {} })
       .then(response => readJson<Observation>(response))
       .then(value => {
-        if ((value.journal?.extent_pages.length ?? 0) > 100) throw new Error('Extent index exceeds 100 entries');
-        if (cursor.generation && (value.journal?.generation !== cursor.generation || value.journal.offset !== cursor.offset)) throw new Error('Stream manifest changed; refresh runtime');
+        if (value.journal && !validChunkRecord(value.journal.chunk_record)) throw new Error('Invalid stream chunk record');
+        if (cursor.generation && (value.journal?.generation !== cursor.generation || value.journal.offset !== cursor.offset)) throw new Error('Stream chunk record changed; refresh runtime');
         if (!abort.signal.aborted) setValue(value);
       })
       .catch(error => { if (!abort.signal.aborted) setError(String(error)); })
@@ -52,6 +51,12 @@ export function useRuntimeObservation({ active, partition, generation, catalogPa
   }, [active, partition.id, partition.epoch, generation, catalogPage, catalogOffset, cursor, revision]);
   return { value, error, busy,
     refresh: () => { onCursor({ offset: 0 }); setRevision(value => value + 1); },
-    pageStream: (offset: number) => { if (value?.journal) onCursor({ generation: value.journal.generation, offset }); },
   };
+}
+
+function validChunkRecord(record: JournalObservation['chunk_record']): boolean {
+  if (!record || !/^[0-9a-f]{32}$/.test(record.chunk_id) || !['Active', 'Sealed'].includes(record.state)) return false;
+  const integers = [record.logical_start, record.logical_end, record.mapping_count, record.mapping_bytes];
+  return integers.every(value => typeof value === 'string' && /^\d{1,20}$/.test(value))
+    && BigInt(record.logical_start) <= BigInt(record.logical_end);
 }

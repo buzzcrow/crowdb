@@ -39,11 +39,6 @@ async fn invalid_stream_geometry_is_rejected_before_execution() {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(message.contains("Stream chunk capacity"));
     }
-    for entries in [json!(0), json!(-1), json!(4_294_967_296u64), json!("1")] {
-        let mut request = body();
-        request["stream_extent_page_entries"] = entries;
-        assert_eq!(submit(request).await.0, StatusCode::UNPROCESSABLE_ENTITY);
-    }
 }
 
 #[tokio::test]
@@ -52,13 +47,12 @@ async fn stream_geometry_is_scoped_to_chunk_kv_and_requires_authority() {
         let mut request = body();
         if let Some(bytes) = bytes {
             request["stream_chunk_capacity_bytes"] = json!(bytes);
-            request["stream_extent_page_entries"] = json!(1);
         }
         let (status, message) = submit(request).await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert!(message.contains("Group 0 is not ready"));
     }
-    for field in ["stream_chunk_capacity_bytes", "stream_extent_page_entries"] {
+    for field in ["stream_chunk_capacity_bytes"] {
         let mut request = json!({"kind":"chunkdb","instance_id":1,"http_port":7300,"rpc_port":7301});
         request[field] = if field == "stream_chunk_capacity_bytes" {
             json!(1024 * 1024)

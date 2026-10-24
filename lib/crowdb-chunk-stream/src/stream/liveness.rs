@@ -12,7 +12,7 @@ impl Drop for Renewal {
 
 pub(super) fn start(state: &WorkerState) -> Renewal {
     let chunks = state.chunks.clone();
-    let view = state.manifest_view.clone();
+    let view = state.published_view.clone();
     let authority = state.authority.clone().expect("writer worker has authority");
     let failed = state.liveness_failed.clone();
     let changed = state.liveness_changed.clone();
@@ -28,8 +28,11 @@ pub(super) fn start(state: &WorkerState) -> Renewal {
             if closed.load(std::sync::atomic::Ordering::Acquire) || authority.check().is_err() {
                 break;
             }
-            let manifest = view.load_full();
-            let Some(active) = &manifest.active else { continue };
+            let state = view.load_full();
+            let active = state.snapshot.record();
+            if active.state != crowdb_protocol::chunk_stream::StreamChunkState::Active {
+                continue;
+            }
             for attempt in 0..3 {
                 if authority.check().is_err() {
                     return;

@@ -7,7 +7,7 @@ use crowdb_chunk_kv::{
 use crowdb_chunk_kv_server::{BootstrapPartitionConfig, ChunkKvStorage};
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkStream, StreamBinding, StreamBindingState, StreamConfig, StreamName, StreamPurpose,
+    ChunkStream, StreamConfig, StreamName, StreamPurpose, StreamRecord, StreamRecordState,
 };
 use crowdb_protocol::chunk_kv::Id128;
 use crowdb_tree_ffi::{ChunkPageStoreOptions, ChunkRootCatalog, PageStore};
@@ -25,13 +25,15 @@ async fn bootstrap_resume_finishes_its_first_checkpoint_and_does_not_reinitializ
     let name = StreamName { high: 2, low: 11 };
     let store = Arc::new(MemoryStreamStore::new(4096));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: StreamPurpose::Wal,
             stream_name: name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         4,
         StreamConfig::default(),

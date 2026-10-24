@@ -12,8 +12,8 @@ use crowdb_chunk_kv::{
 };
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkId, ChunkStream, CursorAdvance, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig,
-    StreamMetadataStore, StreamName, StreamRegistry,
+    ChunkId, ChunkStream, CursorAdvance, StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName,
+    StreamRecord, StreamRecordState, StreamRegistry,
 };
 use crowdb_tree_ffi::{ChunkPageStoreOptions, ChunkRootCatalog, PageStore};
 
@@ -60,7 +60,7 @@ fn split_artifact(plan: &SplitPlan, cutover_seq: u64) -> SplitArtifact {
         parent_id: plan.parent_id,
         parent_epoch: plan.parent_epoch,
         parent_stream_name: StreamName { high: 89, low: 1 },
-        parent_stream_manifest_generation: 1,
+        parent_stream_generation: 1,
         parent_replay_offset: 0,
         parent_cutover_offset: cutover_seq,
         applied_seq: cutover_seq,
@@ -103,7 +103,7 @@ fn empty_prepared_child(
         parent_id: PartitionId { high: 10, low: 1 },
         parent_epoch: 19,
         parent_stream_name: StreamName { high: 12, low: 11 },
-        parent_stream_manifest_generation: 1,
+        parent_stream_generation: 1,
         parent_replay_offset: 0,
         parent_cutover_offset: 0,
         applied_seq: 0,
@@ -118,13 +118,15 @@ async fn partition(
     epoch: u64,
     config: PartitionConfig,
 ) -> Partition {
-    let binding = StreamBinding {
+    let binding = StreamRecord {
         purpose: crowdb_chunk_stream::StreamPurpose::Wal,
         stream_name,
         metadata_group_id: 7,
-        binding_generation: 1,
-        state: StreamBindingState::Active,
-        owner_kind: Some("chunk-kv-partition".into()),
+        record_version: 1,
+        state: StreamRecordState::Active,
+        consumer_kind: Some("chunk-kv-partition".into()),
+        consumer_id: None,
+        created_at_ms: StreamRecord::creation_time_ms(),
     };
     let registry: Arc<dyn StreamRegistry> = store.clone();
     let metadata: Arc<dyn StreamMetadataStore> = store.clone();
@@ -165,13 +167,15 @@ async fn empty_journal(
     epoch: u64,
 ) -> Arc<dyn PartitionJournal> {
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         epoch,
         StreamConfig::default(),
@@ -335,7 +339,7 @@ async fn assert_prepared_tree_identity_mismatch(
             root_manifest_generation: artifact.root_manifest_generation,
             applied_seq: artifact.applied_seq,
             stream_name: artifact.stream_name,
-            stream_manifest_generation: 1,
+            stream_generation: 1,
             replay_offset: 0,
         },
         PartitionConfig::default(),
@@ -407,13 +411,15 @@ async fn native_partition_constructor_owns_tree_and_stream_storage() {
     let stream_name = StreamName { high: 1, low: 9 };
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         4,
         StreamConfig::default(),
@@ -492,13 +498,15 @@ async fn native_partition_reopens_the_latest_tree_root() {
     let stream_name = StreamName { high: 1, low: 10 };
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         4,
         StreamConfig::default(),
@@ -535,13 +543,15 @@ async fn chunk_root_checkpoint_supplies_the_wal_replay_offset() {
     let stream_name = StreamName { high: 1, low: 11 };
     let stream_store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         4,
         StreamConfig::default(),
@@ -1055,7 +1065,7 @@ async fn recovery_replays_recorded_results_and_restores_deduplication() {
             root_manifest_generation: 1,
             applied_seq: 0,
             stream_name,
-            stream_manifest_generation: 1,
+            stream_generation: 1,
             replay_offset: 0,
         },
         PartitionConfig::default(),
@@ -1134,7 +1144,7 @@ async fn recovery_rejects_a_tree_root_other_than_the_checkpoint() {
             root_manifest_generation: 1,
             applied_seq: 0,
             stream_name,
-            stream_manifest_generation: 1,
+            stream_generation: 1,
             replay_offset: 0,
         },
         PartitionConfig::default(),
@@ -1210,7 +1220,7 @@ async fn recovery_rejects_a_frame_bound_to_another_physical_chunk() {
             root_manifest_generation: 1,
             applied_seq: 0,
             stream_name,
-            stream_manifest_generation: 1,
+            stream_generation: 1,
             replay_offset: 0,
         },
         PartitionConfig::default(),
@@ -1607,13 +1617,15 @@ async fn prepared_child_serves_only_after_exact_catalog_proof() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream_name = StreamName { high: 12, low: 12 };
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         20,
         StreamConfig::default(),
@@ -1643,7 +1655,7 @@ async fn prepared_child_serves_only_after_exact_catalog_proof() {
             root_manifest_generation: 1,
             applied_seq: 0,
             stream_name,
-            stream_manifest_generation: 1,
+            stream_generation: 1,
             replay_offset: 0,
         },
         PartitionConfig::default(),
@@ -2149,13 +2161,15 @@ async fn native_online_split_rebuilds_one_child_from_the_exact_parent_manifest()
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let parent_stream_name = StreamName { high: 120, low: 120 };
     let parent_stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_chunk_stream::StreamPurpose::Wal,
             stream_name: parent_stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         18,
         StreamConfig::default(),
@@ -2323,7 +2337,7 @@ async fn overlay_fixture() -> OverlayFixture {
         parent_id: PartitionId { high: 130, low: 1 },
         parent_epoch: 18,
         parent_stream_name: parent_name,
-        parent_stream_manifest_generation: parent_journal.manifest_generation(),
+        parent_stream_generation: parent_journal.record_generation(),
         parent_replay_offset: 0,
         parent_cutover_offset: parent_journal.tail(),
         applied_seq: 5,
@@ -2335,7 +2349,7 @@ async fn overlay_fixture() -> OverlayFixture {
         root_manifest_generation: manifest,
         applied_seq: 2,
         stream_name: child_name,
-        stream_manifest_generation: child_journal.manifest_generation(),
+        stream_generation: child_journal.record_generation(),
         replay_offset: 0,
     };
     let proof = SplitCommitProof {
@@ -2400,7 +2414,7 @@ async fn both_split_halves_recover_pre_split_keys_from_parent_overlay() {
         root_manifest_generation: child_artifact.root_manifest_generation,
         applied_seq: child_artifact.base_applied_seq,
         stream_name: child_artifact.stream_name,
-        stream_manifest_generation: child_journal.manifest_generation(),
+        stream_generation: child_journal.record_generation(),
         replay_offset: 0,
     };
     let proof = SplitCommitProof {
