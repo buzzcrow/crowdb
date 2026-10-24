@@ -245,8 +245,38 @@ object-key mutation. Publication checks the current pointers and immutable
 generation digests again. It never reads or concatenates part bytes. The
 multipart ETag is the hexadecimal MD5 of the selected raw part MD5 values in
 order, followed by the part count suffix. Abort and expiry mark the session
-terminal; physical chunk reclamation follows the ordinary reference and age
-checks.
+terminal while retaining its listing entry, part pointers and immutable part
+generations. Expiry reuses the authority loaded through the validated listing
+entry and consumes the abort CAS observation without another confirmation read.
+An uncertain mutation remains an error; later scanning rechecks the durable
+resource state.
+
+The background expiry worker owns discardable bucket and upload key positions
+for one tenant. Each two-second step scans one raw bucket mapping or at most
+20 upload-index entries, with a four-MiB aggregate result budget. The legacy
+scan transport materializes values before applying that aggregation limit; it
+does not enforce the budget on wire responses or native value materialization.
+Bucket discovery continues after filtered tombstones and legacy object entries even when none
+of those rows is an active bucket. It has no bucket-count cutoff. Raw positions
+advance before decoding a row or dispatching its point operations, so a corrupt
+returned row or uncertain abort cannot pin later uploads. A failed or cancelled
+upload scan drops that bucket hint, allowing later buckets to advance; a later full
+round discovers the skipped bucket again. A process restart starts a fresh
+scan without loading a persistent progress record.
+
+Bucket discovery requests one raw row at a time. If a materialized first row
+exceeds the aggregate budget, the client returns only its validated key. The
+worker advances that position and reports an oversized-row error, retains the
+original metadata, and revisits it in later rounds. A transport failure that
+provides no validated key cannot be skipped safely and remains retryable.
+Obtaining discovery keys without materializing their values requires a separate
+key-only or native bounded-scan capability.
+
+Workers continue after 50 milliseconds while a round has more work, wait
+15 seconds between complete rounds, and defer failures for 500 milliseconds.
+These local cursors authorize no physical deletion. Physical range discovery,
+reference checks and retirement fences remain separate reclamation duties;
+marking an upload terminal does not report its physical storage reclaimed.
 
 ## 5. Relationship to other access models
 

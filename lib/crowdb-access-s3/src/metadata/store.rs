@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use crowdb_chunk_kv_client::{
-    ChunkKvClient, ClientError, MultiScanContinuation, MultiScanPage, MultiScanRequest,
+    ChunkKvClient, ClientError, MultiScanContinuation, MultiScanOutcome, MultiScanPage, MultiScanRequest,
 };
 use crowdb_protocol::chunk_kv::{
     ChunkKvResponse, OperationResult, RpcCompareCondition, RpcFailure, RpcValue, ScanDirection,
@@ -229,6 +229,36 @@ impl ChunkKvMetadataStore {
             return Err(failure(terminal_failure));
         }
         Ok(page)
+    }
+
+    /// Reads one legacy scan row, retaining a validated oversized row's key.
+    /// The aggregation cap applies after the transport materializes the row.
+    ///
+    /// # Errors
+    /// Returns client, malformed response or terminal storage failures.
+    pub(crate) async fn scan_one_observed(
+        &self,
+        start: Vec<u8>,
+        end: Vec<u8>,
+        max_bytes: usize,
+    ) -> Result<MultiScanOutcome, MetadataStoreError> {
+        let outcome = self
+            .client
+            .scan_with_oversized_key(MultiScanRequest {
+                start: Some(start),
+                end: Some(end),
+                direction: ScanDirection::Forward,
+                max_items: 1,
+                max_bytes,
+                continuation: None,
+            })
+            .await?;
+        if let MultiScanOutcome::Page(page) = &outcome {
+            if let Some(terminal_failure) = &page.terminal_failure {
+                return Err(failure(terminal_failure));
+            }
+        }
+        Ok(outcome)
     }
 }
 

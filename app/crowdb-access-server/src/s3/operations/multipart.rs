@@ -3,12 +3,12 @@
 
 //! Authenticated S3 multipart operations over durable session and part records.
 
-use crowdb_access_s3::bucket;
 use crowdb_access_s3::error::S3ErrorCode;
 use crowdb_access_s3::execution::{CopyMetadata, S3WritePolicy};
 use crowdb_access_s3::integrity::{IntegrityError, SinglePartIntegrity};
 use crowdb_access_s3::metadata::{
-    CompletionPart, MultipartRepository, MultipartRepositoryError, MultipartSessionRecord,
+    CompletionPart, MultipartExpiryError, MultipartExpiryStep, MultipartExpirySweep, MultipartRepository,
+    MultipartRepositoryError, MultipartSessionRecord,
 };
 use crowdb_access_s3::route::{S3Operation, S3Route};
 use crowdb_access_s3::wire;
@@ -28,36 +28,21 @@ use crate::multipart_complete::{CompleteRequestError, CompleteSelection};
 const MAX_COMPLETE_BODY: usize = 2 * 1024 * 1024;
 
 impl ProductionS3Operations {
-    /// Walks bounded metadata pages and marks expired sessions terminal.
+    /// Starts discardable expiry positions for the configured tenant.
+    #[must_use]
+    pub fn multipart_expiry_sweep(&self) -> MultipartExpirySweep {
+        MultipartExpirySweep::new(self.storage.metadata.clone(), self.config.tenant.clone())
+    }
+
+    /// Marks expired sessions within one bounded background window.
     ///
     /// # Errors
     /// Defers the sweep when bucket or upload metadata is unavailable.
-    pub async fn expire_multipart_uploads(&self) -> Result<usize, S3ErrorCode> {
-        let buckets = bucket::list_buckets(&self.storage.metadata, &self.config.tenant, 1_001)
-            .await
-            .map_err(|_| S3ErrorCode::ServiceUnavailable)?;
-        if buckets.len() > 1_000 {
-            return Err(S3ErrorCode::SlowDown);
-        }
-        let now = unix_millis();
-        let mut expired = 0;
-        for bucket in buckets {
-            let mut cursor = None;
-            loop {
-                let page = self
-                    .multipart()
-                    .expire_page(bucket.bucket_id, cursor.as_deref(), now, 1_000)
-                    .await
-                    .map_err(|error| map_multipart_error(&error))?;
-                expired += page.expired;
-                let Some(next) = page.next else {
-                    break;
-                };
-                cursor = Some(next);
-                tokio::task::yield_now().await;
-            }
-        }
-        Ok(expired)
+    pub async fn expire_multipart_uploads(
+        &self,
+        sweep: &mut MultipartExpirySweep,
+    ) -> Result<MultipartExpiryStep, MultipartExpiryError> {
+        sweep.step(unix_millis()).await
     }
 
     pub(super) fn multipart(&self) -> MultipartRepository {

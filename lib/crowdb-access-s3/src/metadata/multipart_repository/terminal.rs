@@ -13,6 +13,9 @@ use crowdb_access_multipart::next_revision;
 const MAX_EXPIRY_PAGE: usize = 1_000;
 const MAX_EXPIRY_SCAN_BYTES: usize = 4 * 1024 * 1024;
 
+mod sweep;
+pub use sweep::{MultipartExpiryError, MultipartExpiryStep, MultipartExpirySweep};
+
 #[derive(Debug)]
 pub struct MultipartExpiryPage {
     pub next: Option<Vec<u8>>,
@@ -67,31 +70,40 @@ impl MultipartRepository {
         };
         let mut expired = 0;
         for index in page.items {
-            let Some(session_value) = self.store.get(index.value).await? else {
-                continue;
-            };
-            let session = MultipartSessionRecord::decode_unbound(&session_value.value)?;
-            if session.bucket_id != bucket
-                || MetadataKey::multipart_upload_index(
-                    &self.tenant,
-                    bucket,
-                    &session.object_key,
-                    &session.upload_id,
-                )? != index.key
-                || MetadataKey::multipart_session(&self.tenant, bucket, &session.upload_id)
-                    != session_value.key
-            {
-                return Err(MultipartRepositoryError::Conflict);
-            }
-            if session.phase == MultipartPhase::Open && session.expires_ms <= now_ms {
-                match self.abort_observed(session).await {
-                    Ok(_) => expired += 1,
-                    Err(MultipartRepositoryError::Conflict) => {}
-                    Err(error) => return Err(error),
-                }
-            }
+            expired += usize::from(self.expire_index(bucket, index, now_ms).await?);
         }
         Ok(MultipartExpiryPage { next, expired })
+    }
+
+    async fn expire_index(
+        &self,
+        bucket: BucketId,
+        index: crowdb_protocol::chunk_kv::RpcValue,
+        now_ms: u64,
+    ) -> Result<bool, MultipartRepositoryError> {
+        let Some(session_value) = self.store.get(index.value).await? else {
+            return Ok(false);
+        };
+        let session = MultipartSessionRecord::decode_unbound(&session_value.value)?;
+        if session.bucket_id != bucket
+            || MetadataKey::multipart_upload_index(
+                &self.tenant,
+                bucket,
+                &session.object_key,
+                &session.upload_id,
+            )? != index.key
+            || MetadataKey::multipart_session(&self.tenant, bucket, &session.upload_id) != session_value.key
+        {
+            return Err(MultipartRepositoryError::Conflict);
+        }
+        if session.phase != MultipartPhase::Open || session.expires_ms > now_ms {
+            return Ok(false);
+        }
+        match self.abort_observed(session).await {
+            Ok(_) => Ok(true),
+            Err(MultipartRepositoryError::Conflict) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     /// Logically aborts an open upload, retaining part evidence for cleanup.

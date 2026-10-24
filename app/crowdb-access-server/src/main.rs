@@ -296,14 +296,25 @@ async fn wait_for_shutdown(mut shutdown: Option<watch::Receiver<bool>>) {
 #[cfg(feature = "s3")]
 fn start_multipart_expiry(operations: Arc<ProductionS3Operations>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
+        let mut sweep = operations.multipart_expiry_sweep();
         loop {
-            interval.tick().await;
-            match operations.expire_multipart_uploads().await {
-                Ok(0) => {}
-                Ok(count) => tracing::debug!(count, "expired S3 multipart sessions"),
-                Err(error) => tracing::warn!(?error, "S3 multipart expiry sweep deferred"),
-            }
+            let delay = match operations.expire_multipart_uploads(&mut sweep).await {
+                Ok(step) => {
+                    if step.expired > 0 {
+                        tracing::debug!(count = step.expired, "expired S3 multipart sessions");
+                    }
+                    if step.more {
+                        Duration::from_millis(50)
+                    } else {
+                        Duration::from_secs(15)
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "S3 multipart expiry window deferred; durable evidence retained");
+                    Duration::from_millis(500)
+                }
+            };
+            tokio::time::sleep(delay).await;
         }
     })
 }

@@ -20,7 +20,7 @@ mod terminal;
 pub use completion::CompletionPart;
 use exchange::MultipartExchange;
 pub use listing::{MultipartPartPage, MultipartUploadPage};
-pub use terminal::MultipartExpiryPage;
+pub use terminal::{MultipartExpiryError, MultipartExpiryPage, MultipartExpiryStep, MultipartExpirySweep};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MultipartRepositoryError {
