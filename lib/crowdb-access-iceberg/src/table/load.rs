@@ -196,50 +196,47 @@ fn representation(
     document: TableMetadataDocument,
     mode: SnapshotLoadingMode,
 ) -> Result<Vec<u8>, TableMetadataError> {
-    let canonical = document.into_canonical();
     if mode == SnapshotLoadingMode::All {
-        return Ok(canonical);
+        return Ok(document.into_canonical());
     }
-    let fields: BTreeMap<&str, &RawValue> = serde_json::from_slice(&canonical)?;
-    refs_representation(fields, &canonical)
-}
-
-fn refs_representation(
-    fields: BTreeMap<&str, &RawValue>,
-    canonical: &[u8],
-) -> Result<Vec<u8>, TableMetadataError> {
-    let Some(snapshots) = fields.get("snapshots") else {
-        return Ok(canonical.to_vec());
+    let Some(snapshots) = document
+        .fields()
+        .get("snapshots")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(document.into_canonical());
     };
-    let snapshots: Vec<&RawValue> = serde_json::from_str(snapshots.get())?;
-    let mut referenced = BTreeSet::new();
-    if let Some(current) = fields.get("current-snapshot-id") {
-        if let Some(current) = serde_json::from_str::<Option<i64>>(current.get())?.filter(|id| *id != -1) {
-            referenced.insert(current);
-        }
-    }
-    if let Some(refs) = fields.get("refs") {
-        let refs: BTreeMap<&str, serde_json::Value> = serde_json::from_str(refs.get())?;
+    let mut referenced: BTreeSet<_> = document.current_snapshot().into_iter().collect();
+    if let Some(refs) = document
+        .fields()
+        .get("refs")
+        .and_then(serde_json::Value::as_object)
+    {
         for reference in refs.values() {
             if let Some(id) = reference["snapshot-id"].as_i64() {
                 referenced.insert(id);
             }
         }
     }
-    let mut selected = Vec::new();
-    for snapshot in snapshots {
-        #[derive(serde::Deserialize)]
-        struct Identity {
-            #[serde(rename = "snapshot-id")]
-            snapshot_id: i64,
-        }
-        let identity: Identity = serde_json::from_str(snapshot.get())?;
-        if referenced.contains(&identity.snapshot_id) {
-            selected.push(snapshot);
-        }
-    }
+    let retained: Vec<_> = snapshots
+        .iter()
+        .map(|snapshot| {
+            snapshot["snapshot-id"]
+                .as_i64()
+                .is_some_and(|id| referenced.contains(&id))
+        })
+        .collect();
+    let canonical = document.into_canonical();
+    // Validation already decoded snapshot identities and references. Decode raw
+    // spans only to preserve each retained value's original JSON representation.
+    let mut fields: BTreeMap<&str, &RawValue> = serde_json::from_slice(&canonical)?;
+    let snapshots: Vec<&RawValue> = serde_json::from_str(fields["snapshots"].get())?;
+    let selected: Vec<_> = snapshots
+        .into_iter()
+        .zip(retained)
+        .filter_map(|(snapshot, keep)| keep.then_some(snapshot))
+        .collect();
     let selected = serde_json::value::to_raw_value(&selected)?;
-    let mut fields: BTreeMap<_, _> = fields.into_iter().collect();
     fields.insert("snapshots", &selected);
     Ok(serde_json::to_vec(&fields)?)
 }
