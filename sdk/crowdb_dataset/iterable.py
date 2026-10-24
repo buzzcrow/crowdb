@@ -2,6 +2,8 @@
 # Licensed under the Apache License, Version 2.0.
 """Server-partitioned batches with explicit application acknowledgement."""
 
+from .client import IntegrityError
+
 
 class WorkerPartition:
     def __init__(self, worker=0, workers=1, rank=0, world_size=1):
@@ -50,9 +52,15 @@ class DatasetIterable:
         while True:
             with self.client.next_batch(self.checkpoint) as stream:
                 batch = DatasetBatch(stream.batch())
-            yield batch
-            if not batch.acknowledged:
-                raise RuntimeError("acknowledge the consumed batch before requesting the next batch")
+            following = batch.header["next"]
+            if (batch.header["end"] != (following is None)
+                    or following == self.checkpoint
+                    or (not batch.header["sample_ids"] and batch.fields)):
+                raise IntegrityError({"code": "integrity", "message": "invalid read continuation"})
+            if batch.header["sample_ids"]:
+                yield batch
+                if not batch.acknowledged:
+                    raise RuntimeError("acknowledge the consumed batch before requesting the next batch")
             self.checkpoint = batch.header["next"]
             self.complete = batch.header["end"]
             if self.complete:

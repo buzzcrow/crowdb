@@ -93,6 +93,9 @@ with DatasetClient("http://localhost:9093", "training", "token") as client:
 The iterable acknowledges locally and makes no progress RPC. Continuing without
 acknowledgement fails. Save the cursor returned by `batch.acknowledge()` after
 processing succeeds; pass it as `checkpoint` to a new iterable to resume.
+The iterable skips empty selection or worker windows and advances their local
+continuation. Nonempty samples with zero-length fields are still delivered and
+require acknowledgement. The lower-level `next_batch` retains empty windows.
 `bind_read(plan)` pins immutable versions and returns the initial cursor.
 `next_batch(cursor)` replays that cursor on any server. Drop or cancel stops only
 the current stream; there is no read ID, session TTL or remote close. Use streams
