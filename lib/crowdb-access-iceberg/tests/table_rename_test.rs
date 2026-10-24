@@ -19,13 +19,83 @@ mod namespace_store;
 mod rename;
 
 use crowdb_access_iceberg::{
-    catalog::CatalogError,
-    key::{IcebergKey, OperationId},
+    catalog::{CatalogError, StoredValue},
+    key::{CatalogScope, IcebergKey, OperationId},
     namespace::{NamespaceAuthority, NamespaceLifecycle, NamespaceRepository},
     record::StorageRecord,
     table::{TableLifecycleAction, TableLifecycles, TableRepository},
 };
 use std::sync::atomic::Ordering;
+
+#[tokio::test]
+async fn fresh_rename_uses_resource_facts_without_reading_an_old_request_journal() {
+    let (test, request, _) = rename::setup(false).await;
+    let key = IcebergKey::Catalog {
+        catalog: request.context.catalog,
+        scope: CatalogScope::TableLifecycleOperation,
+        suffix: request.identity.operation.as_bytes().to_vec(),
+    }
+    .encode()
+    .unwrap();
+    let bytes = b"obsolete journal must not be consulted".to_vec();
+    test.fixture.store.values.rcu(|values| {
+        let mut next = (**values).clone();
+        next.insert(
+            key.clone(),
+            StoredValue {
+                bytes: bytes.clone(),
+                revision: 1,
+            },
+        );
+        next
+    });
+    assert_eq!(
+        TableLifecycles::new(test.fixture.store.clone())
+            .execute(&request)
+            .await
+            .unwrap()
+            .status,
+        204
+    );
+    assert_eq!(rename::visible(&test, &request).await, (false, true));
+    assert_eq!(test.fixture.store.values.load().get(&key).unwrap().bytes, bytes);
+}
+
+#[tokio::test]
+async fn request_validation_rejects_invalid_rename_before_any_authority_reads_or_writes() {
+    let (test, request, _) = rename::setup(false).await;
+    let store = test.fixture.store.clone();
+    let before = (
+        store.reads.load(Ordering::SeqCst),
+        store.writes.load(Ordering::SeqCst),
+    );
+    for changed in 0..5 {
+        let mut request = request.clone();
+        match changed {
+            0 => request.principal.clear(),
+            1 => request.principal.push('\0'),
+            2 => request.name.clear(),
+            3 => {
+                let TableLifecycleAction::Rename { name, .. } = &mut request.action else {
+                    panic!()
+                };
+                name.clear();
+            }
+            _ => request.context.activation_epoch = 0,
+        }
+        assert!(TableLifecycles::new(store.clone())
+            .execute(&request)
+            .await
+            .is_err());
+        assert_eq!(
+            (
+                store.reads.load(Ordering::SeqCst),
+                store.writes.load(Ordering::SeqCst)
+            ),
+            before
+        );
+    }
+}
 
 #[tokio::test]
 async fn repeated_namespace_conflicts_use_observed_values_without_gets() {
@@ -61,10 +131,15 @@ async fn rename_preserves_identity_and_creates_no_journal_or_response_records() 
         let store = test.fixture.store.clone();
         let old_keys: std::collections::BTreeSet<_> = store.values.load().keys().cloned().collect();
         let writes = store.writes.load(Ordering::SeqCst);
+        let measured_reads = store.reads.load(Ordering::SeqCst);
         let outcome = TableLifecycles::new(store.clone())
             .execute(&request)
             .await
             .unwrap();
+        assert_eq!(
+            store.reads.load(Ordering::SeqCst) - measured_reads,
+            if cross { 20 } else { 15 }
+        );
         assert_eq!(outcome.status, 204);
         assert!(outcome.body.is_empty());
         assert_eq!(

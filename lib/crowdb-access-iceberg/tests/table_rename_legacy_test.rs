@@ -81,7 +81,14 @@ async fn existing_rename_journals_remain_readable_and_can_finish() {
         )
         .await;
     let manager = TableLifecycles::new(test.fixture.store.clone());
-    assert_eq!(manager.execute(&request).await.unwrap().status, 204);
+    assert_eq!(
+        manager
+            .resume(request.context, request.identity.operation)
+            .await
+            .unwrap()
+            .status,
+        204
+    );
     assert_eq!(rename::visible(&test, &request).await, (false, true));
     assert_eq!(
         manager

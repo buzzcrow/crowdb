@@ -811,8 +811,9 @@ publication. A losing operation keeps its terminal conflict instead of rebasing
 onto a new generation or recreated name.
 
 Same/cross-namespace rename stores no new input, phase, response or lifecycle
-journal. A single bounded `NamespaceRename` occupancy in each affected parent
-contains the source mapping, target name, expected head generation/fence and a
+journal. Request admission validates the route and principal without reading an
+old request journal or encoding a replay payload. Each affected parent holds one
+bounded `NamespaceRename` occupancy containing the source mapping, target name, expected head generation/fence and a
 fresh per-attempt reservation identity. Parents are occupied in stable ID order;
 failure to acquire the second cancels and releases the first, without waiting on
 another rename. Definite parent CAS conflicts use the observed authority directly,

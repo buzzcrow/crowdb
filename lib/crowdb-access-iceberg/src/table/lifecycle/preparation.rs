@@ -8,7 +8,7 @@ use crate::{
     table::{name_key, TableLifecycle, TableRepository},
 };
 
-pub(super) fn input(request: &TableLifecycleRequest) -> Result<Vec<u8>, CatalogError> {
+pub(super) fn validate(request: &TableLifecycleRequest) -> Result<(), CatalogError> {
     request.context.validate()?;
     if request.principal.is_empty() || request.principal.len() > 256 || request.principal.contains('\0') {
         return Err(ValidationError::Text.into());
@@ -18,10 +18,17 @@ pub(super) fn input(request: &TableLifecycleRequest) -> Result<Vec<u8>, CatalogE
         name: &request.name,
     }
     .encode()?;
+    if let TableLifecycleAction::Rename { name, .. } = &request.action {
+        NameSuffix { parent: None, name }.encode()?;
+    }
+    Ok(())
+}
+
+pub(super) fn input(request: &TableLifecycleRequest) -> Result<Vec<u8>, CatalogError> {
+    validate(request)?;
     let action = match &request.action {
         TableLifecycleAction::Drop { purge_requested } => serde_json::json!({"drop": purge_requested}),
         TableLifecycleAction::Rename { namespace, name } => {
-            NameSuffix { parent: None, name }.encode()?;
             serde_json::json!({"rename": {"namespace": namespace.components(), "name": name}})
         }
     };

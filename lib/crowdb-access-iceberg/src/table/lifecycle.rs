@@ -67,19 +67,21 @@ impl TableLifecycles {
     }
 
     /// # Errors
-    /// Rejects changed request identities, retired catalogs and uncertain storage outcomes.
+    /// Rejects invalid requests, retired catalogs and uncertain storage outcomes.
     pub async fn execute(
         &self,
         request: &TableLifecycleRequest,
     ) -> Result<TableLifecycleOutcome, CatalogError> {
-        let input = preparation::input(request)?;
-        if let Some(operation) = self.load(request.context, request.identity.operation).await? {
-            self.match_request(request, &input, &operation).await?;
-        } else if matches!(request.action, TableLifecycleAction::Rename { .. }) {
+        if matches!(request.action, TableLifecycleAction::Rename { .. }) {
+            preparation::validate(request)?;
             let status = super::TableRenames::from_parts(self.store.clone(), self.names.clone())
                 .execute(request)
                 .await?;
             return TableLifecycleOutcome::new(status);
+        }
+        let input = preparation::input(request)?;
+        if let Some(operation) = self.load(request.context, request.identity.operation).await? {
+            self.match_request(request, &input, &operation).await?;
         } else if let Some(outcome) = self.prepare(request, &input).await? {
             return self.inline(outcome).await;
         }
