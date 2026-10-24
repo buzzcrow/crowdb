@@ -330,6 +330,30 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 
 ### P2 — Dataset Composition（执行已确认 D1）
 
+**记录与成本盘点（2026-10-24，源码审查口径）**：
+
+- `CBG` 保存 begin 的原输入与初态，`CD` 再保存可变草稿。新建各一次 create-CAS，
+  尚未生成最终资源就已有两份过程记录。重复 begin 也读 CBG/CD/最终 CD；父、schema、
+  inherited Split 验证另外计算，不能把三次草稿读取当成总 RPC。
+- `CE` 保存每个 edit 输入，`CX` 保存原 draft 响应；新 edit 先 CAS CD 登记 ID，再写
+  CE，再 CAS CD 接受修改，再写 CX。即使只有一个 inline sample，首次新 edit 也有
+  四次条件写，不包含最终 Manifest/index。`registered_edits/journal/edit_pages` 只是为了
+  找回这些中间输入、重放原响应和清理失败写入，不属于 Snapshot 业务结果。
+- 每个 evaluation window 写一份 `CW` Step，再对 `CM` 中间行执行 GET/条件写，再 CAS
+  CD 推进 phase/page/binding。没有 parent 的空 Source 阶段和 edit 列表尾阶段仍各写 CW
+  和 CD，零输出也有两次写。CM 最后再被读回拼成 Manifest、写最终 inspection rows，
+  因而不能把这些工作行说成“最终索引”。Source/Edits/Validate/Done 续算全部删除。
+- `UploadOwnership.candidates.after/complete` 在每个 owner 页前后各 CAS CD，中间重新
+  load CD；staging owner 与最终 Snapshot owner 分开。前者是计算过程；最终 upload
+  owner 对共享引用/回收有实际作用，按 P4/R4 收敛，不能把共享 payload 一并删除。
+- `CCG/CEG/CCP` 是 scratch/edit/candidate 清理游标；CW/CM/CE 的负标记防旧写者复活。
+  新 API 不再生成这些工作 key；旧格式清理由 P13 保留必要解码。最终 CB/Snapshot/Manifest/
+  inspection rows 是资源，CB complete-vs-retired 的同 key 条件隔离不能未经替代证明删除。
+- API/SDK 替换必须真正停止 begin/edit/evaluate/status 的服务端续算写入；不能把旧流程包进
+  一个 HTTP 请求后宣称无状态。客户端保留修改、parent 与显式 head base；服务器每次处理
+  完整有界输入，直接生成最终不可变内容。大输入由客户端组织最终页，再校验绑定并完成根；
+  不另建上传式 work session 或逐页进度根。源码计数需由新路径的成本回归复核，尚非性能结论。
+
 - [ ] **P2.1 分清输入、计算进度与候选内容**：逐项列出 draft/edit receipt/work page/row/candidate/
   cleanup seal 的用途、写入次数和调用者；按 D1 更新 API/SDK 合同，移除服务端续算接口。Files: Dataset `composition/{begin,edit,state,evaluation,evaluate_step,prepare,cleanup}.rs`。
 - [ ] **P2.2 删除服务端编辑/计算过程**：删除 durable 编辑/进度阶段，客户端失败重新请求；
@@ -337,8 +361,29 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 
 ### P3 — Dataset Split（执行已确认 D1）
 
+**记录与成本盘点（2026-10-24，源码审查口径）**：begin 的 `SB` 与 `SD` 分别保存原输入
+和当前 draft；`SX` 重放 edit 响应。每二十个 sample 的 evaluation window 写 `SW` page
+intent、P 份最终 `SM` membership page，再 CAS SD 推进 after/next_page/bindings/counts，
+即 P+2 次条件写；重新检查 owner/schema/编译规则的读取还不含在内。prepare 再写最终
+`SR`、`SRI` 和一次 SD 转换。SM/SR/SRI 描述冻结成员和可枚举完整结果，需要保留；
+SB/SD/SX/SW 和 SCG 清理游标描述编辑与计算过程，按 D1 删除。`source_leases` 字段当前
+只是旧草稿存的 source ID 集合，生产不再写 reader 租约，不能把字段名误当成仍有读者登记。
+替换顺序先抽取可重做的有界计算，直接写最终成员/完整 revision，独立 `update_split_head`
+继续使用已有观察值 CAS；随后迁移 REST/SDK 并停止旧续算写入口。源 revision 固定，重试
+不得用当前 Split 重算历史成员；partial SM 的发现和迟到写隔离与 R4/P13 一起验证。
+
 - [ ] **P3.1 分开临时评估和已发布成员**：盘点 edits/evaluation/overlap examples/work pages；
   保留历史 revision 和冻结成员，不能重算时偷偷改变既有 train/test。Files: Dataset `split/{lifecycle,state,work,evaluation,prepare,initial}.rs`。
+- [~] **P3.2a 原生无状态 Split 准备**：新增 `SplitPreparation { revision, policy, splits }`
+  和 `prepare_split_revision(identity, snapshot, request, cancellation)`，输入由客户端完整保存，
+  每次从固定 Snapshot/继承 revision 重算，内存只保留一个有界窗口与最多 1 MiB 的最终绑定。
+  外层 30 秒 deadline；最多 64 个定义，继续使用既有条件与覆盖/重叠校验。只写最终
+  SM/SR/SRI，禁止 SB/SD/SX/SW 和阶段/进度写入；SRI 在成员前记录可枚举资源身份，
+  SR 最后安装完整根。相同 ID 完整结果按输入身份复用，异内容冲突；unknown 不确认查询。
+  partial SM 可从 SRI 或所属 Snapshot 的 SM prefix 发现，Snapshot 回收覆盖无草稿的
+  输出；独立未引用 revision 期限和迟到元数据重扫仍由 R4/P13 完成，不能掩盖该缺口。
+  先交付 native/cost/取消/丢回复/回收回归，再迁移 REST/SDK 和关闭旧入口；不使用旧
+  durable evaluator 的外层循环冒充无状态。Files: `split/preparation.rs`、共享定义/源校验、tests。
 - [ ] **P3.2 实现选定 Split 流程**：按 D1 删除辅助进度与检查点，客户端重试，保留 currentSplit
   发布 CAS、覆盖/重叠校验和旧 revision 读取。Files: `split/{publication,recovery,cleanup}.rs`、v2/SDK Split 和恢复测试。
 
