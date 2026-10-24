@@ -34,8 +34,6 @@ pub enum CredentialAuthorityError {
     InvalidKey,
     #[error("S3 user has multiple credential records")]
     DuplicateUser,
-    #[error("S3 user credential preparation is malformed or belongs to another user")]
-    InvalidUserPreparation,
     #[error("S3 user credential is disabled or malformed")]
     InvalidUserCredential,
 }
@@ -116,11 +114,11 @@ impl CredentialAuthority {
             if found.is_some() {
                 return Err(CredentialAuthorityError::DuplicateUser);
             }
-            let credential = self.cipher.decrypt(user, access_key, &record.encrypted)?;
+            let mut credential = self.cipher.decrypt(user, access_key, &record.encrypted)?;
             if !credential.enabled {
                 return Err(CredentialAuthorityError::InvalidUserCredential);
             }
-            let secret_key = String::from_utf8(credential.secret_key.clone())
+            let secret_key = String::from_utf8(std::mem::take(&mut credential.secret_key))
                 .map_err(|_| CredentialAuthorityError::InvalidUserCredential)?;
             found = Some(IssuedUserToken {
                 access_key_id: access_key.to_owned(),

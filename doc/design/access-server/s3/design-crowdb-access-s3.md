@@ -61,6 +61,26 @@ boundaries, not isolation between multiple accepted users on one listener.
 Presigned request expiry is enforced independently of the allowed future-clock
 skew; clock tolerance cannot extend an issued URL's lifetime.
 
+User bootstrap reads the bounded final credential inventory to preserve existing
+keys and reject already ambiguous or disabled users. If absent, it derives a
+stable public access-key identifier from the user and conditionally creates one
+final encrypted credential. The secret and encryption nonce remain random;
+the public identifier is not an authentication secret. A collision cannot replace
+another user: the losing caller reads the exact target and validates its user,
+ciphertext and enabled state. Successful creation returns its known token without
+another inventory scan. There is no persistent bootstrap preparation or response.
+Group-0 CAS currently supplies only a conflicting revision, so that exceptional
+path needs one authoritative GET. An absent value after an uncertain write remains
+an error for the caller to retry.
+
+Explicit token issuance can still create multiple credentials for a user;
+bootstrap does not provide an atomic uniqueness guarantee against that independent
+administrative operation. Existing duplicates fail the inventory check. Unused
+legacy preparation records are neither authentication data nor a source for
+restoring a deleted or disabled final credential. Deleting the final credential
+and invoking bootstrap creates a fresh random secret; ordinary lookup never
+creates data. Credential snapshots continue to load only final encrypted records.
+
 ## 3. HTTP data path
 
 PUT and multipart upload stream HTTP bodies into bounded CROWDB writers. GET

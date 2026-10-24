@@ -391,14 +391,10 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
 
 - [ ] **P14.1 审查 root/context/初始化回读**：记录正常请求内重复 GET 和初始化写，复用已验证
   immutable 事实，保留撤销和 catalog reset 的准入边界。凭据持久化不是 reader session。Files: Iceberg `catalog/{repository,storage}.rs`、Access `credentials.rs`、`credentials/ensure.rs`。
-- [ ] **P14.2 删除凭据 bootstrap 准备状态**：现状 `ensure_user` 先扫全部 credential，GET/创建
-  `user-bootstrap/<user hash>` 的加密候选，再 CAS credential，最后再全量 scan 取回 token。
-  准备记录不是认证来源，唯一用途是多个 bootstrap 共用随机 access key。改为 user 派生的
-  稳定 access-key 目标，secret 仍随机；在现有 credential scope 一次 create-CAS 保存最终
-  加密资源。冲突读取唯一该目标并核对 user/密文/启用状态，成功直接返回本次已知 token。
-  保留 legacy inventory 查找与显式 issue-user 的多 token 语义；旧准备记录不恢复/覆盖正式
-  凭据。Group-0 `put_cas` 当前只返回 revision，不能假装有 observed value；需单独补返回值
-  或保留一次确有必要的直接 GET，未知结果不能当作明确冲突。Files: Access credentials、S3 auth。
+- [ ] **P14.3 补 Group-0 CAS observation**：`CrowdbKvClient::put_cas` 的 `CasFailed` 当前仅有
+  current_revision；凭据 bootstrap loser 因此需要直接 GET，无法复用值。由比较时读取的
+  同一 revision/value 贯穿 group admission、RPC response、client error，禁止另读最新值
+  伪装成原 observation；兼容旧服务端与 unknown/busy。Files: KV group CAS、kv client wire/API、credentials。
 
 ## 其他性能任务
 
@@ -470,6 +466,19 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P14.2**：删除 PreparedUser、prepare_user、准备记录格式/验证和相应状态错误；
+  ensure-user 的稳定公开 key 由 user 域分离摘要确定，secret/nonce 仍随机。在原有 credential
+  scope 一次 create-CAS 保存正式加密资源，没有新索引或协调 key，成功直接返回已知 token。
+  初次正常路径由静态 2 scan + 1 prepare GET + 2 CAS 变为 1 scan + 1 CAS；保留一次 legacy
+  inventory 查找。Group-0 conflict/busy/unknown 只直接读唯一目标，校验 user/AEAD/启用状态，
+  absent 仍报原错误，不能假定成功；P14.3 追踪底层 observation。显式 issue-user 可签发
+  多 token，ensure-user 没有对该独立管理操作提供跨 key 原子唯一性，既有重复仍拒绝。
+  旧正式凭据保留，旧准备记录不再参与认证或恢复；实际旧 hash key 的损坏准备记录不阻塞
+  创建，删除正式资源后不会复活旧 secret，disabled 也不覆盖。token 解密结果移交 Vec，
+  不额外 clone secret。真实 Group-0 16 并发调用选出同一 token、restart、legacy duplicate、
+  4097-row 不完整 inventory、disabled 共 6 项及 secret 5 项、两 crate all-target/all-feature
+  clippy、fmt/diff 通过。没有 routed 性能数字或 TPS 提升声明。
 
 - **2026-10-24，P14.1a**：Catalog management install/audit 复用 ledger locator 的 absent/value，
   authority publication 与退休 CAS 复用 observed，删除重复 GET。initialize 正常路径实测

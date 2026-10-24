@@ -143,10 +143,29 @@ impl CredentialCipher {
         generation: u64,
     ) -> Result<(IssuedUserToken, EncryptedCredentialRecord), SecretError> {
         let mut access_random = [0_u8; ACCESS_RANDOM_LENGTH];
-        let mut secret = [0_u8; SECRET_LENGTH];
         OsRng.fill_bytes(&mut access_random);
-        OsRng.fill_bytes(&mut secret);
         let access_key_id = format!("CROW{}", encode_hex(&access_random).to_ascii_uppercase());
+        self.issue_user_token_for_key(user, access_key_id, generation)
+    }
+
+    /// Creates a random secret bound to a caller-selected public key identifier.
+    /// The caller publishes the encrypted credential with create-if-absent.
+    /// # Errors
+    /// Rejects invalid public identifiers or failed encryption.
+    pub fn issue_user_token_for_key(
+        &self,
+        user: &[u8],
+        access_key_id: String,
+        generation: u64,
+    ) -> Result<(IssuedUserToken, EncryptedCredentialRecord), SecretError> {
+        if access_key_id.is_empty()
+            || access_key_id.len() > 80
+            || !access_key_id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        {
+            return Err(SecretError::InvalidRecord);
+        }
+        let mut secret = [0_u8; SECRET_LENGTH];
+        OsRng.fill_bytes(&mut secret);
         let secret_key = URL_SAFE_NO_PAD.encode(secret);
         secret.zeroize();
         let issued = IssuedUserToken {

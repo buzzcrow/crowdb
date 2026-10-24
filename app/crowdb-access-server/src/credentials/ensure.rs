@@ -1,122 +1,67 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Concurrent bootstrap reserves one encrypted candidate before credential publication.
+//! Bootstrap publishes one final encrypted credential without preparation state.
 
-use super::{credential_key, CredentialAuthority, CredentialAuthorityError, CREATE_ATTEMPTS};
+use super::{credential_key, CredentialAuthority, CredentialAuthorityError};
 use crowdb_access_s3::auth::{DurableCredentialRecord, IssuedUserToken};
 use crowdb_kv_client::{Error as KvError, GetOutcome, ReadMode};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PreparedUser {
-    version: u32,
-    access_key_id: String,
-    record: Vec<u8>,
-}
-
 impl CredentialAuthority {
-    /// Reuse one credential across concurrent bootstrap callers and restarts.
-    /// The user-scoped preparation contains only the existing encrypted format;
-    /// publication never replaces another access key's durable record.
-    ///
+    /// Reuses an existing token or creates one final resource at a stable public
+    /// identifier. Concurrent bootstrap callers converge through create-if-absent;
+    /// each candidate secret is random. No upload/workflow recovery record exists.
     /// # Errors
-    /// Fails closed on duplicate/disabled users, malformed preparation, collisions
-    /// and uncertain Group-0 writes. A retry reconciles the same encrypted candidate.
+    /// Fails closed on disabled/duplicate users, conflicting user bindings,
+    /// malformed ciphertext and unavailable or uncertain Group-0 storage.
     pub async fn ensure_user(&self, user: &[u8]) -> Result<IssuedUserToken, CredentialAuthorityError> {
         if let Some(token) = self.lookup_user(user).await? {
             return Ok(token);
         }
-        let prepared = self.prepare_user(user).await?;
-        let key = credential_key(&prepared.access_key_id);
-        match self.control.put_cas(0, 0, &key, &prepared.record, 0).await {
-            Ok(_) => {}
-            Err(KvError::CasFailed { .. } | KvError::CasBusy | KvError::OutcomeUnknown) => {
-                match self.control.get(0, 0, &key, ReadMode::Linearizable, None).await? {
-                    GetOutcome::Found { value, .. } if value.as_ref() == prepared.record.as_slice() => {}
-                    GetOutcome::Found { .. } => return Err(CredentialAuthorityError::Collision),
-                    GetOutcome::NotFound => return Err(KvError::OutcomeUnknown.into()),
-                }
-            }
-            Err(error) => return Err(error.into()),
-        }
-        self.lookup_user(user)
-            .await?
-            .ok_or(CredentialAuthorityError::InvalidUserCredential)
-    }
-
-    async fn prepare_user(&self, user: &[u8]) -> Result<PreparedUser, CredentialAuthorityError> {
-        let key = format!("crowdb/s3/user-bootstrap/{}", hex::encode(Sha256::digest(user)));
-        let mut candidate = None;
-        for _ in 0..CREATE_ATTEMPTS {
-            match self
-                .control
-                .get(0, 0, key.as_bytes(), ReadMode::Linearizable, None)
-                .await?
-            {
-                GetOutcome::Found { value, .. } => {
-                    if value.len() > 65536 {
-                        return Err(CredentialAuthorityError::InvalidUserPreparation);
-                    }
-                    let prepared: PreparedUser = serde_json::from_slice(&value)
-                        .map_err(|_| CredentialAuthorityError::InvalidUserPreparation)?;
-                    self.validate_prepared(user, &prepared)?;
-                    return Ok(prepared);
-                }
-                GetOutcome::NotFound => {}
-            }
-            let prepared = match candidate.as_ref() {
-                Some(prepared) => prepared,
-                None => candidate.insert(self.new_prepared(user)?),
-            };
-            let value =
-                serde_json::to_vec(prepared).map_err(|_| CredentialAuthorityError::InvalidUserPreparation)?;
-            if value.len() > 65536 {
-                return Err(CredentialAuthorityError::InvalidUserPreparation);
-            }
-            match self.control.put_cas(0, 0, key.as_bytes(), &value, 0).await {
-                Ok(_) => return Ok(candidate.take().expect("candidate is present")),
-                Err(KvError::CasFailed { .. } | KvError::CasBusy | KvError::OutcomeUnknown) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Err(KvError::OutcomeUnknown.into())
-    }
-
-    fn new_prepared(&self, user: &[u8]) -> Result<PreparedUser, CredentialAuthorityError> {
-        let (issued, encrypted) = self.cipher.issue_user_token(user, 1)?;
-        let record = DurableCredentialRecord {
+        let mut digest = Sha256::new();
+        digest.update(b"crowdb/s3/user-credential/v1\0");
+        digest.update(user);
+        let access_key_id = format!("CROWU{}", hex::encode(digest.finalize()));
+        let (issued, encrypted) = self.cipher.issue_user_token_for_key(user, access_key_id, 1)?;
+        let key = credential_key(&issued.access_key_id);
+        let bytes = DurableCredentialRecord {
             user: user.to_vec(),
             encrypted,
         }
         .encode()?;
-        Ok(PreparedUser {
-            version: 1,
-            access_key_id: issued.access_key_id.clone(),
-            record,
-        })
+        match self.control.put_cas(0, 0, &key, &bytes, 0).await {
+            Ok(_) => Ok(issued),
+            // Group-0 currently returns only the revision, not the observed value.
+            // This one authoritative GET is required; successful creation needs none.
+            Err(error @ (KvError::CasFailed { .. } | KvError::CasBusy | KvError::OutcomeUnknown)) => {
+                match self.control.get(0, 0, &key, ReadMode::Linearizable, None).await? {
+                    GetOutcome::Found { value, .. } => self.token(user, &issued.access_key_id, &value),
+                    GetOutcome::NotFound => Err(error.into()),
+                }
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
-    fn validate_prepared(
+    fn token(
         &self,
         user: &[u8],
-        prepared: &PreparedUser,
-    ) -> Result<(), CredentialAuthorityError> {
-        if prepared.version != 1 || prepared.access_key_id.is_empty() || prepared.access_key_id.len() > 80 {
-            return Err(CredentialAuthorityError::InvalidUserPreparation);
-        }
-        let record = DurableCredentialRecord::decode(&prepared.record)?;
+        access_key: &str,
+        value: &[u8],
+    ) -> Result<IssuedUserToken, CredentialAuthorityError> {
+        let record = DurableCredentialRecord::decode(value)?;
         if record.user != user {
-            return Err(CredentialAuthorityError::InvalidUserPreparation);
+            return Err(CredentialAuthorityError::Collision);
         }
-        let credential = self
-            .cipher
-            .decrypt(user, &prepared.access_key_id, &record.encrypted)?;
+        let mut credential = self.cipher.decrypt(user, access_key, &record.encrypted)?;
         if !credential.enabled {
             return Err(CredentialAuthorityError::InvalidUserCredential);
         }
-        Ok(())
+        Ok(IssuedUserToken {
+            access_key_id: access_key.to_owned(),
+            secret_key: String::from_utf8(std::mem::take(&mut credential.secret_key))
+                .map_err(|_| CredentialAuthorityError::InvalidUserCredential)?,
+        })
     }
 }
