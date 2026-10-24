@@ -17,6 +17,10 @@ pub use upload::TestStore;
 pub struct TestDatasetHttp {
     pub origin: String,
     #[allow(dead_code)]
+    pub authority: Arc<DatasetAuthority>,
+    #[allow(dead_code)]
+    pub uploads: Arc<DatasetUploads>,
+    #[allow(dead_code)]
     pub clock: Arc<std::sync::atomic::AtomicU64>,
     stop: Option<oneshot::Sender<()>>,
     task: JoinHandle<std::io::Result<()>>,
@@ -45,11 +49,11 @@ impl TestDatasetHttp {
             DatasetAuthority::new(store)
         };
         let clock = Arc::new(std::sync::atomic::AtomicU64::new(1000));
-        let authority = authority.with_reclaim_clock_for_tests(clock.clone());
+        let authority = Arc::new(authority.with_reclaim_clock_for_tests(clock.clone()));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let reads = DatasetReadService::new(
-            Arc::new(authority),
+            authority.clone(),
             DatasetIdentity::new(NamespacePath::root(), "legacy").unwrap(),
             3,
         )
@@ -58,7 +62,7 @@ impl TestDatasetHttp {
             .with_bearer("secret")
             .with_api_capacity(capacity);
         let service = Arc::new(if payload {
-            service.with_uploads(uploads)
+            service.with_uploads(uploads.clone())
         } else {
             service
         });
@@ -68,6 +72,8 @@ impl TestDatasetHttp {
         }));
         Self {
             origin,
+            authority,
+            uploads,
             clock,
             stop: Some(stop),
             task,

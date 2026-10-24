@@ -904,7 +904,7 @@
     "/api/dataset/v1/namespaces/{namespace}/datasets/{dataset}/snapshots/{snapshot}/reclaim": {
       "post": {
         "operationId": "ReclaimSnapshot",
-        "description": "Deletion marks the snapshot unavailable to new requests and persists a five-minute grace deadline before cleanup. Latest/stable/retained/parent snapshots conflict. Active readers do not block deletion; overdue reads may fail. Deferred physical cleanup stays pending.",
+        "description": "Deletion marks the snapshot unavailable to new requests and persists a five-minute grace deadline before background cleanup. This empty-body action only marks deletion and observes status; repeated requests do not drive metadata cleanup or accept a client progress cursor. Latest/stable/retained/parent snapshots conflict. Active readers do not block deletion; overdue reads may fail. Physical capacity recovery remains a separate ChunkDB responsibility.",
         "parameters": [
           {
             "in": "path",

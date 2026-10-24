@@ -60,11 +60,10 @@ impl DatasetHttpService {
                     "parent_protection": "not_evaluated"}));
             }
             (Method::POST, ["snapshots", id, "reclaim"]) => {
-                read_body(request, false).await?;
-                let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
-                let progress = authority
-                    .reclaim_snapshot_step(identity, snapshot(id)?, uploads, &ReadCancellation::new())
-                    .await?;
+                if !read_body(request, false).await?.is_empty() {
+                    return Err(ApiError::invalid());
+                }
+                let progress = authority.mark_snapshot_reclaim(identity, snapshot(id)?).await?;
                 return json(
                     &serde_json::json!({"snapshot":progress.snapshot.to_string(),"phase":progress.phase,"complete":progress.complete,"physical_cleanup_deferred":progress.physical_cleanup_deferred,"reclaim_after":authority.snapshot_reclaim_after(identity, progress.snapshot).await?}),
                 );

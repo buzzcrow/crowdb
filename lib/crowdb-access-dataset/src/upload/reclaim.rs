@@ -2,10 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crate::{
-    AuthorityError, CasOutcome, DatasetAuthority, DatasetIdentity, DatasetUploads, FieldLocator,
-    ManifestRecord, MetadataScanBudget, ReadCancellation, SnapshotId, StoreError, UploadError,
+    AuthorityError, DatasetAuthority, DatasetIdentity, DatasetUploads, FieldLocator, ManifestRecord,
+    MetadataScanBudget, ReadCancellation, SnapshotId, StoreError, UploadError,
 };
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
@@ -21,14 +20,15 @@ pub enum UploadReclaimError {
     #[error("upload reclaim exceeds its work limit")]
     Limit,
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Caller-owned scan position. It is never stored or accepted from REST clients.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnapshotUploadCleanup {
     pub version: u16,
     pub sample: usize,
     pub field: usize,
     pub retired_references: u64,
     pub complete: bool,
+    target: Option<(DatasetIdentity, SnapshotId)>,
 }
 impl Default for SnapshotUploadCleanup {
     fn default() -> Self {
@@ -38,6 +38,7 @@ impl Default for SnapshotUploadCleanup {
             field: 0,
             retired_references: 0,
             complete: false,
+            target: None,
         }
     }
 }
@@ -51,10 +52,11 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
         uploads: &DatasetUploads,
+        progress: &mut SnapshotUploadCleanup,
     ) -> Result<SnapshotUploadCleanup, UploadReclaimError> {
         tokio::time::timeout(
             Duration::from_secs(2),
-            self.retire_snapshot_upload_window(identity, snapshot, uploads),
+            self.retire_snapshot_upload_window(identity, snapshot, uploads, progress),
         )
         .await
         .map_err(|_| UploadReclaimError::Limit)?
@@ -64,6 +66,7 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
         uploads: &DatasetUploads,
+        progress: &mut SnapshotUploadCleanup,
     ) -> Result<SnapshotUploadCleanup, UploadReclaimError> {
         // Bound the retained record before the reclaim protocol reads it again.
         self.store
@@ -82,23 +85,17 @@ impl DatasetAuthority {
         let manifest: ManifestRecord =
             bincode::deserialize(&record.publication.manifest).map_err(|_| UploadReclaimError::Corrupt)?;
         manifest.validate().map_err(AuthorityError::from)?;
-        let mut key = b"DS\0GUP\0".to_vec();
-        key.extend(identity.key().map_err(AuthorityError::from)?);
-        key.extend(snapshot.as_bytes());
-        let stored = self
-            .store
-            .get_bounded(&key, budget(4096), &ReadCancellation::new())
-            .await?;
-        let mut progress: SnapshotUploadCleanup = stored
-            .as_ref()
-            .map_or_else(
-                || Ok(SnapshotUploadCleanup::default()),
-                |v| serde_json::from_slice(&v.bytes),
-            )
-            .map_err(|_| UploadReclaimError::Corrupt)?;
-        validate(&manifest, &progress)?;
+        let target = (identity.clone(), snapshot);
+        if progress.target.as_ref().is_some_and(|bound| bound != &target) {
+            return Err(UploadReclaimError::Corrupt);
+        }
+        if progress.target.is_none() && progress != &SnapshotUploadCleanup::default() {
+            return Err(UploadReclaimError::Corrupt);
+        }
+        progress.target = Some(target);
+        validate(&manifest, progress)?;
         if progress.complete {
-            return Ok(progress);
+            return Ok(progress.clone());
         }
         for _ in 0..20 {
             let Some(sample) = manifest.samples.get(progress.sample) else {
@@ -123,16 +120,7 @@ impl DatasetAuthority {
                 progress.field = 0;
             }
         }
-        let bytes = serde_json::to_vec(&progress).map_err(|_| UploadReclaimError::Corrupt)?;
-        match self
-            .store
-            .compare_exchange(&key, stored.as_ref().map(|v| v.bytes.as_slice()), &bytes)
-            .await?
-        {
-            CasOutcome::Applied(_) => Ok(progress),
-            CasOutcome::Conflict(Some(value)) if value.bytes == bytes => Ok(progress),
-            CasOutcome::Conflict(_) => Err(AuthorityError::HeadConflict.into()),
-        }
+        Ok(progress.clone())
     }
 }
 fn budget(bytes: usize) -> MetadataScanBudget {

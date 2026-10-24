@@ -8,10 +8,9 @@ use super::{
     MAX_REQUEST_BYTES,
 };
 use crowdb_access_dataset::{
-    AuthorityError, DatasetManifestResponse, DatasetPublishRequest, DatasetPublishResponse,
-    DatasetReadRequest, DatasetReclaimResponse, DatasetRetentionResponse, DatasetScanRequest,
-    DatasetSnapshotRequest, DatasetSnapshotResponse, DatasetSnapshotsResponse, OperationId,
-    ReadTransportError,
+    DatasetManifestResponse, DatasetPublishRequest, DatasetPublishResponse, DatasetReadRequest,
+    DatasetReclaimResponse, DatasetRetentionResponse, DatasetScanRequest, DatasetSnapshotRequest,
+    DatasetSnapshotResponse, DatasetSnapshotsResponse, OperationId, ReadTransportError,
 };
 use http_body_util::{BodyExt, Full};
 use hyper::{
@@ -234,24 +233,20 @@ impl DatasetHttpService {
         match self
             .reads
             .authority()
-            .reclaim_snapshot_metadata(self.reads.identity(), request.snapshot)
+            .mark_snapshot_reclaim(self.reads.identity(), request.snapshot)
             .await
         {
-            Ok(()) => encode(
+            Ok(progress) => encode(
                 StatusCode::OK,
                 &DatasetReclaimResponse {
                     snapshot: request.snapshot,
-                    reclaimed: true,
+                    reclaimed: progress.complete,
                 },
             ),
-            Err(AuthorityError::ReclaimPending { .. }) => encode(
-                StatusCode::OK,
-                &DatasetReclaimResponse {
-                    snapshot: request.snapshot,
-                    reclaimed: false,
-                },
-            ),
-            Err(error) => response(status_for_authority(&error), error.to_string().into_bytes()),
+            Err(crowdb_access_dataset::SnapshotReclaimError::Authority(error)) => {
+                response(status_for_authority(&error), error.to_string().into_bytes())
+            }
+            Err(error) => response(StatusCode::SERVICE_UNAVAILABLE, error.to_string().into_bytes()),
         }
     }
 

@@ -745,7 +745,7 @@ paths:
           $ref: '#/components/responses/InspectionError'
     post:
       operationId: reclaimSnapshotV2
-      summary: Advance bounded Snapshot retirement
+      summary: Mark Snapshot deletion and observe background retirement
       parameters:
       - $ref: '#/components/parameters/dataset'
       - in: path
@@ -754,15 +754,18 @@ paths:
         schema: *id001
       responses:
         '200':
-          description: Successful bounded operation. Integer counts are exact decimal strings.
+          description: Durable deletion status. Background workers advance cleanup after the grace deadline.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SnapshotReclaim'
         default:
           $ref: '#/components/responses/InspectionError'
-      description: Repeat until complete. Latest, stable, retained, leased or live-parent Snapshots are protected.
-        Completion fences logical metadata and owners; physical upload deletion remains deferred.
+      description: Latest, stable, retained or live-parent Snapshots are protected.
+        This empty-body action only marks deletion and observes durable status; repeated calls
+        do not drive cleanup. Nonempty bodies, including cleanup cursor or completion inputs,
+        are rejected. Background workers retire owners before metadata. Physical capacity
+        recovery remains a separate ChunkDB responsibility.
   /namespaces/dataset-ns/datasets/{dataset}/commits/{attempt}:
     get:
       operationId: commitStatusV2

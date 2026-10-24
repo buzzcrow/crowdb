@@ -228,15 +228,20 @@ fn start_cleanup(
     uploads: Arc<DatasetUploads>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(15));
-        let mut after = None;
+        let mut snapshot_cursor = crowdb_access_dataset::SnapshotReclaimSweep::default();
+        let mut next_snapshot = tokio::time::Instant::now();
         let mut upload_cursor = UploadExpiryCursor::default();
         let mut next_upload = tokio::time::Instant::now();
         loop {
             tokio::select! {
-                _ = tick.tick() => {
-                    if let Err(error) = authority.reclaim_due_page(&uploads, &mut after,
-                        &crowdb_access_dataset::ReadCancellation::new()).await {
+                () = tokio::time::sleep_until(next_snapshot) => {
+                    let result = authority.reclaim_due_page(&uploads, &mut snapshot_cursor,
+                        &crowdb_access_dataset::ReadCancellation::new()).await;
+                    let delay = if snapshot_cursor.has_more() {
+                        if result.is_ok() { Duration::from_millis(50) } else { Duration::from_millis(500) }
+                    } else { Duration::from_secs(15) };
+                    next_snapshot = tokio::time::Instant::now() + delay;
+                    if let Err(error) = result {
                         if matches!(error, crowdb_access_dataset::SnapshotReclaimError::Limit) {
                             tracing::debug!("Dataset snapshot cleanup yielded at its work deadline");
                         } else {

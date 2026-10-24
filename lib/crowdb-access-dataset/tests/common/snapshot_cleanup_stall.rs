@@ -8,13 +8,23 @@ use std::sync::{
 pub struct TestSnapshotCleanupStall {
     pub inner: Arc<crate::access_store::TestAccessStore>,
     pub stall: AtomicBool,
+    pub permanent: bool,
+    pub target: Option<Vec<u8>>,
 }
 
 #[async_trait]
 impl DatasetStore for TestSnapshotCleanupStall {
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
-        if key.starts_with(b"DS\0S\0") && self.stall.swap(false, Ordering::SeqCst) {
-            futures::future::pending::<()>().await;
+        let target = self.target.as_ref().map_or(true, |target| key == target);
+        if key.starts_with(b"DS\0S\0") && target {
+            let stalled = if self.permanent {
+                self.stall.load(Ordering::SeqCst)
+            } else {
+                self.stall.swap(false, Ordering::SeqCst)
+            };
+            if stalled {
+                futures::future::pending::<()>().await;
+            }
         }
         self.inner.get(key).await
     }

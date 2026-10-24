@@ -27,10 +27,12 @@ async fn a_slow_snapshot_yields_the_sweep_and_keeps_its_durable_cleanup_obligati
     let store = Arc::new(stall::TestSnapshotCleanupStall {
         inner: fixture.store.clone(),
         stall: std::sync::atomic::AtomicBool::new(true),
+        permanent: false,
+        target: None,
     });
     let authority = DatasetAuthority::new(store.clone()).with_reclaim_clock_for_tests(fixture.clock.clone());
     let uploads = DatasetUploads::new(store, Arc::new(upload::TestPayload::default()));
-    let mut after = None;
+    let mut after = SnapshotReclaimSweep::default();
     assert!(matches!(
         authority
             .reclaim_due_page(&uploads, &mut after, &ReadCancellation::new())
@@ -38,11 +40,11 @@ async fn a_slow_snapshot_yields_the_sweep_and_keeps_its_durable_cleanup_obligati
         Err(SnapshotReclaimError::Limit)
     ));
     assert!(
-        after.is_some(),
+        after.pending_snapshots() != 0,
         "a timed-out row must yield to the next deletion mark"
     );
     // Losing the local cursor does not lose the persistent retirement fact.
-    after = None;
+    after = SnapshotReclaimSweep::default();
     for _ in 0..32 {
         authority
             .reclaim_due_page(&uploads, &mut after, &ReadCancellation::new())
@@ -58,6 +60,62 @@ async fn a_slow_snapshot_yields_the_sweep_and_keeps_its_durable_cleanup_obligati
         }
     }
     panic!("snapshot cleanup did not recover after the stalled request was canceled");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_permanently_slow_snapshot_does_not_block_other_pending_cleanup() {
+    let fixture = deletion::TestDeletionFixture::new().await;
+    let other = fixture
+        .authority
+        .prepare_snapshot_candidate(
+            &fixture.identity,
+            None,
+            publication::publication_manifest(3),
+            OperationId::random(),
+        )
+        .await
+        .unwrap();
+    for snapshot in [fixture.snapshot, other] {
+        fixture
+            .authority
+            .mark_snapshot_reclaim(&fixture.identity, snapshot)
+            .await
+            .unwrap();
+    }
+    fixture.clock.store(1300, Ordering::Release);
+    let mut target = b"DS\0S\0".to_vec();
+    target.extend(fixture.identity.key().unwrap());
+    target.extend(fixture.snapshot.as_bytes());
+    let store = Arc::new(stall::TestSnapshotCleanupStall {
+        inner: fixture.store.clone(),
+        stall: std::sync::atomic::AtomicBool::new(true),
+        permanent: true,
+        target: Some(target),
+    });
+    let authority = DatasetAuthority::new(store.clone()).with_reclaim_clock_for_tests(fixture.clock);
+    let uploads = DatasetUploads::new(store, Arc::new(upload::TestPayload::default()));
+    let mut cursor = SnapshotReclaimSweep::default();
+    let mut timed_out = false;
+    for _ in 0..64 {
+        match authority
+            .reclaim_due_page(&uploads, &mut cursor, &ReadCancellation::new())
+            .await
+        {
+            Ok(()) => {}
+            Err(SnapshotReclaimError::Limit) => timed_out = true,
+            result => panic!("unexpected cleanup result: {result:?}"),
+        }
+        if authority
+            .inspect_snapshot_lifecycle(&fixture.identity, other, &ReadCancellation::new())
+            .await
+            .unwrap()
+            .completed
+        {
+            assert!(timed_out);
+            return;
+        }
+    }
+    panic!("slow snapshot starved an unrelated cleanup");
 }
 
 #[tokio::test]
@@ -97,7 +155,11 @@ async fn deletion_rejects_new_reads_and_keeps_the_grace_deadline_across_restarts
     let writes = store.writes.load(Ordering::Relaxed);
     let uploads = DatasetUploads::new(store.clone(), Arc::new(upload::TestPayload::default()));
     restarted
-        .reclaim_due_page(&uploads, &mut None, &ReadCancellation::new())
+        .reclaim_due_page(
+            &uploads,
+            &mut SnapshotReclaimSweep::default(),
+            &ReadCancellation::new(),
+        )
         .await
         .unwrap();
     assert!(matches!(
@@ -133,33 +195,41 @@ async fn deletion_rejects_new_reads_and_keeps_the_grace_deadline_across_restarts
     ));
     assert!(restarted.get_snapshot(&identity, next).await.is_ok());
     // Metadata completion alone must not make the background worker skip owner/index cleanup.
+    finish_worker_cleanup(&restarted, &uploads, &identity, snapshot).await;
+    let writes = store.writes.load(Ordering::Relaxed);
+    restarted
+        .reclaim_due_page(
+            &uploads,
+            &mut SnapshotReclaimSweep::default(),
+            &ReadCancellation::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.writes.load(Ordering::Relaxed), writes);
+}
+
+async fn finish_worker_cleanup(
+    authority: &DatasetAuthority,
+    uploads: &DatasetUploads,
+    identity: &DatasetIdentity,
+    snapshot: SnapshotId,
+) {
+    let mut cursor = SnapshotReclaimSweep::default();
     for _ in 0..32 {
-        restarted
-            .reclaim_due_page(&uploads, &mut None, &ReadCancellation::new())
+        authority
+            .reclaim_due_page(uploads, &mut cursor, &ReadCancellation::new())
             .await
             .unwrap();
-        if restarted
-            .inspect_snapshot_lifecycle(&identity, snapshot, &ReadCancellation::new())
+        if authority
+            .inspect_snapshot_lifecycle(identity, snapshot, &ReadCancellation::new())
             .await
             .unwrap()
             .completed
         {
-            break;
+            return;
         }
     }
-    assert!(
-        restarted
-            .inspect_snapshot_lifecycle(&identity, snapshot, &ReadCancellation::new())
-            .await
-            .unwrap()
-            .completed
-    );
-    let writes = store.writes.load(Ordering::Relaxed);
-    restarted
-        .reclaim_due_page(&uploads, &mut None, &ReadCancellation::new())
-        .await
-        .unwrap();
-    assert_eq!(store.writes.load(Ordering::Relaxed), writes);
+    panic!("background cleanup did not complete");
 }
 
 #[tokio::test]
@@ -179,12 +249,12 @@ async fn corrupt_deletion_marks_do_not_starve_other_snapshots() {
         .unwrap();
     let uploads = DatasetUploads::new(fixture.store.clone(), Arc::new(upload::TestPayload::default()));
     let cancel = ReadCancellation::new();
-    let mut after = None;
+    let mut after = SnapshotReclaimSweep::default();
     assert!(authority
         .reclaim_due_page(&uploads, &mut after, &cancel)
         .await
         .is_err());
-    assert_eq!(after, Some(corrupt_key));
+    assert!(after.has_more());
     for _ in 0..32 {
         // A corrupt record is reported again each cycle without starving later records.
         let _ = authority.reclaim_due_page(&uploads, &mut after, &cancel).await;

@@ -3,7 +3,7 @@
 
 use crate::{
     AuthorityError, DatasetAuthority, DatasetIdentity, DatasetUploads, MetadataScanBudget, ReadCancellation,
-    SnapshotId, SnapshotRecord, StoreError, UploadReclaimError,
+    SnapshotId, SnapshotRecord, SnapshotUploadCleanup, StoreError, UploadReclaimError,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -40,52 +40,89 @@ pub struct SnapshotReclaimStatus {
     pub complete: bool,
     pub physical_cleanup_deferred: bool,
 }
+
+/// Opaque local cleanup position. Losing it repeats idempotent retirement work.
+#[derive(Clone, Debug)]
+pub struct SnapshotReclaimCursor {
+    pub(super) identity: DatasetIdentity,
+    pub(super) snapshot: SnapshotId,
+    uploads: SnapshotUploadCleanup,
+}
+impl SnapshotReclaimCursor {
+    #[must_use]
+    pub fn new(identity: DatasetIdentity, snapshot: SnapshotId) -> Self {
+        Self {
+            identity,
+            snapshot,
+            uploads: SnapshotUploadCleanup::default(),
+        }
+    }
+}
+
 impl DatasetAuthority {
+    /// Marks deletion and observes its durable status. Background cleanup owns progress.
+    /// # Errors
+    /// Rejects protected or missing resources and unavailable storage.
+    pub async fn mark_snapshot_reclaim(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+    ) -> Result<SnapshotReclaimStatus, SnapshotReclaimError> {
+        self.begin_reclaim(identity, snapshot).await?;
+        let stored = self
+            .store
+            .get(&crate::key::read_lease(identity, snapshot).map_err(AuthorityError::from)?)
+            .await?
+            .ok_or(AuthorityError::SnapshotNotFound)?;
+        let access = super::decode_access(&stored.bytes)?;
+        Ok(SnapshotReclaimStatus {
+            snapshot,
+            phase: if access.cleanup_complete {
+                SnapshotReclaimPhase::Complete
+            } else if self.reclaim_time() < access.reclaim_after {
+                SnapshotReclaimPhase::GracePeriod
+            } else {
+                SnapshotReclaimPhase::UploadOwners
+            },
+            complete: access.cleanup_complete,
+            physical_cleanup_deferred: true,
+        })
+    }
+
     /// Advances durable owner and metadata retirement without waiting for physical upload cleanup.
     /// Each component resumes its own bounded window after interruption or restart.
     /// # Errors
     /// Rejects protected owners, unsupported content, storage failures and bounded-work exhaustion.
-    pub async fn reclaim_snapshot_step(
+    pub async fn advance_snapshot_reclaim(
         &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
         uploads: &DatasetUploads,
+        cursor: &mut SnapshotReclaimCursor,
         cancel: &ReadCancellation,
     ) -> Result<SnapshotReclaimStatus, SnapshotReclaimError> {
         tokio::time::timeout(
             Duration::from_secs(10),
-            self.reclaim_snapshot_window(identity, snapshot, uploads, cancel),
+            self.reclaim_snapshot_window(uploads, cursor, cancel),
         )
         .await
         .map_err(|_| SnapshotReclaimError::Limit)?
     }
     async fn reclaim_snapshot_window(
         &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
         uploads: &DatasetUploads,
+        cursor: &mut SnapshotReclaimCursor,
         cancel: &ReadCancellation,
     ) -> Result<SnapshotReclaimStatus, SnapshotReclaimError> {
         if cancel.is_cancelled() {
             return Err(crate::inspection::InspectionError::Cancelled.into());
         }
-        let mut status = SnapshotReclaimStatus {
-            snapshot,
-            phase: SnapshotReclaimPhase::UploadOwners,
-            complete: false,
-            physical_cleanup_deferred: true,
-        };
-        self.begin_reclaim(identity, snapshot).await?;
-        match self.require_reclaim_ready(identity, snapshot).await {
-            Ok(()) => {}
-            Err(AuthorityError::ReclaimPending { .. }) => {
-                status.phase = SnapshotReclaimPhase::GracePeriod;
-                return Ok(status);
-            }
-            Err(error) => return Err(error.into()),
+        let identity = &cursor.identity;
+        let snapshot = cursor.snapshot;
+        let mut status = self.mark_snapshot_reclaim(identity, snapshot).await?;
+        if status.complete || status.phase == SnapshotReclaimPhase::GracePeriod {
+            return Ok(status);
         }
         if !self
-            .reclaim_snapshot_uploads_step(identity, snapshot, uploads)
+            .reclaim_snapshot_uploads_step(identity, snapshot, uploads, &mut cursor.uploads)
             .await?
             .complete
         {

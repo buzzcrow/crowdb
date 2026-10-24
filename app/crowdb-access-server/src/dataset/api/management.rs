@@ -69,17 +69,11 @@ impl DatasetHttpService {
                 )
             }
             (Method::POST, ["snapshots", id, "reclaim"]) => {
-                read_body(request, false).await?;
+                if !read_body(request, false).await?.is_empty() {
+                    return Err(ApiError::invalid());
+                }
                 let id = snapshot(id)?;
-                let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
-                let progress = authority
-                    .reclaim_snapshot_step(
-                        identity,
-                        id,
-                        uploads,
-                        &crowdb_access_dataset::ReadCancellation::new(),
-                    )
-                    .await?;
+                let progress = authority.mark_snapshot_reclaim(identity, id).await?;
                 json(&serde_json::json!({"snapshot":id.to_string(),
                     "state":if progress.complete {"completed"}else{"pending"},
                     "reclaim_after":authority.snapshot_reclaim_after(identity, id).await?,

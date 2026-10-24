@@ -345,10 +345,22 @@ irreversible retiring phase. Concurrent stale reclaimers cannot undo retirement.
 After the terminal deletion mark, cleanup waits until the persisted grace
 deadline. The Access Server scans bounded pages of deletion records and resumes
 cleanup independently of reader processes. An Aborted Snapshot tombstone preserves
-the original Manifest while payload cleanup is pending and prevents publication retry resurrection. Upload ownership
-is released for that operation only; other Snapshot owners preserve shared
-bytes. Deferred physical cleanup remains pending. Shared range retirement does
-not count as a reclaimed whole chunk.
+the original Manifest while payload cleanup is pending and prevents publication retry resurrection.
+REST and bincode deletion requests only establish this mark and observe durable
+completion; repeated requests do not drive metadata deletion or accept a client
+cleanup cursor. Background workers release upload ownership for that operation
+only; other Snapshot owners preserve shared bytes. Owner scan positions are
+local, bound to one Dataset/Snapshot, and lost positions repeat idempotent
+retirement without a stored progress record.
+
+Background discovery reads at most twenty deletion marks / 512 KiB and keeps
+at most 32 local cleanup hints. Each window has a two-second deadline. Pending
+work runs at a 50 ms interval; failures back off to 500 ms and rotate the queue,
+so one slow Snapshot cannot starve another. An empty backlog waits fifteen
+seconds. Restart rescans durable marks. Metadata deletion starts only after the
+owner cursor completes; clients cannot skip that boundary. Accepted range
+notifications end Access responsibility without waiting for physical capacity
+recovery. Shared range retirement does not count as a reclaimed whole chunk.
 
 `reclaim_snapshot_metadata_step` persists phase and continuation while deleting
 at most twenty metadata keys per step. It removes Manifest storage and inspection

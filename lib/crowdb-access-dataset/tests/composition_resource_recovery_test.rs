@@ -145,12 +145,13 @@ async fn final_snapshot_owners_keep_shared_uploads_without_staging_or_cleanup_jo
     ));
     store.reject_workflow_writes.store(false, Ordering::Relaxed);
     for (snapshot, now) in [(a, 1300), (b, 1600)] {
+        let mut upload_cursor = SnapshotUploadCleanup::default();
         authority.begin_reclaim(&identity, snapshot).await.unwrap();
         clock.store(now, Ordering::Release);
         let mut complete = false;
         for _ in 0..10 {
             if authority
-                .reclaim_snapshot_uploads_step(&identity, snapshot, &uploads)
+                .reclaim_snapshot_uploads_step(&identity, snapshot, &uploads, &mut upload_cursor)
                 .await
                 .unwrap()
                 .complete

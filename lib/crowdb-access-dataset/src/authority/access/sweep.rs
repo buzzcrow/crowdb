@@ -1,38 +1,83 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::decode_access;
+use super::{decode_access, SnapshotReclaimCursor};
 use crate::{
     key, AuthorityError, DatasetAuthority, DatasetUploads, MetadataScan, MetadataScanBudget,
     ReadCancellation, SnapshotReclaimError,
 };
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
+
+const QUEUE_LIMIT: usize = 32;
+const DISCOVERY_ITEMS: usize = 20;
+
+/// Bounded worker-local hints. Durable deletion marks rediscover every lost hint.
+#[derive(Default, Debug)]
+pub struct SnapshotReclaimSweep {
+    after: Option<Vec<u8>>,
+    pending: VecDeque<SnapshotReclaimCursor>,
+}
+impl SnapshotReclaimSweep {
+    #[must_use]
+    pub fn has_more(&self) -> bool {
+        self.after.is_some() || !self.pending.is_empty()
+    }
+    #[must_use]
+    pub fn pending_snapshots(&self) -> usize {
+        self.pending.len()
+    }
+}
 
 impl DatasetAuthority {
-    /// Advances one bounded page of durable deletion marks. The cursor is only
-    /// a scan optimization; restarting from the beginning loses no cleanup work.
-    /// On an item failure the cursor advances past it, so unrelated deletions
-    /// can progress; the failed durable mark is retried on the next scan cycle.
+    /// Discovers bounded durable deletion marks and advances one local cleanup hint.
+    /// A failed or interrupted window retains its hint; restart rescans the marks.
     /// # Errors
     /// Returns storage, corrupt marker, cancellation or cleanup failures.
     pub async fn reclaim_due_page(
         &self,
         uploads: &DatasetUploads,
-        after: &mut Option<Vec<u8>>,
+        cursor: &mut SnapshotReclaimSweep,
         cancel: &ReadCancellation,
     ) -> Result<(), SnapshotReclaimError> {
-        tokio::time::timeout(
+        if let Ok(result) = tokio::time::timeout(
             Duration::from_secs(2),
-            self.reclaim_due_window(uploads, after, cancel),
+            self.reclaim_due_window(uploads, cursor, cancel),
         )
         .await
-        .map_err(|_| SnapshotReclaimError::Limit)?
+        {
+            result
+        } else {
+            if cursor.pending.len() > 1 {
+                cursor.pending.rotate_left(1);
+            }
+            Err(SnapshotReclaimError::Limit)
+        }
     }
 
     async fn reclaim_due_window(
         &self,
         uploads: &DatasetUploads,
-        after: &mut Option<Vec<u8>>,
+        cursor: &mut SnapshotReclaimSweep,
+        cancel: &ReadCancellation,
+    ) -> Result<(), SnapshotReclaimError> {
+        if cursor.pending.len() <= QUEUE_LIMIT - DISCOVERY_ITEMS {
+            self.discover_reclaims(cursor, cancel).await?;
+        }
+        let Some(work) = cursor.pending.front_mut() else {
+            return Ok(());
+        };
+        let result = self.advance_snapshot_reclaim(uploads, work, cancel).await;
+        if result.as_ref().is_ok_and(|status| status.complete) {
+            cursor.pending.pop_front();
+        } else {
+            cursor.pending.rotate_left(1);
+        }
+        result.map(|_| ())
+    }
+
+    async fn discover_reclaims(
+        &self,
+        cursor: &mut SnapshotReclaimSweep,
         cancel: &ReadCancellation,
     ) -> Result<(), SnapshotReclaimError> {
         let page = self
@@ -40,9 +85,9 @@ impl DatasetAuthority {
             .scan_page(
                 &MetadataScan {
                     prefix: key::LEASE_PREFIX.to_vec(),
-                    after: after.clone(),
+                    after: cursor.after.clone(),
                     budget: MetadataScanBudget {
-                        items: 20,
+                        items: DISCOVERY_ITEMS,
                         bytes: 512 * 1024,
                         timeout: Duration::from_secs(2),
                     },
@@ -54,7 +99,7 @@ impl DatasetAuthority {
             if cancel.is_cancelled() {
                 return Err(AuthorityError::from(crate::DatasetError::ReadCancelled).into());
             }
-            *after = Some(key.clone());
+            cursor.after = Some(key.clone());
             let access = decode_access(&value.bytes)?;
             if !access.retiring || access.cleanup_complete || access.reclaim_after > self.reclaim_time() {
                 continue;
@@ -65,10 +110,17 @@ impl DatasetAuthority {
             if crate::key::read_lease(&identity, snapshot).map_err(AuthorityError::from)? != *key {
                 return Err(AuthorityError::Corrupt.into());
             }
-            self.reclaim_snapshot_step(&identity, snapshot, uploads, cancel)
-                .await?;
+            if !cursor
+                .pending
+                .iter()
+                .any(|work| work.identity == identity && work.snapshot == snapshot)
+            {
+                cursor
+                    .pending
+                    .push_back(SnapshotReclaimCursor::new(identity, snapshot));
+            }
         }
-        *after = page.after;
+        cursor.after = page.after;
         Ok(())
     }
 }

@@ -5,13 +5,16 @@ use super::{decode, DatasetAuthority, VersionedRecord};
 mod cleanup;
 mod lifecycle;
 mod observation;
-pub use lifecycle::{SnapshotReclaimError, SnapshotReclaimPhase, SnapshotReclaimStatus};
+pub use lifecycle::{
+    SnapshotReclaimCursor, SnapshotReclaimError, SnapshotReclaimPhase, SnapshotReclaimStatus,
+};
 pub use observation::SnapshotLifecycle;
 mod reclaim;
 mod sweep;
 use crate::{key, AuthorityError, CasOutcome, DatasetIdentity, OperationId, SnapshotId};
 pub use cleanup::MetadataCleanupProgress;
 use serde::{Deserialize, Serialize};
+pub use sweep::SnapshotReclaimSweep;
 
 /// Default delay between logical deletion and destructive cleanup.
 const RECLAIM_GRACE_SECONDS: u64 = 300;

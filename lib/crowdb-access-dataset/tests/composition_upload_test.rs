@@ -152,11 +152,12 @@ async fn reclaimed_snapshot_retires_its_upload_owner_after_index_cleanup() {
     f.publish(snapshot).await;
     assert!(f.cleanup().await.complete);
     let record = f.authority.get_snapshot(&f.identity, snapshot).await.unwrap();
+    let mut upload_cursor = SnapshotUploadCleanup::default();
     let other_owner = OperationId::random();
     f.uploads.claim(&f.location, other_owner, 3).await.unwrap();
     assert!(matches!(
         f.authority
-            .reclaim_snapshot_uploads_step(&f.identity, snapshot, &f.uploads)
+            .reclaim_snapshot_uploads_step(&f.identity, snapshot, &f.uploads, &mut upload_cursor)
             .await,
         Err(UploadReclaimError::Authority(AuthorityError::SnapshotProtected))
     ));
@@ -185,16 +186,17 @@ async fn reclaimed_snapshot_retires_its_upload_owner_after_index_cleanup() {
         .unwrap();
     let progress = f
         .authority
-        .reclaim_snapshot_uploads_step(&f.identity, snapshot, &f.uploads)
+        .reclaim_snapshot_uploads_step(&f.identity, snapshot, &f.uploads, &mut upload_cursor)
         .await
         .unwrap();
     assert!(progress.complete);
     assert_eq!(progress.retired_references, 1);
     let mut retired = false;
+    let mut cursor = SnapshotReclaimCursor::new(f.identity.clone(), snapshot);
     for _ in 0..100 {
         let status = f
             .authority
-            .reclaim_snapshot_step(&f.identity, snapshot, &f.uploads, &ReadCancellation::new())
+            .advance_snapshot_reclaim(&f.uploads, &mut cursor, &ReadCancellation::new())
             .await
             .unwrap();
         if status.complete {
@@ -207,7 +209,7 @@ async fn reclaimed_snapshot_retires_its_upload_owner_after_index_cleanup() {
     assert!(retired);
     assert_eq!(
         f.authority
-            .reclaim_snapshot_uploads_step(&f.identity, snapshot, &f.uploads)
+            .reclaim_snapshot_uploads_step(&f.identity, snapshot, &f.uploads, &mut upload_cursor)
             .await
             .unwrap(),
         progress
