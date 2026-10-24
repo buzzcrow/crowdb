@@ -30,6 +30,8 @@ use tokio::sync::{mpsc, oneshot};
 
 #[path = "common/multipart_cost.rs"]
 mod cost;
+#[path = "common/multipart_expiry.rs"]
+mod expiry;
 #[path = "common/multipart_progress.rs"]
 mod progress;
 #[path = "common/multipart_unknown.rs"]

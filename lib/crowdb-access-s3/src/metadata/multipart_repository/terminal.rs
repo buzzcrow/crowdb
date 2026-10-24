@@ -13,6 +13,7 @@ use crowdb_access_multipart::next_revision;
 const MAX_EXPIRY_PAGE: usize = 1_000;
 const MAX_EXPIRY_SCAN_BYTES: usize = 4 * 1024 * 1024;
 
+#[derive(Debug)]
 pub struct MultipartExpiryPage {
     pub next: Option<Vec<u8>>,
     pub expired: usize,
@@ -83,7 +84,7 @@ impl MultipartRepository {
                 return Err(MultipartRepositoryError::Conflict);
             }
             if session.phase == MultipartPhase::Open && session.expires_ms <= now_ms {
-                match self.abort(&session).await {
+                match self.abort_observed(session).await {
                     Ok(_) => expired += 1,
                     Err(MultipartRepositoryError::Conflict) => {}
                     Err(error) => return Err(error),
@@ -101,10 +102,17 @@ impl MultipartRepository {
         &self,
         session: &MultipartSessionRecord,
     ) -> Result<MultipartSessionRecord, MultipartRepositoryError> {
-        let mut current = self
+        let current = self
             .load(session)
             .await?
             .ok_or(MultipartRepositoryError::Conflict)?;
+        self.abort_observed(current).await
+    }
+
+    async fn abort_observed(
+        &self,
+        mut current: MultipartSessionRecord,
+    ) -> Result<MultipartSessionRecord, MultipartRepositoryError> {
         if current.pending.is_some() {
             current = self.settle_current_part(&current).await?.current;
             if current.pending.is_some() {
