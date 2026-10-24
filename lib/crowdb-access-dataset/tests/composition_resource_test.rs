@@ -41,22 +41,10 @@ async fn complete_input_replaces_workflow_writes_and_keeps_the_same_manifest_and
     let (store, authority, identity, parent) = split_store::fixture().await;
     let parent = split_store::publish_binary_samples(&authority, &identity, parent).await;
     let input = request(parent);
-    let before = counts(&store);
-    let operation = OperationId::random();
-    let mut old = common::input(parent);
-    old.splits = input.splits.clone();
-    authority
-        .begin_composition(&identity, operation, &old)
-        .await
-        .unwrap();
-    authority
-        .edit_composition(&identity, operation, &common::edit(1, input.samples.clone()))
-        .await
-        .unwrap();
-    common::evaluate(&authority, &identity, operation, 2).await;
-    let old = common::prepare(&authority, &identity, operation, 2).await;
-    let old_cost = delta(&store, before);
-    let old_snapshot = old.preparation.unwrap().candidate;
+    let mut expected = authority.get_manifest(&identity, parent).await.unwrap().samples;
+    expected.retain(|sample| sample.sample_id != [0, 0, 255]);
+    expected.push(common::sample(b"new", 9));
+    expected.sort_by(|a, b| a.sample_id.cmp(&b.sample_id));
     store.reject_workflow_writes.store(true, Ordering::Relaxed);
     let before = counts(&store);
     let head_reads = store.data_head_reads.load(Ordering::Relaxed);
@@ -69,17 +57,10 @@ async fn complete_input_replaces_workflow_writes_and_keeps_the_same_manifest_and
     assert_eq!(store.data_head_reads.load(Ordering::Relaxed), head_reads);
     assert_eq!(result.snapshot, snapshot);
     assert_eq!(result.sample_count, 45);
-    assert!(new_cost.0 + new_cost.1 + new_cost.2 < old_cost.0 + old_cost.1 + old_cost.2);
-    assert!(new_cost.2 < old_cost.2);
     assert_eq!(new_cost, (187, 14, 153));
-    println!("45 Samples, two Splits: workflow {old_cost:?}, resource {new_cost:?} (GET, scan, CAS)");
     assert_eq!(
-        authority
-            .get_manifest(&identity, old_snapshot)
-            .await
-            .unwrap()
-            .samples,
-        authority.get_manifest(&identity, snapshot).await.unwrap().samples
+        authority.get_manifest(&identity, snapshot).await.unwrap().samples,
+        expected
     );
     let initial = result.initial_split.unwrap();
     let split = authority

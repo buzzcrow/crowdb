@@ -366,9 +366,12 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
   旧路径与新路径的运行时成本对照改为记录历史基线并锁定新成本，不能为比较保留生产旧驱动。
   Files: `composition/{begin,edit,evaluation,evaluate_step,prepare,publication,uploads}.rs`、
   `split/{lifecycle,evaluation,prepare,initial,publication}.rs`、相关 test/common。
-- [~] **P2.2e.2 迁移业务和 legacy 测试 fixture**：common Split/Composition 生产者改完整
+- [ ] **P2.2e.2 迁移业务和 legacy 测试 fixture**：common Split/Composition 生产者改完整
   资源；历史 GC 测试在 tests/common 直接安装原格式 bytes。移除只验证已退休编辑/续算的
   case，保留 schema/selection/frozen inheritance/owner/完整根隔离与历史读取断言。
+- [~] **P2.2e.2b 旧状态直接构造**：补 tests/common 的原始 CD/SD/CE/CW/CM/SW bytes
+  构造器，状态查询/cleanup/finalizer fixture 不调用旧 begin/edit/evaluate/prepare；
+  业务读写用完整资源，终止已删除流程的专有测试，记录保留的反例映射。
 - [ ] **P2.2e.3 删除生产旧写驱动**：删除不再使用的 begin/edit/evaluation/prepare/publish
   及 staging-owner 获取、window/row 写，保留必要 legacy decoder、abort/release/fence。
   all-target 编译不可通过测试 feature 重新开启生产驱动；新路径禁止 workflow 写回归继续有效。
@@ -554,6 +557,13 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P2.2e.2a**：新 Composition/Split 成本回归不再执行旧 workflow 作对照；
+  直接锁定已测的新成本（45 Samples/two Splits：Composition 187G/14S/153C，Split
+  14G/6S/8C），Manifest 与全部成员有独立预期，历史基线仍保留在验证记录。冻结继承
+  fixture 改为完整 Split 准备与显式 direct head，移除其 begin/evaluate/prepare/publish。
+  14 项相关资源/成本/继承/读取测试、Dataset all-target/all-feature clippy、fmt/diff 通过，
+  均经 pixi；没有新增生产 API、存储或 helper 旁路。其余旧清理 fixture 和旧驱动待继续。
 
 - **2026-10-24，P2.2e.1**：parent schema 装载/required 字段延伸校验移入
   `composition/resource/schema.rs`，Split 确定性 ID 移入 `split/identity.rs`；移除新资源

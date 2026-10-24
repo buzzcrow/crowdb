@@ -31,14 +31,6 @@ fn reads(store: &split_store::TestDraftStore) -> (usize, usize) {
 async fn preparation_writes_only_final_resources_without_draft_or_head_state() {
     let (store, authority, identity, parent) = split_store::fixture().await;
     let snapshot = split_store::publish_binary_samples(&authority, &identity, parent).await;
-    let before = store.mutations.load(Ordering::Relaxed);
-    let previous_reads = reads(&store);
-    let legacy = split_store::prepared(&authority, &identity, snapshot, None).await;
-    let legacy_writes = store.mutations.load(Ordering::Relaxed) - before;
-    let legacy_reads = (
-        reads(&store).0 - previous_reads.0,
-        reads(&store).1 - previous_reads.1,
-    );
     store.reject_draft_writes.store(true, Ordering::Relaxed);
     let before = store.mutations.load(Ordering::Relaxed);
     let previous_reads = reads(&store);
@@ -53,13 +45,8 @@ async fn preparation_writes_only_final_resources_without_draft_or_head_state() {
         reads(&store).1 - previous_reads.1,
     );
     assert_eq!(writes, pages(&result) + 2);
-    assert_eq!(pages(&result), pages(&legacy));
-    assert!(legacy_writes > writes, "old={legacy_writes}, new={writes}");
-    assert!(new_reads.0 + new_reads.1 + writes < legacy_reads.0 + legacy_reads.1 + legacy_writes);
-    println!(
-        "45 Samples: old={legacy_reads:?} (GET, scan) + {legacy_writes} CAS, new={new_reads:?} + {writes} CAS, final pages={}",
-        pages(&result)
-    );
+    assert_eq!(pages(&result), 6);
+    assert_eq!((new_reads.0, new_reads.1, writes), (14, 6, 8));
     assert_eq!(result.splits.iter().map(|split| split.count).sum::<u64>(), 45);
     let before = store.mutations.load(Ordering::Relaxed);
     assert_eq!(
