@@ -4,8 +4,8 @@
 //! Compatibility routes for the original bincode client.
 
 use super::{
-    cancelled_status, decode_snapshot_request, encode, response, status_for_authority, unix_seconds,
-    DatasetHttpService, MAX_REQUEST_BYTES,
+    cancelled_status, decode_snapshot_request, encode, response, status_for_authority, DatasetHttpService,
+    MAX_REQUEST_BYTES,
 };
 use crowdb_access_dataset::{
     AuthorityError, DatasetManifestResponse, DatasetPublishRequest, DatasetPublishResponse,
@@ -28,17 +28,6 @@ impl DatasetHttpService {
             return self.read(request).await;
         }
         if request.method() == Method::POST && request.uri().path() == "/v1/dataset/scan" {
-            return self.scan(request).await;
-        }
-        if request.method() == Method::POST
-            && matches!(
-                request.uri().path(),
-                "/v1/dataset/start-read-plan"
-                    | "/v1/dataset/next-batch"
-                    | "/v1/dataset/save-progress"
-                    | "/v1/dataset/resume"
-            )
-        {
             return self.scan(request).await;
         }
         if request.method() == Method::POST && request.uri().path() == "/v1/dataset/create" {
@@ -303,7 +292,7 @@ impl DatasetHttpService {
             Ok(request) => request,
             Err(_) => return response(StatusCode::BAD_REQUEST, b"invalid dataset request".to_vec()),
         };
-        match self.reads.read(request, unix_seconds()).await {
+        match self.reads.read(request).await {
             Ok(result) => encode(StatusCode::OK, &result),
             Err(ReadTransportError::WindowFull) => {
                 response(StatusCode::TOO_MANY_REQUESTS, b"read window full".to_vec())
@@ -332,7 +321,7 @@ impl DatasetHttpService {
             Ok(request) => request,
             Err(_) => return response(StatusCode::BAD_REQUEST, b"invalid scan request".to_vec()),
         };
-        match self.reads.scan(request, unix_seconds()).await {
+        match self.reads.scan(request).await {
             Ok(result) => encode(StatusCode::OK, &result),
             Err(ReadTransportError::WindowFull) => {
                 response(StatusCode::TOO_MANY_REQUESTS, b"read window full".to_vec())

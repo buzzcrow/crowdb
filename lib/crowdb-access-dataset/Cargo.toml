@@ -14,6 +14,7 @@ workspace = true
 test-util = []
 
 [dependencies]
+base64 = "0.22"
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 async-trait = "0.1"
 bincode = "1.3"

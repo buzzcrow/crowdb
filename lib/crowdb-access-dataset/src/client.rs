@@ -165,34 +165,6 @@ impl DatasetHttpClient {
     pub async fn scan(&self, request: DatasetScanRequest) -> Result<DatasetScanResponse, DatasetClientError> {
         self.call("/v1/dataset/scan", &request).await
     }
-
-    pub async fn start_read_plan(
-        &self,
-        request: DatasetScanRequest,
-    ) -> Result<DatasetScanResponse, DatasetClientError> {
-        self.call("/v1/dataset/start-read-plan", &request).await
-    }
-
-    pub async fn next_batch(
-        &self,
-        request: DatasetScanRequest,
-    ) -> Result<DatasetScanResponse, DatasetClientError> {
-        self.call("/v1/dataset/next-batch", &request).await
-    }
-
-    pub async fn save_progress(
-        &self,
-        request: DatasetScanRequest,
-    ) -> Result<DatasetScanResponse, DatasetClientError> {
-        self.call("/v1/dataset/save-progress", &request).await
-    }
-
-    pub async fn resume(
-        &self,
-        request: DatasetScanRequest,
-    ) -> Result<DatasetScanResponse, DatasetClientError> {
-        self.call("/v1/dataset/resume", &request).await
-    }
 }
 
 /// Fat client facade for direct access to the same Dataset authority and
@@ -208,58 +180,12 @@ impl DatasetDirectClient {
         Self { service }
     }
 
-    pub async fn read(
-        &self,
-        request: DatasetReadRequest,
-        now_seconds: u64,
-    ) -> Result<DatasetReadResponse, DatasetClientError> {
-        Ok(self
-            .service
-            .read_surface(ReadSurface::Native, request, now_seconds)
-            .await?)
+    pub async fn read(&self, request: DatasetReadRequest) -> Result<DatasetReadResponse, DatasetClientError> {
+        Ok(self.service.read_surface(ReadSurface::Native, request).await?)
     }
 
-    pub async fn scan(
-        &self,
-        request: DatasetScanRequest,
-        now_seconds: u64,
-    ) -> Result<DatasetScanResponse, DatasetClientError> {
-        Ok(self
-            .service
-            .scan_surface(ReadSurface::Native, request, now_seconds)
-            .await?)
-    }
-
-    pub async fn start_read_plan(
-        &self,
-        request: DatasetScanRequest,
-        now_seconds: u64,
-    ) -> Result<DatasetScanResponse, DatasetClientError> {
-        self.scan(request, now_seconds).await
-    }
-
-    pub async fn next_batch(
-        &self,
-        request: DatasetScanRequest,
-        now_seconds: u64,
-    ) -> Result<DatasetScanResponse, DatasetClientError> {
-        self.scan(request, now_seconds).await
-    }
-
-    pub async fn save_progress(
-        &self,
-        request: DatasetScanRequest,
-        now_seconds: u64,
-    ) -> Result<DatasetScanResponse, DatasetClientError> {
-        self.scan(request, now_seconds).await
-    }
-
-    pub async fn resume(
-        &self,
-        request: DatasetScanRequest,
-        now_seconds: u64,
-    ) -> Result<DatasetScanResponse, DatasetClientError> {
-        self.scan(request, now_seconds).await
+    pub async fn scan(&self, request: DatasetScanRequest) -> Result<DatasetScanResponse, DatasetClientError> {
+        Ok(self.service.scan_surface(ReadSurface::Native, request).await?)
     }
 
     #[must_use]

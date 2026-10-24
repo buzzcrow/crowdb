@@ -1488,6 +1488,173 @@
         }
       }
     },
+    "/api/dataset/v1/namespaces/{namespace}/datasets/{dataset}/reads/next": {
+      "post": {
+        "operationId": "NextBatch",
+        "description": "Replay the caller continuation. Save next only after successful processing; no remote acknowledgement or close.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespace",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          },
+          {
+            "in": "path",
+            "name": "dataset",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/vnd.crowdb.dataset-batch.v1": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          },
+          "499": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadContinuation"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dataset/v1/namespaces/{namespace}/datasets/{dataset}/reads/bind": {
+      "post": {
+        "operationId": "BindRead",
+        "description": "Resolve immutable versions into a client-owned continuation. No read record or progress is stored.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespace",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          },
+          {
+            "in": "path",
+            "name": "dataset",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadBinding"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          },
+          "499": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadPlan"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/dataset/v1/namespaces/{namespace}/datasets/{dataset}/reads": {
       "post": {
         "operationId": "GetBatch",
@@ -1568,501 +1735,6 @@
                 "$ref": "#/components/schemas/BatchRequest"
               }
             }
-          }
-        }
-      }
-    },
-    "/api/dataset/v1/namespaces/{namespace}/datasets/{dataset}/read-plans": {
-      "post": {
-        "operationId": "StartReadPlan",
-        "description": "Resolve latest/stable once; persist immutable selection, projection, deterministic shuffle and rank/worker partition before payload access. Same ID+plan retries recover one session; divergent plan conflicts. Metadata predicates filter before payload transfer.",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "namespace",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255
-            }
-          },
-          {
-            "in": "path",
-            "name": "dataset",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReadSession"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Error"
-          },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          },
-          "409": {
-            "$ref": "#/components/responses/Error"
-          },
-          "413": {
-            "$ref": "#/components/responses/Error"
-          },
-          "429": {
-            "$ref": "#/components/responses/Error"
-          },
-          "500": {
-            "$ref": "#/components/responses/Error"
-          },
-          "501": {
-            "$ref": "#/components/responses/Error"
-          },
-          "503": {
-            "$ref": "#/components/responses/Error"
-          },
-          "504": {
-            "$ref": "#/components/responses/Error"
-          },
-          "499": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ReadPlan"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/dataset/v1/namespaces/{namespace}/datasets/{dataset}/read-plans/{read}": {
-      "get": {
-        "operationId": "ResumeReadPlan",
-        "description": "",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "namespace",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255
-            }
-          },
-          {
-            "in": "path",
-            "name": "dataset",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255
-            }
-          },
-          {
-            "in": "path",
-            "name": "read",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReadSession"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Error"
-          },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          },
-          "409": {
-            "$ref": "#/components/responses/Error"
-          },
-          "413": {
-            "$ref": "#/components/responses/Error"
-          },
-          "429": {
-            "$ref": "#/components/responses/Error"
-          },
-          "500": {
-            "$ref": "#/components/responses/Error"
-          },
-          "501": {
-            "$ref": "#/components/responses/Error"
-          },
-          "503": {
-            "$ref": "#/components/responses/Error"
-          },
-          "504": {
-            "$ref": "#/components/responses/Error"
-          },
-          "499": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      },
-      "delete": {
-        "operationId": "CloseReadPlan",
-        "description": "Idempotent scoped close/cancel; other sessions continue. No activity for 60 seconds expires the read session; it is not a snapshot GC lease. Application processing is at least once around acknowledgement.",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "namespace",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255
-            }
-          },
-          {
-            "in": "path",
-            "name": "dataset",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255
-            }
-          },
-          {
-            "in": "path",
-            "name": "read",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReadSession"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Error"
-          },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          },
-          "409": {
-            "$ref": "#/components/responses/Error"
-          },
-          "413": {
-            "$ref": "#/components/responses/Error"
-          },
-          "429": {
-            "$ref": "#/components/responses/Error"
-          },
-          "500": {
-            "$ref": "#/components/responses/Error"
-          },
-          "501": {
-            "$ref": "#/components/responses/Error"
-          },
-          "503": {
-            "$ref": "#/components/responses/Error"
-          },
-          "504": {
-            "$ref": "#/components/responses/Error"
-          },
-          "499": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
-    "/api/dataset/v1/namespaces/{namespace}/datasets/{dataset}/read-plans/{read}/next": {
-      "post": {
-        "operationId": "NextBatch",
-        "description": "Fetches the batch at the acknowledged position. Repeated fetch replays it. Returns an opaque next cursor; fetching/prefetching never acknowledges. Lease is renewed through active delivery.",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "namespace",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255
-            }
-          },
-          {
-            "in": "path",
-            "name": "dataset",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255
-            }
-          },
-          {
-            "in": "path",
-            "name": "read",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation",
-            "content": {
-              "application/vnd.crowdb.dataset-batch.v1": {
-                "schema": {
-                  "type": "string",
-                  "format": "binary"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Error"
-          },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          },
-          "409": {
-            "$ref": "#/components/responses/Error"
-          },
-          "413": {
-            "$ref": "#/components/responses/Error"
-          },
-          "429": {
-            "$ref": "#/components/responses/Error"
-          },
-          "500": {
-            "$ref": "#/components/responses/Error"
-          },
-          "501": {
-            "$ref": "#/components/responses/Error"
-          },
-          "503": {
-            "$ref": "#/components/responses/Error"
-          },
-          "504": {
-            "$ref": "#/components/responses/Error"
-          },
-          "499": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
-    "/api/dataset/v1/namespaces/{namespace}/datasets/{dataset}/read-plans/{read}/progress": {
-      "put": {
-        "operationId": "SaveProgress",
-        "description": "CAS from expected cursor to one previously issued next cursor. Retrying accepted acknowledgement succeeds; stale/mismatched/forged cursor conflicts. Cursor covers entire logical plan including shuffle/partition.",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "namespace",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255
-            }
-          },
-          {
-            "in": "path",
-            "name": "dataset",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255
-            }
-          },
-          {
-            "in": "path",
-            "name": "read",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReadSession"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Error"
-          },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          },
-          "409": {
-            "$ref": "#/components/responses/Error"
-          },
-          "413": {
-            "$ref": "#/components/responses/Error"
-          },
-          "429": {
-            "$ref": "#/components/responses/Error"
-          },
-          "500": {
-            "$ref": "#/components/responses/Error"
-          },
-          "501": {
-            "$ref": "#/components/responses/Error"
-          },
-          "503": {
-            "$ref": "#/components/responses/Error"
-          },
-          "504": {
-            "$ref": "#/components/responses/Error"
-          },
-          "499": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Acknowledge"
-              }
-            }
-          }
-        }
-      },
-      "get": {
-        "operationId": "GetProgress",
-        "description": "",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "namespace",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255
-            }
-          },
-          {
-            "in": "path",
-            "name": "dataset",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255
-            }
-          },
-          {
-            "in": "path",
-            "name": "read",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful operation",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Progress"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Error"
-          },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          },
-          "409": {
-            "$ref": "#/components/responses/Error"
-          },
-          "413": {
-            "$ref": "#/components/responses/Error"
-          },
-          "429": {
-            "$ref": "#/components/responses/Error"
-          },
-          "500": {
-            "$ref": "#/components/responses/Error"
-          },
-          "501": {
-            "$ref": "#/components/responses/Error"
-          },
-          "503": {
-            "$ref": "#/components/responses/Error"
-          },
-          "504": {
-            "$ref": "#/components/responses/Error"
-          },
-          "499": {
-            "$ref": "#/components/responses/Error"
           }
         }
       }
@@ -2732,9 +2404,6 @@
       "ReadPlan": {
         "type": "object",
         "properties": {
-          "id": {
-            "$ref": "#/components/schemas/Id"
-          },
           "snapshot": {
             "type": "string",
             "maxLength": 32
@@ -2770,78 +2439,12 @@
           }
         },
         "required": [
-          "id",
           "snapshot",
           "selection",
           "fields",
           "batch_size",
           "partition",
           "shuffle"
-        ]
-      },
-      "ReadSession": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "$ref": "#/components/schemas/Id"
-          },
-          "snapshot": {
-            "$ref": "#/components/schemas/Id"
-          },
-          "plan": {
-            "$ref": "#/components/schemas/Md5"
-          },
-          "acknowledged": {
-            "type": "string",
-            "maxLength": 4096
-          },
-          "expires_at": {
-            "type": "integer"
-          },
-          "closed": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "id",
-          "snapshot",
-          "plan",
-          "acknowledged",
-          "expires_at",
-          "closed"
-        ]
-      },
-      "Acknowledge": {
-        "type": "object",
-        "properties": {
-          "expected": {
-            "type": "string",
-            "maxLength": 4096
-          },
-          "next": {
-            "type": "string",
-            "maxLength": 4096
-          }
-        },
-        "required": [
-          "expected",
-          "next"
-        ]
-      },
-      "Progress": {
-        "type": "object",
-        "properties": {
-          "plan": {
-            "$ref": "#/components/schemas/Md5"
-          },
-          "cursor": {
-            "type": "string",
-            "maxLength": 4096
-          }
-        },
-        "required": [
-          "plan",
-          "cursor"
         ]
       },
       "SnapshotRequest": {
@@ -2877,6 +2480,35 @@
           "state",
           "chunks_reclaimed"
         ]
+      },
+      "ReadBinding": {
+        "type": "object",
+        "required": [
+          "snapshot",
+          "cursor"
+        ],
+        "properties": {
+          "snapshot": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 349530
+          }
+        }
+      },
+      "ReadContinuation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cursor"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 349530
+          }
+        }
       }
     },
     "responses": {
@@ -2894,7 +2526,7 @@
   },
   "x-crowdb-wire": {
     "identity": "IDs are lowercase 32-hex nonzero 16-byte identities. MD5 is lowercase 32 hex; MD5 is an integrity check, not authentication. Dataset names are UTF-8, percent-encoded as one path segment, compared without Unicode normalization. Only dataset-ns exists in v1. Sample IDs are canonical padded base64, never interpreted as paths.",
-    "bounds": "JSON request/response at most 8 MiB before allocation; inline decoded values at most 64 KiB, schema/projection 256 fields, sample IDs at most 1024 bytes. Resource credits cover active request bodies and actual response delivery. Request/stream deadlines and deployment admission budgets are explicit configuration. V1 reads admit 100000 selected IDs and immutable 1024-ID pages; progress is a separate CAS record. Manifest membership is the complete current sample set; omitted samples are removed, while omitted optional fields on surviving samples inherit by ancestry. Required fields must be present in each sample; explicit tombstones hide parent fields.",
+    "bounds": "JSON request/response at most 8 MiB before allocation; inline decoded values at most 64 KiB, schema/projection 256 fields, sample IDs at most 1024 bytes. Resource credits cover active request bodies and actual response delivery. Request/stream deadlines and deployment admission budgets are explicit configuration. Stateless read groups admit 100000 selected IDs and 8 MiB of ID bytes; continuation JSON is capped at 256 KiB before encoding. There are no persisted read pages or progress records. Manifest membership is the complete current sample set; omitted samples are removed, while omitted optional fields on surviving samples inherit by ancestry. Required fields must be present in each sample; explicit tombstones hide parent fields.",
     "batch": "Content-Type application/vnd.crowdb.dataset-batch.v1. Magic is 8 ASCII bytes CDBDS001. Each frame: type u8, body length u32 big endian, then body. Types: 1 JSON BatchHeader (at most 8 MiB); 2 data (16-byte MD5 followed by 1..4 MiB bytes); 3 field end (zero length); 0 batch end (zero length); 4 terminal JSON Error (at most 64 KiB, only after the header). Header declares every sample/field in requested order. Value fields are delivered sequentially with one or more type-2 frames and one type-3; empty values have just type-3. Missing/tombstone have no data frames. Validate each frame MD5, exact whole-field length/MD5, field ends, batch end and HTTP EOF with no trailing bytes. A batch is successful only after completion. A streaming destination may contain verified partial data on error and must be discarded; download-to-path publishes only a verified temporary file. A type-4 frame reports a failed operation, may follow verified partial data, and never permits successful completion. It carries the same structured error model as control responses. The SDK must report the error and discard partial output.",
     "retry": "SDK uses one overall deadline and stable logical tokens; bounded attempts/backoff only on documented idempotent operations with replayable bodies. Do not retry authorization, integrity or semantic conflicts. Ambiguous mutation errors retain operation/upload identity for status recovery. Never invent new tokens on retry.",
     "integrity": "Seekable file convenience upload makes a bounded digest pass then a bounded transfer pass. Upload complete independently verifies durable parts and whole MD5. These are deliberate integrity passes, not whole-file buffering. Nonseekable uploads require known length/digest or later explicit streaming-session design.",

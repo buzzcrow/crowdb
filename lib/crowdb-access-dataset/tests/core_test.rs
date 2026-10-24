@@ -10,8 +10,8 @@ use crowdb_access_dataset::{
     SnapshotPublication,
 };
 use crowdb_access_dataset::{
-    DatasetReadRequest, DeliveryWindow, GroupShuffle, Ordering, ReadCursor, ReadFailure, ReadLease,
-    ReadLimits, ReadPlan, ReadSurface, RetryPolicy, SampleShuffle, Selection, ShuffleSpec,
+    DatasetReadRequest, DeliveryWindow, GroupShuffle, Ordering, ReadCursor, ReadFailure, ReadLimits,
+    ReadPlan, ReadSurface, RetryPolicy, SampleShuffle, Selection, ShuffleSpec,
 };
 use dataset_store::TestDatasetStore as MemoryStore;
 use md5::{Digest, Md5};
@@ -439,17 +439,6 @@ fn cursor_is_bound_to_plan_and_advances_only_on_confirmation() {
         ..plan
     };
     assert_eq!(next.validate_for(&wrong), Err(DatasetError::CursorMismatch));
-}
-
-#[test]
-fn read_lease_expires_after_inactivity_and_release() {
-    let lease = ReadLease::new(100);
-    assert!(!lease.expired(159));
-    assert!(lease.expired(160));
-    lease.touch(200);
-    assert!(!lease.expired(259));
-    lease.release();
-    assert!(lease.expired(200));
 }
 
 #[test]
@@ -1027,12 +1016,8 @@ async fn retention_stable_and_reclaim_protect_live_snapshots() {
     ));
 }
 
-#[tokio::test]
-async fn durable_cursor_survives_authority_restart_and_rejects_stale_writes() {
-    let store = Arc::new(MemoryStore::default());
-    let authority = crowdb_access_dataset::DatasetAuthority::new(store.clone());
-    let identity = DatasetIdentity::new(NamespacePath::root(), "cursor-store").unwrap();
-    authority.create_dataset(identity.clone()).await.unwrap();
+#[test]
+fn caller_checkpoint_is_portable_and_does_not_change_another_reader() {
     let plan = ReadPlan {
         snapshot: SnapshotId::random(),
         selection: Selection::Prefix(b"sample".to_vec()),
@@ -1041,26 +1026,11 @@ async fn durable_cursor_survives_authority_restart_and_rejects_stale_writes() {
         batch_size: 2,
     };
     let start = ReadCursor::start(&plan);
-    authority
-        .persist_cursor(&identity, &plan, &start, None)
-        .await
-        .unwrap();
     let next = start.confirm_batch(&plan, 1, 2).unwrap();
-    authority
-        .persist_cursor(&identity, &plan, &next, Some(&start))
-        .await
-        .unwrap();
-    let restarted = crowdb_access_dataset::DatasetAuthority::new(store);
-    assert_eq!(
-        restarted.load_cursor(&identity, &plan).await.unwrap(),
-        Some(next.clone())
-    );
-    assert!(matches!(
-        authority
-            .persist_cursor(&identity, &plan, &start, Some(&start))
-            .await,
-        Err(AuthorityError::CursorConflict)
-    ));
+    let restored: ReadCursor = bincode::deserialize(&bincode::serialize(&next).unwrap()).unwrap();
+    restored.validate_for(&plan).unwrap();
+    assert_eq!(restored, next);
+    assert_eq!(start, ReadCursor::start(&plan));
 }
 
 #[test]

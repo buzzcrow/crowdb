@@ -128,9 +128,9 @@ async fn dispatch(c: DatasetClient, name: &str, args: &str) -> Result<String, Er
                 &c.create_upload(&serde_json::from_str(args)?).await?,
             )?)
         }
-        "start_read" => {
+        "bind_read" => {
             return Ok(serde_json::to_string(
-                &c.start_read(&serde_json::from_str(args)?).await?,
+                &c.bind_read(&serde_json::from_str(args)?).await?,
             )?)
         }
         _ => {}
@@ -180,13 +180,6 @@ async fn dispatch(c: DatasetClient, name: &str, args: &str) -> Result<String, Er
             )
         }
         "download_to_path" => download(&c, &v).await,
-        "resume_read" => output!(c.resume_read(id()?).await),
-        "close_read" => output!(c.close_read(id()?).await),
-        "acknowledge" => output!(
-            c.acknowledge(id()?, &serde_json::from_value(v["ack"].clone())?)
-                .await
-        ),
-        "progress" => output!(c.progress(id()?).await),
         "reclaim" => output!(c.reclaim(id()?).await),
         "reclaim_status" => output!(c.reclaim_status(id()?).await),
         "list_snapshots" => output!(

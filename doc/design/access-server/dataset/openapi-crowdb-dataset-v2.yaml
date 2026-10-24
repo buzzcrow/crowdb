@@ -13,7 +13,7 @@ info:
     bounded-inspection; explicit POST inspection preparation requires
     inspection-preparation. Dataset creation, stable/retention changes and receipts
     require dataset-management; Split lifecycle requires split-revisions; versioned
-    read plans require split-reads. Upload, composition and Snapshot retirement
+    stateless reads require stateless-reads. Upload, composition and Snapshot retirement
     require uploads, composition and snapshot-reclaim respectively, advertised only
     when the upload service is configured. Query parameters are strict and duplicate
     keys fail. Composition JSON bodies are limited to 1 MiB.
@@ -543,9 +543,10 @@ paths:
               schema: {$ref: '#/components/schemas/CommitReceipt'}
         default:
           $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/read-plans:
+  /namespaces/dataset-ns/datasets/{dataset}/reads/bind:
     post:
-      operationId: prepareSplitRead
+      operationId: bindRead
+      description: Resolve immutable Snapshot and Split versions without creating read state.
       parameters:
         - {$ref: '#/components/parameters/dataset'}
       requestBody:
@@ -555,99 +556,29 @@ paths:
             schema: {$ref: '#/components/schemas/ReadPlanV2'}
       responses:
         '200':
-          description: Revision-bound read result; only explicit acknowledgement advances consumption.
+          description: Client-owned continuation; no TTL, remote acknowledgement or close.
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/ReadPreparation'}
+              schema: {$ref: '#/components/schemas/ReadBinding'}
         default:
           $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/read-plans/{operation}:
-    get:
-      operationId: splitReadStatus
+  /namespaces/dataset-ns/datasets/{dataset}/reads/next:
+    post:
+      operationId: nextReadBatch
+      description: Replay this continuation; save the returned next cursor after processing.
       parameters:
         - {$ref: '#/components/parameters/dataset'}
-        - in: path
-          name: operation
-          required: true
-          schema: {$ref: '#/components/schemas/OpaqueId'}
-      responses:
-        '200':
-          description: Revision-bound read result; only explicit acknowledgement advances consumption.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ReadPreparation'}
-        default:
-          $ref: '#/components/responses/InspectionError'
-    delete:
-      operationId: cancelSplitRead
-      parameters:
-        - {$ref: '#/components/parameters/dataset'}
-        - in: path
-          name: operation
-          required: true
-          schema: {$ref: '#/components/schemas/OpaqueId'}
-      responses:
-        '200':
-          description: Revision-bound read result; only explicit acknowledgement advances consumption.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ReadSessionV2'}
-        default:
-          $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/read-plans/{operation}/progress:
-    get:
-      operationId: splitReadProgress
-      parameters:
-        - {$ref: '#/components/parameters/dataset'}
-        - in: path
-          name: operation
-          required: true
-          schema: {$ref: '#/components/schemas/OpaqueId'}
-      responses:
-        '200':
-          description: Revision-bound read result; only explicit acknowledgement advances consumption.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ReadProgress'}
-        default:
-          $ref: '#/components/responses/InspectionError'
-    put:
-      operationId: acknowledgeSplitRead
-      parameters:
-        - {$ref: '#/components/parameters/dataset'}
-        - in: path
-          name: operation
-          required: true
-          schema: {$ref: '#/components/schemas/OpaqueId'}
       requestBody:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/ReadAcknowledgement'}
+            schema: {$ref: '#/components/schemas/ReadContinuation'}
       responses:
         '200':
-          description: Revision-bound read result; only explicit acknowledgement advances consumption.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ReadProgress'}
-        default:
-          $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/read-plans/{operation}/next:
-    post:
-      operationId: nextSplitBatch
-      parameters:
-        - {$ref: '#/components/parameters/dataset'}
-        - in: path
-          name: operation
-          required: true
-          schema: {$ref: '#/components/schemas/OpaqueId'}
-      responses:
-        '200':
-          description: Revision-bound read result; only explicit acknowledgement advances consumption.
+          description: Bounded batch; null next means end of selection.
           content:
             application/vnd.crowdb.dataset-batch.v1:
               schema: {type: string, format: binary}
-              description: Existing CDBDS001 framing, field integrity and end/error records.
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/preview:
@@ -1599,19 +1530,16 @@ components:
     ReadPlanV2:
       type: object
       additionalProperties: false
-      required: [id, snapshot, selection, fields, batch_size, partition, shuffle, split, expected_page]
+      required: [snapshot, selection, fields, batch_size, partition, shuffle, split]
       description: >-
-        Retry preserves all inputs except expected_page. Snapshot latest/stable and
-        null Split revision resolve once before evaluation. Selection and Split
-        intersection precede shuffle and worker/rank partitioning. GET status does
-        not prepare or acknowledge a batch. Cancelled IDs cannot be reopened.
+        Snapshot latest/stable and null Split revision resolve into the returned
+        continuation. Selection and Split filtering precede shuffle and worker
+        partitioning. There is no persisted read plan, preparation or progress.
       properties:
-        id: {$ref: '#/components/schemas/OpaqueId'}
         snapshot: {type: string, description: Concrete ID or latest/stable}
         selection: {$ref: '#/components/schemas/Predicate'}
         fields: {type: array, maxItems: 256, uniqueItems: true, items: {type: string}}
         batch_size: {type: integer, minimum: 1, maximum: 10000}
-        expected_page: {$ref: '#/components/schemas/Decimal'}
         partition:
           type: object
           additionalProperties: false
@@ -1629,7 +1557,7 @@ components:
               required: [seed, group_size]
               properties:
                 seed: {$ref: '#/components/schemas/Decimal'}
-                group_size: {type: integer, minimum: 1, maximum: 1000000}
+                group_size: {type: integer, minimum: 1, maximum: 100000}
         split:
           oneOf:
             - {type: 'null'}
@@ -1639,45 +1567,22 @@ components:
               properties:
                 revision: {$ref: '#/components/schemas/NullableRevision'}
                 name: {type: string}
-    ReadSessionV2:
+    ReadBinding:
       type: object
-      required: [id, snapshot, plan, acknowledged, expires_at, closed]
-      properties:
-        id: {$ref: '#/components/schemas/OpaqueId'}
-        snapshot: {$ref: '#/components/schemas/OpaqueId'}
-        plan: {type: string}
-        acknowledged: {type: string}
-        expires_at: {$ref: '#/components/schemas/Decimal'}
-        closed: {type: boolean}
-    ReadPreparation:
-      type: object
-      required: [snapshot, split, next_page, admitted, complete, session]
+      required: [snapshot, split, cursor]
       properties:
         snapshot: {$ref: '#/components/schemas/OpaqueId'}
         split:
           oneOf:
             - {type: 'null'}
             - {$ref: '#/components/schemas/SplitSource'}
-        next_page: {$ref: '#/components/schemas/Decimal'}
-        admitted: {$ref: '#/components/schemas/Decimal'}
-        complete: {type: boolean}
-        session:
-          oneOf:
-            - {type: 'null'}
-            - {$ref: '#/components/schemas/ReadSessionV2'}
-    ReadAcknowledgement:
+        cursor: {type: string, maxLength: 349530}
+    ReadContinuation:
       type: object
       additionalProperties: false
-      required: [expected, next]
+      required: [cursor]
       properties:
-        expected: {type: string, maxLength: 4096}
-        next: {type: string, maxLength: 4096}
-    ReadProgress:
-      type: object
-      required: [plan, cursor]
-      properties:
-        plan: {type: string}
-        cursor: {type: string}
+        cursor: {type: string, maxLength: 349530}
     CompositionSchema:
       type: object
       additionalProperties: false

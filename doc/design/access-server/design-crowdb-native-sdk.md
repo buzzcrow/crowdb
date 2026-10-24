@@ -39,7 +39,7 @@ Copy captures a source generation. Multipart completion binds an exact selected
 part set; a repeated completed request returns its recorded outcome.
 
 `DatasetClient` attaches `DatasetAuthority`, `DatasetUploads` and
-`DatasetSessions` to these same clients. Shared composition helpers enroll
+`DatasetReads` to these same clients. Shared composition helpers enroll
 upload ownership before edits and bind candidate ownership before publication.
 Snapshot/Read Plan/Split selection, worker partition, CAS, durable intent
 recovery and cleanup remain in the existing Dataset services.
@@ -130,13 +130,14 @@ GPU pointers or RDMA READ/WRITE authority.
 
 The independent Dataset HTTP distribution has no dependency on this storage/FFI
 runtime. A Dataset facade attaches to the common runtime and delivery contracts
-while retaining Dataset authority, Snapshot/Split binding and explicit
-acknowledgement. Buffer release, download completion and processing
-acknowledgement remain separate events. `BatchBody` delivers field metadata and
+while retaining Dataset authority, Snapshot/Split binding and caller-owned
+checkpoints. Buffer release, download completion and saving a processing
+checkpoint remain separate events. `BatchBody` delivers field metadata and
 lazy payload leases with per-part and whole-field integrity checks. Active
 reads renew the existing 60-second protection while live; cancellation stops
 renewal and releases the active handle, with TTL expiry bounding interrupted
-cleanup. Durable session close is explicit and never acknowledges processing.
+cleanup. There is no persistent read session or remote ack/close. A continuation replays
+the same batch on an independent client; only the caller saves the next position.
 
 The optional native Python extension owns a shared runtime and exposes retained
 immutable leases. Slicing shares allocation ownership; conversion to Python
@@ -162,4 +163,5 @@ reuse the Rust facade and shared authority schema without another storage path.
 - **NS-I7 — Bounded transport failure:** accepted RDMA failures never append
   TCP data or replay an ambiguous mutation.
 - **NS-I8 — Explicit Dataset progress:** fetching, verified EOF and final buffer
-  release cannot advance a read cursor; acknowledgement alone records progress.
+  release cannot save progress; the client checkpoints the next continuation
+  only after successful processing.

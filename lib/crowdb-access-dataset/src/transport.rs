@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     AuthorityError, DatasetAuthority, DatasetError, DatasetIdentity, DatasetReadRequest, DatasetReadResponse,
-    DatasetScanRequest, DatasetScanResponse, DeliveryWindow, ReadCursor, ReadLease, ReadSurface,
-    SampleShuffle,
+    DatasetScanRequest, DatasetScanResponse, DeliveryWindow, ReadCursor, ReadSurface, SampleShuffle,
 };
 
 /// Shared bounded read adapter used by HTTP and native callers.
@@ -15,7 +14,6 @@ pub struct DatasetReadService {
     authority: Arc<DatasetAuthority>,
     identity: DatasetIdentity,
     window: Arc<DeliveryWindow>,
-    lease: Arc<ReadLease>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -29,46 +27,19 @@ pub enum ReadTransportError {
 }
 
 impl DatasetReadService {
-    /// Creates a service with a bounded number of batches in flight.
-    ///
+    /// Creates a service with a bounded number of independent requests in flight.
     /// # Errors
-    /// Returns `InvalidManifest` for a zero window.
+    /// Rejects a zero request window.
     pub fn new(
         authority: Arc<DatasetAuthority>,
         identity: DatasetIdentity,
         max_in_flight: usize,
-        now_seconds: u64,
-    ) -> Result<Self, DatasetError> {
-        Self::with_ttl(
-            authority,
-            identity,
-            max_in_flight,
-            now_seconds,
-            crate::DEFAULT_READ_LEASE_SECONDS,
-        )
-    }
-
-    /// Creates a service with an explicit inactivity TTL for deployments with
-    /// a configured lifecycle policy.
-    ///
-    /// # Errors
-    /// Returns `InvalidManifest` for a zero window or TTL.
-    pub fn with_ttl(
-        authority: Arc<DatasetAuthority>,
-        identity: DatasetIdentity,
-        max_in_flight: usize,
-        now_seconds: u64,
-        ttl_seconds: u64,
     ) -> Result<Self, DatasetError> {
         let window = DeliveryWindow::new(max_in_flight).ok_or(DatasetError::InvalidManifest)?;
-        if ttl_seconds == 0 {
-            return Err(DatasetError::InvalidManifest);
-        }
         Ok(Self {
             authority,
             identity,
             window: Arc::new(window),
-            lease: Arc::new(ReadLease::with_ttl(now_seconds, ttl_seconds)),
         })
     }
 
@@ -77,12 +48,8 @@ impl DatasetReadService {
     ///
     /// # Errors
     /// Returns validation, admission, cancellation, or authority failures.
-    pub async fn read(
-        &self,
-        request: DatasetReadRequest,
-        now_seconds: u64,
-    ) -> Result<DatasetReadResponse, ReadTransportError> {
-        self.read_surface(ReadSurface::Http, request, now_seconds).await
+    pub async fn read(&self, request: DatasetReadRequest) -> Result<DatasetReadResponse, ReadTransportError> {
+        self.read_surface(ReadSurface::Http, request).await
     }
 
     /// Reads the same request for either public surface.
@@ -93,12 +60,8 @@ impl DatasetReadService {
         &self,
         surface: ReadSurface,
         request: DatasetReadRequest,
-        now_seconds: u64,
     ) -> Result<DatasetReadResponse, ReadTransportError> {
         request.validate()?;
-        if self.lease.expired(now_seconds) {
-            return Err(DatasetError::ReadCancelled.into());
-        }
         if !self.window.try_acquire() {
             return Err(ReadTransportError::WindowFull);
         }
@@ -106,7 +69,6 @@ impl DatasetReadService {
         self.authority
             .check_snapshot_readable(&self.identity, request.snapshot)
             .await?;
-        self.lease.touch(now_seconds);
         let fields: Vec<&str> = request.fields.iter().map(String::as_str).collect();
         let samples = self
             .authority
@@ -119,7 +81,6 @@ impl DatasetReadService {
             )
             .await;
         drop(permit);
-        self.lease.touch(now_seconds);
         Ok(DatasetReadResponse::from_batch(request.snapshot, samples?))
     }
 
@@ -127,12 +88,8 @@ impl DatasetReadService {
     ///
     /// # Errors
     /// Returns validation, admission, cursor, planning, or authority failures.
-    pub async fn scan(
-        &self,
-        request: DatasetScanRequest,
-        now_seconds: u64,
-    ) -> Result<DatasetScanResponse, ReadTransportError> {
-        self.scan_surface(ReadSurface::Http, request, now_seconds).await
+    pub async fn scan(&self, request: DatasetScanRequest) -> Result<DatasetScanResponse, ReadTransportError> {
+        self.scan_surface(ReadSurface::Http, request).await
     }
 
     /// Executes a bounded scan for a native or HTTP caller.
@@ -143,12 +100,8 @@ impl DatasetReadService {
         &self,
         surface: ReadSurface,
         request: DatasetScanRequest,
-        now_seconds: u64,
     ) -> Result<DatasetScanResponse, ReadTransportError> {
         request.plan.validate()?;
-        if self.lease.expired(now_seconds) {
-            return Err(DatasetError::ReadCancelled.into());
-        }
         if !self.window.try_acquire() {
             return Err(ReadTransportError::WindowFull);
         }
@@ -180,11 +133,7 @@ impl DatasetReadService {
                     .await?
             }
         };
-        let stored = self.authority.load_cursor(&self.identity, &request.plan).await?;
-        let cursor = request
-            .cursor
-            .or(stored)
-            .unwrap_or_else(|| ReadCursor::start(&request.plan));
+        let cursor = request.cursor.unwrap_or_else(|| ReadCursor::start(&request.plan));
         cursor.validate_for(&request.plan)?;
         let group = usize::try_from(cursor.group).map_err(|_| DatasetError::CursorMismatch)?;
         if group > windows.len() || (group == windows.len() && cursor.offset != 0) {
@@ -212,12 +161,7 @@ impl DatasetReadService {
             .and_then(|value| u32::try_from(value).ok())
             .ok_or(DatasetError::CursorMismatch)?;
         let next = cursor.confirm_batch(&request.plan, next_group, 0)?;
-        let expected = self.authority.load_cursor(&self.identity, &request.plan).await?;
-        self.authority
-            .persist_cursor(&self.identity, &request.plan, &next, expected.as_ref())
-            .await?;
         drop(permit);
-        self.lease.touch(now_seconds);
         Ok(DatasetScanResponse {
             snapshot: request.plan.snapshot,
             samples,
@@ -226,10 +170,9 @@ impl DatasetReadService {
         })
     }
 
-    /// Cancels queued and future reads and releases the active lease.
+    /// Cancels queued and future requests on this local service.
     pub fn cancel(&self) {
         self.window.cancel();
-        self.lease.release();
     }
 
     #[must_use]
@@ -240,11 +183,6 @@ impl DatasetReadService {
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.window.is_cancelled()
-    }
-
-    #[must_use]
-    pub fn lease_expired(&self, now_seconds: u64) -> bool {
-        self.lease.expired(now_seconds)
     }
 
     #[must_use]

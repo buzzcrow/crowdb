@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{admission::ReadAdmission, field::FieldReader, BatchHeader};
+use super::{field::FieldReader, BatchHeader};
 use crate::{buffer::BufferLease, runtime::RequestLease, Error, Result, RuntimeResources};
 use crowdb_access_dataset::{DatasetUploads, FieldLocator};
 use crowdb_rpc_ffi::OwnedPayload;
@@ -22,7 +22,6 @@ pub struct BatchBody {
     request: Option<RequestLease>,
     resources: Arc<RuntimeResources>,
     uploads: Arc<DatasetUploads>,
-    admission: Option<ReadAdmission>,
     sequence: u64,
     complete: bool,
     failure: Option<Error>,
@@ -35,7 +34,6 @@ impl BatchBody {
         request: RequestLease,
         resources: Arc<RuntimeResources>,
         uploads: Arc<DatasetUploads>,
-        admission: ReadAdmission,
     ) -> Self {
         Self {
             header,
@@ -45,7 +43,6 @@ impl BatchBody {
             request: Some(request),
             resources,
             uploads,
-            admission: Some(admission),
             sequence: 0,
             complete: false,
             failure: None,
@@ -98,14 +95,12 @@ impl BatchBody {
         self.field = None;
         self.pending = None;
         self.locators.clear();
-        self.admission = None;
         self.request = None;
     }
 
     async fn pull(&mut self) -> Result<Option<FieldBuffer>> {
         let request = self.request.as_ref().ok_or(Error::Cancelled)?;
-        let admission = self.admission.as_ref().ok_or(Error::Cancelled)?;
-        request.run(admission.check()).await?;
+        request.run(async { Ok(()) }).await?;
         loop {
             if self.field.is_none() {
                 let Some((index, locator)) = self.locators.pop_front() else {

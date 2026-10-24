@@ -102,16 +102,15 @@ impl Dataset {
         Ok(Batch::new(self.resources.clone(), read, cancel))
     }
 
-    #[pyo3(signature=(read_id, timeout=30.0))]
-    fn next_batch(&self, py: Python<'_>, read_id: &[u8], timeout: f64) -> PyResult<Batch> {
+    #[pyo3(signature=(cursor, timeout=30.0))]
+    fn next_batch(&self, py: Python<'_>, cursor: &str, timeout: f64) -> PyResult<Batch> {
         let context = self.context(timeout)?;
         let cancel = context.cancellation.clone();
-        let id = OperationId::from_bytes(read_id).map_err(|e| NativeError::new_err(e.to_string()))?;
         let read = py
             .detach(|| {
                 self.resources
                     .executor()
-                    .block_on(self.client.next_batch(context, id))
+                    .block_on(self.client.next_batch(context, cursor))
             })
             .map_err(|e| failure(&e))?;
         Ok(Batch::new(self.resources.clone(), read, cancel))

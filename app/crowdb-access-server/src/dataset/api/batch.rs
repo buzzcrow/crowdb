@@ -69,7 +69,7 @@ impl DatasetHttpService {
             .0
             .clone();
         let request: BatchRequest = read_json(request).await?;
-        self.batch(identity, request, None, true, None, request_id).await
+        self.batch(identity, request, None, true, request_id).await
     }
     pub(super) async fn batch(
         &self,
@@ -77,13 +77,12 @@ impl DatasetHttpService {
         request: BatchRequest,
         next: Option<String>,
         end: bool,
-        session: Option<crowdb_access_dataset::OperationId>,
         request_id: String,
     ) -> ApiResult {
         let id = snapshot(&request.snapshot)?;
         let ids = request.ids()?;
         let authority = self.reads.authority();
-        let admission = ReadAdmission::acquire(authority.clone(), identity, id, session).await?;
+        authority.check_snapshot_readable(identity, id).await?;
         let samples = if ids.is_empty() {
             Vec::new()
         } else if request.sample_id_limit.is_some() {
@@ -126,7 +125,6 @@ impl DatasetHttpService {
             part: 0,
             pending: Some(Bytes::from(prefix)),
             finished: false,
-            admission,
         };
         Ok(Response::builder()
             .header("content-type", "application/vnd.crowdb.dataset-batch.v1")
@@ -170,26 +168,6 @@ fn make_header(
         end,
     }
 }
-pub(super) struct ReadAdmission {
-    authority: Arc<crowdb_access_dataset::DatasetAuthority>,
-    identity: DatasetIdentity,
-    session: Option<crowdb_access_dataset::OperationId>,
-}
-impl ReadAdmission {
-    pub(super) async fn acquire(
-        authority: Arc<crowdb_access_dataset::DatasetAuthority>,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-        session: Option<crowdb_access_dataset::OperationId>,
-    ) -> Result<Arc<Self>, ApiError> {
-        authority.check_snapshot_readable(identity, snapshot).await?;
-        Ok(Arc::new(Self {
-            authority,
-            identity: identity.clone(),
-            session,
-        }))
-    }
-}
 struct BatchState {
     uploads: Option<Arc<crowdb_access_dataset::DatasetUploads>>,
     request_id: String,
@@ -198,7 +176,6 @@ struct BatchState {
     part: u32,
     pending: Option<Bytes>,
     finished: bool,
-    admission: Arc<ReadAdmission>,
 }
 fn stream_body(state: BatchState) -> DatasetBody {
     let frames = stream::unfold(state, |mut state| async move {
@@ -220,11 +197,6 @@ fn stream_body(state: BatchState) -> DatasetBody {
 }
 impl BatchState {
     async fn next(&mut self) -> Result<Bytes, ApiError> {
-        if let Some(session) = self.admission.session {
-            crowdb_access_dataset::DatasetSessions::new(self.admission.authority.clone())
-                .check_open(&self.admission.identity, session)
-                .await?;
-        }
         if let Some(bytes) = self.pending.take() {
             return Ok(bytes);
         }

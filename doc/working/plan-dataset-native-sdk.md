@@ -7,7 +7,7 @@ Upstream: [R220](../backlog/R220-dataset-fat-client-plan.md),
 [Dataset](../design/access-server/dataset/design-crowdb-access-dataset.md),
 [native runtime](../design/access-server/design-crowdb-native-sdk.md).
 
-Goal: attach trusted Dataset access to the accepted runtime with explicit ack,
+Goal: attach trusted Dataset access to the accepted runtime with client checkpoints,
 bounded owner-backed delivery and independently packaged Python bindings.
 
 ## Baseline and contract
@@ -18,14 +18,11 @@ bounded owner-backed delivery and independently packaged Python bindings.
   repeats, concurrency, completed requests, per-size p50/p99, throughput,
   process CPU/RSS and separately timed digest work. Preserve exact-byte checks.
   Files: `sdk/crates/crowdb-sdk-dataset/examples/`, `tools/sdk/`.
-- [x] **Freeze API wiring**: use `DatasetSessions` (including Split preparation),
-  not legacy `DatasetDirectClient::scan` which acknowledges fetched batches.
-  Attach `ChunkKvDatasetStore`, `DatasetUploads` and `DatasetAuthority` to the
-  shared runtime's Dataset writer group. Use explicit `DatasetIdentity`; no
-  bearer/secret lookup or HTTP fallback. Files: `lib/crowdb-sdk-native/src/dataset/`.
-
-## Shared payload and native facade
-
+- [x] **Replace persisted read sessions**: user decision 2026-10-24 supersedes
+  the earlier ack/resume/close contract. Use `DatasetReads`, caller-owned
+  continuations and local checkpoints; track cleanup and validation in
+  [Access cleanup](plan-access-simplification.md). Historical test notes below
+  describe their original revisions, not the current API.
 - [x] **Retain payload owners**: extend the existing payload/upload boundary
   with lazy `OwnedPayload` delivery and verified lengths/digests. Keep the
   byte-returning HTTP path compatible. Accept frozen producer storage without
@@ -51,12 +48,12 @@ bounded owner-backed delivery and independently packaged Python bindings.
 
 - [x] **Add optional native binding**: main-workspace PyO3 extension
   `crowdb_dataset_native`, with owned runtime, Dataset control/read operations,
-  retained immutable payload objects, explicit ack/cancel/close and exception
+  retained immutable payload objects, local checkpoints/cancel/close and exception
   mapping. Keep `sdk/` HTTP distribution free of native storage dependencies.
   Files: `lib/crowdb-sdk-native-python/`, `tools/sdk/`, workspace manifest.
 - [x] **Verify semantics**: shared authority tests and native facade tests for
-  projection/missing/tombstone, Split/revision/worker selection, explicit ack
-  replay, TTL, corruption/truncation, cancellation, dropped pulls, held memory,
+  projection/missing/tombstone, Split/revision/worker selection, caller-cursor
+  replay, deletion admission, corruption/truncation, cancellation, dropped pulls, held memory,
   stale routing, partial transport failure and S3/runtime coexistence. Files:
   native and access-dataset `tests/`, access-server parity tests.
 - [x] **Bound shared KV retention**: retain acceptor nodes through concurrent
@@ -75,7 +72,7 @@ bounded owner-backed delivery and independently packaged Python bindings.
   Files: chunk-kv `partition/checkpoint.rs`, `partition/maintenance.rs`, server
   maintenance/storage, chunk-stream `kv.rs`, focused integration tests.
 - [~] **Run real services and compare**: use the same corpus/snapshot for HTTP
-  and native Rust/Python, restart storage, validate explicit resume and held
+  and native Rust/Python, restart storage, validate caller-checkpoint replay and held
   buffers, TCP and local shared-HCA policies. Run the same pinned workload and
   report measured trade-offs, not an assumed throughput win. Physical multi-node
   execution belongs to its independent plan and is not scheduled here. Files:

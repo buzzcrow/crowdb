@@ -19,7 +19,6 @@ pub struct Shuffle {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadPlan {
-    pub id: OpaqueId,
     /// Concrete Snapshot ID, latest or stable. The server pins it at first admission.
     pub snapshot: String,
     pub selection: Predicate,
@@ -30,25 +29,11 @@ pub struct ReadPlan {
     pub shuffle: Option<Shuffle>,
     #[serde(deserialize_with = "required_option")]
     pub split: Option<ReadSplit>,
-    pub expected_page: Decimal,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReadSession {
-    pub id: OpaqueId,
-    pub snapshot: OpaqueId,
-    pub plan: String,
-    pub acknowledged: String,
-    pub expires_at: Decimal,
-    pub closed: bool,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReadPreparation {
+pub struct ReadBinding {
     pub snapshot: OpaqueId,
     #[serde(deserialize_with = "required_option")]
     pub split: Option<SplitSource>,
-    pub next_page: Decimal,
-    pub admitted: Decimal,
-    pub complete: bool,
-    #[serde(deserialize_with = "required_option")]
-    pub session: Option<ReadSession>,
+    pub cursor: String,
 }

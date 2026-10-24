@@ -111,8 +111,9 @@ does not create a read plan or acknowledge application consumption.
 V2 read planning pins Snapshot and optional Split revision once, intersects Selection
 with Split membership, then orders/shuffles and partitions workers before fetching
 projected payloads. Planning advances twenty-Sample windows with fixed total ID/byte
-limits. Fetch/preview/status never advance the acknowledged cursor; only explicit
-application acknowledgement does so. Cancel stops local work without a persistent reader release.
+limits. Fetch/preview/status never save consumption progress. The client saves the next
+continuation after processing; acknowledgement is local. Cancel stops the current
+request without a reader registry or remote close.
 
 ## 5. Ownership and cleanup
 

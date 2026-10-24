@@ -191,12 +191,10 @@ pub async fn run_with_shutdown(
         crowdb_access_dataset::NamespacePath::root(),
         std::env::var("CROWDB_DATASET_NAME").unwrap_or_else(|_| "default".into()),
     )?;
-    let reads = Arc::new(DatasetReadService::with_ttl(
+    let reads = Arc::new(DatasetReadService::new(
         Arc::clone(&authority),
         identity,
         access.dataset.max_in_flight,
-        unix_seconds(),
-        access.dataset.lease_ttl_seconds,
     )?);
     let mut service =
         DatasetHttpService::new(reads, Duration::from_secs(access.dataset.request_timeout_seconds))

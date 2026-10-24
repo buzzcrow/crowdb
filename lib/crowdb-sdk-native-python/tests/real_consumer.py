@@ -34,61 +34,47 @@ def native_data():
     return (b"native-producer" * 300000)[:(4 << 20) + 17]
 
 
-def prepare(client, snapshot, worker=0, workers=1, ids=None, split=None):
-    read = identity()
-    spec = {"read": {"id": read, "snapshot": snapshot,
+def bind(client, snapshot, worker=0, workers=1, ids=None, split=None):
+    spec = {"snapshot": snapshot,
             "selection": {"Explicit": [list(item) for item in ids] if ids is not None else
                           [list(f"size-{i}".encode()) for i in range(8)]},
             "fields": ["value"], "batch_size": 2,
             "partition": {"worker": worker, "workers": workers, "rank": 0, "world_size": 1},
-            "shuffle": None}, "split": split}
-    page = 0
-    for _ in range(32):
-        result = call(client, "prepare_read", spec=spec, page=page)
-        if result["complete"]:
-            return read, result["session"]
-        page = result["next_page"]
-    raise AssertionError("read preparation did not complete")
+            "shuffle": None, "split": split}
+    return call(client, "bind_read", spec=spec)
 
 
-def session_parity(client, snapshot):
+def continuation_parity(client, snapshot):
     selections = []
     for worker in range(2):
-        read, session = prepare(client, snapshot, worker, 2)
-        cursor = session["acknowledged"]
-        batch = client.next_batch(bytes(read), timeout=60)
+        cursor = bind(client, snapshot, worker, 2)["cursor"]
+        batch = client.next_batch(cursor, timeout=60)
         header = json.loads(batch.header)
         first = drain(batch)
-        assert call(client, "resume_read", read=read)["acknowledged"] == cursor
-        replay = client.next_batch(bytes(read), timeout=60)
+        replay = client.next_batch(cursor, timeout=60)
         assert json.loads(replay.header) == header
         assert drain(replay) == first
         selected = []
         while True:
             selected.extend(bytes(item) for item in header["sample_ids"])
-            session = call(client, "acknowledge", read=read, expected=cursor, next=header["next"])
-            cursor = session["acknowledged"]
             if header["end"]:
                 break
-            batch = client.next_batch(bytes(read), timeout=60)
+            cursor = header["next"]
+            batch = client.next_batch(cursor, timeout=60)
             header = json.loads(batch.header)
             drain(batch)
-        assert call(client, "close_read", read=read)["closed"]
         selections.append(set(selected))
     assert not selections[0].intersection(selections[1])
     assert selections[0] | selections[1] == {f"size-{i}".encode() for i in range(8)}
 
 
-def pressure_and_idle_renewal(client, snapshot):
-    read, session = prepare(client, snapshot)
-    batch = client.next_batch(bytes(read), timeout=120)
-    cursor = session["acknowledged"]
-    # Cross the existing inactivity TTL while a live producer is idle.
-    print("Holding a native batch across the 60-second active-read TTL", flush=True)
+def pressure_and_idle_replay(client, snapshot):
+    cursor = bind(client, snapshot)["cursor"]
+    batch = client.next_batch(cursor, timeout=120)
+    print("Holding a native batch for 65 seconds; reads have no session TTL", flush=True)
     time.sleep(65)
-    drain(batch)
-    assert call(client, "resume_read", read=read)["acknowledged"] == cursor
-    call(client, "close_read", read=read)
+    first = drain(batch)
+    assert drain(client.next_batch(cursor, timeout=120)) == first
     runtime = native.NativeRuntime(os.environ["CROWDB_MANAGEMENT_SEEDS"].split(","),
                                    options=json.dumps(dict(held_bytes=128)))
     try:
@@ -150,11 +136,10 @@ def publish_native(runtime, root):
     snapshot = state["uploads"]["candidate"]
     call(client, "publish_composition", operation=operation, attempt={"version": 1, "id": identity(),
          "target": {"Snapshot": {"snapshot": snapshot}}, "expected_head": None})
-    split_read, _ = prepare(client, bytes(snapshot).hex(), ids=[b"one"], split={"revision": None, "name": "train"})
-    split_batch = client.next_batch(bytes(split_read))
+    split_binding = bind(client, bytes(snapshot).hex(), ids=[b"one"], split={"revision": None, "name": "train"})
+    split_batch = client.next_batch(split_binding["cursor"])
     assert json.loads(split_batch.header)["sample_ids"] == [list(b"one")]
     assert drain(split_batch)[0] == data
-    call(client, "close_read", read=split_read)
     for _ in range(32):
         if call(client, "cleanup_composition", operation=operation)["complete"]:
             break
@@ -190,8 +175,8 @@ def main():
         for i, size in enumerate(SIZES):
             batch = client.read_batch(bytes.fromhex(snapshot), [list(f"size-{i}".encode())], ["value"])
             assert drain(batch).get(0, b"") == bytes([i]) * size
-        session_parity(client, snapshot)
-        pressure_and_idle_renewal(client, snapshot)
+        continuation_parity(client, snapshot)
+        pressure_and_idle_replay(client, snapshot)
         publish_native(runtime, root)
         batch = client.read_batch(bytes.fromhex(snapshot), [list(b"size-1")], ["value"])
         held = batch.next()
@@ -211,7 +196,7 @@ def main():
         del held, view, batch
         gc.collect()
         assert json.loads(runtime.status())["held_bytes"] == 0
-        print("native Python same-snapshot bytes, workers, ack replay, publication, cancellation and lifetime passed")
+        print("native Python same-snapshot bytes, workers, continuation replay, publication, cancellation and lifetime passed")
     finally:
         runtime.close()
 

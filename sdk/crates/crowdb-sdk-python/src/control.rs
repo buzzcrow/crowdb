@@ -54,11 +54,7 @@ pub(super) async fn dispatch(client: DatasetClient, name: &str, args: &str) -> R
         "complete_upload" => encode(&client.complete_upload(&id()?).await?),
         "abort_upload" => encode(&client.abort_upload(&id()?).await?),
         "upload_file" => encode(&client.upload_file(text(&value, "path")?, &id()?).await?),
-        "prepare_read" => encode(&client.prepare_read(&request(&value)?).await?),
-        "read_status" => encode(&client.read_status(&id()?).await?),
-        "close_read" => encode(&client.close_read(&id()?).await?),
-        "acknowledge" => encode(&client.acknowledge(&id()?, &request(&value)?).await?),
-        "progress" => encode(&client.progress(&id()?).await?),
+        "bind_read" => encode(&client.bind_read(&request(&value)?).await?),
         _ => Err(Error::Invalid("unknown v2 SDK operation".into())),
     }
 }

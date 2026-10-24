@@ -1,9 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::super::{
-    batch::ReadAdmission, json, read_body, read_json, ApiError, ApiResult, DatasetHttpService,
-};
+use super::super::{json, read_body, read_json, ApiError, ApiResult, DatasetHttpService};
 use super::{
     inspection_models::Sample,
     query::{bytes, Query},
@@ -75,7 +73,7 @@ impl DatasetHttpService {
         }
         read_body(request, false).await?;
         let authority = self.reads.authority();
-        let _admission = ReadAdmission::acquire(authority.clone(), identity, snapshot, None).await?;
+        authority.check_snapshot_readable(identity, snapshot).await?;
         let mut rows = authority
             .resolve_inspection_batch_locators(
                 identity,

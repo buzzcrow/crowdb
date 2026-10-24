@@ -52,7 +52,6 @@ impl TestDatasetHttp {
             Arc::new(authority),
             DatasetIdentity::new(NamespacePath::root(), "legacy").unwrap(),
             3,
-            u64::MAX - 1000,
         )
         .unwrap();
         let service = DatasetHttpService::new(Arc::new(reads), Duration::from_secs(30))

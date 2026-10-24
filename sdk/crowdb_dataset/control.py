@@ -93,14 +93,10 @@ class ControlClient:
     def upload_part(self, id, index, data):
         self._owner._check()
         return _result(self._owner._native.part_v2(id, index, data), id)
-    def prepare_read(self, request): return self._call("prepare_read", {"request": request})
-    def read_status(self, id): return self._call("read_status", {"id": id})
-    def close_read(self, id): return self._call("close_read", {"id": id})
-    def progress(self, id): return self._call("progress", {"id": id})
-    def acknowledge(self, id, expected, next): return self._call("acknowledge", {"id": id, "request": {"expected": expected, "next": next}})
-    def next_batch(self, id):
+    def bind_read(self, request): return self._call("bind_read", {"request": request})
+    def next_batch(self, cursor):
         self._owner._check()
-        return BatchStream(self._owner._native.stream("v2-next", id))
+        return BatchStream(self._owner._native.stream("v2-next", cursor))
 
     def page(self, kind, *, snapshot=None, source=None, after=None, limit=20):
         """One bounded page; source is a SplitSource or its exact wire dictionary."""
@@ -147,7 +143,7 @@ class AsyncControlClient:
             await asyncio.to_thread(pending.result)
             raise
 
-    def next_batch(self, id): return AsyncBatchStream(ControlClient(self._owner).next_batch(id))
+    def next_batch(self, cursor): return AsyncBatchStream(ControlClient(self._owner).next_batch(cursor))
 
     async def pages(self, kind, **scope):
         while True:

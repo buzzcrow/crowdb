@@ -63,14 +63,14 @@ runtime.close()
 - `dataset.call(json, timeout=30)` uses a tagged `op` command and the existing
   Rust Dataset JSON schema. Commands cover create/open/snapshot/head/commit
   status, composition begin/status/edit/evaluate/prepare/publish/abandon/cleanup,
-  prepare/resume/acknowledge/close read, and upload create/complete/status/abort.
+  stateless read binding, and upload create/complete/status/abort.
   `upload_location` returns the authority's opaque location for a composition
   field. No command is retried automatically.
-- `prepare_read` accepts `spec: SessionSpecV2` and `page`; continue its returned
-  page until complete. `next_batch(read_id)` fetches the issued batch. Call
-  `acknowledge` with the previously acknowledged cursor and `Batch.header.next`
-  only after application processing succeeds. Split/worker binding uses the
-  same shared session service as Rust and HTTP.
+- `bind_read` accepts `spec: ReadSpec` and returns a `cursor`. Call
+  `next_batch(cursor)` to fetch; retrying the same cursor replays its batch.
+  Save `Batch.header.next` after successful processing. There is no remote
+  acknowledgement, TTL renewal or close. Snapshot/Split/worker binding is
+  identical in Rust and HTTP.
 - `upload_part(upload_id, index, bytes)` copies Python input once into final
   transport frame slots across allocations of at most 1 MiB and freezes them
   before submission. A logical upload part can still contain 4 MiB. Publication uses

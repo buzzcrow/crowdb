@@ -139,7 +139,7 @@ impl NativeStream {
                 let mut stream = match kind.as_str() {
                     "batch" => client.stream_batch(&serde_json::from_str(&args)?).await?,
                     "next" => client.next_batch(&args).await?,
-                    "v2-next" => client.control().next_batch(&args.parse()?).await?,
+                    "v2-next" => client.control().next_batch(&args).await?,
                     _ => return Err(Error::Invalid("stream operation".into())),
                 };
                 while let Some(event) = stream.next_event().await? {

@@ -19,7 +19,6 @@ use crate::key;
 use crate::manifest::{ManifestPartition, ManifestRecord};
 use crate::record::{DatasetRecord, HeadRecord, ManifestBinding, SnapshotRecord};
 use crate::store::{CasOutcome, DatasetStore, StoreError};
-use crate::ReadCursor;
 use crate::{DatasetError, DatasetId, DatasetIdentity, PublicationState, SnapshotId, SnapshotPublication};
 
 const RECORD_VERSION: u16 = 1;
@@ -84,8 +83,6 @@ pub struct SampleView {
 
 impl DatasetAuthority {
     #[must_use]
-    /// # Panics
-    /// The built-in non-zero lease duration is always valid.
     pub fn new(store: Arc<dyn DatasetStore>) -> Self {
         Self {
             store,
@@ -96,8 +93,6 @@ impl DatasetAuthority {
     }
 
     #[must_use]
-    /// # Panics
-    /// The built-in non-zero lease duration is always valid.
     pub fn with_chunk_reader(store: Arc<dyn DatasetStore>, chunk_reader: Arc<dyn ChunkReader>) -> Self {
         Self {
             store,
@@ -828,49 +823,6 @@ impl DatasetAuthority {
     ) -> Result<Vec<SampleView>, AuthorityError> {
         let _ = surface;
         self.read_batch(identity, snapshot, sample_ids, fields).await
-    }
-
-    /// Loads a durable cursor bound to its logical plan identity.
-    ///
-    /// # Errors
-    /// Returns malformed cursor bytes or storage failures.
-    pub async fn load_cursor(
-        &self,
-        identity: &DatasetIdentity,
-        plan: &crate::ReadPlan,
-    ) -> Result<Option<ReadCursor>, AuthorityError> {
-        let Some(value) = self.store.get(&key::cursor(identity, plan.identity())?).await? else {
-            return Ok(None);
-        };
-        let cursor: ReadCursor = decode(&value.bytes)?;
-        cursor.validate_for(plan)?;
-        Ok(Some(cursor))
-    }
-
-    /// Persists a confirmed cursor using CAS so an older worker cannot move a
-    /// durable replay boundary backwards after a restart.
-    ///
-    /// # Errors
-    /// Rejects a cursor bound to another plan or an unexpected stored value.
-    pub async fn persist_cursor(
-        &self,
-        identity: &DatasetIdentity,
-        plan: &crate::ReadPlan,
-        cursor: &ReadCursor,
-        expected: Option<&ReadCursor>,
-    ) -> Result<(), AuthorityError> {
-        cursor.validate_for(plan)?;
-        let key = key::cursor(identity, plan.identity())?;
-        let expected_bytes = expected.map(encode).transpose()?;
-        let bytes = encode(cursor)?;
-        match self
-            .store
-            .compare_exchange(&key, expected_bytes.as_deref(), &bytes)
-            .await?
-        {
-            CasOutcome::Applied(_) => Ok(()),
-            CasOutcome::Conflict(_) => Err(AuthorityError::CursorConflict),
-        }
     }
 
     async fn manifest_schema(

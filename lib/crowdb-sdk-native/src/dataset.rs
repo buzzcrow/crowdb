@@ -6,8 +6,8 @@
 mod composition;
 mod control;
 mod error;
+mod query;
 mod read;
-mod session;
 mod upload;
 
 pub use composition::{CompositionCleanup, CompositionStatus};

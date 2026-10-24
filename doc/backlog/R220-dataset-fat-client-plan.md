@@ -24,12 +24,16 @@ and [SDK API guide](../../lib/crowdb-sdk-native/README.md).
    The fat client shares Access Server's internal trust domain, takes explicit
    Dataset identity/context, and needs neither SigV4 verification, the S3
    user-secret database, nor external-user capability issuance.
-2. Reuse `crowdb-access-dataset` authority, sessions, composition, Split, and
+2. Reuse `crowdb-access-dataset` authority, stateless reads, composition, Split, and
    upload logic. Preserve Snapshot/Read Plan binding, selection, worker
    partitioning, integrity, cleanup, and deletion admission. Topology is
    a supported scheduling surface, not placement authority.
-3. Preserve explicit acknowledgement and resume: fetching data, releasing a
-   buffer, and acknowledging processing are separate events. Native delivery
+3. Keep read progress entirely client-owned. Each request supplies its query
+   and continuation, bound to Dataset, immutable Snapshot and Split revision.
+   No read-session record, selected-ID copy, progress CAS, TTL or remote close
+   is stored. Replaying a continuation replays its batch. The client saves its
+   checkpoint after successful processing; buffer release does not advance it.
+   Native delivery
    uses the shared owner-backed streams and bounded prefetch. Cancellation
    stops producers; caller-held leases remain valid and charged until release.
 4. Compare native Chunk-KV and chunk-range reads with the HTTP baseline,
@@ -53,7 +57,7 @@ and [SDK API guide](../../lib/crowdb-sdk-native/README.md).
 
 - Existing `ClientRuntime`, topology/locality observations, owner-backed
   delivery and first native S3 frontend. Dataset uses the common transport
-  and budget contracts while retaining its own selection and acknowledgement.
+  and budget contracts while retaining its own selection and client checkpoints.
   Successful stream EOF, durable publication, caller release and owned runtime
   shutdown remain distinct events. The HCA acceptance is same-host functional
   evidence; it does not replace Dataset workload or cross-host measurements.
@@ -84,8 +88,9 @@ and [SDK API guide](../../lib/crowdb-sdk-native/README.md).
   occurs, memory stays bounded and held data stays valid until final release.
   Invariant: bounded owner-backed delivery. Integration test.
 - Given a fetched but unacknowledged batch, when its buffers are released and
-  the read resumes, progress has not advanced; explicit acknowledgement alone
-  advances it. Invariant: processing acknowledgement. Integration test.
+  the same continuation is retried on another server/client instance, the same
+  batch is returned with no read-side writes. Only choosing the returned next
+  continuation advances delivery. Invariant: client-owned progress. Integration test.
 - Given a native Dataset facade sharing a runtime with S3, when either facade
   executes or closes, resource sharing preserves Dataset authority and the
   other's operations. Invariant: shared runtime, separate semantics.
@@ -96,7 +101,7 @@ and [SDK API guide](../../lib/crowdb-sdk-native/README.md).
   failure boundary. Integration test.
 - Given the same native read through Rust and Python, when cancellation and
   close occur with retained data, logical results, buffer lifetime, isolated
-  cleanup, and explicit acknowledgement agree. Invariant: binding parity.
+  cleanup, and continuation replay agree. Invariant: binding parity.
   Integration test.
 
 Run:

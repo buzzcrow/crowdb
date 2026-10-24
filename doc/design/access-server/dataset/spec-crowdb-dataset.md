@@ -121,14 +121,14 @@ specified below and in its versioned OpenAPI contract.
 | `ReclaimSnapshot` / `GetReclaimStatus` | Snapshot ID | Reclaims eligible state or returns durable reclaim progress. |
 | `GetSample` / `GetBatch` | Snapshot ID, sample IDs, projection | Returns ordered samples and verified field values. |
 | `Scan` | Read Plan, optional Cursor | Returns one bounded batch and the next Cursor. |
-| `SaveProgress` / `Resume` | Read Plan, Cursor | Persists or loads plan-bound progress. |
+| `BindRead` / `NextBatch` | Query or continuation | Pins immutable versions or replays a caller-owned position without read-side writes. |
 | `Cancel` | Bound read or service | Stops local admission and production without a remote reader release. |
 
 `PrepareSnapshot` and `PublishSnapshot` share the same operation token and
 validation rules. A complete publication may be implemented as one call that
 performs preparation and completion internally; it MUST have the same durable
-state transitions. Ordinary data reads do not persist activity. Explicit sessions retain
-cursor state required by their documented lifecycle.
+state transitions. Data reads MUST NOT persist activity, selected-ID copies, progress, TTL or
+reader registration. Checkpoints are owned by the client.
 
 ## 5. Manifest and field values
 
@@ -212,7 +212,7 @@ precedes shuffle and worker partitioning, which precede payload reads. A current
 change MUST NOT alter an admitted plan or composition source.
 
 A Cursor is either at the start or contains a plan-bound group and offset. The
-caller acknowledges a batch by persisting the next Cursor. A failed or
+caller acknowledges a batch by saving the next Cursor in its own checkpoint. A failed or
 unacknowledged batch may be replayed; a successful acknowledgement may not be
 skipped or applied to another plan.
 
@@ -292,7 +292,7 @@ unsupported state MUST NOT appear as an empty result. Preview is opt-in, capped 
 The HTTP surface is the portable wire contract. It exposes Dataset creation and
 opening, latest and Snapshot inspection, publication and preparation, Manifest
 retrieval, retention, stable selection, reclamation status, bounded reads, read
-plans, progress, resume, and cancellation.
+queries and client-owned continuations. Cancellation is request-local.
 
 The native surface exposes the same operations through typed calls. Every
 operation identifies the Dataset explicitly or through a bound service and
@@ -307,17 +307,20 @@ Preparation rejects incomplete, aborted or foreign references. Claimed payloads
 remain protected until every candidate/Snapshot owner is released. Unowned
 sessions expire; physical cleanup may remain pending and MUST report that state.
 
-Public read handles bind the resolved immutable Snapshot, selection, projection,
-shuffle and worker partition. Creation and acknowledgement prepare the next token.
-Fetch MUST NOT acknowledge consumption or persist activity. Creation, explicit
-resume and acknowledgement refresh the 60-second admission deadline; fetching
-alone does not extend it. The caller
-explicitly acknowledges an issued next cursor; repeating that acknowledgement
-is idempotent. Progress inspection MUST NOT fetch another batch. Resume restores
-acknowledged progress. Closing one handle MUST NOT cancel another. Worker
-partitioning executes before payload fetching. A v1 plan selects at most 100000
-IDs; JSON metadata and binary headers are capped at 8 MiB. Large fields stream
-rather than being materialized as a whole batch.
+Public reads bind the resolved immutable Snapshot, optional Split revision,
+selection, projection, shuffle and worker partition in a caller-owned continuation.
+Bind and next requests MUST NOT create persistent or required in-memory sessions.
+The same continuation MUST replay its batch across independent server instances.
+A successful consumer saves the next continuation; fetching, EOF and releasing
+buffers MUST NOT advance shared progress. There is no remote ack, resume or close.
+Missing next continuation means end of selection. Cancellation affects only the
+current request. Each request authenticates and checks deletion admission.
+
+Selection windows, shuffle memory and request deadlines MUST remain bounded.
+Groups admit at most 100000 selected IDs and 8 MiB of ID bytes; token JSON is capped
+at 256 KiB before base64 encoding. Selected IDs are not copied into persistent
+read records or the token. JSON metadata and binary headers are capped at 8 MiB.
+Large fields stream rather than being materialized as a whole batch.
 
 Binary frame integrity is established at each frame, field integrity at field
 end, and successful batch completion requires the batch terminator followed by

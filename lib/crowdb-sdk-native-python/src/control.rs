@@ -3,7 +3,7 @@
 
 use crowdb_access_dataset::{
     composition::{CompositionEdit, CompositionInput},
-    CommitAttempt, DatasetUploads, OperationId, SessionSpecV2, SnapshotId,
+    CommitAttempt, DatasetUploads, OperationId, ReadSpec, SnapshotId,
 };
 use crowdb_sdk_native::{
     dataset::{CompositionStatus, DatasetClient},
@@ -55,20 +55,8 @@ pub enum Command {
     CleanupComposition {
         operation: OperationId,
     },
-    PrepareRead {
-        spec: SessionSpecV2,
-        page: u64,
-    },
-    ResumeRead {
-        read: OperationId,
-    },
-    Acknowledge {
-        read: OperationId,
-        expected: String,
-        next: String,
-    },
-    CloseRead {
-        read: OperationId,
+    BindRead {
+        spec: ReadSpec,
     },
     CreateUpload {
         upload: OperationId,
@@ -155,12 +143,7 @@ pub async fn execute(client: &DatasetClient, context: OperationContext, command:
                 "physical_cleanup_deferred":status.physical_cleanup_deferred}),
             )
         }
-        Command::PrepareRead { spec, page } => encoded(client.prepare_read(context, &spec, page).await?),
-        Command::ResumeRead { read } => encoded(client.resume_read(context, read).await?),
-        Command::Acknowledge { read, expected, next } => {
-            encoded(client.acknowledge(context, read, &expected, &next).await?)
-        }
-        Command::CloseRead { read } => encoded(client.close_read(context, read).await?),
+        Command::BindRead { spec } => encoded(client.bind_read(context, spec).await?),
         Command::CreateUpload {
             upload,
             length,

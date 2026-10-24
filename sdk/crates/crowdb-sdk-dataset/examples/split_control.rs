@@ -310,8 +310,7 @@ async fn read_split(
     snapshot: &v2::OpaqueId,
     revision: &v2::OpaqueId,
 ) -> Result<()> {
-    let mut request = v2::ReadPlan {
-        id: v2::OpaqueId::random(),
+    let request = v2::ReadPlan {
         snapshot: snapshot.to_string(),
         selection: v2::Predicate::All,
         fields: vec!["value".into()],
@@ -322,49 +321,24 @@ async fn read_split(
             revision: Some(revision.clone()),
             name: "train/a b".into(),
         }),
-        expected_page: 0.into(),
     };
-    let mut ready = false;
-    for _ in 0..100 {
-        let p = client.prepare_read(&request).await?;
-        if p.complete {
-            ready = true;
-            break;
-        }
-        request.expected_page = p.next_page;
-    }
-    assert!(ready);
-    assert_eq!(
-        client.read_status(&request.id).await?.split.unwrap().revision,
-        *revision
-    );
-    let before = client.progress(&request.id).await?;
-    let mut stream = client.next_batch(&request.id).await?;
+    let bound = client.bind_read(&request).await?;
+    assert_eq!(bound.split.as_ref().unwrap().revision, *revision);
+    let mut stream = client.next_batch(&bound.cursor).await?;
     let mut data = Vec::new();
-    let mut next = None;
     while let Some(event) = stream.next_event().await? {
-        match event {
-            BatchEvent::Data(bytes) => data.extend_from_slice(&bytes),
-            BatchEvent::Header(header) => next.clone_from(&header.next),
-            _ => {}
+        if let BatchEvent::Data(bytes) = event {
+            data.extend_from_slice(&bytes);
         }
     }
     assert_eq!(data, b"data");
-    assert_eq!(client.progress(&request.id).await?.cursor, before.cursor);
-    let next = next.unwrap();
-    assert_eq!(
-        client
-            .acknowledge(
-                &request.id,
-                &crowdb_sdk_dataset::Acknowledge {
-                    expected: before.cursor,
-                    next: next.clone()
-                }
-            )
-            .await?
-            .cursor,
-        next
-    );
-    assert!(client.close_read(&request.id).await?.closed);
+    let mut replay = client.next_batch(&bound.cursor).await?;
+    let mut again = Vec::new();
+    while let Some(event) = replay.next_event().await? {
+        if let BatchEvent::Data(bytes) = event {
+            again.extend_from_slice(&bytes);
+        }
+    }
+    assert_eq!(again, data);
     Ok(())
 }

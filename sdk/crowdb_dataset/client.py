@@ -190,11 +190,7 @@ class DatasetClient:
         return self._call("upload_file", {"path": os.fspath(path), "id": id, "part_size": part_size, "concurrency": concurrency})
     def download_to_path(self, snapshot, sample, field, path):
         return self._call("download_to_path", {"snapshot": snapshot, "sample": sample, "field": field, "path": os.fspath(path)})
-    def start_read(self, plan): return self._call("start_read", plan)
-    def resume_read(self, id): return self._call("resume_read", {"id": id})
-    def close_read(self, id): return self._call("close_read", {"id": id})
-    def acknowledge(self, id, expected, next): return self._call("acknowledge", {"id": id, "ack": {"expected": expected, "next": next}})
-    def progress(self, id): return self._call("progress", {"id": id})
+    def bind_read(self, plan): return self._call("bind_read", plan)
     def reclaim(self, id): return self._call("reclaim", {"id": id})
     def reclaim_status(self, id): return self._call("reclaim_status", {"id": id})
 
@@ -202,9 +198,9 @@ class DatasetClient:
         self._check()
         return BatchStream(self._native.stream("batch", _encode(request)))
 
-    def next_batch(self, id):
+    def next_batch(self, cursor):
         self._check()
-        return BatchStream(self._native.stream("next", id))
+        return BatchStream(self._native.stream("next", cursor))
 
     def get_batch(self, request, max_bytes=8 * 1024 * 1024):
         with self.stream_batch(request) as stream:
@@ -288,7 +284,7 @@ class AsyncDatasetClient:
             raise
 
     def stream_batch(self, request): return AsyncBatchStream(self._client.stream_batch(request))
-    def next_batch(self, id): return AsyncBatchStream(self._client.next_batch(id))
+    def next_batch(self, cursor): return AsyncBatchStream(self._client.next_batch(cursor))
     async def get_batch(self, request, max_bytes=8 * 1024 * 1024):
         fields, chunks, size, header = [], [], 0, None
         async with self.stream_batch(request) as stream:

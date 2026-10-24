@@ -1,17 +1,14 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-mod admission;
 mod body;
 mod field;
 pub use body::{BatchBody, FieldBuffer};
 
-use super::{now, DatasetClient};
+use super::DatasetClient;
 use crate::runtime::RequestLease;
 use crate::{OperationContext, Result};
-use crowdb_access_dataset::{
-    DatasetSessions, FieldLocator, OperationId, ReadCancellation, SampleView, SnapshotId,
-};
+use crowdb_access_dataset::{DatasetReads, FieldLocator, ReadCancellation, SampleView, SnapshotId};
 use std::sync::Arc;
 
 pub struct BatchRequest {
@@ -56,18 +53,23 @@ impl DatasetClient {
     /// Returns missing data, invalid projection, admission or storage failure.
     pub async fn read_batch(&self, context: OperationContext, batch: BatchRequest) -> Result<ReadBatch> {
         let request = self.runtime.resources.admit(context)?;
-        self.batch(request, batch, None, true, None).await
+        self.batch(request, batch, None, true).await
     }
 
-    /// Fetches the issued batch; only `acknowledge` advances durable progress.
+    /// Fetches a caller-owned continuation. Retrying it replays the same batch.
     /// # Errors
-    /// Returns expired/closed sessions, selection, admission or storage failure.
-    pub async fn next_batch(&self, context: OperationContext, id: OperationId) -> Result<ReadBatch> {
+    /// Returns invalid continuations, deletion admission, bounded-work or storage errors.
+    pub async fn next_batch(&self, context: OperationContext, cursor: &str) -> Result<ReadBatch> {
         let request = self.runtime.resources.admit(context)?;
-        let sessions = DatasetSessions::new(Arc::clone(&self.authority));
+        let reads = DatasetReads::new(Arc::clone(&self.authority));
         let batch = request
-            .run(async { Ok(sessions.next(&self.identity, id, now()).await?) })
+            .run(async {
+                Ok(reads
+                    .next(&self.identity, cursor, &ReadCancellation::new())
+                    .await?)
+            })
             .await?;
+        let end = batch.next.is_none();
         self.batch(
             request,
             BatchRequest {
@@ -75,9 +77,8 @@ impl DatasetClient {
                 sample_ids: batch.ids,
                 fields: batch.fields,
             },
-            Some(batch.next),
-            batch.end,
-            Some(id),
+            batch.next,
+            end,
         )
         .await
     }
@@ -88,9 +89,15 @@ impl DatasetClient {
         batch: BatchRequest,
         next: Option<String>,
         end: bool,
-        session: Option<OperationId>,
     ) -> Result<ReadBatch> {
-        let admission = admission::ReadAdmission::admit(self, &request, batch.snapshot, session).await?;
+        request
+            .run(async {
+                Ok(self
+                    .authority
+                    .check_snapshot_readable(&self.identity, batch.snapshot)
+                    .await?)
+            })
+            .await?;
         let samples = if batch.sample_ids.is_empty() {
             Vec::new()
         } else {
@@ -123,7 +130,6 @@ impl DatasetClient {
             request,
             Arc::clone(&self.runtime.resources),
             Arc::clone(&self.uploads),
-            admission,
         );
         Ok(ReadBatch { header, body })
     }

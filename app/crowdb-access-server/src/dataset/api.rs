@@ -9,7 +9,7 @@ mod conversion;
 mod error;
 mod management;
 mod publication;
-mod session;
+mod query;
 mod upload;
 mod v2;
 
@@ -110,8 +110,8 @@ impl DatasetHttpService {
         let tail: Vec<&str> = parts[7..].iter().map(String::as_str).collect();
         let method = request.method().clone();
         let authority = self.reads.authority();
-        if tail.first() == Some(&"read-plans") {
-            return self.session_route(&identity, &tail, request).await;
+        if tail.first() == Some(&"reads") && tail.len() > 1 {
+            return self.query_route(&identity, &tail, request).await;
         }
         if tail.first() == Some(&"uploads") {
             return self.upload_route(&identity, &tail, request).await;

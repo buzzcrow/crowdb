@@ -5,8 +5,8 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use bytes::Bytes;
 use crowdb_sdk_dataset::{
-    wire::BatchEvent, Acknowledge, DatasetClient, Error, FieldDefinition, FieldValue, Manifest, Publication,
-    ReadPlan, Sample, Selection, UploadRequest, WorkerPartition,
+    wire::BatchEvent, DatasetClient, Error, FieldDefinition, FieldValue, Manifest, Publication, ReadPlan,
+    Sample, Selection, UploadRequest, WorkerPartition,
 };
 use md5::{Digest, Md5};
 use std::{collections::BTreeMap, path::PathBuf};
@@ -157,7 +157,6 @@ async fn verify(
     let mut owned = Vec::new();
     for worker in 0..2 {
         let plan = ReadPlan {
-            id: uuid::Uuid::new_v4().simple().to_string(),
             snapshot: "latest".into(),
             selection: Selection::Prefix {
                 value: STANDARD.encode(b"sample-"),
@@ -172,11 +171,11 @@ async fn verify(
             },
             shuffle: None,
         };
-        let session = client.start_read(&plan).await?;
-        assert_eq!(session.snapshot, snapshot);
-        let mut cursor = session.acknowledged;
+        let bound = client.bind_read(&plan).await?;
+        assert_eq!(bound.snapshot, snapshot);
+        let mut cursor = bound.cursor;
         loop {
-            let mut stream = client.next_batch(&plan.id).await?;
+            let mut stream = client.next_batch(&cursor).await?;
             let mut header = None;
             while let Some(event) = stream.next_event().await? {
                 if let BatchEvent::Header(h) = event {
@@ -185,18 +184,11 @@ async fn verify(
             }
             let header = header.ok_or("batch header")?;
             owned.extend(header.sample_ids.iter().cloned());
-            assert_eq!(client.progress(&plan.id).await?.cursor, cursor);
-            let ack = Acknowledge {
-                expected: cursor.clone(),
-                next: header.next.clone().ok_or("issued cursor")?,
-            };
-            cursor = client.acknowledge(&plan.id, &ack).await?.cursor;
-            assert_eq!(client.acknowledge(&plan.id, &ack).await?.cursor, cursor);
             if header.end {
                 break;
             }
+            cursor = header.next.clone().ok_or("next cursor")?;
         }
-        client.close_read(&plan.id).await?;
     }
     owned.sort();
     owned.dedup();

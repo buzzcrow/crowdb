@@ -158,7 +158,6 @@ pub enum Selection {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReadPlan {
-    pub id: String,
     pub snapshot: String,
     pub selection: Selection,
     pub fields: Vec<String>,
@@ -167,22 +166,8 @@ pub struct ReadPlan {
     pub shuffle: Option<Shuffle>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReadSession {
-    pub id: String,
+pub struct ReadBinding {
     pub snapshot: String,
-    pub plan: String,
-    pub acknowledged: String,
-    pub expires_at: u64,
-    pub closed: bool,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Acknowledge {
-    pub expected: String,
-    pub next: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Progress {
-    pub plan: String,
     pub cursor: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]

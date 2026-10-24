@@ -15,7 +15,6 @@ mod error;
 mod identity;
 pub mod inspection;
 mod key;
-mod lease;
 mod manifest;
 mod namespace;
 mod payload;
@@ -46,7 +45,6 @@ pub use delivery::DeliveryWindow;
 pub use error::DatasetError;
 pub use identity::{DatasetId, OperationId, SnapshotId, SplitRevisionId};
 pub use key::manifest_partition;
-pub use lease::{ReadLease, DEFAULT_READ_LEASE_SECONDS};
 pub use manifest::{
     FieldDefinition, FieldLocator, FieldRecord, ManifestPartition, ManifestRecord, SampleRecord, SchemaRecord,
 };
@@ -79,15 +77,10 @@ pub use record::{
     ActiveReadLease, DatasetRecord, HeadRecord, ManifestBinding, ReclaimProgress, ReclaimState,
     SnapshotRecord,
 };
-pub use retention::{
-    RetentionLease, RetentionLeaseHandle, RetentionLeaseRegistry, RetentionPlan, RetentionPlanner,
-};
+pub use retention::{RetentionPlan, RetentionPlanner};
 pub use store::{
     CasOutcome, DatasetStore, MetadataPage, MetadataScan, MetadataScanBudget, StoreError, StoredValue,
 };
 
-mod read_session;
-pub use read_session::{
-    DatasetSessions, ReadPreparation, ReadSession, SessionBatch, SessionPartition, SessionShuffle,
-    SessionSpec, SessionSpecV2, SessionSplit,
-};
+mod read_query;
+pub use read_query::{DatasetReads, ReadBinding, ReadPage, ReadPartition, ReadShuffle, ReadSpec, ReadSplit};

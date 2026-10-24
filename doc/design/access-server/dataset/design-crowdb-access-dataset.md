@@ -143,8 +143,8 @@ registering a reader. Deletion durably fences new reads and records a five-minut
 `reclaim_after` deadline; retries and restarts preserve that deadline. Existing
 streams can finish using resolved metadata and payloads during the grace period.
 Unusually long reads may fail after reclamation; partial delivery is never complete
-success. Access Servers and native clients do not acknowledge deletion. Session
-progress and local request/buffer admission have independent lifetimes. EOF,
+success. Access Servers and native clients do not acknowledge deletion. Client
+checkpoints and local request/buffer admission have independent lifetimes. EOF,
 cancel and drop release local request admission without remote cleanup writes;
 caller-held buffers remain valid and charged until their final release.
 
@@ -197,8 +197,9 @@ chunk access, local staging and RDMA remain extensions.
   limits bound memory and registration.
 - **DATA-I8 — Cursor binding:** a cursor and Read Plan cannot resume against a
   different snapshot or selection identity.
-- **DATA-I9 — Safe reclamation:** retained snapshots and active reads protect all
-  reachable metadata and payload.
+- **DATA-I9 — Safe reclamation:** retention and live ownership protect reachable
+  metadata and payload. Deletion rejects new reads and delays reclamation for the
+  grace period; overdue reads may fail without returning truncated success.
 - **DATA-I10 — Surface equivalence:** HTTP and native access return the same
   logical selection and integrity result.
 
@@ -207,8 +208,8 @@ chunk access, local staging and RDMA remain extensions.
 The implementation is split into a `crowdb-access-dataset` library and a thin
 `crowdb-access-server` Dataset listener, following the S3 and Iceberg boundary.
 `DatasetAuthority` owns keys, records, publication state, ancestry, retention,
-and durable progress through the `DatasetStore` interface. `DatasetReadService`
-owns admission, bounded delivery, plan/cursor execution, and lease lifetime.
+through the `DatasetStore` interface; read checkpoints stay with the caller. `DatasetReadService`
+owns admission, bounded delivery, plan/cursor execution, and request lifetime.
 `DatasetHttpService` owns HTTP framing, authentication, route/status mapping,
 shutdown, and health wiring. `ChunkKvDatasetStore` adapts Dataset metadata and
 payload access to the chunk-backed KV client without exposing physical layout
@@ -254,23 +255,28 @@ explicit reclaim; upload expiry does not reclaim claimed candidate payloads.
 
 ### 10.2 Read flow
 
-`DatasetSessions` resolves latest/stable once, binds the request to that
-immutable Snapshot, and persists immutable pages of selected IDs separately
-from a small progress record. Selection, deterministic shuffle and rank/worker
-partition execute before fetching payloads. Projection walks explicit ancestry
-only until all requested fields are resolved. Plans admit at most 100000 IDs;
-metadata is capped at 8 MiB and selection pages contain at most 1024 IDs.
+`DatasetReads` resolves latest/stable and optional currentSplit into immutable
+versions and returns a self-contained continuation. The server stores no read
+record, selected-ID pages, progress, TTL or cancellation state. Every next request
+supplies its continuation and passes ordinary authentication and deletion admission.
+The token binds Dataset, Snapshot, Split, selection, projection, worker partition,
+shuffle seed/group size and position. It is a cursor, not an authorization grant.
 
-Creation and acknowledgement persist the next plan-bound opaque token together
-with progress. Fetch reads that token and the immutable ID pages without any
-mutation or activity renewal. Repeated fetches replay the same batch. Acknowledgement
-CAS-advances only the prepared token and is idempotent; progress inspection performs
-no payload read. Creation, acknowledgement and explicit resume set a 60-second
-admission deadline; an expired handle resumes at acknowledged progress while its
-Snapshot remains available. Explicit close affects only that handle. Stream pulls
-check its closed state to preserve remote cancellation; they do not update it.
-CAS conflicts reuse the returned record, while identical resume/close operations
-need no mutation. Legacy sessions without a prepared token acquire one once.
+Selection uses bounded inspection windows without fetching a full Manifest.
+Split filtering precedes deterministic shuffle and worker partitioning. The cursor
+carries a group start and offset, not the Dataset's selected IDs. A partly consumed
+shuffle group is reconstructed from immutable metadata; this bounds memory but
+adds metadata reads when groups are much larger than delivered batches. Groups
+are capped at 100000 selected IDs and 8 MiB of IDs; selection work has a two-second
+deadline and at most 5000 scan windows of up to 20 candidates. Serialized cursor
+content is capped at 256 KiB before base64 encoding. Invalid or excessive work
+returns an explicit error. Stream metadata and headers remain capped at 8 MiB.
+
+Repeating a continuation replays its batch, including from another Access Server
+or native client. After successful application processing, the caller saves the
+returned next continuation in its own checkpoint. EOF and buffer release never
+save progress. There is no remote ack, resume or close; cancelling a request stops
+its local producer. The SDK iterable's acknowledgement is a local operation.
 
 The public binary response streams a bounded JSON header, integrity-checked
 payload frames, field terminators and a batch terminator. Success also requires
@@ -278,8 +284,8 @@ HTTP EOF with no trailing bytes. Each active transfer owns local admission
 credits through delivery/drop. Snapshot reads perform no persistent activity
 updates or heartbeat writes. Cancellation stops the producer and returns credits;
 retained SDK-owned buffers keep their byte credits until released.
-The internal legacy scan adapter retains its compatibility behavior; public
-fetch never implies application acknowledgement.
+The internal legacy scan adapter also returns a caller-owned cursor without
+loading or persisting progress. Requests have no shared inactivity TTL.
 
 ### 10.3 Retention and reclaim flow
 
@@ -337,7 +343,7 @@ cleanup retires the staging owner and obsolete candidate owners, preserving
 published candidates and independent owners of shared uploads. Snapshot upload
 reclaim walks at most twenty retained Manifest field positions per step after
 terminal admission fencing. It revokes only that Snapshot publication's owner;
-physical cleanup stays in the durable upload registry. The retained Manifest
+physical cleanup stays discoverable from durable upload authorities. The retained Manifest
 allows owner cleanup even after inspection indexes have been retired.
 
 Composition version 3 registers each edit ID in the root before writing its
@@ -352,10 +358,12 @@ session CAS that removes its ownership. A delayed claim for that operation then
 conflicts; other owners remain valid. Sessions retain at most 4096 retired owner
 IDs and report capacity explicitly. Ordinary `release` remains reversible.
 
-Upload expiry scans one bounded registry page per background sweep. Registration
-and removal use generation nonces and session CAS fences so stale cleanup cannot
-remove a newer registration. Restart restores sessions, accepted parts, progress
-and pending cleanup from the durable store; in-memory state is not authoritative.
+Upload expiry scans a bounded page of upload authorities with a local continuation
+cursor. Shared registry registration and removal are absent. Restart restores
+sessions, accepted parts, progress and pending cleanup from the durable store;
+restarting the scan cannot lose a cleanup obligation. Scan throughput and per-upload
+cleanup work determine the delay beyond expiry; the grace deadline is not a
+maximum reclamation-latency guarantee.
 
 ### 10.4 Transport and compatibility
 
@@ -381,9 +389,12 @@ Upload sessions decode versions 2 through 4 and write version 4 without registry
 fields. Permanent retired-owner identities still reject delayed claims. This
 metadata upgrade is one-way: do not downgrade an upgraded authority or mix old
 and new authority writers against the same Dataset store. Immutable Dataset/Snapshot/Manifest encodings
-remain compatible. Private read-session progress decodes version 2 and writes
-version 3 with a prepared next token;
-public API versions do not expose these private persistence formats.
+remain compatible. Persisted read-session records and legacy cursor keys are
+unused. Session read routes are absent; clients use `POST reads/bind` and
+`POST reads/next`. Upgraded clients and servers must deploy together. Control v2
+advertises `stateless-reads` so an SDK cannot treat the retired session capability
+as support for this contract. Physical purging of unused keys is an explicit
+maintenance operation, not a read-path side effect.
 
 Hot-path synchronization uses atomics, immutable owned views, CAS and bounded
 notification channels. No application-wide request lock serializes independent

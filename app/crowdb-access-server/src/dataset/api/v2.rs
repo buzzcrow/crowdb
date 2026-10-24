@@ -53,7 +53,7 @@ impl DatasetHttpService {
                 "inspection-preparation",
                 "dataset-management",
                 "split-revisions",
-                "split-reads",
+                "stateless-reads",
             ];
             if self.uploads.is_some() {
                 capabilities.extend(["uploads", "composition", "snapshot-reclaim"]);
@@ -111,8 +111,8 @@ impl DatasetHttpService {
             if tail.first() == Some(&"compositions") {
                 return self.v2_compositions(&identity, &tail, request).await;
             }
-            if tail.first() == Some(&"read-plans") {
-                return self.v2_read_session(&identity, &tail, request).await;
+            if tail.first() == Some(&"reads") {
+                return self.v2_read_query(&identity, &tail, request).await;
             }
             if matches!(
                 tail.as_slice(),

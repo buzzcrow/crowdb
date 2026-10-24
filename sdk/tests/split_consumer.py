@@ -64,25 +64,19 @@ async def verify_async(endpoint, name, token, snapshot, revision):
     async with AsyncDatasetClient(endpoint, name, token) as owner:
         client = owner.control()
         assert (await client.lifecycle(snapshot))["snapshot"] == snapshot
-        plan = {"id": new_id(), "snapshot": snapshot, "selection": {"kind": "all"},
+        plan = {"snapshot": snapshot, "selection": {"kind": "all"},
                 "fields": ["value"], "batch_size": 1,
                 "partition": {"worker": 0, "workers": 1, "rank": 0, "world_size": 1},
-                "shuffle": None, "split": {"revision": revision, "name": "train/a b"}, "expected_page": "0"}
-        for _ in range(100):
-            result = await client.prepare_read(plan)
-            if result["complete"]: break
-            plan["expected_page"] = result["next_page"]
-        else: raise AssertionError("read preparation budget")
-        before = await client.progress(plan["id"])
+                "shuffle": None, "split": {"revision": revision, "name": "train/a b"}}
+        binding = await client.bind_read(plan)
+        assert binding["split"]["revision"] == revision
         chunks, header = [], None
-        async with client.next_batch(plan["id"]) as stream:
+        async with client.next_batch(binding["cursor"]) as stream:
             async for kind, value in stream:
                 if kind == "data": chunks.append(value)
                 if kind == "header": header = value
         assert b"".join(chunks) == b"external source"
-        assert await client.progress(plan["id"]) == before
-        await client.acknowledge(plan["id"], before["cursor"], header["next"])
-        assert (await client.close_read(plan["id"]))["closed"]
+        assert header["snapshot"] == snapshot
         pages = [page async for page in client.pages("samples", snapshot=snapshot, limit=1)]
         assert sum(len(page["entries"]) for page in pages) == 1
 

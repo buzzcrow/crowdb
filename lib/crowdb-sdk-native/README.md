@@ -101,18 +101,16 @@ async fn read_object(seeds: Vec<String>) -> Result<(), Box<dyn std::error::Error
   `body.next()` returns a field index and retained `BufferLease`. Each field
   has its own logical offset. Read through verified EOF before reporting a
   complete result; no contiguous field assembly is required.
-- `prepare_read` advances one bounded `SessionSpecV2` preparation page,
-  including Split revision, selection and worker partition. Continue with
-  its `next_page` until complete. `next_batch` fetches without acknowledging;
-  `resume_read` returns the acknowledged cursor. Only `acknowledge(expected,
-  next)` advances it. Releasing buffers or reaching EOF never acknowledges.
+- `bind_read(context, ReadSpec)` returns a portable `ReadBinding.cursor` pinned
+  to Snapshot and optional Split revision. `next_batch(context, &cursor)` replays
+  that position; save `header.next` only after processing succeeds. `None` means
+  end. There is no server-side progress, ack, TTL, resume or close operation.
 - Reads check snapshot deletion state at admission and perform no persistent
   reader registration, renewal or release. Deletion rejects new requests and
   defers cleanup for five minutes. Admitted transfers may finish; overdue reads
   can fail when their remaining data is reclaimed. EOF/cancel/drop return local
   request credits without a remote cleanup wait. Caller-held buffers remain
-  valid and charged independently. `close_read` closes the durable session;
-  session acknowledgement remains separate from fetching.
+  valid and charged independently.
 - Upload parts accept runtime-owned `BufferLease` or `FrozenObjectBuffer`.
   Complete verifies stored parts before publication. Use `begin_composition`,
   `edit_composition`, bounded evaluate/prepare, publish and cleanup: these

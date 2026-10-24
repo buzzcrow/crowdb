@@ -38,7 +38,7 @@ async fn capabilities_use_existing_auth_and_match_configured_operations() {
             "inspection-preparation",
             "dataset-management",
             "split-revisions",
-            "split-reads"
+            "stateless-reads"
         ])
     );
     let response = client.post(&endpoint).bearer_auth("secret").send().await.unwrap();

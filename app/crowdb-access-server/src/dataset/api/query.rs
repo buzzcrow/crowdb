@@ -1,28 +1,26 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{batch::BatchRequest, error::ApiError, json, operation, read_body, read_json, ApiResult};
-use crate::dataset::{unix_seconds, DatasetHttpService};
+use super::{batch::BatchRequest, json, read_json, ApiError, ApiResult, DatasetHttpService};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use crowdb_access_dataset::{
-    DatasetIdentity, DatasetSessions, Selection, SessionPartition, SessionShuffle, SessionSpec,
+    DatasetIdentity, DatasetReads, ReadCancellation, ReadPartition, ReadShuffle, ReadSpec, Selection,
 };
 use hyper::{body::Incoming, Method, Request};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct Plan {
-    id: String,
     snapshot: String,
     selection: Predicate,
     fields: Vec<String>,
     batch_size: usize,
-    partition: SessionPartition,
+    partition: ReadPartition,
     #[serde(deserialize_with = "required_shuffle")]
-    shuffle: Option<SessionShuffle>,
+    shuffle: Option<ReadShuffle>,
 }
-fn required_shuffle<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<SessionShuffle>, D::Error> {
-    Option::<SessionShuffle>::deserialize(d)
+fn required_shuffle<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<ReadShuffle>, D::Error> {
+    Option::<ReadShuffle>::deserialize(d)
 }
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -83,15 +81,44 @@ impl Predicate {
     }
 }
 #[derive(Deserialize)]
-struct Acknowledge {
-    expected: String,
-    next: String,
+#[serde(deny_unknown_fields)]
+pub(super) struct NextRead {
+    pub cursor: String,
 }
 impl DatasetHttpService {
-    pub(super) async fn session_route(
+    pub(super) async fn query_route(
         &self,
         identity: &DatasetIdentity,
         tail: &[&str],
+        request: Request<Incoming>,
+    ) -> ApiResult {
+        if request.method() != Method::POST {
+            return Err(ApiError::not_found());
+        }
+        match tail {
+            ["reads", "bind"] => {
+                let p: Plan = read_json(request).await?;
+                let spec = ReadSpec {
+                    snapshot: p.snapshot,
+                    selection: p.selection.native(0, &mut 1024)?,
+                    fields: p.fields,
+                    batch_size: p.batch_size,
+                    partition: p.partition,
+                    shuffle: p.shuffle,
+                    split: None,
+                };
+                let binding = DatasetReads::new(self.reads.authority())
+                    .bind(identity, spec)
+                    .await?;
+                json(&serde_json::json!({"snapshot":binding.snapshot.to_string(), "cursor":binding.cursor}))
+            }
+            ["reads", "next"] => self.query_next(identity, request).await,
+            _ => Err(ApiError::not_found()),
+        }
+    }
+    pub(super) async fn query_next(
+        &self,
+        identity: &DatasetIdentity,
         request: Request<Incoming>,
     ) -> ApiResult {
         let request_id = request
@@ -100,60 +127,23 @@ impl DatasetHttpService {
             .ok_or_else(ApiError::integrity)?
             .0
             .clone();
-        let sessions = DatasetSessions::new(self.reads.authority());
-        let now = unix_seconds();
-        match (request.method().clone(), tail) {
-            (Method::POST, ["read-plans"]) => {
-                let p: Plan = read_json(request).await?;
-                let spec = SessionSpec {
-                    id: operation(&p.id)?,
-                    snapshot: p.snapshot,
-                    selection: p.selection.native(0, &mut 1024)?,
-                    fields: p.fields,
-                    batch_size: p.batch_size,
-                    partition: p.partition,
-                    shuffle: p.shuffle,
-                };
-                json(&sessions.start(identity, spec, now).await?)
-            }
-            (Method::GET, ["read-plans", id]) => json(&sessions.resume(identity, operation(id)?, now).await?),
-            (Method::DELETE, ["read-plans", id]) => {
-                read_body(request, false).await?;
-                json(&sessions.close(identity, operation(id)?).await?)
-            }
-            (Method::POST, ["read-plans", id, "next"]) => {
-                read_body(request, false).await?;
-                let batch = sessions.next(identity, operation(id)?, now).await?;
-                self.batch(
-                    identity,
-                    BatchRequest {
-                        snapshot: batch.snapshot.to_string(),
-                        sample_ids: batch.ids.iter().map(|id| STANDARD.encode(id)).collect(),
-                        fields: batch.fields,
-                        sample_id_limit: None,
-                    },
-                    Some(batch.next),
-                    batch.end,
-                    Some(operation(id)?),
-                    request_id,
-                )
-                .await
-            }
-            (Method::PUT, ["read-plans", id, "progress"]) => {
-                let ack: Acknowledge = read_json(request).await?;
-                if ack.expected.len() > 4096 || ack.next.len() > 4096 {
-                    return Err(ApiError::too_large());
-                }
-                let r = sessions
-                    .acknowledge(identity, operation(id)?, &ack.expected, &ack.next, now)
-                    .await?;
-                json(&serde_json::json!({"plan":r.plan,"cursor":r.acknowledged}))
-            }
-            (Method::GET, ["read-plans", id, "progress"]) => {
-                let r = sessions.resume(identity, operation(id)?, now).await?;
-                json(&serde_json::json!({"plan":r.plan,"cursor":r.acknowledged}))
-            }
-            _ => Err(ApiError::not_found()),
-        }
+        let input: NextRead = read_json(request).await?;
+        let page = DatasetReads::new(self.reads.authority())
+            .next(identity, &input.cursor, &ReadCancellation::new())
+            .await?;
+        let end = page.next.is_none();
+        self.batch(
+            identity,
+            BatchRequest {
+                snapshot: page.snapshot.to_string(),
+                sample_ids: page.ids.iter().map(|id| STANDARD.encode(id)).collect(),
+                fields: page.fields,
+                sample_id_limit: Some(16 * 1024),
+            },
+            page.next,
+            end,
+            request_id,
+        )
+        .await
     }
 }
