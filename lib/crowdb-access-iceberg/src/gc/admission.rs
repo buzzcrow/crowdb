@@ -65,16 +65,16 @@ impl GcRepository {
             next.discovery_scope = 0;
             next.scan_after.clear();
             next.sweep_round = 0;
-            return self.exchange_multipart_task(Some(&existing), &next).await;
+            return self.exchange_admission_task(Some(&existing), &next).await;
         }
         let mut task = GcTask::plan(context, identity, None, now_ms, limits)?;
         task.kind = GcTaskKind::MultipartCleanup;
         task.not_before_ms = now_ms;
         task.validate()?;
-        self.exchange_multipart_task(None, &task).await
+        self.exchange_admission_task(None, &task).await
     }
 
-    async fn exchange_multipart_task(
+    async fn exchange_admission_task(
         &self,
         before: Option<&GcTask>,
         task: &GcTask,
@@ -88,7 +88,7 @@ impl GcRepository {
                 let StorageRecord::GcTask(current) = StorageRecord::decode(&key, &value.bytes)? else {
                     return Err(ValidationError::Record.into());
                 };
-                if current.context != task.context || current.kind != GcTaskKind::MultipartCleanup {
+                if current.context != task.context || current.kind != task.kind || current.head != task.head {
                     return Err(CatalogError::Conflict);
                 }
                 Ok(*current)
@@ -165,17 +165,7 @@ impl GcRepository {
             return Ok(existing);
         }
         let task = GcTask::plan(context, identity, None, now_ms, limits)?;
-        match self.create(&task).await {
-            Ok(()) => Ok(task),
-            Err(error) => match self.task(context.catalog, identity).await? {
-                Some(existing)
-                    if existing.context == context && existing.kind == GcTaskKind::RetiredCatalog =>
-                {
-                    Ok(existing)
-                }
-                _ => Err(error),
-            },
-        }
+        self.exchange_admission_task(None, &task).await
     }
 
     /// Installs one replayable purge worker for a durable table purge marker.
@@ -232,18 +222,6 @@ impl GcRepository {
             },
             limits,
         )?;
-        match self.create(&task).await {
-            Ok(()) => Ok(task),
-            Err(error) => match self.task(context.catalog, identity).await? {
-                Some(existing)
-                    if existing.context == context
-                        && existing.kind == GcTaskKind::PurgeTable
-                        && existing.head.as_ref() == Some(&marker.head) =>
-                {
-                    Ok(existing)
-                }
-                _ => Err(error),
-            },
-        }
+        self.exchange_admission_task(None, &task).await
     }
 }

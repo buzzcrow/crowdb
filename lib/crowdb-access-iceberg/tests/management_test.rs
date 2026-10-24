@@ -102,11 +102,17 @@ async fn completed_clear_admits_one_retired_catalog_task() {
     store
         .fail_after
         .store(store.writes.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
-    let task = gc
-        .admit_retired(&operation, 1000, GcLimits::default())
+    assert!(matches!(
+        gc.admit_retired(&operation, 1000, GcLimits::default()).await,
+        Err(CatalogError::Store(
+            crowdb_access_iceberg::catalog::StoreError::Response
+        ))
+    ));
+    store.fail_after.store(0, Ordering::SeqCst);
+    let task = GcRepository::new(store.clone())
+        .admit_retired(&operation, 1001, GcLimits::default())
         .await
         .unwrap();
-    store.fail_after.store(0, Ordering::SeqCst);
     assert_eq!(task.kind, GcTaskKind::RetiredCatalog);
     assert_eq!(task.context.catalog, initialized.catalog);
     assert_eq!(task.identity, identity);
