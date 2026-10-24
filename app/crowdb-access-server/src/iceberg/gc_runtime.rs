@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use crate::config::IcebergGcConfig;
 use crowdb_access_iceberg::{
-    catalog::{CatalogContext, CatalogRepository, RootState, RoutedCatalogStore},
+    catalog::{CatalogRepository, RootState, RoutedCatalogStore},
     file::FileBlockStore,
     gc::{BudgetedGcBlocks, BudgetedGcStore, GcIoBudget, GcLimits, GcRepository, GcWorker},
     key::CatalogId,

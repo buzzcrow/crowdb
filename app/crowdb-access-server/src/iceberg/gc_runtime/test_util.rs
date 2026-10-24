@@ -1,11 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{
-    scan_and_advance, BudgetedGcStore, CatalogContext, CatalogId, GcIoBudget, GcLimits, GcWorker,
-    ScanPosition,
-};
+use super::{scan_and_advance, BudgetedGcStore, CatalogId, GcIoBudget, GcLimits, GcWorker, ScanPosition};
 use crowdb_access_iceberg::{
+    catalog::CatalogContext,
     file::FileBlockStore,
     gc::{BudgetedGcBlocks, GcRepository, GcStore},
 };
