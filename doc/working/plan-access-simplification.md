@@ -161,10 +161,10 @@ CAS 不再满足只证明“本次条件不成立”，不能谎称“第一次�
   历史回复查询；Composition/Split 的 Committing 恢复与 P2/P3 一起删除，客户端保留完整输入。
   旧记录只作为兼容解码/GC 输入，不让旧账本控制新请求。head 保留 expected base；同一
   candidate 的当前结果可判断相同，已被后续 head 遮住时不保证历史请求结果重放。
-- [~] **R2.2a 独立 Split 发布不写请求账本**：从完整 revision 和显式 expected base 更新
-  currentSplit；删除新 CA/CR/SRC、Committing/Published 草稿写入及覆盖 head 前的 helper。
-  同一目标仍是当前结果时返回当前事实；后续代际已遮住时返回条件冲突，不回放旧响应或重置
-  后来者。旧账本仅兼容读取/清理。补 H0→H1→H2、未知回复、并发 CAS 与实际 mutation 成本。
+- [~] **R2.2b Split 发布直接接收资源与 precondition**：补无 draft 的 REST/SDK 入口，
+  消除当前兼容路由的两次 draft 读取；冲突返回已观察的 revision/generation，供客户端审阅后
+  直接组成下一次条件请求，不为取得相同 head 再 GET。不得自动 rebase；旧服务能力缺失时
+  明确失败。验证缺省/null、鉴权、冲突与丢回复、Rust/Python SDK、无账本与实际读写成本。
 
 - [ ] **R2 审查条件发布的回复丢失窗口**：用 H0→H1→H2 测试区分条件失败、相同结果与历史未知；
   列出确实依赖历史精确结果的调用者，没有这种需求就移除相应 ledger/response replay。
@@ -498,6 +498,23 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **R2.2a（2026-10-24）**：新增直接接受完整 revision/显式 expected revision+generation
+  的 `publish_split_revision`，旧 draft 发布仅作适配；新发布只 CAS currentSplit，不再写
+  CA/CR/SRC、Committing/Published，也不帮助补写前一发布。相同当前结果返回当前事实，
+  H0→H1→H2 后重试 H0→H1 返回条件冲突；未知 mutation 原样返回，不确认 GET。
+  legacy attempt/receipt/head 解码与旧 Committing 恢复仅用于旧输入，新操作不创建它们。
+  直接首次发布为 5G+1C（含空 head 时 initial-Split 查询），已有 head 时 4G+1C；确认相同
+  结果或拒绝旧 base 为 4G+0C。实际 key 差集只新增 Split head，CAS definite loser 的返回
+  值直接解码，unknown 没有额外读。兼容 REST 当前仍多两次 draft GET，由 R2.2b 消除。
+  回收 fence 同时修正为复用 CAS observation；有/无 initial/current revision 均连续四次
+  冲突后只读 head 一次，缺省 initial binding 在本请求只查一次，不做跨请求缓存。
+  新增五个成本/故障用例及现有 publication/reclaim 合同回归；Dataset 全部 target 通过，
+  新增 H1 丢回复再被 H2 覆盖、缺省 head 竞争的聚焦用例随后通过。七个 HTTP/Rust SDK
+  用例及显式 `--ignored` 安装后 Python consumer 通过；Python 使用 V4.2 同一 SDK 源码的
+  已安装 wheel，当前服务为新代码。四个受影响 crate（含 e2e-test）all-target/all-feature
+  clippy、两 workspace fmt/diff 通过，均经 `pixi run`。容器 fixture 已增加未发布 ID 读取与
+  无新 Split receipt 断言，尚未运行新镜像；新真实验收继续由 V2/V4 跟踪。
 
 - **R2.1a（2026-10-24）**：完整 Split 的 ID 读取、history、冻结继承和 continuation
   直接使用最终 `SplitRevisionRecord`；移除读取 SRC/currentSplit 的门槛和闲置 initial-Split

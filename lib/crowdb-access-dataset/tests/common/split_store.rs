@@ -19,6 +19,14 @@ pub(super) struct TestDraftStore {
     pub cancel_scan: AtomicBool,
     pub revision_reads: AtomicUsize,
     pub bounded_reads: AtomicUsize,
+    pub unbounded_reads: AtomicUsize,
+    pub mutations: AtomicUsize,
+    pub split_head_reads: AtomicUsize,
+    pub candidate_reads: AtomicUsize,
+    pub split_head_mutations: AtomicUsize,
+    pub split_head_conflicts: AtomicUsize,
+    pub clear_split_conflict_target: AtomicBool,
+    pub reject_publishing_ledgers: AtomicBool,
     pub hide_revision_once: AtomicBool,
     pub lose_revision_reply: AtomicBool,
     pub reject_split_proof_reads: AtomicBool,
@@ -26,6 +34,13 @@ pub(super) struct TestDraftStore {
 #[async_trait::async_trait]
 impl DatasetStore for TestDraftStore {
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
+        self.unbounded_reads.fetch_add(1, Ordering::Relaxed);
+        if key.starts_with(b"DS\0CB\0") {
+            self.candidate_reads.fetch_add(1, Ordering::Relaxed);
+        }
+        if key.starts_with(b"DS\0SH\0") {
+            self.split_head_reads.fetch_add(1, Ordering::Relaxed);
+        }
         assert!(
             !self.inspect_only.load(Ordering::Relaxed),
             "Split inspection used unbounded get"
@@ -45,6 +60,9 @@ impl DatasetStore for TestDraftStore {
         cancel: &ReadCancellation,
     ) -> Result<Option<StoredValue>, StoreError> {
         self.bounded_reads.fetch_add(1, Ordering::Relaxed);
+        if key.starts_with(b"DS\0SH\0") {
+            self.split_head_reads.fetch_add(1, Ordering::Relaxed);
+        }
         if self.reject_split_proof_reads.load(Ordering::Relaxed) {
             assert!(
                 !key.starts_with(b"DS\0SRC\0") && !key.starts_with(b"DS\0SH\0"),
@@ -84,6 +102,35 @@ impl DatasetStore for TestDraftStore {
         expected: Option<&[u8]>,
         value: &[u8],
     ) -> Result<CasOutcome, StoreError> {
+        self.mutations.fetch_add(1, Ordering::Relaxed);
+        if self.reject_publishing_ledgers.load(Ordering::Relaxed) {
+            assert!(
+                ![b"DS\0CA\0".as_slice(), b"DS\0CR\0", b"DS\0SRC\0"]
+                    .iter()
+                    .any(|prefix| key.starts_with(prefix)),
+                "Split publication wrote a request ledger"
+            );
+        }
+        if key.starts_with(b"DS\0SH\0") {
+            self.split_head_mutations.fetch_add(1, Ordering::Relaxed);
+            if self
+                .split_head_conflicts
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                let mut head = split::SplitHead::decode(value).unwrap();
+                head.fence = OperationId::random();
+                if self.clear_split_conflict_target.load(Ordering::Relaxed) {
+                    head.revision = None;
+                }
+                assert!(matches!(
+                    self.inner
+                        .compare_exchange(key, expected, &head.encode().unwrap())
+                        .await?,
+                    CasOutcome::Applied(_)
+                ));
+            }
+        }
         assert!(
             !self.inspect_only.load(Ordering::Relaxed),
             "Split inspection wrote metadata"

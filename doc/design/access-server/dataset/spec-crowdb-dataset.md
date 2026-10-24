@@ -188,7 +188,7 @@ addressable by ID until reclamation removes its metadata under Section 9.
 Control v2 separates candidate creation from publication attempts. An attempt MUST
 bind the exact candidate and expected opaque head generation. Initial Split
 membership and candidate upload ownership MUST be ready before the head transition.
-A successful attempt MUST have a durable recoverable receipt. Retry of a historical
+A successful Snapshot attempt MUST have a durable recoverable receipt. Retry of a historical
 success MUST NOT rewind latest. A head conflict preserves the candidate and parent;
 a reviewed retry uses a new attempt with a newly observed generation.
 
@@ -200,6 +200,13 @@ and usable as a frozen source before publication or after a publication conflict
 Abandoning a draft MUST NOT remove its complete result. A missing or cleanup-sealed
 final revision record is unavailable; incomplete membership pages alone do not
 constitute a result. Snapshot deletion admission still applies to each new request.
+Independent Split publication MUST NOT persist an attempt, response receipt or
+draft publication progress. A retry that observes the same current revision can
+confirm the current effect; if a later revision has replaced it, the stale expected
+base MUST fail without rewinding currentSplit. It does not promise historical
+response replay. Unknown storage outcomes MUST propagate without a confirmation
+query. Existing legacy receipts remain readable; new Split attempts are absent
+from commit-status history.
 
 ## 7. Selection, plans, and cursors
 

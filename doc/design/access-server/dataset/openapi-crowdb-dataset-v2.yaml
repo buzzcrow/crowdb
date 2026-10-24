@@ -523,6 +523,7 @@ paths:
   /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}/publish:
     post:
       operationId: publishSplitDraft
+      description: Conditionally updates currentSplit without a request ledger or draft publication progress. The same current revision confirms the current effect; a later revision makes a stale retry conflict. Unknown outcomes propagate without a confirmation query.
       parameters:
         - in: path
           name: dataset
@@ -755,6 +756,7 @@ paths:
     get:
       operationId: commitStatusV2
       summary: Recover a successful publication receipt
+      description: Returns Snapshot or legacy publication receipts. New independent Split publication does not create historical receipts; retry the same conditional request to confirm its current effect.
       parameters:
       - $ref: '#/components/parameters/dataset'
       - in: path

@@ -185,6 +185,20 @@ async fn revise(client: &Client, snapshot: &str) {
         200,
     )
     .await;
+    assert_eq!(
+        call(
+            client,
+            Method::GET,
+            &format!(
+                "/snapshots/{snapshot}/split-revisions/{}",
+                prepared["revision"].as_str().unwrap()
+            ),
+            None,
+            200
+        )
+        .await,
+        prepared
+    );
     restart().await;
     let publish = json!({"attempt":"25252525252525252525252525252525","revision":prepared["revision"],"expected_head":head["generation"]});
     let receipt = call(
@@ -208,6 +222,17 @@ async fn revise(client: &Client, snapshot: &str) {
         receipt
     );
     assert_eq!(call(client, Method::GET, "/head", None, 200).await, data_head);
+    assert_eq!(
+        call(
+            client,
+            Method::GET,
+            "/commits/25252525252525252525252525252525",
+            None,
+            200
+        )
+        .await["receipt"],
+        Value::Null
+    );
     assert_eq!(
         call(
             client,

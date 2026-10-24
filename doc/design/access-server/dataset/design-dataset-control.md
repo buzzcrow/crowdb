@@ -93,6 +93,16 @@ The complete `SplitRevisionRecord` is the final result: an explicit revision ID
 can be read, listed or used as an inherited source without winning currentSplit.
 Read admission still checks the owning Snapshot. Reads load that immutable record
 directly without Split publication proofs, currentSplit lookups or helper writes.
+Standalone Split publication writes only currentSplit. It creates no attempt,
+response receipt, per-revision success proof or draft committing/published state.
+A retry returns the current generation when it still names the same revision;
+after a later revision replaces it, the stale request returns a precondition
+conflict without replaying historical success or rewinding the pointer. A definite
+CAS conflict uses its returned head; a transport error remains unknown. Legacy
+receipts and attempt-bearing heads remain readable without backfilling receipts.
+The draft publication route is a compatibility adapter for its prepared target and
+expected revision; `publish_split_revision` accepts these caller-owned inputs
+directly. New draft status remains Prepared after publication.
 
 ## 4. Bounded observation and reads
 
@@ -167,6 +177,8 @@ late write keys, including currently absent keys, rather than deleting a value a
 allowing a stale CAS(None) writer to recreate it. Edit IDs are registered before
 payload writes so failed admissions can also be retired. Small receipt/fence records
 remain after bulk cleanup to preserve replay and non-resurrection guarantees.
+Split publication does not create those replay records; existing records and
+editing/evaluation cleanup remain compatibility inputs.
 Helping an already stored edit receipt only reads and validates it; retries do not
 submit a doomed CAS for the same bytes. Evaluation journals and cleanup cursors
 are scoped to one draft, not to unrelated readers. They retain exact partial-work

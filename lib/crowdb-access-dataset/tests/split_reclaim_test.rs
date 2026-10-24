@@ -107,7 +107,7 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
         .commit_status(&identity, first_attempt.id)
         .await
         .unwrap()
-        .is_some());
+        .is_none());
     assert!(restarted.inspect_split_head(&identity, snapshot).await.is_err());
     assert!(restarted.get_manifest(&identity, snapshot).await.is_err());
 }

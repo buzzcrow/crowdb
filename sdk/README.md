@@ -198,8 +198,12 @@ Existing `DatasetClient` methods retain their v1 contracts.
   `uploads.publication_ready` is true. Initial Splits publish with the Snapshot.
 - `publish_composition` advances latest; `publish_split` updates only currentSplit
   on its owning Snapshot. Null expected heads/revisions are explicit. On an
-  unknown outcome, retry the exact request or query `commit_status`; a deliberate
-  retry after a head conflict uses a new attempt and freshly observed generation.
+  unknown outcome, retry the exact request. `commit_status` exposes Snapshot and
+  legacy receipts; new independent Split publication saves no request ledger.
+  A Split retry confirms the same current revision or returns a condition conflict
+  after a later revision replaces it. A deliberate retry after a head conflict
+  uses newly reviewed inputs and an observed generation. Publishing a Split does
+  not change its compatibility draft from Prepared to Published.
 - `split_members`, `split_history`, `inventory`, `roots`, `children`, `schema` and
   `samples` return lazy `PageCursor`s. Each `next_page` fetches at most 100 items;
   it never eagerly collects the Dataset. Persist `continuation()` for scoped

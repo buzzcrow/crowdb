@@ -14,7 +14,7 @@ use std::sync::Arc;
 async fn evaluation_resumes_after_server_restart_and_stale_publish_keeps_candidate() {
     let client = Client::new();
     let (test, root, snapshot, draft, first_prepared) = restart_preparation(&client).await;
-    let first_receipt = common::publish(
+    common::publish(
         &client,
         &draft,
         &first_prepared,
@@ -56,17 +56,7 @@ async fn evaluation_resumes_after_server_restart_and_stale_publish_keeps_candida
         response(client.get(&b.0), 200).await["progress"]["state"],
         "prepared"
     );
-    assert_eq!(
-        common::publish(
-            &client,
-            &draft,
-            &first_prepared,
-            "22222222222222222222222222222222",
-            Value::Null
-        )
-        .await,
-        first_receipt
-    );
+    response(client.post(format!("{draft}/publish")).json(&json!({"attempt":"22222222222222222222222222222222", "revision":first_prepared["revision"], "expected_head":Value::Null})), 409).await;
     assert_eq!(response(client.get(&head_url), 200).await, current);
     assert_eq!(
         response(

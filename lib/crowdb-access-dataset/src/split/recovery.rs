@@ -23,7 +23,7 @@ impl DatasetAuthority {
                 return Err(SplitLifecycleError::Corrupt);
             }
             if let Some(receipt) = self.commit_status(identity, id).await? {
-                self.finish_split_publication(identity, &receipt, &old, &state)
+                self.finish_legacy_split_publication(identity, &receipt, &old, &state)
                     .await?;
                 return Ok(self.load_split_draft(identity, operation).await?.1.record);
             }
@@ -33,10 +33,11 @@ impl DatasetAuthority {
             let observed = self.inspect_split_head(identity, snapshot).await?;
             if observed.generation != attempt.expected_head {
                 if let Some(receipt) = self.commit_status(identity, id).await? {
-                    self.finish_split_publication(identity, &receipt, &old, &state)
+                    self.finish_legacy_split_publication(identity, &receipt, &old, &state)
                         .await?;
                 } else {
-                    self.reset_split_publication(identity, &old, &state).await?;
+                    self.reset_legacy_split_publication(identity, &old, &state)
+                        .await?;
                 }
                 return Ok(self.load_split_draft(identity, operation).await?.1.record);
             }
@@ -72,28 +73,32 @@ impl DatasetAuthority {
         snapshot: SnapshotId,
     ) -> Result<(), SplitLifecycleError> {
         let key = key::head(identity, snapshot).map_err(AuthorityError::from)?;
+        let mut old = self.store.get(&key).await?;
+        let mut initial = None;
         for _ in 0..64 {
-            let old = self.store.get(&key).await?;
-            if let Some(value) = &old {
-                self.help_split_head(identity, value).await?;
-            }
-            let observed = self
-                .resolve_split_reference(identity, old.as_ref(), snapshot)
-                .await?;
+            let observed = super::head::reference(old.as_ref(), snapshot)?;
+            let revision = if observed.revision.is_some() {
+                observed.revision
+            } else {
+                if initial.is_none() {
+                    initial = Some(self.initial_split_revision(identity, snapshot).await?);
+                }
+                initial.flatten()
+            };
             let bytes = SplitHead {
                 version: 1,
                 snapshot,
-                revision: observed.revision,
+                revision,
                 fence: OperationId::random(),
             }
             .encode()?;
-            if matches!(
-                self.store
-                    .compare_exchange(&key, old.as_ref().map(|v| v.bytes.as_slice()), &bytes)
-                    .await?,
-                CasOutcome::Applied(_)
-            ) {
-                return Ok(());
+            match self
+                .store
+                .compare_exchange(&key, old.as_ref().map(|v| v.bytes.as_slice()), &bytes)
+                .await?
+            {
+                CasOutcome::Applied(_) => return Ok(()),
+                CasOutcome::Conflict(observed) => old = observed,
             }
         }
         Err(SplitLifecycleError::Conflict)

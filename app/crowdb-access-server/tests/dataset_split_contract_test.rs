@@ -62,7 +62,15 @@ async fn split_revision_flow_preserves_data_head_and_historical_members() {
     );
     assert_eq!(
         response(client.get(&draft), 200).await["progress"]["state"],
-        "published"
+        "prepared"
+    );
+    assert_eq!(
+        response(
+            client.get(format!("{root}/commits/03030303030303030303030303030303")),
+            200
+        )
+        .await["receipt"],
+        Value::Null
     );
     let current = response(client.get(format!("{base}/split-head")), 200).await;
     assert_eq!(current["revision"], revision);

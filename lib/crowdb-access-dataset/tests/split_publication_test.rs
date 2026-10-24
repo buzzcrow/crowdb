@@ -9,14 +9,14 @@ use split_store::{attempt, fixture, prepared};
 use std::sync::atomic::Ordering;
 
 #[tokio::test]
-async fn independent_revision_cas_and_historical_retries_never_move_data_head() {
+async fn independent_revision_cas_and_historical_conflicts_never_move_data_head() {
     let (_, authority, identity, snapshot) = fixture().await;
     let data_head = authority.inspect_head(&identity).await.unwrap();
     let first = prepared(&authority, &identity, snapshot, None).await;
     let competing = prepared(&authority, &identity, snapshot, None).await;
     let first_attempt = attempt(&authority, &identity, &first).await;
     let stale = attempt(&authority, &identity, &competing).await;
-    let receipt = authority
+    authority
         .publish_split_draft(&identity, first.operation, &first_attempt)
         .await
         .unwrap();
@@ -47,13 +47,12 @@ async fn independent_revision_cas_and_historical_retries_never_move_data_head() 
         .unwrap();
     let current = authority.inspect_split_head(&identity, snapshot).await.unwrap();
     assert_eq!(current.revision, Some(next.revision));
-    assert_eq!(
+    assert!(matches!(
         authority
             .publish_split_draft(&identity, first.operation, &first_attempt)
-            .await
-            .unwrap(),
-        receipt
-    );
+            .await,
+        Err(SplitLifecycleError::Conflict)
+    ));
     assert_eq!(
         authority.inspect_split_head(&identity, snapshot).await.unwrap(),
         current
@@ -62,7 +61,7 @@ async fn independent_revision_cas_and_historical_retries_never_move_data_head() 
 }
 
 #[tokio::test]
-async fn lost_split_cas_reply_is_recoverable_and_pending_commit_cannot_be_abandoned() {
+async fn lost_split_cas_reply_retries_current_effect_without_a_request_ledger() {
     let (store, authority, identity, snapshot) = fixture().await;
     let record = prepared(&authority, &identity, snapshot, None).await;
     let attempt = attempt(&authority, &identity, &record).await;
@@ -92,18 +91,16 @@ async fn lost_split_cas_reply_is_recoverable_and_pending_commit_cannot_be_abando
     );
     store.inspect_only.store(false, Ordering::Relaxed);
     store.reject_split_proof_reads.store(false, Ordering::Relaxed);
-    assert!(matches!(
-        authority
-            .abandon_split_draft(&identity, record.operation, 1)
-            .await,
-        Err(SplitLifecycleError::Frozen)
-    ));
     let head = authority.inspect_split_head(&identity, snapshot).await.unwrap();
     let restarted = DatasetAuthority::new(store);
-    let status = restarted
+    assert!(restarted
         .commit_status(&identity, attempt.id)
         .await
         .unwrap()
+        .is_none());
+    let status = restarted
+        .publish_split_draft(&identity, record.operation, &attempt)
+        .await
         .unwrap();
     assert_eq!(status.committed_head, head.generation.unwrap());
     assert_eq!(
@@ -123,49 +120,53 @@ async fn lost_split_cas_reply_is_recoverable_and_pending_commit_cannot_be_abando
             .await
             .unwrap()
             .progress,
-        DraftProgress::Published { .. }
+        DraftProgress::Prepared { .. }
     ));
+    restarted
+        .abandon_split_draft(&identity, record.operation, 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        restarted
+            .publish_split_revision(&identity, &attempt, None)
+            .await
+            .unwrap(),
+        status
+    );
 }
 
 #[tokio::test]
-async fn receipt_failure_blocks_replacement_until_pending_success_is_helped() {
+async fn replacing_current_split_does_not_write_or_help_receipts() {
     let (store, authority, identity, snapshot) = fixture().await;
     let first = prepared(&authority, &identity, snapshot, None).await;
     let first_attempt = attempt(&authority, &identity, &first).await;
     store.reject_receipts.store(true, Ordering::Relaxed);
-    assert!(authority
+    authority
         .publish_split_draft(&identity, first.operation, &first_attempt)
         .await
-        .is_err());
+        .unwrap();
     let old = authority.inspect_split_head(&identity, snapshot).await.unwrap();
     let next = prepared(&authority, &identity, snapshot, Some(first.revision)).await;
     let next_attempt = attempt(&authority, &identity, &next).await;
-    assert!(authority
+    authority
         .publish_split_draft(&identity, next.operation, &next_attempt)
         .await
-        .is_err());
-    assert_eq!(
+        .unwrap();
+    assert_ne!(
         authority.inspect_split_head(&identity, snapshot).await.unwrap(),
         old
     );
-    store.reject_receipts.store(false, Ordering::Relaxed);
-    authority
-        .publish_split_draft(&identity, next.operation, &next_attempt)
+    assert!(authority
+        .commit_status(&identity, first_attempt.id)
         .await
-        .unwrap();
-    assert_eq!(
+        .unwrap()
+        .is_none());
+    assert!(matches!(
         authority
-            .commit_status(&identity, first_attempt.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .committed_head,
-        old.generation.unwrap()
-    );
-    authority
-        .publish_split_draft(&identity, first.operation, &first_attempt)
-        .await
-        .unwrap();
+            .publish_split_draft(&identity, first.operation, &first_attempt)
+            .await,
+        Err(SplitLifecycleError::Conflict)
+    ));
     assert_eq!(
         authority
             .inspect_split_head(&identity, snapshot)
