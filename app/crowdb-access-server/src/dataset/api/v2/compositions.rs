@@ -145,7 +145,7 @@ impl DatasetHttpService {
         let draft = authority.composition_status(identity, operation).await?;
         let edits = if matches!(
             draft.record.progress,
-            DraftProgress::Published { .. } | DraftProgress::Abandoned
+            DraftProgress::Prepared { .. } | DraftProgress::Published { .. } | DraftProgress::Abandoned
         ) {
             Some(
                 authority

@@ -154,7 +154,7 @@ async fn cleanup_uses_a_completed_cas_winner_without_reloading_or_retiring_conte
     let cb = key(b"DS\0CB\0", &identity, snapshot);
     let complete = store.storage().get(&cb).await.unwrap().unwrap();
     let mut staged: serde_json::Value = serde_json::from_slice(&complete.bytes).unwrap();
-    staged["version"] = 1.into();
+    staged["version"] = 3.into();
     assert!(matches!(
         store
             .storage()

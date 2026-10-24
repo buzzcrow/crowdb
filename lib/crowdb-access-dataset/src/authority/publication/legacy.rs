@@ -29,10 +29,11 @@ impl DatasetAuthority {
         stored: &StoredValue,
     ) -> Result<(), AuthorityError> {
         let head = decode_head(&stored.bytes)?;
-        let Some(snapshot) = head.latest else {
-            return Ok(());
-        };
-        if self.snapshot_candidate(identity, snapshot).await?.is_some() {
+        let mut legacy = false;
+        for snapshot in [head.latest, head.stable].into_iter().flatten() {
+            legacy |= self.snapshot_candidate(identity, snapshot).await?.is_none();
+        }
+        if !legacy {
             return Ok(());
         }
         let key = anchor_key(identity)?;
@@ -73,12 +74,18 @@ impl DatasetAuthority {
         if candidate.as_ref().is_some_and(|c| c.version == 2) {
             return Ok(());
         }
+        if candidate.as_ref().is_some_and(|c| c.version == 3) {
+            return Err(AuthorityError::SnapshotNotFound);
+        }
         if self.snapshot_commit(identity, snapshot).await?.is_some()
             || self.legacy_commit_exists(identity, snapshot).await?
         {
             return Ok(());
         }
-        if candidate.is_some() {
+        if let Some(candidate) = candidate {
+            if self.legacy_candidate_ready(identity, &candidate).await? {
+                return Ok(());
+            }
             return Err(AuthorityError::SnapshotNotFound);
         }
         let cancel = ReadCancellation::new();
@@ -204,7 +211,7 @@ pub(super) fn validate_visibility(bytes: &[u8], snapshot: SnapshotId) -> Result<
     Ok(())
 }
 
-fn legacy_read_error(error: InspectionError) -> AuthorityError {
+pub(super) fn legacy_read_error(error: InspectionError) -> AuthorityError {
     match error {
         InspectionError::Authority(error) => error,
         InspectionError::Store(error) => error.into(),

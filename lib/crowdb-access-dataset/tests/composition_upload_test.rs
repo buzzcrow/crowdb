@@ -135,13 +135,14 @@ async fn publication_requires_candidate_owners_and_preserves_payload_after_stagi
     ));
     f.own().await;
     assert!(f.authority.get_snapshot(&f.identity, snapshot).await.is_ok());
+    let cleanup = f.cleanup().await;
+    assert!(cleanup.complete);
+    assert_eq!(cleanup.retired_owners, 1);
     f.authority
         .publish_composition(&f.identity, f.operation, &attempt)
         .await
         .unwrap();
-    let cleanup = f.cleanup().await;
-    assert!(cleanup.complete);
-    assert_eq!(cleanup.retired_owners, 1);
+    assert_eq!(f.cleanup().await, cleanup);
     assert!(matches!(
         f.uploads.abort(&f.location).await,
         Err(UploadError::Conflict)

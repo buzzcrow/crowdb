@@ -3,17 +3,17 @@
 
 use super::super::{
     decode, encode,
-    head::{decode_head, encode_commit_head},
+    head::{encode_head, reference},
 };
 use crate::{
     key, AuthorityError, CasOutcome, CommitAttempt, CommitGeneration, CommitTarget, DatasetAuthority,
-    DatasetError, DatasetIdentity, HeadRecord, PublicationState, SnapshotId, SnapshotRecord,
-    SuccessfulCommit,
+    DatasetError, DatasetHead, DatasetIdentity, HeadRecord, PublicationState, SnapshotHeadUpdate, SnapshotId,
+    SnapshotRecord, StoredValue, SuccessfulCommit,
 };
 use sha2::{Digest, Sha256};
 
 impl DatasetAuthority {
-    /// Commits one immutable candidate using an explicit, independently retryable attempt.
+    /// Compatibility adapter for caller-owned expected-base publication inputs.
     /// # Errors
     /// Rejects divergent attempt IDs, stale heads, unavailable parents and incomplete candidates.
     pub async fn publish_snapshot_candidate(
@@ -21,69 +21,73 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         attempt: &CommitAttempt,
     ) -> Result<SuccessfulCommit, AuthorityError> {
-        self.commit_snapshot_attempt(identity, attempt, None).await
-    }
-
-    pub(super) async fn commit_snapshot_attempt(
-        &self,
-        identity: &DatasetIdentity,
-        attempt: &CommitAttempt,
-        stable: Option<SnapshotId>,
-    ) -> Result<SuccessfulCommit, AuthorityError> {
         attempt.validate()?;
         let CommitTarget::Snapshot { snapshot } = attempt.target else {
             return Err(DatasetError::InvalidPublicationState.into());
         };
-        if let Some(receipt) = self.commit_status(identity, attempt.id).await? {
-            if receipt.attempt != *attempt {
-                return Err(AuthorityError::AlreadyExists);
-            }
-            return Ok(receipt);
-        }
+        let head = self
+            .update_snapshot_head(
+                identity,
+                &SnapshotHeadUpdate {
+                    snapshot,
+                    expected_head: attempt.expected_head,
+                },
+            )
+            .await?;
+        Ok(SuccessfulCommit {
+            version: 1,
+            attempt: attempt.clone(),
+            committed_head: head.generation.ok_or(AuthorityError::Corrupt)?,
+        })
+    }
+
+    /// Conditionally selects one complete Snapshot without request or response persistence.
+    /// # Errors
+    /// Returns incomplete/deleted resources, the observed conflicting head or unknown storage outcomes.
+    pub async fn update_snapshot_head(
+        &self,
+        identity: &DatasetIdentity,
+        update: &SnapshotHeadUpdate,
+    ) -> Result<DatasetHead, AuthorityError> {
+        SnapshotId::from_bytes(update.snapshot.as_bytes())?;
+        let current = self.store.get(&key::head(identity)?).await?;
+        self.commit_snapshot_head(identity, update, None, current).await
+    }
+
+    pub(super) async fn commit_snapshot_head(
+        &self,
+        identity: &DatasetIdentity,
+        update: &SnapshotHeadUpdate,
+        stable: Option<SnapshotId>,
+        current: Option<StoredValue>,
+    ) -> Result<DatasetHead, AuthorityError> {
+        let snapshot = update.snapshot;
+        SnapshotId::from_bytes(snapshot.as_bytes())?;
         let candidate = self
             .snapshot_candidate(identity, snapshot)
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
-        if candidate.version != 2 {
+        if candidate.version != 2 && !self.legacy_candidate_ready(identity, &candidate).await? {
             return Err(AuthorityError::SnapshotNotFound);
         }
-        self.persist_attempt(identity, attempt).await?;
-        if let Some(receipt) = self.snapshot_commit(identity, snapshot).await? {
-            return Ok(receipt);
-        }
-        let current = self.store.get(&key::head(identity)?).await?;
-        if let Some(current) = &current {
-            self.help_head_commit(identity, current).await?;
-        }
-        if current
-            .as_ref()
-            .map(|value| CommitGeneration::from_head(&value.bytes))
-            != attempt.expected_head
-        {
-            return Err(AuthorityError::HeadConflict);
-        }
-        if let Some(parent) = candidate.parent {
-            self.require_committed_snapshot(identity, parent).await?;
-        }
         self.ensure_snapshot_live(identity, snapshot).await?;
-        self.validate_initial_split(identity, snapshot, candidate.initial_split)
-            .await?;
-        self.mark_candidate_published(identity, &candidate).await?;
-        let old_head = current
-            .as_ref()
-            .map(|value| decode_head(&value.bytes))
-            .transpose()?
-            .unwrap_or(HeadRecord {
-                latest: None,
-                stable: None,
+        let observed = reference(current.as_ref())?;
+        if observed.latest == Some(snapshot) && stable.map_or(true, |stable| observed.stable == Some(stable))
+        {
+            return Ok(observed);
+        }
+        if observed.generation != update.expected_head {
+            return Err(AuthorityError::SnapshotHeadConflict {
+                observed: Box::new(observed),
             });
-        let bytes = encode_commit_head(
-            HeadRecord {
-                latest: Some(snapshot),
-                stable: stable.or(old_head.stable),
-            },
-            attempt.clone(),
-        )?;
+        }
+        if let Some(current) = &current {
+            self.preserve_legacy_head(identity, current).await?;
+        }
+        let bytes = encode_head(HeadRecord {
+            latest: Some(snapshot),
+            stable: stable.or(observed.stable),
+        })?;
         match self
             .store
             .compare_exchange(
@@ -93,19 +97,22 @@ impl DatasetAuthority {
             )
             .await?
         {
-            CasOutcome::Applied(_) => {
-                let receipt = SuccessfulCommit {
-                    version: 1,
-                    attempt: attempt.clone(),
-                    committed_head: CommitGeneration::from_head(&bytes),
-                };
-                self.persist_commit_receipt(identity, &receipt).await?;
-                Ok(receipt)
+            CasOutcome::Applied(_) => Ok(DatasetHead {
+                latest: Some(snapshot),
+                stable: stable.or(observed.stable),
+                generation: Some(CommitGeneration::from_head(&bytes)),
+            }),
+            CasOutcome::Conflict(value) => {
+                let observed = reference(value.as_ref())?;
+                if observed.latest == Some(snapshot)
+                    && stable.map_or(true, |stable| observed.stable == Some(stable))
+                {
+                    return Ok(observed);
+                }
+                Err(AuthorityError::SnapshotHeadConflict {
+                    observed: Box::new(observed),
+                })
             }
-            CasOutcome::Conflict(_) => self
-                .snapshot_commit(identity, snapshot)
-                .await?
-                .ok_or(AuthorityError::HeadConflict),
         }
     }
 

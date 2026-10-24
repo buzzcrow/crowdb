@@ -196,9 +196,14 @@ late finalization from exposing reclaimed data.
 Control v2 separates candidate creation from publication attempts. An attempt MUST
 bind the exact candidate and expected opaque head generation. Initial Split
 membership and candidate upload ownership MUST be ready before the head transition.
-A successful Snapshot attempt MUST have a durable recoverable receipt. Retry of a historical
-success MUST NOT rewind latest. A head conflict preserves the candidate and parent;
-a reviewed retry uses a new attempt with a newly observed generation.
+New Snapshot publication MUST NOT persist attempt/response ledgers, success proofs
+or draft publication progress. A response may echo the compatibility attempt ID;
+it does not establish historical response replay. Retrying the same current target
+can confirm its effect; a stale request after a later publication MUST NOT rewind
+latest. A head conflict MUST return the observed latest/stable/generation without
+a confirmation query. A reviewed retry uses that observation with caller-chosen
+content; the server MUST NOT rebase. Unknown storage outcomes MUST propagate.
+Existing legacy receipts remain readable without backfill.
 
 Publishing an independent Split revision MUST update only its Snapshot's currentSplit
 pointer with an expected revision/head CAS. It MUST NOT create a data Snapshot or

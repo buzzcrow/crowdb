@@ -45,8 +45,12 @@ impl DatasetAuthority {
             if candidate.bytes == super::complete::RETIRED {
                 return Ok(false);
             }
-            if super::candidate::decode_candidate(&candidate.bytes, snapshot)?.version == 2 {
+            let candidate = super::candidate::decode_candidate(&candidate.bytes, snapshot)?;
+            if candidate.version == 2 {
                 return Ok(true);
+            }
+            if candidate.version == 3 {
+                return Ok(false);
             }
         }
         if let Some(value) = work
@@ -83,8 +87,14 @@ impl DatasetAuthority {
         }
         // A prepared modern candidate is not a legacy publication, even when
         // a malformed old head happens to name it.
-        if candidate.is_some() {
-            return Ok(false);
+        if let Some(candidate) = candidate {
+            return self
+                .legacy_candidate_available(
+                    identity,
+                    &super::candidate::decode_candidate(&candidate.bytes, snapshot)?,
+                    work,
+                )
+                .await;
         }
         Ok(self
             .legacy_snapshot_visible(identity, snapshot, head.as_ref(), work)

@@ -93,7 +93,7 @@ async fn split_commit_restart_preserves_candidates_receipts_and_historical_membe
             200
         )
         .await["receipt"],
-        receipt
+        Value::Null
     );
     revise(&client, snapshot).await;
     assert_eq!(

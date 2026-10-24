@@ -4,8 +4,8 @@
 use super::{error::ApiError, models};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use crowdb_access_dataset::{
-    DatasetRecord, FieldLocator, FieldRecord, ManifestRecord, PublicationState, SampleRecord, SchemaRecord,
-    SnapshotId, SnapshotRecord,
+    DatasetRecord, FieldLocator, FieldRecord, ManifestRecord, OperationId, PublicationState, SampleRecord,
+    SchemaRecord, SnapshotId, SnapshotRecord,
 };
 use md5::{Digest, Md5};
 use std::collections::BTreeMap;
@@ -21,17 +21,26 @@ pub(super) fn dataset(value: &DatasetRecord) -> models::DatasetInfo {
 }
 pub(super) fn snapshot(value: SnapshotRecord, latest: Option<SnapshotId>) -> models::Snapshot {
     let value = value.publication;
+    snapshot_metadata(value.snapshot, value.parent, value.operation, value.state, latest)
+}
+pub(super) fn snapshot_metadata(
+    snapshot: SnapshotId,
+    parent: Option<SnapshotId>,
+    operation: OperationId,
+    state: PublicationState,
+    latest: Option<SnapshotId>,
+) -> models::Snapshot {
     models::Snapshot {
-        id: value.snapshot.to_string(),
-        parent: value.parent.map(|v| v.to_string()),
-        operation: value.operation.to_string(),
-        state: match value.state {
+        id: snapshot.to_string(),
+        parent: parent.map(|v| v.to_string()),
+        operation: operation.to_string(),
+        state: match state {
             PublicationState::Prepared => "prepared",
             PublicationState::Published => "published",
             PublicationState::Aborted => "aborted",
         }
         .into(),
-        is_latest: latest == Some(value.snapshot),
+        is_latest: latest == Some(snapshot),
     }
 }
 pub(super) fn manifest(

@@ -8,7 +8,6 @@ mod observation;
 pub use lifecycle::{SnapshotReclaimError, SnapshotReclaimPhase, SnapshotReclaimStatus};
 pub use observation::SnapshotLifecycle;
 mod reclaim;
-pub(crate) use reclaim::CandidateRetirement;
 mod sweep;
 use crate::{key, AuthorityError, CasOutcome, DatasetIdentity, OperationId, SnapshotId};
 pub use cleanup::MetadataCleanupProgress;

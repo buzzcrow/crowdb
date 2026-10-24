@@ -27,17 +27,32 @@ generation used for publication CAS. Multiple roots and off-latest branches rema
 discoverable. A preparation binding or a Published flag alone is not a complete result.
 The final Snapshot resource root is installed after Manifest/index rows, the initial
 Split revision and necessary payload ownership are ready. The current root uses
-version 2 of the existing candidate binding; version 1 remains an incomplete legacy
-preparation unless old successful-publication evidence exists. Complete results are
+version 2 of the existing candidate binding; new staging uses version 3 and is not
+readable. Old version 1 bindings use existing publication evidence, or read-only
+validation of their Published content identity/digest and complete initial Split.
+They never acquire new publication proofs during reads or head replacement. Complete results are
 readable, enumerable, retainable and usable as parents/stable targets without winning
 latest. ID reads consult this root rather than publication receipts or mutable heads.
 
-Publication has a candidate identity and a separate caller-owned attempt identity.
-Each attempt binds its target and exact expected head generation. Successful commit
-receipts remain durable and help incomplete publication finalization after restart.
-Retrying a successful historical attempt returns its receipt without rewinding a
-later head. On a head conflict the candidate remains available; an explicit new
-attempt can use a newly observed head without changing its parent or contents.
+Publication selects a complete candidate with an exact expected head generation.
+It writes only the fenced head, without attempt/response records, success proofs
+or Composition committing/published progress. Compatibility attempt IDs are echoed
+in the immediate response and do not create request history. Retrying the same
+current latest confirms its current effect; after another Snapshot replaces it,
+the stale condition returns the observed latest/stable/generation without rewinding
+the head or querying again. Unknown storage outcomes propagate unchanged. The
+caller decides how to use an observed base; the server never rebases content.
+Existing receipts and attempt-bearing heads are decoded read-only. Before replacing
+an old head without complete resource roots, the existing bounded legacy ancestry
+anchor preserves those resources; new version 4 heads need no receipt helping or
+anchor lookup. Stable-only legacy roots are included in that compatibility index.
+
+The v1 JSON adapter prepares content once before acquiring payload owners. It then
+completes that resource and selects it using the existing latest-parent condition;
+it does not rerun Manifest/index preparation. Authority validation replaces the
+old operation/head preflight. Responses use the known immutable metadata plus one
+latest observation, without rereading operation/Snapshot records or copying the
+Manifest for a second preparation.
 
 Each Snapshot owns immutable Split-set revisions and an independently fenced
 currentSplit pointer. Names are scoped to Dataset/Snapshot/revision. Publishing a

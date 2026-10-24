@@ -117,10 +117,7 @@ async fn import(client: &v2::ControlClient) -> Result<(v2::OpaqueId, v2::OpaqueI
     assert_eq!(lifecycle.snapshot, snapshot);
     assert!(lifecycle.latest);
     assert!(!lifecycle.retained);
-    assert_eq!(
-        client.commit_status(&request.attempt).await?.unwrap().attempt,
-        receipt.attempt
-    );
+    assert!(client.commit_status(&request.attempt).await?.is_none());
     assert_eq!(
         client.publish_composition(&operation, &request).await?.attempt,
         receipt.attempt

@@ -51,7 +51,7 @@ async fn uploaded_composition_publishes_initial_splits_and_branches_from_a_froze
     let prepared = composition::prepare(&client, &draft, "2", "1").await;
     let snapshot = prepared["preparation"]["snapshot"].as_str().unwrap();
     response(client.get(format!("{root}/snapshots/{snapshot}/summary")), 200).await;
-    let receipt = composition::publish(
+    composition::publish(
         &client,
         &root,
         &draft,
@@ -65,7 +65,7 @@ async fn uploaded_composition_publishes_initial_splits_and_branches_from_a_froze
             200
         )
         .await["receipt"],
-        receipt
+        Value::Null
     );
     let head = response(client.get(format!("{root}/head")), 200).await;
     assert_eq!(head["latest"], snapshot);

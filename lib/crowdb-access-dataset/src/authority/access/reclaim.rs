@@ -5,17 +5,6 @@ use super::DatasetAuthority;
 use crate::authority::{decode, decode_head, encode_head};
 use crate::{key, AuthorityError, CasOutcome, DatasetIdentity, HeadRecord, OperationId, SnapshotId};
 
-pub(crate) enum CandidateRetirement {
-    Retired,
-    Complete,
-    LegacyCommitted(crate::SuccessfulCommit),
-}
-impl CandidateRetirement {
-    pub(crate) fn retained(&self) -> bool {
-        !matches!(self, Self::Retired)
-    }
-}
-
 impl DatasetAuthority {
     pub(super) async fn fence_reclaim(
         &self,
@@ -43,7 +32,7 @@ impl DatasetAuthority {
         let mut old = self.store.get(&key).await?;
         for _ in 0..64 {
             if let Some(old) = &old {
-                self.help_head_commit(identity, old).await?;
+                self.preserve_legacy_head(identity, old).await?;
             }
             let head = old
                 .as_ref()
@@ -194,24 +183,15 @@ impl DatasetAuthority {
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
-    ) -> Result<CandidateRetirement, AuthorityError> {
-        if let Some(receipt) = self.snapshot_commit(identity, snapshot).await? {
-            return Ok(CandidateRetirement::LegacyCommitted(receipt));
-        }
+    ) -> Result<bool, AuthorityError> {
         if self.seal_incomplete_snapshot(identity, snapshot).await? {
-            return Ok(CandidateRetirement::Complete);
+            return Ok(true);
         }
         if let Some(owner) = self.fence_reclaim(identity, snapshot).await? {
-            if let Some(receipt) = self.snapshot_commit(identity, snapshot).await? {
-                self.unfence_reclaim(identity, snapshot, owner).await?;
-                return Ok(CandidateRetirement::LegacyCommitted(receipt));
-            }
             self.begin_terminal_retirement(identity, snapshot, owner, 0)
                 .await?;
-        } else if let Some(receipt) = self.snapshot_commit(identity, snapshot).await? {
-            return Ok(CandidateRetirement::LegacyCommitted(receipt));
         }
         self.retire_snapshot_record(identity, snapshot).await?;
-        Ok(CandidateRetirement::Retired)
+        Ok(false)
     }
 }

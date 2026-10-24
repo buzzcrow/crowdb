@@ -68,8 +68,8 @@ pub use wire::{
 
 pub use adapter::{BoundedPrefetch, WorkerPartition};
 pub use authority::{
-    AuthorityError, DatasetAuthority, DatasetHead, MetadataCleanupProgress, SampleView, SnapshotLifecycle,
-    SnapshotReclaimError, SnapshotReclaimPhase, SnapshotReclaimStatus,
+    AuthorityError, DatasetAuthority, DatasetHead, MetadataCleanupProgress, SampleView, SnapshotHeadUpdate,
+    SnapshotLifecycle, SnapshotReclaimError, SnapshotReclaimPhase, SnapshotReclaimStatus,
 };
 pub use chunk_store::{
     unavailable_chunk_reader, ChunkKvDatasetStore, ChunkReadError, ChunkReader, ReadCancellation,

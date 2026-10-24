@@ -81,7 +81,7 @@ paths:
   /namespaces/dataset-ns/datasets/{dataset}/snapshot-inventory:
     get:
       operationId: snapshotInventory
-      summary: List committed Snapshot inventory
+      summary: List complete Snapshot inventory
       parameters:
         - {$ref: '#/components/parameters/dataset'}
         - {$ref: '#/components/parameters/after'}
@@ -97,7 +97,7 @@ paths:
   /namespaces/dataset-ns/datasets/{dataset}/roots:
     get:
       operationId: snapshotRoots
-      summary: List committed parentless Snapshot roots
+      summary: List complete parentless Snapshot roots
       parameters:
         - {$ref: '#/components/parameters/dataset'}
         - {$ref: '#/components/parameters/after'}
@@ -113,7 +113,7 @@ paths:
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/children:
     get:
       operationId: snapshotChildren
-      summary: List committed children of a concrete Snapshot
+      summary: List complete children of a concrete Snapshot
       parameters:
         - {$ref: '#/components/parameters/dataset'}
         - {$ref: '#/components/parameters/snapshot'}
@@ -130,7 +130,7 @@ paths:
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/summary:
     get:
       operationId: snapshotSummary
-      summary: Read bounded committed Snapshot metadata
+      summary: Read bounded complete Snapshot metadata
       parameters:
         - {$ref: '#/components/parameters/dataset'}
         - {$ref: '#/components/parameters/snapshot'}
@@ -775,8 +775,8 @@ paths:
   /namespaces/dataset-ns/datasets/{dataset}/commits/{attempt}:
     get:
       operationId: commitStatusV2
-      summary: Recover a successful publication receipt
-      description: Returns Snapshot or legacy publication receipts. New independent Split publication does not create historical receipts; retry the same conditional request to confirm its current effect.
+      summary: Read a legacy publication receipt
+      description: Returns existing legacy receipts without backfill. New Snapshot and Split publication creates no historical receipts; retry the same conditional request to confirm its current effect.
       parameters:
       - $ref: '#/components/parameters/dataset'
       - in: path
@@ -1082,9 +1082,10 @@ paths:
                 $ref: '#/components/schemas/CommitReceipt'
         default:
           $ref: '#/components/responses/InspectionError'
-      description: Successful publication advances latest only. Null expected_head is explicit; omission fails. Keep
-        the exact attempt and request on unknown outcome. A head conflict preserves the prepared candidate; refresh
-        the head and use a new attempt.
+      description: Successful publication advances latest only, leaving the draft Prepared and creating no attempt,
+        receipt or success-proof record. Null expected_head is explicit; omission fails. Retry the exact conditional
+        request on unknown outcome. A conflict preserves the complete candidate and returns observed_head for caller
+        review, without a confirmation query. A later publication prevents historical replay from rewinding latest.
       requestBody:
         required: true
         content:
@@ -1110,8 +1111,8 @@ paths:
                 $ref: '#/components/schemas/CompositionCleanup'
         default:
           $ref: '#/components/responses/InspectionError'
-      description: Repeat until complete. Active drafts preserve current work; terminal drafts also retire staging
-        owners and edit payloads. Successful publication receipts remain available.
+      description: Repeat until complete. Prepared resources allow scratch and edit payload cleanup; completed
+        candidate ownership permits staging-owner retirement. Final resource owners remain until Snapshot reclamation.
 components:
   parameters:
     dataset:
@@ -1150,7 +1151,10 @@ components:
               message: {type: string}
               request_id: {type: string}
               retryable: {type: boolean}
-              observed_head: {$ref: '#/components/schemas/SplitHead'}
+              observed_head:
+                oneOf:
+                  - {$ref: '#/components/schemas/SplitHead'}
+                  - {$ref: '#/components/schemas/Head'}
   securitySchemes:
     bearerAuth:
       type: http

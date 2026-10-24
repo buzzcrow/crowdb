@@ -116,7 +116,7 @@ impl ControlClient {
         )
         .await
     }
-    /// Resolves an unknown publication outcome without issuing a new attempt.
+    /// Reads legacy publication receipts. Current pointer updates create no receipt history.
     /// # Errors
     /// Returns capability, transport, invalid response or service errors.
     pub async fn commit_status(&self, attempt: &OpaqueId) -> Result<Option<CommitReceipt>, Error> {

@@ -156,6 +156,10 @@ CAS 不再满足只证明“本次条件不成立”，不能谎称“第一次�
   历史回复查询；Composition/Split 的 Committing 恢复与 P2/P3 一起删除，客户端保留完整输入。
   旧记录只作为兼容解码/GC 输入，不让旧账本控制新请求。head 保留 expected base；同一
   candidate 的当前结果可判断相同，已被后续 head 遮住时不保证历史请求结果重放。
+- [ ] **R2.2d Snapshot 直接 REST/SDK 发布入口**：提供只接收完整 Snapshot ID 与显式 nullable
+  expected head 的 head 更新 API、能力和 Rust/Python SDK；不读草稿或使用 attempt ID。
+  SDK 提供 typed observed head，正常/冲突/unknown 请求计数和真实 installed consumer 验证，
+  迁移示例与容器流程；保留父内容不可隐式 rebase、鉴权、删除与不支持时无降级。
 
 - [ ] **R2 审查条件发布的回复丢失窗口**：用 H0→H1→H2 测试区分条件失败、相同结果与历史未知；
   列出确实依赖历史精确结果的调用者，没有这种需求就移除相应 ledger/response replay。
@@ -489,6 +493,30 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，R2.2c/R1.1**：Snapshot 新发布只写 version 4 fenced head，删除 CA/CR/SC
+  写入、head 成功补写和新 Composition Committing/Published 转换。当前同目标确认效果，
+  后续目标遮住的旧条件返回 observed latest/stable/generation，真实 CAS 失败直接解码返回值，
+  unknown 不确认 GET。原生 `SnapshotHeadUpdate` 不含 attempt ID；compatibility response
+  仅回显调用者输入。正常/真实冲突各 3G + 1C，当前目标重试/过期条件各 3G + 0C；
+  四次真实冲突后客户端直接复用返回代际，共五次请求 15G + 5C，没有单独 head 查询。
+  Composition adapter 只多一次草稿 GET（4G + 1C），Prepared 状态保持不变。
+  cleanup 在最终 owner 就绪后可释放 staging owner，Prepared 计算 scratch/edit payload
+  也可回收，最终数据及初始 Split 仍保留。旧 Committing 只读取既有结果后复位；旧回执
+  和 version 3 attempt head 只读，不补写。旧 CB v1 Published 通过有界身份/digest/初始
+  Split 校验保持可读，新暂存绑定用 version 3，不能旁路最终根。旧无 CB 资源仅保留已有
+  bounded legacy ancestry anchor；stable-only 旧根也覆盖，现代 head 不做该查询/写入。
+  同时删除 JSON 发布的重复预检、整次二次 prepare、完成回查和响应 operation/Snapshot
+  回读；获取 owner 前先保留候选可发现性。单 inline 请求真实 listener 冷发布从 28G + 25
+  mutations 降为 12G + 15；同内容重放从 24G 降为 11G、零写。40 个 sample 实测 12G +
+  132 mutations，重放仍 11G、零写，immutable 行只准备一遍；去掉一份 Manifest Vec 复制。
+  上述均为逻辑元数据调用，未等同于 routed 网络 RPC 或 TPS/CPU 实测。
+  Dataset 全目标与追加 cost/legacy/ownership 回归通过；HTTP restart/冲突观察值重试、
+  Rust/installed Python SDK 与 payload consumer、11 项 native 读取测试通过。三 crate
+  all-target/all-feature clippy、独立 SDK 与 e2e-client clippy、两个 workspace fmt、diff
+  检查通过；OpenAPI 解析及 333 个本地引用验证通过。均经 pixi。
+  R2.2d 跟进直接 REST/SDK head API；P2/P3/R4 继续删除计算过程与补全孤儿 GC，V2/V4
+  仍需新源码镜像复验，不能把此批算作全部清理完成。
 
 - **2026-10-24，R2.1/R2.1b**：新 Snapshot 最后将已有 CB 条件替换为 version 2 完整根，
   Manifest/index、初始 Split 与必要 upload owners 就绪后，才能按 ID 读取/引用、列入

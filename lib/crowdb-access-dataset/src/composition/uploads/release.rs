@@ -47,13 +47,10 @@ impl DatasetAuthority {
         let (old, state) = self.load_composition(identity, operation).await?;
         let mut next = state.clone();
         next.edit = None;
-        let terminal = matches!(
-            state.draft.record.progress,
-            DraftProgress::Abandoned | DraftProgress::Published { .. }
-        );
+        let release_staged = staging_releasable(&state)?;
         let ownership = next.uploads.as_mut().ok_or(CompositionError::Conflict)?;
         let mut remaining = 20;
-        if terminal {
+        if release_staged {
             let owner = super::staging_owner(operation)?;
             while remaining > 0 && ownership.staged_retired < ownership.staged.len() {
                 let id = ownership.staged[ownership.staged_retired];
@@ -76,7 +73,6 @@ impl DatasetAuthority {
                 if self
                     .abort_uncommitted_candidate(identity, candidate.snapshot)
                     .await?
-                    .retained()
                 {
                     candidate.keep_committed = true;
                     continue;
@@ -105,18 +101,22 @@ fn obsolete(state: &CompositionState, revision: u64, snapshot: crate::SnapshotId
 }
 fn cleanup_status(state: &CompositionState) -> Result<CompositionUploadCleanup, CompositionError> {
     let ownership = state.uploads.as_ref().ok_or(CompositionError::Conflict)?;
-    let terminal = matches!(
-        state.draft.record.progress,
-        DraftProgress::Published { .. } | DraftProgress::Abandoned
-    );
+    let release_staged = staging_releasable(state)?;
     Ok(CompositionUploadCleanup {
         retired_owners: ownership.staged_retired as u64
             + ownership.candidates.iter().map(|c| c.retired as u64).sum::<u64>(),
-        complete: (!terminal || ownership.staged_retired == ownership.staged.len())
+        complete: (!release_staged || ownership.staged_retired == ownership.staged.len())
             && ownership.candidates.iter().all(|c| {
                 !obsolete(state, c.input_revision, c.snapshot)
                     || c.keep_committed
                     || (c.fenced && c.retired == c.uploads.len())
             }),
     })
+}
+fn staging_releasable(state: &CompositionState) -> Result<bool, CompositionError> {
+    Ok(matches!(
+        state.draft.record.progress,
+        DraftProgress::Abandoned | DraftProgress::Published { .. }
+    ) || (matches!(state.draft.record.progress, DraftProgress::Prepared { .. })
+        && super::publication_ready(state)?))
 }

@@ -93,6 +93,7 @@ fn status_for_authority(error: &AuthorityError) -> StatusCode {
         AuthorityError::AlreadyExists
         | AuthorityError::ParentConflict
         | AuthorityError::HeadConflict
+        | AuthorityError::SnapshotHeadConflict { .. }
         | AuthorityError::CursorConflict
         | AuthorityError::ReclaimPending { .. }
         | AuthorityError::SnapshotProtected => StatusCode::CONFLICT,

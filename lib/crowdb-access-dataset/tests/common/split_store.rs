@@ -23,6 +23,10 @@ pub(super) struct TestDraftStore {
     pub mutations: AtomicUsize,
     pub split_head_reads: AtomicUsize,
     pub candidate_reads: AtomicUsize,
+    pub data_head_reads: AtomicUsize,
+    pub data_head_mutations: AtomicUsize,
+    pub data_head_conflicts: AtomicUsize,
+    pub keep_data_conflict_target: AtomicBool,
     pub split_head_mutations: AtomicUsize,
     pub split_head_conflicts: AtomicUsize,
     pub clear_split_conflict_target: AtomicBool,
@@ -35,6 +39,9 @@ pub(super) struct TestDraftStore {
 impl DatasetStore for TestDraftStore {
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
         self.unbounded_reads.fetch_add(1, Ordering::Relaxed);
+        if key.starts_with(b"DS\0H\0") {
+            self.data_head_reads.fetch_add(1, Ordering::Relaxed);
+        }
         if key.starts_with(b"DS\0CB\0") {
             self.candidate_reads.fetch_add(1, Ordering::Relaxed);
         }
@@ -60,6 +67,9 @@ impl DatasetStore for TestDraftStore {
         cancel: &ReadCancellation,
     ) -> Result<Option<StoredValue>, StoreError> {
         self.bounded_reads.fetch_add(1, Ordering::Relaxed);
+        if key.starts_with(b"DS\0H\0") {
+            self.data_head_reads.fetch_add(1, Ordering::Relaxed);
+        }
         if key.starts_with(b"DS\0SH\0") {
             self.split_head_reads.fetch_add(1, Ordering::Relaxed);
         }
@@ -105,11 +115,30 @@ impl DatasetStore for TestDraftStore {
         self.mutations.fetch_add(1, Ordering::Relaxed);
         if self.reject_publishing_ledgers.load(Ordering::Relaxed) {
             assert!(
-                ![b"DS\0CA\0".as_slice(), b"DS\0CR\0", b"DS\0SRC\0"]
+                ![b"DS\0CA\0".as_slice(), b"DS\0CR\0", b"DS\0SC\0", b"DS\0SRC\0"]
                     .iter()
                     .any(|prefix| key.starts_with(prefix)),
                 "Split publication wrote a request ledger"
             );
+        }
+        if key.starts_with(b"DS\0H\0") {
+            self.data_head_mutations.fetch_add(1, Ordering::Relaxed);
+            if self
+                .data_head_conflicts
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                let (version, (mut head, _)): (u16, (HeadRecord, OperationId)) =
+                    bincode::deserialize(value).unwrap();
+                if !self.keep_data_conflict_target.load(Ordering::Relaxed) {
+                    head.latest = None;
+                }
+                let competing = bincode::serialize(&(version, (head, OperationId::random()))).unwrap();
+                assert!(matches!(
+                    self.inner.compare_exchange(key, expected, &competing).await?,
+                    CasOutcome::Applied(_)
+                ));
+            }
         }
         if key.starts_with(b"DS\0SH\0") {
             self.split_head_mutations.fetch_add(1, Ordering::Relaxed);

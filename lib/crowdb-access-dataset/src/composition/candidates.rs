@@ -107,7 +107,6 @@ impl DatasetAuthority {
         if self
             .abort_uncommitted_candidate(identity, record.publication.snapshot)
             .await?
-            .retained()
         {
             return Ok(true);
         }

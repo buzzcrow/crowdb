@@ -3,54 +3,20 @@
 
 use super::super::head::head_attempt;
 use crate::{
-    AuthorityError, CasOutcome, CommitAttempt, CommitGeneration, CommitTarget, DatasetAuthority,
-    DatasetError, DatasetIdentity, OperationId, SnapshotId, StoredValue, SuccessfulCommit,
+    AuthorityError, CommitAttempt, CommitGeneration, CommitTarget, DatasetAuthority, DatasetError,
+    DatasetIdentity, OperationId, SnapshotId, StoredValue, SuccessfulCommit,
 };
 
 impl DatasetAuthority {
-    pub(in crate::authority) async fn help_head_commit(
+    pub(in crate::authority) async fn preserve_legacy_head(
         &self,
         identity: &DatasetIdentity,
         head: &StoredValue,
     ) -> Result<(), AuthorityError> {
-        let Some(attempt) = head_attempt(&head.bytes)? else {
-            return self.capture_legacy_head(identity, head).await;
-        };
-        let receipt = SuccessfulCommit {
-            version: 1,
-            attempt,
-            committed_head: CommitGeneration::from_head(&head.bytes),
-        };
-        self.persist_commit_receipt(identity, &receipt).await
-    }
-
-    pub(crate) async fn persist_commit_receipt(
-        &self,
-        identity: &DatasetIdentity,
-        receipt: &SuccessfulCommit,
-    ) -> Result<(), AuthorityError> {
-        let bytes = receipt.encode()?;
-        self.put_commit_record(&receipt_key(identity, receipt.attempt.id)?, &bytes)
-            .await?;
-        let key = match receipt.attempt.target {
-            CommitTarget::Snapshot { snapshot } => snapshot_commit_key(identity, snapshot)?,
-            CommitTarget::SplitRevision { snapshot, revision } => {
-                crate::split::key::committed_revision(identity, snapshot, revision)?
-            }
-        };
-        self.put_commit_record(&key, &bytes).await
-    }
-
-    pub(in crate::authority) async fn put_commit_record(
-        &self,
-        key: &[u8],
-        bytes: &[u8],
-    ) -> Result<(), AuthorityError> {
-        match self.store.compare_exchange(key, None, bytes).await? {
-            CasOutcome::Applied(_) => Ok(()),
-            CasOutcome::Conflict(Some(value)) if value.bytes == bytes => Ok(()),
-            CasOutcome::Conflict(_) => Err(AuthorityError::AlreadyExists),
+        if head.bytes.get(..2) == Some(4u16.to_le_bytes().as_slice()) {
+            return Ok(());
         }
+        self.capture_legacy_head(identity, head).await
     }
 
     /// Recovers success from durable evidence or the current head's commit marker.
@@ -70,7 +36,6 @@ impl DatasetAuthority {
         }
         if let Some(head) = self.store.get(&crate::key::head(identity)?).await? {
             if head_attempt(&head.bytes)?.is_some_and(|pending| pending.id == attempt) {
-                self.help_head_commit(identity, &head).await?;
                 let receipt = SuccessfulCommit {
                     version: 1,
                     attempt: head_attempt(&head.bytes)?.ok_or(AuthorityError::Corrupt)?,
@@ -109,7 +74,6 @@ impl DatasetAuthority {
         if let Some(head) = self.store.get(&crate::key::head(identity)?).await? {
             if let Some(attempt) = head_attempt(&head.bytes)? {
                 if attempt.target == (CommitTarget::Snapshot { snapshot }) {
-                    self.help_head_commit(identity, &head).await?;
                     return Ok(Some(SuccessfulCommit {
                         version: 1,
                         attempt,
@@ -137,15 +101,6 @@ impl DatasetAuthority {
                 Ok(attempt)
             })
             .transpose()
-    }
-
-    pub(crate) async fn persist_attempt(
-        &self,
-        identity: &DatasetIdentity,
-        attempt: &CommitAttempt,
-    ) -> Result<(), AuthorityError> {
-        self.put_commit_record(&attempt_key(identity, attempt.id)?, &attempt.encode()?)
-            .await
     }
 }
 fn scoped(prefix: &[u8], identity: &DatasetIdentity, id: &[u8]) -> Result<Vec<u8>, DatasetError> {

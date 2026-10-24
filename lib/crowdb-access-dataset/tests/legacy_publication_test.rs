@@ -165,3 +165,49 @@ async fn completing_an_already_current_legacy_manifest_installs_a_readable_resou
         .await
         .is_ok());
 }
+
+#[tokio::test]
+async fn a_stable_only_legacy_root_remains_readable_after_both_names_move() {
+    let store = Arc::new(dataset_store::TestDatasetStore::default());
+    let authority = DatasetAuthority::new(store.clone());
+    let identity = DatasetIdentity::new(NamespacePath::root(), "legacy-stable").unwrap();
+    authority.create_dataset(identity.clone()).await.unwrap();
+    let old = authority
+        .publish_snapshot(&identity, None, publication_manifest(1))
+        .await
+        .unwrap();
+    legacy::emulate_legacy(store.as_ref(), &authority, &identity, &[old], old).await;
+    let head_key = [b"DS\0H\0".as_slice(), &identity.key().unwrap()].concat();
+    let stored = store.get(&head_key).await.unwrap().unwrap();
+    let head = bincode::serialize(&(
+        1u16,
+        HeadRecord {
+            latest: None,
+            stable: Some(old),
+        },
+    ))
+    .unwrap();
+    store
+        .compare_exchange(&head_key, Some(&stored.bytes), &head)
+        .await
+        .unwrap();
+    let next = authority
+        .prepare_snapshot_candidate(&identity, None, publication_manifest(2), OperationId::random())
+        .await
+        .unwrap();
+    authority
+        .update_snapshot_head(
+            &identity,
+            &SnapshotHeadUpdate {
+                snapshot: next,
+                expected_head: Some(CommitGeneration::from_head(&head)),
+            },
+        )
+        .await
+        .unwrap();
+    authority.set_stable(&identity, next).await.unwrap();
+    assert!(DatasetAuthority::new(store)
+        .get_snapshot(&identity, old)
+        .await
+        .is_ok());
+}

@@ -667,7 +667,7 @@ async fn authority_requires_default_namespace_and_publishes_complete_head() {
         authority
             .publish_snapshot(&identity, Some(snapshot), publication_manifest(3))
             .await,
-        Err(AuthorityError::ParentConflict)
+        Err(AuthorityError::SnapshotHeadConflict { observed }) if observed.latest == Some(first)
     ));
     assert!(matches!(
         authority.create_dataset(identity.clone()).await,

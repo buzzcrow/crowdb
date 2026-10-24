@@ -76,9 +76,15 @@ impl DatasetAuthority {
                 if value.bytes == RETIRED {
                     return Ok(false);
                 }
-                if decode_candidate(&value.bytes, snapshot)?.version == 2 {
+                let candidate = decode_candidate(&value.bytes, snapshot)?;
+                if candidate.version == 2 {
                     return Ok(true);
                 }
+                if self.legacy_candidate_ready(identity, &candidate).await? {
+                    return Ok(true);
+                }
+            } else if self.snapshot_commit(identity, snapshot).await?.is_some() {
+                return Ok(true);
             }
             match self
                 .store

@@ -1,5 +1,4 @@
 mod access;
-pub(crate) use access::CandidateRetirement;
 pub use access::{
     MetadataCleanupProgress, SnapshotLifecycle, SnapshotReclaimError, SnapshotReclaimPhase,
     SnapshotReclaimStatus,
@@ -8,8 +7,8 @@ mod discovery;
 mod head;
 mod projection;
 
-pub use head::DatasetHead;
 use head::{decode_head, encode_head};
+pub use head::{DatasetHead, SnapshotHeadUpdate};
 mod publication;
 
 use std::collections::{BTreeMap, HashSet};
@@ -54,6 +53,8 @@ pub enum AuthorityError {
     ParentConflict,
     #[error("publication lost its head race")]
     HeadConflict,
+    #[error("Snapshot publication condition no longer matches the head")]
+    SnapshotHeadConflict { observed: Box<DatasetHead> },
     #[error("stored dataset record is malformed")]
     Corrupt,
     #[error("snapshot was not found")]
@@ -204,9 +205,6 @@ impl DatasetAuthority {
         self.get_snapshot(identity, snapshot).await?;
         let key = key::head(identity)?;
         let current = self.store.get(&key).await?;
-        if let Some(current) = &current {
-            self.help_head_commit(identity, current).await?;
-        }
         let mut head = current
             .as_ref()
             .map(|value| decode_head(&value.bytes))
@@ -219,12 +217,23 @@ impl DatasetAuthority {
             return Ok(());
         }
         self.ensure_snapshot_live(identity, snapshot).await?;
+        if let Some(current) = &current {
+            self.preserve_legacy_head(identity, current).await?;
+        }
         head.stable = Some(snapshot);
         let bytes = encode_head(head)?;
         let expected = current.as_ref().map(|value| value.bytes.as_slice());
         match self.store.compare_exchange(&key, expected, &bytes).await? {
             CasOutcome::Applied(_) => Ok(()),
-            CasOutcome::Conflict(_) => Err(AuthorityError::HeadConflict),
+            CasOutcome::Conflict(value) => {
+                let observed = head::reference(value.as_ref())?;
+                if observed.stable == Some(snapshot) {
+                    return Ok(());
+                }
+                Err(AuthorityError::SnapshotHeadConflict {
+                    observed: Box::new(observed),
+                })
+            }
         }
     }
 

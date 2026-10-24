@@ -5,6 +5,7 @@ mod candidate;
 mod commit;
 mod complete;
 mod legacy;
+mod legacy_candidate;
 mod legacy_reclaim;
 mod opaque;
 mod receipt;
@@ -86,6 +87,19 @@ impl DatasetAuthority {
         .await
     }
 
+    /// Compatibility selection of pre-built content using the v1 latest-parent condition.
+    /// The Snapshot's declared parent is immutable and is not implicitly rebased.
+    /// # Errors
+    /// Rejects unavailable content, stale conditions and unknown storage outcomes.
+    pub async fn publish_prepared_snapshot(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        expected_parent: Option<SnapshotId>,
+    ) -> Result<SnapshotId, AuthorityError> {
+        self.advance_head(identity, None, expected_parent, snapshot).await
+    }
+
     /// Returns the candidate associated with a durable publication token.
     ///
     /// # Errors
@@ -158,9 +172,14 @@ impl DatasetAuthority {
             }
             SnapshotId::from_bytes(&value.bytes)?
         } else {
-            let current_latest = self.current_latest(identity).await?;
-            if !matches!(mode, PublicationMode::Candidate(_)) && current_latest != parent {
-                return Err(AuthorityError::ParentConflict);
+            if !matches!(mode, PublicationMode::Candidate(_)) {
+                let current = self.store.get(&key::head(identity)?).await?;
+                let observed = super::head::reference(current.as_ref())?;
+                if observed.latest != parent {
+                    return Err(AuthorityError::SnapshotHeadConflict {
+                        observed: Box::new(observed),
+                    });
+                }
             }
             let snapshot = SnapshotId::random();
             match self
@@ -336,32 +355,25 @@ impl DatasetAuthority {
         expected_parent: Option<SnapshotId>,
         snapshot: SnapshotId,
     ) -> Result<SnapshotId, AuthorityError> {
-        if self.snapshot_commit(identity, snapshot).await?.is_some()
-            || self.legacy_commit_exists(identity, snapshot).await?
-        {
-            return Ok(snapshot);
-        }
         let current_head = self.store.get(&key::head(identity)?).await?;
-        if let Some(current) = &current_head {
-            self.help_head_commit(identity, current).await?;
-        }
         let current_latest = current_head
             .as_ref()
             .map(|value| decode_head(&value.bytes))
             .transpose()?
             .and_then(|head| head.latest);
-        if current_latest != expected_parent {
-            return Err(AuthorityError::ParentConflict);
+        if current_latest != expected_parent && current_latest != Some(snapshot) {
+            return Err(AuthorityError::SnapshotHeadConflict {
+                observed: Box::new(super::head::reference(current_head.as_ref())?),
+            });
         }
-        let attempt = crate::CommitAttempt {
-            version: 1,
-            id: OperationId::random(),
-            target: crate::CommitTarget::Snapshot { snapshot },
+        let update = crate::SnapshotHeadUpdate {
+            snapshot,
             expected_head: current_head
                 .as_ref()
                 .map(|value| crate::CommitGeneration::from_head(&value.bytes)),
         };
-        self.commit_snapshot_attempt(identity, &attempt, stable).await?;
+        self.commit_snapshot_head(identity, &update, stable, current_head)
+            .await?;
         Ok(snapshot)
     }
 }

@@ -69,7 +69,7 @@ impl DatasetAuthority {
         let (_, state) = self.load_composition(identity, operation).await?;
         if !matches!(
             state.draft.record.progress,
-            DraftProgress::Published { .. } | DraftProgress::Abandoned
+            DraftProgress::Prepared { .. } | DraftProgress::Published { .. } | DraftProgress::Abandoned
         ) {
             return Err(CompositionError::Frozen);
         }

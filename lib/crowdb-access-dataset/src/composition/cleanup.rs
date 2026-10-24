@@ -57,7 +57,7 @@ impl DatasetAuthority {
         let end = state.draft.record.revision
             + u64::from(matches!(
                 state.draft.record.progress,
-                DraftProgress::Published { .. } | DraftProgress::Abandoned
+                DraftProgress::Prepared { .. } | DraftProgress::Published { .. } | DraftProgress::Abandoned
             ));
         let mut work = InspectionWork::new(
             self.store.as_ref(),

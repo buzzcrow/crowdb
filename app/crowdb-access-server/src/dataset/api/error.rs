@@ -96,6 +96,13 @@ impl From<crowdb_access_dataset::UploadError> for ApiError {
 }
 impl From<AuthorityError> for ApiError {
     fn from(error: AuthorityError) -> Self {
+        if let AuthorityError::SnapshotHeadConflict { observed } = error {
+            return Self::conflict().with_observed_head(serde_json::json!({
+                "latest":observed.latest.map(|id|id.to_string()),
+                "stable":observed.stable.map(|id|id.to_string()),
+                "generation":observed.generation.map(|generation|hex::encode(generation.as_bytes())),
+            }));
+        }
         if matches!(
             &error,
             AuthorityError::Invalid(crowdb_access_dataset::DatasetError::ReadCancelled)

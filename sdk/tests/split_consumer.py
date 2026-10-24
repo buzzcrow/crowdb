@@ -34,7 +34,7 @@ def publish(client, operation, snapshot):
     request = {"attempt": new_id(), "snapshot": snapshot, "expected_head": client.head()["generation"]}
     receipt = client.publish_composition(operation, request)
     assert client.publish_composition(operation, request) == receipt
-    assert client.commit_status(request["attempt"]) == receipt
+    assert client.commit_status(request["attempt"]) is None
     return receipt
 
 

@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 #[tokio::test]
-async fn restart_and_head_conflict_preserve_candidates_and_receipts() {
+async fn restart_and_head_conflict_preserve_candidates_without_receipt_writes() {
     let store = Arc::new(TestStore::default());
     let first = TestDatasetHttp::start_payload(store.clone()).await;
     let client = Client::new();
@@ -46,13 +46,15 @@ async fn restart_and_head_conflict_preserve_candidates_and_receipts() {
     .await;
     let attempt = "13131313131313131313131313131313";
     let mut publish = json!({"attempt":attempt,"snapshot":prepared["preparation"]["snapshot"],"expected_head":old_head["generation"]});
-    response(client.post(format!("{draft}/publish")).json(&publish), 409).await;
+    let conflict = response(client.post(format!("{draft}/publish")).json(&publish), 409).await;
+    assert_eq!(conflict["observed_head"]["latest"], parent);
+    assert_eq!(conflict["observed_head"]["stable"], parent);
     assert_eq!(
         response(client.get(&draft), 200).await["progress"]["state"],
         "prepared"
     );
     publish["attempt"] = json!("14141414141414141414141414141414");
-    publish["expected_head"] = response(client.get(format!("{root}/head")), 200).await["generation"].clone();
+    publish["expected_head"] = conflict["observed_head"]["generation"].clone();
     let receipt = response(client.post(format!("{draft}/publish")).json(&publish), 200).await;
     composition::cleanup(&client, &draft).await;
     assert_eq!(

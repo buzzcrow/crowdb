@@ -23,12 +23,9 @@ async fn reclaim_reuses_four_head_observations_and_a_terminal_snapshot_without_c
     assert!(!fixture.held.samples.is_empty());
     let head_key = scoped(b"DS\0H\0", &fixture, &[]);
     let head_value = fixture.store.get(&head_key).await.unwrap().unwrap();
-    let (version, head, _, attempt): (u16, HeadRecord, OperationId, CommitAttempt) =
-        bincode::deserialize(&head_value.bytes).unwrap();
-    assert_eq!(version, 3);
-    let receipt = scoped(b"DS\0CR\0", &fixture, attempt.id.as_bytes());
+    let (version, head, _): (u16, HeadRecord, OperationId) = bincode::deserialize(&head_value.bytes).unwrap();
+    assert_eq!(version, 4);
     let snapshot_receipt = scoped(b"DS\0SC\0", &fixture, fixture.next.as_bytes());
-    fixture.store.delete(&receipt).await.unwrap();
     fixture.store.delete(&snapshot_receipt).await.unwrap();
     let snapshot = scoped(b"DS\0S\0", &fixture, fixture.snapshot.as_bytes());
     let store = Arc::new(observed::TestReclaimObserved::new(
@@ -52,8 +49,7 @@ async fn reclaim_reuses_four_head_observations_and_a_terminal_snapshot_without_c
         current.generation.unwrap(),
         CommitGeneration::from_head(&head_value.bytes)
     );
-    assert!(fixture.store.get(&receipt).await.unwrap().is_some());
-    assert!(fixture.store.get(&snapshot_receipt).await.unwrap().is_some());
+    assert!(fixture.store.get(&snapshot_receipt).await.unwrap().is_none());
 }
 
 #[tokio::test]

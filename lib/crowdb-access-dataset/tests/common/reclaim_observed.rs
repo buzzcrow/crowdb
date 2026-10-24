@@ -81,6 +81,12 @@ impl DatasetStore for TestReclaimObserved {
         expected: Option<&[u8]>,
         value: &[u8],
     ) -> Result<CasOutcome, StoreError> {
+        assert!(
+            ![b"DS\0CA\0".as_slice(), b"DS\0CR\0", b"DS\0SC\0"]
+                .iter()
+                .any(|prefix| key.starts_with(prefix)),
+            "reclaim wrote a publication ledger"
+        );
         if key.starts_with(b"DS\0H\0")
             && self
                 .head_conflicts

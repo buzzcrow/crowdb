@@ -102,10 +102,10 @@ async fn abandon_recognizes_a_successful_historical_candidate_without_deleting_i
         .publish_snapshot_candidate(&identity, &common::attempt(&authority, &identity, root).await)
         .await
         .unwrap();
-    assert!(matches!(
-        authority.abandon_composition(&identity, operation, 1).await,
-        Err(CompositionError::Frozen)
-    ));
+    authority
+        .abandon_composition(&identity, operation, 1)
+        .await
+        .unwrap();
     assert_eq!(
         authority
             .composition_status(&identity, operation)
@@ -113,10 +113,7 @@ async fn abandon_recognizes_a_successful_historical_candidate_without_deleting_i
             .unwrap()
             .record
             .progress,
-        DraftProgress::Published {
-            target: attempt.target,
-            attempt: attempt.id
-        }
+        DraftProgress::Abandoned
     );
     assert!(authority
         .snapshot_inspection_summary(&identity, snapshot, common::budget(), &ReadCancellation::new())

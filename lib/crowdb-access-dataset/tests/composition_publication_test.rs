@@ -11,7 +11,7 @@ use crowdb_access_dataset::{composition::*, *};
 use std::sync::atomic::Ordering;
 
 #[tokio::test]
-async fn composition_commit_reconciles_lost_head_reply_and_prevents_abandonment() {
+async fn composition_retry_observes_current_effect_without_published_process_state() {
     let (store, authority, identity, parent) = split_store::fixture().await;
     let operation = OperationId::random();
     authority
@@ -27,17 +27,12 @@ async fn composition_commit_reconciles_lost_head_reply_and_prevents_abandonment(
         .publish_composition(&identity, operation, &attempt)
         .await
         .is_err());
-    assert!(authority
-        .abandon_composition(&identity, operation, 1)
-        .await
-        .is_err());
     let restarted = DatasetAuthority::new(store);
     let status = restarted.composition_status(&identity, operation).await.unwrap();
     assert_eq!(
         status.record.progress,
-        DraftProgress::Published {
-            target: attempt.target,
-            attempt: attempt.id
+        DraftProgress::Prepared {
+            target: attempt.target
         }
     );
     assert_eq!(
@@ -48,6 +43,11 @@ async fn composition_commit_reconciles_lost_head_reply_and_prevents_abandonment(
             .attempt,
         attempt
     );
+    restarted
+        .abandon_composition(&identity, operation, 1)
+        .await
+        .unwrap();
+    assert!(restarted.get_snapshot(&identity, snapshot).await.is_ok());
 }
 
 #[tokio::test]
@@ -66,10 +66,14 @@ async fn composition_head_conflict_preserves_candidate_for_explicit_new_attempt(
         .publish_snapshot(&identity, Some(parent), publication::publication_manifest(2))
         .await
         .unwrap();
-    assert!(matches!(
-        authority.publish_composition(&identity, operation, &stale).await,
-        Err(CompositionError::Conflict)
-    ));
+    let error = authority
+        .publish_composition(&identity, operation, &stale)
+        .await
+        .unwrap_err();
+    let CompositionError::Authority(AuthorityError::SnapshotHeadConflict { observed }) = error else {
+        panic!("{error:?}")
+    };
+    assert_eq!(observed.latest, Some(other));
     assert_eq!(
         authority
             .composition_status(&identity, operation)
@@ -83,7 +87,11 @@ async fn composition_head_conflict_preserves_candidate_for_explicit_new_attempt(
         authority.inspect_head(&identity).await.unwrap().latest,
         Some(other)
     );
-    let next = common::attempt(&authority, &identity, snapshot).await;
+    let next = CommitAttempt {
+        id: OperationId::random(),
+        expected_head: observed.generation,
+        ..stale
+    };
     authority
         .publish_composition(&identity, operation, &next)
         .await

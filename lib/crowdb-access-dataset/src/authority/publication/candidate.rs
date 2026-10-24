@@ -124,7 +124,7 @@ pub(crate) fn decode_candidate(
         return Err(AuthorityError::Corrupt);
     }
     let binding: CandidateBinding = serde_json::from_slice(bytes).map_err(|_| AuthorityError::Corrupt)?;
-    if !matches!(binding.version, 1 | 2) || binding.snapshot != snapshot || binding.parent == Some(snapshot) {
+    if !matches!(binding.version, 1..=3) || binding.snapshot != snapshot || binding.parent == Some(snapshot) {
         return Err(AuthorityError::Corrupt);
     }
     SnapshotId::from_bytes(binding.snapshot.as_bytes())?;
@@ -146,7 +146,7 @@ pub(in crate::authority) fn binding(
     initial_split: Option<SplitRevisionId>,
 ) -> CandidateBinding {
     CandidateBinding {
-        version: 1,
+        version: 3,
         snapshot,
         parent,
         operation,
@@ -175,7 +175,7 @@ impl DatasetAuthority {
         use crate::{key, PublicationState};
         let snapshot = snapshot_record.publication.snapshot;
         if let Some(head) = self.store.get(&key::head(identity)?).await? {
-            self.help_head_commit(identity, &head).await?;
+            self.preserve_legacy_head(identity, &head).await?;
         }
         if snapshot_record.publication.state == PublicationState::Published
             && self.snapshot_candidate(identity, snapshot).await?.is_none()
