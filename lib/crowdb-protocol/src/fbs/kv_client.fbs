@@ -11,7 +11,8 @@ namespace crowdb.kv_client.proto;
 //   as its first two fields, same as kv_consensus.fbs / diskdb.fbs.
 // - Every response carries `ret_code` (FBKvClientRetCode) + optional
 //   `error_msg`. On Success the data fields are populated; on error
-//   the data fields are empty and `error_msg` describes the failure.
+//   `error_msg` describes the failure. CasFailed may carry the exact key and
+//   versioned value from the comparison in compare_observation.
 // - `NotLeaderHint` is NOT a separate message — it is a string field
 //   (`not_leader_hint`) on the response tables. The client reads it
 //   to detect a non-leader replica and redirects via its topology
@@ -139,6 +140,13 @@ table FBKvBatchWriteRequest {
     owner_fence:FBKvOwnerFence;
 }
 
+// revision zero means observed absent, distinct from an absent optional table.
+table FBKvCompareObservation {
+    key:[ubyte];
+    revision:uint64;
+    value:[ubyte];
+}
+
 // Unified mutation + get response (mirrors kv.proto KvResponse).
 table FBKvResponse {
     id:uint64;
@@ -155,6 +163,7 @@ table FBKvResponse {
     value:[ubyte];
     read_slot:uint64;
     safe_slot:uint64;
+    compare_observation:FBKvCompareObservation;
 }
 
 // ── Scan ────────────────────────────────────────────────────────

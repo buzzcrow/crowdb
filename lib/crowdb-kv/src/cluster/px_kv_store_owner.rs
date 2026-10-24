@@ -48,13 +48,9 @@ pub(super) fn write_response(
         Err(KvGroupOperationError::NotLeader { leader_hint }) => {
             crate::rpc::KvResponse::not_leader(leader_hint, request_id, request_create_ms)
         }
-        Err(KvGroupOperationError::CompareFailed { current_revision }) => crate::rpc::KvResponse::cas_error(
-            crate::rpc::KvErrorCode::KvErrorCasFailed,
-            current_revision,
-            "compare-and-set precondition failed",
-            request_id,
-            request_create_ms,
-        ),
+        Err(KvGroupOperationError::CompareFailed { observation }) => {
+            crate::rpc::KvResponse::compare_failed(observation, request_id, request_create_ms)
+        }
         Err(KvGroupOperationError::Busy | KvGroupOperationError::CompareBusy) => {
             crate::rpc::KvResponse::cas_error(
                 crate::rpc::KvErrorCode::KvErrorCasBusy,

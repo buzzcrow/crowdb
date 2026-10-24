@@ -389,10 +389,6 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
 
 - [ ] **P14.1 审查 root/context/初始化回读**：记录正常请求内重复 GET 和初始化写，复用已验证
   immutable 事实，保留撤销和 catalog reset 的准入边界。凭据持久化不是 reader session。Files: Iceberg `catalog/{repository,storage}.rs`、Access `credentials.rs`、`credentials/ensure.rs`。
-- [ ] **P14.3 补 Group-0 CAS observation**：`CrowdbKvClient::put_cas` 的 `CasFailed` 当前仅有
-  current_revision；凭据 bootstrap loser 因此需要直接 GET，无法复用值。由比较时读取的
-  同一 revision/value 贯穿 group admission、RPC response、client error，禁止另读最新值
-  伪装成原 observation；兼容旧服务端与 unknown/busy。Files: KV group CAS、kv client wire/API、credentials。
 
 ## 其他性能任务
 
@@ -438,6 +434,11 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   无条件覆盖与 expected-base 重试测试。断言总 GET+写，不仅是零写。Files: Dataset `tests/*cost*`、`read_query*`、upload/Composition/Split/inspection；S3/Iceberg 对应 repository 测试。
 - [ ] **V2 HTTP/native/SDK 集成**：各受影响 route 的鉴权、错误、协议/SDK 一致性；保留删除准入、
   迟到写者、非空 namespace、共享 owner、held buffer、cancel/drop 和损坏内容测试。Files: Access/native tests、`sdk/tests/`、native Python consumer。
+- [ ] **V2.1 迁移旧容器 fixture 并验证当前源码**：`cargo check -p e2e-test --tests` 已发现
+  catalog fixture 仍调用已删除 RetryLedger、旧 property journal/响应 API，ChunkDB fixture
+  仍断言 DeleteChunkRange Unimplemented。改为验证资源结果、无新过程记录、legacy 解码与
+  GC 兼容，以及已接受的范围退休语义；不恢复生产 ledger 来通过旧测试。
+  Files: `e2e-test/tests/access_iceberg/catalog/{journal,property}.rs`、`catalog.rs`、`chunkdb/lifecycle.rs`。
 - [ ] **V3 工程门禁与文档**：每批执行适用 fmt/clippy/测试，全部经 `pixi run`；同步 owning
   design/spec/OpenAPI/SDK。只修改文档时检查 diff、引用和任务状态，不为此跑整套服务测试。
 - [ ] **V4 同源真实负载验收**：重新构建当前源码的镜像，运行现有 HTTP/native Rust/native Python
@@ -464,6 +465,19 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **P14.3（2026-10-24）**：Group CAS 的首次比较、foreign slot 后重比较、失败 slot
+  结算后重比较及 owner value 比较，均直接移交同一 engine lookup 的 key/revision/value。
+  可选 `FBKvCompareObservation` 贯穿 typed operations、RPC 和 client error；旧 peer 与
+  非比较拒绝为 None，revision=0 的显式 observation 才表示观察到缺失，空值可保留非零
+  revision。owner/record 条件带实际失败 key。成功不加 GET/写/状态；错误附加数据仅在
+  比较失败时分配，避免放大每个成功 proposal 的 enum/response。凭据 definite loser 直接
+  校验 observation，不再确认 GET；busy/unknown/旧 peer 仍按已有合同读最终资源。
+  真实 RPC 测试覆盖连续四次冲突无 GET、缺失/空值/删除重建、owner/record 两种失败；
+  synthetic wire 覆盖旧 peer、非法值/代际、busy/unknown 和缺字段。三副本测试覆盖实际
+  prior accepted foreign value，异步 apply fence、内部 Group-0、凭据六例均通过。
+  Protocol wrapper 十三例及五个受影响 crate 的 all-target/all-feature clippy 通过。
+  E2E 编译另发现此前清理留下的旧 fixture API，列 V2.1 继续处理；未声称容器验收已通过。
 
 - **F4.1 / F9.2（2026-10-24）**：legacy scan 只移交当前窗口的 ID，public batch adapter
   移交 ID allocation；ReadPlan limits/shuffle 一次选择累计预算，shuffle 每次执行只计算一次

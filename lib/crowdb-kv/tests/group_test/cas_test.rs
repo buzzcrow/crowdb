@@ -44,7 +44,8 @@ async fn cas_matches_current_revision_and_rejects_stale_revision() {
     ));
     assert!(matches!(
         group.propose_cas(encode_put(&key, b"stale"), key, 1, 9, 3).await,
-        ProposeResult::CasFailed { current_revision: 2 }
+        ProposeResult::CasFailed { observation } if observation.revision == 2
+            && observation.key.as_ref() == b"cas-key" && observation.value.as_ref() == b"v2"
     ));
 }
 
@@ -62,7 +63,8 @@ async fn create_if_absent_cas_succeeds_once() {
         group
             .propose_cas(encode_put(&key, b"second"), key, 0, 11, 1)
             .await,
-        ProposeResult::CasFailed { current_revision: 1 }
+        ProposeResult::CasFailed { observation } if observation.revision == 1
+            && observation.key.as_ref() == b"new-key" && observation.value.as_ref() == b"first"
     ));
 }
 
@@ -138,7 +140,8 @@ async fn create_if_absent_waits_for_acknowledged_async_apply() {
         .unwrap()
         .unwrap();
     assert!(
-        matches!(result, ProposeResult::CasFailed { current_revision: 1 }),
+        matches!(&result, ProposeResult::CasFailed { observation } if observation.revision == 1
+            && observation.key.as_ref() == b"async-cas-key" && observation.value.as_ref() == b"winner"),
         "{result:?}"
     );
     let value = group

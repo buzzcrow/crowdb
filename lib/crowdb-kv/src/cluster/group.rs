@@ -1036,7 +1036,7 @@ pub enum ProposeResult {
     /// Distinct from `Err` so the KV layer can surface a retryable signal.
     Busy,
     CasFailed {
-        current_revision: u64,
+        observation: Box<crate::rpc::KvCompareObservation>,
     },
     CasBusy,
     OutcomeUnknown,

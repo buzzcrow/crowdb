@@ -158,6 +158,24 @@ pub struct KvRevisionPrecondition {
     pub expected_revision: u64,
 }
 
+/// The key and versioned value read by a failed comparison. Revision zero
+/// means absent; an existing empty value has a nonzero revision. This is an
+/// observation at comparison time, not a promise that the key remains unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KvCompareObservation {
+    pub key: Bytes,
+    pub revision: u64,
+    pub value: Bytes,
+}
+
+impl KvCompareObservation {
+    #[must_use]
+    pub fn from_versioned(key: Bytes, observed: Option<(u64, Bytes)>) -> Self {
+        let (revision, value) = observed.unwrap_or_default();
+        Self { key, revision, value }
+    }
+}
+
 /// Unified mutation response.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct KvResponse {
@@ -182,6 +200,8 @@ pub struct KvResponse {
     pub safe_slot: u64,
     /// Structured error code. Default 0 = NONE (old server).
     pub error_code: i32,
+    /// None on old servers or errors without a completed comparison.
+    pub compare_observation: Option<Box<KvCompareObservation>>,
 }
 
 impl KvResponse {
@@ -206,6 +226,7 @@ impl KvResponse {
             read_slot: 0,
             safe_slot: 0,
             error_code: KvErrorCode::KvErrorNone as i32,
+            compare_observation: None,
         }
     }
 
@@ -234,6 +255,7 @@ impl KvResponse {
             read_slot: 0,
             safe_slot: 0,
             error_code: KvErrorCode::KvErrorNone as i32,
+            compare_observation: None,
         }
     }
 
@@ -260,6 +282,7 @@ impl KvResponse {
             read_slot: 0,
             safe_slot: 0,
             error_code: KvErrorCode::KvErrorNone as i32,
+            compare_observation: None,
         }
     }
 
@@ -279,6 +302,7 @@ impl KvResponse {
             read_slot: 0,
             safe_slot: 0,
             error_code: KvErrorCode::KvErrorNone as i32,
+            compare_observation: None,
         }
     }
 
@@ -299,6 +323,7 @@ impl KvResponse {
             read_slot: 0,
             safe_slot: 0,
             error_code: KvErrorCode::KvErrorNotLeader as i32,
+            compare_observation: None,
         }
     }
 
@@ -318,6 +343,7 @@ impl KvResponse {
             read_slot: 0,
             safe_slot: 0,
             error_code: KvErrorCode::KvErrorInternal as i32,
+            compare_observation: None,
         }
     }
 
@@ -332,6 +358,23 @@ impl KvResponse {
         let mut response = Self::err(msg.into(), request_id, request_create_ms);
         response.revision = revision;
         response.error_code = code as i32;
+        response
+    }
+
+    #[must_use]
+    pub fn compare_failed(
+        observation: Box<KvCompareObservation>,
+        request_id: u64,
+        request_create_ms: u64,
+    ) -> Self {
+        let mut response = Self::cas_error(
+            KvErrorCode::KvErrorCasFailed,
+            observation.revision,
+            "compare-and-set precondition failed",
+            request_id,
+            request_create_ms,
+        );
+        response.compare_observation = Some(observation);
         response
     }
 }

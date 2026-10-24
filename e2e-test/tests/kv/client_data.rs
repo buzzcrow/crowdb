@@ -70,7 +70,7 @@ async fn revision_cas_and_conditional_batch_round_trip() {
     assert!(matches!(
         client.put_cas(STORE_ID, GROUP_ID, b"guard", b"stale", 0).await,
         Err(crowdb_kv_client::Error::CasFailed {
-            current_revision
+            current_revision, ..
         }) if current_revision == created.revision
     ));
 

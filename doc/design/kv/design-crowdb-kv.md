@@ -223,6 +223,20 @@ higher ballot, adopting an accepted value or filling NoOp; failure to resolve
 closes conditional admission for that leader tenure and returns
 `OutcomeUnknown`.
 
+`CasFailed` carries the comparison's key, revision and complete value, taken
+from the same versioned engine lookup. Revision zero means observed absent;
+an existing empty value has a nonzero revision. No confirmation GET is issued
+to build the reply. After adopting a foreign slot or resolving an abandoned
+slot, a renewed comparison returns that lookup's observation. It may be stale
+again by receipt; clients may retry legal updates with its revision, while
+explicit expected-base operations retain their original precondition.
+
+The response's optional `compare_observation` is absent on old peers, local
+validation rejection, `CasBusy` and `OutcomeUnknown`. Clients preserve these
+distinct outcomes. An owner-guarded write also identifies whether the owner
+key or business-record key failed; one key's revision cannot be used for the
+other condition. Success adds no observation read or persisted record.
+
 The group-owned task survives RPC cancellation. New leaders admit reads and
 CAS only after bulk Phase 1 has resolved and locally applied every slot through
 its election ceiling. Blind writes do not participate in the guard, so the CAS

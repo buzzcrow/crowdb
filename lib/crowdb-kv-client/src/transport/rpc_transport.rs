@@ -1002,7 +1002,10 @@ fn check_client_ret_code(code: FBKvClientRetCode, msg: Option<&str>, endpoint: &
             status: msg.unwrap_or("unavailable").into(),
         }),
         FBKvClientRetCode::JournalScanGcGap => Err(Error::JournalScanGcGap),
-        FBKvClientRetCode::CasFailed => Err(Error::CasFailed { current_revision: 0 }),
+        FBKvClientRetCode::CasFailed => Err(Error::CasFailed {
+            current_revision: 0,
+            observation: None,
+        }),
         FBKvClientRetCode::CasBusy => Err(Error::CasBusy),
         FBKvClientRetCode::OutcomeUnknown => Err(Error::OutcomeUnknown),
         _ => Err(Error::Transport {
@@ -1015,6 +1018,16 @@ fn check_client_ret_code(code: FBKvClientRetCode, msg: Option<&str>, endpoint: &
 // ── Response parsing ─────────────────────────────────────────────
 
 /// Parse a `FBKvResponse` flatbuffer into a `KvResponse`.
+#[cfg(feature = "test-util")]
+impl KvRpcTransport {
+    /// Decode a synthetic peer reply through the production parser.
+    /// # Errors
+    /// Rejects malformed control messages and inconsistent comparisons.
+    pub fn parse_response_for_tests(buf: &[u8]) -> Result<KvResponse> {
+        parse_kv_response(buf)
+    }
+}
+
 fn parse_kv_response(buf: &[u8]) -> Result<KvResponse> {
     let r = FBKvResponseRef::new(buf);
     if !r.valid() {
@@ -1042,6 +1055,7 @@ fn parse_kv_response(buf: &[u8]) -> Result<KvResponse> {
         read_slot: r.read_slot(),
         safe_slot: r.safe_slot(),
         error_code: fb_ret_code_to_kv_error_code(ret_code),
+        compare_observation: super::comparison::decode(&r)?,
     })
 }
 

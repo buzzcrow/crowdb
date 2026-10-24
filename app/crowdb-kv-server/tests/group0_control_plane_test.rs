@@ -45,7 +45,7 @@ async fn facade_reads_scans_and_revision_checks_without_rpc_loopback() {
         .unwrap_err();
     assert!(matches!(
         error,
-        KvGroupOperationError::CompareFailed { current_revision } if current_revision == first_revision
+        KvGroupOperationError::CompareFailed { observation } if observation.revision == first_revision
     ));
 }
 

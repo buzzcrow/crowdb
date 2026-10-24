@@ -66,6 +66,9 @@ impl<'a> FBKvResponseRef<'a> {
     pub fn safe_slot(&self) -> u64 {
         self.root.map_or(0, |r| r.safe_slot())
     }
+    pub fn compare_observation(&self) -> Option<crate::kv_client_fb::FBKvCompareObservation<'a>> {
+        self.root.and_then(|r| r.compare_observation())
+    }
 }
 
 // ── FBKvScanResponseRef ─────────────────────────────────────────

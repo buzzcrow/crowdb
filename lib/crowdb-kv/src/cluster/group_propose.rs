@@ -342,7 +342,14 @@ impl PxGroup {
                                         let current_revision =
                                             value.as_ref().map_or(0, |(revision, _)| *revision);
                                         if current_revision != expected_revision {
-                                            return ProposeResult::CasFailed { current_revision };
+                                            return ProposeResult::CasFailed {
+                                                observation: Box::new(
+                                                    crate::rpc::KvCompareObservation::from_versioned(
+                                                        bytes::Bytes::copy_from_slice(key),
+                                                        value,
+                                                    ),
+                                                ),
+                                            };
                                         }
                                     }
                                     Err(error) => return ProposeResult::Err(error),
@@ -421,7 +428,12 @@ impl PxGroup {
                     Ok(value) => {
                         let current_revision = value.as_ref().map_or(0, |(revision, _)| *revision);
                         if current_revision != expected_revision {
-                            return ProposeResult::CasFailed { current_revision };
+                            return ProposeResult::CasFailed {
+                                observation: Box::new(crate::rpc::KvCompareObservation::from_versioned(
+                                    bytes::Bytes::copy_from_slice(key),
+                                    value,
+                                )),
+                            };
                         }
                     }
                     Err(error) => return ProposeResult::Err(error),

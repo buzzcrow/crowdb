@@ -74,10 +74,16 @@ impl ChunkSlotMapClient {
             GetOutcome::Found { revision, .. } => {
                 return Err(Error::CasFailed {
                     current_revision: revision,
+                    observation: None,
                 })
             }
             GetOutcome::NotFound if transfer.previous.is_none() => 0,
-            GetOutcome::NotFound => return Err(Error::CasFailed { current_revision: 0 }),
+            GetOutcome::NotFound => {
+                return Err(Error::CasFailed {
+                    current_revision: 0,
+                    observation: None,
+                })
+            }
         };
         match self
             .kv
@@ -263,9 +269,15 @@ impl ChunkSlotMapClient {
                 GetOutcome::Found { revision, .. } => {
                     return Err(Error::CasFailed {
                         current_revision: revision,
+                        observation: None,
                     })
                 }
-                GetOutcome::NotFound => return Err(Error::CasFailed { current_revision: 0 }),
+                GetOutcome::NotFound => {
+                    return Err(Error::CasFailed {
+                        current_revision: 0,
+                        observation: None,
+                    })
+                }
             }
         }
         Ok(())
@@ -278,6 +290,7 @@ impl ChunkSlotMapClient {
         } else {
             Err(Error::CasFailed {
                 current_revision: current.revision,
+                observation: None,
             })
         }
     }

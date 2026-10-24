@@ -135,7 +135,12 @@ impl PxGroup {
             Ok(value) => {
                 let current_revision = value.as_ref().map_or(0, |(revision, _)| *revision);
                 if current_revision != expected_revision {
-                    ProposeResult::CasFailed { current_revision }
+                    ProposeResult::CasFailed {
+                        observation: Box::new(crate::rpc::KvCompareObservation::from_versioned(
+                            precondition_key,
+                            value,
+                        )),
+                    }
                 } else if !self.cas_admission_ready(tenure, required_term) {
                     self.cas_not_ready_result()
                 } else {

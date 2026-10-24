@@ -193,7 +193,7 @@ impl PxGroup {
             Ok(Some((revision, value))) if value == expected_value => revision,
             Ok(value) => {
                 return ProposeResult::CasFailed {
-                    current_revision: value.map_or(0, |(revision, _)| revision),
+                    observation: Box::new(crate::rpc::KvCompareObservation::from_versioned(key, value)),
                 }
             }
             Err(error) => return ProposeResult::Err(error),

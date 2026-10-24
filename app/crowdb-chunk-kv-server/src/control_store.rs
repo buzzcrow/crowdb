@@ -141,7 +141,7 @@ impl Group0Kv for CrowdbKvClient {
 
 fn map_client_error(error: KvClientError) -> Group0KvError {
     match error {
-        KvClientError::CasFailed { current_revision } => Group0KvError::CasFailed { current_revision },
+        KvClientError::CasFailed { current_revision, .. } => Group0KvError::CasFailed { current_revision },
         KvClientError::OutcomeUnknown => Group0KvError::OutcomeUnknown,
         other => Group0KvError::Unavailable(other.to_string()),
     }

@@ -96,6 +96,7 @@ impl ChunkSlotMapClient {
         if before != after || before.as_ref().map(|(head, _)| head) != Some(service.head()) {
             return Err(crate::Error::CasFailed {
                 current_revision: after.map_or(0, |(_, revision)| revision),
+                observation: None,
             });
         }
         ChunkServiceSnapshot::validate(service, authority)

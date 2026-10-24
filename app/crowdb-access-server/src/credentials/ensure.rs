@@ -32,8 +32,14 @@ impl CredentialAuthority {
         .encode()?;
         match self.control.put_cas(0, 0, &key, &bytes, 0).await {
             Ok(_) => Ok(issued),
-            // Group-0 currently returns only the revision, not the observed value.
-            // This one authoritative GET is required; successful creation needs none.
+            Err(KvError::CasFailed {
+                observation: Some(observation),
+                ..
+            }) if observation.key.as_ref() == key.as_slice() && observation.revision != 0 => {
+                self.token(user, &issued.access_key_id, &observation.value)
+            }
+            // Older peers and uncertain/busy outcomes have no comparison value.
+            // Reconcile only the final resource, never a preparation record.
             Err(error @ (KvError::CasFailed { .. } | KvError::CasBusy | KvError::OutcomeUnknown)) => {
                 match self.control.get(0, 0, &key, ReadMode::Linearizable, None).await? {
                     GetOutcome::Found { value, .. } => self.token(user, &issued.access_key_id, &value),

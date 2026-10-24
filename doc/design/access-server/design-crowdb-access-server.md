@@ -271,9 +271,10 @@ Frontend query failures do not mutate these backend health observations.
 
 Coordination follows the semantic owner, rather than the Access Server process:
 
-- Dataset read admission is read-only. Explicit session acknowledgements persist
-  application progress; normal fetching and snapshot activity do not. Draft
-  journals recover one draft's partial work and fence late writes after cleanup.
+- Dataset read admission is read-only. Clients retain continuation progress;
+  fetching, acknowledgements and snapshot activity create no reader records.
+  Existing write-side draft journals recover partial work and fence late writes
+  after cleanup.
 - Dataset upload expiry scans upload authorities; creation does not enter a
   global registry. Shared payload owner records prevent one snapshot's retirement
   from reclaiming another snapshot's bytes.
@@ -284,9 +285,12 @@ Coordination follows the semantic owner, rather than the Access Server process:
   recovery state preserves that strict contract and is not a reader lease.
 - S3 multipart coordinates accounting and exact completion selection within one
   upload. Ordinary object reads do not register persistent activity.
-- A failed CAS observation can supply the next base for an allowed retry. Unknown
-  transport outcomes require reconciliation with the same mutation identity;
-  application preconditions must not silently move to a newer base.
+- A failed CAS observation supplies the compared key, revision and value for an
+  allowed retry. Unknown transport outcomes follow the operation's retry contract;
+  application preconditions must not silently move to a newer base. Credential
+  bootstrap publishes one encrypted final resource through create-if-absent;
+  comparison losers reuse that value, while older peers and busy/unknown replies
+  require a direct resource read. It has no persisted preparation record.
 
 ## 9. Direction and risks
 

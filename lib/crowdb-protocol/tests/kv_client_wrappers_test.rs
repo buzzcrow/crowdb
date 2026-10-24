@@ -43,6 +43,7 @@ fn kv_response_round_trip() {
             value: Some(value),
             read_slot: 7,
             safe_slot: 5,
+            compare_observation: None,
         },
     );
     fbb.finish(resp, None);
@@ -81,6 +82,7 @@ fn kv_response_not_leader_ret_code() {
             value: None,
             read_slot: 0,
             safe_slot: 0,
+            compare_observation: None,
         },
     );
     fbb.finish(resp, None);
