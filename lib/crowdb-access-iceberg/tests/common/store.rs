@@ -22,6 +22,8 @@ pub struct TestStore {
     pub gc_delete_reply_loss: AtomicBool,
     pub writes: AtomicUsize,
     pub reads: AtomicUsize,
+    pub cas_attempts: AtomicUsize,
+    pub projection_reads: AtomicUsize,
     pub file_scans: AtomicUsize,
     pub fencing_delay_ms: AtomicUsize,
     pub fencing_barrier: Option<Arc<tokio::sync::Barrier>>,
@@ -63,6 +65,23 @@ impl TestStore {
         if self.file_mapping_pause.swap(false, Ordering::SeqCst) {
             self.file_mapping_entered.notify_one();
             self.file_mapping_release.notified().await;
+        }
+    }
+
+    async fn pause_file_location(&self, key: &[u8]) {
+        if matches!(
+            crowdb_access_iceberg::key::IcebergKey::decode(key),
+            Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
+                scope: crowdb_access_iceberg::key::CatalogScope::FileLocation,
+                ..
+            })
+        ) {
+            self.pause_file_mapping().await;
+            if let Some(barrier) = &self.file_mapping_barrier {
+                if self.file_mapping_visits.fetch_add(1, Ordering::SeqCst) < 2 {
+                    barrier.wait().await;
+                }
+            }
         }
     }
 
@@ -189,6 +208,18 @@ impl CatalogStore for TestStore {
             tokio::task::yield_now().await;
         }
         self.reads.fetch_add(1, Ordering::SeqCst);
+        if matches!(
+            StorageKey::decode(key),
+            Ok(StorageKey::Legacy(IcebergKey::Catalog {
+                scope: CatalogScope::MetadataProjection,
+                ..
+            }) | StorageKey::NativeTable(TableStorageKey {
+                scope: TableStorageScope::Projection,
+                ..
+            }))
+        ) {
+            self.projection_reads.fetch_add(1, Ordering::SeqCst);
+        }
         Ok(self.values.load().get(key).cloned())
     }
 
@@ -199,6 +230,7 @@ impl CatalogStore for TestStore {
         value: &[u8],
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
+        self.cas_attempts.fetch_add(1, Ordering::SeqCst);
         identity.validate().unwrap();
         if self.yield_operations {
             tokio::task::yield_now().await;
@@ -208,20 +240,7 @@ impl CatalogStore for TestStore {
         }
         self.pause_table_head(key, expected, value, false).await;
         self.pause_stage_transition(key, expected).await;
-        if matches!(
-            crowdb_access_iceberg::key::IcebergKey::decode(key),
-            Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
-                scope: crowdb_access_iceberg::key::CatalogScope::FileLocation,
-                ..
-            })
-        ) {
-            self.pause_file_mapping().await;
-            if let Some(barrier) = &self.file_mapping_barrier {
-                if self.file_mapping_visits.fetch_add(1, Ordering::SeqCst) < 2 {
-                    barrier.wait().await;
-                }
-            }
-        }
+        self.pause_file_location(key).await;
         if expected.is_none() {
             if let Ok(crowdb_access_iceberg::record::StorageRecord::TableMapping(mapping)) =
                 crowdb_access_iceberg::key::IcebergKey::decode(key)

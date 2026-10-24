@@ -4,7 +4,7 @@
 use super::{error::ApiError, read_json, snapshot, ApiResult};
 use crate::dataset::{DatasetBody, DatasetHttpService};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use crowdb_access_dataset::{DatasetIdentity, FieldLocator, SampleView, SnapshotId};
+use crowdb_access_dataset::{DatasetIdentity, FieldLocator, SampleView, SnapshotId, UploadReadDescriptor};
 use futures::stream;
 use http_body_util::{BodyExt, StreamBody};
 use hyper::{
@@ -123,6 +123,7 @@ impl DatasetHttpService {
             locators,
             index: 0,
             part: 0,
+            upload: None,
             pending: Some(Bytes::from(prefix)),
             finished: false,
         };
@@ -174,6 +175,7 @@ struct BatchState {
     locators: Vec<FieldLocator>,
     index: usize,
     part: u32,
+    upload: Option<UploadReadDescriptor>,
     pending: Option<Bytes>,
     finished: bool,
 }
@@ -217,13 +219,24 @@ impl BatchState {
                 self.part = 1;
                 self.data_frame(bytes, digest)
             }
-            FieldLocator::Chunk { location, length, .. } => {
-                let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
-                let metadata = uploads.metadata(location).await?;
-                if u64::from(self.part) >= length.div_ceil(u64::from(metadata.part_size)) {
+            FieldLocator::Chunk {
+                location,
+                length,
+                md5,
+            } => {
+                if self.upload.is_none() {
+                    let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
+                    let descriptor = uploads.open_read(location).await?;
+                    if descriptor.length() != *length || descriptor.md5() != *md5 {
+                        return Err(ApiError::integrity());
+                    }
+                    self.upload = Some(descriptor);
+                }
+                let descriptor = self.upload.as_ref().ok_or_else(ApiError::integrity)?;
+                if self.part >= descriptor.part_count() {
                     return self.end_field();
                 }
-                let (bytes, digest) = uploads.read_part_verified(location, self.part).await?;
+                let (bytes, digest) = descriptor.read_part_verified(self.part).await?;
                 self.part += 1;
                 self.data_frame(bytes, digest)
             }
@@ -242,6 +255,7 @@ impl BatchState {
     fn end_field(&mut self) -> Result<Bytes, ApiError> {
         self.index += 1;
         self.part = 0;
+        self.upload = None;
         frame(3, &Bytes::new())
     }
 }

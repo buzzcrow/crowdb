@@ -4,7 +4,7 @@
 use crowdb_rpc_ffi::OwnedPayload;
 use md5::{Digest, Md5};
 
-use super::{decode_part, part_key, DatasetUploads, PartState, UploadError, UploadPart, UploadState};
+use super::{DatasetUploads, UploadError, UploadPart, UploadReadDescriptor};
 use crate::PayloadStream;
 
 /// An accepted upload part with incremental integrity checks. Emitted owners
@@ -26,28 +26,20 @@ impl DatasetUploads {
         location: &[u8],
         index: u32,
     ) -> Result<VerifiedUploadPart, UploadError> {
-        let session = self.session(location).await?;
-        if !matches!(session.state, UploadState::Complete | UploadState::Claimed) {
-            return Err(UploadError::Conflict);
-        }
-        let entry = self
-            .store
-            .get(&part_key(location, index))
-            .await?
-            .ok_or(UploadError::NotFound)?;
-        let entry = decode_part(&entry.bytes)?;
-        let start = u64::from(index) * u64::from(session.part_size);
-        if entry.state != PartState::Accepted
-            || entry.part.index != index
-            || start >= session.length
-            || entry.part.length != (session.length - start).min(u64::from(session.part_size))
-        {
-            return Err(UploadError::Integrity);
-        }
-        let stream = self.payloads.read_stream(&entry.part.locations).await?;
+        self.open_read(location).await?.read_part_stream(index).await
+    }
+}
+
+impl UploadReadDescriptor {
+    /// Opens a part using this request's immutable upload description.
+    /// # Errors
+    /// Rejects invalid boundaries, reclaimed parts and unavailable storage.
+    pub async fn read_part_stream(&self, index: u32) -> Result<VerifiedUploadPart, UploadError> {
+        let part = self.part(index).await?;
+        let stream = self.uploads.payloads.read_stream(&part.locations).await?;
         Ok(VerifiedUploadPart {
             stream: Some(stream),
-            expected: entry.part,
+            expected: part,
             delivered: 0,
             digest: Md5::new(),
             failed: false,

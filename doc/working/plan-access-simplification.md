@@ -3,707 +3,442 @@
 
 # Access Server Simplification Plan
 
-Upstream: [Dataset SDK](../backlog/R220-dataset-fat-client-plan.md),
-[Access design](../design/access-server/design-crowdb-access-server.md).
+Upstream: [Dataset SDK](../backlog/R220-dataset-fat-client-plan.md)、
+[Access design](../design/access-server/design-crowdb-access-server.md)。
 
-Goal: reduce Access request RPCs, copies, CPU work and shared contention; remove
-coordination without a necessary business contract and retain justified authority.
-This is a persistent cleanup inventory requested by the user; remove completed
-items after recording their verified outcome in the owning design.
+目标：减少 Access 请求的 RPC、持久化、复制、CPU 和共享竞争，保留确有业务用途的约束。
+这是用户要求长期维护的清理计划；完成项转入验证记录和所属设计后，从待办中移除。
 
-## Agreed Dataset deletion contract
+## 跟踪方式与当前状态
 
-- Mark deletion durably, reject new requests, then reclaim after a persisted
-  grace deadline. No Access Server/client acknowledgements or reader registry.
-- Requests admitted before the mark may continue during the grace period.
-  Reclamation may interrupt unusually long reads; return an error, never a
-  successful truncated response or a different snapshot.
-- Default grace: five minutes. It is a delay, not a promise that a running job
-  can issue new requests forever. Retries/restarts must not reset the deadline.
-- Retention, live snapshot ownership, publication fences, physical allocation
-  identity, in-flight I/O and caller-owned buffers remain distinct protections.
-- A read checks authoritative availability at admission. A stale cache is not
-  sufficient to admit a new read after deletion. Read paths perform no snapshot
-  activity writes, heartbeats or asynchronous release writes.
+- `[ ]` 未完成，`[~]` 正在执行（最多一项），`[x]` 已验证；任务 ID 保持稳定。
+- P1–P14 对应持久化审查；F1–F10 对应其他性能问题；V1–V4 是验收任务。
+- D1–D3 的原则已由用户确认；已记录决定不等于实现完成。
+  R1–R4 跟踪具体写入反例审查，D4–D5 仅在出现实际业务需求时讨论；不预设保留中间状态。
+- 每项实现完成需记录：实际修改、正常/冲突/结果未知路径、验证命令和结果。
+  静态发现、提出方案、代码完成、性能验收不能互相代替。
+- 当前实施基线为 `489ae507`；旧性能审查来自 `878ee901`，
+  涉及已删除 session 的结论已移除。下面的成本数字只描述注明的函数路径，需动态复核。
 
-## Approved stateless read contract (2026-10-24)
+## 已确定的约束
 
-- The user explicitly removed persisted read sessions. This supersedes the
-  earlier inventory's proposals to retain durable ack/resume/remote close.
-- Requests carry the query and continuation. The continuation binds Dataset,
-  immutable Snapshot, Split revision, projection, worker partition and shuffle.
-  Processing checkpoints belong to the caller; fetching/releasing a buffer does
-  not commit progress anywhere. Reusing a continuation replays its batch.
-- Remove session records, persisted selected-ID pages, preparation progress,
-  version reservations, TTL renewal, ack/close routes and per-frame state reads.
-  Do not replace them with a required in-memory session or sticky routing.
-- Keep bounded work, cancellation, integrity and buffer ownership. New requests
-  still check snapshot deletion. A continuation is not an authorization grant.
-- Review remaining persistent mutations by use case and total RPC cost before
-  changing their business semantics. Strict nonempty namespace deletion remains
-  approved; durable publication and shared data ownership need separate review.
+- Dataset 读取无服务端 session：无持久化 reader、选中 ID 页、进度、续租、ack/close。
+  continuation 固定 Dataset、Snapshot、Split revision、投影、分区和 shuffle；
+  客户端处理成功后保存 next，重用原 token 可重放，不依赖固定 Access 实例。
+- Snapshot 删除：持久化标记，拒绝新请求，默认等待五分钟后回收。
+  重试/重启不重置期限；已准入流可继续，过久的流允许失败，不能截断后报成功。
+  Access Server 不登记读者、不互相确认删除、不异步写释放记录。
+- **非空 Iceberg namespace 删除必须失败**，已由用户决定，不再提出放宽选项。
+- definite CAS conflict 立即使用返回的 observed value 计算合法重试，无“三次后才更新”。
+  返回值可能随后又变旧，因此仍需期限/重试上限；transport timeout 不等于 CAS 失败。
+  明确 expected revision 的业务操作不能擅自改 base 重放。
+- 新请求仍须鉴权并检查删除状态；同一请求内可复用已验证结果。
+  跨请求缓存可变准入结果必须证明失效语义，不能只依靠 TTL。
+- 已提交业务数据、共享 payload 存活引用、物理分配代际和校验仍须正确。
+  每项持久化都要说明用途，但删除 session 不等于删除业务资源本身。
+- **用户决定（2026-10-24）**：服务端不保存编辑、计算、上传的中间过程；客户端控制流程，
+  失败后重新请求。允许 MPU，恢复粒度为完整 part，不支持 part 内断点续传。
+  不用新的内存会话、固定实例路由或持久化 job 替代旧 session。
+- 已完成 part、最终文件/Manifest 和正式引用属于数据结果；步骤号、处理偏移、工作页、
+  输入/输出重放账本、pending journal 等不得仅为恢复请求过程而保存。
+  确有其他用途的记录必须列出具体使用场景和最小方案，先 review，再保留或新增。
+- 中途生成但未被正式引用的文件/part 交给 GC；删除过程状态之前必须验证 GC 能独立发现
+  并回收它们，且不会误删待发布或已有 owner 的内容。不能假设现有 GC 已具备此能力。
+- **用户决定（2026-10-24）**：未发布 MPU part 有明确可提交期限；过期拒绝新提交，
+  客户端重传。GC 在期限后再等待安全期回收；已发布资源不能按该临时期限回收。
+  期限必须随 part 结果返回，最终提交验证期限；本地时钟检查不能单独证明迟到发布安全。
+- 幂等按操作效果判断：同目标同内容的普通覆盖可直接重试，不要求原响应重放、
+  operation ledger 或多次查询来“证明幂等”。有反例按 R1–R4 单独 review；
+  不把“最小提交回执 + 查询结果”设成所有写 API 的默认成本。
+- 热路径不新增锁；不得用无界缓存、无界并发或降低校验来换吞吐。
 
-## Execution
+## 已确认的设计决定与具体反例审查
 
-- [ ] **Confirm remaining persistence contracts**: review P1–P14 below before
-  changing resource/recovery semantics. In particular confirm disposable draft
-  work, upload restart behavior, exact retry responses and global quotas. Strict
-  nonempty namespace deletion is already decided and remains unchanged.
-- [ ] **Reduce remaining request costs**: execute the still-applicable findings
-  1–13 below; session-only findings are superseded by the completed removal. Measure total reads/mutations and serial
-  dependency depth, not only CAS counts. Consume returned CAS observations on
-  justified retries; preserve explicit expected-version failures.
-- [ ] **Measure real services**: rebuild matching sources and run mixed-size/restart
-  acceptance after the confirmed simplifications. No throughput claim from static RPC counts.
+### D1 — 客户端控制 Composition / Split，失败重新计算（已确认）
 
-### Verified session cleanup
+**旧流程及开销**：begin 写草稿 → edit 保存修订/回执 → evaluate 保存每页工作和中间行 →
+CAS 推进进度 → prepare → publish。它让服务端能接着上次编辑/计算，却给每页增加 GET、
+持久化和草稿竞争。这个恢复合同不再需要，不能仅降低检查点频率后继续保留。
 
-- Replaced persisted Dataset read sessions with `DatasetReads` and caller-owned
-  continuation tokens. Removed remote ack/resume/close, reader TTL/configuration,
-  selected-ID/progress pages and legacy cursor storage. HTTP v1/v2 binding uses
-  `POST reads/bind`; `POST reads/next` replays a continuation. Existing v1 direct
-  batch reads remain `POST reads`. Native and Python callers use the same shared
-  query semantics, with client-side processing checkpoints.
-- Added zero-write regressions for bind, 96 concurrent fetches, cross-instance
-  replay and legacy scan continuation. Covered immutable Snapshot/Split binding,
-  worker coverage, cancellation, deletion admission and bounded token size.
-- Passed Dataset core all-target tests and the final focused query regressions;
-  Access Server and native SDK all-target tests; independent HTTP SDK tests;
-  affected all-feature clippy, independent SDK clippy and both fmt checks.
-  Parsed both OpenAPI documents and resolved every local reference.
-- The HTTP SDK wheel was rebuilt and installed into an isolated environment.
-  Its Split/read round trip passed against the real HTTP listener, with the
-  consumer script copied outside the repository.
-- A full Access run initially exhausted disk during linking, before tests;
-  deleting only rebuildable incremental cache restored space. A subsequent
-  payload test exposed a conflicting `reads` route; the independent `reads/bind`
-  route fixed it, and the complete Access suite then passed.
-- This validates session removal, not full R220 performance acceptance. The
-  container mixed-size/restart workload and local-HCA comparison remain pending;
-  an OCI image from baseline `878ee901` does not contain these changes.
+**目标流程**：客户端保存规则/修改和调用顺序 → 提交独立完整、资源有界的请求 →
+服务端计算并生成最终所需的内容 → 发布最终引用。失败由客户端重试，服务端不恢复过程。
+大输入和分页由客户端组织，不要求一次塞进内存；输出文件可以先存在，再由最终发布引用。
+这些文件不是服务端步骤回执或隐藏的工作状态；未引用内容由 GC 清理。
 
-The review below describes baseline `878ee901`. Its session preservation and
-remote-close alternatives are superseded by the approved contract above; those
-entries remain evidence of the cost being removed, not current requirements.
+**实施边界**：删除 durable draft/edit/evaluation/work-progress 等过程记录与相应续算 API；
+已发布 Snapshot/Split 成员继续固定，不能因为重试改变历史结果。迟到请求与 GC/发布竞争
+需要单独证明安全；若认为必须保留某个封口/阶段记录，提交 R4 场景，不能默认保留。
+影响 P2/P3/P12/P13，决策不再等待确认。
 
-## Remaining persistence review (2026-10-24)
+### D2 — 无服务端上传续传，MPU 按 part 由客户端控制（已确认）
 
-Scope: Access Server adapters plus Dataset, S3 and Iceberg metadata repositories.
-`persistent` here means durable application metadata, including read-triggered
-cache fills. A local atomic, resource permit or transport connection is not a
-persistent read session. Chunk allocation/WAL/Paxos durability remains storage
-infrastructure and is outside this Access semantic cleanup. Counts are logical
-metadata operations; nested validation/replication and payload IO are additional.
-These items are review proposals, not authorization to remove business guarantees.
+**旧流程及开销**：upload descriptor → part intent → 物理写入 → part 结果/索引 →
+complete → owner 引用。这里混合了实际数据结果与“服务端记住做到了哪一步”的状态，
+还有重复 GET、共享索引页竞争和过程恢复记录。
 
-- **P1 — Iceberg GET can persist an optional projection**. `TableLoader::representation`
-  in `lib/crowdb-access-iceberg/src/table/load.rs` calls `ProjectionStore::put_document`
-  on a refs-mode cache miss. `metadata_projection/repository.rs` writes each child
-  page and root with create-CAS; `validated.rs` rereads the root and writes a
-  validation receipt. For P child pages this fill alone adds `(P + 2)C + 1G`,
-  on top of reads, parsing and hashing. Concurrent GETs repeat that durable work.
-  This is derived data, not publication authority. Proposal: remove synchronous
-  persistent fills from reads; compare a bounded local cache with publication-time
-  construction. Review decision: whether a durable projection is needed at all.
-- **P2 — Dataset Composition workflow**. `composition/{begin,edit,state,evaluation,
-  evaluate_step,prepare,cleanup}.rs` stores draft revisions, edit receipts,
-  evaluation windows/rows, candidate pointers and cleanup progress. Use case:
-  editing a large derived Dataset and recovering across Access restarts without
-  redoing all preparation. Each window/row/receipt adds separate create-CAS and
-  progress replacement, with validation GETs; this is not one publication CAS.
-  Proposal: client-owned editing specification and replayable/disposable
-  preparation, retaining only immutable candidate data plus publication authority.
-  Decision: may an unfinished draft/evaluation be lost and restarted? If yes,
-  remove durable editing/progress first; do not remove committed candidates.
-- **P3 — Dataset Split workflow**. `split/{lifecycle,state,work,evaluation,prepare,
-  recovery,cleanup,initial}.rs` similarly persists edits, evaluation progress,
-  overlap examples, membership work pages and fences. Published membership and
-  revision identity are business data; draft progress is auxiliary recovery state.
-  Proposal: compute from client-owned rules, publish immutable revision once,
-  restart incomplete evaluation instead of journaling every window. Same decision
-  as P2; retain frozen historical membership and explicit currentSplit CAS.
-- **P4 — Dataset uploads**. `upload.rs`, `upload/{parts,index,ownership,retirement,
-  reclaim}.rs` retain upload descriptor, part intent/result/index, completion,
-  owner list, retired-owner IDs and abort/cleanup status. Trigger: multi-request
-  payload upload, retry after lost storage replies, sharing one payload across
-  candidates/Snapshots. Create currently costs `1C`; part acceptance adds intent,
-  part receipt and index mutations plus repeated state reads. Owner mutation is
-  `1G + C` attempts on one upload; observed conflicts must feed the next attempt.
-  Permanent retired-owner IDs can grow, and the part index serializes writers.
-  Proposal: separate immutable part results from upload-wide state; assess replacing
-  the growing owner list/index with per-owner/per-part records and bounded discovery.
-  Decisions: is resumable upload across restarts required, and may an incomplete
-  upload be discarded? Shared published payloads must not be reclaimed accidentally.
-- **P5 — S3 multipart**. `metadata/multipart_repository{,/parts,/completion,
-  /publication,/terminal}.rs` stores upload identity, immutable parts/index,
-  completion/abort state and publication evidence. These implement S3 multipart
-  operations, not login/read sessions. Baseline normal new part is `7G + 4C` at
-  the helper boundary (finding 5); payload and replica IO are extra. First simplify
-  redundant state reloads and pass observed/applied values through helpers.
-  Removing upload durability changes resume/list/complete semantics and requires
-  explicit review; don't silently break S3 clients while removing Dataset reads.
-- **P6 — Iceberg multipart and durable admission credits**. `file/multipart_repository/`
-  and `file/multipart_credits{,/settle}.rs` contain upload state plus a catalog-wide
-  sessions/byte reservation and pending-credit journal. Such a shared counter
-  serializes otherwise independent transfers. The current Access file upload path
-  uses its active upload-head flow; legacy durable-credit code must be traced by
-  caller before attributing its cost to active requests (finding 7).
-  Proposal: remove unreachable credit machinery; use bounded local producer
-  admission for resource protection. Decision for any reachable global budget:
-  are hard cross-server quotas a required contract, or is per-server admission enough?
-- **P7 — Iceberg file writer recovery**. `file/{writer,write_intent,injection}.rs`
-  and writer checkpoints persist physical ownership/offsets, exact write intents,
-  completed file records and adoption receipts. Current active part publication
-  costs `1G + 1C` after admission; intent/checkpoint paths have separate costs.
-  Purpose: distinguish committed bytes from readable but unconfirmed bytes after
-  timeout/crash, and avoid adopting recycled storage. Proposal: retain physical
-  generation/fencing and immutable completion; review whether incomplete writer
-  checkpoints can be discarded/replayed. Acceptance must inject lost storage replies.
-- **P8 — Iceberg HTTP retry ledger and body copies**. `operation/{retry,result,payload}.rs`
-  and Access `iceberg/{table_write,namespace_write}` persist request binding,
-  original body pages, result body and terminal status. `RetryLedger::begin` checks
-  context and locates a binding before create-CAS; finish checks context, locates
-  the binding, reads/writes result and updates binding again. Large bodies add
-  page reads/writes; replay may repair a status marker. Boolean CAS loses the
-  conflict observation and adds a confirmation GET. Proposal: first reuse observed
-  values; then merge retry evidence with the actual mutation journal or commit
-  record. Decision: must every retry reproduce the original response, or may an
-  ambiguous reply return a conflict/unknown outcome for client reconciliation?
-- **P9 — Iceberg namespace/table journals and reservations**. `namespace/{journal,
-  reservation,admission,publication,drop_fence,drop_finish,update_recovery}.rs`,
-  `table/lifecycle/` and `commit/create/` persist name reservations, parent entries,
-  namespace/table generations and recovery phases. Multiple records/RPCs implement
-  multi-key create/drop/rename recovery. **Nonempty namespace deletion must fail**,
-  already confirmed by the user; do not ask again or replace it with eventual
-  emptiness. Review phase journals and duplicated context reads independently.
-  Removing a journal must still preserve strict parent admission and name uniqueness.
-- **P10 — Dataset publication and explicit resource controls**. `authority.rs`,
-  `authority/publication/`, `split/{head,publication,recovery}.rs` persist Dataset
-  identity, immutable Manifest/Snapshot/Split, latest/stable pointer, retention
-  marker, commit attempt/receipt and visibility evidence. User mutations need
-  durable results; head CAS prevents a stale expected generation from publishing.
-  Extra attempt/receipt/visibility records are separately reviewable overhead.
-  Proposal: minimize the commit record set while preserving lost-reply outcome
-  discovery; evaluate whether the separate retention API is actually used.
-  Dropping persistent resource data is not justified by removing read sessions.
-- **P11 — S3 object/bucket publication**. `publication.rs`, `bucket.rs`,
-  `metadata/{store,namespace}.rs` store object version/location/user metadata,
-  bucket identity and deletion markers. Unconditional PUT/DELETE should use the
-  overwrite contract without a preliminary GET/CAS; conditional operations retain
-  their expected-version check. Bucket tombstone replay still has an avoidable
-  bool-CAS/put-if-absent sequence (finding 4). These are resource writes; review
-  unnecessary mutation stages rather than replacing persistence with volatile state.
-- **P12 — Dataset inspection indexes**. `inspection/{index,preparation,legacy,
-  retirement,reclaim}.rs` store schema/member/field projections, summary and
-  preparation/reclamation progress. They enable bounded reads without decoding a
-  full Manifest, but build cost is serial and multiplied per row (finding 9).
-  Explicit legacy preparation remains a mutation. Proposal: keep useful immutable
-  indexes with publication; compare batched/co-located writes and restarting
-  interrupted builds, removing auxiliary progress where redo is acceptable.
-- **P13 — Cleanup/GC tasks and tombstones**. Dataset `authority/access/`, upload
-  cleanup and Split/Composition cleanup; Iceberg `gc/{repository,budget,worker}`;
-  S3 multipart terminal cleanup persist claim/phase/cursors and deletion fences.
-  Mark + delayed reclamation is already approved for snapshots. Proposal: use
-  idempotent bounded scans and local cursors where restart only repeats work;
-  review durable global counters and per-page progress. Keep enough physical
-  identity/fencing that a delayed delete cannot free a newly reused range.
-  Decision: accept recomputation after cleanup-worker restart and approximate
-  progress counters? Distinguish that from a repeated destructive operation.
-- **P14 — Catalog lifecycle and credential authority**. Iceberg
-  `catalog/{repository,storage}.rs` persists active context/root/epoch; Access
-  `credentials{,/ensure}.rs` persists user credentials in Group-0. These are
-  administrative identity/revocation boundaries, not per-read sessions. Review
-  repeated root/context GETs and redundant initialization writes; deleting these
-  records would change authentication or catalog-reset safety. S3 session-token
-  credential fields alone are not evidence of server-side session persistence.
+**目标流程**：客户端决定分片与 part 标识 → 每次请求完整写一个 part → 返回完整 part 的
+标识/长度/校验等结果 → 客户端收集结果并提交最终清单 → 发布最终资源。
+某个 part 断了就重传该 part，不恢复其字节偏移；客户端无需服务端保存步骤/上传进度。
+其他成功 part 可继续由客户端引用，换 Access 也不能依赖原实例的会话。
+响应丢失时同一 part 的重写优先按相同目标/内容实现，不先加查询和去重账本。
 
-Execution priority after confirmation: P1 read-triggered writes; P2/P3 disposable
-workflows; P8 duplicate retry persistence; P4/P5 upload amplification; P6/P13 global
-coordination. Every item must name its required invariant, exact normal/conflict/
-unknown-outcome RPC path, and a smaller alternative before implementation.
+**实施边界**：已完成 part 的数据和必要资源元数据可以存在；upload-wide pending、
+逐步恢复 journal、part 内 checkpoint 不因 MPU 而自动获得保留理由。
+S3 ListParts 等协议入口若需要索引，必须解释资源查询用途、最小记录与成本，不能据此
+保留全部旧会话状态机。GC 负责失败的半成品和未被最终引用的完整 part。
+影响 P4/P5/P6/P7/P13，跨重启续传不再是默认合同或待选建议。
 
-### Cost still present in the new stateless read
+### D3 — 按实际操作效果选择重试方式，不默认保存幂等账本（原则已确认）
 
-- No persistent reader record or selected-ID page is written. Continuations do
-  not eliminate snapshot/index/locator reads, payload IO or digest work.
-- A partially consumed shuffle group is reconstructed; small `batch_size` with
-  very large `group_size` can therefore increase metadata RPCs. Repeated selection
-  windows also reload schema/membership validation. This is an explicit remaining
-  performance review item, not a claimed throughput improvement. Compare bounded
-  client-side planning/group buffering against server re-evaluation before choosing
-  a default; do not reintroduce mandatory read-session storage to cache that work.
-- Query, payload admission and inspection can repeat deletion/visibility checks.
-  Consolidate within a request only after preserving the new-request deletion
-  boundary. Native/HTTP streaming no longer reads a session record per frame.
-- Legacy `DatasetReadService::scan_surface` still reconstructs all planned windows
-  from the Manifest before selecting one cursor window. Removing its persisted
-  cursor does not remove that CPU/memory amplification; migrate callers to the
-  bounded inspection path or replace the planner in a separate measured change.
-- Old `DS\\0RS\\0` and cursor records are no longer consulted or written. Physical
-  purge needs a separately scoped maintenance operation and coordinated removal
-  of old writers; no bulk deletion was executed during this cleanup.
+用户认可普通覆盖写相同内容的逻辑幂等。此前“所有写操作至少保存提交证据、允许查询结果”
+的统一建议撤回。先列目标对象、输入、并发写者、失败点和重复执行后果，再判断是否需要
+条件写或其他约束；需要条件写不等于需要持久化过程/响应账本。
+现有测试要求原错误/原响应重放，是旧实现合同，不能单凭测试把该行为保留下来。
 
-## Performance review: counting rules and current evidence
+#### R1 — 普通覆盖写：通常无需额外去重；并发语义要说清楚
 
-- Static review baseline: `878ee901`. The prior implementation passed Dataset,
-  Access Server, S3 and native component/integration suites, namespace admission
-  and drop suites, workspace all-feature clippy and fmt. Its local OCI image
-  built successfully. Full mixed-size workload/restart was not run on that
-  revision before the user requested this broader review; do not report it as
-  accepted performance.
-- `G` means one Access metadata point read, `B` one bounded read, `S` one scan,
-  `C` one conditional mutation, and `W` one unconditional mutation. `C(None)`
-  is create-if-absent, not a read-modify-write retry. Counts below describe the
-  named function path, not an entire HTTP request unless explicitly stated.
-- These are logical storage calls, not physical wire-packet counts. Dataset `B`
-  currently becomes a one-key `scan_bounded`; routing, range crossings, topology
-  discovery, replica reads, Paxos and WAL can add messages and work. Measure
-  actual client RPC sends and server replication separately.
-- A definite CAS conflict returns the value observed when the mutation was
-  evaluated. It can already be stale by the time it arrives. Use it immediately
-  to recompute an allowed retry; repeated competition can still fail, so preserve
-  the existing request deadline and bounded retry budget. Never wait for three
-  failures before using it. The three-conflict test injects competing writes to
-  verify this behavior, not a production batching/backoff rule.
-- A lost reply is not a definite conflict. It may require exact-operation replay
-  or a confirmation read. An explicit expected revision/selected generation must
-  return a conflict when invalidated, rather than silently applying user intent
-  to a different base.
-- Add request-scoped traces/counters in test wrappers and existing metrics, not
-  per-RPC production logging or a global profiling lock. Count GET/B/scan/CAS/
-  PUT/delete, repeated keys, retries, bytes, concurrent operations, and serial
-  dependency stages. Separately record copied bytes, allocations/retained bytes,
-  digest/codec CPU, queue wait, active requests, wakeups and cleanup lag.
+**流程**：客户端向同一 key 写 A，响应丢失，再向同一 key 写 A。没有夹入其他修改时，
+最终逻辑内容仍是 A。S3 `publish_versioned` 当前直接调用一次 `store.put`，
+说明完成资源发布不必经过统一 RetryLedger。相同逻辑内容不要求物理地址/修订号不变；
+重试产生的未引用物理副本交给 GC。
 
-## Findings and proposed corrections
+**边界例子**：A 已写入 → 另一个客户端写 B → A 的客户端重试 A，最终内容回到 A。
+若 API 是无条件覆盖，这是新的有效覆盖，不需要为此引入账本；若 API 承诺不得覆盖
+并发更新，就应由请求携带 expected version 做条件写。问题是 API 合同，不是同内容本身。
+若每次覆盖还创建可枚举历史版本或其他业务副作用，则需要对该实际入口单独 review；
+不要把尚未发现的副作用当作默认事实。
 
-### 1. Repeated snapshot admission within one Dataset batch — confirmed
+- [ ] **R1 逐路由确定覆盖合同**：普通 S3/Dataset part/文件发布分别记录是否无条件覆盖、
+  是否有额外可见副作用。可重复覆盖的入口删除过程/响应去重和额外确认 GET；保持内容校验。
+  Files: S3 `publication.rs`、Dataset upload/MPU、Iceberg file 入口。
 
-- Use case: read the next batch of a persisted session, with deletion rejecting
-  new requests and admitted reads allowed to finish during grace.
-- `DatasetSessions::next` reads session + deletion state + selected ID pages:
-  `2G + P G`, where P is the number of ID pages. Native `ReadAdmission::admit`
-  and HTTP `ReadAdmission::acquire` read deletion state again. For a nonempty
-  batch, `ready_inspection -> inspection_snapshot_committed` reads the same
-  deletion state a third time through `B`, before separate commit proof reads.
-- Proposed: establish one request-local, snapshot-bound admission result and
-  reuse it across session/locator/body setup. Public standalone entry points
-  must still admit independently. Do not cache mutable deletion permission
-  across requests or confuse it with immutable publication proof.
-- Verify: count one authoritative deletion check per admitted request; race
-  deletion at each boundary, direct/session and HTTP/native parity, missing and
-  unpublished snapshots, retained bodies and failure after physical cleanup.
+#### R2 — expected-base 发布：CAS 是必要约束，历史成功查询未必必要
 
-### 2. Remote session GET on each body pull — confirmed; contract-sensitive
+**具体流程**：请求固定 H0，希望发布 H1；CAS 已成功但回复丢失；另一个写者又把 H1
+推进到 H2。原请求重试 H0→H1 时，CAS 返回 H2，直接覆盖 H1 会丢掉后续写者的更新。
+这不同于无条件 PUT。当前 Iceberg `publish_direct_commit` 已用 CAS 返回值判断相同
+candidate；观察到后续代际时可能返回 Uncertain，没有必要再盲目 GET 同一个 head。
 
-- Use case: a separate client closes a session while another client is reading
-  its current body. Existing code deliberately observes that close remotely.
-- Native `BatchBody::pull -> ReadAdmission::check -> check_open` performs `1G`
-  on each pull. HTTP `BatchState::next` does the same before even returning
-  already-held `pending` bytes: frame header, payload, field end and stream end
-  can each incur a session GET. This traffic grows with delivery fragmentation,
-  not only logical requests or payload size. Ordinary direct batches have no
-  session ID and skip this cost.
-- Proposed: first eliminate duplicate checks within one logical delivery step
-  if its existing cancellation boundary permits it. Separately evaluate whether
-  remote close must interrupt an admitted body, or can reject the next request
-  while local cancel stops the current body. The latter removes per-pull RPCs
-  but is a distinct contract change, not implied by snapshot deletion approval.
-- Verify: current remote-close tests, empty/pending/EOF/capacity-wait cases,
-  plus RPC counts versus frame count. No new persistent reader registration.
+**初步判断**：保留请求的 expected base/候选身份，重试同一条件写；observed 就是候选时
+可以认定结果一致，observed 已变化时按真实条件失败/无法判断历史结果返回，不能暗中 rebase。
+CAS 不再满足只证明“本次条件不成立”，不能谎称“第一次一定没成功”。
+不为每次请求添加历史查询或回执；只有某个具体调用者必须识别被后续提交遮住的历史成功，
+才提出该场景需要的最小方案及代价，交用户 review。
 
-### 3. Upload metadata repeatedly reloaded while reading — confirmed
+- [ ] **R2 审查条件发布的回复丢失窗口**：用 H0→H1→H2 测试区分条件失败、相同结果与历史未知；
+  列出确实依赖历史精确结果的调用者，没有这种需求就移除相应 ledger/response replay。
+  Files: Iceberg `commit/direct.rs`、Dataset `authority/publication/`、Split head、SDK。
 
-- Use case: read an immutable completed upload referenced by a snapshot field.
-- Native `FieldReader` loads upload metadata once, but every
-  `read_part_stream` loads it again and then loads the part: `1 + 2P` metadata
-  GETs for P parts, excluding snapshot/session/locator work.
-- HTTP `BatchState` loads metadata before each part, and
-  `read_part_verified` loads it again before the part record. Its normal chunk
-  branch costs `3P + 1` GETs including the final end-of-field metadata probe,
-  excluding per-frame session checks and payload reads.
-- Proposed: pass a validated, request-owned upload descriptor to part readers;
-  validate part index/length/digest against it. Reclamation may make later part
-  I/O fail; it must never yield successful truncation or another upload's bytes.
-  Keep mutable admission separate from immutable shape and physical identity.
-- Also remove upload `create/complete/abort` readbacks that only reconstruct
-  state already returned by a successful mutation or conflict; assemble parts
-  for response only when the response needs them.
-- Verify: per-field/per-part call budgets, shared owners, corruption, abort and
-  physical reclamation races; held buffers remain valid after completion.
+#### R3 — rename / 严格非空删除：涉及多个资源，不是一个 key 的覆盖
 
-### 4. CAS observations still discarded by retry paths — confirmed
+**具体流程**：Iceberg rename A→B 当前涉及目标名称 reservation、表 head、目标 mapping、
+源 mapping 和父 namespace admission。代码先改权威 head，再发布目标名、删除源名；
+在任一边界宕机，重试不能只凭“A 不在了”就认定原操作成功，也不能误删重建后的 A。
+并发创建子对象与删除父 namespace 的检查/执行之间，也不能只做 GET empty 后无条件删除。
 
-- Dataset `upload/index.rs::index_part` does `GET -> CAS` on every attempt.
-  Concurrent different part numbers update one 128-part index page; merging
-  into the returned page is necessary to preserve both, another GET is not.
-- Dataset `upload/ownership.rs::{abort,cleanup,cleanup_part}` loops reload the
-  same upload/part after confirmed CAS conflicts. Retain CAS to prevent abort
-  racing a claim, a delayed write intent overwriting reclaim, or an owner update
-  being lost. Recompute state from each returned observation.
-- Dataset `authority/access/reclaim.rs::{fence_reclaim,retire_snapshot_record}`
-  and `split/recovery.rs::invalidate_split_head` do the same. The head nonce
-  change is a real publisher fence even if latest/stable IDs are unchanged;
-  it is not removable as a no-op. Reuse observed head and preserve receipt help.
-- Dataset `read_session/planning.rs::start` and `read_session/split/finish.rs`
-  discard a session-create conflict value before entering `resume`; existing
-  start also reads a record and then resumes through another read. Pass state
-  through instead. Existing progress and upload-owner retry loops already use
-  observations; keep them as the expected behavior.
-- S3 `bucket.rs::create_bucket` discards a tombstone replacement CAS result
-  through the bool wrapper, then performs another put-if-absent. Decode and use
-  the returned active mapping/tombstone immediately. Keep name uniqueness CAS.
-- Iceberg `RetryLedger::begin` restarts `ledger_locate` after a failed bool CAS;
-  use the returned occupant, looking up an overflow key only when the competing
-  operation actually belongs to a different collision slot. `finish` also GETs
-  result bytes already supplied by a definite conflict.
-- Verify: inject different numbers of actual conflicting writes, assert one
-  initial read and zero same-key re-GETs solely for each definite conflict;
-  preserve terminal/missing outcomes, explicit preconditions and lost replies.
+**初步判断**：这是必须审查的多资源一致性场景，不是保留整个 journal 的结论。
+先比较以单个权威记录确定最终状态、从资源事实重建派生 mapping、请求携带原资源代际、
+以及已有存储原子能力，明确各方案能否保持非空删除失败和名称唯一。
+若仍主张某个中间记录不可避免，必须展示具体失败时间线、无法从最终事实修复的原因和
+最小持久化集合，先 review；不能用“恢复方便”作为理由。
 
-### 5. S3 multipart helpers discard known state — confirmed
+- [ ] **R3 提交多资源操作的最小方案**：按 rename/create/drop 分别列失败点、实际读取可见性、
+  新请求如何处理和无 journal 替代方案；有保留中间记录的需求时单独确认。
+  Files: Iceberg `table/lifecycle/{operation,completion,reservation}.rs`、`namespace/`。
 
-- Use case: publish a new part in an existing open upload; simultaneous parts,
-  complete and abort share that upload's durable pending/accounting state.
-- With no existing part/generation, no pending work, no conflict and no error,
-  `put_stream_part` currently performs **7G + 4C** before returning:
-  load index/session (2G), read part (1G), create immutable generation (1C),
-  reserve session (1C), settle reload index/session (2G), read generation (1G),
-  read pointer (1G), publish pointer (1C), clear pending (1C).
-- `load_identity` reads an index even though the session key is derivable and
-  `MultipartSessionRecord::decode` checks bucket/object/upload identity. Assess
-  whether index presence is an independent contract or only listing metadata;
-  remove it from point operations if the session alone is authoritative.
-- Carry the known session, generation and pointer into settling; CAS still
-  protects against a competing writer. Make `exchange` return typed observed
-  state through its callers instead of a bool that forces `load` again.
-- `publish_completion` has an extra object GET after definite CAS conflict.
-  `finish_publication`, `abort` and `settle_pending_part` likewise reload the
-  session after `exchange` discards the observation. Uncertain errors retain
-  separate confirmation logic. Do not silently overwrite a changed predecessor.
-- The four conditional writes have separate current responsibilities. Reducing
-  them further requires proving quota accounting, same-part replacement and
-  freeze/abort behavior, not simply replacing them with unconditional PUTs.
-- Verify: call counts for new/replaced/replayed parts, concurrent distinct/same
-  parts, complete-vs-abort, generation orphan cleanup and every lost-write reply.
+#### R4 — 去掉过程状态后，GC 是否还能发现所有孤儿？这是实现前置检查
 
-### 6. Iceberg phase machines reload their own progress — confirmed
+**具体流程**：物理文件已写出 → 尚未保存 part/最终引用时进程退出。若 GC 只扫描 upload
+记录，就可能根本看不到这份数据。另一个窗口是文件已生成但尚未发布，GC 判断无 owner，
+同时迟到请求又尝试发布；仅“当前无 owner”不自动意味着可以安全回收。
+现有 `DatasetUploads::expire` 扫 `DS\0U\0`，并从 upload record 进入 abort/cleanup，
+不能凭这个入口证明没有 upload record 的物理孤儿也能被清理。
 
-- Use case: namespace creation/drop/rename/property update and table lifecycle
-  operations survive Access restart and helpers finishing another request.
-- `NamespaceJournal::advance`, table lifecycle/create/commit journals and
-  `CatalogRepository::cas` reduce CAS to bool. Their driver loops then load
-  progress from storage after both successful advancement and conflicts.
-  `NamespaceJournal::load` also checks ActiveRoot, so one reload is at least
-  `2G`, before payload and authority reads. Preserve applied or observed typed
-  state within the running request; restart still loads durable progress.
-- `NamespaceRepository::load` costs `2 + 2D` GETs for an existing D-component
-  namespace: two context checks plus mapping and authority for each component.
-  Nested callers often resolve the same namespace/context again. Identify each
-  required clear/drop boundary before introducing request-local reuse; a cached
-  Ready result cannot grant indefinite mutation permission.
-- `cleanup_marker` GETs the exact expected value before issuing a conditional
-  replacement. The CAS itself rejects a changed value. Compare direct-CAS and
-  existing-marker replay costs; carry known observations when available.
-- Preserve the user's strict nonempty-delete guarantee. Parent admission,
-  name reservation and publication proof cannot be removed merely because the
-  recovery path has too many RPCs. Simplify state propagation first.
-- Verify: count per phase; concurrent create/drop/rename, nonempty rejection,
-  recreation, epoch change, helper races and lost replies at every durable step.
+**初步判断**：先证明底层分配/文件清单及引用信息足以发现孤儿，建立等待期和发布/回收边界，
+并测试物理身份复用。扫描游标是本地优化，不恢复服务端业务步骤；必要的文件身份/时间等
+资源事实与操作 checkpoint 分开审查。不能为补 GC 缺口直接把已否定的上传/计算 journal 加回来。
 
-### 7. Active Iceberg paths versus legacy work — confirmed distinction
+**已核实的缺口（2026-10-24）**：`ChunkdbClient::list_chunks` 能枚举 chunk；共享 writer
+过期后在 `acknowledged_cursor` 封口，保留已经确认的字节。`FrameHeaderPrefix` 有大小和
+写入时间，没有对象 owner；`reclaim_location` 只能回收调用者给定的物理范围。
+Dataset expiry 依赖 upload/part 记录，Iceberg discovery/write sweep 依赖 file/intent 记录，
+都不是“封口 chunk 范围减去全部存活引用”的独立扫描器。删除写前 intent 后，写出 payload
+而尚未保存结果就宕机会产生不可发现的范围。tree 内部 orphan 回收不能代替用户 payload GC。
 
-- `publish_direct_commit` already conditionally publishes one table head and
-  examines the observed head on conflict. Keep optimistic table requirements;
-  do not add its legacy multi-phase publisher to normal commit cost estimates.
-- Active streamed `put_stream_part` uses one part GET plus one part CAS after
-  admission, and returns a conflict instead of silently rebasing replacement.
-  Inspect its callers for duplicate session/context lookup; do not introduce
-  catalog-wide quota writes already absent from this path.
-- Legacy multipart `part` checks `load` before and after reading a part; each
-  `load` itself reads context + session, giving `5G` for this helper. Completion
-  can nest further load/exchange checks. `exchange` checks context before and
-  after CAS. Track these as legacy/recovery costs, with a migration/removal
-  option if there are no live callers; never attribute them to streamed traffic.
-- Native injection selects an immutable receipt, then publishes file authority;
-  both have request/content identity and deletion replay constraints. Preserve
-  winner selection while passing known descriptors and admission through.
-- Verify: active route tracing, file replacement/deletion, retry identity,
-  direct-file no-KV reads, old-session recovery and catalog clear/rotation.
+**已确认的期限与剩余工程证明**：未发布 part 过期后重传；不支持无限期稍后提交。
+仅在 Access 开始请求时检查期限仍有竞态：检查通过 → 发布 RPC 延迟 → GC 回收 → 迟到发布。
+必须在最终权威发布边界拒绝过期候选，或以资源代际/封口隔离迟到发布；等待若干分钟本身
+不能证明不存在无限延迟请求。此处没有授权新增逐请求 journal，也不先删除唯一孤儿发现链路。
 
-### 8. Fewer writes can still mean more RPCs — confirmed trade-off
+`DatasetAuthority::fence_reclaim` 已通过修改 head nonce 作废旧发布 CAS；
+`commit_snapshot_attempt` 在读取 head 后检查 Snapshot 准入，再做 expected-head CAS。
+这是可复用的隔离机制，但当前只针对指定 Snapshot，不能直接当作任意过期 part 的发布屏障。
+后续须证明全体引用发布入口都经过该边界、扫描与新提交的顺序、跨 Dataset 共享引用的范围；
+S3 普通对象是直接 PUT，不能未经设计就套用 Dataset head 机制或给每次 PUT 增加 CAS。
 
-- Previous cleanup added preflight reads to Dataset immutable session metadata
-  and Composition/Split receipt helping. A new value now costs `G/B + C`
-  instead of just `C`; an existing identical value costs a read instead of a
-  failed conditional mutation. Zero-write replay tests alone miss this trade-off.
-- `reserve_session_version(version=2)` can read VERSION, check legacy SPEC, then
-  call `immutable_session_metadata`, which reads VERSION again. Carry that first
-  observation and avoid redundant preflights.
-- Iceberg `PayloadStore::put_page` similarly performs GET then create-if-absent;
-  a new P-page payload costs `P G + P C`, serially. Journal validation rereads
-  payloads which the same request may just have produced.
-- Proposed: distinguish definitely-new writes from replay/help paths using
-  existing request-owned evidence, not a new durable flag. Compare direct
-  create-if-absent, known-value reuse and read-before-write with total round trips
-  and server work. Immutable CAS preserves identity collisions and cleanup seals;
-  plain PUT is allowed only if divergent overwrite/resurrection is impossible.
-- Verify: first request versus repeated helpers, collisions, late writers after
-  cleanup, bounds and total GET+CAS counts as well as persistent mutation counts.
+- [ ] **R4 验证无过程记录的孤儿发现**：注入文件生成前后、part 回复前后、最终引用前后宕机；
+  证明无 owner 内容最终清掉、已发布/共享内容不误删。若缺底层发现能力，先补独立 GC，
+  需要新增持久化信息时说明用途供 review。Files: Dataset expiry/reclaim、Iceberg file/GC、底层文件/分配枚举接口。
+- [ ] **R4.1 建立有界物理范围发现**：枚举已封口用户数据 chunk，按完整 frame 边界建立候选，
+  与最终 Manifest/文件引用求差；包含写成功但结果记录缺失、共享 chunk 混合存活和孤儿、
+  writer 失效和物理身份复用。不得把整个 shared chunk 当作一个可删除文件。
+  Files: chunk-client reclamation、chunkdb ListChunks、protocol frame、Dataset/Iceberg GC。
+- [ ] **R4.2 实现提交期限和回收隔离**：part 结果携带期限，提交权威边界验证；覆盖期限前准入
+  但期限后落地的 RPC、GC 与最终引用并发、成功发布后的长期存活。若需新增持久化资源事实，
+  先列出最小字段和每请求 RPC 成本供 review。Files: Dataset publication/upload、Iceberg file、GC。
 
-### 9. Serial fine-grained metadata I/O — confirmed shape, cost to measure
+### D4 — 全局硬配额，还是每台 Access 的资源准入？仅在发现活跃需求后讨论
 
-- `resolve_inspection_batch_locators` serially walks samples and fields: one
-  membership read per sample, a field metadata lookup per ancestor searched,
-  then a separate locator/inline-value lookup for each present value. Costs grow
-  with samples × fields × ancestry depth. Schema and snapshot proofs add work.
-- These bounded point reads use scans in `chunk_store/metadata.rs`, not a native
-  bounded point-get RPC. Review protocol support before substituting an unbounded
-  GET; byte/deadline bounds must remain enforced before materialization.
-- `persist_inspection_rows` writes schema, membership, field metadata and value
-  rows one at a time. For F schema fields, N samples and E present sample-field
-  entries it emits `F + N + 2E` conditional row writes, then 3 summary/index
-  writes, excluding manifest/publication records. Session ID pages and Iceberg
-  payload pages are also written serially.
-- Proposed: batch compatible point operations or use bounded concurrent reads/
-  writes with a shared byte/work budget; reuse immutable request-local schemas
-  and proofs. Consider co-locating metadata/locators only after measuring byte
-  amplification and defining migration. Preserve output order and missing-field
-  semantics; do not turn a sparse projection into an unbounded Manifest read.
-- Verify: samples/fields/ancestry/page-count sweeps, RPC count and dependency
-  depth, missing/tombstone fields, byte budgets and cancellation under concurrency.
+**场景和流程**：旧 Iceberg multipart credit 在 catalog-wide 记录上预留 sessions/bytes，
+写 pending journal，再创建 upload，结束时归还。不同上传会竞争同一个计数器；它实现的是
+跨实例总量约束，而本地 semaphore/字节预算只保护一台机器。两者不能直接等价替换。
+当前新上传前台路径未使用该全局 reserve/release；旧记录恢复仍可能依赖它。
 
-### 10. Payload copies and full-part materialization — confirmed
+**判断与建议**：先追踪入口和历史记录，删除确证无调用、无恢复责任的旧逻辑；
+不因为看到了类名就把旧路径开销算进新上传。只有确有硬配额需求时才讨论全局协调方案。
 
-- HTTP Dataset upload collects an entire part before writing. Byte-mode
-  `ChunkPayloadStorage::read` concatenates receive chunks into `BytesMut` before
-  HTTP delivery. Inline HTTP delivery uses `Bytes::copy_from_slice` even though
-  the request already owns the value. Keep the native owner-backed path intact.
-- Compatibility `UploadedChunkReader::read` adds another concatenation and then
-  `output.to_vec()`, copying the assembled result again. Trace its active callers
-  before prioritizing; it is not the normal native streaming reader.
-- Generic S3 coalescing copies frames into a fresh Vec per receive window;
-  native direct-receive is a separate path. HTTP read-ahead/native fallback and
-  mixed-size partial frames need separate measurements, not a zero-copy label
-  applied to all traffic.
-- Proposed: move existing owners into outputs, stream retained payload owners
-  where framing allows, avoid concatenation just to change container type, and
-  keep bounded aggregation only where measurements justify it. A header-copy
-  and payload-copy have different costs; count bytes, not only copy calls.
-- Verify: address/owner lifetime, partial frames and unaligned sizes, caller-held
-  buffers, cancel/drop/shutdown, peak physical allocation and explicit fallback.
+- [ ] **D4 条件决策**：P6 若证明仍有跨实例硬配额需求，再确认是否允许按实例限制，
+  接受实例数增加导致总上限增加；若无需求，记录无需产品决策及调查证据。
 
-### 11. Digest, serialization and allocation CPU — confirmed work, profile first
+### D5 — GC 是否有完成时限和精确恢复进度要求？先测清理积压
 
-- `DatasetUploads::complete` serially rereads every accepted part. Each
-  `verified_part` verifies its MD5, then completion hashes the bytes again for
-  whole-upload MD5. Part MD5s cannot simply be combined into whole-upload MD5;
-  removing this read requires durable trusted whole-content evidence, not
-  trusting a caller checksum or weakening integrity.
-- Native `VerifiedUploadPart::next` and `FieldReader::delivered` both hash
-  delivered bytes for different scopes. When a field is exactly one verified
-  part, investigate sharing the certificate; multipart fields still require
-  their whole-field validation. Measure hash CPU separately from transport.
-- Upload/session/draft CAS serializes records repeatedly; owner revocation lists
-  grow to 4096 entries, part-index pages to 128 receipts. Conflicts repeat
-  decoding/encoding of whole records. Record encoded bytes and CPU by size and
-  contention; evaluate narrower records only if lifecycle atomicity survives.
-- Inspection stores JSON field/locator values and clones sample/field metadata
-  for response headers. Profile parsing, allocations and inline byte encoding,
-  then pre-size or move owned values where justified. An Arc/Bytes clone does
-  not imply a payload copy; do not optimize it based on syntax alone.
-- Verify: CPU samples, allocations/request and bytes processed by each digest
-  or codec; singleton/multipart, small/large and high-owner-count cases.
+**场景和流程**：Snapshot 标记后等待五分钟，只保证不早于期限回收；实际回收由后台扫描。
+当前调度每 15 秒做 snapshot cleanup，再扫一页 upload（20 个 key，包含子记录）。
+100,000 条稳定记录理想扫描周期已约 20.8 小时；单个大 upload 还可能串行清理大量 part。
+持久化每页进度有写入成本，完全重扫则在重启后重复工作。
 
-### 12. Upload expiry throughput and coupled cleanup — confirmed
+**判断与建议**：默认用有界、公平、可幂等重做的清理，允许本地游标和进度估计；
+保留删除标记、物理身份和不能遗失的清理义务。重试删除必须验证代际，不能删到复用后的数据。
+若实测重扫已影响容量或明确要求多久清完，再提出 expiry index 等资源发现方案及前台写放大供 review，不能自行恢复过程检查点。
 
-- Current `start_cleanup` wakes every 15 seconds, runs snapshot cleanup first,
-  then one upload page. `expire` scans 20 keys from `DS\0U\0`, including part
-  and index records; it also revisits claimed and cleanup-complete authorities.
-- With R stable scanned records, the nominal full-pass scheduling budget is
-  `15 * ceil(R / 20)` seconds in the no-overrun case. At 100,000 records that is
-  about 20.8 hours, before I/O delay. Five-minute grace is a minimum delay, not
-  an upper cleanup bound. Removing the registry eliminated foreground writes
-  but did not establish acceptable large-scale cleanup latency.
-- One expired upload can enumerate up to 10,000 parts and clean them serially;
-  the two-second scan timeout does not bound the entire cleanup step. A slow
-  upload delays the next snapshot sweep on the same task. Multiple Access
-  instances can also duplicate scans and cleanup work.
-- Proposed: separate bounded progress budgets for discovery and reclamation;
-  consume multiple pages while within time/bytes/I/O budget, skip child ranges
-  where supported, retain incremental cleanup progress and yield fairly.
-  Compare per-object expiry indexing with full scans only after accounting for
-  any extra foreground write; do not restore one global registry contention key.
-- Verify: sparse expired uploads among live/cleaned records, maximum-part uploads,
-  repeated restarts, corrupt entries, multiple cleaners, cleanup lag and effect
-  on foreground p99/CPU/metadata RPCs. Restart cursors must not lose obligations.
+- [ ] **D5 条件决策**：P13 测得积压后，如需保证清理完成时限或重启精确续扫，再确认具体目标；
+  五分钟 grace 本身不意味着“五分钟内清完”。若无此需求，按可重复计算的实现处理。
 
-### 13. Admission, scheduling and lower-layer costs — measurement tasks
+## 无需重新讨论的工程判断
 
-- Review count-based versus byte-based admission for mixed sizes, queue residence
-  and capacity retained by slow consumers; differentiate overload rejection from
-  insufficient in-flight work. Do not increase capacity just to raise benchmark
-  throughput or reintroduce unbounded prefetched buffers/tasks.
-- Native Dataset pulls one field stream at a time. Measure whether bounded
-  prefetch hides storage RTT under real mixed sizes, and whether it increases
-  retained-memory pressure or harms small-request p99. One thread can have
-  multiple pending operations; the load generator's request/response discipline
-  must be recorded.
-- S3 native allocation credit has a 1-ms retry timer when other producers/CQ
-  completions can release arena credit; Dataset metadata cancellation polls at
-  10 ms. Measure wakeup overhead, stalls and cancellation latency before changing
-  notification plumbing. Preserve missed-wakeup safety and avoid a new lock.
-- Profile allocation arenas, serialization/hash time, scheduler occupancy,
-  shared writer queues, batching dwell time, transport in-flight WR/byte depth,
-  CQ processing, disk durability and metadata replication separately. Attribute
-  a lower-layer bottleneck with traces before expanding this Access change into
-  a storage or RDMA redesign.
-- Include authentication/signing, error/logging paths and metrics overhead in
-  endpoint CPU profiles. Retain authorization/integrity checks; consolidate
-  duplicate computation or reuse already-validated request-local evidence.
-- No direct production Mutex/RwLock was found in the audited Access libraries;
-  that does not establish lock-free behavior in dependencies, FFI or the kernel.
+- P1 投影是可重建派生数据，当前失败就回退 canonical 内容；从 GET 中去掉同步持久化
+  不改变表的权威数据合同。先验证冷读/热读成本，再选无缓存、本地有界缓存或发布时构建。
+- confirmed CAS conflict 使用 observed value、已成功写入后的状态直传、请求内复用
+  immutable descriptor、减少不必要复制，均可在现有合同下进行，不必逐项请求产品批准。
+- namespace 非空删除、名称唯一性、共享 payload 引用、物理代际、已提交数据持久性、
+  鉴权撤销边界不重新投票。若发现其实现复杂，先提出保持这些约束的更小方案。
+- 尚未证明性能收益或未确认调用路径属于调查任务，不当作必须由用户回答的问题。
 
-## CAS use cases and disposition
+## 持久化清理任务
 
-- **Ordinary reads, fetch replay, payload delivery**: no persistent reader CAS.
-  Keep only request admission, selected immutable identity and physical integrity;
-  repeated GETs remain subject to findings 1–3 and 9.
-- **Ordinary S3 object PUT/DELETE**: final object publication/deletion already
-  uses one unconditional mutation; HEAD uses one object GET after bucket
-  resolution. Do not add preflight CAS. Bucket names still need uniqueness and
-  generation protection across delete/recreate.
-- **Snapshot/table/Split head publication**: competing publishers select one
-  current generation, respecting an explicit expected base. Keep one conditional
-  publication point and exact lost-reply proof; do not silently rebase user edits.
-- **Upload owners, claim versus reclaim**: two snapshots may reference one
-  upload. Keep an atomic owner/state update so removing one owner cannot delete
-  another's live data; permanent owner revocation rejects delayed claims.
-- **Part intent/accept/index/complete**: prevent same-part writers, delayed I/O
-  and abort/complete from publishing inconsistent data. Keep the necessary
-  atomic state transitions; returned observations and known state eliminate
-  redundant reads. Index-page sharing is limited to one upload and merits a
-  separate contention measurement for parallel part uploads.
-- **Session ack/resume/close**: same-session cursor/closed/deadline changes must
-  not overwrite each other. CAS is scoped to that handle; independent sessions
-  must not share mutable reader state. Normal fetch needs none.
-- **Draft edits/checkpoints/cleanup seals**: explicit revision checks protect
-  concurrent edits; seals reject a late writer after cleanup. Reuse known
-  immutable receipts without inventing another mutable coordination record.
-- **Iceberg namespace parent/name/lifecycle**: preserve strict nonempty delete,
-  generation isolation and recovery. Ordinary table creation already avoids a
-  parent mutation. Reduce supporting RPCs without removing the required boundary.
-- **Idempotency bindings/immutable records**: create-if-absent selects one payload
-  per operation/name and detects divergent identity reuse. Plain PUT is not a
-  generic substitute; prove sole ownership, identical bytes and no cleanup seal
-  before removing the condition. A failed create-if-absent still costs an RPC.
-- **GC progress and conditional deletion**: prevent stale workers from overwriting
-  newer progress or deleting a reused identity. Background workers need bounded
-  work and fair progress, not reader leases. Legacy catalog credit accounting
-  remains only where old records require settlement.
-- Remote CAS inventory covers Dataset authority/publication/access, uploads,
-  sessions, Composition/Split/inspection; S3 bucket and multipart repositories;
-  Iceberg catalog/namespace/commit/table lifecycle, files/multipart/injection,
-  retry/payload/projection and GC. Shared `crowdb-access-multipart` helpers do
-  arithmetic/validation rather than issuing storage RPCs. Local delivery/arena
-  atomics and metrics are excluded from remote CAS counts. Dynamic counts for
-  every route and failure branch are still an execution task, not a static proof.
+每项先记录正常/冲突/结果未知流程和必要不变量，再修改。D1/D2 和 D3 原则已经确定，
+据此删除过程状态；任何需要保留中间状态的具体例外先提交 R1–R4 review。R4 是去掉旧过程记录的验收前置条件。
 
-## Performance verification matrix
+### P1 — Iceberg GET 派生投影
 
-- Run direct read, session start/next/ack/resume/close; upload create/new-part/
-  replay/complete/abort; Composition/Split edit/evaluate/publish/recover/cleanup;
-  S3 ordinary objects and multipart; Iceberg active file/table/namespace paths,
-  legacy recovery and GC. Include auth/admission entry costs in endpoint totals.
-- Vary payload sizes, samples and fields, ancestry, part count, owner count,
-  concurrency and retained buffers. Separate one shared key from independent
-  objects. Include no contention, definite conflicts, response loss and restart.
-- For each change record before/after logical storage calls, actual routed RPCs,
-  serial stages, bytes, CPU, allocations, p50/p99 and backlog. Keep byte/digest
-  correctness and resource limits fixed. Batch operations may lower RPC count
-  without lowering backend I/O; report both.
-- The unchanged full HTTP/native Rust/native Python workload and restart check
-  remain the final acceptance. Do not compare phases from different source
-  images or count an interrupted/partial run as a throughput result. Physical
-  multi-host validation remains in its separate plan.
+P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内容，不读写持久化投影。
 
-## Decisions applied to the inventory
+- [ ] **P1.2 验证剩余解析 CPU 成本**：当前选用无投影缓存；旧路径无论命中与否都读 canonical，
+  额外访问持久化投影只节省部分解析。零投影 RPC 已有回归，尚未测混合大小的冷/热 CPU 和
+  p99。与 F9 一起测量；只有解析成为瓶颈再比较本地有界缓存/发布时构建，明确上限和失效身份。
+  Files: Iceberg `table/load.rs`、相关 table/projection 测试及真实负载。
 
-- Dataset sessions retain explicit durable acknowledgement and remote close.
-  Normal fetch/replay is read-only; start/ack prepares the next token. Only
-  start/ack/resume extends admission. Legacy unprepared sessions upgrade once.
-  See [Dataset read flow](../design/access-server/dataset/design-crowdb-access-dataset.md#102-read-flow).
-- Composition/Split retain draft-scoped recovery checkpoints and cleanup fences
-  for exact lost-reply recovery and late-writer exclusion. Source activity leases
-  are absent; receipt helping avoids redundant CAS. No reader-shared journal was
-  found. See [control lifecycle](../design/access-server/dataset/design-dataset-control.md).
-- Dataset uploads no longer register in shared tail/pages or persist a scan
-  cursor. Expiry directly scans upload authorities with local continuation.
-  Permanent owner revocation protects other live snapshots; bounded part indexes
-  remain to avoid one metadata point read per part during listing/completion.
-  See [upload flow](../design/access-server/dataset/design-crowdb-access-dataset.md#101-upload-and-publication-flow).
-- Iceberg catalog-wide credits are legacy recovery only. New streamed sessions
-  already use independent session limits; no foreground reserve/release was
-  found. Keep legacy recovery so old outstanding records can settle.
-- **User decision, 2026-10-24**: nonempty namespace deletion must fail. Keep the
-  parent admission protocol where required by creation/rename/drop recovery;
-  do not replace it with cascading deletion. Ordinary table creation already
-  avoids a parent authority mutation. See [Iceberg authority](../design/access-server/iceberge/design-crowdb-iceberg.md#2-authority-model).
-- Ordinary Iceberg commits already use one head CAS; the legacy multi-phase
-  publisher is not the normal HTTP path. Preserve GC/publication fencing because
-  it prevents deleting referenced files, rather than only interrupting a reader.
-- Iceberg streamed parts already publish independently by part number. S3 keeps
-  upload-local accounting and the completion/part-pointer fence; independent
-  uploads do not contend on one global record. Confirmed S3 CAS conflicts now
-  use returned observed bytes, and part retry retains its latest loaded state.
-  See [S3 data flow](../design/access-server/s3/design-crowdb-access-s3.md).
-- Dataset session and upload-owner retry loops use returned observed state.
-  Confirmed stale-base retries and uncertain transport reconciliation remain
-  distinct. Explicit revision preconditions still return conflict; retrying an
-  application mutation against a new base is not universally valid.
+### P2 — Dataset Composition（执行已确认 D1）
 
-## Files and focused checks
+- [ ] **P2.1 分清输入、计算进度与候选内容**：逐项列出 draft/edit receipt/work page/row/candidate/
+  cleanup seal 的用途、写入次数和调用者；按 D1 更新 API/SDK 合同，移除服务端续算接口。Files: Dataset `composition/{begin,edit,state,evaluation,evaluate_step,prepare,cleanup}.rs`。
+- [ ] **P2.2 删除服务端编辑/计算过程**：删除 durable 编辑/进度阶段，客户端失败重新请求；
+  保持发布前不可见、expected head 及源 Snapshot 被删时的明确错误。孤儿清理通过 R4 验证，例外封口记录先 review。Files: `composition/`、Access v2 composition、SDK 和恢复测试。
 
-- Dataset: `read_session/`, `upload/`, `composition/`, `split/state.rs`; Access
-  Server Dataset cleanup wiring and publication; Dataset design/spec/OpenAPI.
-- S3: `metadata/store.rs`, `metadata/multipart_repository{.rs,/parts.rs}`;
-  owning design. Iceberg design corrections document existing foreground paths.
-- Cost regressions: `session_cost_test`, `draft_cost_test`,
-  `upload_registry_test`; lifecycle regressions retain restart, shared-owner,
-  lost-response, invalid-content and cancellation assertions.
-- Integration: affected Access Server/native/S3 suites; Iceberg namespace drop
-  and admission tests retain the explicitly selected nonempty-delete contract.
-- Gates: Rust fmt and workspace clippy through Pixi. Full workload and restart
-  use `tools/sdk/dataset_workload.py` with its unchanged defaults and same-source
-  image; physical multi-host acceptance remains in its independent plan.
+### P3 — Dataset Split（执行已确认 D1）
 
-## Inspection coverage and exclusions
+- [ ] **P3.1 分开临时评估和已发布成员**：盘点 edits/evaluation/overlap examples/work pages；
+  保留历史 revision 和冻结成员，不能重算时偷偷改变既有 train/test。Files: Dataset `split/{lifecycle,state,work,evaluation,prepare,initial}.rs`。
+- [ ] **P3.2 实现选定 Split 流程**：按 D1 删除辅助进度与检查点，客户端重试，保留 currentSplit
+  发布 CAS、覆盖/重叠校验和旧 revision 读取。Files: `split/{publication,recovery,cleanup}.rs`、v2/SDK Split 和恢复测试。
 
-- Inspected route ownership and coordination sites in
-  `app/crowdb-access-server/src/` and production sources of
-  `lib/crowdb-access-{dataset,s3,iceberg,multipart}/src/`, including shared credentials,
-  admission, streaming, Dataset lifecycle, S3 metadata and Iceberg catalogs.
-  This inventory identifies candidates; it is not a measured proof that every
-  listed write is unnecessary.
-- No direct `Mutex`/`RwLock` usages found in those five production source trees.
-  Dependencies and FFI may contain locks; audit them only when profiling points
-  there. Atomic resource counters are not automatically removal candidates.
-- S3 ordinary object PUT/DELETE already use unconditional point mutations;
-  ordinary GET has no persistent reader registration. Bucket-name deletion CAS,
-  explicitly conditional writes and multipart completion have different scopes.
-- Iceberg `FileReader` verifies physical directory ownership and block digests
-  without registering each reader. Preserve stale/reused-location rejection.
-- Credentials, immutable content publication, explicit retention, shared payload
-  owners, authorization and physical allocation identity are not expendable
-  merely because they persist state or use CAS.
+### P4 — Dataset 上传、索引和 owners（执行已确认 D2）
 
-## Verification for each cleanup
+- [ ] **P4.1 缩减 upload/part 状态与回读**：列出 create/intent/write/accept/index/complete/abort
+  的必要资源事实与过程状态；删除后者，改成客户端控制完整 part/最终清单；
+  成功结果直接返回，不为续传保存进度。需要保留 intent 的具体反例先按 R4 review。Files: Dataset `upload.rs`、`upload/{parts,index,ownership}.rs`。
+- [ ] **P4.2 修复 CAS 冲突重读**：`index_part`、`abort/cleanup/cleanup_part` 直接使用 observation；
+  合并不同 part 的索引更新时保留双方结果。claim/release 已正确使用 observation，不重复改写。Files: `upload/{index,ownership,retirement}.rs`。
+- [ ] **P4.3 缩小 owner/part 争用范围**：测 128-part 索引页、增长的 retired owners 的争用和编码；
+  比较更小记录，证明 claim-vs-reclaim 和迟到 claim 不破坏共享引用。Files: `upload/{index,ownership,retirement,reclaim}.rs`、相关并发/丢回复测试。
 
-- Record the old guarantee, accepted replacement semantics, conflict scope,
-  persistent GET/write counts and reader/request lifetime before implementation.
-- Unit/integration: independent concurrent operations, deletion races, retries,
-  restart, partial results, retained buffers and shared references.
-- E2E: existing HTTP/native Dataset parity and mixed-size workload; use matched
-  source/builds. For other domains run the affected existing protocol suites.
-- Run affected tests and Rust fmt/clippy through `pixi run`. Do not increase
-  retry bounds, weaken integrity assertions or call workload reduction a fix.
+### P5 — S3 multipart（客户端控制 part；协议资源与过程状态分开审查）
+
+- [ ] **P5.1 精简 MPU 持久化与重复装载**：先说明 UploadId/ListParts/Complete 所需资源事实，
+  删除无用过程阶段；复核旧实现新 part `7G + 4C` 路径，把已知 session/generation/
+  pointer 传给 settle；验证 identity index 是否只是列表元数据，不能未经证明删除权威检查。Files: S3 `metadata/multipart_repository{.rs,/parts.rs}`。
+- [ ] **P5.2 保留 typed CAS 结果**：exchange 返回 applied/observed，消除 complete/abort/settle
+  对同 key 的 conflict 后 GET；同时覆盖同 part 替换、不同 part 并发、complete/abort 和不确定写入。Files: S3 `metadata/multipart_repository/{completion,publication,terminal}.rs`。
+
+### P6 — Iceberg 旧 multipart / 全局 credits
+
+- [ ] **P6.1 追踪活跃与恢复入口**：新 part 前台已是准入后 `1G + 1C`，旧 `part` helper 可有
+  `5G`；分别计数。列出旧记录兼容/结算责任，不能把“无前台调用”当成“可以删”。Files: Iceberg `file/multipart{,_credits,_recovery,_repository}.rs` 及子模块、Access file 路由。
+- [ ] **P6.2 删除确证无用的协调**：没有调用/恢复义务的代码可删；有旧记录则给出迁移/结算方案。
+  只有仍有全局硬配额需求才触发 D4。Files: `file/multipart_admission.rs`、`file/multipart_credits/settle.rs` 及恢复测试。
+
+### P7 — Iceberg 物理写入（执行 D2；必要安全例外先 review）
+
+- [ ] **P7.1 区分安全事实与续传检查点**：逐一标明 ownership/generation、write intent、偏移、
+  completed file、adoption receipt 防止的失败；可读 bytes 不等于已确认提交。Files: Iceberg `file/{writer,write_intent,injection}.rs` 和 writer 子模块。
+- [ ] **P7.2 精简可重做阶段**：按 D2 删除未完成偏移/步骤恢复，复用请求已知 descriptor；
+  保留复用存储拒绝能力；若认为须保留 intent/checkpoint，先给出具体 R4 反例和替代方案。用丢失写回复、旧实例迟到、重启/回收注入验证。Files: 同 P7.1 及 file recovery 测试。
+
+### P8 — Iceberg RetryLedger（执行 D3；按 route 判定必要性）
+
+- [ ] **P8.1 清掉确定冲突后的查询**：begin 使用返回 binding，仅真实碰撞才查 overflow；finish
+  使用已返回 result，不重新 GET。Files: Iceberg `operation/{retry,ledger,result}.rs`。
+- [ ] **P8.2 按实际用途删除重试账本**：按 route 对照业务 journal 与 HTTP binding/input/result，判定实际重试效果；
+  普通覆盖删除 ledger/body/状态，条件或多资源操作按 R2/R3 处理；不默认保留“最小回执”。迁移测试和 SDK。Files: `operation/{retry,result,payload}.rs`、Access `iceberg/{table_write,namespace_write}`。
+
+### P9 — Iceberg namespace / table 多阶段操作
+
+- [ ] **P9.1 直传阶段状态与上下文**：journal CAS 后复用 applied/observed，避免重新 load +
+  ActiveRoot 检查；逐个标明必须重新检查的 clear/drop 边界。现有 D 层 namespace load
+  静态成本为 `2 + 2D` GET。Files: Iceberg `namespace/`、`table/lifecycle/`、`commit/create/`、`catalog/repository.rs`。
+- [ ] **P9.2 删除或替代阶段 journal**：画 create/drop/rename 的失败点与恢复流程；保持非空删除
+  失败、名称唯一、代际隔离。按 R3 先审查无 journal 方案，确需中间状态再 review，不能用 eventual emptiness 简化。Files: 同 P9.1 及 namespace admission/drop/recovery 测试。
+
+### P10 — Dataset 发布与显式资源控制
+
+- [ ] **P10.1 区分发布事实与辅助回执**：区分 immutable Manifest/Snapshot/Split、latest/stable、retention
+  与 attempt/receipt/visibility 的重复证明；最终发布 CAS 保持 expected base。Files: Dataset `authority.rs`、`authority/publication/`、`split/{head,publication,recovery}.rs`。
+- [ ] **P10.2 精简额外标记**：依据 P10.1、D3 删除不必要恢复写；有必要回执反例先按 R2 review；retention API 查调用者和用途，
+  不在无替代合同下删除用户 pin。不默认承诺 head 再次推进后仍可查询原操作的精确结果。Files: 同 P10.1、publication/retention 测试。
+
+### P11 — S3 object / bucket 发布
+
+- [ ] **P11.1 修复 bucket tombstone CAS 回路**：直接消费 observed active mapping/tombstone，
+  不接无意义 put-if-absent；保留名称唯一和删除重建代际。Files: S3 `bucket.rs`、`metadata/store.rs`。
+- [ ] **P11.2 锁定普通对象最小路径**：普通 PUT/DELETE 已为无条件 mutation，不加 GET/CAS；
+  单独验证 conditional 请求和 multipart 发布，记录包括 bucket resolution 的端到端成本。Files: S3 `publication.rs`、`metadata/namespace.rs`、对象/桶测试。
+
+### P12 — Dataset inspection 索引
+
+- [ ] **P12.1 降低索引写入粒度**：当前 F 个 schema field、N 个 sample、E 个非空 sample-field
+  产生 `F + N + 2E` 行写和 3 个 summary/index 写，不含 Manifest/publication。
+  比较批量与有界并发，保留顺序、预算和未完整索引不可见性。Files: Dataset `inspection/{index,preparation}.rs`。
+- [ ] **P12.2 精简索引准备/回收检查点**：保留服务必需的不可变索引，按 D1 删除辅助恢复进度，失败重做；
+  未发布索引/候选纳入 R4 孤儿清理。显式 legacy preparation 仍是 mutation，读 miss 不自动持久化构建。Files: `inspection/{legacy,retirement,reclaim}.rs` 及索引恢复测试。
+
+### P13 — GC / expiry / cleanup
+
+- [ ] **P13.1 拆开有界发现与回收**：复核 15 秒/20 key 调度，避免一个最多 10,000-part 的
+  upload 串行清理阻塞 snapshot sweep；分时间/字节/IO 预算公平推进。Files: Access Dataset `start_cleanup`、Dataset `upload/{expiry,ownership,reclaim}.rs`。
+- [ ] **P13.2 审查 cleanup 持久化**：将 claim/phase/cursor/tombstone 分为可重做进度与不可丢的
+  义务/代际；即使重扫昂贵也先优化发现/预算；新增持久化信息必须 review，用途和额外前台写均写明。Files: Dataset `authority/access/`、Split/Composition cleanup、Iceberg `gc/`、S3 terminal cleanup。
+- [ ] **P13.3 量化回收滞后**：稀疏过期、大 upload、多 cleaner、频繁重启、损坏记录下测 backlog、
+  前台 p99 和孤儿收敛；如需确定完成时限再讨论 D5。Files: 相关 cleanup 测试、负载工具。
+
+### P14 — Catalog 与凭据
+
+- [ ] **P14.1 审查 root/context/初始化回读**：记录正常请求内重复 GET 和初始化写，复用已验证
+  immutable 事实，保留撤销和 catalog reset 的准入边界。凭据持久化不是 reader session。Files: Iceberg `catalog/{repository,storage}.rs`、Access `credentials.rs`、`credentials/ensure.rs`。
+
+## 其他性能任务
+
+- [ ] **F1 请求级成本计数**：记录 GET/bounded GET/scan/CAS/PUT/delete、重复 key、冲突与
+  unknown、真实 routed RPC、串行阶段和复制字节；用测试 wrapper/已有 metrics，不加生产
+  每 RPC 日志或 profiling 锁。Files: Dataset/S3/Iceberg 测试 store、现有指标、`tools/sdk/`。
+- [ ] **F2 合并一次请求的删除准入**：`DatasetReads::next`、HTTP/native batch 和 inspection
+  仍可重复查询删除/提交状态。建立 snapshot-bound 请求内结果，独立入口仍需准入；不跨请求
+  缓存删除许可。Files: Dataset `read_query/`、`inspection/`、Access `dataset/api/batch.rs`、native `dataset/read.rs`。
+- [ ] **F3 避免无状态读取重复规划**：大 shuffle group + 小 batch 会反复重建同一 group；
+  selection 窗口还重复加载 schema/membership。比较有界客户端 group 缓存、请求内规划复用
+  与 token 大小；不恢复持久化 session。Files: Dataset `read_query/page.rs`、`inspection/evaluate.rs`、SDK iterable。
+- [ ] **F4 替换 legacy scan 全量规划**：`scan_surface` 每页重建所有窗口，造成 CPU/内存放大；
+  追踪调用者后迁移到有界 inspection 或增量 planner。Files: Dataset `transport.rs`、`planner/`、legacy API 和 scan 测试。
+- [ ] **F6 批量或并发 locator 读取**：membership + 每 sample/field/ancestor 元数据 + value
+  读取目前串行；bounded point read 在 chunk store 内还转成单 key scan。保留 materialize 前
+  字节/期限限制、结果顺序和 missing/tombstone。Files: Dataset `inspection/`、`chunk_store/metadata.rs`、相关 RPC 支持。
+- [ ] **F7 比较预读与 create-CAS 总成本**：新 immutable 页的 GET+CAS 可能比直接 CAS 更贵，
+  replay 则可能相反；比较新写/重放比例，复用本请求已知值，不能无证明改普通 PUT。Files: Dataset Composition/Split receipts、Iceberg `operation/payload.rs`、journal validation。
+- [ ] **F8 减少 payload 复制**：审查 HTTP 收整 part、`BytesMut` 拼接、inline copy、兼容
+  UploadedChunkReader 的拼接后 `to_vec` 和 S3 coalescing；先查活跃调用，再移交 owner 或流式
+  发送。Files: Dataset payload/upload、Access HTTP batch、S3/native 接收路径。验证部分帧、非整齐 size、held buffer 和实际复制字节。
+- [ ] **F9 分解摘要/编码/分配 CPU**：complete 重读 part 并做 part/whole MD5，native part 与
+  field 还各有摘要；MD5 不能直接拼合，只有同范围可信校验证据才可复用。测大 owner/part-index
+  编码、JSON/base64、header clone 和 allocations。Files: Dataset upload、native `dataset/read/field.rs`、inspection response。
+- [ ] **F10 混合大小准入与调度**：测 count/bytes 限制、慢消费者占用、单线程多个 in-flight、
+  有界 prefetch、batch 等待、1 ms arena 重试和 10 ms cancellation 轮询。区分 Access、CQ/WR、
+  replication/disk 瓶颈，保留鉴权/校验，禁止仅增大容量刷 TPS。Files: native runtime/arena、Dataset cancellation、现有 workload/transport 指标。
+
+## 执行顺序与验收 checkbox
+
+- 第一批：F1 建成本基线，P1 去掉 GET 写入；R4 验证孤儿发现/回收，R1–R3 确定各写入场景。
+- 第二批：按已确认 D1/D2 实施 P2/P3、P4/P5/P7，按 R1–R3 处理 P8.2/P9.2/P10；
+  只有确有中间状态必要性的例外等待单独 review。涉及孤儿的删除先通过 R4。
+- 第三批：在保留下来的真实路径上做 P4.2/P5.2/P8.1/P9.1、P11、F2/F7 等 RPC 优化（F5 已完成）；
+  路径若随状态删除则移除对应优化任务，避免先优化即将删除的 journal。
+  F3/F4/F6/F8/F9/F10、P12/P13 按测量瓶颈排序；P6/P14 可独立审查。
+- 每个可独立验证的改动完成后运行对应检查，不等所有任务完成才验证。
+
+- [ ] **V1 单元/组件与成本回归**：正常请求、1/多次真实 CAS 冲突、缺失/终态、丢回复、重启、
+  独立对象并发与同 key 竞争；新增无过程记录的孤儿回收、part 整体重传、
+  无条件覆盖与 expected-base 重试测试。断言总 GET+写，不仅是零写。Files: Dataset `tests/*cost*`、`read_query*`、upload/Composition/Split/inspection；S3/Iceberg 对应 repository 测试。
+- [ ] **V2 HTTP/native/SDK 集成**：各受影响 route 的鉴权、错误、协议/SDK 一致性；保留删除准入、
+  迟到写者、非空 namespace、共享 owner、held buffer、cancel/drop 和损坏内容测试。Files: Access/native tests、`sdk/tests/`、native Python consumer。
+- [ ] **V3 工程门禁与文档**：每批执行适用 fmt/clippy/测试，全部经 `pixi run`；同步 owning
+  design/spec/OpenAPI/SDK。只修改文档时检查 diff、引用和任务状态，不为此跑整套服务测试。
+- [ ] **V4 同源真实负载验收**：重新构建当前源码的镜像，运行现有 HTTP/native Rust/native Python
+  混合 size、restart 和本机 HCA 对比；固定核心、并发、请求完成口径、数据集和完整性校验。
+  记录 p50/p99、TPS、CPU/RSS、RPC、复制/摘要、清理积压，不缩小负载掩盖失败。
+  Files: `tools/sdk/dataset_workload.py`、相关 examples、`e2e-test/`、本机 HCA runner。
+  物理多主机验证继续留在独立计划，不并回此处。
+
+## 成本口径与集中代码索引
+
+- `G` 是一个逻辑 point GET，`B` 是有界读，`S` 是 scan，`C` 是条件 mutation，`W` 是无条件 mutation。
+  `C(None)` 是 create-if-absent，也消耗 RPC。上述数字不含嵌套路由/复制/WAL/物理 IO，
+  单函数静态数不能当端到端 RTT 或 TPS 结果；批量 RPC 也未必减少后端 IO。
+- CAS 必要性按用例证明：发布 head 的 expected base、名称唯一、part/finalize/abort、
+  共享引用 vs 回收、迟到写者隔离。明确失败冲突可复用 observation；unknown 按该操作语义处理，不默认追加查询。
+- Dataset 路径前缀：`lib/crowdb-access-dataset/src/`；重点 `read_query/`、`upload/`、
+  `composition/`、`split/`、`inspection/`、`authority/`、`transport.rs`。
+- S3 路径前缀：`lib/crowdb-access-s3/src/`；重点 `bucket.rs`、`publication.rs`、`metadata/`。
+- Iceberg 路径前缀：`lib/crowdb-access-iceberg/src/`；重点 `table/`、`metadata_projection/`、
+  `operation/`、`namespace/`、`commit/`、`catalog/`、`file/`、`gc/`。
+- 入口/客户端：`app/crowdb-access-server/src/`、`lib/crowdb-sdk-native/src/`、
+  `lib/crowdb-sdk-native-python/`、`sdk/`。检查现有调用者后再删除代码，不把 legacy 算作活跃路径。
+- 先前检查以上 Access production trees 未发现直接 Mutex/RwLock；不代表依赖、FFI、内核无锁。
+  下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
+
+## 已完成与验证记录
+
+- **2026-10-24，P1.1**：删除 TableLoader 持久化投影 GET、miss 填充和验证回执代码。
+  冷读、重复读、32 个并发读取及 conditional GET 均无投影读取和 CAS；refs/all、ETag、
+  parser limits、损坏拒绝和 namespace/head 变化检查保留。历史投影不参与表读取，未批量删除。
+  file-level 通用 projection 仍有独立调用者，不在这批删除。
+- **2026-10-24，F5**：增加请求内 `UploadReadDescriptor`，私有字段绑定原 location/storage；
+  HTTP batch、native、preview、兼容 range reader 均复用一次只读描述信息。
+  P 个 part 的上传元数据 GET 从 native `1 + 2P`、HTTP batch `3P + 1` 降为 `1 + P`；
+  这是逻辑元数据调用数，不含 Snapshot/locator 准入、路由复制和物理 payload IO。
+  不持久化、不登记 reader、不跨请求缓存准入；继续验证 part index/length/digest，
+  已回收 part 报错，已交付 buffer 保持有效。HTTP 增加 locator 与描述信息的 length/md5 一致性检查。
+- 本批功能回归共 **59 个测试通过**：Iceberg `table_projection_test`、`metadata_projection_test`、
+  `table_load_test`（21）；Access `iceberg_table_http_test`、`iceberg_table_acceptance_test`（14）；
+  Dataset `upload_read_cost_test`、`upload_stream_test`、`upload_test`（12）；
+  Access `dataset_batch_cost_test`、`dataset_preview_contract_test`、`dataset_read_query_contract_test`（5）；
+  native `dataset_payload_test`、`dataset_read_test`（7）。均通过 `pixi run cargo test`；
+  HTTP/native 集成先执行 `pixi run clean-env`，完成短尾 part、跨 part range、校验损坏、
+  回收、取消、held buffer 和零写/RPC 次数验证。
+- 本批门禁：四个受影响 crate 的 `pixi run cargo clippy --all-targets --all-features -- -D warnings`、
+  workspace fmt 和 `git diff --check`。无新锁、无 unsafe 例外、无 HTTP wire 协议变化。
+  测试辅助代码的依赖/格式 lint 已修正；HTTP 测试释放客户端后再关闭 listener。
+- **R4 未完成**：已定位物理孤儿发现缺口，并记录用户确认的未发布 part 有效期。
+  尚未新增范围 GC 或删除上传/Composition/Split 的过程状态，不能将本批读取优化算作该清理完成。
+  尚无当前源码的 HCA/TPS 对比，不声称吞吐提升比例。
+
+
+- `489ae507`：移除 Dataset 持久化读取 session、远端 ack/resume/close、TTL/配置和 legacy
+  cursor storage；HTTP 使用 `reads/bind`、`reads/next`，原 v1 直接 `reads` 保留。
+  native/Python 同步迁移，读取进度归客户端；旧 session key 不再读写，尚未物理批量清除。
+- 已通过 Dataset 全目标及最终 query 专项、Access Server 全目标、native SDK 全目标、独立
+  HTTP SDK 测试、安装后 Python wheel 的真实 HTTP Split/read 测试、相关 all-feature clippy、
+  SDK clippy、两个 workspace fmt，以及 OpenAPI 解析/本地引用检查。
+- 零写回归覆盖 bind、96 个并发 fetch、跨实例重放和 legacy scan；另有 Snapshot/Split 固定、
+  worker 覆盖、删除/取消和 token 大小验证。每帧 session GET 已随旧实现删除。
+- 曾出现链接磁盘不足和 `reads` 路由冲突：前者仅清理可重建 incremental 缓存，后者改为
+  独立 `reads/bind`；修复后完整 Access suite 通过。这不是未处理的测试阻塞。
+- 以上是功能与局部成本证据。全量混合 size/restart、本机 HCA 性能验收仍未完成；
+  `878ee901` 的旧 OCI 镜像不能用于声称当前改动已验收，R220 尚未完成。

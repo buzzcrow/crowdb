@@ -7,6 +7,8 @@ mod expiry;
 mod index;
 mod ownership;
 mod parts;
+mod read;
+pub use read::UploadReadDescriptor;
 mod retirement;
 mod stream;
 pub use stream::VerifiedUploadPart;
@@ -232,21 +234,9 @@ impl DatasetUploads {
         location: &[u8],
         index: u32,
     ) -> Result<(Bytes, [u8; 16]), UploadError> {
-        let session = self.session(location).await?;
-        if !matches!(session.state, UploadState::Complete | UploadState::Claimed) {
-            return Err(UploadError::Conflict);
-        }
-        let entry = self
-            .store
-            .get(&part_key(location, index))
-            .await?
-            .ok_or(UploadError::NotFound)?;
-        let entry = decode_part(&entry.bytes)?;
-        if entry.state != PartState::Accepted {
-            return Err(UploadError::Conflict);
-        }
-        Ok((self.verified_part(&entry.part).await?, entry.part.md5))
+        self.open_read(location).await?.read_part_verified(index).await
     }
+
     async fn verified_part(&self, part: &UploadPart) -> Result<Bytes, UploadError> {
         let bytes = self.payloads.read(&part.locations).await?;
         if bytes.len() as u64 != part.length || digest(&bytes) != part.md5 {

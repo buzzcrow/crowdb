@@ -284,6 +284,11 @@ HTTP EOF with no trailing bytes. Each active transfer owns local admission
 credits through delivery/drop. Snapshot reads perform no persistent activity
 updates or heartbeat writes. Cancellation stops the producer and returns credits;
 retained SDK-owned buffers keep their byte credits until released.
+For an uploaded field, HTTP and native readers validate one immutable upload
+description per request, then fetch each part record once. Part indices, lengths
+and payload digests remain checked; EOF does not reload metadata. The description
+is request-owned and registers no remote reader or retention. New requests still
+perform admission, and reclaimed parts fail instead of producing successful EOF.
 The internal legacy scan adapter also returns a caller-owned cursor without
 loading or persisting progress. Requests have no shared inactivity TTL.
 

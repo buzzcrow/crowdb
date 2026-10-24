@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crate::{runtime::RequestLease, Error, Result};
-use crowdb_access_dataset::{DatasetUploads, FieldLocator, UploadRecord, VerifiedUploadPart};
+use crowdb_access_dataset::{DatasetUploads, FieldLocator, UploadReadDescriptor, VerifiedUploadPart};
 use crowdb_rpc_ffi::OwnedPayload;
 use md5::{Digest, Md5};
 
@@ -10,7 +10,7 @@ enum Source {
     Inline(Option<OwnedPayload>),
     Upload {
         location: Vec<u8>,
-        metadata: Option<UploadRecord>,
+        metadata: Option<UploadReadDescriptor>,
         part: u32,
         stream: Option<Box<VerifiedUploadPart>>,
     },
@@ -77,22 +77,22 @@ impl FieldReader {
             } => {
                 if metadata.is_none() {
                     let record = request
-                        .run(async { Ok(uploads.metadata(location).await?) })
+                        .run(async { Ok(uploads.open_read(location).await?) })
                         .await?;
-                    if record.length != self.length || record.md5 != self.expected {
+                    if record.length() != self.length || record.md5() != self.expected {
                         return Err(Error::Integrity);
                     }
                     *metadata = Some(record);
                 }
                 let record = metadata.as_ref().ok_or(Error::Integrity)?;
                 loop {
-                    if u64::from(*part) >= record.length.div_ceil(u64::from(record.part_size)) {
+                    if *part >= record.part_count() {
                         break None;
                     }
                     if stream.is_none() {
                         *stream = Some(
                             request
-                                .run(async { Ok(Box::new(uploads.read_part_stream(location, *part).await?)) })
+                                .run(async { Ok(Box::new(record.read_part_stream(*part).await?)) })
                                 .await?,
                         );
                     }

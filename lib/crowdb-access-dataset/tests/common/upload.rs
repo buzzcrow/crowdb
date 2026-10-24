@@ -18,10 +18,17 @@ use std::{
 #[derive(Default)]
 pub struct TestStore {
     values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
+    pub reads: AtomicU64,
+    pub upload_reads: AtomicU64,
+    pub mutations: AtomicU64,
 }
 #[async_trait]
 impl DatasetStore for TestStore {
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        if key.starts_with(b"DS\0U\0") {
+            self.upload_reads.fetch_add(1, Ordering::Relaxed);
+        }
         Ok(self.values.load().get(key).cloned())
     }
     async fn get_bounded(
@@ -92,6 +99,7 @@ impl DatasetStore for TestStore {
         expected: Option<&[u8]>,
         value: &[u8],
     ) -> Result<CasOutcome, StoreError> {
+        self.mutations.fetch_add(1, Ordering::Relaxed);
         loop {
             let old = self.values.load_full();
             let current = old.get(key).cloned();
@@ -113,6 +121,7 @@ impl DatasetStore for TestStore {
         }
     }
     async fn delete(&self, key: &[u8]) -> Result<(), StoreError> {
+        self.mutations.fetch_add(1, Ordering::Relaxed);
         loop {
             let old = self.values.load_full();
             let mut next = (*old).clone();

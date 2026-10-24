@@ -120,14 +120,14 @@ impl DatasetHttpService {
                 crowdb_access_dataset::DatasetUploads::upload_id(identity, &location)
                     .map_err(|_| ApiError::unsupported())?;
                 let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
-                let metadata = uploads.metadata(&location).await?;
-                if metadata.length != length || metadata.md5 != md5 {
+                let metadata = uploads.open_read(&location).await?;
+                if metadata.length() != length || metadata.md5() != md5 {
                     return Err(ApiError::integrity());
                 }
                 let mut value = Vec::new();
                 let mut part = 0;
                 while value.len() < limit && (value.len() as u64) < length {
-                    let (bytes, _) = uploads.read_part_verified(&location, part).await?;
+                    let (bytes, _) = metadata.read_part_verified(part).await?;
                     let count = bytes.len().min(limit - value.len());
                     value.extend_from_slice(&bytes[..count]);
                     part += 1;

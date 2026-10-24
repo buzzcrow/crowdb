@@ -47,17 +47,14 @@ Standard Iceberg metadata is the recoverable table state. CROWDB may maintain
 derived indexes or projections for scale, but they are disposable and cannot
 become a second table authority.
 
-Generation-local metadata projections preserve raw top-level JSON children in
-bounded pages. REFS loads construct them only after canonical metadata passes
-the complete bounded parser. A versioned validation receipt binds the selected
-head, exact parser limits and projection root; a generic JSON projection alone
-cannot stand in for metadata validation. REFS loads may reuse this validated
-representation without decoding the complete object graph. They still read and
-verify canonical storage and recheck the namespace and head before responding.
-Missing, partial, corrupt, unknown-version or differently bounded projections
-fall back to the canonical parser. ALL responses preserve exact canonical bytes.
-Projection construction is optional and never participates in commit proofs or
-head publication. No cross-generation cache or deduplication is implied.
+Table ALL/REFS loads read and verify canonical storage, run the complete bounded
+metadata parser, and recheck the namespace and selected head before responding.
+ALL preserves exact canonical bytes; REFS filters snapshots from the same validated
+content. Table loads do not read or write projection pages, validation receipts,
+or other persistent cache state, including on repeated and conditional requests.
+Optional generation-local JSON projections used by file-level selection remain
+disposable derived data with canonical fallback; they cannot replace table
+validation, participate in commit proofs, or become file/publication authority.
 
 Iceberg metadata stores bounded logical records and opaque data references.
 Physical chunk placement and storage topology remain below the access boundary.
@@ -153,8 +150,9 @@ Metadata files use useful public relative prefixes such as
 `metadata/<name>.metadata.json`, `metadata/<name>.avro` and
 `statistics/<name>.puffin`. These are defaults, not restrictions on safe
 client-chosen paths. The optional generation-bound projections described above
-accelerate metadata reads; they are not duplicate file authorities. Parser,
-collection and response budgets remain explicit even for chunk-backed JSON.
+support file-level selection; they are not used by table ALL/REFS loads or duplicate
+file authorities. Parser, collection and response budgets remain explicit even for
+chunk-backed JSON.
 An unsupported oversize request fails clearly rather than silently truncating
 snapshots. ALL and REFS keep their standard response semantics; internal
 projection paging does not introduce private REST pagination fields.

@@ -10,7 +10,6 @@ use super::{TableHead, TableMetadataDocument, TableMetadataError, TableMetadataL
 use crate::{
     catalog::{Capabilities, CatalogContext, CatalogError, FormatAction},
     file::FileBlockStore,
-    metadata_projection::ProjectionStore,
     namespace::{NamespaceIdentifier, NamespaceRepository, NamespaceStore},
 };
 
@@ -48,9 +47,6 @@ pub struct TableLoader {
     tables: TableRepository,
     blocks: Arc<dyn FileBlockStore>,
     limits: TableMetadataLimits,
-    projections: ProjectionStore,
-    #[cfg(feature = "test-util")]
-    projection_hits: std::sync::atomic::AtomicUsize,
 }
 
 impl TableLoader {
@@ -62,12 +58,9 @@ impl TableLoader {
     ) -> Self {
         Self {
             namespaces: NamespaceRepository::new(store.clone()),
-            projections: ProjectionStore::new(store.clone(), blocks.clone()),
             tables: TableRepository::new(store),
             blocks,
             limits,
-            #[cfg(feature = "test-util")]
-            projection_hits: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -164,7 +157,8 @@ impl TableLoader {
         let canonical =
             super::metadata::read_table_metadata_bytes(self.blocks.clone(), &selected, self.limits).await?;
         let etag = etag(&selected.head, mode);
-        let metadata = self.representation(&selected, canonical, mode).await?;
+        let document = TableMetadataDocument::parse(canonical, &selected.head, self.limits)?;
+        let metadata = representation(&document, mode)?;
         if metadata.len() > self.limits.bytes {
             return Err(TableMetadataError::Bounds.into());
         }
@@ -184,42 +178,6 @@ impl TableLoader {
             etag,
             metadata,
         })
-    }
-
-    #[cfg(feature = "test-util")]
-    #[must_use]
-    pub fn projection_hits_for_tests(&self) -> usize {
-        self.projection_hits.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    async fn representation(
-        &self,
-        selected: &super::SelectedTable,
-        canonical: Vec<u8>,
-        mode: SnapshotLoadingMode,
-    ) -> Result<Vec<u8>, TableMetadataError> {
-        if mode == SnapshotLoadingMode::Refs {
-            if let Some(fields) = self
-                .projections
-                .document_fields(&selected.metadata, &selected.head, self.limits)
-                .await
-            {
-                if let Ok(metadata) = projected_representation(&fields, &canonical) {
-                    #[cfg(feature = "test-util")]
-                    self.projection_hits
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return Ok(metadata);
-                }
-            }
-        }
-        let document = TableMetadataDocument::parse(canonical, &selected.head, self.limits)?;
-        let metadata = representation(&document, mode)?;
-        if mode == SnapshotLoadingMode::Refs {
-            self.projections
-                .put_document(&selected.metadata, &document, self.limits)
-                .await;
-        }
-        Ok(metadata)
     }
 
     async fn check_namespace(
@@ -260,17 +218,6 @@ fn representation(
     }
     let fields: BTreeMap<&str, &RawValue> = serde_json::from_slice(document.canonical())?;
     refs_representation(fields, document.canonical())
-}
-
-fn projected_representation(
-    fields: &BTreeMap<String, Vec<u8>>,
-    canonical: &[u8],
-) -> Result<Vec<u8>, TableMetadataError> {
-    let fields = fields
-        .iter()
-        .map(|(name, bytes)| Ok((name.as_str(), serde_json::from_slice::<&RawValue>(bytes)?)))
-        .collect::<Result<BTreeMap<_, _>, serde_json::Error>>()?;
-    refs_representation(fields, canonical)
 }
 
 fn refs_representation(

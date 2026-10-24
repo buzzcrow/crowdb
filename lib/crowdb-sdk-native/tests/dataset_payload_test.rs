@@ -143,3 +143,52 @@ async fn maximum_upload_part_keeps_every_producer_allocation_through_durable_wri
     assert_eq!(views.concat(), data);
     runtime.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn multipart_field_streams_a_short_last_part_and_preserves_held_buffers() {
+    let backend = write_storage::TestWriteStorage::new();
+    let runtime = backend.runtime(metadata::client().await);
+    let identity = DatasetIdentity::new(NamespacePath::root(), "multipart").unwrap();
+    let dataset = DatasetClient::new(&runtime, identity.clone()).unwrap();
+    dataset.create(context(1)).await.unwrap();
+    let upload = OperationId::random();
+    let digest = Md5::digest(b"retained").into();
+    dataset
+        .create_upload(context(2), upload, 8, 3, digest, u64::MAX)
+        .await
+        .unwrap();
+    for (index, part) in b"retained".chunks(3).enumerate() {
+        let buffer = runtime.prepare_framed(part).unwrap();
+        dataset
+            .upload_framed_part(context(3), upload, u32::try_from(index).unwrap(), buffer)
+            .await
+            .unwrap();
+    }
+    dataset.complete_upload(context(4), upload).await.unwrap();
+    let location = DatasetUploads::location(&identity, upload).unwrap();
+    let snapshot = composition::publish(&dataset, location, digest).await;
+    let mut read = dataset
+        .read_batch(
+            context(5),
+            BatchRequest {
+                snapshot,
+                sample_ids: vec![b"one".to_vec()],
+                fields: vec!["value".into()],
+            },
+        )
+        .await
+        .unwrap();
+    let mut held = Vec::new();
+    while let Some(part) = read.body.next().await.unwrap() {
+        held.push(part.buffer);
+    }
+    assert!(read.body.is_complete());
+    drop(read);
+    runtime.shutdown().await.unwrap();
+    assert_eq!(
+        held.iter()
+            .flat_map(|buffer| buffer.as_slice().iter().copied())
+            .collect::<Vec<_>>(),
+        b"retained"
+    );
+}
