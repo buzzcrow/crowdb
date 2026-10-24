@@ -14,7 +14,7 @@ use crowdb_protocol::chunkdb::rpc::{ChunkState, DeleteChunkRangeRequest, DeleteC
 use crowdb_protocol::common::ChunkId;
 
 impl ChunkStore {
-    /// Records an already-qualified dead range without freeing physical blocks.
+    /// Qualifies and records a logically dead range without freeing physical blocks.
     /// The caller must establish absence of live/future references before calling.
     /// Conflicts and unknown results are returned without confirmation reads.
     pub async fn retire_chunk_range(
@@ -25,8 +25,8 @@ impl ChunkStore {
             .chunk_id
             .ok_or_else(|| invalid("missing chunk identity"))?;
         let end = u64::from(request.chunk_offset) + u64::from(request.chunk_size);
-        if request.chunk_size == 0 || request.expected_modify_ts == 0 {
-            return Err(invalid("empty range or missing qualification revision"));
+        if request.chunk_size == 0 {
+            return Err(invalid("empty range"));
         }
         let route = self.route(&id)?;
         let authority = self.capture_authority(&id)?;
@@ -49,10 +49,9 @@ impl ChunkStore {
         if chunk.id != Some(id)
             || ChunkDomain::for_chunk(&id) != Some(ChunkDomain::UserData)
             || chunk.chunk_type != i32::from(id.high.to_be_bytes()[0])
-            || chunk.writer_epoch == 0
-            || end > chunk.acknowledged_cursor
+            || chunk.modify_ts == 0
         {
-            return Err(invalid("range must belong to a sealed shared user-data chunk"));
+            return Err(invalid("range must belong to a user-data chunk"));
         }
         match ChunkState::try_from(chunk.state) {
             Ok(ChunkState::Deleted) => {
@@ -61,7 +60,14 @@ impl ChunkStore {
                 })
             }
             Ok(ChunkState::Sealed) => {}
-            _ => return Err(invalid("shared writer is not sealed")),
+            _ => return Err(StoreError::Conflict),
+        }
+        if chunk.writer_epoch == 0 {
+            if request.chunk_offset != 0 || end.div_ceil(1024) != u64::from(chunk.sealed_length) {
+                return Err(invalid("range must own the complete sealed dedicated chunk"));
+            }
+        } else if end > chunk.acknowledged_cursor {
+            return Err(StoreError::Conflict);
         }
         let mut record = self
             .get_chunk_range_retirement(&id)
@@ -76,7 +82,7 @@ impl ChunkStore {
             // Repeating a proven retirement is safe after later layout changes.
             return Ok(DeleteChunkRangeResponse { reclaimed: false });
         }
-        if chunk.modify_ts != request.expected_modify_ts {
+        if request.expected_modify_ts != 0 && chunk.modify_ts != request.expected_modify_ts {
             return Err(StoreError::Conflict);
         }
         record.insert(range)?;

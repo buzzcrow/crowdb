@@ -1,54 +1,47 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use crowdb_chunk_client::{reclaim_location, ChunkAllocator, IoError, ReclaimOutcome, Result};
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, Chunk, ChunkState,
+    AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse,
     DeleteChunkRangeRequest, DeleteChunkRangeResponse, DeleteChunkRequest, DeleteChunkResponse, Location,
     QueryChunkRequest, QueryChunkResponse, SealChunkRequest, SealChunkResponse,
 };
 use crowdb_protocol::common::ChunkId;
 
+enum TestReply {
+    Accepted(bool),
+    Missing,
+    Deferred,
+    Unsupported,
+    Unknown,
+}
+
 struct TestAllocator {
-    chunk: Chunk,
-    range_calls: AtomicUsize,
-    query_calls: AtomicUsize,
-    chunk_calls: AtomicUsize,
-    range_supported: bool,
-    range_reclaimed: bool,
-    delete_failed: bool,
+    calls: AtomicUsize,
+    reply: TestReply,
     expected_range: (u32, u32),
 }
 
 impl TestAllocator {
-    fn new(shared: bool) -> Self {
+    fn new(reply: TestReply, expected_range: (u32, u32)) -> Self {
         Self {
-            chunk: Chunk {
-                id: Some(ChunkId { high: 1, low: 2 }),
-                state: ChunkState::Sealed as i32,
-                modify_ts: 4,
-                acknowledged_cursor: 4096,
-                sealed_length: 4,
-                writer_epoch: u64::from(shared),
-                ..Chunk::default()
-            },
-            range_calls: AtomicUsize::new(0),
-            query_calls: AtomicUsize::new(0),
-            chunk_calls: AtomicUsize::new(0),
-            range_supported: false,
-            range_reclaimed: true,
-            delete_failed: false,
-            expected_range: (1024, 2048),
+            calls: AtomicUsize::new(0),
+            reply,
+            expected_range,
         }
     }
 
     fn location(&self) -> Location {
         Location {
-            chunk_id: self.chunk.id,
-            offset: 0,
-            length: 4096,
+            chunk_id: Some(ChunkId { high: 1, low: 2 }),
+            offset: u64::from(self.expected_range.0),
+            length: u64::from(self.expected_range.1),
             logical_offset: 0,
-            logical_length: 4000,
+            logical_length: u64::from(self.expected_range.1),
         }
     }
 }
@@ -58,193 +51,98 @@ impl ChunkAllocator for TestAllocator {
     async fn allocate_chunk(&self, _: AllocateChunkRequest) -> Result<AllocateChunkResponse> {
         unreachable!()
     }
-
     async fn append_chunk(&self, _: AppendChunkRequest) -> Result<AppendChunkResponse> {
         unreachable!()
     }
-
     async fn seal_chunk(&self, _: SealChunkRequest) -> Result<SealChunkResponse> {
         unreachable!()
     }
-
-    async fn query_chunk(&self, request: QueryChunkRequest) -> Result<QueryChunkResponse> {
-        assert_eq!(request.chunk_id, self.chunk.id);
-        self.query_calls.fetch_add(1, Ordering::Relaxed);
-        Ok(QueryChunkResponse {
-            chunk: Some(self.chunk.clone()),
-            ..QueryChunkResponse::default()
-        })
+    async fn query_chunk(&self, _: QueryChunkRequest) -> Result<QueryChunkResponse> {
+        panic!("range notifications must not query chunk metadata");
     }
-
-    async fn delete_chunk(&self, request: DeleteChunkRequest) -> Result<DeleteChunkResponse> {
-        assert_eq!(request.chunk_id, self.chunk.id);
-        self.chunk_calls.fetch_add(1, Ordering::Relaxed);
-        if self.delete_failed {
-            return Err(IoError::WriteFailed("partial disk block release".into()));
-        }
-        Ok(DeleteChunkResponse {
-            chunk: Some(Chunk {
-                state: ChunkState::Deleted as i32,
-                ..self.chunk.clone()
-            }),
-        })
+    async fn delete_chunk(&self, _: DeleteChunkRequest) -> Result<DeleteChunkResponse> {
+        panic!("range notifications must not delete a whole chunk");
     }
-
     async fn delete_chunk_range(&self, request: DeleteChunkRangeRequest) -> Result<DeleteChunkRangeResponse> {
-        assert_eq!(request.chunk_id, self.chunk.id);
+        assert_eq!(request.chunk_id, self.location().chunk_id);
         assert_eq!((request.chunk_offset, request.chunk_size), self.expected_range);
-        assert_eq!(request.expected_modify_ts, self.chunk.modify_ts);
-        self.range_calls.fetch_add(1, Ordering::Relaxed);
-        if !self.range_supported {
-            return Err(IoError::Unsupported("shared ranges pending".into()));
+        assert_eq!(request.expected_modify_ts, 0);
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        match self.reply {
+            TestReply::Accepted(reclaimed) => Ok(DeleteChunkRangeResponse { reclaimed }),
+            TestReply::Missing => Err(IoError::ChunkNotFound("retired chunk".into())),
+            TestReply::Deferred => Err(IoError::MetadataConflict("writer is not sealed".into())),
+            TestReply::Unsupported => Err(IoError::Unsupported("range retirement pending".into())),
+            TestReply::Unknown => Err(IoError::WriteFailed("reply lost".into())),
         }
-        Ok(DeleteChunkRangeResponse {
-            reclaimed: self.range_reclaimed,
-        })
     }
 }
 
 #[tokio::test]
-async fn dedicated_chunk_deletion_checks_ownership_and_retries_failures() {
-    let mut allocator = TestAllocator::new(false);
-    let mut location = allocator.location();
-    location.offset = 1024;
-    assert!(reclaim_location(&allocator, &location).await.is_err());
-    assert_eq!(allocator.chunk_calls.load(Ordering::Relaxed), 0);
-    location.offset = 0;
-    allocator.delete_failed = true;
-    assert!(reclaim_location(&allocator, &location).await.is_err());
-    allocator.delete_failed = false;
-    assert_eq!(
-        reclaim_location(&allocator, &location).await.unwrap(),
-        ReclaimOutcome::Accepted
-    );
-    assert_eq!(allocator.chunk_calls.load(Ordering::Relaxed), 2);
-    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 0);
+async fn one_notification_finishes_without_querying_layout_or_waiting_for_physical_free() {
+    for reclaimed in [false, true] {
+        for range in [(134, 234), (0, 4096)] {
+            let allocator = TestAllocator::new(TestReply::Accepted(reclaimed), range);
+            assert_eq!(
+                reclaim_location(&allocator, &allocator.location()).await.unwrap(),
+                ReclaimOutcome::Accepted
+            );
+            assert_eq!(allocator.calls.load(Ordering::Relaxed), 1);
+        }
+    }
 }
 
 #[tokio::test]
-async fn shared_range_finishes_when_chunkdb_accepts_notification_without_physical_completion() {
-    let mut allocator = TestAllocator::new(true);
-    allocator.expected_range = (134, 234);
-    let mut location = allocator.location();
-    location.offset = 134;
-    location.length = 234;
-    assert_eq!(
-        reclaim_location(&allocator, &location).await.unwrap(),
-        ReclaimOutcome::Deferred
-    );
-    allocator.range_supported = true;
-    allocator.range_reclaimed = false;
-    assert_eq!(
-        reclaim_location(&allocator, &location).await.unwrap(),
-        ReclaimOutcome::Accepted
-    );
-    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 2);
-    assert_eq!(allocator.query_calls.load(Ordering::Relaxed), 2);
-    allocator.range_reclaimed = true;
-    assert_eq!(
-        reclaim_location(&allocator, &location).await.unwrap(),
-        ReclaimOutcome::Accepted
-    );
-    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 3);
-    assert_eq!(allocator.chunk_calls.load(Ordering::Relaxed), 0);
+async fn unavailable_qualification_is_deferred_without_confirmation_reads() {
+    for reply in [TestReply::Deferred, TestReply::Unsupported] {
+        let allocator = TestAllocator::new(reply, (134, 234));
+        assert_eq!(
+            reclaim_location(&allocator, &allocator.location()).await.unwrap(),
+            ReclaimOutcome::Deferred
+        );
+        assert_eq!(allocator.calls.load(Ordering::Relaxed), 1);
+    }
 }
 
 #[tokio::test]
-async fn accepted_dedicated_deletion_does_not_wait_for_chunkdb_cleanup() {
-    use crowdb_protocol::chunkdb::rpc::{ChunkStrip, StripCleanupIntent};
-    let mut allocator = TestAllocator::new(false);
-    allocator.chunk.strips.push(ChunkStrip::default());
-    allocator
-        .chunk
-        .cleanup_intents
-        .push(StripCleanupIntent::default());
+async fn missing_chunk_is_already_accepted_but_unknown_notification_remains_an_error() {
+    let allocator = TestAllocator::new(TestReply::Missing, (134, 234));
     assert_eq!(
         reclaim_location(&allocator, &allocator.location()).await.unwrap(),
         ReclaimOutcome::Accepted
     );
-    assert_eq!(allocator.chunk_calls.load(Ordering::Relaxed), 1);
-    assert_eq!(allocator.query_calls.load(Ordering::Relaxed), 1);
+    let allocator = TestAllocator::new(TestReply::Unknown, (134, 234));
+    assert!(matches!(
+        reclaim_location(&allocator, &allocator.location()).await,
+        Err(IoError::WriteFailed(_))
+    ));
+    assert_eq!(allocator.calls.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
-async fn shared_retirement_requires_a_sealed_writer_and_readable_range() {
-    let mut allocator = TestAllocator::new(true);
-    allocator.range_supported = true;
-    allocator.expected_range = (0, 4096);
-    allocator.chunk.state = ChunkState::Active as i32;
-    allocator.chunk.acknowledged_cursor = 4095;
-    let location = allocator.location();
-    assert_eq!(
-        reclaim_location(&allocator, &location).await.unwrap(),
-        ReclaimOutcome::Deferred
-    );
-    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 0);
-    allocator.chunk.acknowledged_cursor = 4096;
-    assert_eq!(
-        reclaim_location(&allocator, &location).await.unwrap(),
-        ReclaimOutcome::Deferred
-    );
-    allocator.chunk.acknowledged_cursor = 0;
-    allocator.chunk.state = ChunkState::Sealed as i32;
-    assert_eq!(
-        reclaim_location(&allocator, &location).await.unwrap(),
-        ReclaimOutcome::Deferred
-    );
-    allocator.chunk.acknowledged_cursor = 4096;
-    assert_eq!(
-        reclaim_location(&allocator, &location).await.unwrap(),
-        ReclaimOutcome::Accepted
-    );
-    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 1);
-}
-
-#[tokio::test]
-async fn active_dedicated_chunk_and_invalid_ranges_are_never_deleted() {
-    let mut allocator = TestAllocator::new(false);
-    allocator.chunk.state = ChunkState::Active as i32;
-    assert!(reclaim_location(&allocator, &allocator.location()).await.is_err());
-    let mut location = allocator.location();
-    location.length = 0;
-    assert!(reclaim_location(&allocator, &location).await.is_err());
-    location.offset = u64::MAX;
-    location.length = 1;
-    assert!(reclaim_location(&allocator, &location).await.is_err());
-    assert_eq!(allocator.chunk_calls.load(Ordering::Relaxed), 0);
-    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 0);
-}
-
-#[tokio::test]
-async fn shared_byte_ranges_are_never_rounded_into_neighbouring_objects() {
-    let mut allocator = TestAllocator::new(true);
-    allocator.range_supported = true;
-    for (offset, length) in [
+async fn byte_ranges_are_never_rounded_into_neighbouring_objects() {
+    for range in [
         (134, 234),
         (1025, 2048),
         (1024, 2047),
         (256 * 1024 * 1024 - 1, 1),
         (1024 * 1024 * 1024 - 1, 1),
     ] {
-        allocator.expected_range = (offset, length);
-        allocator.chunk.acknowledged_cursor = u64::from(offset) + u64::from(length);
-        let mut location = allocator.location();
-        location.offset = u64::from(offset);
-        location.length = u64::from(length);
+        let allocator = TestAllocator::new(TestReply::Accepted(false), range);
         assert_eq!(
-            reclaim_location(&allocator, &location).await.unwrap(),
+            reclaim_location(&allocator, &allocator.location()).await.unwrap(),
             ReclaimOutcome::Accepted
         );
+        assert_eq!(allocator.calls.load(Ordering::Relaxed), 1);
     }
-    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 5);
-    assert_eq!(allocator.chunk_calls.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
-async fn shared_ranges_reject_unrepresentable_fields_and_range_end() {
-    let allocator = TestAllocator::new(true);
+async fn invalid_identities_and_unrepresentable_ranges_never_send_a_notification() {
+    let allocator = TestAllocator::new(TestReply::Accepted(false), (0, 4096));
     for (offset, length) in [
         (0, 0),
+        (u64::MAX, 1),
         (u64::from(u32::MAX) + 1, 1),
         (0, u64::from(u32::MAX) + 1),
         (u64::from(u32::MAX), 1),
@@ -254,6 +152,10 @@ async fn shared_ranges_reject_unrepresentable_fields_and_range_end() {
         location.length = length;
         assert!(reclaim_location(&allocator, &location).await.is_err());
     }
-    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 0);
-    assert_eq!(allocator.chunk_calls.load(Ordering::Relaxed), 0);
+    for identity in [None, Some(ChunkId::default())] {
+        let mut location = allocator.location();
+        location.chunk_id = identity;
+        assert!(reclaim_location(&allocator, &location).await.is_err());
+    }
+    assert_eq!(allocator.calls.load(Ordering::Relaxed), 0);
 }

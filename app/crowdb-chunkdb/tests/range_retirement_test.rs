@@ -178,7 +178,7 @@ async fn invalid_ranges_active_writers_and_system_chunks_never_create_retirement
         match case {
             0 => req.chunk_size = 0,
             1 => req.chunk_offset = 8192,
-            2 => req.expected_modify_ts = 0,
+            2 => chunk.modify_ts = 0,
             3 => chunk.state = ChunkState::Active as i32,
             4 => {
                 chunk.id.as_mut().unwrap().high = 1 << 56;
@@ -195,7 +195,7 @@ async fn invalid_ranges_active_writers_and_system_chunks_never_create_retirement
         assert!(
             matches!(
                 store.retire_chunk_range(&req).await,
-                Err(StoreError::InvalidRange(_))
+                Err(StoreError::InvalidRange(_) | StoreError::Conflict)
             ),
             "case {case}"
         );
@@ -225,7 +225,7 @@ async fn reused_physical_identity_cannot_adopt_old_retired_ranges() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn production_rpc_requires_qualification_and_reports_retirement_as_deferred() {
+async fn production_rpc_qualifies_notifications_and_keeps_explicit_layout_conditions() {
     use crowdb_chunkdb::range_guard::RangeGuard;
     use crowdb_chunkdb_client::{ChunkdbClientError, ChunkdbRpcTransport};
     use crowdb_protocol::{chunk_domain::ChunkDomain, port::alloc::alloc_test_port, ServicePort};
@@ -259,17 +259,17 @@ async fn production_rpc_requires_qualification_and_reports_retirement_as_deferre
     let endpoint = format!("http://127.0.0.1:{port}");
     let client = ChunkdbRpcTransport::new();
     let mut req = request(&chunk, 134, 234);
-    req.expected_modify_ts = 0;
+    req.expected_modify_ts = chunk.modify_ts + 1;
     assert!(matches!(
         client.send_delete_chunk_range(&endpoint, &req).await,
-        Err(ChunkdbClientError::InvalidArgument(_))
+        Err(ChunkdbClientError::Aborted(_))
     ));
     assert!(store
         .get_chunk_range_retirement(&chunk.id.unwrap())
         .await
         .unwrap()
         .is_none());
-    req.expected_modify_ts = chunk.modify_ts;
+    req.expected_modify_ts = 0;
     for _ in 0..2 {
         assert!(
             !client
@@ -302,6 +302,99 @@ async fn production_rpc_requires_qualification_and_reports_retirement_as_deferre
             .unwrap()
             .unwrap();
     }
+}
+
+#[tokio::test]
+async fn server_qualifies_current_layout_but_retains_resource_identity_and_atomicity() {
+    let test = slot_groups::TestGroups::start().await;
+    let store = store(&test);
+    let mut chunk = chunk();
+    store.put_chunk(&chunk).await.unwrap();
+    let mut notification = request(&chunk, 134, 234);
+    notification.expected_modify_ts = 0;
+    chunk.modify_ts += 1;
+    store.put_chunk(&chunk).await.unwrap();
+    assert!(!store.retire_chunk_range(&notification).await.unwrap().reclaimed);
+    let retired = store
+        .get_chunk_range_retirement(&chunk.id.unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retired.revision, chunk.modify_ts);
+    assert_eq!(retired.ranges(), [RetiredByteRange { start: 134, end: 368 }]);
+    chunk.writer_epoch += 1;
+    chunk.modify_ts += 1;
+    store.put_chunk(&chunk).await.unwrap();
+    assert!(matches!(
+        store.retire_chunk_range(&notification).await,
+        Err(StoreError::InvalidRange(_))
+    ));
+    assert_eq!(
+        store
+            .get_chunk_range_retirement(&chunk.id.unwrap())
+            .await
+            .unwrap()
+            .unwrap(),
+        retired
+    );
+}
+
+#[tokio::test]
+async fn dedicated_notification_accepts_only_its_complete_sealed_extent() {
+    let test = slot_groups::TestGroups::start().await;
+    let store = store(&test);
+    let mut chunk = chunk();
+    chunk.writer_epoch = 0;
+    chunk.acknowledged_cursor = 0;
+    store.put_chunk(&chunk).await.unwrap();
+    for (offset, length) in [(1, 8191), (0, 7168), (0, 8193)] {
+        let mut notification = request(&chunk, offset, length);
+        notification.expected_modify_ts = 0;
+        assert!(matches!(
+            store.retire_chunk_range(&notification).await,
+            Err(StoreError::InvalidRange(_))
+        ));
+    }
+    let mut notification = request(&chunk, 0, 8100);
+    notification.expected_modify_ts = 0;
+    assert!(!store.retire_chunk_range(&notification).await.unwrap().reclaimed);
+    let restarted = crate::store(&test);
+    assert!(
+        !restarted
+            .retire_chunk_range(&notification)
+            .await
+            .unwrap()
+            .reclaimed
+    );
+    assert_eq!(
+        restarted
+            .get_chunk_range_retirement(&chunk.id.unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .ranges(),
+        [RetiredByteRange { start: 0, end: 8100 }]
+    );
+    assert_eq!(restarted.get_chunk(&chunk.id.unwrap()).await.unwrap(), chunk);
+}
+
+#[tokio::test]
+async fn deleted_chunk_identity_cannot_be_allocated_again() {
+    let test = slot_groups::TestGroups::start().await;
+    let store = store(&test);
+    let mut chunk = chunk();
+    chunk.state = ChunkState::Deleted as i32;
+    store.put_chunk(&chunk).await.unwrap();
+    let mut reused = chunk.clone();
+    reused.state = ChunkState::Active as i32;
+    reused.writer_epoch += 1;
+    assert!(matches!(
+        store
+            .create_chunk_with_finalize_task(&reused, &slot_groups::finalize(chunk.id.unwrap()))
+            .await,
+        Err(StoreError::ChunkAlreadyExists)
+    ));
+    assert_eq!(store.get_chunk(&chunk.id.unwrap()).await.unwrap(), chunk);
 }
 
 #[tokio::test]

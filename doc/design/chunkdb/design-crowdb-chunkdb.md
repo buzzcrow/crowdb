@@ -948,21 +948,28 @@ mutating RPC acquires the per-chunk lock before its RMW cycle:
   with segments as cleanup intent → free segments → clear the segment list
   and persist the tombstone → `guard.refresh(chunk)`.
 - `delete_chunk_range`: offset and length are independent u32 byte values,
-  describing an exact half-open object range without KiB rounding. A qualified
-  request includes the observed layout revision and targets a sealed shared
-  user-data chunk. The caller must already establish absence of live and future
+  describing an exact half-open object range without KiB rounding. The caller
+  sends the immutable chunk identity and logical range; an optional nonzero
+  layout revision adds a strict precondition. ChunkDB qualifies its current
+  sealed user-data chunk before accepting the notification. Dedicated chunks
+  accept only their complete sealed object extent. The caller must already establish absence of live and future
   references. The server atomically records merged exact dead ranges in a
   co-located resource record, guarded by the chunk's KV revision; the unchanged
   chunk participates in that conditional batch without changing its layout.
   Resource identity includes the writer epoch and sealed extent. Existing
-  retirement replays without another mutation; a new stale-layout range fails.
+  retirement replays without another mutation; a new range with an explicit
+  stale layout condition fails. An active writer or unacknowledged shared range
+  returns a retryable conflict. The client performs one range notification,
+  without a preliminary QueryChunk or whole-chunk deletion.
   Records are bounded to 4096 intervals and decoded within 128 KiB. Foreground
   QueryChunk does not load or return this resource metadata. Conflict or unknown
   write results do not trigger confirmation GETs inside the retirement handler.
   A successful response means ChunkDB has accepted cleanup ownership. Access
   finishes its notification without waiting for the physical `reclaimed` flag;
   physical capacity release is a separate ChunkDB/DiskDB responsibility.
-  Missing qualification revisions are rejected. An intersecting strip is never permission
+  Chunk identities remain tombstones after deletion and cannot be allocated
+  again. Strip replacement preserves logical offsets and total capacity;
+  physical relocation does not change the range being retired. An intersecting strip is never permission
   to free blocks containing live neighbours. Mixed-strip physical compaction and
   independent orphan qualification are not implemented by range retirement.
 - `update_chunk_strip`: compatibility wrapper over the one-strip form of

@@ -472,7 +472,7 @@ pub struct DeleteChunkRangeRequest {
     pub chunk_id: Option<ChunkId>,
     pub chunk_offset: u32,
     pub chunk_size: u32,
-    /// Chunk layout revision used to qualify the range. Zero is not qualified.
+    /// Optional layout precondition. Zero lets ChunkDB qualify its current layout.
     pub expected_modify_ts: u64,
 }
 

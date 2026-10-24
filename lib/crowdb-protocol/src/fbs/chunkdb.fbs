@@ -429,6 +429,7 @@ table FBDeleteChunkRangeRequest {
     chunk_id:crowdb.rpc.proto.FBInt128;
     chunk_offset:uint32;
     chunk_size:uint32;
+    // Zero lets ChunkDB qualify and atomically fence the current layout.
     expected_modify_ts:uint64;
 }
 

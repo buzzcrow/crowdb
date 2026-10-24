@@ -35,12 +35,12 @@ impl ChunkRangeRetirement {
 
     pub(super) fn new(chunk: &Chunk) -> Self {
         Self {
-            version: 1,
+            version: 2,
             chunk_id: chunk.id,
             writer_epoch: chunk.writer_epoch,
             create_ts_ms: chunk.create_ts_ms,
             sealed_ts_ms: chunk.sealed_ts_ms,
-            sealed_bytes: chunk.acknowledged_cursor,
+            sealed_bytes: sealed_bytes(chunk),
             revision: chunk.modify_ts,
             ranges: Vec::new(),
         }
@@ -51,7 +51,7 @@ impl ChunkRangeRetirement {
             || self.writer_epoch != chunk.writer_epoch
             || self.create_ts_ms != chunk.create_ts_ms
             || self.sealed_ts_ms != chunk.sealed_ts_ms
-            || self.sealed_bytes != chunk.acknowledged_cursor
+            || self.sealed_bytes != sealed_bytes(chunk)
         {
             return Err(invalid("retirement resource identity corruption"));
         }
@@ -61,9 +61,9 @@ impl ChunkRangeRetirement {
         Ok(())
     }
     fn validate_shape(&self) -> Result<()> {
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
             || self.chunk_id.is_none()
-            || self.writer_epoch == 0
+            || (self.version == 1 && self.writer_epoch == 0)
             || self.sealed_bytes == 0
             || self.revision == 0
             || self.ranges.len() > MAX_RANGES
@@ -112,5 +112,13 @@ impl ChunkRangeRetirement {
             .map_err(|error| StoreError::Serde(error.to_string()))?;
         record.validate_shape()?;
         Ok(record)
+    }
+}
+
+fn sealed_bytes(chunk: &Chunk) -> u64 {
+    if chunk.writer_epoch == 0 {
+        u64::from(chunk.sealed_length) * 1024
+    } else {
+        chunk.acknowledged_cursor
     }
 }
