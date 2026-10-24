@@ -74,6 +74,10 @@ remain readable. An empty set is a revision, distinct from an absent pointer.
 Split revision, edits, evaluation progress, candidate and ownership state. Edits
 use expected-revision CAS and immutable edit receipts. Historical retries return
 their original draft result; current status is a separate read.
+Status reads load only the stored draft and never help edit receipts, query commit
+ledgers or advance publication state. A legacy Committing phase is returned as
+Prepared for an explicit caller retry; the stored bytes remain unchanged. A status
+response does not establish whether that historical request selected the head.
 
 The default source is all parent Samples. Selection filters and a frozen named
 Split can restrict the source, with their intersection when both are present.

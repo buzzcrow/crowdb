@@ -1,10 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{
-    key, state::DraftState, SplitHead, SplitHeadUpdate, SplitLifecycleError, SplitReference,
-    SplitRevisionRecord,
-};
+use super::{key, SplitHead, SplitHeadUpdate, SplitLifecycleError, SplitReference, SplitRevisionRecord};
 use crate::{
     composition::DraftProgress, CasOutcome, CommitAttempt, CommitGeneration, CommitTarget, DatasetAuthority,
     DatasetIdentity, OperationId, SnapshotId, SplitRevisionId, StoredValue, SuccessfulCommit,
@@ -143,35 +140,6 @@ impl DatasetAuthority {
                 current_reference(revision, observed.as_ref())
             }
         }
-    }
-
-    pub(super) async fn reset_legacy_split_publication(
-        &self,
-        identity: &DatasetIdentity,
-        old: &StoredValue,
-        state: &DraftState,
-    ) -> Result<(), SplitLifecycleError> {
-        let DraftProgress::Committing { target, .. } = state.record.progress else {
-            return Err(SplitLifecycleError::Corrupt);
-        };
-        let mut next = state.clone();
-        next.record.progress = DraftProgress::Prepared { target };
-        self.replace_split_draft(identity, old, state, &next).await
-    }
-    pub(super) async fn finish_legacy_split_publication(
-        &self,
-        identity: &DatasetIdentity,
-        receipt: &SuccessfulCommit,
-        old: &StoredValue,
-        state: &DraftState,
-    ) -> Result<(), SplitLifecycleError> {
-        let mut next = state.clone();
-        next.edit = None;
-        next.record.progress = DraftProgress::Published {
-            target: receipt.attempt.target,
-            attempt: receipt.attempt.id,
-        };
-        self.replace_split_draft(identity, old, state, &next).await
     }
 }
 

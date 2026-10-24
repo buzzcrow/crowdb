@@ -8,43 +8,6 @@ use crate::{
 };
 
 impl DatasetAuthority {
-    pub(super) async fn reconcile_split_draft(
-        &self,
-        identity: &DatasetIdentity,
-        operation: OperationId,
-    ) -> Result<super::SplitDraftRecord, SplitLifecycleError> {
-        let (old, state) = self.load_split_draft(identity, operation).await?;
-        if let crate::composition::DraftProgress::Committing { target, attempt: id } = state.record.progress {
-            let attempt = self
-                .stored_commit_attempt(identity, id)
-                .await?
-                .ok_or(SplitLifecycleError::Corrupt)?;
-            if attempt.target != target {
-                return Err(SplitLifecycleError::Corrupt);
-            }
-            if let Some(receipt) = self.commit_status(identity, id).await? {
-                self.finish_legacy_split_publication(identity, &receipt, &old, &state)
-                    .await?;
-                return Ok(self.load_split_draft(identity, operation).await?.1.record);
-            }
-            let CommitTarget::SplitRevision { snapshot, .. } = target else {
-                return Err(SplitLifecycleError::Corrupt);
-            };
-            let observed = self.inspect_split_head(identity, snapshot).await?;
-            if observed.generation != attempt.expected_head {
-                if let Some(receipt) = self.commit_status(identity, id).await? {
-                    self.finish_legacy_split_publication(identity, &receipt, &old, &state)
-                        .await?;
-                } else {
-                    self.reset_legacy_split_publication(identity, &old, &state)
-                        .await?;
-                }
-                return Ok(self.load_split_draft(identity, operation).await?.1.record);
-            }
-        }
-        Ok(state.record)
-    }
-
     pub(crate) async fn recover_split_commit(
         &self,
         identity: &DatasetIdentity,

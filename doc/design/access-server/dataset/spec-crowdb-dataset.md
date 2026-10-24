@@ -204,6 +204,11 @@ latest. A head conflict MUST return the observed latest/stable/generation withou
 a confirmation query. A reviewed retry uses that observation with caller-chosen
 content; the server MUST NOT rebase. Unknown storage outcomes MUST propagate.
 Existing legacy receipts remain readable without backfill.
+Composition and Split status reads MUST NOT reconstruct a publication request,
+help edit receipts or persist recovery state. Legacy Committing drafts are
+presented as Prepared without rewriting the stored draft or querying attempt,
+receipt or head records. This permits an explicit publication retry; it does not
+prove that the historical request changed a head.
 Direct Snapshot head updates MUST accept the complete Snapshot ID and explicit
 nullable expected generation without an operation or draft identity. They MUST
 preserve stable and require the `snapshot-head-update` capability in portable SDKs.

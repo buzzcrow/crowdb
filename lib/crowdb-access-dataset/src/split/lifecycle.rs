@@ -106,7 +106,7 @@ impl DatasetAuthority {
         Ok(current.record)
     }
 
-    /// Reads the durable editing/evaluation/preparation state after restart.
+    /// Reads the stored draft without recovering a historical publication request.
     /// # Errors
     /// Returns unknown operations, corrupt records or storage failures.
     pub async fn split_draft_status(
@@ -114,7 +114,12 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         operation: OperationId,
     ) -> Result<SplitDraftRecord, SplitLifecycleError> {
-        self.reconcile_split_draft(identity, operation).await
+        let (_, state) = self.load_split_draft(identity, operation).await?;
+        let mut record = state.record;
+        if let DraftProgress::Committing { target, .. } = record.progress {
+            record.progress = DraftProgress::Prepared { target };
+        }
+        Ok(record)
     }
 
     /// Replaces the whole definition set under a draft revision CAS.

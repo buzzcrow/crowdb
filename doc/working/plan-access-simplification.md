@@ -156,13 +156,6 @@ CAS 不再满足只证明“本次条件不成立”，不能谎称“第一次�
   历史回复查询；Composition/Split 的 Committing 恢复与 P2/P3 一起删除，客户端保留完整输入。
   旧记录只作为兼容解码/GC 输入，不让旧账本控制新请求。head 保留 expected base；同一
   candidate 的当前结果可判断相同，已被后续 head 遮住时不保证历史请求结果重放。
-- [ ] **R2.2e 旧草稿 status 不恢复发布过程**：Composition status 目前仍 help edit receipt，
-  Committing 还读 CA/CR/head 后写 Prepared/Published 并再次 load；Split status 同样会读
-  attempt、head，某分支重复查 commit_status。这些只恢复已经取消的请求历史合同。
-  改为读取已存草稿，旧 Committing 在响应中解释为可重新发布的 Prepared，不写回、不查
-  发布账本、不确认 GET；完整资源准入仍由 CB/SR 和删除事实决定，后台旧资源 GC 解码不变。
-  不把它当作 P2/P3 的 edit/evaluation 状态机已经删除。Files: `composition/{edit,publication}.rs`、
-  `split/{lifecycle,recovery,publication}.rs`；验证存在/缺失旧回执均单次 bounded GET、零写。
 
 - [ ] **R2 审查条件发布的回复丢失窗口**：用 H0→H1→H2 测试区分条件失败、相同结果与历史未知；
   列出确实依赖历史精确结果的调用者，没有这种需求就移除相应 ledger/response replay。
@@ -512,6 +505,18 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，R2.2e**：Composition/Split status 只读已存草稿；删除 Committing 的
+  attempt/receipt/head 查询、二次确认、Prepared/Published 帮助写入，以及专用
+  `stored_commit_attempt` helper。Composition status 也不补 edit receipt。旧 Committing
+  只在响应中呈现为可重新发布的 Prepared，存储字节不变，不声称原请求曾赢 head。
+  新 cost 回归分别注入旧 Committing 和缺失 edit receipt，在 CA/CR 存在与缺失两种
+  情况下均断言每次 status 为 1 bounded GET、零 unbounded GET、零 mutation；重启后
+  也相同。18 项 native 草稿/发布/legacy/cost、4 项真实 HTTP recovery/SDK 测试通过；
+  Dataset/Access/native SDK all-target/all-feature clippy、fmt、diff 检查通过，均经 pixi。
+  Native status 成本不包含 HTTP 的 Dataset 准入和 upload summary 查询；未冒充总路由
+  RPC 数。显式旧 commit-status 仍为只读兼容，edit/evaluation/cleanup 工作状态仍由
+  P2/P3/P13 删除；此项没有新增资源标记或放宽完整结果/删除准入。
 
 - **2026-10-24，V2.4**：从配额清理源码构建并导入
   `crowdb-node:access-cleanup-iceberg-credits-20261024`；14-node native files 用例通过，

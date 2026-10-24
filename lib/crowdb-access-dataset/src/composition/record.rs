@@ -20,7 +20,7 @@ pub enum CompositionSource {
 }
 
 /// Evaluation output is valid only at the editing revision that produced it.
-/// Prepared content is frozen; commit attempts are separate durable records.
+/// Prepared content is frozen; older publication phases remain decodable.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum DraftProgress {

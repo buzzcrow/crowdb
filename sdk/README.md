@@ -148,10 +148,10 @@ It contains no benchmark driver or timing threshold.
 - Only documented idempotent operations retry; bodies/tokens remain unchanged
   within one overall deadline. Authentication, integrity and semantic conflicts
   are not blanket-retried. Rust ambiguous errors and Python exceptions retain
-  recovery identity. Inspect status and retry the identical publication after
-  response loss; the operation's Published record can precede head advancement.
-  A successful publish call establishes publication, rather than part completion
-  or preparation. Later latest changes preserve historical publish retries.
+  resource identity. After response loss, retry the identical publication condition;
+  a status query is optional and does not prove that the head advanced. A successful
+  publish confirms the current effect. If a later publication replaced it, the old
+  condition returns a conflict and its observed head for caller review.
 - Manifests declare the complete current sample membership. Omitted samples
   disappear; surviving samples may inherit omitted optional fields through
   parents. Explicit tombstones hide inherited fields, including required fields

@@ -12,7 +12,7 @@ use crate::{
 use sha2::{Digest, Sha256};
 
 impl DatasetAuthority {
-    /// Returns durable composition state, including edits whose response was lost.
+    /// Reads the stored composition without replaying edits or publication requests.
     /// # Errors
     /// Returns unknown operations, corrupt metadata and storage failures.
     pub async fn composition_status(
@@ -20,7 +20,12 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         operation: OperationId,
     ) -> Result<CompositionDraft, CompositionError> {
-        self.reconcile_composition(identity, operation).await
+        let (_, state) = self.load_composition(identity, operation).await?;
+        let mut draft = state.draft;
+        if let DraftProgress::Committing { target, .. } = draft.record.progress {
+            draft.record.progress = DraftProgress::Prepared { target };
+        }
+        Ok(draft)
     }
     /// Appends a bounded Sample patch page and changes schema/Splits with a revision CAS.
     /// # Errors

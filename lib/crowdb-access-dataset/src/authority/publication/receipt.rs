@@ -84,24 +84,6 @@ impl DatasetAuthority {
         }
         Ok(None)
     }
-
-    pub(crate) async fn stored_commit_attempt(
-        &self,
-        identity: &DatasetIdentity,
-        id: OperationId,
-    ) -> Result<Option<CommitAttempt>, AuthorityError> {
-        self.store
-            .get(&attempt_key(identity, id)?)
-            .await?
-            .map(|value| {
-                let attempt = CommitAttempt::decode(&value.bytes)?;
-                if attempt.id != id {
-                    return Err(AuthorityError::Corrupt);
-                }
-                Ok(attempt)
-            })
-            .transpose()
-    }
 }
 fn scoped(prefix: &[u8], identity: &DatasetIdentity, id: &[u8]) -> Result<Vec<u8>, DatasetError> {
     let mut key = prefix.to_vec();
