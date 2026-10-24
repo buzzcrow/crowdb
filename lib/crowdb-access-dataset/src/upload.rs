@@ -143,25 +143,22 @@ impl DatasetUploads {
             retired_owners: Vec::new(),
             cleanup_complete: false,
         };
-        let created = match self
+        match self
             .store
             .compare_exchange(location, None, &encode(&record)?)
             .await?
         {
-            CasOutcome::Applied(_) => true,
+            CasOutcome::Applied(_) => Ok(record),
             CasOutcome::Conflict(Some(value)) => {
                 let existing = decode_session(&value.bytes)?;
                 if existing.length != length || existing.part_size != part_size || existing.md5 != md5 {
                     return Err(UploadError::Conflict);
                 }
-                false
+                let mut existing = existing;
+                existing.parts = self.accepted_parts(location, &existing).await?;
+                Ok(existing)
             }
-            CasOutcome::Conflict(None) => return Err(UploadError::Conflict),
-        };
-        if created {
-            self.session(location).await
-        } else {
-            self.get(location).await
+            CasOutcome::Conflict(None) => Err(UploadError::Conflict),
         }
     }
 

@@ -78,23 +78,27 @@ impl DatasetUploads {
     }
 
     /// # Errors
-    /// Claimed data conflicts. Deferred physical reclamation remains observable.
+    /// Claimed data conflicts. Deferred cleanup notifications remain observable.
     pub async fn abort(&self, location: &[u8]) -> Result<UploadRecord, UploadError> {
+        let mut stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
         for _ in 0..16 {
-            let stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
             let mut record = decode_session(&stored.bytes)?;
             if !record.owners.is_empty() {
                 return Err(UploadError::Conflict);
             }
             if record.state != UploadState::Aborted {
                 record.state = UploadState::Aborted;
-                if !matches!(
-                    self.store
-                        .compare_exchange(location, Some(&stored.bytes), &encode(&record)?)
-                        .await?,
-                    CasOutcome::Applied(_)
-                ) {
-                    continue;
+                match self
+                    .store
+                    .compare_exchange(location, Some(&stored.bytes), &encode(&record)?)
+                    .await?
+                {
+                    CasOutcome::Applied(_) => {}
+                    CasOutcome::Conflict(Some(observed)) => {
+                        stored = observed;
+                        continue;
+                    }
+                    CasOutcome::Conflict(None) => return Err(UploadError::NotFound),
                 }
             }
             return self.cleanup(location, record).await;
@@ -102,54 +106,63 @@ impl DatasetUploads {
         Err(UploadError::Pending)
     }
 
-    async fn cleanup(&self, location: &[u8], record: UploadRecord) -> Result<UploadRecord, UploadError> {
+    async fn cleanup(&self, location: &[u8], mut record: UploadRecord) -> Result<UploadRecord, UploadError> {
         if record.cleanup_complete {
-            return self.get(location).await;
+            record.parts = self.accepted_parts(location, &record).await?;
+            return Ok(record);
         }
         let entries = self.entries(location, &record).await?;
         let mut complete = true;
         for entry in entries {
-            complete &= self.cleanup_part(&part_key(location, entry.part.index)).await?;
+            complete &= self
+                .cleanup_part(&part_key(location, entry.part.index), entry)
+                .await?;
         }
         if complete {
+            let mut expected = encode(&record)?;
             for _ in 0..16 {
-                let stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
-                let mut current = decode_session(&stored.bytes)?;
-                if current.state != UploadState::Aborted {
+                if record.state != UploadState::Aborted {
                     return Err(UploadError::Conflict);
                 }
-                if current.cleanup_complete {
+                if record.cleanup_complete {
                     break;
                 }
-                current.cleanup_complete = true;
-                if matches!(
-                    self.store
-                        .compare_exchange(location, Some(&stored.bytes), &encode(&current)?)
-                        .await?,
-                    CasOutcome::Applied(_)
-                ) {
-                    break;
+                record.cleanup_complete = true;
+                match self
+                    .store
+                    .compare_exchange(location, Some(&expected), &encode(&record)?)
+                    .await?
+                {
+                    CasOutcome::Applied(_) => break,
+                    CasOutcome::Conflict(Some(observed)) => {
+                        record = decode_session(&observed.bytes)?;
+                        expected = observed.bytes;
+                    }
+                    CasOutcome::Conflict(None) => return Err(UploadError::NotFound),
                 }
             }
+            if !record.cleanup_complete {
+                return Err(UploadError::Pending);
+            }
         }
-        self.get(location).await
+        record.parts = self.accepted_parts(location, &record).await?;
+        Ok(record)
     }
 
-    async fn cleanup_part(&self, key: &[u8]) -> Result<bool, UploadError> {
+    async fn cleanup_part(&self, key: &[u8], mut record: super::PartEntry) -> Result<bool, UploadError> {
+        let mut expected = encode(&record)?;
         for _ in 0..16 {
-            let Some(stored) = self.store.get(key).await? else {
-                return Ok(true);
-            };
-            let mut record = decode_part(&stored.bytes)?;
             if record.state != PartState::Reclaimed {
                 record.state = PartState::Reclaimed;
-                if !matches!(
-                    self.store
-                        .compare_exchange(key, Some(&stored.bytes), &encode(&record)?)
-                        .await?,
-                    CasOutcome::Applied(_)
-                ) {
-                    continue;
+                let value = encode(&record)?;
+                match self.store.compare_exchange(key, Some(&expected), &value).await? {
+                    CasOutcome::Applied(_) => expected = value,
+                    CasOutcome::Conflict(Some(observed)) => {
+                        record = decode_part(&observed.bytes)?;
+                        expected = observed.bytes;
+                        continue;
+                    }
+                    CasOutcome::Conflict(None) => return Ok(true),
                 }
             }
             if record.part.locations.is_empty() {
@@ -158,15 +171,17 @@ impl DatasetUploads {
             if !self.payloads.discard(&record.part.locations).await? {
                 return Ok(false);
             }
-            let expected = encode(&record)?;
             record.part.locations.clear();
-            if matches!(
-                self.store
-                    .compare_exchange(key, Some(&expected), &encode(&record)?)
-                    .await?,
-                CasOutcome::Applied(_)
-            ) {
-                return Ok(true);
+            match self
+                .store
+                .compare_exchange(key, Some(&expected), &encode(&record)?)
+                .await?
+            {
+                CasOutcome::Applied(_) | CasOutcome::Conflict(None) => return Ok(true),
+                CasOutcome::Conflict(Some(observed)) => {
+                    record = decode_part(&observed.bytes)?;
+                    expected = observed.bytes;
+                }
             }
         }
         Err(UploadError::Pending)

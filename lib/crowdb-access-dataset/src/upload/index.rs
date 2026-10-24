@@ -33,8 +33,8 @@ impl DatasetUploads {
     }
     pub(super) async fn index_part(&self, location: &[u8], part: &UploadPart) -> Result<(), UploadError> {
         let key = index_key(location, part.index / PAGE_PARTS);
+        let mut stored = self.store.get(&key).await?;
         for _ in 0..16 {
-            let stored = self.store.get(&key).await?;
             let mut parts = stored
                 .as_ref()
                 .map(|v| decode::<Vec<UploadPart>>(&v.bytes))
@@ -52,17 +52,17 @@ impl DatasetUploads {
             }
             parts.push(part.clone());
             parts.sort_by_key(|v| v.index);
-            if matches!(
-                self.store
-                    .compare_exchange(
-                        &key,
-                        stored.as_ref().map(|v| v.bytes.as_slice()),
-                        &encode(&parts)?
-                    )
-                    .await?,
-                CasOutcome::Applied(_)
-            ) {
-                return Ok(());
+            match self
+                .store
+                .compare_exchange(
+                    &key,
+                    stored.as_ref().map(|v| v.bytes.as_slice()),
+                    &encode(&parts)?,
+                )
+                .await?
+            {
+                CasOutcome::Applied(_) => return Ok(()),
+                CasOutcome::Conflict(observed) => stored = observed,
             }
         }
         Err(UploadError::Pending)

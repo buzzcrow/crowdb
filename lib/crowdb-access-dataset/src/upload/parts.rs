@@ -177,7 +177,8 @@ impl DatasetUploads {
         let stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
         let mut session = decode_session(&stored.bytes)?;
         if matches!(session.state, UploadState::Complete | UploadState::Claimed) {
-            return self.get(location).await;
+            session.parts = self.accepted_parts(location, &session).await?;
+            return Ok(session);
         }
         if session.state != UploadState::Open || now >= session.expires_at {
             return Err(UploadError::Conflict);
@@ -202,16 +203,19 @@ impl DatasetUploads {
             .compare_exchange(location, Some(&stored.bytes), &encode(&session)?)
             .await?
         {
-            CasOutcome::Applied(_) => self.get(location).await,
-            CasOutcome::Conflict(Some(value))
-                if matches!(
-                    decode_session(&value.bytes)?.state,
-                    UploadState::Complete | UploadState::Claimed
-                ) =>
-            {
-                self.get(location).await
+            CasOutcome::Applied(_) => {
+                session.parts = parts;
+                Ok(session)
             }
-            CasOutcome::Conflict(_) => Err(UploadError::Conflict),
+            CasOutcome::Conflict(Some(value)) => {
+                let mut observed = decode_session(&value.bytes)?;
+                if !matches!(observed.state, UploadState::Complete | UploadState::Claimed) {
+                    return Err(UploadError::Conflict);
+                }
+                observed.parts = parts;
+                Ok(observed)
+            }
+            CasOutcome::Conflict(None) => Err(UploadError::Conflict),
         }
     }
 }

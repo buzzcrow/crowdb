@@ -293,8 +293,6 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 - [ ] **P4.1 缩减 upload/part 状态与回读**：列出 create/intent/write/accept/index/complete/abort
   的必要资源事实与过程状态；删除后者，改成客户端控制完整 part/最终清单；
   成功结果直接返回，不为续传保存进度。需要保留 intent 的具体反例先按 R4 review。Files: Dataset `upload.rs`、`upload/{parts,index,ownership}.rs`。
-- [ ] **P4.2 修复 CAS 冲突重读**：`index_part`、`abort/cleanup/cleanup_part` 直接使用 observation；
-  合并不同 part 的索引更新时保留双方结果。claim/release 已正确使用 observation，不重复改写。Files: `upload/{index,ownership,retirement}.rs`。
 - [ ] **P4.3 缩小 owner/part 争用范围**：测 128-part 索引页、增长的 retired owners 的争用和编码；
   比较更小记录，证明 claim-vs-reclaim 和迟到 claim 不破坏共享引用。Files: `upload/{index,ownership,retirement,reclaim}.rs`、相关并发/丢回复测试。
 
@@ -438,6 +436,15 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P4.2**：part 索引、abort、cleanup 完成标记、part 清理均直接沿 CAS 的
+  observed value 重试；初始 part 枚举的结果也直接交给清理，不重复 GET。
+  索引连续四次冲突保留其他四个 part；abort 观察到新 owner 立即停止；cleanup 在通知前后
+  的连续冲突不追加 GET。create 成功 0G + 1C，冲突复用 descriptor；单页 complete
+  正常/重复均 2G，复用本次已校验 parts，不回读 descriptor/index。unknown 直接传播，
+  客户端可重新请求；不把 timeout 当作 definite conflict。没有改变上传生命周期或删除 intent。
+  新增 `upload_mutation_cost_test` 六项均通过；Dataset `--all-targets`、all-target/all-feature
+  clippy、workspace fmt 和 diff 检查通过，均经 pixi。P4.1/P4.3 与 R4 继续跟踪状态删除和争用。
 
 - **2026-10-24，R4.4**：按用户明确的职责边界，DeleteChunkRange 成功即返回 Accepted，
   不等待 `reclaimed`；已接受的 dedicated 删除也不再检查 strips/cleanup intents 是否排空。

@@ -1,0 +1,209 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+#[path = "common/upload.rs"]
+mod upload;
+#[path = "common/upload_fault.rs"]
+mod upload_fault;
+
+use bytes::Bytes;
+use crowdb_access_dataset::{
+    DatasetIdentity, DatasetStore, DatasetUploads, NamespacePath, OperationId, UploadError, UploadState,
+};
+use md5::{Digest, Md5};
+use serde_json::{json, Value};
+use std::sync::{atomic::Ordering, Arc};
+use upload::{TestPayload, TestStore};
+use upload_fault::{TestMutation, TestUploadFaultStore};
+
+fn location() -> Vec<u8> {
+    DatasetUploads::location(
+        &DatasetIdentity::new(NamespacePath::root(), "mutation-cost").unwrap(),
+        OperationId::random(),
+    )
+    .unwrap()
+}
+
+async fn complete_upload(store: Arc<TestStore>, payloads: Arc<TestPayload>, key: &[u8]) {
+    let uploads = DatasetUploads::new(store, payloads);
+    uploads
+        .create(key, 4, 4, Md5::digest(b"data").into(), 100)
+        .await
+        .unwrap();
+    uploads
+        .put_part(key, 0, Bytes::from_static(b"data"), 1)
+        .await
+        .unwrap();
+    uploads.complete(key, 2).await.unwrap();
+}
+
+async fn changed_records(store: &TestStore, key: &[u8], field: &str) -> Vec<TestMutation> {
+    let mut value: Value = serde_json::from_slice(&store.get(key).await.unwrap().unwrap().bytes).unwrap();
+    (101..105)
+        .map(|number| {
+            value[field] = json!(number);
+            TestMutation::Conflict(serde_json::to_vec(&value).unwrap())
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn create_and_complete_return_known_results_without_confirmation_reads() {
+    let store = Arc::new(TestStore::default());
+    let uploads = DatasetUploads::new(store.clone(), Arc::new(TestPayload::default()));
+    let key = location();
+    let declared = uploads
+        .create(&key, 4, 4, Md5::digest(b"data").into(), 100)
+        .await
+        .unwrap();
+    assert_eq!(store.reads.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        uploads.create(&key, 4, 4, declared.md5, 100).await.unwrap(),
+        declared
+    );
+    assert_eq!(
+        store.reads.load(Ordering::Relaxed),
+        1,
+        "only the part index is read"
+    );
+    uploads
+        .put_part(&key, 0, Bytes::from_static(b"data"), 1)
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        let reads = store.reads.load(Ordering::Relaxed);
+        let complete = uploads.complete(&key, 2).await.unwrap();
+        assert_eq!(complete.state, UploadState::Complete);
+        assert_eq!(complete.parts.len(), 1);
+        assert_eq!(store.reads.load(Ordering::Relaxed) - reads, 2);
+    }
+}
+
+#[tokio::test]
+async fn four_index_conflicts_merge_other_parts_using_each_observation() {
+    let store = Arc::new(TestStore::default());
+    let payloads = Arc::new(TestPayload::default());
+    let uploads = DatasetUploads::new(store.clone(), payloads.clone());
+    let key = location();
+    uploads.create(&key, 20, 4, [0; 16], 100).await.unwrap();
+    let mut parts = Vec::new();
+    let mut mutations = Vec::new();
+    for index in 1..5 {
+        parts.push(
+            uploads
+                .put_part(&key, index, Bytes::from_static(b"data"), 1)
+                .await
+                .unwrap(),
+        );
+        mutations.push(TestMutation::Conflict(serde_json::to_vec(&parts).unwrap()));
+    }
+    let mut index_key = key.clone();
+    index_key.extend_from_slice(b"\0I\0\0\0\0");
+    store.delete(&index_key).await.unwrap();
+    let fault = TestUploadFaultStore::new(store, index_key, mutations);
+    let uploads = DatasetUploads::new(fault.clone(), payloads);
+    let first = uploads
+        .put_part(&key, 0, Bytes::from_static(b"data"), 1)
+        .await
+        .unwrap();
+    assert_eq!(fault.reads.load(Ordering::Relaxed), 1);
+    assert_eq!(fault.writes.load(Ordering::Relaxed), 5);
+    parts.insert(0, first);
+    assert_eq!(uploads.get(&key).await.unwrap().parts, parts);
+}
+
+#[tokio::test]
+async fn abort_reuses_conflicts_and_stops_when_an_owner_wins() {
+    let store = Arc::new(TestStore::default());
+    let payloads = Arc::new(TestPayload::default());
+    let key = location();
+    complete_upload(store.clone(), payloads.clone(), &key).await;
+    let mut mutations = changed_records(&store, &key, "expires_at").await;
+    let mut claimed: Value = serde_json::from_slice(&store.get(&key).await.unwrap().unwrap().bytes).unwrap();
+    claimed["state"] = json!("claimed");
+    claimed["owners"] = json!([OperationId::random()]);
+    mutations.push(TestMutation::Conflict(serde_json::to_vec(&claimed).unwrap()));
+    let fault = TestUploadFaultStore::new(store, key.clone(), mutations);
+    let uploads = DatasetUploads::new(fault.clone(), payloads);
+    assert!(matches!(uploads.abort(&key).await, Err(UploadError::Conflict)));
+    assert_eq!(fault.reads.load(Ordering::Relaxed), 1);
+    assert_eq!(fault.writes.load(Ordering::Relaxed), 5);
+    assert_eq!(uploads.read_part(&key, 0).await.unwrap(), b"data".as_slice());
+}
+
+#[tokio::test]
+async fn cleanup_part_reuses_observations_before_and_after_notification() {
+    let store = Arc::new(TestStore::default());
+    let payloads = Arc::new(TestPayload::default());
+    let key = location();
+    complete_upload(store.clone(), payloads.clone(), &key).await;
+    let mut part_key = key.clone();
+    part_key.extend_from_slice(b"\0P\0\0\0\0");
+    let mut mutations = changed_records(&store, &part_key, "deadline").await;
+    mutations.push(TestMutation::Apply);
+    let mut retired: Value =
+        serde_json::from_slice(&store.get(&part_key).await.unwrap().unwrap().bytes).unwrap();
+    retired["state"] = json!("Reclaimed");
+    for number in 105..109 {
+        retired["deadline"] = json!(number);
+        mutations.push(TestMutation::Conflict(serde_json::to_vec(&retired).unwrap()));
+    }
+    let fault = TestUploadFaultStore::new(store, part_key, mutations);
+    let uploads = DatasetUploads::new(fault.clone(), payloads);
+    assert!(uploads.abort(&key).await.unwrap().cleanup_complete);
+    assert_eq!(
+        fault.reads.load(Ordering::Relaxed),
+        1,
+        "the initial entry enumeration only"
+    );
+    assert_eq!(fault.writes.load(Ordering::Relaxed), 10);
+}
+
+#[tokio::test]
+async fn cleanup_completion_conflicts_do_not_reload_the_upload() {
+    let store = Arc::new(TestStore::default());
+    let payloads = Arc::new(TestPayload::default());
+    let key = location();
+    complete_upload(store.clone(), payloads.clone(), &key).await;
+    let mut mutations = vec![TestMutation::Apply];
+    for mutation in changed_records(&store, &key, "expires_at").await {
+        let TestMutation::Conflict(bytes) = mutation else {
+            unreachable!()
+        };
+        let mut value: Value = serde_json::from_slice(&bytes).unwrap();
+        value["state"] = json!("aborted");
+        mutations.push(TestMutation::Conflict(serde_json::to_vec(&value).unwrap()));
+    }
+    let fault = TestUploadFaultStore::new(store, key.clone(), mutations);
+    let uploads = DatasetUploads::new(fault.clone(), payloads);
+    assert!(uploads.abort(&key).await.unwrap().cleanup_complete);
+    assert_eq!(fault.reads.load(Ordering::Relaxed), 1);
+    assert_eq!(fault.writes.load(Ordering::Relaxed), 6);
+}
+
+#[tokio::test]
+async fn unknown_completion_is_propagated_without_confirmation_get() {
+    let store = Arc::new(TestStore::default());
+    let payloads = Arc::new(TestPayload::default());
+    let key = location();
+    let uploads = DatasetUploads::new(store.clone(), payloads.clone());
+    uploads
+        .create(&key, 4, 4, Md5::digest(b"data").into(), 100)
+        .await
+        .unwrap();
+    uploads
+        .put_part(&key, 0, Bytes::from_static(b"data"), 1)
+        .await
+        .unwrap();
+    let fault = TestUploadFaultStore::new(store, key.clone(), vec![TestMutation::LoseReply]);
+    let uploads = DatasetUploads::new(fault.clone(), payloads);
+    assert!(matches!(
+        uploads.complete(&key, 2).await,
+        Err(UploadError::Store(_))
+    ));
+    assert_eq!(fault.reads.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        uploads.complete(&key, 3).await.unwrap().state,
+        UploadState::Complete
+    );
+}
