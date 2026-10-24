@@ -2,6 +2,7 @@ use super::{
     mutation_identity, name_key, storage_head_key, CasOutcome, CatalogContext, CatalogError, NamespaceRename,
     StorageRecord, TableMapping, TableMappingState, TableRenames, ValidationError,
 };
+use crate::table::{retire_absent_table, TableSlot};
 
 impl TableRenames {
     pub(super) async fn reserve(
@@ -39,12 +40,15 @@ impl TableRenames {
                     }
                     let head_key = storage_head_key(existing.storage_location());
                     if let Some(head) = self.store.get(&head_key.encode()?).await? {
-                        let StorageRecord::TableHead(head) = StorageRecord::decode(&head_key, &head.bytes)?
-                        else {
-                            return Err(ValidationError::Record.into());
-                        };
-                        if existing.resolves(&head) {
+                        let record = StorageRecord::decode(&head_key, &head.bytes)?;
+                        if matches!(&record, StorageRecord::TableHead(head) if existing.resolves(head)) {
                             return Err(CatalogError::Conflict);
+                        }
+                        if !matches!(
+                            record,
+                            StorageRecord::TableHead(_) | StorageRecord::RetiredTable(_)
+                        ) {
+                            return Err(ValidationError::Record.into());
                         }
                     }
                     self.remove(&existing).await?;
@@ -84,11 +88,9 @@ impl TableRenames {
             }
         }
         // Occupancy can be cleared only after the old head CAS is fenced or settled.
-        let key = storage_head_key(mapping.storage_location());
-        if let Some(value) = self.store.get(&key.encode()?).await? {
-            let StorageRecord::TableHead(head) = StorageRecord::decode(&key, &value.bytes)? else {
-                return Err(ValidationError::Record.into());
-            };
+        if let TableSlot::Existing(head) =
+            retire_absent_table(self.store.as_ref(), mapping.storage_location()).await?
+        {
             let mut published = mapping.clone();
             published.state = TableMappingState::Published;
             if published.resolves(&head) {

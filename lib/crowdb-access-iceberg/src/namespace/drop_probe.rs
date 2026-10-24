@@ -172,12 +172,16 @@ impl NamespaceDropper {
             .get(&key.encode()?)
             .await?
             .ok_or(ValidationError::Record)?;
-        let StorageRecord::TableHead(head) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
-        };
-        if mapping.resolves(&head) {
+        let record = StorageRecord::decode(&key, &value.bytes)?;
+        if matches!(&record, StorageRecord::TableHead(head) if mapping.resolves(head)) {
             self.prepare_finish(operation, NamespacePhase::Restoring).await?;
             return Ok(true);
+        }
+        if !matches!(
+            record,
+            StorageRecord::TableHead(_) | StorageRecord::RetiredTable(_)
+        ) {
+            return Err(ValidationError::Record.into());
         }
         self.creator
             .names

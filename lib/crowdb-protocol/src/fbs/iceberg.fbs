@@ -501,7 +501,13 @@ table FBNativeInjection {
     file:FBFileRecord (required);
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask, FBGcTask, FBGcCandidate, FBGcPage, FBGcNode, FBFileWriteIntent, FBDeletedFile, FBNativeInjection }
+table FBRetiredTable {
+    catalog:[ubyte] (required);
+    table_id:[ubyte] (required);
+    storage_namespace:[ubyte];
+}
+
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask, FBGcTask, FBGcCandidate, FBGcPage, FBGcNode, FBFileWriteIntent, FBDeletedFile, FBNativeInjection, FBRetiredTable }
 
 table FBIcebergRecord {
     schema_version:ushort;

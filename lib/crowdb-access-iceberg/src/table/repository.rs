@@ -74,8 +74,10 @@ impl TableRepository {
             .get(&key.encode()?)
             .await?
             .ok_or(CatalogError::Conflict)?;
-        let StorageRecord::TableHead(head) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
+        let head = match StorageRecord::decode(&key, &value.bytes)? {
+            StorageRecord::TableHead(head) => head,
+            StorageRecord::RetiredTable(_) => return Err(CatalogError::Conflict),
+            _ => return Err(ValidationError::Record.into()),
         };
         if *head != selected.head {
             return Err(CatalogError::Conflict);
@@ -103,8 +105,10 @@ impl TableRepository {
         let Some(value) = self.store.get(&key.encode()?).await? else {
             return Ok(None);
         };
-        let StorageRecord::TableHead(head) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
+        let head = match StorageRecord::decode(&key, &value.bytes)? {
+            StorageRecord::TableHead(head) => head,
+            StorageRecord::RetiredTable(_) => return Ok(None),
+            _ => return Err(ValidationError::Record.into()),
         };
         if head.lifecycle == super::TableLifecycle::Reclaiming {
             return Err(CatalogError::Busy);

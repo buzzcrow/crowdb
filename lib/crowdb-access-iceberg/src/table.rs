@@ -6,6 +6,8 @@ mod list;
 mod load;
 mod metadata;
 mod record;
+mod retirement;
+pub(crate) use retirement::{retire_absent_table, TableSlot};
 mod rename;
 mod repository;
 

@@ -154,7 +154,15 @@ impl GcWorker {
             match key.scope {
                 crate::key::TableStorageScope::Projection => {}
                 crate::key::TableStorageScope::Head => {
-                    StorageRecord::decode_storage(&crate::key::StorageKey::NativeTable(key), &item.value)?;
+                    if matches!(
+                        StorageRecord::decode_storage(
+                            &crate::key::StorageKey::NativeTable(key),
+                            &item.value
+                        )?,
+                        StorageRecord::RetiredTable(_)
+                    ) {
+                        continue;
+                    }
                 }
                 crate::key::TableStorageScope::Operation => {
                     let StorageRecord::NativeInjection(receipt) = StorageRecord::decode_storage(
@@ -217,6 +225,7 @@ impl GcWorker {
             return Err(CatalogError::Busy.into());
         }
         match &record {
+            StorageRecord::RetiredTable(_) => Ok(false),
             StorageRecord::File(_)
             | StorageRecord::DeletedFile(_)
             | StorageRecord::MultipartPart(_)

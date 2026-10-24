@@ -1,4 +1,6 @@
-use crowdb_protocol::iceberg_fb::{FBTableHead, FBTableHeadArgs, FBTableMapping, FBTableMappingArgs};
+use crowdb_protocol::iceberg_fb::{
+    FBRetiredTable, FBRetiredTableArgs, FBTableHead, FBTableHeadArgs, FBTableMapping, FBTableMappingArgs,
+};
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 
 use crate::{
@@ -6,6 +8,39 @@ use crate::{
     key::{CatalogId, FileId, NamespaceId, OperationId, TableId},
     table::{TableHead, TableLifecycle, TableMapping, TableMappingState},
 };
+
+pub(super) fn encode_retired<'buffer>(
+    builder: &mut FlatBufferBuilder<'buffer>,
+    table: crate::file::TableLocation,
+) -> Result<WIPOffset<FBRetiredTable<'buffer>>, ValidationError> {
+    crate::table::storage_head_key(table).encode()?;
+    let catalog = builder.create_vector(table.catalog.as_bytes());
+    let table_id = builder.create_vector(table.table.as_bytes());
+    let storage_namespace = table
+        .storage_namespace
+        .map(|id| builder.create_vector(id.as_bytes()));
+    Ok(FBRetiredTable::create(
+        builder,
+        &FBRetiredTableArgs {
+            catalog: Some(catalog),
+            table_id: Some(table_id),
+            storage_namespace,
+        },
+    ))
+}
+
+pub(super) fn decode_retired(
+    value: FBRetiredTable<'_>,
+) -> Result<crate::file::TableLocation, ValidationError> {
+    Ok(crate::file::TableLocation {
+        catalog: CatalogId::from_bytes(value.catalog().bytes())?,
+        table: TableId::from_bytes(value.table_id().bytes())?,
+        storage_namespace: value
+            .storage_namespace()
+            .map(|id| NamespaceId::from_bytes(id.bytes()))
+            .transpose()?,
+    })
+}
 
 pub(super) fn encode_head<'buffer>(
     builder: &mut FlatBufferBuilder<'buffer>,

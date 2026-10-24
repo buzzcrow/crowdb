@@ -138,7 +138,7 @@ async fn rename_preserves_identity_and_creates_no_journal_or_response_records() 
             .unwrap();
         assert_eq!(
             store.reads.load(Ordering::SeqCst) - measured_reads,
-            if cross { 20 } else { 15 }
+            if cross { 19 } else { 14 }
         );
         assert_eq!(outcome.status, 204);
         assert!(outcome.body.is_empty());

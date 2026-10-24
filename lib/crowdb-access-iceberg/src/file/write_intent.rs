@@ -120,8 +120,10 @@ async fn check_writer(store: &dyn CatalogStore, owner: FileIdentity) -> Result<(
         return Err(CatalogError::Busy);
     }
     if let Some(value) = head {
-        let StorageRecord::TableHead(head) = StorageRecord::decode(&head_key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
+        let head = match StorageRecord::decode(&head_key, &value.bytes)? {
+            StorageRecord::TableHead(head) => head,
+            StorageRecord::RetiredTable(_) => return Err(CatalogError::Busy),
+            _ => return Err(ValidationError::Record.into()),
         };
         if head.lifecycle != crate::table::TableLifecycle::Ready {
             return Err(CatalogError::Busy);
