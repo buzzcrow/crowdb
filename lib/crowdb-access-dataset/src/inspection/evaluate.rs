@@ -3,7 +3,7 @@
 
 use super::{
     content::validate_page_budget, cursor::CursorScope, key, work::InspectionWork, FieldMetadata,
-    FieldStorageKind, InspectionError, InspectionPage,
+    FieldStorageKind, InspectionError, InspectionPage, SnapshotSummary,
 };
 use crate::{
     selection::EffectiveSelection, AuthorityError, DatasetAuthority, DatasetError, DatasetIdentity,
@@ -28,15 +28,27 @@ impl DatasetAuthority {
     ) -> Result<InspectionPage<Vec<u8>>, InspectionError> {
         validate_page_budget(budget)?;
         let mut work = InspectionWork::new(self.store.as_ref(), cancel, budget)?;
-        let summary = self.ready_inspection(identity, snapshot, &mut work).await?;
+        self.prepare_inspection_selection(identity, snapshot, selection, &mut work)
+            .await?
+            .page(after, budget.items, &mut work)
+            .await
+    }
+
+    pub(crate) async fn prepare_inspection_selection<'a>(
+        &'a self,
+        identity: &'a DatasetIdentity,
+        snapshot: SnapshotId,
+        selection: &'a Selection,
+        work: &mut InspectionWork<'_>,
+    ) -> Result<PreparedInspectionSelection<'a>, InspectionError> {
+        let summary = self.ready_inspection(identity, snapshot, work).await?;
         let schema = self
-            .inspection_schema_definitions(identity, &summary, &mut work)
+            .inspection_schema_definitions(identity, &summary, work)
             .await?;
         let compiled = EffectiveSelection::new(selection, &schema).map_err(AuthorityError::from)?;
         let prefix = key::scope(identity, snapshot, b'M').map_err(AuthorityError::from)?;
         let query = serde_json::to_vec(selection).map_err(|_| InspectionError::Corrupt)?;
         let cursor = CursorScope::new(&prefix, &query);
-        let after = cursor.decode(after)?;
         for id in &compiled.explicit_ids {
             let mut key = prefix.clone();
             key::component(&mut key, id);
@@ -50,34 +62,13 @@ impl DatasetAuthority {
                 return Err(InspectionError::Corrupt);
             }
         }
-        let members = self
-            .inspection_member_window(identity, snapshot, after, budget.items, &mut work)
-            .await?;
-        let mut summaries = BTreeMap::from([(snapshot, summary)]);
-        let mut entries = Vec::new();
-        for id in members.entries {
-            let mut values = BTreeMap::new();
-            for field in &compiled.fields {
-                if let Some(metadata) = self
-                    .effective_field_metadata(identity, snapshot, &id, field, &mut summaries, &mut work)
-                    .await?
-                {
-                    if metadata.storage == FieldStorageKind::Inline {
-                        values.insert(
-                            field.clone(),
-                            self.inspection_inline_value(identity, &id, &metadata, &mut work)
-                                .await?,
-                        );
-                    }
-                }
-            }
-            if compiled.matches(&id, &values) {
-                entries.push(id);
-            }
-        }
-        Ok(InspectionPage {
-            entries,
-            after: cursor.encode(members.after)?,
+        Ok(PreparedInspectionSelection {
+            authority: self,
+            identity,
+            snapshot,
+            compiled,
+            cursor,
+            summaries: BTreeMap::from([(snapshot, summary)]),
         })
     }
 
@@ -108,5 +99,68 @@ impl DatasetAuthority {
         }
         locator.verify_payload(value).map_err(AuthorityError::from)?;
         Ok(locator)
+    }
+}
+
+/// Local to one bounded request; its authority and immutable query cannot be replaced.
+pub(crate) struct PreparedInspectionSelection<'a> {
+    authority: &'a DatasetAuthority,
+    identity: &'a DatasetIdentity,
+    snapshot: SnapshotId,
+    compiled: EffectiveSelection<'a>,
+    cursor: CursorScope,
+    summaries: BTreeMap<SnapshotId, SnapshotSummary>,
+}
+impl PreparedInspectionSelection<'_> {
+    pub(crate) async fn page(
+        &mut self,
+        after: Option<Vec<u8>>,
+        items: usize,
+        work: &mut InspectionWork<'_>,
+    ) -> Result<InspectionPage<Vec<u8>>, InspectionError> {
+        let members = self
+            .authority
+            .inspection_member_window(
+                self.identity,
+                self.snapshot,
+                self.cursor.decode(after)?,
+                items,
+                work,
+            )
+            .await?;
+        let mut entries = Vec::new();
+        for id in members.entries {
+            let mut values = BTreeMap::new();
+            for field in &self.compiled.fields {
+                if let Some(metadata) = self
+                    .authority
+                    .effective_field_metadata(
+                        self.identity,
+                        self.snapshot,
+                        &id,
+                        field,
+                        &mut self.summaries,
+                        work,
+                    )
+                    .await?
+                {
+                    if metadata.storage == FieldStorageKind::Inline {
+                        values.insert(
+                            field.clone(),
+                            self.authority
+                                .inspection_inline_value(self.identity, &id, &metadata, work)
+                                .await?,
+                        );
+                    }
+                }
+            }
+            if self.compiled.matches(&id, &values) {
+                entries.push(id);
+            }
+        }
+        Ok(InspectionPage {
+            entries,
+            after: self.cursor.encode(members.after)?,
+        })
     }
 }

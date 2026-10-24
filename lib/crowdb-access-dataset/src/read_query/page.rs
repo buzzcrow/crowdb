@@ -113,6 +113,18 @@ impl DatasetReads {
         } else {
             None
         };
+        let mut selection_work =
+            InspectionWork::new(self.authority.store.as_ref(), cancel, budget()).map_err(inspection_error)?;
+        let mut selection = self
+            .authority
+            .prepare_inspection_selection(
+                identity,
+                cursor.snapshot,
+                &cursor.spec.selection,
+                &mut selection_work,
+            )
+            .await
+            .map_err(inspection_error)?;
         for _ in 0..5000 {
             if cancel.is_cancelled() {
                 return Err(DatasetError::ReadCancelled.into());
@@ -123,16 +135,8 @@ impl DatasetReads {
             let mut limits = budget();
             limits.items = (size - ids.len()).min(20);
             limits.timeout = remaining;
-            let page = self
-                .authority
-                .inspection_selection_page(
-                    identity,
-                    cursor.snapshot,
-                    &cursor.spec.selection,
-                    after,
-                    limits,
-                    cancel,
-                )
+            let page = selection
+                .page(after, limits.items, &mut selection_work)
                 .await
                 .map_err(inspection_error)?;
             let mut work = InspectionWork::new(self.authority.store.as_ref(), cancel, limits)
@@ -160,6 +164,8 @@ impl DatasetReads {
             if ids.len() == size || after.is_none() {
                 return Ok((ids, after));
             }
+            selection_work = InspectionWork::new(self.authority.store.as_ref(), cancel, limits)
+                .map_err(inspection_error)?;
         }
         Err(DatasetError::ReadLimitExceeded.into())
     }

@@ -263,6 +263,11 @@ The token binds Dataset, Snapshot, Split, selection, projection, worker partitio
 shuffle seed/group size and position. It is a cursor, not an authorization grant.
 
 Selection uses bounded inspection windows without fetching a full Manifest.
+Within one next request, selection windows share admission, immutable summaries,
+schema and compiled predicates. Explicit IDs are validated once. This prepared
+query is local to the request and binds its authority, Dataset and Snapshot;
+independent page requests still perform their own admission. Per-window storage
+budgets and the overall group deadline remain enforced.
 Split filtering precedes deterministic shuffle and worker partitioning. The cursor
 carries a group start and offset, not the Dataset's selected IDs. A partly consumed
 shuffle group is reconstructed from immutable metadata; this bounds memory but

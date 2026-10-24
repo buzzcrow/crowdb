@@ -16,6 +16,9 @@ pub struct TestAccessStore {
     pub writes: AtomicU64,
     pub reads: AtomicU64,
     pub admission_reads: AtomicU64,
+    pub bounded_reads: AtomicU64,
+    pub schema_scans: AtomicU64,
+    pub member_scans: AtomicU64,
     pub upload_conflicts: AtomicU64,
 }
 impl TestAccessStore {
@@ -39,6 +42,7 @@ impl DatasetStore for TestAccessStore {
         budget: MetadataScanBudget,
         cancel: &ReadCancellation,
     ) -> Result<Option<StoredValue>, StoreError> {
+        self.bounded_reads.fetch_add(1, Ordering::Relaxed);
         if key.starts_with(b"DS\0L\0") {
             self.admission_reads.fetch_add(1, Ordering::Relaxed);
         }
@@ -49,6 +53,17 @@ impl DatasetStore for TestAccessStore {
         request: &MetadataScan,
         cancel: &ReadCancellation,
     ) -> Result<MetadataPage, StoreError> {
+        if request.prefix.starts_with(b"DS\0I\0") {
+            match request.prefix.last() {
+                Some(b'S') => {
+                    self.schema_scans.fetch_add(1, Ordering::Relaxed);
+                }
+                Some(b'M') => {
+                    self.member_scans.fetch_add(1, Ordering::Relaxed);
+                }
+                _ => {}
+            }
+        }
         self.inner.scan_page(request, cancel).await
     }
     async fn compare_exchange(

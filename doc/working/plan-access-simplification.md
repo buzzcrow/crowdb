@@ -174,7 +174,7 @@ Dataset expiry 依赖 upload/part 记录，Iceberg discovery/write sweep 依赖 
 约束需按本计划已确认的删除 grace、part 期限重新整理。R168 的逐对象 cleanup record
 也不是本计划自动批准的新状态。涉及新持久化资源字段先列出用途、写入频率和替代方案。
 
-**需要 review 的物理资源事实（尚未实施）**：R95 若按范围逐步回收，需要在 chunk/strip
+**已确认的物理资源事实（2026-10-24，待实施）**：R95 若按范围逐步回收，需要在 chunk/strip
 元数据中保留已经判定死亡的精确区间及布局代际。它表示“哪些物理字节已经不可再引用”，
 不是 upload 的步骤、进度或 owner session；由后台 GC 按 chunk 合并写，前台上传不追加
 cleanup/journal RPC。现有 `usage_bitmap` 描述的粒度不能直接用于任意字节范围，不能把
@@ -184,8 +184,8 @@ cleanup/journal RPC。现有 `usage_bitmap` 描述的粒度不能直接用于任
 失败流程：GC 先完成发布隔离与活引用检查 → 以 chunk revision 条件更新死亡范围/布局 →
 物理释放。进程在二者间退出时，从资源事实重做释放；丢回复时重复操作不得伤及新代际。
 如果不保留死亡范围，每次必须重新从全部最终引用计算；可以先只释放完全无引用的整 chunk，
-但长期混存 chunk 的孤儿空间不会收敛，不能据此宣称 R4/R92 完成。这个容量与实现复杂度
-取舍需要用户确认后再扩充底层持久化结构；独立的 RPC/CAS 清理不受此决策影响。
+但长期混存 chunk 的孤儿空间不会收敛，不能据此宣称 R4/R92 完成。用户已确认采用精确范围和布局代际的持久化资源状态，继续补齐范围回收；
+不采用仅回收整 chunk 的替代方案，不再等待此项确认。
 
 **已确认的期限与剩余工程证明**：未发布 part 过期后重传；不支持无限期稍后提交。
 仅在 Access 开始请求时检查期限仍有竞态：检查通过 → 发布 RPC 延迟 → GC 回收 → 迟到发布。
@@ -424,6 +424,15 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，F3.1**：同一 next 多窗口使用请求局部的 selection 准备结果，绑定
+  authority/Dataset/Snapshot/规则，复用准入、summary、schema 和 explicit-ID 校验。
+  81 个候选、五个窗口、两个 explicit ID：独立逐页调用实测 25 bounded GET + 10 scan，
+  请求内复用实测 5 bounded GET + 6 scan；零 mutation。新请求重新准入，不共享缓存或 session。
+  小 batch 跨请求重建 group 仍未处理。每窗口预算、group 两秒/5000 页/8 MiB ID 和取消保留。
+  `read_query_planning_test`、`read_query_cost_test`、`read_query_edges_test`、`split_read_query_test`、
+  `inspection_pages_test`、`selection_v2_test` 共 16 项通过；HTTP read-query 与 native read
+  共 7 项通过。三 crate all-target/all-feature clippy、workspace fmt 通过，均经 pixi。
 
 - **2026-10-24，P11.1**：bucket 首次 PutIfAbsent 后，tombstone 冲突直接沿 observed CAS；
   active 直接返回，missing 才重新 PutIfAbsent。名称唯一、删除重建新代际和八次上限保留；
