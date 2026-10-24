@@ -427,7 +427,7 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
 - [ ] **F1 请求级成本计数**：记录 GET/bounded GET/scan/CAS/PUT/delete、重复 key、冲突与
   unknown、真实 routed RPC、串行阶段和复制字节；用测试 wrapper/已有 metrics，不加生产
   每 RPC 日志或 profiling 锁。Files: Dataset/S3/Iceberg 测试 store、现有指标、`tools/sdk/`。
-- [ ] **F1.1 去掉 SDK 每次 control 调用的 capabilities GET**：R2.2b 抓到显式重试的请求
+- [~] **F1.1 去掉 SDK 每次 control 调用的 capabilities GET**：R2.2b 抓到显式重试的请求
   为 capabilities GET → PUT → capabilities GET → PUT；没有 head GET，但仍多一次 Access
   往返。能力是版本化路由/配置发现，不是鉴权或资源准入；研究按 client 复用已确认能力，
   保持服务端每次真实鉴权/条件检查、缺失能力不降级、重新发现/滚动升级的失效语义。
@@ -480,9 +480,6 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   无条件覆盖与 expected-base 重试测试。断言总 GET+写，不仅是零写。Files: Dataset `tests/*cost*`、`read_query*`、upload/Composition/Split/inspection；S3/Iceberg 对应 repository 测试。
 - [ ] **V2 HTTP/native/SDK 集成**：各受影响 route 的鉴权、错误、协议/SDK 一致性；保留删除准入、
   迟到写者、非空 namespace、共享 owner、held buffer、cancel/drop 和损坏内容测试。Files: Access/native tests、`sdk/tests/`、native Python consumer。
-- [~] **V2.2 Split 清理同源容器验收**：稳定树构建新镜像，运行全部五个 Dataset 容器用例，
-  包括真实 Chunk-KV/存储重启、Rust 与安装后 Python SDK 的直接 Split head 更新/观察值。
-  构建期间不改任何非忽略文件，保留 source guard；记录镜像、客户端与 artifact 身份。
 - [ ] **V3 工程门禁与文档**：每批执行适用 fmt/clippy/测试，全部经 `pixi run`；同步 owning
   design/spec/OpenAPI/SDK。只修改文档时检查 diff、引用和任务状态，不为此跑整套服务测试。
 - [ ] **V4 同源真实负载验收**：重新构建当前源码的镜像，运行现有 HTTP/native Rust/native Python
@@ -509,6 +506,20 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **V2.2（2026-10-24）**：源码 `5f18bd58`、source tree
+  `1f22dcff0524d743893bc993824350827dc6049f` 稳定构建的新镜像
+  `crowdb-node:access-cleanup-split-head-20261024`，OCI digest
+  `sha256:cd582599b79107dcd45ce814f642f0c949dfd30e68f431e0ffb23e91eb29724f`，
+  Docker identity `sha256:cee85d588e1c317e61d0bd462bc74b5cef65b058fe8e80dd7666c2d949b80c27`。
+  全部五个 Dataset 容器用例通过：发布/读取/重启、Split 完整候选和无新 receipt、鉴权、
+  实际 payload 重启、独立 Rust 与新安装 Python wheel 的直接更新/冲突观察值。
+  客户端同 revision；完整日志/身份/用时位于
+  `.crowdb-runtime/artifacts/container-e2e/run-a8f9817b8c8b40958ff08325a52265d5/`，
+  status=pass，client build 33.35 s、SDK build 21.92 s、场景 54.58 s。
+  build/import/验收均经 `pixi run`；首次 build 的 Git 快照写被沙箱只读 `.git` 拒绝，
+  同命令提升权限后完成且保留 source guard；镜像只导入独立本地 tag。
+  此项是同主机 TCP 正确性/重启验收，不替代吞吐、HCA、独立 GC 发现或 Snapshot 主线清理。
 
 - **R2.2b（2026-10-24）**：新增 `PUT snapshots/{snapshot}/split-head` 与
   `split-head-update` 能力，Rust/Python SDK 提供 `update_split_head`。仅携带完整 revision
