@@ -69,7 +69,11 @@ async fn idle_active_chunk_renews_liveness_without_advancing_cursor() {
     assert_eq!(store.cursor_advance_count(), 0);
     tokio::time::advance(Duration::from_secs(12 * 60)).await;
     tokio::task::yield_now().await;
-    assert_eq!(store.liveness_renew_count(), 1);
+    assert_eq!(
+        store.liveness_renew_count(),
+        2,
+        "active and candidate chunks renew independently"
+    );
     assert_eq!(store.cursor_advance_count(), 0);
 }
 
@@ -84,7 +88,11 @@ async fn idle_liveness_uses_the_configured_interval() {
     stream.append(&[Bytes::from_static(b"idle")]).await.unwrap();
     tokio::time::advance(Duration::from_secs(10)).await;
     tokio::task::yield_now().await;
-    assert_eq!(store.liveness_renew_count(), 1);
+    assert_eq!(
+        store.liveness_renew_count(),
+        2,
+        "active and candidate chunks use the configured interval"
+    );
 }
 
 #[tokio::test(start_paused = true)]

@@ -171,7 +171,11 @@ async fn chunk_liveness_renews_while_a_data_write_is_blocked() {
     store.wait_for_write().await;
     tokio::time::advance(std::time::Duration::from_secs(1)).await;
     tokio::task::yield_now().await;
-    assert_eq!(store.liveness_renew_count(), 1);
+    assert_eq!(
+        store.liveness_renew_count(),
+        2,
+        "both the attached chunk and its ready successor renew while data IO is blocked"
+    );
     assert!(!write.is_finished());
     assert_eq!(store.cursor_advance_count(), 0);
     store.resume_writes();

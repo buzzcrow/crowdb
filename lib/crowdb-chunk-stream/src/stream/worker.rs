@@ -7,7 +7,8 @@ use super::append::write_with_recovery;
 use super::capacity::{fits_active, prepare_active_for_append};
 use super::publication::publish_state;
 use super::{
-    finish_failed, liveness, preparation, AppendRequest, BatchFailure, Command, ReadView, WorkerState,
+    finish_failed, liveness, preparation, successor, AppendRequest, BatchFailure, Command, ReadView,
+    WorkerState,
 };
 use crate::perf::{observe, perf, PhaseTimer};
 use crate::{Result, StreamError};
@@ -22,6 +23,7 @@ pub(super) async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Recei
     let mut liveness = tokio::time::interval(state.config.liveness_interval);
     liveness.tick().await;
     loop {
+        successor::start(&mut state);
         let command = if let Some(command) = pending.take() {
             command
         } else {
@@ -63,6 +65,9 @@ pub(super) async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Recei
     // Never detach initialization IO that could outlive its owner or a seal.
     if let Err(error) = preparation::drain(&mut state).await {
         state.log_unavailable("drain_capacity", &error);
+    }
+    if let Err(error) = successor::discard(&mut state).await {
+        state.log_unavailable("discard_successor", &error);
     }
     if let Some(authority) = &state.authority {
         authority.fence();
@@ -145,6 +150,7 @@ async fn process_append_batch(
         }
     }
     preparation::start(state, bytes);
+    successor::start(state);
     let result = write_with_recovery(state, &requests, bytes).await;
     match result {
         Ok(ranges) => {
@@ -214,13 +220,11 @@ pub(super) async fn rotate_externally_sealed_active(state: &mut WorkerState) -> 
     state.checkpoint = None;
     state.manifest.active = None;
     state.manifest.sealed_tail = tail;
-    let mut successor = state
-        .chunks
-        .allocate_mirrored(state.stream_name, state.writer_epoch, state.manifest.purpose)
-        .await?;
+    let mut successor = successor::take(state).await?;
     successor.logical_start = tail;
     state.manifest.active = Some(successor);
     publish_state(state).await?;
+    successor::start(state);
     state.stalled = false;
     state.metrics.rollovers.fetch_add(1, Ordering::Relaxed);
     Ok(true)
@@ -317,6 +321,7 @@ async fn process_close(state: &mut WorkerState) -> Result<()> {
         return Ok(());
     }
     preparation::drain(state).await?;
+    successor::discard(state).await?;
     if let Some(active) = state.manifest.active.take() {
         state
             .chunks
@@ -340,6 +345,7 @@ async fn process_release(state: &mut WorkerState) -> Result<()> {
         return Err(StreamError::WriteStalled);
     }
     preparation::drain(state).await?;
+    successor::discard(state).await?;
     if state.manifest.sealed_tail != state.manifest_view.load().sealed_tail {
         publish_state(state).await?;
     }

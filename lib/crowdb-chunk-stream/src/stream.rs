@@ -23,6 +23,9 @@ use crate::{Result, StreamError};
 
 mod append;
 mod capacity;
+mod capacity_plan;
+#[cfg(feature = "test-util")]
+pub use capacity_plan::capacity_target_for_tests;
 mod checkpoint;
 mod liveness;
 mod observation;
@@ -31,6 +34,7 @@ mod preparation;
 mod publication;
 mod read;
 mod recovery;
+mod successor;
 mod view;
 mod worker;
 pub use observation::StreamMetadataObservation;
@@ -222,6 +226,8 @@ struct WorkerState {
     capacity_preparation: Option<preparation::CapacityPreparation>,
     capacity_failure: Option<(ChunkId, StreamError)>,
     capacity_exhausted: Option<ChunkId>,
+    capacity_plan: capacity_plan::CapacityPlan,
+    successor: Option<successor::SuccessorPreparation>,
     liveness_failed: Arc<AtomicBool>,
     liveness_changed: Arc<tokio::sync::Notify>,
     stalled: bool,
@@ -361,6 +367,8 @@ impl ChunkStream {
             capacity_preparation: None,
             capacity_failure: None,
             capacity_exhausted: None,
+            capacity_plan: capacity_plan::CapacityPlan::default(),
+            successor: None,
             liveness_failed: Arc::new(AtomicBool::new(false)),
             liveness_changed: Arc::new(tokio::sync::Notify::new()),
             stalled: false,

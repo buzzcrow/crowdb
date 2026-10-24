@@ -3,8 +3,8 @@
 
 //! Allocate, grow and rotate the worker-owned active chunk.
 
-use super::preparation;
 use super::publication::publish_state;
+use super::{preparation, successor};
 use super::{Duration, Ordering, Result, StreamError, WorkerState};
 use crate::perf::{perf, PhaseTimer};
 
@@ -73,7 +73,9 @@ async fn ensure_active(state: &mut WorkerState) -> Result<()> {
         ));
     }
     state.manifest.active = Some(active);
-    publish_state(state).await
+    publish_state(state).await?;
+    successor::start(state);
+    Ok(())
 }
 
 pub(super) async fn rollover(state: &mut WorkerState) -> Result<()> {
@@ -91,13 +93,11 @@ pub(super) async fn rollover(state: &mut WorkerState) -> Result<()> {
     state.checkpoint = None;
     let tail = state.tail_view.load(Ordering::Acquire);
     state.manifest.sealed_tail = tail;
-    let mut successor = state
-        .chunks
-        .allocate_mirrored(state.stream_name, state.writer_epoch, state.manifest.purpose)
-        .await?;
+    let mut successor = successor::take(state).await?;
     successor.logical_start = tail;
     state.manifest.active = Some(successor);
     publish_state(state).await?;
+    successor::start(state);
     state.metrics.rollovers.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }

@@ -10,6 +10,16 @@ impl MemoryStreamStore {
         purpose: crowdb_protocol::chunk_stream::StreamPurpose,
     ) -> Result<ActiveChunkDescriptor> {
         let low = self.next_chunk.fetch_add(1, Ordering::AcqRel);
+        if self.fail_allocation_number.load(Ordering::Acquire) == low {
+            self.allocation_started.notify_one();
+            return Err(crate::StreamError::ReadUnavailable(
+                "injected allocation outage".into(),
+            ));
+        }
+        if self.pause_allocation_number.load(Ordering::Acquire) == low {
+            self.allocation_started.notify_one();
+            self.allocation_resume.notified().await;
+        }
         let chunk_id = ChunkId {
             high: (purpose.chunk_type() as u64) << 56,
             low,

@@ -14,6 +14,8 @@ pub(crate) struct StreamPerfMetrics {
     pub(crate) capacity: Arc<LatencyHistogram>,
     pub(crate) capacity_wait: Arc<LatencyHistogram>,
     pub(crate) preparation: Arc<LatencyHistogram>,
+    pub(crate) successor_prepare: Arc<LatencyHistogram>,
+    pub(crate) successor_wait: Arc<LatencyHistogram>,
     pub(crate) growth: Arc<LatencyHistogram>,
     pub(crate) initialize: Arc<LatencyHistogram>,
     pub(crate) batch: Arc<LatencyHistogram>,
@@ -44,6 +46,8 @@ pub(crate) fn perf() -> &'static StreamPerfMetrics {
         capacity: histogram("stream.append.capacity.lh"),
         capacity_wait: histogram("stream.capacity.wait.lh"),
         preparation: histogram("stream.capacity.prepare.lh"),
+        successor_prepare: histogram("stream.successor.prepare.lh"),
+        successor_wait: histogram("stream.successor.wait.lh"),
         growth: histogram("stream.capacity.grow.lh"),
         initialize: histogram("stream.capacity.initialize.lh"),
         batch: histogram("stream.append.batch.lh"),
@@ -88,7 +92,7 @@ pub fn register_stream_perf_metrics(registry: &mut MetricsRegistry) {
     }
 }
 
-fn histograms() -> [(&'static str, &'static Arc<LatencyHistogram>); 21] {
+fn histograms() -> [(&'static str, &'static Arc<LatencyHistogram>); 23] {
     let metrics = perf();
     [
         ("stream.append.e2e.lh", &metrics.append),
@@ -96,6 +100,8 @@ fn histograms() -> [(&'static str, &'static Arc<LatencyHistogram>); 21] {
         ("stream.append.capacity.lh", &metrics.capacity),
         ("stream.capacity.wait.lh", &metrics.capacity_wait),
         ("stream.capacity.prepare.lh", &metrics.preparation),
+        ("stream.successor.prepare.lh", &metrics.successor_prepare),
+        ("stream.successor.wait.lh", &metrics.successor_wait),
         ("stream.capacity.grow.lh", &metrics.growth),
         ("stream.capacity.initialize.lh", &metrics.initialize),
         ("stream.append.batch.lh", &metrics.batch),

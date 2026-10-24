@@ -41,6 +41,8 @@ pub use storage::{
     CursorAdvance, DurableCursor, MirrorStripImage, RecoveredStreamTail, StreamChunkStore,
     StreamMetadataStore, StreamMirrorWrite, StreamRegistry, TrimmedChunk,
 };
+#[cfg(feature = "test-util")]
+pub use stream::capacity_target_for_tests;
 pub use stream::{
     AppendRange, ChunkStream, ReadHint, ReadSegment, StreamConfig, StreamMetadataObservation, StreamReader,
     StreamViewSource,

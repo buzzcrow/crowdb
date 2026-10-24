@@ -126,6 +126,7 @@ async fn write_batch(
         .map_err(BatchFailure::Other)?;
     drop(encode_timer);
     let mirror_timer = PhaseTimer::start(&perf().mirror);
+    let mirror_started = Instant::now();
     let write = state
         .chunks
         .write_mirrors(
@@ -150,6 +151,9 @@ async fn write_batch(
     if let Err(error) = write {
         return Err(BatchFailure::MirrorWrite(error));
     }
+    state
+        .capacity_plan
+        .record_write(new_cursor - expected_cursor, mirror_started.elapsed());
     state.metrics.physical_append_bytes.fetch_add(
         physical_bytes.saturating_mul(u64::from(state.chunks.mirror_copies())),
         Ordering::Relaxed,

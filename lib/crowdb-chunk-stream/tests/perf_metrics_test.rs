@@ -57,6 +57,15 @@ async fn stream_stages_appear_in_perf_output_and_survive_window_flushes() {
             "missing phase: {name}"
         );
     }
+    stream.close().await.unwrap();
+    assert!(matches!(
+        registry.snapshot_named("stream.successor.prepare.lh", 1.0),
+        Some(MetricPoint::Histogram { count: 1.., .. })
+    ));
+    assert!(matches!(
+        registry.snapshot_named("stream.successor.wait.lh", 1.0),
+        Some(MetricPoint::Histogram { .. })
+    ));
     let cumulative = stream_perf_metrics();
     let mut output = Vec::new();
     registry.flush(&mut output, 1.0, "test");

@@ -13,7 +13,8 @@ KV work, with compact locations, incremental directories, and bounded recovery.
 
 - Deployment requirement R243 is complete at `c3d7d64d`; R244 is in progress.
 - T01/T02/T03/T05–T07 foundations and T20a's measured hot-path changes are
-  verified. T20b capacity preparation is verified; T18 is active. Ordinary
+  verified. T20b/T20c capacity preparation is verified; T09 indexed worker
+  integration is active; T18 remains unfinished. Ordinary
   append now completes at synchronized mirrors with local owner checks; cursor
   persistence occurs only at checkpoints. Production recovery scans complete
   grouped frames past the checkpoint after process exclusion and ordered drains.
@@ -236,7 +237,7 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   maximum 367 ms. Higher throughput now reaches rollover during this workload;
   do not infer that p99 removes this remaining tail. Keep that optimization
   separate from the verified removal of ordinary cursor RPCs.
-- T18 remains active: the exact serving assignment still needs propagation
+- T18 remains unfinished: the exact serving assignment still needs propagation
   into the WAL IO context and assignment-specific unreachable-owner exclusion.
   The current process-level exclusion is conservative and can wait while the
   prior process remains live; it does not treat serving-grant expiry alone as
@@ -247,6 +248,84 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   complete; they do not reintroduce per-append RPCs.
 
 ## Direct hot-path integration
+
+- [x] **T20c — Adapt preparation to bandwidth and keep a successor**: estimate
+  synchronized physical write bandwidth without queue/capacity/idle delays;
+  reserve twice the measured allocation-plus-initialization consumption, start
+  refill at that low watermark and refill above it, bounded by the fixed chunk
+  capacity. Keep one independently initialized, unwritten successor in the
+  background, including liveness renewal; use it on rotation and replenish it.
+  Drain initialization and reclaim an unused candidate on close/release. Only
+  exhausted ready capacity or unavailable preparation backpressures writers.
+  Preserve attachment-before-data and the necessary final seal/head ordering.
+  Verify adaptation, paused strip/candidate preparation, ready candidate reuse,
+  idle renewal and cleanup. Files:
+  `lib/crowdb-chunk-stream/src/stream/{capacity_plan,preparation,successor,capacity,worker,append}.rs`,
+  `lib/crowdb-chunk-stream/src/{perf,memory}.rs`,
+  `lib/crowdb-chunk-stream/tests/{capacity_plan,successor_preparation,production_chunk,rollover_growth,perf_metrics}_test.rs`.
+- The previous 32-producer 60-second controlled run spent about 12.9 seconds
+  in foreground capacity/rotation, including 11.25 seconds publishing the
+  full historical directory. T20c does not remove that remaining full-history
+  publication; T09–T12 must connect the existing indexed implementation before
+  claiming bounded lifecycle work or a completed rollover optimization.
+- T20c implementation uses a fast-attack, gradual-decay physical write-rate
+  estimate and observed preparation latency, with a 20 ms bootstrap and 2 MiB
+  minimum reserve. The refill threshold includes the current batch; the target
+  is twice that reserve plus the batch, clipped only by fixed chunk capacity.
+  It requests multiple strips through the existing production growth adapter.
+  Candidate allocation/initialization and renewal run in a separate task; no
+  candidate admits data or publishes a Stream head before attachment. Renewal
+  failure replaces only the unused candidate, with empty seal/release cleanup.
+- New histograms `stream.successor.prepare.lh` and
+  `stream.successor.wait.lh` separate background work from foreground handoff.
+  Together with existing capacity wait/growth/initialization and directory
+  publication histograms they expose whether preparation failed to keep ahead
+  or metadata publication still dominates the transition.
+- Focused regression: 158 Stream tests across 28 targets pass, including four
+  bandwidth/reserve-bound tests, seven candidate lifecycle/backpressure tests,
+  blocked-current-strip tests, mirror repair and owner fencing. The production
+  test allocator now models independent chunk/segment identities instead of
+  replacing its one chunk during candidate allocation. Existing idle tests
+  assert both active and candidate renewals. Workspace Rust formatting and
+  strict all-target/all-feature Stream clippy pass. Complete test output is in
+  `/home/cj/.cache/crowdb-r244-mirror-latency-results/capacity-adaptive/tests-final.log`.
+- A temporary candidate allocation outage retains the pending rotation and
+  retries in the background instead of returning an error to the already-sealed
+  predecessor's writer. Discard/release can stop those unused retries. An
+  uncertain candidate initialization drains its submitted IO, seals/releases
+  that empty chunk and retries with a fresh ID; it never reinitializes that ID.
+  The production adapter regression verifies both old/new candidates are
+  reclaimed and the acknowledged prefix remains intact.
+- The first timed implementation began replacement preparation before the
+  current head publication completed. Its 32-producer throughput was 39238
+  versus baseline 40041 ops/s, despite 6.63 us mean ready-candidate handoff and
+  fewer foreground capacity waits (37 versus 78). Directory publication grew
+  from 11.31 to 15.51 seconds in the run, with concurrent initialization a
+  plausible contributor. The final implementation starts replacement only
+  after attachment publication, overlapping the new active chunk's appends.
+  This ordering also avoids allocating another orphan while head outcome is
+  unresolved. The intermediate measurement remains at
+  `capacity-adaptive/run-20261024T001942Z/` under the same evidence root.
+- Final source passes all 158 tests, strict clippy and workspace formatting;
+  the release benchmark hash is
+  `27202e877b17ffe0277933ec81be3d8e2227b0dfd2cfe4babd753cc1cbd378d1`.
+  Fresh 60-second cases at `capacity-adaptive/final-20261024T002914Z/`
+  retain the same CPUs 0–3, 32 Tokio workers, 4 KiB payload, retained MemDisk,
+  two synchronized mirrors and service binaries as the before cases. Both
+  final cases have zero errors/watchdogs/cursor checkpoints and bounded queues.
+  One producer is 6128 versus 6154 ops/s; 32 producers are 39853 versus 40041
+  ops/s. This establishes no throughput gain. Concurrent p99 is 3889 versus
+  3433 us in these samples, so neither latency improvement nor overall
+  performance acceptance is established.
+- The final concurrent sample records exactly 37 foreground capacity waits:
+  first attachment plus 36 rotations. Ready-candidate handoff averages 6.79 us
+  over 36 transitions (reported maximum 65 us includes the histogram's lower
+  floor). Background active growth falls to 9 operations plus 37 candidate
+  preparations; all 46 physical growth operations are outside normal append
+  completion. Total capacity time is about 12.34 seconds, including 11.03
+  seconds of directory publication. Historical publication still writes 42159
+  pages. The remaining work is indexed publication and its runtime/retention
+  integration, not further claims based on candidate readiness alone.
 
 - [x] **T20b — Prepare strip capacity ahead of writes**: overlap bounded
   allocation and single-attempt replica initialization with appends in the
@@ -1907,7 +1986,7 @@ adaptation rather than a new transport or storage engine.
   `lib/crowdb-tree/src/backend/chunk/chunk_page_store.cpp`, and their existing
   frame/native-buffer/object/tree test suites.
 
-- [ ] **T09 — Introduce versioned directory records**: replace the flat head
+- [~] **T09 — Introduce versioned directory records**: replace the flat head
   fence list with a bounded root and independent page references. Represent
   multi-frame extents with logical intervals and `ChunkLocation` geometry;
   keep page identity independent of owner epoch/head generation. Implement
@@ -2016,7 +2095,7 @@ adaptation rather than a new transport or storage engine.
   `lib/crowdb-chunk-stream/src/stream/publication.rs`,
   `lib/crowdb-chunk-stream/tests/rollover_growth_test.rs`,
   `lib/crowdb-chunk-stream/tests/stream_test.rs`.
-- [~] **T18 — Enforce the selected Group-0 writer lease**: implement Q3 for busy
+- [ ] **T18 — Enforce the selected Group-0 writer lease**: implement Q3 for busy
   workers, long IO, paused/resumed owners, renewal failure, delayed old writes,
   and takeover. Acknowledgment requires current authority even when all writes
   succeeded; no per-append KV fallback. Compose serving grants and Stream owner

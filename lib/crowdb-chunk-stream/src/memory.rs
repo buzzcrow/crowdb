@@ -72,6 +72,10 @@ pub struct MemoryStreamStore {
     state: Arc<Mutex<MemoryState>>,
     chunk_capacity: u64,
     next_chunk: AtomicU64,
+    pause_allocation_number: AtomicU64,
+    fail_allocation_number: AtomicU64,
+    allocation_started: Notify,
+    allocation_resume: Notify,
     metadata_publishes: Arc<AtomicU64>,
     extent_page_loads: AtomicU64,
     chunk_writes: AtomicU64,
@@ -85,6 +89,7 @@ pub struct MemoryStreamStore {
     fail_next_publish: Arc<AtomicBool>,
     fail_next_writes: AtomicUsize,
     fail_next_renewals: AtomicUsize,
+    fail_chunk_renewal: AtomicU64,
     write_started: Notify,
     resume_write: Notify,
     read_started: Notify,
@@ -113,6 +118,10 @@ impl MemoryStreamStore {
                 })
                 .expect("valid test chunk geometry"),
             next_chunk: AtomicU64::new(1),
+            pause_allocation_number: AtomicU64::new(0),
+            fail_allocation_number: AtomicU64::new(0),
+            allocation_started: Notify::new(),
+            allocation_resume: Notify::new(),
             metadata_publishes: Arc::new(AtomicU64::new(0)),
             extent_page_loads: AtomicU64::new(0),
             chunk_writes: AtomicU64::new(0),
@@ -126,6 +135,7 @@ impl MemoryStreamStore {
             fail_next_publish: Arc::new(AtomicBool::new(false)),
             fail_next_writes: AtomicUsize::new(0),
             fail_next_renewals: AtomicUsize::new(0),
+            fail_chunk_renewal: AtomicU64::new(0),
             write_started: Notify::new(),
             resume_write: Notify::new(),
             read_started: Notify::new(),
@@ -145,6 +155,33 @@ impl MemoryStreamStore {
         self.pause_writes.store(true, Ordering::Release);
     }
 
+    pub fn pause_allocation_for_tests(&self, number: u64) {
+        self.pause_allocation_number.store(number, Ordering::Release);
+    }
+
+    pub fn fail_allocation_for_tests(&self, number: u64) {
+        self.fail_allocation_number.store(number, Ordering::Release);
+    }
+
+    pub async fn wait_for_allocation_for_tests(&self) {
+        self.allocation_started.notified().await;
+    }
+
+    pub fn resume_allocation_for_tests(&self) {
+        self.allocation_resume.notify_one();
+    }
+
+    pub async fn chunks_for_tests(&self) -> Vec<(ChunkId, u64, bool, bool)> {
+        let state = self.state.lock().await;
+        let mut chunks = state
+            .chunks
+            .iter()
+            .map(|(id, chunk)| (*id, chunk.synchronized_cursor, chunk.sealed, chunk.released))
+            .collect::<Vec<_>>();
+        chunks.sort_by_key(|(id, ..)| id.low);
+        chunks
+    }
+
     pub fn fail_next_publish(&self) {
         self.fail_next_publish.store(true, Ordering::Release);
     }
@@ -159,6 +196,10 @@ impl MemoryStreamStore {
 
     pub fn fail_next_renewals(&self, count: usize) {
         self.fail_next_renewals.store(count, Ordering::Release);
+    }
+
+    pub fn fail_chunk_renewal_for_tests(&self, chunk: ChunkId) {
+        self.fail_chunk_renewal.store(chunk.low, Ordering::Release);
     }
 
     pub async fn wait_for_write(&self) {
@@ -497,6 +538,15 @@ impl StreamChunkStore for MemoryStreamStore {
 
     async fn renew_liveness(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<()> {
         self.liveness_attempts.fetch_add(1, Ordering::AcqRel);
+        if self
+            .fail_chunk_renewal
+            .compare_exchange(chunk_id.low, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return Err(StreamError::ReadUnavailable(
+                "injected candidate renewal failure".into(),
+            ));
+        }
         if self
             .fail_next_renewals
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| count.checked_sub(1))

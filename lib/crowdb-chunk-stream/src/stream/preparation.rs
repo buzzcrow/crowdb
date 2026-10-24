@@ -4,6 +4,7 @@
 //! One bounded strip preparation overlaps writes to the initialized prefix.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
 
@@ -13,37 +14,41 @@ use crate::{ActiveChunkDescriptor, ChunkId, Result, StreamError};
 
 pub(super) struct CapacityPreparation {
     chunk_id: ChunkId,
-    task: JoinHandle<Result<Option<ActiveChunkDescriptor>>>,
+    task: JoinHandle<(Result<Option<ActiveChunkDescriptor>>, Duration)>,
 }
 
 pub(super) fn start(state: &mut WorkerState, batch_bytes: usize) {
     let Some(active) = state.manifest.active.as_ref() else {
         return;
     };
-    let ahead = (batch_bytes as u64)
-        .saturating_mul(4)
-        .clamp(2 * 1024 * 1024, 8 * 1024 * 1024);
     if state.capacity_preparation.is_some()
         || state.capacity_exhausted == Some(active.chunk_id)
         || state
             .capacity_failure
             .as_ref()
             .is_some_and(|(id, _)| *id == active.chunk_id)
-        || active.capacity >= state.config.chunk_capacity_bytes
-        || active.capacity.saturating_sub(active.acknowledged_cursor) > ahead
     {
         return;
     }
+    let Some(required) = state.capacity_plan.target(
+        active.acknowledged_cursor,
+        active.capacity,
+        state.config.chunk_capacity_bytes,
+        batch_bytes as u64,
+    ) else {
+        return;
+    };
     let chunks = Arc::clone(&state.chunks);
     let name = state.stream_name;
     let epoch = state.writer_epoch;
     let chunk_id = active.chunk_id;
-    let required = active.capacity + 1;
     state.capacity_preparation = Some(CapacityPreparation {
         chunk_id,
         task: tokio::spawn(async move {
             let _timer = PhaseTimer::start(&perf().preparation);
-            chunks.grow_mirrored(name, epoch, chunk_id, required).await
+            let started = Instant::now();
+            let result = chunks.grow_mirrored(name, epoch, chunk_id, required).await;
+            (result, started.elapsed())
         }),
     });
 }
@@ -97,7 +102,10 @@ async fn complete(state: &mut WorkerState) {
     };
     let chunk_id = preparation.chunk_id;
     let result = match preparation.task.await {
-        Ok(result) => result,
+        Ok((result, elapsed)) => {
+            state.capacity_plan.record_preparation(elapsed);
+            result
+        }
         Err(error) => Err(StreamError::Internal(format!(
             "capacity preparation task failed: {error}"
         ))),

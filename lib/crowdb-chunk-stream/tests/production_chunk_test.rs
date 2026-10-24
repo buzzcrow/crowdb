@@ -53,8 +53,13 @@ mod owner_capture;
 mod grouped_write;
 use grouped_write::TestGroupedStrip;
 
+#[path = "production_chunk_test/allocated.rs"]
+mod allocated;
+
 struct Allocator {
     chunk: Mutex<Option<Chunk>>,
+    successors: Mutex<HashMap<ChunkId, Chunk>>,
+    next_chunk: AtomicU64,
     stale_query_once: Mutex<Option<Chunk>>,
     fail_advance_after_commit: AtomicBool,
     fail_replacement_response_once: AtomicBool,
@@ -76,6 +81,8 @@ impl Allocator {
     fn new() -> Self {
         Self {
             chunk: Mutex::new(None),
+            successors: Mutex::new(HashMap::new()),
+            next_chunk: AtomicU64::new(8),
             stale_query_once: Mutex::new(None),
             fail_advance_after_commit: AtomicBool::new(false),
             fail_replacement_response_once: AtomicBool::new(false),
@@ -138,7 +145,7 @@ impl ChunkAllocator for Allocator {
     ) -> crowdb_chunk_client::Result<AllocateChunkResponse> {
         let chunk_id = ChunkId {
             high: u64::try_from(request.chunk_type).unwrap() << 56,
-            low: 8,
+            low: self.next_chunk.fetch_add(1, Ordering::AcqRel),
         };
         let limit = self.allocation_copy_limit.load(Ordering::Acquire);
         let copies = if limit == 0 {
@@ -149,7 +156,7 @@ impl ChunkAllocator for Allocator {
         let segments = (1..=copies)
             .map(|disk| Segment {
                 disk_id: Some(DiskId {
-                    high: u64::from(disk),
+                    high: (chunk_id.low - 8) * 1000 + u64::from(disk),
                     low: 0,
                 }),
                 owner_chunk: Some(chunk_id),
@@ -180,7 +187,12 @@ impl ChunkAllocator for Allocator {
             owner_key: request.owner_key,
             ..Chunk::default()
         };
-        *self.chunk.lock().unwrap() = Some(chunk.clone());
+        let mut primary = self.chunk.lock().unwrap();
+        if primary.is_none() {
+            *primary = Some(chunk.clone());
+        } else {
+            self.successors.lock().unwrap().insert(chunk_id, chunk.clone());
+        }
         Ok(AllocateChunkResponse { chunk: Some(chunk) })
     }
 
@@ -188,17 +200,19 @@ impl ChunkAllocator for Allocator {
         &self,
         request: AppendChunkRequest,
     ) -> crowdb_chunk_client::Result<AppendChunkResponse> {
-        if self.pause_growth.swap(false, Ordering::AcqRel) {
+        if request.chunk_id.is_some_and(|id| id.low == 8) && self.pause_growth.swap(false, Ordering::AcqRel) {
             self.growth_started.notify_one();
             self.growth_resume.notified().await;
         }
-        if self.fail_growth_once.swap(false, Ordering::AcqRel) {
+        if request.chunk_id.is_some_and(|id| id.low == 8)
+            && self.fail_growth_once.swap(false, Ordering::AcqRel)
+        {
             return Err(IoError::AllocationFailed(
                 "injected allocation unavailability".into(),
             ));
         }
-        let mut guard = self.chunk.lock().unwrap();
-        let chunk = guard.as_mut().unwrap();
+        let mut guard = self.chunk_for(request.chunk_id);
+        let chunk = &mut *guard;
         if chunk.id != request.chunk_id || chunk.modify_ts != request.modify_ts {
             return Ok(AppendChunkResponse {
                 modify_ts: chunk.modify_ts,
@@ -207,7 +221,11 @@ impl ChunkAllocator for Allocator {
             });
         }
         let unit_kb = chunk.strips.first().unwrap().unit_kb;
-        let concurrent_cursor = self.advance_during_growth.swap(0, Ordering::AcqRel);
+        let concurrent_cursor = if chunk.id.is_some_and(|id| id.low == 8) {
+            self.advance_during_growth.swap(0, Ordering::AcqRel)
+        } else {
+            0
+        };
         if concurrent_cursor != 0 {
             chunk.acknowledged_cursor = concurrent_cursor;
             chunk.modify_ts += 1;
@@ -221,7 +239,7 @@ impl ChunkAllocator for Allocator {
             let segments = (1..=request.copy_count)
                 .map(|disk| Segment {
                     disk_id: Some(DiskId {
-                        high: u64::from(sequence) * 10 + u64::from(disk),
+                        high: (chunk_id.low - 8) * 1000 + u64::from(sequence) * 10 + u64::from(disk),
                         low: 0,
                     }),
                     owner_chunk: Some(chunk_id),
@@ -258,8 +276,8 @@ impl ChunkAllocator for Allocator {
         request: AdvanceChunkWriteRequest,
     ) -> crowdb_chunk_client::Result<AdvanceChunkWriteResponse> {
         self.advance_calls.fetch_add(1, Ordering::AcqRel);
-        let mut guard = self.chunk.lock().unwrap();
-        let chunk = guard.as_mut().unwrap();
+        let mut guard = self.chunk_for(request.chunk_id);
+        let chunk = &mut *guard;
         if self.conflict_advance_once.swap(false, Ordering::AcqRel) {
             chunk.modify_ts += 1;
         }
@@ -280,8 +298,8 @@ impl ChunkAllocator for Allocator {
     }
 
     async fn seal_chunk(&self, request: SealChunkRequest) -> crowdb_chunk_client::Result<SealChunkResponse> {
-        let mut guard = self.chunk.lock().unwrap();
-        let chunk = guard.as_mut().unwrap();
+        let mut guard = self.chunk_for(request.chunk_id);
+        let chunk = &mut *guard;
         assert_eq!(chunk.id, request.chunk_id);
         chunk.state = ChunkState::Sealed as i32;
         chunk.sealed_length = u32::try_from(request.seal_bytes.div_ceil(1024)).unwrap();
@@ -296,8 +314,8 @@ impl ChunkAllocator for Allocator {
         &self,
         request: DeleteChunkRequest,
     ) -> crowdb_chunk_client::Result<DeleteChunkResponse> {
-        let mut guard = self.chunk.lock().unwrap();
-        let chunk = guard.as_mut().unwrap();
+        let mut guard = self.chunk_for(request.chunk_id);
+        let chunk = &mut *guard;
         assert_eq!(chunk.id, request.chunk_id);
         chunk.state = ChunkState::Deleted as i32;
         Ok(DeleteChunkResponse {
@@ -312,12 +330,18 @@ impl ChunkAllocator for Allocator {
         if self.fail_query_once.swap(false, Ordering::AcqRel) {
             return Err(IoError::AllocationFailed("injected query outage".into()));
         }
-        let chunk = self
-            .stale_query_once
-            .lock()
-            .unwrap()
-            .take()
-            .or_else(|| self.chunk.lock().unwrap().clone());
+        let chunk = self.stale_query_once.lock().unwrap().take().or_else(|| {
+            let primary = self.chunk.lock().unwrap();
+            if primary.as_ref().and_then(|chunk| chunk.id) == request.chunk_id {
+                primary.clone()
+            } else {
+                self.successors
+                    .lock()
+                    .unwrap()
+                    .get(&request.chunk_id.unwrap())
+                    .cloned()
+            }
+        });
         if chunk.as_ref().and_then(|chunk| chunk.id) != request.chunk_id {
             return Err(IoError::ChunkNotFound("missing test chunk".into()));
         }
@@ -350,8 +374,8 @@ impl ChunkAllocator for Allocator {
         request: ReplaceChunkStripRangeRequest,
     ) -> crowdb_chunk_client::Result<ReplaceChunkStripRangeResponse> {
         self.replacement_calls.fetch_add(1, Ordering::AcqRel);
-        let mut guard = self.chunk.lock().unwrap();
-        let chunk = guard.as_mut().unwrap();
+        let mut guard = self.chunk_for(request.chunk_id);
+        let chunk = &mut *guard;
         let index = request.start_index as usize;
         if self.conflict_replacement_once.swap(false, Ordering::AcqRel) {
             chunk.modify_ts += 1;
@@ -433,7 +457,9 @@ impl DiskWriter for Disks {
         offset: u64,
         data: Bytes,
     ) -> crowdb_chunk_client::Result<()> {
-        if segment.disk_id.is_some_and(|disk| disk.high > 2)
+        if segment
+            .disk_id
+            .is_some_and(|disk| disk.high > 2 && disk.high < 1000)
             && self.pause_initialization.swap(false, Ordering::AcqRel)
         {
             self.initialization_started.notify_one();

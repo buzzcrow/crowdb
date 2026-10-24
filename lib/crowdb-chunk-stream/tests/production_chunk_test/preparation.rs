@@ -96,6 +96,49 @@ async fn temporary_allocation_failure_does_not_poison_later_capacity() {
     stream.close().await.unwrap();
 }
 
+#[tokio::test]
+async fn uncertain_unused_candidate_is_reclaimed_and_replaced_without_reinitialization() {
+    let allocator = Arc::new(Allocator::new());
+    let disks = Arc::new(Disks::default());
+    // The primary chunk uses disks 1/2, 11/12, ...; its first candidate
+    // has distinct disks 1001/1002, 1011/1012, ... . Fail candidate growth.
+    disks.fail_fsync_once.store(1011, Ordering::Release);
+    let stream = test_stream(allocator.clone(), disks.clone()).await;
+    stream.append(&[Bytes::from_static(b"retained")]).await.unwrap();
+    timeout(Duration::from_secs(1), async {
+        while allocator.successors.lock().unwrap().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    stream.close().await.unwrap();
+    {
+        let candidates = allocator.successors.lock().unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates
+            .values()
+            .all(|chunk| chunk.state == ChunkState::Deleted as i32 && chunk.acknowledged_cursor == 0));
+    }
+    assert_eq!(
+        disks
+            .writes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(segment, ..)| segment.disk_id.unwrap().high == 1011)
+            .count(),
+        1,
+        "uncertain initialization must never repeat on that candidate"
+    );
+    assert_eq!(stream.metrics().failed, 0);
+    assert_eq!(stream.metrics().rollovers, 0);
+    assert_eq!(
+        stream.read_at(0, 8).await.unwrap(),
+        Bytes::from_static(b"retained")
+    );
+}
+
 async fn test_stream(allocator: Arc<Allocator>, disks: Arc<Disks>) -> ChunkStream {
     let metadata = Arc::new(MemoryStreamStore::new(256 * 1024 * 1024));
     let chunks = Arc::new(
