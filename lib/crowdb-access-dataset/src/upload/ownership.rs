@@ -3,7 +3,7 @@
 
 use super::{
     decode_part, decode_session, encode, part_key, DatasetUploads, PartState, UploadError, UploadRecord,
-    UploadState,
+    UploadState, MAX_OWNERS, MAX_RETIRED_OWNERS,
 };
 use crate::{CasOutcome, OperationId};
 
@@ -36,7 +36,7 @@ impl DatasetUploads {
             {
                 return Err(UploadError::Conflict);
             }
-            if record.owners.len() >= 256 {
+            if record.owners.len() >= MAX_OWNERS || record.retired_owners.len() >= MAX_RETIRED_OWNERS {
                 return Err(UploadError::Capacity);
             }
             record.state = UploadState::Claimed;

@@ -226,6 +226,17 @@ Successful durable completion accepts the receipt. Recovery accepts an intent
 only after the chunk's acknowledged cursor covers the location and the bytes
 pass integrity checks. Readable but unconfirmed bytes remain pending. A fenced
 abandoned allocation is reclaimed before replacing it under the same part ID.
+Upload resources hold at most 256 active and 4096 retired owner identities. A full
+retirement list closes admission to new owners while existing owner retries remain
+valid. Retiring an owner not recorded in a full list upgrades the same resource to
+version 5 before success, even if that owner has not yet claimed it; an active owner
+is removed in that CAS. This prevents an older writer paused before its claim from
+reintroducing the owner after cleanup. Readers supporting only versions 2 through 4
+reject this final fence. Older Access servers and native SDKs must upgrade before
+reading or writing that saturated resource. New mutators retain version 5 and
+require its retirement list to remain full.
+Ordinary resources use version 4. The first upgrade costs one GET and one CAS;
+repeating retirement of an absent owner in version 5 needs one GET and no write.
 Completion verifies every part and the whole declared MD5 with bounded buffers.
 For one part whose declared length and MD5 match the whole upload, verification
 hashes the stored bytes once and reuses that exact-range result. Multiple part
@@ -238,6 +249,10 @@ subtree. A bounded local queue schedules uploads in turn; each cleanup window
 scans at most 32 actual part records / 1 MiB and attempts at most 64 range
 notifications. Discovery and cleanup each have a two-second deadline. Sparse
 uploads do not perform a point GET for every declared but absent part.
+Each cleanup authority point read has a fixed 352 KiB budget. Canonical JSON needs
+at most 66 bytes per owner including a separator, plus 1 KiB for other fields;
+4352 owner identities and a metadata key shorter than 64 KiB fit this bound.
+Noncanonical or otherwise oversized records still return a visible limit error.
 Accepted range retirement permits deletion of that aborted upload's part record;
 the upload cannot accept a new part or owner. Deferred or uncertain notification
 retains the exact range. A full queue can discard a hint only after serving it,
@@ -271,8 +286,9 @@ Lost responses are resolved by inspecting status and retrying identical content
 with the same operation token. Historical retries cannot rewind a newer head.
 Divergent retries conflict. Snapshot content bindings carry a fixed retirement
 eligibility deadline twenty-four hours after their first creation. Identical
-retries preserve that deadline. A bounded background scan discovers complete
-results after it, checks head, retention and ancestry protection without
+retries preserve that deadline. A bounded background scan discovers expired
+bindings, including prepared content whose dependency or owner step failed
+before completion. It checks head, retention and ancestry protection without
 mutations, then uses the ordinary authoritative reclamation fence and five-minute
 deletion grace. The deadline alone does not revoke reads or reclaim protected
 resources. Legacy bindings without a deadline require explicit reclaim. The
@@ -461,8 +477,13 @@ root while preserving its journal and payload ownership.
 
 `retire_owner` permanently revokes one publication's upload claim with the same
 session CAS that removes its ownership. A delayed claim for that operation then
-conflicts; other owners remain valid. Sessions retain at most 4096 retired owner
-IDs and report capacity explicitly. Ordinary `release` remains reversible.
+fails; other owners remain valid. Resources retain at most 4096 retired owner IDs.
+Below that limit, retirement records a negative fence even for an absent owner.
+At the limit, new claims report capacity; retirement upgrades the resource to
+version 5 before removing an unrecorded owner or acknowledging its absence.
+The full list remains unchanged, so retired owners cannot rejoin and the final
+active owner can still be removed before abort or expiry. Ordinary `release`
+remains reversible below saturation; a released owner cannot rejoin a full resource.
 
 Upload expiry uses local continuation/queue hints and existing upload/part resource
 facts. Shared registry registration and removal are absent. Snapshot deletion

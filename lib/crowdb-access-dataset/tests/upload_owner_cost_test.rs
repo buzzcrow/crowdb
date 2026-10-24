@@ -6,7 +6,7 @@ mod cost;
 #[path = "common/upload.rs"]
 mod upload;
 
-use cost::{add_owner, owner, retire, TestOwnerCost, TestOwnerFixture};
+use cost::{add_owner, canonical, owner, retire, TestOwnerCost, TestOwnerFixture};
 use crowdb_access_dataset::{UploadError, UploadState};
 use serde_json::Value;
 
@@ -90,6 +90,22 @@ async fn claims_recompute_from_observations_without_copying_stale_owner_sets_at_
         let test = TestOwnerFixture::new(count, 4, false).await;
         let initial = test.raw().await;
         let target = owner(0xd0, 0);
+        if count == 4096 {
+            assert!(matches!(
+                test.uploads.claim(&test.key, target, 6).await,
+                Err(UploadError::Capacity)
+            ));
+            assert_eq!(
+                test.store.cost(),
+                TestOwnerCost {
+                    gets: 1,
+                    read_bytes: initial.len() as u64,
+                    ..TestOwnerCost::default()
+                }
+            );
+            assert_eq!(test.raw().await, initial);
+            continue;
+        }
         let mut current = initial.clone();
         let mut expected_bytes = 0;
         let mut value_bytes = 0;
@@ -164,19 +180,24 @@ async fn lost_retirement_reply_stops_without_get_and_restart_uses_the_final_fenc
     assert_eq!(test.raw().await, expected);
     verify_fences(&test, 4096).await;
     let before = test.store.cost();
-    assert!(matches!(
-        test.restart().retire_owner(&test.key, test.live).await,
-        Err(UploadError::Capacity)
-    ));
+    let mut final_record: Value = serde_json::from_slice(&expected).unwrap();
+    final_record["version"] = serde_json::json!(5);
+    final_record["owners"] = serde_json::json!([]);
+    final_record["state"] = serde_json::json!("complete");
+    let final_record = canonical(final_record);
+    test.restart().retire_owner(&test.key, test.live).await.unwrap();
     assert_eq!(
         test.store.cost().since(before),
         TestOwnerCost {
             gets: 1,
+            exchanges: 1,
             read_bytes: expected.len() as u64,
-            ..TestOwnerCost::default()
+            observation_bytes: 0,
+            expected_bytes: expected.len() as u64,
+            value_bytes: final_record.len() as u64,
         }
     );
-    assert_eq!(test.raw().await, expected);
+    assert_eq!(test.raw().await, final_record);
 }
 
 async fn verify_fences(test: &TestOwnerFixture, retired: u32) {

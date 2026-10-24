@@ -24,6 +24,8 @@ use crate::{CasOutcome, DatasetIdentity, DatasetStore, OperationId, PayloadStora
 
 pub const MAX_UPLOAD_PART_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PARTS: u64 = 10_000;
+const MAX_OWNERS: usize = 256;
+const MAX_RETIRED_OWNERS: usize = 4096;
 const WRITE_LEASE_SECONDS: u64 = 60;
 
 #[derive(Debug, thiserror::Error)]
@@ -264,9 +266,10 @@ fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, UploadError> {
 }
 fn decode_session(bytes: &[u8]) -> Result<UploadRecord, UploadError> {
     let mut record: UploadRecord = decode(bytes)?;
-    if !matches!(record.version, 2..=4)
+    if !matches!(record.version, 2..=5)
         || (record.version == 2 && !record.retired_owners.is_empty())
-        || record.retired_owners.len() > 4096
+        || (record.version == 5 && record.retired_owners.len() != MAX_RETIRED_OWNERS)
+        || record.retired_owners.len() > MAX_RETIRED_OWNERS
         || record.retired_owners.windows(2).any(|pair| pair[0] >= pair[1])
         || record
             .owners
@@ -276,11 +279,11 @@ fn decode_session(bytes: &[u8]) -> Result<UploadRecord, UploadError> {
         || record.part_size == 0
         || record.part_size as usize > MAX_UPLOAD_PART_BYTES
         || record.length.div_ceil(u64::from(record.part_size)) > MAX_PARTS
-        || record.owners.len() > 256
+        || record.owners.len() > MAX_OWNERS
     {
         return Err(UploadError::Integrity);
     }
-    record.version = 4;
+    record.version = record.version.max(4);
     Ok(record)
 }
 fn decode_part(bytes: &[u8]) -> Result<PartEntry, UploadError> {

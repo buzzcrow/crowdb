@@ -7,6 +7,11 @@ use super::{
 use crate::MetadataScan;
 use std::time::Duration;
 
+// Canonical JSON uses at most 66 bytes per owner including its separator, plus
+// 1 KiB for scalars and field names. Include the metadata key's <64 KiB limit.
+const AUTHORITY_READ_BYTES: usize = 352 * 1024;
+const _: () = assert!(AUTHORITY_READ_BYTES > (4096 + 256) * 66 + 1024 + 64 * 1024);
+
 impl DatasetUploads {
     pub(super) async fn expire_window(
         &self,
@@ -17,7 +22,11 @@ impl DatasetUploads {
         if work.parts.is_none() {
             let Some(stored) = self
                 .store
-                .get_bounded(&work.location, budget(256 * 1024), &ReadCancellation::new())
+                .get_bounded(
+                    &work.location,
+                    budget(AUTHORITY_READ_BYTES),
+                    &ReadCancellation::new(),
+                )
                 .await?
             else {
                 return Ok(true);
@@ -94,7 +103,11 @@ impl DatasetUploads {
         }
         let Some(stored) = self
             .store
-            .get_bounded(&work.location, budget(256 * 1024), &ReadCancellation::new())
+            .get_bounded(
+                &work.location,
+                budget(AUTHORITY_READ_BYTES),
+                &ReadCancellation::new(),
+            )
             .await?
         else {
             return Ok(true);
