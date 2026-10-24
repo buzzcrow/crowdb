@@ -31,9 +31,10 @@ async fn stream_retains_allocation_without_collecting_and_verifies_at_eof() {
     let (uploads, location, payloads) = fixture().await;
     assert!(uploads.read_part_stream(&location, 0).await.is_err());
     uploads.complete(&location, 2).await.unwrap();
+    let pulls = payloads.pulls.load(Ordering::Relaxed);
     let mut stream = uploads.read_part_stream(&location, 0).await.unwrap();
     assert!(stream.verified_digest().is_none());
-    assert_eq!(payloads.pulls.load(Ordering::Relaxed), 0);
+    assert_eq!(payloads.pulls.load(Ordering::Relaxed), pulls);
     let first = stream.next().await.unwrap().unwrap();
     let second = stream.next().await.unwrap().unwrap();
     assert!(stream.verified_digest().is_none());

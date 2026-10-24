@@ -11,7 +11,8 @@ use crate::PayloadStream;
 /// remain valid independently; only successful EOF certifies the whole part.
 pub struct VerifiedUploadPart {
     stream: Option<Box<dyn PayloadStream>>,
-    expected: UploadPart,
+    expected_length: u64,
+    expected_md5: [u8; 16],
     delivered: u64,
     digest: Md5,
     failed: bool,
@@ -37,23 +38,28 @@ impl UploadReadDescriptor {
     pub async fn read_part_stream(&self, index: u32) -> Result<VerifiedUploadPart, UploadError> {
         let part = self.part(index).await?;
         let stream = self.uploads.payloads.read_stream(&part.locations).await?;
-        Ok(VerifiedUploadPart {
-            stream: Some(stream),
-            expected: part,
-            delivered: 0,
-            digest: Md5::new(),
-            failed: false,
-        })
+        Ok(VerifiedUploadPart::new(&part, stream))
     }
 }
 
 impl VerifiedUploadPart {
+    pub(super) fn new(part: &UploadPart, stream: Box<dyn PayloadStream>) -> Self {
+        Self {
+            stream: Some(stream),
+            expected_length: part.length,
+            expected_md5: part.md5,
+            delivered: 0,
+            digest: Md5::new(),
+            failed: false,
+        }
+    }
+
     /// Returns the exact verified byte range and digest only after successful EOF.
     /// Partial data, cancellation and failed integrity checks do not certify a part.
     #[must_use]
     pub fn verified_digest(&self) -> Option<(u64, [u8; 16])> {
-        (!self.failed && self.stream.is_none() && self.delivered == self.expected.length)
-            .then_some((self.expected.length, self.expected.md5))
+        (!self.failed && self.stream.is_none() && self.delivered == self.expected_length)
+            .then_some((self.expected_length, self.expected_md5))
     }
 
     /// Failure is terminal; subsequent pulls cannot report successful EOF.
@@ -69,7 +75,7 @@ impl VerifiedUploadPart {
         let result = match stream.next().await {
             Ok(Some(payload)) => {
                 let length = self.delivered.saturating_add(payload.len() as u64);
-                if payload.is_empty() || length > self.expected.length {
+                if payload.is_empty() || length > self.expected_length {
                     Err(UploadError::Integrity)
                 } else {
                     self.delivered = length;
@@ -78,8 +84,8 @@ impl VerifiedUploadPart {
                 }
             }
             Ok(None) => {
-                if self.delivered != self.expected.length
-                    || <[u8; 16]>::from(self.digest.clone().finalize()) != self.expected.md5
+                if self.delivered != self.expected_length
+                    || <[u8; 16]>::from(self.digest.clone().finalize()) != self.expected_md5
                 {
                     Err(UploadError::Integrity)
                 } else {
