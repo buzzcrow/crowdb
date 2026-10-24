@@ -100,24 +100,27 @@ pub(crate) async fn register_intent(
 }
 
 async fn check_writer(store: &dyn CatalogStore, owner: FileIdentity) -> Result<(), CatalogError> {
-    check_write_fence(store, owner).await?;
-    let key = IcebergKey::System {
+    let root_key = IcebergKey::System {
         scope: SystemScope::ActiveRoot,
         suffix: Vec::new(),
     };
-    let value = store
-        .get(&key.encode()?)
-        .await?
-        .ok_or(CatalogError::Uninitialized)?;
-    let StorageRecord::Active(root) = StorageRecord::decode(&key, &value.bytes)? else {
+    let head_key = crate::table::storage_head_key(owner.table);
+    let root_bytes = root_key.encode()?;
+    let head_bytes = head_key.encode()?;
+    let ((), root, head) = tokio::try_join!(
+        check_write_fence(store, owner),
+        async { store.get(&root_bytes).await.map_err(CatalogError::from) },
+        async { store.get(&head_bytes).await.map_err(CatalogError::from) },
+    )?;
+    let value = root.ok_or(CatalogError::Uninitialized)?;
+    let StorageRecord::Active(root) = StorageRecord::decode(&root_key, &value.bytes)? else {
         return Err(ValidationError::Record.into());
     };
     if root.state != RootState::Ready || root.context.catalog != owner.table.catalog {
         return Err(CatalogError::Busy);
     }
-    let key = crate::table::storage_head_key(owner.table);
-    if let Some(value) = store.get(&key.encode()?).await? {
-        let StorageRecord::TableHead(head) = StorageRecord::decode(&key, &value.bytes)? else {
+    if let Some(value) = head {
+        let StorageRecord::TableHead(head) = StorageRecord::decode(&head_key, &value.bytes)? else {
             return Err(ValidationError::Record.into());
         };
         if head.lifecycle != crate::table::TableLifecycle::Ready {
