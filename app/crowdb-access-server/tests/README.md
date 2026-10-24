@@ -68,17 +68,17 @@ Client recipes: [container development](../../../container/single-node-container
 ## Dataset HTTP/native comparison
 
 The complete same-host TCP workload and installed Python/storage-restart
-acceptance pass in `dataset-workload/9dbf56c386e142e995b8eb400305b467` under
+acceptance pass in `dataset-workload/abea0a0568824233a32ba85a063e522a` under
 `.crowdb-runtime/artifacts/`. `manifest.json` retains image labels, CPU placement
 and per-phase service counters; each client log retains all per-size p50/p99
 observations and digest timings. `summary.json` aggregates the three trials.
 
-- Image: `crowdb-node:access-stateless-20261025`, imported Docker ID
-  `sha256:95dd137f69d4cf4e767945b02fec5e63d72ec530338e5ecdd1f342dbcadc1667`.
-- Source revision: `4cd4f752d08c5dc48118965a5405a1c2d24082ad`; source tree:
-  `528ce6b7bb9954663734242df1f2142d436b9c53`.
+- Image: `crowdb-node:access-cleanup-20261025`, imported Docker ID
+  `sha256:43e6d9e595055b506c664d3dcca018a9b62c7cb64d56bfdb286da695b97d5a14`.
+- Source revision: `7b2c61aa24ffa8068fc4f4197cd646d0480c0343`; source tree:
+  `aecf740ce52381d5b90843921b21608f494db30e`.
 - Client CPU 2; service CPUs 4–15; each metadata replica capped at 2 GiB.
-  Metadata cgroup peaks were 234/205/205 MiB, without a stopped replica.
+  Metadata cgroup peaks were 205/205/205 MiB, without a stopped replica.
 - Sizes: 0, 128, 513, 4,096, 65,535, 262,144, 1,048,576 and 4,194,321 bytes.
   Two warmup rounds precede three trials at each concurrency. Each worker
   performs 128 requests per trial: 4,608 measured requests, zero errors.
@@ -90,18 +90,22 @@ Client CPU is the three-trial sum; RSS is the largest observed client value.
 
 | Path          | Concurrency | MiB/s  | Client CPU (s) | Peak RSS (MiB) |
 | ------------- | ----------- | ------ | -------------- | -------------- |
-| HTTP          | 1           | 183.81 | 0.87           | 11.38          |
-| Native Rust   | 1           | 213.80 | 0.89           | 28.72          |
-| Native Python | 1           | 202.29 | 0.95           | 55.08          |
-| HTTP          | 3           | 254.64 | 2.46           | 17.51          |
-| Native Rust   | 3           | 271.47 | 2.72           | 30.26          |
-| Native Python | 3           | 268.57 | 2.84           | 60.52          |
+| HTTP          | 1           | 159.65 | 0.93           | 12.29          |
+| Native Rust   | 1           | 191.64 | 0.92           | 28.73          |
+| Native Python | 1           | 188.94 | 0.98           | 54.36          |
+| HTTP          | 3           | 257.07 | 2.53           | 16.95          |
+| Native Rust   | 3           | 267.30 | 2.79           | 31.37          |
+| Native Python | 3           | 267.23 | 2.84           | 61.33          |
 
-Native throughput improves for this mixed corpus, while client memory and CPU
-increase. Individual sizes do not all improve: at concurrency one, the median
-trial p50 for 128 bytes is 524 µs over HTTP and 666 µs in native Rust; for 1 MiB
-it is 6,361 and 3,035 µs respectively. Only 16/48 observations per size enter each
-trial, so these tails do not establish a production latency guarantee.
+Native Rust throughput is about 20% higher at concurrency one and 4% higher at
+concurrency three in this execution. Client memory increases, singleton CPU is
+similar, and multi-flight CPU increases. Individual sizes do not all improve:
+at concurrency one, the median trial p50 for 128 bytes is 561 µs over HTTP and
+703 µs in native Rust; for 1 MiB it is 6,407 and 3,686 µs respectively. At
+concurrency three, the 128-byte p50 is 804 versus 2,613 µs, while its p99 is
+12,450 versus 7,156 µs. These are medians of three trial quantiles, not pooled
+percentiles. Only 16/48 observations per size enter each trial, so these tails
+do not establish a production latency guarantee.
 The separately timed resident-buffer 64-MiB MD5 kernel takes approximately
 85 ms in Rust and 63 ms in Python; normal reads still perform integrity checks.
 
@@ -119,12 +123,16 @@ uses HTTP as an implicit fallback.
 Reproduce after building/importing the matching service image:
 
 ```sh
-pixi run -- python tools/sdk/dataset_workload.py --image crowdb-node:access-stateless-20261025
+pixi run clean-env && pixi run python tools/sdk/dataset_workload.py --image crowdb-node:access-cleanup-20261025
 ```
 
 The explicit local-HCA profile remains a separate gate. Its current host setup
 needs restoration; environment-gated unit cases are not counted as hardware
 acceptance.
+
+The earlier accepted run `dataset-workload/9dbf56c386e142e995b8eb400305b467`
+and its original image remain available. Differences between independent runs
+are not an isolated before/after measurement of any one code change.
 
 ## Bounded immutable write comparison
 
@@ -161,8 +169,8 @@ is one partition, one owner and catalog generation 1; it is not a multi-partitio
 measurement. Each measured trial keeps both connections open and has no setup
 frames or failed owner attempts.
 
-| Rows                   | Path           | Min / median / max (ms) | Owner RPCs | Sent protocol bytes |
-| ---------------------- | -------------- | ----------------------- | ---------- | ------------------- |
+| Rows                   | Path           | Min / median / max (ms)  | Owner RPCs | Sent protocol bytes |
+| ---------------------- | -------------- | ------------------------ | ---------- | ------------------- |
 | 256 metadata rows      | Sliding points | 371.3 / 469.4 / 470.0    | 256        | 80,680              |
 | 256 metadata rows      | Routed batch   | 2913.6 / 3708.7 / 4102.8 | 16         | 167,864             |
 | 16 inline 64-KiB rows  | Sliding points | 286.7 / 318.0 / 320.5    | 16         | 4,199,136           |

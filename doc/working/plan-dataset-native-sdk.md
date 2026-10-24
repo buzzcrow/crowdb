@@ -547,7 +547,7 @@ remaining user design decision and no requirement `Blocked` condition.
 ## Current acceptance preparation (2026-10-25)
 
 - The final seven-crate Access/Dataset/Iceberg/S3/native/ChunkClient/Chunk-KV
-  all-target gate passes: 1,642 tests, zero failures, three ignored cases.
+  all-target gate at `7b2c61aa` passes: 1,699 tests, zero failures, four ignored cases.
   Workspace all-target/all-feature clippy, standard Rust lint, formatting and
   SDK dependency boundaries pass. Official Java/PyIceberg SDK acceptance passes
   all eight cases. These results do not substitute for current-image acceptance.
@@ -566,16 +566,37 @@ remaining user design decision and no requirement `Blocked` condition.
   The user has been asked to run the existing local setup command. Continue
   image, TCP workload and container acceptance independently; do not count
   environment-gated unit cases as actual HCA evidence.
-- Current-source image build/import and the unchanged complete TCP workload pass
+- The earlier image build/import and unchanged complete TCP workload pass
   in `dataset-workload/9dbf56c386e142e995b8eb400305b467`, including installed
   Python semantics, HTTP/native Split parity, cross-runtime cursor replay,
-  held buffers and storage-restart replay. All 4,608 measured requests succeed.
-  The retained [Access acceptance record](../../app/crowdb-access-server/tests/README.md#dataset-httpnative-comparison)
-  contains exact image/source identity, per-path throughput/CPU/RSS, per-size
-  latency examples, digest cost, original artifact locations and statistical
-  limits. Native Rust improves aggregate throughput but uses more client CPU
-  and memory; some small requests remain slower than HTTP.
-- Dataset container acceptance passes in
-  `container-e2e/run-4e53cd0385824d9b8b5d6218655a02cb`; the final Iceberg domain
-  now runs against the same image. Local HCA remains outstanding; keep this
-  plan, the requirement and its backlog entry until that gate actually passes.
+  held buffers and storage-restart replay. All 4,608 measured requests succeed;
+  its original image/artifacts remain available as earlier evidence.
+- Dataset container acceptance on that earlier image passes in
+  `container-e2e/run-4e53cd0385824d9b8b5d6218655a02cb`.
+- The rebuilt `crowdb-node:access-cleanup-20261025` image is from `7b2c61aa`,
+  source tree `aecf740ce52381d5b90843921b21608f494db30e`, imported Docker ID
+  `sha256:43e6d9e595055b506c664d3dcca018a9b62c7cb64d56bfdb286da695b97d5a14`.
+  All 16 affected Iceberg file cases and four GC cases pass in
+  `container-e2e/run-7182e79d73e24569b9df7900ba084315` and
+  `container-e2e/run-394ea52271a84a8a8ed05d2df7de1188`, including both prior
+  failures. Six affected S3 cases pass; all five Dataset container cases pass
+  in `container-e2e/run-b5f5b8ddadcb45a0bec8c698a783d3ba`.
+- The unchanged full TCP workload passes on the rebuilt image in
+  `dataset-workload/abea0a0568824233a32ba85a063e522a`: 18 trials, 4,608 completed
+  requests, zero errors, installed Python semantics, HTTP/native Split parity,
+  cross-runtime and storage-restart cursor replay, held buffers and cancellation.
+  Metadata replicas peak at approximately 205 MiB each under the unchanged
+  2-GiB cap. The [Access acceptance record](../../app/crowdb-access-server/tests/README.md#dataset-httpnative-comparison)
+  retains exact identity and trade-offs: native Rust throughput is about 20%
+  higher at concurrency one and 4% higher at three; memory and multi-flight CPU
+  are higher, and some small-request p50 values are slower. This is not an
+  isolated before/after performance claim for the cleanup patches.
+- The bounded immutable write comparison passes in
+  `write-batch-comparison/acd38136ec0943aeac3aaa9d849c0a5c`. Both profiles are
+  slower with the current routed batch despite fewer owner RPCs and use more
+  protocol bytes; retain bounded point concurrency. The cold warmup handshake
+  accounting fix preserves exact frame equality and forbids new connections in
+  measured trials. Applicable fmt/clippy and the real fixture pass.
+- Local HCA remains outstanding because the address/local-loop prerequisites
+  have not been restored. Keep this plan, the requirement and its backlog entry
+  until the applicable gates actually pass.
