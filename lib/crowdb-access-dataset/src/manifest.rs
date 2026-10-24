@@ -140,7 +140,7 @@ impl SchemaRecord {
 }
 
 impl FieldLocator {
-    fn validate(&self) -> Result<(), DatasetError> {
+    pub(crate) fn validate(&self) -> Result<(), DatasetError> {
         match self {
             Self::Inline { value, md5 } => {
                 if value.len() > MAX_INLINE_BYTES {

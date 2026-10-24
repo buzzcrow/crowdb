@@ -37,9 +37,62 @@ pub(super) struct TestDraftStore {
     pub lose_member_reply: AtomicBool,
     pub reject_split_proof_reads: AtomicBool,
     pub reject_draft_writes: AtomicBool,
+    pub reject_workflow_writes: AtomicBool,
+    pub lose_complete_reply: AtomicBool,
+    pub lose_claim_reply: AtomicBool,
+    pub reject_after_unknown: AtomicBool,
 }
 impl TestDraftStore {
+    fn check_unknown_reply(&self, key: &[u8], value: &[u8], result: &CasOutcome) -> Result<(), StoreError> {
+        if key.starts_with(b"DS\0CB\0")
+            && matches!(result, CasOutcome::Applied(_))
+            && self.lose_complete_reply.load(Ordering::Relaxed)
+            && serde_json::from_slice::<serde_json::Value>(value).is_ok_and(|v| v["version"] == 2)
+        {
+            self.lose_complete_reply.store(false, Ordering::Relaxed);
+            self.reject_after_unknown.store(true, Ordering::Relaxed);
+            return Err(StoreError::Rejected);
+        }
+        if key.starts_with(b"DS\0U\0")
+            && matches!(result, CasOutcome::Applied(_))
+            && self.lose_claim_reply.load(Ordering::Relaxed)
+            && serde_json::from_slice::<serde_json::Value>(value).is_ok_and(|v| v["state"] == "claimed")
+        {
+            self.lose_claim_reply.store(false, Ordering::Relaxed);
+            self.reject_after_unknown.store(true, Ordering::Relaxed);
+            return Err(StoreError::Rejected);
+        }
+        Ok(())
+    }
     fn check_result_write(&self, key: &[u8]) {
+        assert!(
+            !self.reject_after_unknown.load(Ordering::Relaxed),
+            "mutation after unknown completion"
+        );
+        if self.reject_workflow_writes.load(Ordering::Relaxed) {
+            assert!(
+                ![
+                    b"DS\0CBG\0".as_slice(),
+                    b"DS\0CD\0",
+                    b"DS\0CE\0",
+                    b"DS\0CX\0",
+                    b"DS\0CW\0",
+                    b"DS\0CM\0",
+                    b"DS\0SB\0",
+                    b"DS\0SD\0",
+                    b"DS\0SX\0",
+                    b"DS\0SW\0",
+                    b"DS\0O\0",
+                    b"DS\0CA\0",
+                    b"DS\0CR\0",
+                    b"DS\0SC\0",
+                    b"DS\0SRC\0"
+                ]
+                .iter()
+                .any(|prefix| key.starts_with(prefix)),
+                "stateless composition wrote process metadata"
+            );
+        }
         if self.reject_draft_writes.load(Ordering::Relaxed) {
             assert!(
                 [b"DS\0SR\0".as_slice(), b"DS\0SRI\0", b"DS\0SM\0"]
@@ -53,6 +106,10 @@ impl TestDraftStore {
 #[async_trait::async_trait]
 impl DatasetStore for TestDraftStore {
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
+        assert!(
+            !self.reject_after_unknown.load(Ordering::Relaxed),
+            "GET after unknown completion"
+        );
         self.unbounded_reads.fetch_add(1, Ordering::Relaxed);
         if key.starts_with(b"DS\0H\0") {
             self.data_head_reads.fetch_add(1, Ordering::Relaxed);
@@ -81,6 +138,10 @@ impl DatasetStore for TestDraftStore {
         budget: MetadataScanBudget,
         cancel: &ReadCancellation,
     ) -> Result<Option<StoredValue>, StoreError> {
+        assert!(
+            !self.reject_after_unknown.load(Ordering::Relaxed),
+            "bounded GET after unknown completion"
+        );
         self.bounded_reads.fetch_add(1, Ordering::Relaxed);
         if key.starts_with(b"DS\0H\0") {
             self.data_head_reads.fetch_add(1, Ordering::Relaxed);
@@ -191,6 +252,7 @@ impl DatasetStore for TestDraftStore {
             return Err(StoreError::Rejected);
         }
         let result = self.inner.compare_exchange(key, expected, value).await?;
+        self.check_unknown_reply(key, value, &result)?;
         if key.starts_with(b"DS\0SR\0")
             && matches!(result, CasOutcome::Applied(_))
             && self.lose_revision_reply.swap(false, Ordering::Relaxed)

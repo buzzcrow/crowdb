@@ -17,6 +17,7 @@ enum PublicationMode {
     LegacyPrepare,
     LegacyPublish,
     Candidate(Option<crate::SplitRevisionId>),
+    Resource(Option<crate::SplitRevisionId>),
 }
 
 use super::{decode, decode_head, decode_manifest, encode, DatasetAuthority};
@@ -136,11 +137,15 @@ impl DatasetAuthority {
         operation: OperationId,
         mode: PublicationMode,
     ) -> Result<SnapshotId, AuthorityError> {
-        self.get_dataset(identity).await?;
+        if matches!(mode, PublicationMode::Resource(_)) {
+            self.read_dataset_record(identity).await?;
+        } else {
+            self.get_dataset(identity).await?;
+        }
         let mut manifest = match decode_manifest(&manifest_bytes) {
             Ok(manifest) => manifest,
             Err(AuthorityError::Invalid(DatasetError::InvalidManifest))
-                if !matches!(mode, PublicationMode::Candidate(_)) =>
+                if !matches!(mode, PublicationMode::Candidate(_) | PublicationMode::Resource(_)) =>
             {
                 return self
                     .prepare_opaque_snapshot(identity, parent, manifest_bytes, operation)
@@ -166,7 +171,9 @@ impl DatasetAuthority {
             }
         }
         let operation_key = key::operation(identity, operation)?;
-        let snapshot = if let Some(value) = self.store.get(&operation_key).await? {
+        let snapshot = if matches!(mode, PublicationMode::Resource(_)) {
+            SnapshotId::from_bytes(operation.as_bytes())?
+        } else if let Some(value) = self.store.get(&operation_key).await? {
             if value.bytes == retirement::RETIRED {
                 return Err(DatasetError::InvalidPublicationState.into());
             }
@@ -218,29 +225,46 @@ impl DatasetAuthority {
                 {
                     return Err(AuthorityError::AlreadyExists);
                 }
-                if existing.publication.state == PublicationState::Published
-                    && (self
-                        .snapshot_candidate(identity, snapshot)
-                        .await?
-                        .is_some_and(|c| c.version == 2)
-                        || self.snapshot_commit(identity, snapshot).await?.is_some())
-                {
-                    if matches!(mode, PublicationMode::LegacyPublish) {
-                        return self.advance_head(identity, None, parent, snapshot).await;
-                    }
-                    return Ok(snapshot);
-                }
-                if existing.publication.state == PublicationState::Published
-                    && self.snapshot_candidate(identity, snapshot).await?.is_none()
-                {
-                    match self.require_committed_snapshot(identity, snapshot).await {
-                        Ok(()) => return Ok(snapshot),
-                        Err(AuthorityError::SnapshotNotFound) => {}
-                        Err(error) => return Err(error),
-                    }
-                }
                 if existing.publication.state == PublicationState::Aborted {
                     return Err(AuthorityError::Invalid(DatasetError::InvalidPublicationState));
+                }
+                if let PublicationMode::Resource(initial) = mode {
+                    if let Some(mut content) = self.snapshot_candidate(identity, snapshot).await? {
+                        let reusable = matches!(content.version, 2 | 3);
+                        let expected =
+                            candidate::binding(snapshot, parent, operation, &manifest_bytes, initial);
+                        content.version = expected.version;
+                        if content != expected {
+                            return Err(AuthorityError::AlreadyExists);
+                        }
+                        // The content binding follows all immutable Manifest and inspection rows.
+                        // Initial membership and payload owners are checked by final completion.
+                        if reusable {
+                            return Ok(snapshot);
+                        }
+                    }
+                } else {
+                    if existing.publication.state == PublicationState::Published
+                        && (self
+                            .snapshot_candidate(identity, snapshot)
+                            .await?
+                            .is_some_and(|c| c.version == 2)
+                            || self.snapshot_commit(identity, snapshot).await?.is_some())
+                    {
+                        if matches!(mode, PublicationMode::LegacyPublish) {
+                            return self.advance_head(identity, None, parent, snapshot).await;
+                        }
+                        return Ok(snapshot);
+                    }
+                    if existing.publication.state == PublicationState::Published
+                        && self.snapshot_candidate(identity, snapshot).await?.is_none()
+                    {
+                        match self.require_committed_snapshot(identity, snapshot).await {
+                            Ok(()) => return Ok(snapshot),
+                            Err(AuthorityError::SnapshotNotFound) => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
                 }
             }
             None => match self
@@ -263,7 +287,7 @@ impl DatasetAuthority {
                 operation,
                 &manifest_bytes,
                 match mode {
-                    PublicationMode::Candidate(initial) => initial,
+                    PublicationMode::Candidate(initial) | PublicationMode::Resource(initial) => initial,
                     _ => None,
                 },
             ),

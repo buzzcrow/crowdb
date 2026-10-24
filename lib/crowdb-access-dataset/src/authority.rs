@@ -132,18 +132,22 @@ impl DatasetAuthority {
     /// # Errors
     /// Returns malformed storage or a missing Dataset.
     pub async fn get_dataset(&self, identity: &DatasetIdentity) -> Result<DatasetRecord, AuthorityError> {
-        let value = self
-            .store
-            .get(&key::dataset(identity)?)
-            .await?
-            .ok_or(AuthorityError::NotFound)?;
-        let mut dataset: DatasetRecord = decode(&value.bytes)?;
+        let mut dataset = self.read_dataset_record(identity).await?;
         if let Some(head) = self.store.get(&key::head(identity)?).await? {
             let head = decode_head(&head.bytes)?;
             dataset.latest = head.latest;
             dataset.stable = head.stable;
         }
         Ok(dataset)
+    }
+
+    async fn read_dataset_record(&self, identity: &DatasetIdentity) -> Result<DatasetRecord, AuthorityError> {
+        let value = self
+            .store
+            .get(&key::dataset(identity)?)
+            .await?
+            .ok_or(AuthorityError::NotFound)?;
+        decode(&value.bytes)
     }
 
     /// # Errors

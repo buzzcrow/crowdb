@@ -204,6 +204,17 @@ latest. A head conflict MUST return the observed latest/stable/generation withou
 a confirmation query. A reviewed retry uses that observation with caller-chosen
 content; the server MUST NOT rebase. Unknown storage outcomes MUST propagate.
 Existing legacy receipts remain readable without backfill.
+Native Composition resource preparation MUST accept complete caller-owned inputs
+and a fixed Snapshot ID without persisting editing or evaluation progress. Its
+fixed source/Split revisions MUST survive retries unchanged. It MUST install the
+complete resource root only after final Manifest/index, initial Split membership
+and managed payload owners are ready; it MUST NOT move latest/stable. Input and
+final Manifest are bounded to 8 MiB and computation to 30 seconds. Incomplete
+computation is redone; identical complete content is reusable with zero writes.
+Different resource content, including its initial Split binding, MUST conflict.
+Unknown completion outcomes MUST NOT cause a confirmation query. This native
+contract does not imply that the legacy Composition REST workflow is migrated.
+
 Composition and Split status reads MUST NOT reconstruct a publication request,
 help edit receipts or persist recovery state. Legacy Committing drafts are
 presented as Prepared without rewriting the stored draft or querying attempt,

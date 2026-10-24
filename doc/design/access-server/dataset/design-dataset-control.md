@@ -70,6 +70,40 @@ remain readable. An empty set is a revision, distinct from an absent pointer.
 
 ## 2. Composition and inheritance
 
+The native `prepare_composition_resource` accepts a caller-owned Snapshot ID and
+complete parent/source/schema/changes/Split inputs. It computes a bounded final
+Manifest directly, then writes its immutable partitions and inspection index,
+initial Split membership and final payload owners. It completes the existing
+resource root last; latest/stable are updated separately. There is no operation
+mapping, draft, edit receipt, working row, window intent, staging owner or durable
+computation cursor. The native input and final Manifest are bounded to 8 MiB and
+the request to 30 seconds, with twenty-Sample source windows. Partial field patches
+keep other effective parent fields; source filtering does not prevent an explicit
+upsert from reintroducing a parent Sample. Each patch ID appears once. Frozen
+Split sources and inherited definitions name exact revisions; retries never resolve
+currentSplit again. Patch application moves existing rows and tracks encoded size
+incrementally rather than serializing the growing Manifest after every change.
+
+A retry recomputes incomplete work and reuses matching complete content. The
+existing content binding follows all final Manifest/index rows, so retrying a
+failed owner claim does not rewrite those rows; it still checks unfinished initial
+membership and owners before completion. The Snapshot ID fixes its Manifest and initial Split binding; different final content
+conflicts, including removing an existing initial Split. Identical complete retries
+write no state. Unknown completion replies return directly without a confirmation
+read. Resource preparation checks Dataset identity without loading the head.
+Managed upload metadata is validated once per unique upload before output writes,
+and the final Snapshot owner is acquired before completion. The final Manifest
+finds every owner for cleanup; there is no parallel ownership-progress list. Opaque
+legacy locators inherited from a parent retain their existing storage contract;
+new chunk patches must be valid managed upload locators.
+
+Resource prefixes and the immutable Snapshot record expose interrupted output to
+owner retirement. Existing member pages are sealed after the grace period, and
+recomputation cannot complete a retired Snapshot. Independent unused-resource
+expiry and discovery of arbitrarily late unseen keys remain separate work. The
+REST/SDK Composition workflow below still uses the legacy path until migration;
+the new native operation does not call it.
+
 `CompositionRecord` persists the operation, input revision, source, pinned parent
 Split revision, edits, evaluation progress, candidate and ownership state. Edits
 use expected-revision CAS and immutable edit receipts. Historical retries return

@@ -3,6 +3,9 @@
 
 //! Server-owned child composition drafts and revision-bound evaluation state.
 
+mod resource;
+pub use resource::{CompositionRequest, CompositionResult};
+
 mod record;
 pub use record::{CompositionRecord, CompositionSource, DraftProgress};
 

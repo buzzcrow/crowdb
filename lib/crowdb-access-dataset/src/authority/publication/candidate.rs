@@ -78,6 +78,26 @@ impl DatasetAuthority {
         .await
     }
 
+    pub(crate) async fn prepare_composition_content(
+        &self,
+        identity: &DatasetIdentity,
+        parent: Option<SnapshotId>,
+        manifest: Vec<u8>,
+        snapshot: SnapshotId,
+        initial: Option<SplitRevisionId>,
+    ) -> Result<(), AuthorityError> {
+        let operation = OperationId::from_bytes(snapshot.as_bytes())?;
+        self.write_publication(
+            identity,
+            parent,
+            manifest,
+            operation,
+            PublicationMode::Resource(initial),
+        )
+        .await?;
+        Ok(())
+    }
+
     pub(in crate::authority) async fn bind_snapshot_candidate(
         &self,
         identity: &DatasetIdentity,

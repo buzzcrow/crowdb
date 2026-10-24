@@ -34,16 +34,25 @@ impl DatasetAuthority {
         input: &SplitPreparation,
         cancel: &ReadCancellation,
     ) -> Result<SplitRevisionRecord, SplitLifecycleError> {
-        SnapshotId::from_bytes(snapshot.as_bytes()).map_err(AuthorityError::from)?;
-        SplitRevisionId::from_bytes(input.revision.as_bytes()).map_err(AuthorityError::from)?;
-        super::draft::validate_definitions(snapshot, &input.splits)?;
-        super::codec::encode(input)?;
+        validate(snapshot, input)?;
         tokio::time::timeout(
             Duration::from_secs(30),
-            self.prepare_split_result(identity, snapshot, input, cancel),
+            self.prepare_split_result(identity, snapshot, input, cancel, false),
         )
         .await
         .map_err(|_| SplitLifecycleError::Limit)?
+    }
+
+    pub(crate) async fn prepare_initial_split_revision(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        input: &SplitPreparation,
+        cancel: &ReadCancellation,
+    ) -> Result<SplitRevisionRecord, SplitLifecycleError> {
+        validate(snapshot, input)?;
+        self.prepare_split_result(identity, snapshot, input, cancel, true)
+            .await
     }
 
     async fn prepare_split_result(
@@ -52,9 +61,12 @@ impl DatasetAuthority {
         snapshot: SnapshotId,
         input: &SplitPreparation,
         cancel: &ReadCancellation,
+        initial: bool,
     ) -> Result<SplitRevisionRecord, SplitLifecycleError> {
         cancelled(cancel)?;
-        self.require_committed_snapshot(identity, snapshot).await?;
+        let parent = self
+            .check_preparation_owner(identity, snapshot, input.revision, initial)
+            .await?;
         let root = key::revision(identity, snapshot, input.revision).map_err(AuthorityError::from)?;
         if let Some(stored) = self.split_state_get(&root).await? {
             if stored.bytes == super::RETIRED_RECORD {
@@ -67,8 +79,13 @@ impl DatasetAuthority {
                 Err(SplitLifecycleError::Conflict)
             };
         }
-        self.validate_split_definitions(identity, snapshot, &input.splits)
-            .await?;
+        if initial {
+            self.validate_split_parent_sources(identity, parent, &input.splits)
+                .await?;
+        } else {
+            self.validate_split_definitions(identity, snapshot, &input.splits)
+                .await?;
+        }
         let mut record = result(snapshot, input)?;
         let encoded_size = record.encode()?.len();
         let summary = SplitRevisionSummary {
@@ -84,12 +101,38 @@ impl DatasetAuthority {
             &super::codec::encode(&summary)?,
         )
         .await?;
-        self.compute_split_members(identity, input, &mut record, encoded_size, cancel)
+        self.compute_split_members(identity, input, &mut record, encoded_size, cancel, initial)
             .await?;
         cancelled(cancel)?;
-        self.require_committed_snapshot(identity, snapshot).await?;
+        self.check_preparation_owner(identity, snapshot, input.revision, initial)
+            .await?;
         self.put_split_state(&root, &record.encode()?).await?;
         Ok(record)
+    }
+
+    async fn check_preparation_owner(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        revision: SplitRevisionId,
+        initial: bool,
+    ) -> Result<Option<SnapshotId>, SplitLifecycleError> {
+        if !initial {
+            self.require_committed_snapshot(identity, snapshot).await?;
+            return Ok(None);
+        }
+        let candidate = self
+            .snapshot_candidate(identity, snapshot)
+            .await?
+            .ok_or(SplitLifecycleError::NotFound)?;
+        if candidate.initial_split != Some(revision) {
+            return Err(SplitLifecycleError::Conflict);
+        }
+        if let Some(parent) = candidate.parent {
+            self.require_committed_snapshot(identity, parent).await?;
+        }
+        self.check_snapshot_readable(identity, snapshot).await?;
+        Ok(candidate.parent)
     }
 
     async fn compute_split_members(
@@ -99,6 +142,7 @@ impl DatasetAuthority {
         record: &mut SplitRevisionRecord,
         mut encoded_size: usize,
         cancel: &ReadCancellation,
+        initial: bool,
     ) -> Result<(), SplitLifecycleError> {
         let mut after = None;
         let mut validation = SplitValidation::default();
@@ -116,7 +160,7 @@ impl DatasetAuthority {
                         timeout: Duration::from_secs(2),
                     },
                     cancel,
-                    false,
+                    initial,
                 )
                 .await?;
             validation.merge(&window.validation)?;
@@ -190,6 +234,14 @@ impl DatasetAuthority {
         }
         Ok(())
     }
+}
+
+fn validate(snapshot: SnapshotId, input: &SplitPreparation) -> Result<(), SplitLifecycleError> {
+    SnapshotId::from_bytes(snapshot.as_bytes()).map_err(AuthorityError::from)?;
+    SplitRevisionId::from_bytes(input.revision.as_bytes()).map_err(AuthorityError::from)?;
+    super::draft::validate_definitions(snapshot, &input.splits)?;
+    super::codec::encode(input)?;
+    Ok(())
 }
 
 fn result(

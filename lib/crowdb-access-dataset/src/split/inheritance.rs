@@ -54,11 +54,26 @@ impl DatasetAuthority {
         let owner = self
             .snapshot_inspection_summary(identity, snapshot, budget, &cancel)
             .await?;
+        self.validate_split_parent_sources(identity, owner.parent, splits)
+            .await
+    }
+    pub(crate) async fn validate_split_parent_sources(
+        &self,
+        identity: &DatasetIdentity,
+        parent: Option<SnapshotId>,
+        splits: &[DraftSplit],
+    ) -> Result<(), SplitLifecycleError> {
+        let budget = MetadataScanBudget {
+            items: 1,
+            bytes: 1024 * 1024,
+            timeout: Duration::from_secs(2),
+        };
+        let cancel = ReadCancellation::new();
         let mut work = InspectionWork::new(self.store.as_ref(), &cancel, budget)?;
         let mut revisions = BTreeMap::new();
         for split in splits {
             if let MembershipOrigin::Inherited(source) = &split.origin {
-                if owner.parent != Some(source.snapshot) {
+                if parent != Some(source.snapshot) {
                     return Err(SplitLifecycleError::Conflict);
                 }
                 let key = (source.snapshot, source.revision);
