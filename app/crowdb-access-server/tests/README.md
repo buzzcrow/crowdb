@@ -32,8 +32,8 @@ Client recipes: [container development](../../../container/single-node-container
   recurs; do not describe it as fixed by FileIO scheduling changes.
 - Native multipart diagnostics exposed unequal competing copy windows, tiny
   checkpoint-only leaves, repeated directory reads and duplicate JSON digest
-  passes. These targeted costs are removed. One-frame assembly overlap preserves
-  checkpoint/replay/error invariants. Broader batching, shared decoded caches,
+  passes. Assembly now recomputes from the complete selected-part input without
+  persisting byte progress. Broader batching, shared decoded caches,
   sustained throughput and recovery-page scaling remain measurement work, not
   implied guarantees from the original-bound functional fixture passing.
 
@@ -64,6 +64,67 @@ Client recipes: [container development](../../../container/single-node-container
   storage I/O, CPU and memory alongside failure-injection regression results.
 - Create one consolidated optimization backlog later. No new performance backlog
   or latency guarantee is introduced by the functional-test split itself.
+
+## Dataset HTTP/native comparison
+
+The complete same-host TCP workload and installed Python/storage-restart
+acceptance pass in `dataset-workload/9dbf56c386e142e995b8eb400305b467` under
+`.crowdb-runtime/artifacts/`. `manifest.json` retains image labels, CPU placement
+and per-phase service counters; each client log retains all per-size p50/p99
+observations and digest timings. `summary.json` aggregates the three trials.
+
+- Image: `crowdb-node:access-stateless-20261025`, imported Docker ID
+  `sha256:95dd137f69d4cf4e767945b02fec5e63d72ec530338e5ecdd1f342dbcadc1667`.
+- Source revision: `4cd4f752d08c5dc48118965a5405a1c2d24082ad`; source tree:
+  `528ce6b7bb9954663734242df1f2142d436b9c53`.
+- Client CPU 2; service CPUs 4–15; each metadata replica capped at 2 GiB.
+  Metadata cgroup peaks were 234/205/205 MiB, without a stopped replica.
+- Sizes: 0, 128, 513, 4,096, 65,535, 262,144, 1,048,576 and 4,194,321 bytes.
+  Two warmup rounds precede three trials at each concurrency. Each worker
+  performs 128 requests per trial: 4,608 measured requests, zero errors.
+  Every path verifies exact bytes and integrity; Python byte-copy costs remain
+  included. No workload budget, deadline or retry bound was increased.
+
+Throughput is total bytes divided by total elapsed time across three trials.
+Client CPU is the three-trial sum; RSS is the largest observed client value.
+
+| Path          | Concurrency | MiB/s  | Client CPU (s) | Peak RSS (MiB) |
+| ------------- | ----------- | ------ | -------------- | -------------- |
+| HTTP          | 1           | 183.81 | 0.87           | 11.38          |
+| Native Rust   | 1           | 213.80 | 0.89           | 28.72          |
+| Native Python | 1           | 202.29 | 0.95           | 55.08          |
+| HTTP          | 3           | 254.64 | 2.46           | 17.51          |
+| Native Rust   | 3           | 271.47 | 2.72           | 30.26          |
+| Native Python | 3           | 268.57 | 2.84           | 60.52          |
+
+Native throughput improves for this mixed corpus, while client memory and CPU
+increase. Individual sizes do not all improve: at concurrency one, the median
+trial p50 for 128 bytes is 524 µs over HTTP and 666 µs in native Rust; for 1 MiB
+it is 6,361 and 3,035 µs respectively. Only 16/48 observations per size enter each
+trial, so these tails do not establish a production latency guarantee.
+The separately timed resident-buffer 64-MiB MD5 kernel takes approximately
+85 ms in Rust and 63 ms in Python; normal reads still perform integrity checks.
+
+The shared fixture's service `memory.peak` is cumulative, and HTTP service CPU
+also includes initial publication. Those counters are not isolated per-path
+server peaks or a fair read-only server-CPU comparison. This is a pinned
+same-host functional workload, not cross-host RDMA performance evidence.
+
+The semantic phase compares HTTP/native ReadSpec and Split batch headers,
+sample IDs and bytes; replays the original cursor on a second runtime and after
+storage restart; and checks publication conflicts, multipart ownership, a
+65-second idle, cancellation and caller-held buffers. The native runtime never
+uses HTTP as an implicit fallback.
+
+Reproduce after building/importing the matching service image:
+
+```sh
+pixi run -- python tools/sdk/dataset_workload.py --image crowdb-node:access-stateless-20261025
+```
+
+The explicit local-HCA profile remains a separate gate. Its current host setup
+needs restoration; environment-gated unit cases are not counted as hardware
+acceptance.
 
 ## Verification and execution notes
 

@@ -12,7 +12,7 @@ bounded owner-backed delivery and independently packaged Python bindings.
 
 ## Baseline and contract
 
-- [ ] **Measure HTTP**: add a reproducible release Rust consumer over the owned
+- [x] **Measure HTTP**: add a reproducible release Rust consumer over the owned
   real-service fixture. Pin one client physical core, record the server CPU
   placement, immutable image/source, snapshot, mixed payload sizes, warmup,
   repeats, concurrency, completed requests, per-size p50/p99, throughput,
@@ -543,3 +543,39 @@ remaining user design decision and no requirement `Blocked` condition.
   installed-Python cases are not current-source hardware acceptance.
 - Next: rebuild/import the same source and rerun unchanged mixed-size workload,
   then final real-service restart/local-HCA acceptance. R220 stays open.
+
+## Current acceptance preparation (2026-10-25)
+
+- The final seven-crate Access/Dataset/Iceberg/S3/native/ChunkClient/Chunk-KV
+  all-target gate passes: 1,642 tests, zero failures, three ignored cases.
+  Workspace all-target/all-feature clippy, standard Rust lint, formatting and
+  SDK dependency boundaries pass. Official Java/PyIceberg SDK acceptance passes
+  all eight cases. These results do not substitute for current-image acceptance.
+- Dataset partial TCP read failure and accepted-read cancellation pass through
+  the production facade and DiskIO RPC, with in-process metadata/layout fixtures.
+  Delivered owners survive terminal failure and shutdown; local admission and
+  held charges drain independently. TCP preserves its three bounded target
+  attempts, while subsequent sticky pulls issue no RPC. The explicit RDMA case
+  remains unactivated until the HCA environment is restored.
+- The semantic consumer now compares HTTP/native ReadSpec and Split batches,
+  replays the original cursor on another runtime, and persists an original
+  Split cursor/header/digests for storage-restart verification. Mixed-size
+  performance sizes, concurrency, rounds, budgets and deadlines are unchanged.
+- The host HCA is active, but its test address and local-loop settings were
+  reset. Restoring them requires a sudo password unavailable to the agent.
+  The user has been asked to run the existing local setup command. Continue
+  image, TCP workload and container acceptance independently; do not count
+  environment-gated unit cases as actual HCA evidence.
+- Current-source image build/import and the unchanged complete TCP workload pass
+  in `dataset-workload/9dbf56c386e142e995b8eb400305b467`, including installed
+  Python semantics, HTTP/native Split parity, cross-runtime cursor replay,
+  held buffers and storage-restart replay. All 4,608 measured requests succeed.
+  The retained [Access acceptance record](../../app/crowdb-access-server/tests/README.md#dataset-httpnative-comparison)
+  contains exact image/source identity, per-path throughput/CPU/RSS, per-size
+  latency examples, digest cost, original artifact locations and statistical
+  limits. Native Rust improves aggregate throughput but uses more client CPU
+  and memory; some small requests remain slower than HTTP.
+- Dataset container acceptance passes in
+  `container-e2e/run-4e53cd0385824d9b8b5d6218655a02cb`; the final Iceberg domain
+  now runs against the same image. Local HCA remains outstanding; keep this
+  plan, the requirement and its backlog entry until that gate actually passes.
