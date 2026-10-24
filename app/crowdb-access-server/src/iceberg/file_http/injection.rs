@@ -1,5 +1,5 @@
 use crowdb_access_iceberg::{
-    file::{FileIdentity, NativeInjectionRepository, NativeInjectionRequest},
+    file::{FileIdentity, FileRepository},
     key::FileId,
 };
 use hyper::{
@@ -9,8 +9,8 @@ use hyper::{
 };
 
 use super::{
-    admission_error, catalog_error, etag, multipart, now_ms, set_header, FileHttp, FileRequest,
-    FileS3ErrorCode, FileTransferAdmission, IcebergBody, UploadBody,
+    admission_error, catalog_error, etag, multipart, set_header, FileHttp, FileRequest, FileS3ErrorCode,
+    FileTransferAdmission, IcebergBody, UploadBody,
 };
 
 impl FileHttp {
@@ -32,56 +32,43 @@ impl FileHttp {
             .and_then(|filename| filename.strip_suffix(".parquet"))
             .ok_or(FileS3ErrorCode::InvalidRequest)?
             .to_owned();
-        let injection = NativeInjectionRequest {
-            context: admission.context(),
-            table: file_request.location.table(),
-            identity: file_request.injection.ok_or(FileS3ErrorCode::InvalidRequest)?,
-            principal: admission.principal(),
-            stem,
-            digest,
-        };
-        let repository = NativeInjectionRepository::new(self.store.clone());
-        crowdb_access_iceberg::file::DirectFileLocations::validate_stem(&injection.stem)
+        let identity = file_request.injection.ok_or(FileS3ErrorCode::InvalidRequest)?;
+        identity
+            .validate(current_ms)
             .map_err(|_| FileS3ErrorCode::InvalidRequest)?;
-        let file = if let Some(file) = repository
-            .replay(&injection, current_ms)
-            .await
-            .map_err(catalog_error)?
-        {
-            file
-        } else {
-            let (parts, incoming) = request.into_parts();
-            let mut body = UploadBody::new(incoming, &parts.headers, None, admission.request_byte_limit())
-                .map_err(multipart::encoding_error)?;
-            let owner = FileIdentity {
-                table: injection.table,
-                file: FileId::random(),
-            };
-            let length = body.decoded_length();
-            let tree = admission
-                .receive(
-                    &self.uploads,
-                    &mut body,
-                    self.blocks.clone(),
-                    owner,
-                    length,
-                    Some(digest),
-                )
-                .await
-                .map_err(|error| {
-                    body.failure()
-                        .map_or_else(|| admission_error(error), multipart::encoding_error)
-                })?;
-            crowdb_access_iceberg::file::FileSealer::new(self.blocks.clone(), self.limits.max_file_bytes)
-                .map_err(|_| FileS3ErrorCode::InternalError)?
-                .seal_uploaded(owner, file_request.location.clone(), tree.clone())
-                .await
-                .map_err(multipart::seal_error)?;
-            repository
-                .finish(&injection, owner, tree, locations, now_ms()?)
-                .await
-                .map_err(catalog_error)?
+        crowdb_access_iceberg::file::DirectFileLocations::validate_stem(&stem)
+            .map_err(|_| FileS3ErrorCode::InvalidRequest)?;
+        let (parts, incoming) = request.into_parts();
+        let mut body = UploadBody::new(incoming, &parts.headers, None, admission.request_byte_limit())
+            .map_err(multipart::encoding_error)?;
+        let owner = FileIdentity {
+            table: file_request.location.table(),
+            file: FileId::random(),
         };
+        let length = body.decoded_length();
+        let tree = admission
+            .receive(
+                &self.uploads,
+                &mut body,
+                self.blocks.clone(),
+                owner,
+                length,
+                Some(digest),
+            )
+            .await
+            .map_err(|error| {
+                body.failure()
+                    .map_or_else(|| admission_error(error), multipart::encoding_error)
+            })?;
+        crowdb_access_iceberg::file::FileSealer::new(self.blocks.clone(), self.limits.max_file_bytes)
+            .map_err(|_| FileS3ErrorCode::InternalError)?
+            .seal_uploaded(owner, file_request.location.clone(), tree.clone())
+            .await
+            .map_err(multipart::seal_error)?;
+        let file = FileRepository::new(self.store.clone())
+            .finalize_native_parquet(admission.context(), owner, &stem, tree, locations)
+            .await
+            .map_err(catalog_error)?;
         let bytes = serde_json::to_vec(&serde_json::json!({"location": file.location.to_string()}))
             .map_err(|_| FileS3ErrorCode::InternalError)?;
         let length = bytes.len();

@@ -19,8 +19,8 @@ impl FileRepository {
         Self { store }
     }
 
-    /// Finalizes an injection using its durably selected upload tree.
-    /// The caller retains that same owner/tree in its upload recovery state.
+    /// Publishes one complete native upload. The caller retains its input and
+    /// retries the whole transfer after failure; no request selection is stored.
     ///
     /// # Errors
     /// Rejects legacy scope, corrupt trees and conflicting filename publication.

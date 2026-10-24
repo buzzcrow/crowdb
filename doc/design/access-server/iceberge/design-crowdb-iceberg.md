@@ -78,8 +78,7 @@ has a durable ID under the same rules as named namespaces.
     └── <table-id>/
         ├── head
         ├── file/<public-relative-filename>
-        ├── projection/<metadata-generation>/<page-or-receipt>
-        └── operation/<operation-id>/injection
+        └── projection/<metadata-generation>/<page-or-receipt>
 ```
 
 Catalog and namespace control records have their own typed scopes. Namespace
@@ -124,8 +123,8 @@ These records are retained only for retry, fencing and reclamation. They do not
 add another published file authority or participate in direct GET/HEAD. GC data
 discovery chooses v1 or v2 from the persisted catalog layout; independent
 service-control scans never merge the two file namespaces. Head, file and
-projection records use the native table directory. The native injection receipt
-already knows its selected table and is stored under that directory.
+projection records use the native table directory. Historical native injection
+receipts remain decodable for reclamation; uploads create no request receipt.
 
 ### Standard metadata and bounded scale
 
@@ -463,8 +462,11 @@ a unique FileId, length, integrity information and complete stable native
 location or chunk-resident directory root. Its versioned signature binds the
 full table identity, readable stem and unsigned locator fields; the signature
 bytes are excluded from that signing input. Repeated readable stems are harmless;
-an identical upload retry returns the original selected filename. Locator and
-stem together must fit the object-key limit.
+a full upload retry can return a new filename for equivalent contents. The
+client retains the returned URL for its eventual metadata commit. Unreferenced
+copies are discovered through file and physical range ownership facts. No
+operation record selects or replays an upload response. Locator and stem
+together must fit the object-key limit.
 
 Ordinary SDK writers choose logical filenames before S3 PUT and keep those
 URLs. A PUT-time allocation does not change a client's chosen path. These

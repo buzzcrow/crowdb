@@ -9,7 +9,7 @@ mod deletion_vector;
 mod digest;
 mod direct_location;
 mod injection;
-pub use injection::{NativeInjection, NativeInjectionRepository, NativeInjectionRequest};
+pub use injection::NativeInjection;
 mod directory;
 mod format;
 mod json;
