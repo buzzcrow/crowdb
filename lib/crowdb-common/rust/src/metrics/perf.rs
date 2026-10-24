@@ -28,6 +28,11 @@
     clippy::items_after_statements
 )]
 
+mod cstate;
+pub use cstate::C6Counters;
+#[cfg(feature = "test-util")]
+pub use cstate::{parse_c6_cpu_list_for_tests, TestC6Window};
+
 #[cfg(target_os = "linux")]
 mod imp {
     use std::time::Instant;
@@ -74,14 +79,14 @@ mod imp {
 
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
-    struct PerfRead {
-        value: u64,
-        time_enabled: u64,
-        time_running: u64,
+    pub(super) struct PerfRead {
+        pub(super) value: u64,
+        pub(super) time_enabled: u64,
+        pub(super) time_running: u64,
     }
 
     /// A single opened perf counter fd + its previous reading.
-    struct PerfFd {
+    pub(super) struct PerfFd {
         fd: i32,
         prev: PerfRead,
     }
@@ -92,7 +97,7 @@ mod imp {
         /// `pmu_type` is the type from /sys/bus/event_source/devices/<pmu>/type.
         /// `cpu` is the CPU from the PMU's cpumask (uncore PMUs require
         /// a specific CPU, not -1).
-        fn open(pmu_type: u32, config: u64, cpu: i32) -> Option<Self> {
+        pub(super) fn open(pmu_type: u32, config: u64, cpu: i32) -> Option<Self> {
             let attr = PerfEventAttr {
                 type_: pmu_type,
                 size: PERF_ATTR_SIZE,
@@ -120,16 +125,16 @@ mod imp {
 
             // Enable the counter.
             const PERF_EVENT_IOC_ENABLE: u64 = 0x2400;
-            let _ = unsafe { libc::ioctl(fd, PERF_EVENT_IOC_ENABLE as libc::c_ulong, 0u64) };
-
-            Some(Self {
+            let counter = Self {
                 fd,
                 prev: PerfRead::default(),
-            })
+            };
+            let enabled = unsafe { libc::ioctl(fd, PERF_EVENT_IOC_ENABLE as libc::c_ulong, 0u64) };
+            (enabled == 0).then_some(counter)
         }
 
         /// Read the current cumulative counter value.
-        fn read(&self) -> Option<PerfRead> {
+        pub(super) fn read(&self) -> Option<PerfRead> {
             let mut sample = PerfRead::default();
             let size = std::mem::size_of::<PerfRead>();
             let read = unsafe {
@@ -164,7 +169,7 @@ mod imp {
     }
 
     /// Read a PMU type from /sys/bus/event_source/devices/<name>/type.
-    fn read_pmu_type(name: &str) -> Option<u32> {
+    pub(super) fn read_pmu_type(name: &str) -> Option<u32> {
         let path = format!("/sys/bus/event_source/devices/{name}/type");
         std::fs::read_to_string(path)
             .ok()
@@ -188,7 +193,7 @@ mod imp {
     /// Returns None if the file doesn't exist (some PMUs like amd_df
     /// don't expose events/ in sysfs — their encodings come from perf's
     /// JSON metric database and must be hardcoded by the caller).
-    fn read_pmu_event_config(pmu: &str, event: &str) -> Option<u64> {
+    pub(super) fn read_pmu_event_config(pmu: &str, event: &str) -> Option<u64> {
         let path = format!("/sys/bus/event_source/devices/{pmu}/events/{event}");
         let content = std::fs::read_to_string(path).ok()?;
         let mut event_val: u64 = 0;

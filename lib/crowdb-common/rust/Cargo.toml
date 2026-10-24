@@ -11,6 +11,9 @@ autobenches = false
 [lints]
 workspace = true
 
+[features]
+test-util = []
+
 [dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
 tracing = { workspace = true }
@@ -28,4 +31,5 @@ xxhash-rust = { version = "0.8", features = ["xxh64"] }
 libc = "0.2"
 
 [dev-dependencies]
+crowdb-common = { path = ".", features = ["test-util"] }
 crowdb-test-harness = { path = "../../crowdb-test-harness" }

@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdio>
+#include <memory>
 #include <string>
 
 using crowdb::common::metrics::flush_system;
@@ -41,16 +42,22 @@ TEST(SystemMetricsTest, FlushWritesAllFields)
     snap.dram_read_mib   = 512.5;
     snap.dram_write_mib  = 128.3;
     snap.dram_total_mib  = 640.8;
+    snap.cpu_core_c6     = {
+        {.cpu = 0, .pct = 83.25},
+        {.cpu = 2, .pct = 0.0  }
+    };
+    snap.cpu_package_c6 = {
+        {.cpu = 0, .pct = std::nullopt}
+    };
 
     // Write to a temp file via FILE*.
-    FILE *fp = std::tmpfile();
+    std::unique_ptr<FILE, decltype(&std::fclose)> fp(std::tmpfile(), &std::fclose);
     ASSERT_NE(fp, nullptr);
-    flush_system(fp, snap);
-    std::fseek(fp, 0, SEEK_SET);
+    flush_system(fp.get(), snap);
+    std::fseek(fp.get(), 0, SEEK_SET);
     std::array<char, 4096> buf{};
-    size_t                 n = std::fread(buf.data(), 1, buf.size() - 1, fp);
+    size_t                 n = std::fread(buf.data(), 1, buf.size() - 1, fp.get());
     buf[n]                   = '\0';
-    std::fclose(fp);
 
     std::string out(buf.data());
     EXPECT_TRUE(out.find("cpu.user=42%") != std::string::npos);
@@ -61,6 +68,7 @@ TEST(SystemMetricsTest, FlushWritesAllFields)
     EXPECT_TRUE(out.find("bw_read_mib=512.5") != std::string::npos);
     EXPECT_TRUE(out.find("bw_write_mib=128.3") != std::string::npos);
     EXPECT_TRUE(out.find("bw_total_mib=640.8") != std::string::npos);
+    EXPECT_TRUE(out.find("cpu.c6.core@0=83.2% cpu.c6.core@2=0.0% cpu.c6.package@0=unsupported") != std::string::npos);
 }
 
 TEST(SystemMetricsTest, FlushWritesUnsupportedWhenNone)
@@ -70,17 +78,17 @@ TEST(SystemMetricsTest, FlushWritesUnsupportedWhenNone)
     snap.dram_write_mib = std::nullopt;
     snap.dram_total_mib = std::nullopt;
 
-    FILE *fp = std::tmpfile();
+    std::unique_ptr<FILE, decltype(&std::fclose)> fp(std::tmpfile(), &std::fclose);
     ASSERT_NE(fp, nullptr);
-    flush_system(fp, snap);
-    std::fseek(fp, 0, SEEK_SET);
+    flush_system(fp.get(), snap);
+    std::fseek(fp.get(), 0, SEEK_SET);
     std::array<char, 1024> buf{};
-    size_t                 n = std::fread(buf.data(), 1, buf.size() - 1, fp);
+    size_t                 n = std::fread(buf.data(), 1, buf.size() - 1, fp.get());
     buf[n]                   = '\0';
-    std::fclose(fp);
 
     std::string out(buf.data());
     EXPECT_TRUE(out.find("bw_read_mib=unsupported") != std::string::npos);
     EXPECT_TRUE(out.find("bw_write_mib=unsupported") != std::string::npos);
     EXPECT_TRUE(out.find("bw_total_mib=unsupported") != std::string::npos);
+    EXPECT_TRUE(out.find("cpu.c6.core=unsupported cpu.c6.package=unsupported") != std::string::npos);
 }
