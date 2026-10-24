@@ -20,7 +20,7 @@ impl DatasetAuthority {
         }
         Ok(draft)
     }
-    /// Abandons an unpublished composition and releases only its owned source lease.
+    /// Marks an unpublished legacy draft abandoned while preserving complete resource ownership.
     /// # Errors
     /// Rejects stale revisions and publications in progress or already committed.
     pub async fn abandon_composition(
@@ -33,10 +33,7 @@ impl DatasetAuthority {
         if state.draft.record.revision != expected_revision {
             return Err(CompositionError::Conflict);
         }
-        if matches!(
-            state.draft.record.progress,
-            DraftProgress::Committing { .. } | DraftProgress::Published { .. }
-        ) {
+        if matches!(state.draft.record.progress, DraftProgress::Published { .. }) {
             return Err(CompositionError::Frozen);
         }
         let mut next = state.clone();

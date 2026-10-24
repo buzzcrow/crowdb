@@ -219,9 +219,12 @@ is also bounded to 8 MiB. Parent/schema are explicit nullable fields. Upload inp
 MUST include completed id/length/md5; DTO conversion MUST NOT add metadata queries.
 The authority validates unique upload descriptors and returns conflict on mismatch.
 Rust/Python SDKs MUST retain the same ID/full input without status queries or a
-workflow fallback. Legacy Composition begin/edit/evaluate/prepare/publish routes
-return 501 before storage; only observation, abandonment and cleanup remain for
-old records.
+workflow fallback. Legacy Composition begin/edit/evaluate/prepare/publish and
+cleanup routes return 501 before storage; only observation and abandonment remain
+for old records. Background cleanup MUST rediscover old draft, work-page and edit
+registration facts without storing candidate, scratch, edit or upload-retirement
+progress. A lost local cursor repeats idempotent retirement and preserves complete
+resource ownership and permanent fences against delayed writes.
 
 Composition and Split status reads MUST NOT reconstruct a publication request,
 help edit receipts or persist recovery state. Legacy Committing drafts are

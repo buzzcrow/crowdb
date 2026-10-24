@@ -62,6 +62,44 @@ async fn unavailable_preparation_cannot_fall_back_to_a_composition_workflow() {
 }
 
 #[tokio::test]
+async fn unsupported_preparation_returns_its_error_without_legacy_cleanup_or_status_queries() {
+    let mut peer = peer::TestPeer::start_responses(
+        vec![
+            (
+                200,
+                r#"{"api_version":2,"capabilities":["composition-preparation"]}"#,
+            ),
+            (
+                501,
+                r#"{"code":"unsupported","message":"unavailable","request_id":"test","retryable":false}"#,
+            ),
+        ],
+        false,
+    )
+    .await;
+    let client = DatasetClient::new(&peer.endpoint, "test", None)
+        .unwrap()
+        .control();
+    assert!(matches!(
+        client.prepare_snapshot(&OpaqueId::random(), &input()).await,
+        Err(crowdb_sdk_dataset::Error::Service { status: 501, .. })
+    ));
+    assert!(peer
+        .requests
+        .recv()
+        .await
+        .unwrap()
+        .starts_with("GET /api/dataset/v2/capabilities "));
+    assert!(peer
+        .requests
+        .recv()
+        .await
+        .unwrap()
+        .starts_with("PUT /api/dataset/v2/namespaces/dataset-ns/datasets/test/snapshots/"));
+    assert!(peer.requests.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn an_unknown_reply_retries_the_same_snapshot_and_full_input_without_status_queries() {
     let mut peer = peer::TestPeer::start_responses(
         vec![

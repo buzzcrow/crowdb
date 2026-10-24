@@ -20,9 +20,10 @@ fn scope(prefix: &[u8], identity: &DatasetIdentity, operation: OperationId, revi
     key
 }
 async fn finish(authority: &DatasetAuthority, identity: &DatasetIdentity, operation: OperationId) {
+    let mut cursor = CompositionReclaimCursor::new(identity.clone(), operation);
     for _ in 0..100 {
         if authority
-            .cleanup_composition_scratch_step(identity, operation, &ReadCancellation::new())
+            .cleanup_composition_scratch_step_for_tests(&mut cursor, &ReadCancellation::new())
             .await
             .unwrap()
             .complete
@@ -153,14 +154,15 @@ async fn cancellation_and_partial_window_cleanup_resume_after_restart() {
         .abandon_composition(&identity, operation, 1)
         .await
         .unwrap();
+    let mut cursor = CompositionReclaimCursor::new(identity.clone(), operation);
     let cancel = ReadCancellation::new();
     cancel.cancel();
     assert!(authority
-        .cleanup_composition_scratch_step(&identity, operation, &cancel)
+        .cleanup_composition_scratch_step_for_tests(&mut cursor, &cancel)
         .await
         .is_err());
     let first = authority
-        .cleanup_composition_scratch_step(&identity, operation, &ReadCancellation::new())
+        .cleanup_composition_scratch_step_for_tests(&mut cursor, &ReadCancellation::new())
         .await
         .unwrap();
     assert!(!first.complete);

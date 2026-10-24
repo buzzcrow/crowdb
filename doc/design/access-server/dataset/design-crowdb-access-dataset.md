@@ -377,9 +377,16 @@ in pages of twenty only after authoritative Snapshot completion. The sweep reads
 no checkpoint payload and never deletes the completion or immutable-write fences;
 its scan position is also local. Empty legacy scans wait fifteen seconds.
 
-Legacy Composition draft cleanup temporarily retains its separate checkpoint
-adapter so existing draft-owned orphan resources remain discoverable. Modern
-Snapshot cleanup does not read or write that adapter.
+Legacy Composition cleanup scans existing draft facts into a separate local queue
+of at most 32 operations, discovering eight drafts / 9 MiB at a time. Each
+two-second window advances candidate fences, upload owner retirement, scratch
+fences or registered edit fences. The queue rotates failures and slow operations;
+restart rediscovers every obligation from the retained draft, work-page and edit
+registration facts. No candidate, scratch, edit or upload-retirement checkpoint is
+written. Complete result owners remain independent of draft abandonment. Old
+checkpoint keys are deleted after the local pass; immutable discovery facts and
+negative fences remain. The retired HTTP Composition cleanup action returns 501
+before storage, and no client supplies or confirms background cleanup progress.
 
 Composition evaluation work pages record their possible row writes before applying
 those writes. Obsolete-window cleanup seals rows before sealing their work page,

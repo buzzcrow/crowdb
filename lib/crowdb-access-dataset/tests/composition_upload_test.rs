@@ -18,8 +18,86 @@ mod split_store;
 #[path = "common/upload.rs"]
 #[allow(dead_code)]
 mod upload;
-use crowdb_access_dataset::*;
+use crowdb_access_dataset::{
+    composition::{CompositionReclaimCursor, DraftProgress},
+    *,
+};
 use legacy_upload::TestComposition;
+
+async fn committing(fixture: &TestComposition, snapshot: SnapshotId) {
+    let key = legacy::key(b"DS\0CD\0", &fixture.identity, fixture.operation);
+    let old = fixture.store.get(&key).await.unwrap().unwrap();
+    let mut state: serde_json::Value = serde_json::from_slice(&old.bytes).unwrap();
+    state["draft"]["record"]["progress"] = serde_json::json!(DraftProgress::Committing {
+        target: CommitTarget::Snapshot { snapshot },
+        attempt: OperationId::random(),
+    });
+    legacy::replace(fixture.store.as_ref(), &key, &old.bytes, &state).await;
+}
+
+#[tokio::test]
+async fn interrupted_legacy_publication_releases_staging_and_preserves_a_hidden_complete_result() {
+    let f = TestComposition::new().await;
+    let snapshot = f.prepare().await;
+    f.publish(snapshot).await;
+    let replacement = f
+        .authority
+        .prepare_snapshot_candidate(
+            &f.identity,
+            Some(snapshot),
+            publication::publication_manifest(3),
+            OperationId::random(),
+        )
+        .await
+        .unwrap();
+    f.publish(replacement).await;
+    committing(&f, snapshot).await;
+    let head = f.authority.inspect_head(&f.identity).await.unwrap();
+    assert!(f.cleanup().await.complete);
+    f.authority
+        .abandon_composition(&f.identity, f.operation, 1)
+        .await
+        .unwrap();
+    assert_eq!(f.authority.inspect_head(&f.identity).await.unwrap(), head);
+    assert!(f.authority.get_manifest(&f.identity, snapshot).await.is_ok());
+    assert!(matches!(
+        f.uploads.abort(&f.location).await,
+        Err(UploadError::Conflict)
+    ));
+    assert_eq!(
+        f.uploads.read_part(&f.location, 0).await.unwrap(),
+        b"data".as_slice()
+    );
+}
+
+#[tokio::test]
+async fn interrupted_legacy_publication_seals_an_incomplete_root_before_owner_retirement() {
+    let f = TestComposition::new().await;
+    let snapshot = f.prepare().await;
+    let key = [
+        b"DS\0CB\0".as_slice(),
+        &f.identity.key().unwrap(),
+        snapshot.as_bytes(),
+    ]
+    .concat();
+    let delayed = f.store.get(&key).await.unwrap().unwrap().bytes;
+    f.store.delete(&key).await.unwrap();
+    committing(&f, snapshot).await;
+    f.authority
+        .abandon_composition(&f.identity, f.operation, 1)
+        .await
+        .unwrap();
+    assert!(f.cleanup().await.complete);
+    assert_eq!(
+        f.store.get(&key).await.unwrap().unwrap().bytes,
+        b"retired-snapshot-content-v1"
+    );
+    assert!(matches!(
+        f.store.compare_exchange(&key, None, &delayed).await.unwrap(),
+        CasOutcome::Conflict(_)
+    ));
+    f.uploads.abort(&f.location).await.unwrap();
+}
 
 #[tokio::test]
 async fn legacy_staging_cleanup_preserves_the_complete_resource_owner_and_payload() {
@@ -119,7 +197,10 @@ async fn child_candidate_claims_inherited_upload_and_cancellation_preserves_pare
         .unwrap();
     let cleanup = f
         .authority
-        .cleanup_composition_uploads_step(&f.identity, operation, &f.uploads)
+        .cleanup_composition_uploads_step_for_tests(
+            &mut CompositionReclaimCursor::new(f.identity.clone(), operation),
+            &f.uploads,
+        )
         .await
         .unwrap();
     assert!(cleanup.complete);

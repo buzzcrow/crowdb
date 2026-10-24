@@ -109,7 +109,10 @@ impl TestComposition {
 
     pub async fn cleanup(&self) -> CompositionUploadCleanup {
         self.authority
-            .cleanup_composition_uploads_step(&self.identity, self.operation, &self.uploads)
+            .cleanup_composition_uploads_step_for_tests(
+                &mut CompositionReclaimCursor::new(self.identity.clone(), self.operation),
+                &self.uploads,
+            )
             .await
             .unwrap()
     }

@@ -261,9 +261,10 @@ permission or promise that a redeployed endpoint still supports the operation.
   parts against replayed bytes. Reopen the same source from the beginning on retry.
   Changed data fails integrity checks; source files and remote objects are untouched.
   This is a reader adapter, not a built-in remote storage/catalog connector.
-- `abandon_composition` and `cleanup_composition` are distinct operations. Run cleanup
-  steps until complete; physical payload deletion remains deferred. Snapshot reclaim
-  similarly reports its current phase and respects latest/stable/retention/deletion grace.
+- Complete Snapshot preparation uses caller-owned input; legacy Composition cleanup
+  actions return 501. Background workers retire old draft resources without client
+  cleanup calls. Snapshot deletion marks durable retirement and reports completion
+  after background cleanup; latest/stable/retention and deletion grace still apply.
 
 The `split_control` example exercises local file and caller-owned stream ingestion,
 initial Split publication, independent revision publication, historical Split reads,

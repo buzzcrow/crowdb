@@ -106,7 +106,7 @@ async fn retired_composition_workflow_writes_never_access_storage() {
     response(client.post(format!("{root}/compositions")).json(&json!({})), 501).await;
     let draft = format!("{root}/compositions/77777777777777777777777777777777");
     response(client.put(&draft).json(&json!({})), 501).await;
-    for suffix in ["evaluate", "prepare", "publish"] {
+    for suffix in ["evaluate", "prepare", "publish", "cleanup"] {
         response(client.post(format!("{draft}/{suffix}")).json(&json!({})), 501).await;
     }
     assert_eq!(

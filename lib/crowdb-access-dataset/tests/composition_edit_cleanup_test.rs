@@ -22,6 +22,7 @@ fn page_key(identity: &DatasetIdentity, operation: OperationId, edit: OperationI
 async fn failed_edit_admission_is_tracked_and_fences_late_payload_writes() {
     let (store, authority, identity, parent) = split_store::fixture().await;
     let operation = OperationId::random();
+    let mut cursor = CompositionReclaimCursor::new(identity.clone(), operation);
     legacy::editing_composition(store.as_ref(), &authority, &identity, operation, parent).await;
     let (edit, payload) = legacy::composition_edit(
         store.as_ref(),
@@ -39,7 +40,7 @@ async fn failed_edit_admission_is_tracked_and_fences_late_payload_writes() {
         .await
         .unwrap();
     let cleanup = restarted
-        .cleanup_composition_edits_step(&identity, operation, &ReadCancellation::new())
+        .cleanup_composition_edits_step_for_tests(&mut cursor, &ReadCancellation::new())
         .await
         .unwrap();
     assert!(cleanup.complete);
@@ -50,7 +51,7 @@ async fn failed_edit_admission_is_tracked_and_fences_late_payload_writes() {
     ));
     assert_eq!(
         restarted
-            .cleanup_composition_edits_step(&identity, operation, &ReadCancellation::new())
+            .cleanup_composition_edits_step_for_tests(&mut cursor, &ReadCancellation::new())
             .await
             .unwrap(),
         cleanup
@@ -60,6 +61,7 @@ async fn failed_edit_admission_is_tracked_and_fences_late_payload_writes() {
 async fn edit_payload_cleanup_preserves_historical_receipts_and_published_data() {
     let (store, authority, identity, parent) = split_store::fixture().await;
     let operation = OperationId::random();
+    let mut cursor = CompositionReclaimCursor::new(identity.clone(), operation);
     legacy::editing_composition(store.as_ref(), &authority, &identity, operation, parent).await;
     let changes = vec![SampleChange::Upsert(common::sample(b"new", 2))];
     let (edit, _) =
@@ -69,7 +71,7 @@ async fn edit_payload_cleanup_preserves_historical_receipts_and_published_data()
     let receipt = store.get(&receipt_key).await.unwrap().unwrap().bytes;
     assert!(matches!(
         authority
-            .cleanup_composition_edits_step(&identity, operation, &ReadCancellation::new())
+            .cleanup_composition_edits_step_for_tests(&mut cursor, &ReadCancellation::new())
             .await,
         Err(CompositionError::Frozen)
     ));
@@ -103,7 +105,7 @@ async fn edit_payload_cleanup_preserves_historical_receipts_and_published_data()
         .await
         .unwrap();
     let progress = authority
-        .cleanup_composition_edits_step(&identity, operation, &ReadCancellation::new())
+        .cleanup_composition_edits_step_for_tests(&mut cursor, &ReadCancellation::new())
         .await
         .unwrap();
     assert!(progress.complete);

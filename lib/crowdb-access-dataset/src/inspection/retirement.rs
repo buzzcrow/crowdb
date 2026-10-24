@@ -12,17 +12,14 @@ use crate::{
     AuthorityError, CasOutcome, DatasetAuthority, DatasetIdentity, ManifestRecord, MetadataScanBudget,
     ReadCancellation, SnapshotId, SnapshotRecord,
 };
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 pub(crate) const RETIRED_RECORD: &[u8] = b"snapshot-metadata-retired-v1";
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct CandidateRetirementCursor {
     partition: u32,
     rows: IndexPosition,
     complete: bool,
-    #[serde(skip)]
     target: Option<(DatasetIdentity, SnapshotId)>,
 }
 impl DatasetAuthority {
@@ -94,50 +91,6 @@ impl DatasetAuthority {
         }
         Ok(cursor.complete)
     }
-    /// Compatibility adapter for legacy CD/CCP cleanup; modern Snapshot workers keep this cursor locally.
-    pub(crate) async fn retire_candidate_metadata_legacy_step(
-        &self,
-        identity: &DatasetIdentity,
-        record: &SnapshotRecord,
-        cancel: &ReadCancellation,
-    ) -> Result<bool, InspectionError> {
-        let mut key = b"DS\0CGF\0".to_vec();
-        key.extend(identity.key().map_err(AuthorityError::from)?);
-        key.extend(record.publication.snapshot.as_bytes());
-        let stored = self
-            .store
-            .get_bounded(
-                &key,
-                MetadataScanBudget {
-                    items: 1,
-                    bytes: 4096,
-                    timeout: Duration::from_secs(2),
-                },
-                cancel,
-            )
-            .await?;
-        let mut cursor: CandidateRetirementCursor = stored
-            .as_ref()
-            .map_or_else(
-                || Ok(CandidateRetirementCursor::default()),
-                |v| serde_json::from_slice(&v.bytes),
-            )
-            .map_err(|_| InspectionError::Corrupt)?;
-        let complete = self
-            .retire_candidate_metadata_step(identity, record, &mut cursor, cancel)
-            .await?;
-        let bytes = serde_json::to_vec(&cursor).map_err(|_| InspectionError::Corrupt)?;
-        match self
-            .store
-            .compare_exchange(&key, stored.as_ref().map(|v| v.bytes.as_slice()), &bytes)
-            .await?
-        {
-            CasOutcome::Applied(_) => Ok(complete),
-            CasOutcome::Conflict(Some(value)) if value.bytes == bytes => Ok(complete),
-            CasOutcome::Conflict(_) => Err(AuthorityError::HeadConflict.into()),
-        }
-    }
-
     async fn finish_candidate_retirement(
         &self,
         identity: &DatasetIdentity,

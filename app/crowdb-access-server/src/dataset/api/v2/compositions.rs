@@ -8,7 +8,7 @@ use super::{
     split_models::decimal,
     split_requests,
 };
-use crowdb_access_dataset::{composition::DraftProgress, DatasetIdentity, OperationId, ReadCancellation};
+use crowdb_access_dataset::{DatasetIdentity, OperationId};
 use hyper::{body::Incoming, Method, Request};
 impl DatasetHttpService {
     pub(super) async fn v2_compositions(
@@ -18,17 +18,18 @@ impl DatasetHttpService {
         request: Request<Incoming>,
     ) -> ApiResult {
         Query::parse(request.uri().query(), &[])?;
-        if request.method() == Method::PUT
-            || (request.method() == Method::POST && !matches!(tail, ["compositions", _, "cleanup"]))
-        {
+        if tail == ["compositions"] && matches!(*request.method(), Method::PUT | Method::POST) {
             return Err(ApiError::unsupported());
         }
-        self.reads.authority().get_dataset(identity).await?;
-        self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
         let ["compositions", id, rest @ ..] = tail else {
             return Err(ApiError::not_found());
         };
         let operation = operation(id)?;
+        if request.method() == Method::PUT || request.method() == Method::POST {
+            return Err(ApiError::unsupported());
+        }
+        self.reads.authority().get_dataset(identity).await?;
+        self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
         let authority = self.reads.authority();
         match (request.method().clone(), rest) {
             (Method::GET, []) => {
@@ -42,10 +43,6 @@ impl DatasetHttpService {
                     .await?;
                 self.v2_composition_status(identity, operation).await
             }
-            (Method::POST, ["cleanup"]) => {
-                read_body(request, false).await?;
-                self.v2_composition_cleanup(identity, operation).await
-            }
             _ => Err(ApiError::not_found()),
         }
     }
@@ -55,40 +52,6 @@ impl DatasetHttpService {
             authority.composition_status(identity, operation).await?,
             &authority.composition_upload_status(identity, operation).await?,
         ))
-    }
-    async fn v2_composition_cleanup(&self, identity: &DatasetIdentity, operation: OperationId) -> ApiResult {
-        let authority = self.reads.authority();
-        let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
-        let cancel = ReadCancellation::new();
-        let candidates = authority
-            .cleanup_composition_candidates_step(identity, operation, &cancel)
-            .await?;
-        let owners = authority
-            .cleanup_composition_uploads_step(identity, operation, uploads)
-            .await?;
-        let scratch = authority
-            .cleanup_composition_scratch_step(identity, operation, &cancel)
-            .await?;
-        let draft = authority.composition_status(identity, operation).await?;
-        let edits = if matches!(
-            draft.record.progress,
-            DraftProgress::Prepared { .. } | DraftProgress::Published { .. } | DraftProgress::Abandoned
-        ) {
-            Some(
-                authority
-                    .cleanup_composition_edits_step(identity, operation, &cancel)
-                    .await?,
-            )
-        } else {
-            None
-        };
-        json(
-            &serde_json::json!({"complete":candidates.complete && owners.complete && scratch.complete && edits.as_ref().map_or(true, |e| e.complete),
-            "candidates":{"input_revision":candidates.input_revision.to_string(),"complete":candidates.complete},
-            "uploads":{"retired_owners":owners.retired_owners.to_string(),"complete":owners.complete},
-            "scratch":{"input_revision":scratch.input_revision.to_string(),"next_page":scratch.next_page.to_string(),"complete":scratch.complete},
-            "edits":edits.map(|e|serde_json::json!({"retired_pages":e.retired_pages.to_string(),"complete":e.complete})), "physical_cleanup_deferred":true}),
-        )
     }
 }
 

@@ -5,6 +5,8 @@
 
 mod resource;
 pub use resource::{CompositionRequest, CompositionResult};
+mod reclamation;
+pub use reclamation::{CompositionReclaimCursor, CompositionReclaimSweep};
 
 mod record;
 pub use record::{CompositionRecord, CompositionSource, DraftProgress};

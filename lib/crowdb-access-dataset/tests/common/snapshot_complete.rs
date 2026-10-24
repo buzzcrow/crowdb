@@ -152,9 +152,11 @@ pub async fn finish_cleanup(
     identity: &DatasetIdentity,
     operation: OperationId,
 ) {
+    let mut cursor =
+        crowdb_access_dataset::composition::CompositionReclaimCursor::new(identity.clone(), operation);
     for _ in 0..100 {
         if authority
-            .cleanup_composition_candidates_step(identity, operation, &ReadCancellation::new())
+            .cleanup_composition_candidates_step_for_tests(&mut cursor, &ReadCancellation::new())
             .await
             .unwrap()
             .complete

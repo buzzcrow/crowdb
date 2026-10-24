@@ -3,6 +3,7 @@
 
 mod release;
 pub use release::CompositionUploadCleanup;
+pub(super) use release::UploadCursor;
 mod state;
 pub(super) use state::{staging_owner, UploadOwnership};
 

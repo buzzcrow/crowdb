@@ -12,7 +12,7 @@ mod legacy_split;
 mod publication;
 #[path = "common/split_store.rs"]
 mod split_store;
-use crowdb_access_dataset::*;
+use crowdb_access_dataset::{composition::CompositionReclaimCursor, *};
 use sha2::{Digest, Sha256};
 fn candidate(operation: OperationId, revision: u64) -> OperationId {
     let mut hash = Sha256::new();
@@ -22,9 +22,10 @@ fn candidate(operation: OperationId, revision: u64) -> OperationId {
     OperationId::from_bytes(&hash.finalize()[..16]).unwrap()
 }
 async fn finish(authority: &DatasetAuthority, identity: &DatasetIdentity, operation: OperationId) {
+    let mut cursor = CompositionReclaimCursor::new(identity.clone(), operation);
     for _ in 0..100 {
         if authority
-            .cleanup_composition_candidates_step(identity, operation, &ReadCancellation::new())
+            .cleanup_composition_candidates_step_for_tests(&mut cursor, &ReadCancellation::new())
             .await
             .unwrap()
             .complete

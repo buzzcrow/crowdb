@@ -954,7 +954,7 @@ paths:
                 $ref: '#/components/schemas/CompositionDraft'
         default:
           $ref: '#/components/responses/InspectionError'
-      description: Cleanup is separately resumable through POST cleanup; abandonment never removes a successful publication.
+      description: Background workers clean existing draft resources after abandonment; no client cleanup action is required. Complete resource owners remain independent of the draft.
       requestBody:
         required: true
         content:
@@ -965,7 +965,7 @@ paths:
     post:
       deprecated: true
       operationId: cleanupComposition
-      summary: Advance bounded obsolete composition cleanup
+      summary: Retired Composition cleanup action
       parameters:
       - $ref: '#/components/parameters/dataset'
       - in: path
@@ -973,16 +973,11 @@ paths:
         required: true
         schema: *id001
       responses:
-        '200':
-          description: Successful bounded operation. Integer counts are exact decimal strings.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CompositionCleanup'
+        '501':
+          $ref: '#/components/responses/InspectionError'
         default:
           $ref: '#/components/responses/InspectionError'
-      description: Repeat until complete. Prepared resources allow scratch and edit payload cleanup; completed
-        candidate ownership permits staging-owner retirement. Final resource owners remain until Snapshot reclamation.
+      description: Returns unsupported after authentication and route validation, before storage. Background workers discover historical draft facts and retire them using local cursors; no client cleanup state or completion confirmation is accepted.
 components:
   parameters:
     dataset:
@@ -1648,51 +1643,6 @@ components:
           - type: 'null'
         uploads:
           $ref: '#/components/schemas/CompositionUploadStatus'
-    CompositionCleanup:
-      type: object
-      additionalProperties: false
-      required:
-      - complete
-      - candidates
-      - uploads
-      - scratch
-      - edits
-      - physical_cleanup_deferred
-      properties:
-        complete: {type: boolean}
-        candidates:
-          type: object
-          additionalProperties: false
-          required:
-          - input_revision
-          - complete
-          properties:
-            input_revision: {$ref: '#/components/schemas/Decimal'}
-            complete: {type: boolean}
-        uploads:
-          type: object
-          additionalProperties: false
-          required:
-          - retired_owners
-          - complete
-          properties:
-            retired_owners: {$ref: '#/components/schemas/Decimal'}
-            complete: {type: boolean}
-        scratch:
-          $ref: '#/components/schemas/SplitCleanup'
-        edits:
-          anyOf:
-          - type: object
-            additionalProperties: false
-            required:
-            - retired_pages
-            - complete
-            properties:
-              retired_pages: {$ref: '#/components/schemas/Decimal'}
-              complete: {type: boolean}
-          - type: 'null'
-        physical_cleanup_deferred:
-          const: true
     SplitCleanup:
       type: object
       additionalProperties: false
