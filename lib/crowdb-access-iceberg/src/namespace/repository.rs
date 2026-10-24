@@ -102,6 +102,45 @@ impl NamespaceRepository {
         Ok(self.load(context, identifier).await?.is_some())
     }
 
+    pub(crate) async fn ensure_current(
+        &self,
+        context: CatalogContext,
+        selected: &NamespaceAuthority,
+    ) -> Result<(), CatalogError> {
+        if selected.catalog != context.catalog {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
+        let key = name_key(context.catalog, selected.parent, selected.identifier.name())?;
+        let value = self
+            .store
+            .get(&key.encode()?)
+            .await?
+            .ok_or(CatalogError::Conflict)?;
+        let StorageRecord::NamespaceMapping(mapping) = StorageRecord::decode(&key, &value.bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        let key = authority_key(context.catalog, selected.namespace);
+        let value = self
+            .store
+            .get(&key.encode()?)
+            .await?
+            .ok_or(CatalogError::Conflict)?;
+        let StorageRecord::NamespaceAuthority(current) = StorageRecord::decode(&key, &value.bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        // Namespaces cannot move, and a live child prevents every ancestor's
+        // deletion. Recheck the selected leaf and its name within this request.
+        if !mapping.resolves(&current)
+            || current.namespace != selected.namespace
+            || current.name_epoch != selected.name_epoch
+            || current.identifier != selected.identifier
+            || current.parent != selected.parent
+        {
+            return Err(CatalogError::Conflict);
+        }
+        self.check_context(context).await
+    }
+
     async fn resolve(
         &self,
         context: CatalogContext,

@@ -92,8 +92,7 @@ impl TableLoader {
         if let Some(selected) = &selected {
             self.tables.ensure_current(context, selected).await?;
         }
-        self.check_namespace(context, namespace, parent.namespace, parent.name_epoch)
-            .await?;
+        self.namespaces.ensure_current(context, &parent).await?;
         Ok(selected.map(|value| value.head))
     }
 
@@ -145,8 +144,7 @@ impl TableLoader {
             return Ok(TableLoad::Missing);
         };
         let Some(selected) = self.tables.select(context, parent.namespace, name).await? else {
-            self.check_namespace(context, namespace, parent.namespace, parent.name_epoch)
-                .await?;
+            self.namespaces.ensure_current(context, &parent).await?;
             return Ok(TableLoad::Missing);
         };
         if capabilities
@@ -163,8 +161,7 @@ impl TableLoader {
             return Err(TableMetadataError::Bounds.into());
         }
         self.tables.ensure_current(context, &selected).await?;
-        self.check_namespace(context, namespace, parent.namespace, parent.name_epoch)
-            .await?;
+        self.namespaces.ensure_current(context, &parent).await?;
         if if_none_match.is_some_and(|header| {
             header.split(',').any(|tag| {
                 let tag = tag.trim();
@@ -178,20 +175,6 @@ impl TableLoader {
             etag,
             metadata,
         })
-    }
-
-    async fn check_namespace(
-        &self,
-        context: CatalogContext,
-        identifier: &NamespaceIdentifier,
-        namespace: crate::key::NamespaceId,
-        epoch: u64,
-    ) -> Result<(), CatalogError> {
-        let current = self.namespaces.load(context, identifier).await?;
-        if !current.is_some_and(|current| current.namespace == namespace && current.name_epoch == epoch) {
-            return Err(CatalogError::Conflict);
-        }
-        Ok(())
     }
 }
 
