@@ -80,6 +80,67 @@ async fn create_and_complete_return_known_results_without_confirmation_reads() {
 }
 
 #[tokio::test]
+async fn successful_part_uses_its_known_write_intent_without_confirmation_get() {
+    let store = Arc::new(TestStore::default());
+    let uploads = DatasetUploads::new(store.clone(), Arc::new(TestPayload::default()));
+    let key = location();
+    uploads
+        .create(&key, 4, 4, Md5::digest(b"data").into(), 100)
+        .await
+        .unwrap();
+    let reads = store.reads.load(Ordering::Relaxed);
+    let writes = store.mutations.load(Ordering::Relaxed);
+    let part = uploads
+        .put_part(&key, 0, Bytes::from_static(b"data"), 1)
+        .await
+        .unwrap();
+    assert_eq!(store.reads.load(Ordering::Relaxed) - reads, 6);
+    assert_eq!(store.mutations.load(Ordering::Relaxed) - writes, 4);
+    assert_eq!(uploads.complete(&key, 2).await.unwrap().parts, vec![part]);
+}
+
+#[tokio::test]
+async fn accepting_a_known_intent_still_rejects_concurrent_reclamation() {
+    let store = Arc::new(TestStore::default());
+    let payloads = Arc::new(TestPayload::default());
+    let key = location();
+    let uploads = DatasetUploads::new(store.clone(), payloads.clone());
+    uploads
+        .create(&key, 4, 4, Md5::digest(b"data").into(), 100)
+        .await
+        .unwrap();
+    let mut part_key = key.clone();
+    part_key.extend_from_slice(b"\0P\0\0\0\0");
+    let reclaimed = json!({
+        "version": 1,
+        "owner": OperationId::random(),
+        "deadline": 61,
+        "state": "Reclaimed",
+        "part": {"index": 0, "length": 4, "md5": <[u8; 16]>::from(Md5::digest(b"data")), "locations": []}
+    });
+    let fault = TestUploadFaultStore::new(
+        store,
+        part_key,
+        vec![
+            TestMutation::Apply,
+            TestMutation::Apply,
+            TestMutation::Conflict(serde_json::to_vec(&reclaimed).unwrap()),
+        ],
+    );
+    let uploads = DatasetUploads::new(fault.clone(), payloads);
+    assert!(matches!(
+        uploads.put_part(&key, 0, Bytes::from_static(b"data"), 1).await,
+        Err(UploadError::Conflict)
+    ));
+    assert_eq!(fault.reads.load(Ordering::Relaxed), 1);
+    assert_eq!(fault.writes.load(Ordering::Relaxed), 3);
+    assert!(matches!(
+        uploads.complete(&key, 2).await,
+        Err(UploadError::Conflict)
+    ));
+}
+
+#[tokio::test]
 async fn four_index_conflicts_merge_other_parts_using_each_observation() {
     let store = Arc::new(TestStore::default());
     let payloads = Arc::new(TestPayload::default());

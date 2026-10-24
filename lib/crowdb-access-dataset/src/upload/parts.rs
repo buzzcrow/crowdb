@@ -117,14 +117,9 @@ impl DatasetUploads {
             PartInput::Bytes(bytes) => self.payloads.write(&key, bytes, intent).await?,
             PartInput::Framed(buffer, _) => self.payloads.write_framed(&key, buffer, intent).await?,
         };
-        let current = self.store.get(&key).await?.ok_or(UploadError::Integrity)?;
-        let entry = decode_part(&current.bytes)?;
-        if entry.owner != pending.owner
-            || entry.state != PartState::Intent
-            || entry.part.locations != locations
-        {
-            return Err(UploadError::Conflict);
-        }
+        let mut entry = pending;
+        entry.state = PartState::Intent;
+        entry.part.locations = locations;
         self.accept_part(location, &key, &entry).await
     }
 
