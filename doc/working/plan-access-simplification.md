@@ -156,6 +156,13 @@ CAS 不再满足只证明“本次条件不成立”，不能谎称“第一次�
   历史回复查询；Composition/Split 的 Committing 恢复与 P2/P3 一起删除，客户端保留完整输入。
   旧记录只作为兼容解码/GC 输入，不让旧账本控制新请求。head 保留 expected base；同一
   candidate 的当前结果可判断相同，已被后续 head 遮住时不保证历史请求结果重放。
+- [ ] **R2.2e 旧草稿 status 不恢复发布过程**：Composition status 目前仍 help edit receipt，
+  Committing 还读 CA/CR/head 后写 Prepared/Published 并再次 load；Split status 同样会读
+  attempt、head，某分支重复查 commit_status。这些只恢复已经取消的请求历史合同。
+  改为读取已存草稿，旧 Committing 在响应中解释为可重新发布的 Prepared，不写回、不查
+  发布账本、不确认 GET；完整资源准入仍由 CB/SR 和删除事实决定，后台旧资源 GC 解码不变。
+  不把它当作 P2/P3 的 edit/evaluation 状态机已经删除。Files: `composition/{edit,publication}.rs`、
+  `split/{lifecycle,recovery,publication}.rs`；验证存在/缺失旧回执均单次 bounded GET、零写。
 
 - [ ] **R2 审查条件发布的回复丢失窗口**：用 H0→H1→H2 测试区分条件失败、相同结果与历史未知；
   列出确实依赖历史精确结果的调用者，没有这种需求就移除相应 ledger/response replay。
@@ -479,9 +486,6 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   无条件覆盖与 expected-base 重试测试。断言总 GET+写，不仅是零写。Files: Dataset `tests/*cost*`、`read_query*`、upload/Composition/Split/inspection；S3/Iceberg 对应 repository 测试。
 - [ ] **V2 HTTP/native/SDK 集成**：各受影响 route 的鉴权、错误、协议/SDK 一致性；保留删除准入、
   迟到写者、非空 namespace、共享 owner、held buffer、cancel/drop 和损坏内容测试。Files: Access/native tests、`sdk/tests/`、native Python consumer。
-- [~] **V2.4 Iceberg 配额清理后容器复验**：构建本批源码镜像，运行
-  `access_iceberg::native_files::native_file_tree_publication_and_ranges_survive_catalog_storage_restart`，
-  覆盖普通上传的后台过期、part 保留和文件重启读取；记录来源与结果，不能复用清理前镜像。
 - [ ] **V3 工程门禁与文档**：每批执行适用 fmt/clippy/测试，全部经 `pixi run`；同步 owning
   design/spec/OpenAPI/SDK。只修改文档时检查 diff、引用和任务状态，不为此跑整套服务测试。
 - [ ] **V4 同源真实负载验收**：重新构建当前源码的镜像，运行现有 HTTP/native Rust/native Python
@@ -508,6 +512,16 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，V2.4**：从配额清理源码构建并导入
+  `crowdb-node:access-cleanup-iceberg-credits-20261024`；14-node native files 用例通过，
+  覆盖普通 MPU 的后台过期、已完成 part 保留、文件发布和存储重启读取。
+  artifact `.crowdb-runtime/artifacts/container-e2e/run-ee87dde2591b484299f3c20be19991ff`；
+  image/client revision `4cb7accc4114357aa3aa6b45423610b3935e7394`，source tree
+  `c3589d7ccaee35d13260542f6966772c8db6b50b`，server_sources_match=true；
+  OCI `sha256:17621fe039b24c56fe8c2463fb45689622d93f680268a88700b27f1356ab4c56`，
+  Docker `sha256:d22daa4a26a5cd0aaa81b92b2086cdab91986c7d162c1421e68409c2dc0e6027`。
+  本机 TCP 功能验证，不作为性能测量或其他 Iceberg 用例全部通过的证明。
 
 - **2026-10-24，P6.2**：删除 `MultipartAdmission`、reserve/release/settle driver、journal
   proposal 和相关 test-util 写入口。后台每页不再读全局 policy，终态 upload 不再写 snapshot、
