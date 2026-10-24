@@ -1,11 +1,12 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{content::validate_page_budget, key, work::InspectionWork, FieldStorageKind, InspectionError};
+use super::{
+    content::validate_page_budget, read::PreparedInspectionRead, work::InspectionWork, InspectionError,
+};
 use crate::{
     split::{DraftSplit, SplitValidation},
-    AuthorityError, DatasetAuthority, DatasetError, DatasetIdentity, MetadataScanBudget, ReadCancellation,
-    SnapshotId,
+    DatasetAuthority, DatasetIdentity, MetadataScanBudget, ReadCancellation, SnapshotId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -45,41 +46,28 @@ impl DatasetAuthority {
             .await?;
         let compiled =
             super::split_rules::compile(self, identity, summary.parent, splits, &schema, &mut work).await?;
-        let prefix = key::scope(identity, snapshot, b'M').map_err(AuthorityError::from)?;
-        for id in &compiled.explicit {
-            let mut key = prefix.clone();
-            key::component(&mut key, id);
-            if work.get(&key, 128 * 1024).await?.is_none() {
-                return Err(AuthorityError::Invalid(DatasetError::SampleNotFound).into());
-            }
-        }
+        let universe_count = summary.sample_count;
+        let mut read = PreparedInspectionRead {
+            authority: self,
+            identity,
+            snapshot,
+            schema,
+            summaries: BTreeMap::from([(snapshot, summary)]),
+        };
+        let explicit: Vec<_> = compiled.explicit.iter().cloned().collect();
+        read.members(&explicit, &mut work).await?;
         let samples = self
             .inspection_member_window(identity, snapshot, after, budget.items, &mut work)
             .await?;
-        let universe_count = summary.sample_count;
-        let mut summaries = BTreeMap::from([(snapshot, summary)]);
+        let fields: Vec<_> = compiled.fields.into_iter().collect();
+        let values = read.inline_matrix(&samples.entries, &fields, &mut work).await?;
         let mut result = SplitEvaluationWindow {
             universe_count,
             after: samples.after,
             members: vec![Vec::new(); splits.len()],
             validation: SplitValidation::default(),
         };
-        for id in samples.entries {
-            let mut values = BTreeMap::new();
-            for field in &compiled.fields {
-                if let Some(metadata) = self
-                    .effective_field_metadata(identity, snapshot, &id, field, &mut summaries, &mut work)
-                    .await?
-                {
-                    if metadata.storage == FieldStorageKind::Inline {
-                        values.insert(
-                            field.clone(),
-                            self.inspection_inline_value(identity, &id, &metadata, &mut work)
-                                .await?,
-                        );
-                    }
-                }
-            }
+        for (id, values) in samples.entries.into_iter().zip(values) {
             let mut count = 0;
             for index in 0..splits.len() {
                 let matches = compiled.rules[index]

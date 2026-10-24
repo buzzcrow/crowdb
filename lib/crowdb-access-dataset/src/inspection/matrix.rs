@@ -125,44 +125,6 @@ impl DatasetAuthority {
         }
         Ok(definitions)
     }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn effective_field_metadata(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-        sample_id: &[u8],
-        field: &str,
-        summaries: &mut BTreeMap<SnapshotId, SnapshotSummary>,
-        work: &mut InspectionWork<'_>,
-    ) -> Result<Option<FieldMetadata>, InspectionError> {
-        let mut current = Some(snapshot);
-        let mut seen = HashSet::new();
-        while let Some(snapshot) = current {
-            if !seen.insert(snapshot) {
-                return Err(AuthorityError::AncestryCycle.into());
-            }
-            if seen.len() > 64 {
-                return Err(InspectionError::Limit);
-            }
-            if let std::collections::btree_map::Entry::Vacant(entry) = summaries.entry(snapshot) {
-                entry.insert(self.ready_inspection(identity, snapshot, work).await?);
-            }
-            let mut key = key::scope(identity, snapshot, b'F').map_err(AuthorityError::from)?;
-            key::component(&mut key, sample_id);
-            key::component(&mut key, field.as_bytes());
-            if let Some(value) = work.get(&key, 128 * 1024).await? {
-                let metadata: FieldMetadata =
-                    serde_json::from_slice(&value.bytes).map_err(|_| InspectionError::Corrupt)?;
-                if metadata.name != field || metadata.source_snapshot != snapshot {
-                    return Err(InspectionError::Corrupt);
-                }
-                return Ok(Some(metadata));
-            }
-            current = summaries[&snapshot].parent;
-        }
-        Ok(None)
-    }
 }
 
 impl PreparedInspectionRead<'_> {

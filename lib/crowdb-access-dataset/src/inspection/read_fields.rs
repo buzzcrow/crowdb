@@ -6,7 +6,7 @@ use super::{
     FieldStorageKind, InspectionError,
 };
 use crate::{AuthorityError, FieldLocator, SnapshotId};
-use std::collections::{btree_map::Entry, HashSet};
+use std::collections::{btree_map::Entry, BTreeMap, HashSet};
 
 pub(super) struct FieldRequest<'a> {
     pub(super) sample: &'a [u8],
@@ -14,6 +14,31 @@ pub(super) struct FieldRequest<'a> {
 }
 
 impl PreparedInspectionRead<'_> {
+    pub(super) async fn inline_matrix(
+        &mut self,
+        ids: &[Vec<u8>],
+        fields: &[String],
+        work: &mut InspectionWork<'_>,
+    ) -> Result<Vec<BTreeMap<String, FieldLocator>>, InspectionError> {
+        let mut values = vec![BTreeMap::new(); ids.len()];
+        for start in (0..ids.len() * fields.len()).step_by(16) {
+            let end = (start + 16).min(ids.len() * fields.len());
+            let requests: Vec<_> = (start..end)
+                .map(|index| FieldRequest {
+                    sample: &ids[index / fields.len()],
+                    field: &fields[index % fields.len()],
+                })
+                .collect();
+            let locators = self.inline_fields(&requests, work).await?;
+            for (index, locator) in (start..end).zip(locators) {
+                if let Some(locator) = locator {
+                    values[index / fields.len()].insert(fields[index % fields.len()].clone(), locator);
+                }
+            }
+        }
+        Ok(values)
+    }
+
     /// Resolve a small field window one ancestry level at a time. Shared ancestors
     /// are admitted once, and explicit tombstones stop inheritance without value IO.
     pub(super) async fn fields(

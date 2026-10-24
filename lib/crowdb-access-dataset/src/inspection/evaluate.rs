@@ -3,12 +3,11 @@
 
 use super::{
     content::validate_page_budget, cursor::CursorScope, key, read::PreparedInspectionRead,
-    read_fields::FieldRequest, work::InspectionWork, FieldMetadata, FieldStorageKind, InspectionError,
-    InspectionPage,
+    work::InspectionWork, InspectionError, InspectionPage,
 };
 use crate::{
-    selection::EffectiveSelection, AuthorityError, DatasetAuthority, DatasetIdentity, FieldLocator,
-    MetadataScanBudget, ReadCancellation, Selection, SnapshotId,
+    selection::EffectiveSelection, AuthorityError, DatasetAuthority, DatasetIdentity, MetadataScanBudget,
+    ReadCancellation, Selection, SnapshotId,
 };
 use std::collections::BTreeMap;
 
@@ -65,26 +64,6 @@ impl DatasetAuthority {
             delivery,
         })
     }
-
-    pub(super) async fn inspection_inline_value(
-        &self,
-        identity: &DatasetIdentity,
-        sample: &[u8],
-        metadata: &FieldMetadata,
-        work: &mut InspectionWork<'_>,
-    ) -> Result<FieldLocator, InspectionError> {
-        let mut key = key::scope(identity, metadata.source_snapshot, b'V').map_err(AuthorityError::from)?;
-        key::component(&mut key, sample);
-        key::component(&mut key, metadata.name.as_bytes());
-        let stored = work
-            .get(&key, 512 * 1024)
-            .await?
-            .ok_or(InspectionError::Corrupt)?;
-        if metadata.storage != FieldStorageKind::Inline {
-            return Err(InspectionError::Corrupt);
-        }
-        super::materialize::decode_locator(metadata, &stored.bytes)
-    }
 }
 
 /// Local to one bounded request; its authority and immutable query cannot be replaced.
@@ -115,23 +94,10 @@ impl<'a> PreparedInspectionSelection<'a, '_> {
                 work,
             )
             .await?;
-        let fields = &self.compiled.fields;
-        let mut values = vec![BTreeMap::new(); members.entries.len()];
-        for start in (0..members.entries.len() * fields.len()).step_by(16) {
-            let end = (start + 16).min(members.entries.len() * fields.len());
-            let requests: Vec<_> = (start..end)
-                .map(|index| FieldRequest {
-                    sample: &members.entries[index / fields.len()],
-                    field: &fields[index % fields.len()],
-                })
-                .collect();
-            let locators = self.delivery.inline_fields(&requests, work).await?;
-            for (index, locator) in (start..end).zip(locators) {
-                if let Some(locator) = locator {
-                    values[index / fields.len()].insert(fields[index % fields.len()].clone(), locator);
-                }
-            }
-        }
+        let values = self
+            .delivery
+            .inline_matrix(&members.entries, &self.compiled.fields, work)
+            .await?;
         let entries = members
             .entries
             .into_iter()
