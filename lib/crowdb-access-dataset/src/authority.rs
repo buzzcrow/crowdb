@@ -10,6 +10,7 @@ mod projection;
 use head::{decode_head, encode_head};
 pub use head::{DatasetHead, SnapshotHeadUpdate};
 mod publication;
+pub use publication::SnapshotExpirySweep;
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;

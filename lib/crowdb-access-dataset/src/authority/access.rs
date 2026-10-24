@@ -231,7 +231,7 @@ impl DatasetAuthority {
 
     // The per-authority clock override exists only in test builds.
     #[cfg_attr(not(feature = "test-util"), allow(clippy::unused_self))]
-    fn reclaim_time(&self) -> u64 {
+    pub(in crate::authority) fn reclaim_time(&self) -> u64 {
         #[cfg(feature = "test-util")]
         if let Some(clock) = &self.reclaim_clock {
             return clock.load(std::sync::atomic::Ordering::Acquire);

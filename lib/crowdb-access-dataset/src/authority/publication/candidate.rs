@@ -9,6 +9,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub(super) const CANDIDATE_PREFIX: &[u8] = b"DS\0CB\0";
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CandidateBinding {
@@ -18,6 +20,18 @@ pub(crate) struct CandidateBinding {
     pub operation: OperationId,
     pub manifest_sha256: [u8; 32],
     pub initial_split: Option<SplitRevisionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+}
+
+impl CandidateBinding {
+    pub(super) fn same_content(&self, other: &Self) -> bool {
+        self.snapshot == other.snapshot
+            && self.parent == other.parent
+            && self.operation == other.operation
+            && self.manifest_sha256 == other.manifest_sha256
+            && self.initial_split == other.initial_split
+    }
 }
 
 impl DatasetAuthority {
@@ -78,15 +92,16 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         binding: &CandidateBinding,
     ) -> Result<(), AuthorityError> {
-        let bytes = serde_json::to_vec(binding).map_err(|_| AuthorityError::Corrupt)?;
+        let mut binding = binding.clone();
+        binding.expires_at = Some(self.reclaim_time().saturating_add(86400));
+        let bytes = serde_json::to_vec(&binding).map_err(|_| AuthorityError::Corrupt)?;
         let key = candidate_key(identity, binding.snapshot)?;
         match self.store.compare_exchange(&key, None, &bytes).await? {
             CasOutcome::Applied(_) => Ok(()),
             CasOutcome::Conflict(Some(value)) if value.bytes == bytes => Ok(()),
             CasOutcome::Conflict(Some(value)) => {
-                let mut existing = decode_candidate(&value.bytes, binding.snapshot)?;
-                existing.version = binding.version;
-                if existing == *binding {
+                let existing = decode_candidate(&value.bytes, binding.snapshot)?;
+                if existing.same_content(&binding) {
                     Ok(())
                 } else {
                     Err(AuthorityError::AlreadyExists)
@@ -147,13 +162,14 @@ pub(in crate::authority) fn binding(
         operation,
         manifest_sha256: Sha256::digest(manifest).into(),
         initial_split,
+        expires_at: None,
     }
 }
 pub(crate) fn candidate_key(
     identity: &DatasetIdentity,
     snapshot: SnapshotId,
 ) -> Result<Vec<u8>, DatasetError> {
-    let mut key = b"DS\0CB\0".to_vec();
+    let mut key = CANDIDATE_PREFIX.to_vec();
     key.extend_from_slice(&identity.key()?);
     key.extend_from_slice(snapshot.as_bytes());
     Ok(key)

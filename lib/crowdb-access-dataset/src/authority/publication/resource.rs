@@ -80,11 +80,10 @@ impl DatasetAuthority {
             return Err(AuthorityError::Invalid(DatasetError::InvalidPublicationState));
         }
         if let PublicationMode::Resource(initial) = mode {
-            if let Some(mut content) = self.snapshot_candidate(identity, snapshot).await? {
+            if let Some(content) = self.snapshot_candidate(identity, snapshot).await? {
                 let reusable = matches!(content.version, 2 | 3);
                 let expected = candidate::binding(snapshot, parent, operation, manifest_bytes, initial);
-                content.version = expected.version;
-                if content != expected {
+                if !content.same_content(&expected) {
                     return Err(AuthorityError::AlreadyExists);
                 }
                 // The content binding follows all immutable Manifest and inspection rows.

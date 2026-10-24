@@ -15,6 +15,56 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 #[tokio::test]
+async fn unreferenced_complete_results_expire_through_the_normal_http_deletion_contract() {
+    let store = Arc::new(TestStore::default());
+    let test = TestDatasetHttp::start_payload(store).await;
+    let client = Client::new();
+    let (root, latest) = common::fixture(&client, &test.origin).await;
+    let mut input = composition::input(&Value::Null);
+    input["samples"] = json!([{"kind":"upsert","id":"YQ==","fields":[{"name":"value","value":{"kind":"inline","data":"Yg=="}}]}]);
+    let prepared = composition::prepare(&client, &root, "19191919191919191919191919191919", &input).await;
+    let snapshot = format!("{root}/snapshots/{}", prepared["snapshot"].as_str().unwrap());
+    response(client.get(format!("{snapshot}/summary")), 200).await;
+    test.clock
+        .store(1000 + 86400, std::sync::atomic::Ordering::Release);
+    test.authority
+        .expire_snapshot_candidates_page(&mut SnapshotExpirySweep::default(), &ReadCancellation::new())
+        .await
+        .unwrap();
+    response(client.get(format!("{snapshot}/summary")), 404).await;
+    let marked = response(client.post(format!("{snapshot}/reclaim")), 200).await;
+    assert_eq!(marked["phase"], "grace_period");
+    assert_eq!(marked["reclaim_after"], 1000 + 86400 + 300);
+    assert_eq!(
+        response(client.get(format!("{root}/head")), 200).await["latest"],
+        latest
+    );
+    let mut cursor = SnapshotReclaimSweep::default();
+    test.authority
+        .reclaim_due_page(&test.uploads, &mut cursor, &ReadCancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        response(client.post(format!("{snapshot}/reclaim")), 200).await["complete"],
+        false
+    );
+    test.clock
+        .store(1000 + 86400 + 300, std::sync::atomic::Ordering::Release);
+    for _ in 0..100 {
+        test.authority
+            .reclaim_due_page(&test.uploads, &mut cursor, &ReadCancellation::new())
+            .await
+            .unwrap();
+        if response(client.post(format!("{snapshot}/reclaim")), 200).await["complete"] == true {
+            drop(client);
+            test.stop().await;
+            return;
+        }
+    }
+    panic!("expired complete Snapshot did not finish ordinary reclamation");
+}
+
+#[tokio::test]
 async fn retirement_respects_retention_and_finishes_split_and_composition_cleanup() {
     let store = Arc::new(TestStore::default());
     let test = TestDatasetHttp::start_payload(store.clone()).await;

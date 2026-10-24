@@ -160,8 +160,10 @@ It contains no benchmark driver or timing threshold.
   reads keep no selected-ID pages or progress on the server. A shuffle group has
   at most 100000 IDs and 8 MiB of ID bytes; the cursor is bounded to 256 KiB before
   encoding. Small batches within a shuffle group reconstruct that bounded group.
-- Prepared candidates persist until publication or explicit reclaim. Reclaim
-  preserves head/stable/retained/ancestor data and a deletion grace period. Deferred cleanup reports
+- Complete Snapshot results without a live reference become eligible for background
+  retirement twenty-four hours after their first content binding; identical retries
+  do not renew that deadline. Legacy results without a deadline require explicit
+  reclaim. Reclaim preserves head/stable/retained/ancestor data and a deletion grace period. Deferred cleanup reports
   pending; shared ranges do not count as reclaimed whole chunks.
 
 Local disk cache/checkpoint staging, direct chunk access, RDMA, storage-side

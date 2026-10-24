@@ -269,8 +269,16 @@ and CAS-advances the head. A Published Snapshot record can precede head
 advancement; a successful publish response establishes the completed operation.
 Lost responses are resolved by inspecting status and retrying identical content
 with the same operation token. Historical retries cannot rewind a newer head.
-Divergent retries conflict. Prepared candidates remain until publication or
-explicit reclaim; upload expiry does not reclaim claimed candidate payloads.
+Divergent retries conflict. Snapshot content bindings carry a fixed retirement
+eligibility deadline twenty-four hours after their first creation. Identical
+retries preserve that deadline. A bounded background scan discovers complete
+results after it, checks head, retention and ancestry protection without
+mutations, then uses the ordinary authoritative reclamation fence and five-minute
+deletion grace. The deadline alone does not revoke reads or reclaim protected
+resources. Legacy bindings without a deadline require explicit reclaim. The
+binding follows immutable metadata preparation; resources that never reached
+that binding still require their existing abandonment discovery facts.
+Upload expiry does not reclaim claimed candidate payloads.
 
 ### 10.2 Read flow
 

@@ -4,6 +4,8 @@
 mod candidate;
 mod commit;
 mod complete;
+mod expiry;
+pub use expiry::SnapshotExpirySweep;
 mod identity;
 mod legacy;
 mod legacy_candidate;

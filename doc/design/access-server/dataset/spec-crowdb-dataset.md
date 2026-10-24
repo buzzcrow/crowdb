@@ -324,6 +324,14 @@ The parent/child index MUST precede final child completion, which MUST recheck p
 availability. An indexed child protects its parent until terminal retirement even
 while its own completion is pending; cleanup removes this conservative protection.
 
+A new Snapshot content binding MUST retain its first fixed twenty-four-hour
+retirement eligibility deadline. Identical retries MUST NOT renew it. Background
+expiry MAY mark an expired complete result only through the same authoritative
+reference checks and publication fencing as explicit reclamation. Protected
+results remain available; expiry eligibility alone is not a read-admission TTL.
+Legacy bindings without this resource fact require explicit reclamation. This
+scan does not establish discovery of partial resources missing their content binding.
+
 Deletion first persists a terminal mark and a five-minute `reclaim_after` deadline.
 Cleanup MUST NOT remove snapshot-owned metadata or payload references before
 that deadline. Restart and retry MUST preserve it. No Access Server or client
