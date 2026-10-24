@@ -15,6 +15,8 @@ use sha2::{Digest as _, Sha256};
 #[path = "common/multipart_actor.rs"]
 mod actor;
 use actor::{repository, repository_with_probe};
+#[path = "common/multipart_completion_request.rs"]
+mod completion_request;
 #[path = "common/multipart_cost.rs"]
 mod cost;
 #[path = "common/multipart_expiry.rs"]
@@ -23,6 +25,8 @@ mod expiry;
 mod expiry_sweep;
 #[path = "common/multipart_progress.rs"]
 mod progress;
+#[path = "common/retrieval_storage.rs"]
+mod retrieval_storage;
 #[path = "common/multipart_unknown.rs"]
 mod unknown;
 

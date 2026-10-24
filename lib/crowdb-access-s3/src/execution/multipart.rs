@@ -148,14 +148,11 @@ impl S3Executor {
         let repository = self.multipart_repository();
         let current = self.refresh_multipart(session, false).await?;
         let frozen = repository
-            .freeze_completion(&current, requested, unix_millis())
+            .freeze_current(current, requested, unix_millis())
             .await
             .map_err(mutation_error)?
             .ok_or(MultipartFailure::S3(S3ErrorCode::ServiceUnavailable))?;
-        repository
-            .publish_completion(&frozen)
-            .await
-            .map_err(mutation_error)
+        repository.publish_frozen(frozen).await.map_err(mutation_error)
     }
 
     /// # Errors

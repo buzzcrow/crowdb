@@ -41,6 +41,30 @@ impl MultipartRepository {
             .load(session)
             .await?
             .ok_or(MultipartRepositoryError::Conflict)?;
+        self.freeze_selection(current, requested, request_digest, now_ms)
+            .await
+    }
+
+    // Only continues the authority freshly loaded by this request. The exact
+    // session CAS still rejects an intervening part reservation or abort.
+    pub(crate) async fn freeze_current(
+        &self,
+        current: MultipartSessionRecord,
+        requested: &[CompletionPart],
+        now_ms: u64,
+    ) -> Result<Option<MultipartSessionRecord>, MultipartRepositoryError> {
+        let request_digest = request_digest(requested)?;
+        self.freeze_selection(current, requested, request_digest, now_ms)
+            .await
+    }
+
+    async fn freeze_selection(
+        &self,
+        current: MultipartSessionRecord,
+        requested: &[CompletionPart],
+        request_digest: [u8; 32],
+        now_ms: u64,
+    ) -> Result<Option<MultipartSessionRecord>, MultipartRepositoryError> {
         if matches!(
             current.phase,
             MultipartPhase::Publishing | MultipartPhase::Published

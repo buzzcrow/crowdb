@@ -27,6 +27,15 @@ impl MultipartRepository {
             .load(session)
             .await?
             .ok_or(MultipartRepositoryError::Conflict)?;
+        self.publish_frozen(current).await
+    }
+
+    // The caller just selected this frozen authority. Part generations and the
+    // object predecessor remain independently checked before publication.
+    pub(crate) async fn publish_frozen(
+        &self,
+        current: MultipartSessionRecord,
+    ) -> Result<MultipartSessionRecord, MultipartRepositoryError> {
         if current.phase == MultipartPhase::Published {
             return Ok(current);
         }
