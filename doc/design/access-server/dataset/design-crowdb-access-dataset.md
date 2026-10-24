@@ -366,6 +366,18 @@ owner cursor completes; clients cannot skip that boundary. Accepted range
 notifications end Access responsibility without waiting for physical capacity
 recovery. Shared range retirement does not count as a reclaimed whole chunk.
 
+Local queues reserve a full discovery page against failed work. Each hint tracks
+whether its previous window failed. Successful incomplete windows keep their
+positions. Failed hints may occupy at most `32 - discovery_page_items` slots;
+overflow discards the oldest failed hint, leaving every durable resource fact
+untouched. This opens discovery capacity even when 32 operations never respond.
+An outer deadline marks a hint failed only while its window is active, not while
+discovery or legacy-checkpoint sweeping runs. Dropped positions repeat idempotent
+retirement. After discarding a hint, a completed discovery pass restarts when its
+remaining hints have all failed, so no discarded resource is permanently skipped. Empty
+passes retain the normal fifteen-second idle interval. No scheduler position or
+failure bit is persisted.
+
 Metadata cleanup deletes at most twenty keys per local window. It removes
 obsolete Manifest storage and inspection projections while retaining small
 permanent CAS fences for all possible immutable index and Split revision/member

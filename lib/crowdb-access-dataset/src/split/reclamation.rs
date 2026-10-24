@@ -3,7 +3,7 @@
 
 use super::{cleanup::SplitReclaimCursor, SplitLifecycleError};
 use crate::{DatasetAuthority, MetadataScan, MetadataScanBudget, ReadCancellation};
-use std::{collections::VecDeque, time::Duration};
+use std::time::Duration;
 
 const DISCOVERY_ITEMS: usize = 8;
 const QUEUE_LIMIT: usize = 32;
@@ -12,7 +12,7 @@ const QUEUE_LIMIT: usize = 32;
 #[derive(Debug, Default)]
 pub struct SplitReclaimSweep {
     after: Option<Vec<u8>>,
-    pending: VecDeque<SplitReclaimCursor>,
+    pending: crate::retirement_queue::RetirementQueue<SplitReclaimCursor, QUEUE_LIMIT, DISCOVERY_ITEMS>,
     exhausted: bool,
 }
 impl SplitReclaimSweep {
@@ -39,9 +39,7 @@ impl DatasetAuthority {
         {
             result
         } else {
-            if cursor.pending.len() > 1 {
-                cursor.pending.rotate_left(1);
-            }
+            cursor.pending.timeout();
             Err(SplitLifecycleError::Limit)
         }
     }
@@ -50,30 +48,28 @@ impl DatasetAuthority {
         cursor: &mut SplitReclaimSweep,
         cancel: &ReadCancellation,
     ) -> Result<(), SplitLifecycleError> {
-        if cursor.exhausted && cursor.pending.is_empty() {
+        if cursor.exhausted && (cursor.pending.is_empty() || cursor.pending.needs_rescan()) {
             cursor.exhausted = false;
+            cursor.pending.restarting_scan();
         }
-        if !cursor.exhausted && cursor.pending.len() <= QUEUE_LIMIT - DISCOVERY_ITEMS {
+        if !cursor.exhausted && cursor.pending.can_discover() {
             self.discover_splits(cursor, cancel).await?;
         }
-        let Some(work) = cursor.pending.front_mut() else {
+        let Some(work) = cursor.pending.begin() else {
             return Ok(());
         };
         let result = self.advance_split_reclaim(work, cancel).await;
-        if result.as_ref().is_ok_and(|progress| progress.complete)
-            || matches!(
-                result,
-                Err(SplitLifecycleError::Frozen
-                    | SplitLifecycleError::Authority(
-                        crate::AuthorityError::ReclaimPending { .. }
-                            | crate::AuthorityError::SnapshotProtected
-                    ))
-            )
-        {
-            cursor.pending.pop_front();
-        } else {
-            cursor.pending.rotate_left(1);
-        }
+        let skipped = matches!(
+            result,
+            Err(SplitLifecycleError::Frozen
+                | SplitLifecycleError::Authority(
+                    crate::AuthorityError::ReclaimPending { .. } | crate::AuthorityError::SnapshotProtected
+                ))
+        );
+        cursor.pending.finish(
+            result.as_ref().is_ok_and(|progress| progress.complete) || skipped,
+            result.is_err() && !skipped,
+        );
         match result {
             Err(
                 SplitLifecycleError::Frozen
@@ -115,9 +111,7 @@ impl DatasetAuthority {
                 .iter()
                 .any(|work| work.identity == identity && work.operation == operation)
             {
-                cursor
-                    .pending
-                    .push_back(SplitReclaimCursor::new(identity, operation));
+                cursor.pending.push(SplitReclaimCursor::new(identity, operation));
             }
         }
         cursor.after = page.after;

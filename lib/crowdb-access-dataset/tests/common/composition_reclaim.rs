@@ -2,10 +2,10 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crate::{legacy, publication, upload};
-use arc_swap::ArcSwapOption;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use crowdb_access_dataset::*;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 
@@ -14,6 +14,9 @@ pub struct TestReclaimStore {
     pub inner: upload::TestStore,
     pub frozen: AtomicBool,
     pub stalled: ArcSwapOption<Vec<u8>>,
+    pub blocked: ArcSwap<Vec<Vec<u8>>>,
+    pub observed: ArcSwapOption<Vec<u8>>,
+    pub observations: AtomicU64,
 }
 #[async_trait::async_trait]
 impl DatasetStore for TestReclaimStore {
@@ -27,10 +30,19 @@ impl DatasetStore for TestReclaimStore {
         cancel: &ReadCancellation,
     ) -> Result<Option<StoredValue>, StoreError> {
         if self
+            .observed
+            .load()
+            .as_ref()
+            .is_some_and(|target| target.as_slice() == key)
+        {
+            self.observations.fetch_add(1, Ordering::Relaxed);
+        }
+        if self
             .stalled
             .load()
             .as_ref()
             .is_some_and(|target| target.as_slice() == key)
+            || self.blocked.load().iter().any(|target| target.as_slice() == key)
         {
             std::future::pending::<()>().await;
         }

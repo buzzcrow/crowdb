@@ -6,7 +6,7 @@ use crate::{
     key, AuthorityError, DatasetAuthority, DatasetUploads, MetadataScan, MetadataScanBudget,
     ReadCancellation, SnapshotReclaimError,
 };
-use std::{collections::VecDeque, time::Duration};
+use std::time::Duration;
 
 const QUEUE_LIMIT: usize = 32;
 const DISCOVERY_ITEMS: usize = 20;
@@ -15,7 +15,7 @@ const DISCOVERY_ITEMS: usize = 20;
 #[derive(Default, Debug)]
 pub struct SnapshotReclaimSweep {
     after: Option<Vec<u8>>,
-    pending: VecDeque<SnapshotReclaimCursor>,
+    pending: crate::retirement_queue::RetirementQueue<SnapshotReclaimCursor, QUEUE_LIMIT, DISCOVERY_ITEMS>,
     legacy: super::legacy_progress::LegacyProgressSweep,
 }
 impl SnapshotReclaimSweep {
@@ -48,9 +48,7 @@ impl DatasetAuthority {
         {
             result
         } else {
-            if cursor.pending.len() > 1 {
-                cursor.pending.rotate_left(1);
-            }
+            cursor.pending.timeout();
             Err(SnapshotReclaimError::Limit)
         }
     }
@@ -61,16 +59,15 @@ impl DatasetAuthority {
         cursor: &mut SnapshotReclaimSweep,
         cancel: &ReadCancellation,
     ) -> Result<(), SnapshotReclaimError> {
-        if cursor.pending.len() <= QUEUE_LIMIT - DISCOVERY_ITEMS {
+        if cursor.pending.can_discover() {
             self.discover_reclaims(cursor, cancel).await?;
         }
-        if let Some(work) = cursor.pending.front_mut() {
+        if let Some(work) = cursor.pending.begin() {
             let result = self.advance_snapshot_reclaim(uploads, work, cancel).await;
-            if result.as_ref().is_ok_and(|status| status.complete) {
-                cursor.pending.pop_front();
-            } else {
-                cursor.pending.rotate_left(1);
-            }
+            cursor.pending.finish(
+                result.as_ref().is_ok_and(|status| status.complete),
+                result.is_err(),
+            );
             result?;
         }
         self.sweep_legacy_progress(&mut cursor.legacy, cancel).await
@@ -118,7 +115,7 @@ impl DatasetAuthority {
             {
                 cursor
                     .pending
-                    .push_back(SnapshotReclaimCursor::new(identity, snapshot));
+                    .push(SnapshotReclaimCursor::new(identity, snapshot));
             }
         }
         cursor.after = page.after;

@@ -24,6 +24,7 @@ mod planner;
 mod publication;
 mod record;
 mod retention;
+mod retirement_queue;
 mod selection;
 mod shuffle;
 pub mod split;

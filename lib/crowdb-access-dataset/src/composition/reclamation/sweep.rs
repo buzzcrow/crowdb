@@ -6,7 +6,7 @@ use crate::{
     composition::CompositionError, DatasetAuthority, DatasetUploads, MetadataScan, MetadataScanBudget,
     ReadCancellation,
 };
-use std::{collections::VecDeque, time::Duration};
+use std::time::Duration;
 
 const DISCOVERY_ITEMS: usize = 8;
 const QUEUE_LIMIT: usize = 32;
@@ -15,7 +15,7 @@ const QUEUE_LIMIT: usize = 32;
 #[derive(Debug, Default)]
 pub struct CompositionReclaimSweep {
     after: Option<Vec<u8>>,
-    pending: VecDeque<CompositionReclaimCursor>,
+    pending: crate::retirement_queue::RetirementQueue<CompositionReclaimCursor, QUEUE_LIMIT, DISCOVERY_ITEMS>,
     exhausted: bool,
 }
 impl CompositionReclaimSweep {
@@ -46,9 +46,7 @@ impl DatasetAuthority {
         {
             result
         } else {
-            if cursor.pending.len() > 1 {
-                cursor.pending.rotate_left(1);
-            }
+            cursor.pending.timeout();
             Err(CompositionError::Limit)
         }
     }
@@ -58,21 +56,20 @@ impl DatasetAuthority {
         cursor: &mut CompositionReclaimSweep,
         cancel: &ReadCancellation,
     ) -> Result<(), CompositionError> {
-        if cursor.exhausted && cursor.pending.is_empty() {
+        if cursor.exhausted && (cursor.pending.is_empty() || cursor.pending.needs_rescan()) {
             cursor.exhausted = false;
+            cursor.pending.restarting_scan();
         }
-        if !cursor.exhausted && cursor.pending.len() <= QUEUE_LIMIT - DISCOVERY_ITEMS {
+        if !cursor.exhausted && cursor.pending.can_discover() {
             self.discover_compositions(cursor, cancel).await?;
         }
-        let Some(work) = cursor.pending.front_mut() else {
+        let Some(work) = cursor.pending.begin() else {
             return Ok(());
         };
         let result = self.advance_composition_reclaim(uploads, work, cancel).await;
-        if result.as_ref().is_ok_and(|complete| *complete) {
-            cursor.pending.pop_front();
-        } else {
-            cursor.pending.rotate_left(1);
-        }
+        cursor
+            .pending
+            .finish(result.as_ref().is_ok_and(|complete| *complete), result.is_err());
         result.map(|_| ())
     }
     async fn discover_compositions(
@@ -105,7 +102,7 @@ impl DatasetAuthority {
             {
                 cursor
                     .pending
-                    .push_back(CompositionReclaimCursor::new(identity, operation));
+                    .push(CompositionReclaimCursor::new(identity, operation));
             }
         }
         cursor.after = page.after;
