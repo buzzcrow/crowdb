@@ -102,7 +102,8 @@ impl NamespaceRepository {
         Ok(self.load(context, identifier).await?.is_some())
     }
 
-    pub(crate) async fn ensure_current(
+    // Composite readers check the catalog context around their complete request.
+    pub(crate) async fn ensure_current_in_context(
         &self,
         context: CatalogContext,
         selected: &NamespaceAuthority,
@@ -138,10 +139,11 @@ impl NamespaceRepository {
         {
             return Err(CatalogError::Conflict);
         }
-        self.check_context(context).await
+        Ok(())
     }
 
-    async fn resolve(
+    // The caller brackets this binding read with catalog availability checks.
+    pub(crate) async fn resolve(
         &self,
         context: CatalogContext,
         identifier: &NamespaceIdentifier,

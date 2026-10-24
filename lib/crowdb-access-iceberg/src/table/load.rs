@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 use super::{TableHead, TableMetadataDocument, TableMetadataError, TableMetadataLimits, TableRepository};
 use crate::{
-    catalog::{Capabilities, CatalogContext, CatalogError, FormatAction},
+    catalog::{check_context, Capabilities, CatalogContext, CatalogError, CatalogStore, FormatAction},
     file::FileBlockStore,
     namespace::{NamespaceIdentifier, NamespaceRepository, NamespaceStore},
 };
@@ -42,7 +42,10 @@ pub enum TableLoadError {
     UnsupportedVersion,
 }
 
+/// Each call brackets its binding reads with fresh catalog availability checks.
+/// Replacement advances the activation epoch; same-context activation only adds capabilities.
 pub struct TableLoader {
+    store: Arc<dyn CatalogStore>,
     namespaces: NamespaceRepository,
     tables: TableRepository,
     blocks: Arc<dyn FileBlockStore>,
@@ -57,6 +60,7 @@ impl TableLoader {
         limits: TableMetadataLimits,
     ) -> Self {
         Self {
+            store: store.clone(),
             namespaces: NamespaceRepository::new(store.clone()),
             tables: TableRepository::new(store),
             blocks,
@@ -85,14 +89,28 @@ impl TableLoader {
         namespace: &NamespaceIdentifier,
         name: &str,
     ) -> Result<Option<TableHead>, TableLoadError> {
-        let Some(parent) = self.namespaces.load(context, namespace).await? else {
+        check_context(self.store.as_ref(), context).await?;
+        let selected = self.head_in_context(context, namespace, name).await?;
+        check_context(self.store.as_ref(), context).await?;
+        Ok(selected)
+    }
+
+    async fn head_in_context(
+        &self,
+        context: CatalogContext,
+        namespace: &NamespaceIdentifier,
+        name: &str,
+    ) -> Result<Option<TableHead>, TableLoadError> {
+        let Some(parent) = self.namespaces.resolve(context, namespace).await? else {
             return Ok(None);
         };
-        let selected = self.tables.select(context, parent.namespace, name).await?;
+        let selected = self.tables.resolve(context, parent.namespace, name).await?;
         if let Some(selected) = &selected {
-            self.tables.ensure_current(context, selected).await?;
+            self.tables.ensure_current_in_context(context, selected).await?;
         }
-        self.namespaces.ensure_current(context, &parent).await?;
+        self.namespaces
+            .ensure_current_in_context(context, &parent)
+            .await?;
         Ok(selected.map(|value| value.head))
     }
 
@@ -140,11 +158,30 @@ impl TableLoader {
         if if_none_match.is_some_and(|value| value.len() > 8192) {
             return Err(TableMetadataError::Bounds.into());
         }
-        let Some(parent) = self.namespaces.load(context, namespace).await? else {
+        check_context(self.store.as_ref(), context).await?;
+        let result = self
+            .load_in_context(context, namespace, name, mode, if_none_match, capabilities)
+            .await?;
+        check_context(self.store.as_ref(), context).await?;
+        Ok(result)
+    }
+
+    async fn load_in_context(
+        &self,
+        context: CatalogContext,
+        namespace: &NamespaceIdentifier,
+        name: &str,
+        mode: SnapshotLoadingMode,
+        if_none_match: Option<&str>,
+        capabilities: Option<Capabilities>,
+    ) -> Result<TableLoad, TableLoadError> {
+        let Some(parent) = self.namespaces.resolve(context, namespace).await? else {
             return Ok(TableLoad::Missing);
         };
-        let Some(selected) = self.tables.select(context, parent.namespace, name).await? else {
-            self.namespaces.ensure_current(context, &parent).await?;
+        let Some(selected) = self.tables.resolve(context, parent.namespace, name).await? else {
+            self.namespaces
+                .ensure_current_in_context(context, &parent)
+                .await?;
             return Ok(TableLoad::Missing);
         };
         if capabilities
@@ -160,8 +197,10 @@ impl TableLoader {
         if metadata.len() > self.limits.bytes {
             return Err(TableMetadataError::Bounds.into());
         }
-        self.tables.ensure_current(context, &selected).await?;
-        self.namespaces.ensure_current(context, &parent).await?;
+        self.tables.ensure_current_in_context(context, &selected).await?;
+        self.namespaces
+            .ensure_current_in_context(context, &parent)
+            .await?;
         if if_none_match.is_some_and(|header| {
             header.split(',').any(|tag| {
                 let tag = tag.trim();

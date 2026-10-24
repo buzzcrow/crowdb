@@ -51,6 +51,20 @@ impl FileRepository {
         self.resolve(location).await
     }
 
+    // The enclosing composite read checks catalog availability before and after
+    // resolving its namespace, table and immutable file bindings.
+    pub(crate) async fn load_in_context(
+        &self,
+        context: CatalogContext,
+        location: &FileLocation,
+    ) -> Result<Option<FileRecord>, CatalogError> {
+        context.validate()?;
+        if context.catalog != location.table().catalog {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
+        self.resolve(location).await
+    }
+
     /// Publishes a candidate after callers verify transfer integrity and durable storage.
     /// # Errors
     /// Rejects invalid records, changed content, retired contexts and uncertain writes.

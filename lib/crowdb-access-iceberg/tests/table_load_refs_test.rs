@@ -112,7 +112,7 @@ async fn refs_keep_original_snapshot_order_and_exact_raw_values_without_writes()
     let writes = fixture.fixture.store.writes.load(Ordering::Relaxed);
     let reads = fixture.fixture.store.reads.load(Ordering::Relaxed);
     let bytes = refs(&fixture).await;
-    assert_eq!(fixture.fixture.store.reads.load(Ordering::Relaxed) - reads, 16);
+    assert_eq!(fixture.fixture.store.reads.load(Ordering::Relaxed) - reads, 10);
     let actual: TestFields = serde_json::from_slice(&bytes).unwrap();
     let selected: Vec<&RawValue> = serde_json::from_str(actual["snapshots"].get()).unwrap();
     assert_eq!(selected.len(), 2);

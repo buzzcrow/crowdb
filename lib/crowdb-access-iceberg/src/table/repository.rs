@@ -56,6 +56,15 @@ impl TableRepository {
         selected: &SelectedTable,
     ) -> Result<(), CatalogError> {
         check_context(self.store.as_ref(), context).await?;
+        self.ensure_current_in_context(context, selected).await?;
+        check_context(self.store.as_ref(), context).await
+    }
+
+    pub(super) async fn ensure_current_in_context(
+        &self,
+        context: CatalogContext,
+        selected: &SelectedTable,
+    ) -> Result<(), CatalogError> {
         if selected.head.catalog != context.catalog {
             return Err(ValidationError::IdentityMismatch.into());
         }
@@ -71,10 +80,10 @@ impl TableRepository {
         if *head != selected.head {
             return Err(CatalogError::Conflict);
         }
-        check_context(self.store.as_ref(), context).await
+        Ok(())
     }
 
-    async fn resolve(
+    pub(super) async fn resolve(
         &self,
         context: CatalogContext,
         namespace: NamespaceId,
@@ -105,7 +114,7 @@ impl TableRepository {
         }
         let metadata = self
             .files
-            .load(context, &head.metadata_location)
+            .load_in_context(context, &head.metadata_location)
             .await?
             .ok_or(ValidationError::Record)?;
         if metadata.file != head.metadata_file
