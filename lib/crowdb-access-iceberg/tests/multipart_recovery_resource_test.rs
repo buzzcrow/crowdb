@@ -74,66 +74,48 @@ async fn completing(fixture: &file::TestFile, blocks: Arc<blocks::TestBlocks>) -
 }
 
 #[tokio::test]
-async fn observed_recovery_defers_active_copy_but_resumes_unchanged_revisions() {
+async fn background_sweeps_leave_client_copy_state_and_physical_bytes_untouched() {
     let fixture = file::TestFile::new(common::TestStore::default()).await;
     let blocks = Arc::new(blocks::TestBlocks::default());
     let repository = MultipartRepository::new(fixture.store.clone());
     let session = completing(&fixture, blocks.clone()).await;
-    let recovery = MultipartRecovery::new(fixture.store.clone(), blocks.clone(), 4, 8).unwrap();
-    let writes = fixture.store.writes.load(Ordering::SeqCst);
-    let observation = recovery.observe_page(fixture.context, None).await.unwrap();
-    assert_eq!(fixture.store.writes.load(Ordering::SeqCst), writes);
-    assert!(repository
-        .advance_completion(&session, blocks.clone(), 4, 8)
-        .await
-        .unwrap());
+    let recovery = MultipartRecovery::new(fixture.store.clone());
     let writes = fixture.store.writes.load(Ordering::SeqCst);
     let block_writes = blocks.writes.load(Ordering::SeqCst);
-    let report = recovery.recover_observed_page(observation, 103).await.unwrap();
-    assert_eq!((report.progressed, report.deferred), (0, 1));
-    assert!(report.failures.is_empty());
+    let block_reads = blocks.reads.load(Ordering::SeqCst);
+    blocks.pause_reads.store(true, Ordering::SeqCst);
+    for _ in 0..3 {
+        let report = recovery.recover_page(fixture.context, None, 103).await.unwrap();
+        assert_eq!((report.progressed, report.retained), (0, 1));
+        assert!(report.failures.is_empty());
+    }
     assert_eq!(fixture.store.writes.load(Ordering::SeqCst), writes);
     assert_eq!(blocks.writes.load(Ordering::SeqCst), block_writes);
-    for expected in [8, 10] {
-        let observation = recovery.observe_page(fixture.context, None).await.unwrap();
-        let report = recovery.recover_observed_page(observation, 104).await.unwrap();
-        assert_eq!((report.progressed, report.deferred), (1, 0));
-        assert!(report.failures.is_empty());
-        let current = repository
-            .load(session.context, session.upload)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(current.completion.unwrap().progress.completed_bytes, expected);
-    }
-    let observation = recovery.observe_page(fixture.context, None).await.unwrap();
-    let report = recovery.recover_observed_page(observation, 105).await.unwrap();
-    assert_eq!(report.awaiting_seal, [session.upload]);
+    assert_eq!(blocks.reads.load(Ordering::SeqCst), block_reads);
+    assert_eq!(
+        repository.load(session.context, session.upload).await.unwrap(),
+        Some(session)
+    );
 }
 
 #[tokio::test]
-async fn stale_observations_cannot_delay_expiry_or_authorize_retired_catalogs() {
+async fn expiry_remains_metadata_only_and_retired_catalogs_cannot_authorize_it() {
     for retire in [false, true] {
         let fixture = file::TestFile::new(common::TestStore::default()).await;
         let blocks = Arc::new(blocks::TestBlocks::default());
         let repository = MultipartRepository::new(fixture.store.clone());
         let session = completing(&fixture, blocks.clone()).await;
-        let recovery = MultipartRecovery::new(fixture.store.clone(), blocks.clone(), 4, 8).unwrap();
-        let observation = recovery.observe_page(fixture.context, None).await.unwrap();
-        assert!(repository
-            .advance_completion(&session, blocks.clone(), 4, 8)
-            .await
-            .unwrap());
+        let recovery = MultipartRecovery::new(fixture.store.clone());
         if retire {
             let mut replacement = fixture.context;
             replacement.activation_epoch += 1;
             fixture.root(replacement, RootState::Ready).await;
         }
-        let writes = blocks.writes.load(Ordering::SeqCst);
+        let physical = blocks.values.load_full();
         let result = recovery
-            .recover_observed_page(observation, session.expires_ms)
+            .recover_page(fixture.context, None, session.expires_ms)
             .await;
-        assert_eq!(blocks.writes.load(Ordering::SeqCst), writes);
+        assert_eq!(*blocks.values.load_full(), *physical);
         if retire {
             assert!(result.is_err());
         } else {
@@ -150,32 +132,28 @@ async fn stale_observations_cannot_delay_expiry_or_authorize_retired_catalogs() 
 }
 
 #[tokio::test]
-async fn observed_sweeps_keep_fixed_pages_and_recover_new_sessions_on_later_visits() {
+async fn resource_sweeps_visit_every_session_with_bounded_pages_without_a_copy_observation_pass() {
     let fixture = file::TestFile::new(common::TestStore::default()).await;
     let blocks = Arc::new(blocks::TestBlocks::default());
-    let recovery = MultipartRecovery::new(fixture.store.clone(), blocks.clone(), 4, 8).unwrap();
-    let empty = recovery.observe_page(fixture.context, None).await.unwrap();
+    let recovery = MultipartRecovery::new(fixture.store.clone());
     for _ in 0..9 {
         completing(&fixture, blocks.clone()).await;
     }
-    let report = recovery.recover_observed_page(empty, 103).await.unwrap();
-    assert_eq!((report.progressed, report.deferred), (0, 4));
     let mut continuation = None;
-    let mut progressed = 0;
+    let mut retained = 0;
     loop {
-        let observation = recovery
-            .observe_page(fixture.context, continuation)
+        let report = recovery
+            .recover_page(fixture.context, continuation, 104)
             .await
             .unwrap();
-        let report = recovery.recover_observed_page(observation, 104).await.unwrap();
-        assert!(report.progressed <= 4);
-        assert_eq!(report.deferred, 0);
+        assert!(report.retained <= 4);
+        assert_eq!((report.progressed, report.deferred), (0, 0));
         assert!(report.failures.is_empty());
-        progressed += report.progressed;
+        retained += report.retained;
         continuation = report.continuation;
         if continuation.is_none() {
             break;
         }
     }
-    assert_eq!(progressed, 9);
+    assert_eq!(retained, 9);
 }

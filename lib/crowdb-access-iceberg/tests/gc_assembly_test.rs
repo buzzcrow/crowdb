@@ -1,8 +1,10 @@
+#[path = "common/legacy_checkpoint.rs"]
+mod legacy_checkpoint;
 use std::sync::{atomic::Ordering, Arc};
 
 use crowdb_access_iceberg::{
     catalog::{CatalogAuthority, CatalogLifecycle, CatalogStore, RootState},
-    file::{FileBlockStore, FileTreeWriter, MultipartPhase, MultipartSession},
+    file::{FileBlockStore, MultipartPhase, MultipartSession},
     gc::{GcLimits, GcPhase, GcRepository, GcStalledReason, GcTask, GcWorker},
     key::{CatalogId, CatalogScope, IcebergKey, OperationId},
     operation::{mutation_identity, PayloadStore},
@@ -15,6 +17,8 @@ mod blocks;
 mod gc_blocks;
 #[path = "common/multipart.rs"]
 mod multipart;
+#[path = "common/multipart_recovery_store.rs"]
+mod scan;
 mod common {
     pub mod store;
     pub use store::TestStore;
@@ -47,8 +51,9 @@ impl TestAssembly {
         session.part_count = 1;
         session.staged_bytes = 600;
         session.limits.max_part_bytes = 600;
-        let mut writer = FileTreeWriter::new(blocks.clone(), session.owner, 2).unwrap();
-        writer.push(&vec![7; 600]).await.unwrap();
+        let (checkpoint, tree) =
+            legacy_checkpoint::TestLegacyCheckpoint::create(blocks.clone(), session.owner, &vec![7; 600], 2)
+                .await;
         let mut completion = multipart::completion(&session);
         if !retire {
             completion.selection = PayloadStore::new(file.store.clone())
@@ -57,11 +62,11 @@ impl TestAssembly {
                 .unwrap();
             completion.progress.selection = completion.selection.digest;
         }
-        completion.progress.writer = Some(writer.checkpoint().await.unwrap());
+        completion.progress.writer = Some(checkpoint);
         completion.progress.completed_bytes = 600;
         completion.progress.next_part = 1;
-        if phase != MultipartPhase::Aborted {
-            completion.candidate = Some(writer.finish().await.unwrap());
+        if !matches!(phase, MultipartPhase::Aborted | MultipartPhase::Completing) {
+            completion.candidate = Some(tree);
             completion.publication = Some(completion.selection.clone());
         }
         if phase == MultipartPhase::Published {
@@ -140,6 +145,103 @@ impl TestAssembly {
             }
         }
         panic!("assembly did not terminate: {:?}", self.task);
+    }
+}
+
+#[tokio::test]
+async fn legacy_complete_progress_is_rejected_without_copy_and_expiry_preserves_gc_frontier() {
+    use crowdb_access_iceberg::file::{
+        MultipartRecovery, MultipartRepository, MultipartSelection, MultipartWorkError, SelectedPart,
+    };
+    let mut fixture = TestAssembly::new_with_catalog(MultipartPhase::Completing, false).await;
+    let before = fixture.blocks.blocks.values.load_full();
+    let repository = MultipartRepository::new(fixture.file.store.clone());
+    let selection = MultipartSelection::new(vec![SelectedPart {
+        number: 1,
+        revision: 1,
+        digest: [1; 32],
+    }])
+    .unwrap();
+    let error = repository
+        .assemble(&fixture.session, &selection, fixture.blocks.clone(), 1000, 2)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, MultipartWorkError::LegacyProgress));
+    assert_eq!(*fixture.blocks.blocks.values.load_full(), *before);
+    let report = MultipartRecovery::new(fixture.file.store.clone())
+        .recover_page(fixture.session.context, None, fixture.session.expires_ms)
+        .await
+        .unwrap();
+    assert_eq!(report.progressed, 1);
+    let current = repository
+        .load(fixture.session.context, fixture.session.upload)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.phase, MultipartPhase::Aborted);
+    assert_eq!(current.completion, fixture.session.completion);
+    assert_eq!(*fixture.blocks.blocks.values.load_full(), *before);
+    fixture.run().await;
+    assert_eq!(fixture.task.phase, GcPhase::Complete);
+    assert!(fixture.blocks.blocks.values.load().is_empty());
+}
+
+#[tokio::test]
+async fn valid_storage_digest_cannot_hide_invalid_legacy_frontier_coverage_owner_or_height() {
+    use crowdb_access_iceberg::file::{FileDigest, FileWriterCheckpoint};
+    for changed in 0..4 {
+        let mut fixture = TestAssembly::new(MultipartPhase::Aborted).await;
+        let completion = fixture.session.completion.as_ref().unwrap();
+        let mut bytes = fixture
+            .blocks
+            .read(&completion.progress.writer.as_ref().unwrap().root)
+            .await
+            .unwrap();
+        let digest_length = usize::from(u16::from_be_bytes(bytes[5..7].try_into().unwrap()));
+        let mut directory = 7 + digest_length;
+        while u32::from_be_bytes(bytes[directory..directory + 4].try_into().unwrap()) == 0 {
+            directory += 4;
+        }
+        directory += 4;
+        match changed {
+            0 => {
+                let mut digest = FileDigest::new(fixture.session.owner);
+                digest.update(b"wrong length").unwrap();
+                bytes[7..7 + digest_length].copy_from_slice(&digest.checkpoint());
+            }
+            1 => bytes.push(0),
+            2 => bytes[directory + 53] += 1,
+            _ => bytes[directory + 5] ^= 1,
+        }
+        let old = StorageRecord::MultipartSession(Box::new(fixture.session.clone()))
+            .encode()
+            .unwrap();
+        let root = fixture
+            .blocks
+            .put(fixture.session.owner, 0, &bytes)
+            .await
+            .unwrap();
+        fixture.session.completion.as_mut().unwrap().progress.writer = Some(FileWriterCheckpoint { root });
+        let key = fixture.session.key().encode().unwrap();
+        let next = StorageRecord::MultipartSession(Box::new(fixture.session.clone()))
+            .encode()
+            .unwrap();
+        fixture
+            .file
+            .store
+            .compare_exchange(
+                &key,
+                Some(&old),
+                &next,
+                mutation_identity(&key, Some(&old), &next),
+            )
+            .await
+            .unwrap();
+        fixture.run().await;
+        assert_eq!(fixture.task.phase, GcPhase::Quarantined, "variant {changed}");
+        assert_eq!(fixture.task.stalled, GcStalledReason::Corruption);
+        assert_eq!(fixture.blocks.deletes.load(Ordering::Relaxed), 0);
+        assert!(fixture.file.store.get(&key).await.unwrap().is_some());
     }
 }
 

@@ -22,10 +22,9 @@ async fn multipart_session_phases_require_frozen_completion_and_never_claim_an_a
     session.validate().unwrap();
     session.phase = MultipartPhase::Publishing;
     assert!(session.validate().is_err());
-    let mut writer = FileTreeWriter::new(Arc::new(TestBlocks::default()), session.owner, 8).unwrap();
+    let writer = FileTreeWriter::new(Arc::new(TestBlocks::default()), session.owner, 8).unwrap();
     let completion = session.completion.as_mut().unwrap();
     completion.progress.next_part = 1;
-    completion.progress.writer = Some(writer.checkpoint().await.unwrap());
     completion.candidate = Some(writer.finish().await.unwrap());
     completion.publication = Some(completion.selection.clone());
     session.validate().unwrap();

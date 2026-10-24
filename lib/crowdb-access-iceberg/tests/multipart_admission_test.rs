@@ -1,5 +1,3 @@
-#[path = "common/file_blocks.rs"]
-mod blocks;
 #[path = "common/store.rs"]
 mod common;
 #[path = "common/file.rs"]
@@ -66,13 +64,7 @@ fn install_session(fixture: &file::TestFile, session: &MultipartSession) {
     fixture.store.values.store(Arc::new(values));
 }
 fn recovery(fixture: &file::TestFile) -> MultipartRecovery {
-    MultipartRecovery::new(
-        fixture.store.clone(),
-        Arc::new(blocks::TestBlocks::default()),
-        8,
-        32,
-    )
-    .unwrap()
+    MultipartRecovery::new(fixture.store.clone())
 }
 
 #[tokio::test]

@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 use crate::catalog::CatalogError;
@@ -12,6 +13,10 @@ use super::{check_live, increment, MultipartRepository};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MultipartWorkError {
+    #[error("legacy multipart byte progress cannot be resumed; abort and create a new upload")]
+    LegacyProgress,
+    #[error("legacy multipart assembly exceeds the complete request byte limit")]
+    CopyLimit,
     #[error(transparent)]
     Catalog(#[from] CatalogError),
     #[error(transparent)]
@@ -91,102 +96,73 @@ impl MultipartRepository {
         self.exchange(session, &next).await
     }
 
-    /// Copies one bounded byte window and conditionally advances durable progress.
+    /// Copies the complete selected legacy tree parts within this request's byte budget.
+    /// No byte cursor or writer checkpoint is persisted; retries start from whole parts.
     /// # Errors
-    /// Rejects stale sessions, changed selections, missing parts and corrupt bytes.
-    pub async fn advance_completion(
+    /// Rejects stale sessions, selection changes, excess total bytes and corrupt parts.
+    pub async fn assemble(
         &self,
         session: &MultipartSession,
+        selection: &MultipartSelection,
         blocks: Arc<dyn FileBlockStore>,
-        step_bytes: usize,
-        block_bytes: usize,
-    ) -> Result<bool, MultipartWorkError> {
-        let completion = completing(session)?;
-        let assembly = assembly(session, completion, blocks, step_bytes, block_bytes)?;
-        let mut next = increment(session)?;
-        if self.load(session.context, session.upload).await?.as_ref() != Some(session) {
-            return Ok(false);
-        }
-        let bytes = PayloadStore::new(self.store.clone())
-            .get(&completion.selection)
-            .await?;
-        let selection = MultipartSelection::decode(&bytes)?;
-        if selection.parts().len() != usize::from(completion.selected_parts) {
-            return Err(ValidationError::Record.into());
-        }
-        let selected = selection
-            .parts()
-            .get(usize::from(completion.progress.next_part))
-            .ok_or(ValidationError::Record)?;
-        let part = self
-            .part(session, selected.number)
-            .await?
-            .ok_or(ValidationError::Record)?;
-        if part.revision != selected.revision || part.selection_digest() != selected.digest {
-            return Err(ValidationError::Record.into());
-        }
-        let progress = assembly
-            .advance(
-                &completion.progress,
-                &AssemblyPart {
-                    ordinal: completion.progress.next_part,
-                    owner: part.owner,
-                    tree: part.tree.ok_or(ValidationError::Record)?,
-                },
-            )
-            .await?;
-        next.completion.as_mut().ok_or(ValidationError::Record)?.progress = progress;
-        Ok(self.exchange(session, &next).await?)
-    }
-
-    /// Returns assembled bytes for semantic sealing, without publishing a file location.
-    /// # Errors
-    /// Rejects stale sessions, incomplete selections and invalid writer checkpoints.
-    pub async fn assembled_tree(
-        &self,
-        session: &MultipartSession,
-        blocks: Arc<dyn FileBlockStore>,
+        max_copy_bytes: u64,
         block_bytes: usize,
     ) -> Result<FileTree, MultipartWorkError> {
-        let completion = completing(session)?;
+        session.validate()?;
+        let completion = session.completion.as_ref().ok_or(ValidationError::Record)?;
+        if session.phase != MultipartPhase::Completing {
+            return Err(CatalogError::Conflict.into());
+        }
+        if completion.progress.writer.is_some() {
+            // Legacy partial frontiers remain owned by their original GC record.
+            return Err(MultipartWorkError::LegacyProgress);
+        }
+        if selection.count() != completion.selected_parts
+            || <[u8; 32]>::from(Sha256::digest(selection.encode())) != completion.selection.digest
+        {
+            return Err(ValidationError::Record.into());
+        }
         if self.load(session.context, session.upload).await?.as_ref() != Some(session) {
             return Err(CatalogError::Conflict.into());
         }
-        let tree = assembly(session, completion, blocks, 1, block_bytes)?
-            .finish(&completion.progress)
-            .await?;
+        let mut parts = Vec::with_capacity(usize::from(selection.count()));
+        let mut length = 0_u64;
+        let max_bytes = max_copy_bytes.min(session.limits.max_file_bytes);
+        if max_bytes == 0 {
+            return Err(MultipartWorkError::CopyLimit);
+        }
+        for selected in selection.parts() {
+            let part = self.selected_part(session, selected).await?;
+            let tree = part.tree.ok_or(ValidationError::Record)?;
+            length = length
+                .checked_add(tree.length)
+                .ok_or(MultipartWorkError::CopyLimit)?;
+            if length > max_bytes {
+                return Err(MultipartWorkError::CopyLimit);
+            }
+            parts.push((part.owner, tree));
+        }
+        let mut assembly = FileAssembly::new(
+            blocks,
+            session.owner,
+            selection.count(),
+            max_bytes,
+            16 * 1024,
+            block_bytes,
+        )?;
+        for (ordinal, (owner, tree)) in parts.into_iter().enumerate() {
+            assembly
+                .push(&AssemblyPart {
+                    ordinal: u16::try_from(ordinal).map_err(|_| ValidationError::Record)?,
+                    owner,
+                    tree,
+                })
+                .await?;
+        }
+        let tree = assembly.finish().await?;
         if self.load(session.context, session.upload).await?.as_ref() != Some(session) {
             return Err(CatalogError::Conflict.into());
         }
         Ok(tree)
     }
-}
-
-fn completing(session: &MultipartSession) -> Result<&MultipartCompletion, MultipartWorkError> {
-    session.validate()?;
-    if session.phase != MultipartPhase::Completing {
-        return Err(CatalogError::Conflict.into());
-    }
-    session
-        .completion
-        .as_ref()
-        .ok_or_else(|| ValidationError::Record.into())
-}
-
-fn assembly(
-    session: &MultipartSession,
-    completion: &MultipartCompletion,
-    blocks: Arc<dyn FileBlockStore>,
-    step_bytes: usize,
-    block_bytes: usize,
-) -> Result<FileAssembly, FileIoError> {
-    FileAssembly::new(
-        blocks,
-        session.owner,
-        completion.selection.digest,
-        completion.selected_parts,
-        session.limits.max_file_bytes,
-        step_bytes,
-        block_bytes,
-    )
 }

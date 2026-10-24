@@ -202,11 +202,7 @@ async fn start_listener(
     let listener = TcpListener::bind(&address).await?;
     tracing::info!(%address, "Iceberg listener ready");
     let serving = serve(listener, service, wait_for_shutdown(shutdown));
-    let multipart = Box::pin(super::file_recovery::run(
-        repository.clone(),
-        store.clone(),
-        blocks.clone(),
-    ));
+    let multipart = Box::pin(super::file_recovery::run(repository.clone(), store.clone()));
     let tables = super::table_recovery::run(repository.clone(), store.clone(), blocks.clone());
     let (gc_store, gc_chunks) =
         connect_gc_pool(&access_config, management_seeds, store.clone(), gc_config.enabled).await?;

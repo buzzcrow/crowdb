@@ -123,9 +123,15 @@ impl MultipartRepository {
         if session.phase != MultipartPhase::Completing {
             return Err(CatalogError::Conflict);
         }
-        validate_candidate(session, tree, sealed)?;
         session.revision.checked_add(2).ok_or(ValidationError::Record)?;
         let mut next = increment(session)?;
+        let completion = next.completion.as_mut().ok_or(ValidationError::Record)?;
+        if completion.progress.writer.is_some() {
+            return Err(CatalogError::Conflict);
+        }
+        completion.progress.next_part = completion.selected_parts;
+        completion.progress.completed_bytes = tree.length;
+        validate_candidate(&next, tree, sealed)?;
         if self.load(session.context, session.upload).await?.as_ref() != Some(session) {
             return Ok(false);
         }
@@ -241,6 +247,8 @@ fn validate_candidate(
     let completion = session.completion.as_ref().ok_or(ValidationError::Record)?;
     if completion.progress.next_part != completion.selected_parts
         || completion.progress.completed_bytes != tree.length
+        || tree.length > session.limits.max_file_bytes
+        || (session.staged_bytes != 0 && tree.length > session.staged_bytes)
         || sealed.file != session.owner.file
         || sealed.location != session.location
         || sealed.length != tree.length

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use super::{
-    ByteRange, FileBlockStore, FileDigest, FileIdentity, FileIoError, FileReader, FileTree, FileTreeWriter,
-    FileWriterCheckpoint, MAX_FILE_BLOCK_BYTES,
+    FileBlockStore, FileIdentity, FileIoError, FileReader, FileTree, FileTreeWriter, FileWriterCheckpoint,
+    MAX_READ_FRAME_BYTES,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,182 +32,99 @@ pub struct AssemblyProgress {
 pub struct FileAssembly {
     store: Arc<dyn FileBlockStore>,
     owner: FileIdentity,
-    selection: [u8; 32],
     parts: u16,
+    next_part: u16,
     max_file_bytes: u64,
-    step_bytes: usize,
-    block_bytes: usize,
+    frame_bytes: usize,
+    writer: FileTreeWriter,
+    failed: bool,
 }
 
 impl FileAssembly {
-    /// Builds a bounded copier for a selection already frozen by a durable journal.
-    /// The journal must supply the selected part at each ordinal and CAS progress;
-    /// this byte engine neither authorizes uploads nor publishes file locations.
+    /// Creates request-local assembly with bounded read frames and writer buffers.
+    /// Failed or cancelled requests discard the copier and restart from complete parts.
     /// # Errors
-    /// Rejects invalid part counts, file limits and per-step memory/work bounds.
+    /// Rejects invalid part counts, file limits and buffer bounds before any I/O.
     pub fn new(
         store: Arc<dyn FileBlockStore>,
         owner: FileIdentity,
-        selection: [u8; 32],
         parts: u16,
         max_file_bytes: u64,
-        step_bytes: usize,
+        frame_bytes: usize,
         block_bytes: usize,
     ) -> Result<Self, FileIoError> {
         if parts == 0
             || parts > 10_000
             || max_file_bytes == 0
             || max_file_bytes > u64::MAX / 8
-            || step_bytes == 0
-            || step_bytes > 1024 * 1024
-            || block_bytes == 0
-            || block_bytes > MAX_FILE_BLOCK_BYTES
+            || frame_bytes == 0
+            || frame_bytes > MAX_READ_FRAME_BYTES
         {
             return Err(FileIoError::Bounds);
         }
+        let writer = FileTreeWriter::new(store.clone(), owner, block_bytes)?;
         Ok(Self {
             store,
             owner,
-            selection,
             parts,
+            next_part: 0,
             max_file_bytes,
-            step_bytes,
-            block_bytes,
+            frame_bytes,
+            writer,
+            failed: false,
         })
     }
 
-    #[must_use]
-    pub fn begin(&self) -> AssemblyProgress {
-        AssemblyProgress {
-            selection: self.selection,
-            next_part: 0,
-            part_offset: 0,
-            completed_bytes: 0,
-            writer: None,
-            active: None,
-            part_digest: None,
-        }
-    }
-
-    /// Copies at most one byte window from one selected part and checkpoints it.
-    /// Old progress remains reusable after a lost or failed reply; orphan writes stay retained.
+    /// Copies one complete part while verifying its full digest, without saving progress.
+    /// At most the current and next read frames overlap with one bounded writer.
     /// # Errors
-    /// Rejects changed selections/parts, invalid progress, byte excess and storage failures.
-    pub async fn advance(
-        &self,
-        progress: &AssemblyProgress,
-        part: &AssemblyPart,
-    ) -> Result<AssemblyProgress, FileIoError> {
-        self.validate(progress)?;
-        let fingerprint = PartFingerprint {
-            owner: part.owner,
-            length: part.tree.length,
-            digest: part.tree.digest,
-        };
-        if part.ordinal != progress.next_part
+    /// Rejects reordered or foreign parts, byte excess, corruption and storage failures.
+    /// After failure this copier cannot be resumed or finalized.
+    pub async fn push(&mut self, part: &AssemblyPart) -> Result<(), FileIoError> {
+        if self.failed {
+            return Err(FileIoError::Finished);
+        }
+        self.failed = true;
+        let length = self
+            .writer
+            .length()
+            .checked_add(part.tree.length)
+            .ok_or(FileIoError::Bounds)?;
+        if part.ordinal != self.next_part
             || part.ordinal >= self.parts
             || part.owner.table != self.owner.table
-            || progress.part_offset > part.tree.length
-            || progress
-                .active
-                .as_ref()
-                .is_some_and(|active| *active != fingerprint)
+            || part.owner.file == self.owner.file
+            || length > self.max_file_bytes
         {
             return Err(FileIoError::Bounds);
         }
-        let remaining = part.tree.length - progress.part_offset;
-        if progress
-            .completed_bytes
-            .checked_add(remaining)
-            .map_or(true, |size| size > self.max_file_bytes)
-        {
-            return Err(FileIoError::Bounds);
-        }
-        let count = remaining.min(self.step_bytes as u64);
-        let end = progress.part_offset + count;
         let mut reader = FileReader::from_tree(
             self.store.clone(),
             part.owner,
             part.tree.clone(),
-            Some(ByteRange {
-                start: progress.part_offset,
-                end,
-            }),
-            16 * 1024,
+            None,
+            self.frame_bytes,
         )?;
-        let mut writer = self.writer(progress).await?;
-        let mut part_digest = match &progress.part_digest {
-            Some(bytes) => FileDigest::restore(part.owner, bytes)?,
-            None => FileDigest::new(part.owner),
-        };
-        if part_digest.length() != progress.part_offset {
-            return Err(FileIoError::Bounds);
-        }
         let mut pending = reader.next().await?;
         while let Some(bytes) = pending {
-            part_digest.update(&bytes)?;
-            let (next, ()) = tokio::try_join!(reader.next(), writer.push(&bytes))?;
+            let (next, ()) = tokio::try_join!(reader.next(), self.writer.push(&bytes))?;
             pending = next;
         }
-        if writer.length() != progress.completed_bytes + count {
+        if self.writer.length() != length {
             return Err(FileIoError::Bounds);
         }
-        let complete = end == part.tree.length;
-        let part_checkpoint = if complete {
-            if part_digest.finish() != part.tree.digest {
-                return Err(crate::error::ValidationError::Record.into());
-            }
-            None
-        } else {
-            Some(part_digest.checkpoint())
-        };
-        let checkpoint = writer.checkpoint().await?;
-        Ok(AssemblyProgress {
-            selection: self.selection,
-            next_part: progress.next_part + u16::from(complete),
-            part_offset: if complete { 0 } else { end },
-            completed_bytes: writer.length(),
-            writer: Some(checkpoint),
-            active: (!complete).then_some(fingerprint),
-            part_digest: part_checkpoint,
-        })
-    }
-
-    /// Finalizes bytes only; semantic sealing and immutable publication are separate.
-    /// # Errors
-    /// Rejects incomplete selections, corrupt checkpoints and storage failures.
-    pub async fn finish(&self, progress: &AssemblyProgress) -> Result<FileTree, FileIoError> {
-        self.validate(progress)?;
-        if progress.next_part != self.parts || progress.part_offset != 0 || progress.active.is_some() {
-            return Err(FileIoError::Bounds);
-        }
-        self.writer(progress).await?.finish().await
-    }
-
-    fn validate(&self, progress: &AssemblyProgress) -> Result<(), FileIoError> {
-        if progress.selection != self.selection
-            || progress.next_part > self.parts
-            || progress.completed_bytes > self.max_file_bytes
-            || progress.part_offset > progress.completed_bytes
-            || (progress.part_offset > 0) != progress.active.is_some()
-            || progress.active.is_some() != progress.part_digest.is_some()
-            || (progress.writer.is_none() && (progress.next_part != 0 || progress.completed_bytes != 0))
-        {
-            return Err(FileIoError::Bounds);
-        }
+        self.next_part += 1;
+        self.failed = false;
         Ok(())
     }
 
-    async fn writer(&self, progress: &AssemblyProgress) -> Result<FileTreeWriter, FileIoError> {
-        let writer = match &progress.writer {
-            Some(checkpoint) => {
-                FileTreeWriter::restore(self.store.clone(), self.owner, self.block_bytes, checkpoint).await?
-            }
-            None => FileTreeWriter::new(self.store.clone(), self.owner, self.block_bytes)?,
-        };
-        if writer.length() != progress.completed_bytes {
-            return Err(FileIoError::Bounds);
+    /// Finishes the complete request; semantic sealing and final publication remain separate.
+    /// # Errors
+    /// Rejects incomplete selections and any earlier copy failure.
+    pub async fn finish(self) -> Result<FileTree, FileIoError> {
+        if self.failed || self.next_part != self.parts {
+            return Err(FileIoError::Finished);
         }
-        Ok(writer)
+        self.writer.finish().await
     }
 }

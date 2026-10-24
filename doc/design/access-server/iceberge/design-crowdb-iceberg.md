@@ -531,29 +531,28 @@ The HTTP pull-body adapter adds shared response admission and 16-KiB frames.
 Only body polling starts a storage read; cancellation drops the in-flight read
 before releasing admission. Exact remaining-byte hints track delivery, and storage
 errors terminate the body rather than returning a successful truncated stream.
-Writer checkpoints flush partial leaves and store the bounded directory frontier
-plus resumable digest state in a chunk; durable journals need retain only one root.
-Restoration checks owner identity, checksum, frontier heights and total byte
-coverage. SHA-256 compression uses RustCrypto; versioned digest checkpoints retain
-only chaining state, byte length and a partial block. They are trusted-storage
-recovery records, not client authentication assertions. Failed checkpoint writes
-poison the current writer without invalidating earlier durable checkpoints.
+Legacy writer checkpoint decoding remains only for reclaiming existing physical
+frontiers. GC verifies owner identity, storage checksum, frontier heights and
+complete byte coverage before deleting any child. Foreground writers do not
+produce or restore byte checkpoints. Versioned digest state in legacy records is
+trusted-storage metadata, never a client authentication assertion.
 Legacy native block writes persist an exact physical-range ownership intent in the
 catalog before DiskIO. A shared-writer callback receives the assigned location;
-uncertain catalog writes are read back before the physical batch proceeds.
-This ledger also covers process loss before file publication and checkpoints
-superseded by later assembly progress. Reclamation waits for the chunk readable
+an uncertain catalog reply stops the physical batch without a confirmation GET.
+Explicit retries reconcile the existing range fact. This ledger also covers
+process loss before file publication and legacy checkpoint ranges. Reclamation waits for the chunk readable
 cursor or terminal state to settle any unconfirmed physical write.
 Staged-tree readers validate physical roots, byte lengths and digests without
 assigning a semantic file kind or declaring an incomplete multipart fragment to
 be a valid complete-format file. Published-file reads retain record validation.
-The assembly byte engine consumes a previously frozen part selection in ordinal
-order. Each step copies at most one bounded window, persists target-writer progress
-and checkpoints the current part digest. This verifies complete part digests even
-when recovery spans many windows. Lost replies can repeat old progress without
-duplicating bytes in the selected output; losing physical writes remain retained.
-The engine requires a durable selection/progress journal and does not itself
-authorize multipart operations or publish file locations.
+The legacy tree assembly byte engine consumes complete selected parts in ordinal
+order within one request. It preflights the entire selection against the
+intersection of request, grant, service and upload file limits before physical
+copying. The copier retains bounded read frames and writer frontiers, verifies
+each full part digest, and emits no intermediate checkpoints or progress CAS.
+One next frame read can overlap the current writer push; either failure cancels
+the other future and poisons that request-local copier. A complete-input retry
+starts a new copier, while unowned physical ranges remain discoverable by GC.
 Multipart session/part models retain independent resource limits and validate
 phase coherence: publishing requires complete candidate bytes, published outcomes
 require a selected FileId, and abort retains completion evidence without claiming
@@ -580,10 +579,14 @@ retains parts and completion evidence rather than deleting physical storage.
 Legacy completion freezes an ordered part-number/revision/digest selection in immutable
 payload pages, then changes the session phase by CAS to fence part replacement.
 Selections are independently bounded to 10,000 entries and 420,007 encoded bytes.
-Each completion step verifies that bounded selection and one selected part before
-copying a bounded byte window and publishing its checkpoint by session CAS. Lost
-replies reload progress without appending selected bytes twice. Assembled bytes
-remain unexposed until semantic sealing and immutable location publication.
+A client Complete request copies the entire bounded selection in one attempt and
+holds the existing upload concurrency permit through assembly and sealing. Its
+300-second response-body deadline cancels all pending work. A selection exceeding
+the request copy limit fails explicitly before any physical copy. Existing byte
+checkpoint sessions reject continuation with an instruction to abort and create
+a new upload; their original frontiers remain available to expiry and GC.
+Assembled bytes remain unexposed until semantic sealing and immutable location
+publication.
 Streamed UploadPart writes one part key by CAS without changing the session for
 each part. Create caps part count by the reserved staged-byte ceiling divided
 by the per-part byte ceiling. Complete freezes an ordered selection with each
@@ -594,38 +597,26 @@ from the ordered raw part MD5 values; it does not read part data or assemble a
 new chunk. Session phase CAS freezes publication against later selections. The
 final file descriptor becomes visible through the immutable location publication
 protocol.
-Foreground and recovery drivers use the same native-block-aligned byte window
-below the one-MiB assembly ceiling. Equal windows prevent systematic CAS losses
-to a smaller competing recovery step; alignment avoids checkpoint-only tiny leaves.
-Within a step, one next 16-KiB frame read may overlap the current writer push.
-There are no detached copy tasks or unbounded queues. Either IO failure cancels
-the other future and returns no new checkpoint; prior durable progress stays valid.
 A recovery page scans at most four session authorities and performs one pending
-part settlement, logical expiry or assembly byte window per session. It validates
-the complete scan page before session mutations, rejects foreign continuations and reports
-finished assembly as awaiting semantic sealing. Expiry never deletes physical
-parts and cannot bypass an unresolved part mutation or a publication fence.
+legacy part settlement, logical expiry or frozen publication per session. It
+validates the complete scan page before mutations, rejects foreign continuations,
+and never starts or resumes byte assembly. Completing uploads wait for a client
+request or expiry. Expiry retains physical parts and legacy frontiers and cannot
+bypass an unresolved part mutation or a publication fence.
 Publication freezes a caller-validated sealed file record in immutable payload
 pages before the publication phase CAS. Recovery replays that exact record through
 the immutable file repository and persists the selected FileId. Equal preexisting
 bytes retain their original identity. Only a proven incompatible immutable location
 permits the terminal Conflicted phase; uncertain writes and context failures do not
 become false aborts. Canonical format validation remains the seal caller's contract.
-Each native listener schedules the multipart sweep independently of namespace
-recovery. It observes at most four session revisions, then rechecks the same page
-on the next tick. Byte-copy recovery defers revisions that advanced meanwhile;
-unchanged revisions remain eligible. This bounded observation is only scheduling
-advice, not a lock or lease: expiry, journal settlement, publication and all
-context/session CAS checks remain authoritative. An observation does not retain
-file bytes or survive a restart. It resets its cursor when the active context changes and bounds each
-session by the persisted catalog request deadline. Timeout defers only that session,
-allowing later entries in the page to progress. A separate outer budget bounds the
-whole page and context/scan work. There is no admission-journal recovery step or
-global credit release. Empty and terminal-only sweeps perform the two context
-checks and the bounded session scan, with no policy GET or mutation; legacy
-credit fields do not delay expiry or modify complete file resources.
-The HTTP driver composes this durable state machine with physical sealing;
-recovery remains the authority for abandoned or uncertain work.
+Each native listener schedules this resource sweep independently of namespace
+recovery, with one bounded scan and no copy-observation pass. Context changes
+reset the cursor. Each session uses the persisted catalog request deadline;
+timeout defers only that session so later entries can progress. A separate outer
+budget bounds page and context work. Empty and terminal-only sweeps perform two
+context checks and the scan, with no policy GET or mutation. There is no global
+credit recovery or background byte-copy continuation.
+
 
 Multipart part listing uses one upload-scoped scan with at most 256 records per
 page. Numeric markers preserve gaps and resume strictly after the returned part

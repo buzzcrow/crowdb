@@ -26,6 +26,7 @@ pub enum FileS3ErrorCode {
     InvalidPart,
     EntityTooLarge,
     InvalidRequest,
+    RestartMultipart,
     InternalError,
     NoSuchKey,
     InvalidRange,
@@ -41,9 +42,11 @@ impl FileS3ErrorCode {
         match self {
             Self::AccessDenied => StatusCode::FORBIDDEN,
             Self::NoSuchUpload | Self::NoSuchKey => StatusCode::NOT_FOUND,
-            Self::InvalidPart | Self::InvalidRequest | Self::BadDigest | Self::EntityTooSmall => {
-                StatusCode::BAD_REQUEST
-            }
+            Self::InvalidPart
+            | Self::InvalidRequest
+            | Self::RestartMultipart
+            | Self::BadDigest
+            | Self::EntityTooSmall => StatusCode::BAD_REQUEST,
             Self::EntityTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
             Self::InvalidRange => StatusCode::RANGE_NOT_SATISFIABLE,
@@ -60,6 +63,9 @@ impl FileS3ErrorCode {
             Self::InvalidPart => "One or more parts are invalid",
             Self::EntityTooLarge => "The request exceeds the allowed size",
             Self::InvalidRequest => "The request is invalid",
+            Self::RestartMultipart => {
+                "Legacy byte progress cannot be resumed; abort and create a new multipart upload"
+            }
             Self::InternalError => "The service could not complete the request",
             Self::NoSuchKey => "The specified key does not exist",
             Self::InvalidRange => "The requested range cannot be satisfied",
@@ -77,7 +83,7 @@ impl FileS3ErrorCode {
             Self::NoSuchUpload => "NoSuchUpload",
             Self::InvalidPart => "InvalidPart",
             Self::EntityTooLarge => "EntityTooLarge",
-            Self::InvalidRequest => "InvalidRequest",
+            Self::InvalidRequest | Self::RestartMultipart => "InvalidRequest",
             Self::InternalError => "InternalError",
             Self::NoSuchKey => "NoSuchKey",
             Self::InvalidRange => "InvalidRange",

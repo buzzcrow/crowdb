@@ -77,8 +77,7 @@ pub use multipart_admission::{
 };
 pub use multipart_list::{MultipartLister, MultipartPartPage, MultipartPartScan, MultipartPartStore};
 pub use multipart_recovery::{
-    MultipartRecovery, MultipartRecoveryObservation, MultipartRecoveryPage, MultipartRecoveryScan,
-    MultipartRecoveryStore,
+    MultipartRecovery, MultipartRecoveryPage, MultipartRecoveryScan, MultipartRecoveryStore,
 };
 pub use multipart_repository::{MultipartRepository, MultipartWorkError};
 pub use multipart_selection::{MultipartSelection, SelectedPart, SelectedStreamPart};

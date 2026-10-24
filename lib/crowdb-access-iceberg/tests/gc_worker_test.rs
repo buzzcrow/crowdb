@@ -1,3 +1,5 @@
+#[path = "common/legacy_checkpoint.rs"]
+mod legacy_checkpoint;
 use std::sync::{atomic::Ordering, Arc};
 
 use crowdb_access_iceberg::{
@@ -530,10 +532,10 @@ async fn retired_cleanup_retains_aborted_assembly_checkpoint_until_its_chunks_ar
     session.part_count = 1;
     session.staged_bytes = 1;
     session.completion = Some(multipart_fixtures::completion(&session));
-    let mut writer = FileTreeWriter::new(blocks.clone(), session.owner, 1).unwrap();
-    writer.push(b"x").await.unwrap();
+    let (checkpoint, _) =
+        legacy_checkpoint::TestLegacyCheckpoint::create(blocks.clone(), session.owner, b"x", 1).await;
     let progress = &mut session.completion.as_mut().unwrap().progress;
-    progress.writer = Some(writer.checkpoint().await.unwrap());
+    progress.writer = Some(checkpoint);
     progress.completed_bytes = 1;
     let key = session.key().encode().unwrap();
     let bytes = StorageRecord::MultipartSession(Box::new(session))

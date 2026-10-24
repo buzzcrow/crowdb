@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use crowdb_access_iceberg::catalog::CatalogContext;
 use crowdb_access_iceberg::file::{
-    FileIdentity, FileOperation, FileSealError, FileSealer, MultipartPart, MultipartPhase, MultipartSession,
-    MultipartWorkError,
+    FileIdentity, FileOperation, FileSealError, FileSealer, MultipartPart, MultipartPhase,
+    MultipartSelection, MultipartSession, MultipartWorkError,
 };
 use crowdb_access_iceberg::key::{FileId, OperationId};
 use crowdb_access_s3::auth::StreamingPayloadVerifier;
@@ -94,8 +94,13 @@ impl FileHttp {
                 self.abort(session.ok_or(FileS3ErrorCode::NoSuchUpload)?).await
             }
             (Some(MultipartRequest::Complete { .. }), FileOperation::CompleteMultipart) => {
-                self.complete(session.ok_or(FileS3ErrorCode::NoSuchUpload)?, request, now_ms)
-                    .await
+                self.complete(
+                    session.ok_or(FileS3ErrorCode::NoSuchUpload)?,
+                    request,
+                    admission,
+                    now_ms,
+                )
+                .await
             }
             _ => Err(FileS3ErrorCode::InvalidRequest),
         }
@@ -258,6 +263,7 @@ impl FileHttp {
         self: &Arc<Self>,
         mut session: MultipartSession,
         request: Request<Incoming>,
+        admission: &FileTransferAdmission,
         now_ms: u64,
     ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
         let host = request
@@ -294,13 +300,15 @@ impl FileHttp {
             }
             session = self.current(&session).await?;
         }
-        let expected: [u8; 32] = Sha256::digest(selection.encode()).into();
+        let max_copy_bytes = admission.copy_byte_limit();
         let service = Arc::clone(self);
         let resource = session.location.object_key();
         let body = crate::iceberg::FileCompleteBody::new(
             async move {
                 let started = Instant::now();
-                let result = service.drive_complete(session, expected, now_ms, &url).await;
+                let result = service
+                    .drive_complete(session, &selection, max_copy_bytes, now_ms, &url)
+                    .await;
                 service.upload_metrics.multipart_complete(started.elapsed());
                 result.map(Response::into_body)
             },
@@ -320,15 +328,14 @@ impl FileHttp {
     async fn drive_complete(
         &self,
         mut session: MultipartSession,
-        expected: [u8; 32],
+        selection: &MultipartSelection,
+        max_copy_bytes: u64,
         now_ms: u64,
         url: &str,
     ) -> Result<Response<Vec<u8>>, FileS3ErrorCode> {
-        if session
-            .completion
-            .as_ref()
-            .map_or(true, |completion| completion.selection.digest != expected)
-        {
+        if session.completion.as_ref().map_or(true, |completion| {
+            completion.selection.digest != <[u8; 32]>::from(Sha256::digest(selection.encode()))
+        }) {
             return Err(FileS3ErrorCode::InvalidPart);
         }
         loop {
@@ -349,36 +356,27 @@ impl FileHttp {
                         session = self.current(&session).await?;
                         continue;
                     }
-                    if completion.progress.next_part < completion.selected_parts {
-                        self.multipart
-                            .advance_completion(
-                                &session,
-                                self.blocks.clone(),
-                                crate::iceberg::file_admission::MULTIPART_COPY_BYTES,
-                                crowdb_access_iceberg::file::NATIVE_FILE_BLOCK_BYTES,
-                            )
-                            .await
-                            .map_err(work_error)?;
-                    } else {
-                        let tree = self
-                            .multipart
-                            .assembled_tree(
-                                &session,
-                                self.blocks.clone(),
-                                crowdb_access_iceberg::file::NATIVE_FILE_BLOCK_BYTES,
-                            )
-                            .await
-                            .map_err(work_error)?;
-                        let sealed = FileSealer::new(self.blocks.clone(), self.limits.max_file_bytes)
-                            .map_err(seal_error)?
-                            .seal_uploaded(session.owner, session.location.clone(), tree.clone())
-                            .await
-                            .map_err(seal_error)?;
-                        self.multipart
-                            .prepare_publication(&session, &tree, &sealed, now_ms)
-                            .await
-                            .map_err(catalog_error)?;
-                    }
+                    let _permit = self.uploads.acquire().map_err(|_| FileS3ErrorCode::SlowDown)?;
+                    let tree = self
+                        .multipart
+                        .assemble(
+                            &session,
+                            selection,
+                            self.blocks.clone(),
+                            max_copy_bytes,
+                            crowdb_access_iceberg::file::NATIVE_FILE_BLOCK_BYTES,
+                        )
+                        .await
+                        .map_err(work_error)?;
+                    let sealed = FileSealer::new(self.blocks.clone(), max_copy_bytes)
+                        .map_err(seal_error)?
+                        .seal_uploaded(session.owner, session.location.clone(), tree.clone())
+                        .await
+                        .map_err(seal_error)?;
+                    self.multipart
+                        .prepare_publication(&session, &tree, &sealed, now_ms)
+                        .await
+                        .map_err(catalog_error)?;
                 }
                 MultipartPhase::Publishing | MultipartPhase::Published => {
                     let Some(record) = self.multipart.publish(&session).await.map_err(catalog_error)? else {
@@ -426,7 +424,9 @@ async fn read_complete_body(mut body: Incoming) -> Result<Vec<u8>, FileS3ErrorCo
 
 fn work_error(error: MultipartWorkError) -> FileS3ErrorCode {
     match error {
+        MultipartWorkError::LegacyProgress => FileS3ErrorCode::RestartMultipart,
         MultipartWorkError::Catalog(error) => catalog_error(error),
+        MultipartWorkError::CopyLimit => FileS3ErrorCode::EntityTooLarge,
         MultipartWorkError::File(_) | MultipartWorkError::Invalid(_) => FileS3ErrorCode::InternalError,
     }
 }

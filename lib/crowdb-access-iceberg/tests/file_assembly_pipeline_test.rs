@@ -74,22 +74,21 @@ async fn setup() -> (Arc<TestPipelineBlocks>, FileAssembly, AssemblyPart, FileId
         owner: source,
         tree: writer.finish().await.unwrap(),
     };
-    let assembly = FileAssembly::new(store.clone(), owner, [1; 32], 1, 16, 16, 8).unwrap();
+    let assembly = FileAssembly::new(store.clone(), owner, 1, 16, 16, 8).unwrap();
     store.enabled.store(true, Ordering::SeqCst);
     (store, assembly, part, owner)
 }
 
 #[tokio::test]
 async fn assembly_overlaps_one_next_read_with_the_current_write_without_reordering_bytes() {
-    let (store, assembly, part, owner) = setup().await;
-    let progress = tokio::time::timeout(Duration::from_secs(1), assembly.advance(&assembly.begin(), &part))
+    let (store, mut assembly, part, owner) = setup().await;
+    tokio::time::timeout(Duration::from_secs(1), assembly.push(&part))
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(progress.completed_bytes, 16);
     assert_eq!(store.reads.load(Ordering::SeqCst), 3);
     store.enabled.store(false, Ordering::SeqCst);
-    let tree = assembly.finish(&progress).await.unwrap();
+    let tree = assembly.finish().await.unwrap();
     let mut reader = FileReader::from_tree(store, owner, tree, None, 8).unwrap();
     assert_eq!(reader.next().await.unwrap().unwrap(), b"abcdefgh");
     assert_eq!(reader.next().await.unwrap().unwrap(), b"ijklmnop");
@@ -97,26 +96,47 @@ async fn assembly_overlaps_one_next_read_with_the_current_write_without_reorderi
 }
 
 #[tokio::test]
-async fn failed_overlapped_read_or_write_never_returns_a_checkpoint_or_detaches_work() {
+async fn failed_overlapped_read_or_write_poisons_the_copier_without_detaching_work() {
     for fail_read in [false, true] {
-        let (store, assembly, part, _) = setup().await;
+        let (store, mut assembly, part, owner) = setup().await;
         store.fail_read.store(fail_read, Ordering::SeqCst);
         store.fail_write.store(!fail_read, Ordering::SeqCst);
-        let initial = assembly.begin();
-        assert!(
-            tokio::time::timeout(Duration::from_secs(1), assembly.advance(&initial, &part))
-                .await
-                .unwrap()
-                .is_err()
-        );
-        assert_eq!(initial.completed_bytes, 0);
-        assert!(initial.writer.is_none());
+        assert!(tokio::time::timeout(Duration::from_secs(1), assembly.push(&part))
+            .await
+            .unwrap()
+            .is_err());
+        assert!(assembly.push(&part).await.is_err());
+        assert!(assembly.finish().await.is_err());
         let writes = store.inner.writes.load(Ordering::SeqCst);
         tokio::task::yield_now().await;
         assert_eq!(store.inner.writes.load(Ordering::SeqCst), writes);
         store.enabled.store(false, Ordering::SeqCst);
-        let progress = assembly.advance(&initial, &part).await.unwrap();
-        assert_eq!(progress.completed_bytes, 16);
-        assert_eq!(assembly.finish(&progress).await.unwrap().digest, part.tree.digest);
+        let mut assembly = FileAssembly::new(store.clone(), owner, 1, 16, 16, 8).unwrap();
+        assembly.push(&part).await.unwrap();
+        assert_eq!(assembly.finish().await.unwrap().digest, part.tree.digest);
     }
+}
+
+#[tokio::test]
+async fn cancelled_copy_drops_its_read_and_requires_a_complete_new_attempt() {
+    let (store, mut assembly, part, owner) = setup().await;
+    store.enabled.store(false, Ordering::SeqCst);
+    store.inner.pause_reads.store(true, Ordering::SeqCst);
+    {
+        let copy = assembly.push(&part);
+        tokio::pin!(copy);
+        tokio::select! {
+            result = &mut copy => panic!("copy finished before its blocked read: {result:?}"),
+            () = store.inner.read_entered.notified() => {}
+        }
+    }
+    assert!(assembly.finish().await.is_err());
+    let writes = store.inner.writes.load(Ordering::SeqCst);
+    store.inner.pause_reads.store(false, Ordering::SeqCst);
+    store.inner.read_release.notify_one();
+    tokio::task::yield_now().await;
+    assert_eq!(store.inner.writes.load(Ordering::SeqCst), writes);
+    let mut retry = FileAssembly::new(store, owner, 1, 16, 16, 8).unwrap();
+    retry.push(&part).await.unwrap();
+    assert_eq!(retry.finish().await.unwrap().digest, part.tree.digest);
 }
