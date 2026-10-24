@@ -8,6 +8,11 @@ use crate::{
     SnapshotId, SnapshotPublication, SnapshotRecord,
 };
 
+#[derive(serde::Serialize)]
+struct BorrowedSnapshotRecord<'a> {
+    publication: &'a SnapshotPublication,
+}
+
 impl DatasetAuthority {
     pub(super) async fn ensure_publication_resource(
         &self,
@@ -40,8 +45,8 @@ impl DatasetAuthority {
                 });
             }
         }
-        let bytes = encode(&SnapshotRecord {
-            publication: prepared.clone(),
+        let bytes = encode(&BorrowedSnapshotRecord {
+            publication: prepared,
         })?;
         match self.store.compare_exchange(&snapshot_key, None, &bytes).await? {
             CasOutcome::Applied(_) => Ok(None),

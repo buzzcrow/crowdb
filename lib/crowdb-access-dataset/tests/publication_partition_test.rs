@@ -53,6 +53,9 @@ async fn publication_serializes_borrowed_partitions_with_the_established_wire_la
         .prepare_snapshot_with_operation(&identity, None, input.clone(), operation)
         .await
         .unwrap();
+    let prepared = authority.publication_status(&identity, operation).await.unwrap();
+    assert_eq!(prepared.publication.manifest, input);
+    assert_eq!(prepared.publication.state, PublicationState::Prepared);
     manifest.snapshot = snapshot;
     for expected in manifest.partition(1024).unwrap() {
         let key = manifest_partition(&identity, snapshot, expected.partition).unwrap();
