@@ -23,11 +23,19 @@ async fn split_revision_flow_preserves_data_head_and_historical_members() {
     response(client.post(format!("{base}/split-drafts")).json(&begin), 200).await;
     let prepared = common::prepare(&client, &draft, "1").await;
     let revision = prepared["revision"].as_str().unwrap();
-    response(client.get(format!("{base}/split-revisions/{revision}")), 404).await;
     assert_eq!(
-        response(client.get(format!("{base}/split-revisions")), 200).await["entries"],
-        json!([])
+        response(client.get(format!("{base}/split-revisions/{revision}")), 200).await,
+        prepared
     );
+    assert_eq!(
+        response(client.get(format!("{base}/split-revisions")), 200).await["entries"][0]["revision"],
+        revision
+    );
+    let before_publish = members(
+        &client,
+        &format!("{base}/split-revisions/{revision}/splits/train%2Fa%20b/members"),
+    )
+    .await;
     let receipt = common::publish(
         &client,
         &draft,
@@ -68,6 +76,7 @@ async fn split_revision_flow_preserves_data_head_and_historical_members() {
         &format!("{base}/split-revisions/{revision}/splits/test/members"),
     )
     .await;
+    assert_eq!(train, before_publish);
     assert!(train.is_disjoint(&test_ids));
     assert_eq!(train.len() + test_ids.len(), 45);
     assert_eq!(

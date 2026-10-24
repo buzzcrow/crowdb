@@ -11,16 +11,17 @@ use crowdb_access_dataset::*;
 use std::sync::Arc;
 
 #[tokio::test]
-async fn continuation_pins_snapshot_and_split_across_instances() {
+async fn continuation_pins_unpublished_split_across_pointer_changes_and_instances() {
     let (_, authority, identity, parent) = split_store::fixture().await;
     let snapshot = split_store::publish_binary_samples(&authority, &identity, parent).await;
     let first = split_store::prepared(&authority, &identity, snapshot, None).await;
-    split_store::publish_revision(&authority, &identity, &first).await;
     let authority = Arc::new(authority);
     let reads = DatasetReads::new(authority.clone());
-    let binding = reads.bind(&identity, common::spec("train")).await.unwrap();
+    let mut spec = common::spec("train");
+    spec.split.as_mut().unwrap().revision = Some(first.revision);
+    let binding = reads.bind(&identity, spec).await.unwrap();
     assert_eq!(binding.split.as_ref().unwrap().revision, first.revision);
-    let next = split_store::prepared(&authority, &identity, snapshot, Some(first.revision)).await;
+    let next = split_store::prepared(&authority, &identity, snapshot, None).await;
     split_store::publish_revision(&authority, &identity, &next).await;
     authority
         .publish_snapshot(&identity, Some(snapshot), publication::publication_manifest(2))

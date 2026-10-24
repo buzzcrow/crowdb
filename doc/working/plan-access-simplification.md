@@ -161,6 +161,10 @@ CAS 不再满足只证明“本次条件不成立”，不能谎称“第一次�
   历史回复查询；Composition/Split 的 Committing 恢复与 P2/P3 一起删除，客户端保留完整输入。
   旧记录只作为兼容解码/GC 输入，不让旧账本控制新请求。head 保留 expected base；同一
   candidate 的当前结果可判断相同，已被后续 head 遮住时不保证历史请求结果重放。
+- [~] **R2.2a 独立 Split 发布不写请求账本**：从完整 revision 和显式 expected base 更新
+  currentSplit；删除新 CA/CR/SRC、Committing/Published 草稿写入及覆盖 head 前的 helper。
+  同一目标仍是当前结果时返回当前事实；后续代际已遮住时返回条件冲突，不回放旧响应或重置
+  后来者。旧账本仅兼容读取/清理。补 H0→H1→H2、未知回复、并发 CAS 与实际 mutation 成本。
 
 - [ ] **R2 审查条件发布的回复丢失窗口**：用 H0→H1→H2 测试区分条件失败、相同结果与历史未知；
   列出确实依赖历史精确结果的调用者，没有这种需求就移除相应 ledger/response replay。
@@ -270,6 +274,8 @@ S3 普通对象是直接 PUT，不能未经设计就套用 Dataset head 机制�
 - [ ] **R4.2 实现提交期限和回收隔离**：part 结果携带期限，提交权威边界验证；覆盖期限前准入
   但期限后落地的 RPC、GC 与最终引用并发、成功发布后的长期存活。若需新增持久化资源事实，
   先列出最小字段和每请求 RPC 成本供 review。Files: Dataset publication/upload、Iceberg file、GC。
+  完整但没有正式引用的 Snapshot/Split 也需独立过期与引用隔离；目前完整 Split 保留到 owner
+  Snapshot 回收，不能把“放弃草稿不删完整结果”当作独立期限 GC 已完成。
 - [ ] **R4.5 简化通知入口的前置查询**：当前接口要求 expected_modify_ts，reclaim_location
   因此先 QueryChunk，并兼容旧的 dedicated DeleteChunk 分支。与后续 ChunkDB 接口实现一起
   收敛为 chunk_id/offset/length 的单次 DeleteChunkRange 通知；布局、封口与物理回收判断归
@@ -492,6 +498,22 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **R2.1a（2026-10-24）**：完整 Split 的 ID 读取、history、冻结继承和 continuation
+  直接使用最终 `SplitRevisionRecord`；移除读取 SRC/currentSplit 的门槛和闲置 initial-Split
+  proof helper，Snapshot 准入与成员页校验保持。无新持久化记录、锁或后台 reader 状态。
+  scratch cleanup 与最终 root 在同一 key 上 create-if-absent：已有完整 root 或冲突返回完整
+  root 就保留成员/summary，仅清理 evaluation intent；清理先封口时迟到 prepare 失败。
+  CAS 返回值直接使用，不再为确认结果读第二次 root；storage unknown 原样返回。
+  新增四例覆盖 CAS 输家、最终 root 丢回复、清理 CAS 竞争、迟到准备、未发布结果继承及
+  owner 删除；增加 head CAS 丢回复后的直接读取。无发布 helper 的 ID 读取实际为 3 个 bounded
+  GET（Snapshot 删除准入、Snapshot 现有成功记录、Split root）+0 mutation；root 只取一次。
+  Dataset `cargo test --all-targets`、七个 HTTP/独立 Rust SDK 用例、三个相关 crate 的
+  all-target/all-feature clippy、SDK example clippy、两 workspace fmt、SDK boundary 与
+  diff check 通过，全部经 `pixi run`。HTTP 首次因沙箱禁止本地 bind 失败，提升权限后相同
+  用例全部通过；继承旧测试仍要求未发布结果不可用，已按用户选定合同更新并保留缺失名称
+  与删除拒绝断言。文档同步 control design/spec/OpenAPI/SDK。Snapshot 完整准入、
+  发布账本删除、独立结果期限 GC 尚未完成；此批未构建新镜像或声称吞吐提升。
 
 - **V4.2（2026-10-24）**：稳定源码树重新构建成功；本地镜像
   `crowdb-node:access-cleanup-acd25325`，revision `d82721f1`，source tree

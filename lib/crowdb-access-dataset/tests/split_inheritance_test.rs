@@ -86,7 +86,7 @@ async fn frozen_child_membership_ignores_new_parent_revision_and_new_matching_sa
 }
 
 #[tokio::test]
-async fn inherited_sources_require_a_committed_parent_revision_and_exact_name() {
+async fn inherited_sources_accept_complete_parent_revisions_and_require_exact_names() {
     let (_, authority, identity, parent) = fixture().await;
     let source = split_store::prepared(&authority, &identity, parent, None).await;
     let child = authority
@@ -102,27 +102,17 @@ async fn inherited_sources_require_a_committed_parent_revision_and_exact_name() 
             name: SplitName::new("train").unwrap(),
         }),
     };
-    assert!(matches!(
-        authority
-            .begin_split_draft(
-                &identity,
-                OperationId::random(),
-                child,
-                None,
-                SplitPolicy::default(),
-                vec![inherited.clone()]
-            )
-            .await,
-        Err(SplitLifecycleError::NotFound)
-    ));
-    authority
-        .publish_split_draft(
+    assert!(authority
+        .begin_split_draft(
             &identity,
-            source.operation,
-            &attempt(&authority, &identity, &source).await,
+            OperationId::random(),
+            child,
+            None,
+            SplitPolicy::default(),
+            vec![inherited.clone()]
         )
         .await
-        .unwrap();
+        .is_ok());
     let mut missing_name = inherited.clone();
     if let MembershipOrigin::Inherited(source) = &mut missing_name.origin {
         source.name = SplitName::new("missing").unwrap();

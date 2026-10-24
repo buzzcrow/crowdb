@@ -204,6 +204,9 @@ Existing `DatasetClient` methods retain their v1 contracts.
   `samples` return lazy `PageCursor`s. Each `next_page` fetches at most 100 items;
   it never eagerly collects the Dataset. Persist `continuation()` for scoped
   resume. Dropping the cursor stops further requests.
+- Complete Split revisions can be read or used as frozen sources before updating
+  currentSplit, after a head conflict, or after abandoning their draft. Each new
+  read still checks Snapshot availability; incomplete revisions remain unavailable.
 - `bind_read` pins Snapshot and optional Split revision without writes;
   `next_batch(cursor)` uses verified streaming framing. Save the next cursor after
   successful processing. The required capability is `stateless-reads`; old session

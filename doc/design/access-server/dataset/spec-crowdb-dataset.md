@@ -195,6 +195,11 @@ a reviewed retry uses a new attempt with a newly observed generation.
 Publishing an independent Split revision MUST update only its Snapshot's currentSplit
 pointer with an expected revision/head CAS. It MUST NOT create a data Snapshot or
 change latest/stable. Old revisions remain addressable until owner reclamation.
+Every complete immutable Split revision MUST also be readable by ID, enumerable
+and usable as a frozen source before publication or after a publication conflict.
+Abandoning a draft MUST NOT remove its complete result. A missing or cleanup-sealed
+final revision record is unavailable; incomplete membership pages alone do not
+constitute a result. Snapshot deletion admission still applies to each new request.
 
 ## 7. Selection, plans, and cursors
 

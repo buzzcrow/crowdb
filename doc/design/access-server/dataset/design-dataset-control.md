@@ -89,6 +89,10 @@ not a promise of exact cardinality. Overlap/coverage validation remains independ
 Membership pages are immutable and checksum-bound. Preparation persists the whole
 revision before currentSplit CAS. A conflict preserves the candidate and caller
 inputs; retry never silently rebases definitions or overwrites another revision.
+The complete `SplitRevisionRecord` is the final result: an explicit revision ID
+can be read, listed or used as an inherited source without winning currentSplit.
+Read admission still checks the owning Snapshot. Reads load that immutable record
+directly without Split publication proofs, currentSplit lookups or helper writes.
 
 ## 4. Bounded observation and reads
 
@@ -167,6 +171,12 @@ Helping an already stored edit receipt only reads and validates it; retries do n
 submit a doomed CAS for the same bytes. Evaluation journals and cleanup cursors
 are scoped to one draft, not to unrelated readers. They retain exact partial-work
 recovery and prevent a delayed writer from reviving cleaned candidate data.
+Split cleanup competes with preparation on the final revision key. If the complete
+root already exists, including a root returned by a failed cleanup CAS, cleanup
+preserves its member pages and summary while retiring evaluation intents. If
+cleanup seals an absent root first, a delayed preparation cannot publish it.
+Abandoning the draft does not delete an already complete revision. Retiring the
+owning Snapshot still permits revision cleanup and closes new read admission.
 Sources use read-only availability checks. The compatibility
 `source_lease_deadline` field is zero for new drafts and edits.
 
@@ -175,7 +185,7 @@ ownership under a terminal owner fence. A durable five-minute grace deadline
 separates deletion admission from cleanup. After that deadline it retires upload owners,
 Snapshot-scoped Split drafts, possible index writes and ordinary metadata in phases.
 Completion reports logical retirement; physical upload deletion remains deferred
-to the bounded upload-authority scan. There is no independent committed Split revision pruning.
+to the bounded upload-authority scan. There is no independent complete Split revision pruning.
 
 `GET snapshots/{snapshot}/reclaim` is bounded, read-only observation. It returns
 publication operation identity where available, latest/stable/retained flags,

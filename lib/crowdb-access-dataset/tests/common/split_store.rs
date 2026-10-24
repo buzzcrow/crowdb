@@ -4,7 +4,7 @@
 #[allow(dead_code)]
 mod dataset_store;
 use crowdb_access_dataset::*;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[derive(Default)]
 pub(super) struct TestDraftStore {
@@ -17,6 +17,11 @@ pub(super) struct TestDraftStore {
     pub inspect_only: AtomicBool,
     pub metadata_only: AtomicBool,
     pub cancel_scan: AtomicBool,
+    pub revision_reads: AtomicUsize,
+    pub bounded_reads: AtomicUsize,
+    pub hide_revision_once: AtomicBool,
+    pub lose_revision_reply: AtomicBool,
+    pub reject_split_proof_reads: AtomicBool,
 }
 #[async_trait::async_trait]
 impl DatasetStore for TestDraftStore {
@@ -39,6 +44,19 @@ impl DatasetStore for TestDraftStore {
         budget: MetadataScanBudget,
         cancel: &ReadCancellation,
     ) -> Result<Option<StoredValue>, StoreError> {
+        self.bounded_reads.fetch_add(1, Ordering::Relaxed);
+        if self.reject_split_proof_reads.load(Ordering::Relaxed) {
+            assert!(
+                !key.starts_with(b"DS\0SRC\0") && !key.starts_with(b"DS\0SH\0"),
+                "explicit Split reads queried publication evidence"
+            );
+        }
+        if key.starts_with(b"DS\0SR\0") {
+            self.revision_reads.fetch_add(1, Ordering::Relaxed);
+            if self.hide_revision_once.swap(false, Ordering::Relaxed) {
+                return Ok(None);
+            }
+        }
         if self.inspect_only.load(Ordering::Relaxed) || self.metadata_only.load(Ordering::Relaxed) {
             assert!(
                 !key.starts_with(b"DS\0S\0") && !key.starts_with(b"DS\0M\0"),
@@ -80,6 +98,12 @@ impl DatasetStore for TestDraftStore {
             return Err(StoreError::Rejected);
         }
         let result = self.inner.compare_exchange(key, expected, value).await?;
+        if key.starts_with(b"DS\0SR\0")
+            && matches!(result, CasOutcome::Applied(_))
+            && self.lose_revision_reply.swap(false, Ordering::Relaxed)
+        {
+            return Err(StoreError::Rejected);
+        }
         if key.starts_with(b"DS\0H\0")
             && matches!(result, CasOutcome::Applied(_))
             && self.lose_data_reply.swap(false, Ordering::Relaxed)

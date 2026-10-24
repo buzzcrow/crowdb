@@ -302,6 +302,7 @@ paths:
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-revisions:
     get:
       operationId: splitHistory
+      description: Lists complete revisions, including results that have not updated currentSplit. Snapshot read admission applies.
       parameters:
         - in: path
           name: dataset
@@ -324,6 +325,7 @@ paths:
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-revisions/{revision}:
     get:
       operationId: splitRevision
+      description: Reads a complete immutable revision by ID without requiring currentSplit publication. Snapshot read admission applies.
       parameters:
         - in: path
           name: dataset

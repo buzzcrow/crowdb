@@ -115,22 +115,26 @@ async fn members_are_scoped_ordered_and_bounded() {
 }
 
 #[tokio::test]
-async fn history_excludes_prepared_revisions_and_retains_committed_revisions() {
+async fn history_includes_complete_revisions_before_and_after_publication() {
     let (store, authority, identity, snapshot) = fixture().await;
     let first = prepared(&authority, &identity, snapshot, None).await;
     let cancel = ReadCancellation::new();
-    assert!(authority
-        .split_revision_history(&identity, snapshot, None, budget(20), &cancel)
-        .await
-        .unwrap()
-        .entries
-        .is_empty());
-    assert!(matches!(
+    assert_eq!(
+        authority
+            .split_revision_history(&identity, snapshot, None, budget(20), &cancel)
+            .await
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
+    assert_eq!(
         authority
             .get_split_revision(&identity, snapshot, first.revision, budget(20), &cancel)
-            .await,
-        Err(SplitLifecycleError::NotFound)
-    ));
+            .await
+            .unwrap(),
+        first
+    );
     authority
         .publish_split_draft(
             &identity,
@@ -154,7 +158,7 @@ async fn history_excludes_prepared_revisions_and_retains_committed_revisions() {
         .split_revision_history(&identity, snapshot, None, budget(20), &cancel)
         .await
         .unwrap();
-    assert_eq!(history.entries.len(), 2);
+    assert_eq!(history.entries.len(), 3);
     assert_eq!(
         authority
             .get_split_revision(&identity, snapshot, first.revision, budget(20), &cancel)

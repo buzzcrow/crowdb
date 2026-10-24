@@ -13,6 +13,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+mod revision;
+
 pub(crate) const SEALED: &[u8] = b"split-retired-v1";
 const END: &[u8] = b"split-retired-end-v1";
 const RECORD_CAP: usize = 1024 * 1024 + 64 * 1024;
@@ -32,7 +34,7 @@ struct Cursor {
     item: usize,
 }
 impl DatasetAuthority {
-    /// Retires obsolete uncommitted membership windows, preserving committed revision data.
+    /// Retires obsolete incomplete membership windows, preserving complete revision data.
     /// Each call processes at most twenty page references and retains small write fences.
     /// # Errors
     /// Rejects legacy drafts without work intents, live initial drafts, corruption and bounded-work failures.
@@ -99,11 +101,6 @@ impl DatasetAuthority {
         }
         if cursor.revision < end {
             let revision = super::candidate_revision(operation, cursor.revision)?;
-            let record_key = super::key::revision(identity, state.record.snapshot, revision)
-                .map_err(AuthorityError::from)?;
-            // Preparation is immutable and can race abandonment after reading the root.
-            // Fence its record before retiring the pages it could otherwise reference.
-            self.seal_split_key(&record_key, &mut work).await?;
             let summary = super::SplitRevisionSummary {
                 version: 1,
                 snapshot: state.record.snapshot,
@@ -111,15 +108,15 @@ impl DatasetAuthority {
                 operation,
                 split_count: 0,
             };
-            let summary_key = super::key::revision_summary(identity, state.record.snapshot, revision)
-                .map_err(AuthorityError::from)?;
-            self.seal_split_value(&summary_key, &super::codec::encode(&summary)?, &mut work)
+            let preserve = self
+                .fence_split_cleanup_revision(identity, &summary, retired, &mut work)
                 .await?;
             let intent_key = work_key(identity, operation, cursor.revision, cursor.page)?;
             self.retire_split_intent(
                 &intent_key,
                 &super::key::membership_prefix(identity, state.record.snapshot, revision)
                     .map_err(AuthorityError::from)?,
+                !preserve,
                 &mut cursor,
                 &mut work,
             )
@@ -145,6 +142,7 @@ impl DatasetAuthority {
         &self,
         key: &[u8],
         prefix: &[u8],
+        retire_members: bool,
         cursor: &mut Cursor,
         work: &mut InspectionWork<'_>,
     ) -> Result<(), SplitLifecycleError> {
@@ -174,8 +172,10 @@ impl DatasetAuthority {
                 return Err(SplitLifecycleError::Corrupt);
             }
             let stop = (cursor.item + 20).min(intent.pages.len());
-            for page in &intent.pages[cursor.item..stop] {
-                self.seal_split_key(&page.key, work).await?;
+            if retire_members {
+                for page in &intent.pages[cursor.item..stop] {
+                    self.seal_split_key(&page.key, work).await?;
+                }
             }
             cursor.item = stop;
             if stop < intent.pages.len() {

@@ -21,7 +21,7 @@ async fn finish(authority: &DatasetAuthority, identity: &DatasetIdentity, operat
 }
 
 #[tokio::test]
-async fn abandoning_prepared_split_retires_membership_and_fences_late_preparation() {
+async fn abandoning_complete_split_preserves_result_and_membership() {
     let (store, authority, identity, snapshot) = split_store::fixture().await;
     let record = split_store::prepared(&authority, &identity, snapshot, None).await;
     let record_key = key::revision(&identity, snapshot, record.revision).unwrap();
@@ -33,7 +33,7 @@ async fn abandoning_prepared_split_retires_membership_and_fences_late_preparatio
         .await
         .unwrap();
     finish(&authority, &identity, record.operation).await;
-    assert!(store.get(&page_key).await.unwrap().unwrap().bytes.len() < original.bytes.len());
+    assert_eq!(store.get(&page_key).await.unwrap().unwrap().bytes, original.bytes);
     assert!(matches!(
         store
             .compare_exchange(&page_key, None, &original.bytes)
@@ -48,12 +48,28 @@ async fn abandoning_prepared_split_retires_membership_and_fences_late_preparatio
             .unwrap(),
         CasOutcome::Conflict(_)
     ));
-    assert!(authority
-        .split_revision_history(&identity, snapshot, None, budget(), &ReadCancellation::new())
-        .await
-        .unwrap()
-        .entries
-        .is_empty());
+    assert_eq!(
+        authority
+            .split_revision_history(&identity, snapshot, None, budget(), &ReadCancellation::new())
+            .await
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
+    assert_eq!(
+        authority
+            .get_split_revision(
+                &identity,
+                snapshot,
+                record.revision,
+                budget(),
+                &ReadCancellation::new()
+            )
+            .await
+            .unwrap(),
+        record
+    );
     finish(&DatasetAuthority::new(store), &identity, record.operation).await;
 }
 

@@ -68,6 +68,17 @@ async fn evaluation_resumes_after_server_restart_and_stale_publish_keeps_candida
         first_receipt
     );
     assert_eq!(response(client.get(&head_url), 200).await, current);
+    assert_eq!(
+        response(
+            client.get(format!(
+                "{root}/snapshots/{snapshot}/split-revisions/{}",
+                b.1["revision"].as_str().unwrap()
+            )),
+            200
+        )
+        .await,
+        b.1
+    );
     let historic = response(
         client.get(format!(
             "{root}/snapshots/{snapshot}/split-revisions/{}",

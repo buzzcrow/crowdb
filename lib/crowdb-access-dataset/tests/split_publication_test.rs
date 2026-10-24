@@ -71,6 +71,27 @@ async fn lost_split_cas_reply_is_recoverable_and_pending_commit_cannot_be_abando
         .publish_split_draft(&identity, record.operation, &attempt)
         .await
         .is_err());
+    store.inspect_only.store(true, Ordering::Relaxed);
+    store.reject_split_proof_reads.store(true, Ordering::Relaxed);
+    assert_eq!(
+        authority
+            .get_split_revision(
+                &identity,
+                snapshot,
+                record.revision,
+                MetadataScanBudget {
+                    items: 1,
+                    bytes: 1024 * 1024,
+                    timeout: std::time::Duration::from_secs(2)
+                },
+                &ReadCancellation::new()
+            )
+            .await
+            .unwrap(),
+        record
+    );
+    store.inspect_only.store(false, Ordering::Relaxed);
+    store.reject_split_proof_reads.store(false, Ordering::Relaxed);
     assert!(matches!(
         authority
             .abandon_split_draft(&identity, record.operation, 1)

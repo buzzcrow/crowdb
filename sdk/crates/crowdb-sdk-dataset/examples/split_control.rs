@@ -242,6 +242,17 @@ async fn revise_splits(
             },
         )
         .await?;
+    assert_eq!(
+        client
+            .split_revision(snapshot, &revision.revision)
+            .await?
+            .revision,
+        revision.revision
+    );
+    assert_eq!(
+        client.split_head(snapshot).await?.revision,
+        Some(previous.clone())
+    );
     client
         .publish_split(
             &begin.operation,
