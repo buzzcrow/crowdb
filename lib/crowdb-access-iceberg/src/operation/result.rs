@@ -1,8 +1,8 @@
-use crate::catalog::CatalogError;
-use crate::error::ValidationError;
-use crate::record::StorageRecord;
+//! Legacy paged HTTP response format; new requests do not create these records.
 
-use super::{PayloadReference, PayloadStore, RetryRecord};
+use crate::error::ValidationError;
+
+use super::{PayloadReference, RetryRecord};
 
 pub const INLINE_RETRY_BYTES: usize = 16 * 1024;
 
@@ -27,36 +27,5 @@ impl RetryResult {
             return Err(ValidationError::Record);
         }
         Ok(())
-    }
-}
-
-pub(super) async fn encode_result(
-    payloads: &PayloadStore,
-    request: &RetryRecord,
-) -> Result<Vec<u8>, CatalogError> {
-    if request.body.len() <= INLINE_RETRY_BYTES {
-        return Ok(StorageRecord::Retry(Box::new(request.clone())).encode()?);
-    }
-    let body = payloads
-        .put(request.context.catalog, request.identity.operation, &request.body)
-        .await?;
-    let mut binding = request.clone();
-    binding.body.clear();
-    Ok(StorageRecord::RetryResult(Box::new(RetryResult { binding, body })).encode()?)
-}
-
-pub(super) async fn decode_result(
-    payloads: &PayloadStore,
-    record: StorageRecord,
-) -> Result<RetryRecord, CatalogError> {
-    match record {
-        StorageRecord::Retry(record) => Ok(*record),
-        StorageRecord::RetryResult(result) => {
-            let mut record = result.binding;
-            record.body = payloads.get(&result.body).await?;
-            record.validate()?;
-            Ok(record)
-        }
-        _ => Err(ValidationError::Record.into()),
     }
 }

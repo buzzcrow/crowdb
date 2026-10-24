@@ -10,7 +10,6 @@ use crowdb_access_iceberg::{
         CreateTableRequest, DirectCommitError, StagedCommitRequest, TableCommitJournal, TableCommitOperation,
         TableCommitOutcome, TableCommitPhase, TableCreationRequest, TableRequirement,
     },
-    operation::RetryRecord,
     wire::IcebergErrorResponse,
 };
 
@@ -22,7 +21,7 @@ struct CommitInput<'input> {
 impl TableWrites {
     pub(super) async fn try_direct_update(
         &self,
-        record: &RetryRecord,
+        record: &super::TableMutation,
         capabilities: Capabilities,
         uri: &hyper::Uri,
         body: &[u8],
@@ -90,7 +89,7 @@ impl TableWrites {
 
     pub(super) async fn mutate(
         &self,
-        record: &RetryRecord,
+        record: &super::TableMutation,
         capabilities: Capabilities,
         target: Target,
         body: Vec<u8>,
@@ -170,7 +169,7 @@ impl TableWrites {
 
     async fn update(
         &self,
-        record: &RetryRecord,
+        record: &super::TableMutation,
         capabilities: Capabilities,
         namespace: &crowdb_access_iceberg::namespace::NamespaceIdentifier,
         name: &str,

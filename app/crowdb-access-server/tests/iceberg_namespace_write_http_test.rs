@@ -260,7 +260,7 @@ async fn verify_drop_replay(
 }
 
 #[tokio::test]
-async fn malformed_and_missing_parent_results_are_retained_before_any_later_retry() {
+async fn failed_requests_without_a_resource_operation_can_retry_after_the_cause_changes() {
     let (store, address, stop, server) = setup().await;
     let key = fresh_key(&store).await;
     let body = r#"{"namespace":["missing","child"]}"#;
@@ -280,8 +280,10 @@ async fn malformed_and_missing_parent_results_are_retained_before_any_later_retr
         200
     );
     assert_eq!(
-        send(address, "POST", "/v1/namespaces", "w", Some(&key), body).await,
-        failed
+        send(address, "POST", "/v1/namespaces", "w", Some(&key), body)
+            .await
+            .0,
+        200
     );
     let invalid_key = fresh_key(&store).await;
     let malformed = send(address, "POST", "/v1/namespaces", "w", Some(&invalid_key), "{").await;
@@ -291,6 +293,19 @@ async fn malformed_and_missing_parent_results_are_retained_before_any_later_retr
         malformed
     );
     assert_eq!(
+        send(
+            address,
+            "POST",
+            "/v1/namespaces",
+            "w",
+            Some(&invalid_key),
+            r#"{"namespace":["corrected"]}"#
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
         send(address, "POST", "/v1/namespaces", "w", Some("invalid"), "{}")
             .await
             .0,
@@ -298,7 +313,7 @@ async fn malformed_and_missing_parent_results_are_retained_before_any_later_retr
     );
     assert_eq!(
         send(address, "POST", "/v1/namespaces", "w", None, body).await.0,
-        200
+        409
     );
     assert_eq!(
         send(address, "DELETE", "/v1/namespaces/missing", "w", None, "")
@@ -311,7 +326,7 @@ async fn malformed_and_missing_parent_results_are_retained_before_any_later_retr
 }
 
 #[tokio::test]
-async fn colliding_uuidv7_headers_have_independent_durable_http_replay() {
+async fn colliding_uuidv7_headers_do_not_create_shared_http_binding_state() {
     let (store, address, stop, server) = setup().await;
     let now = u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()).unwrap();
     let mut seen = std::collections::BTreeMap::new();
@@ -385,7 +400,14 @@ async fn colliding_uuidv7_headers_have_independent_durable_http_replay() {
         scope: SystemScope::RetryOverflow,
         suffix: second.as_bytes().to_vec(),
     };
-    assert!(store.values.load().contains_key(&overflow.encode().unwrap()));
+    assert!(!store.values.load().contains_key(&overflow.encode().unwrap()));
+    assert!(store.values.load().keys().all(|key| !matches!(
+        IcebergKey::decode(key),
+        Ok(IcebergKey::System {
+            scope: SystemScope::RetryBinding | SystemScope::RetryOverflow,
+            ..
+        })
+    )));
     stop.send(()).unwrap();
     server.await.unwrap();
 }

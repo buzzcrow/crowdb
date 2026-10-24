@@ -202,24 +202,27 @@ neither clear nor smaller restart settings can shorten existing bounds.
 Listeners stop admission before bounded draining;
 startup and periodic reconciliation resume interrupted management operations.
 
-Management, audit and shared REST retry ledgers each use 4096 deterministic
-fast-hash slots with exact-identity overflow keys. An occupied slot does not
-reject a different identity: it routes that identity to its own durable key.
-Neither slot nor overflow records are evicted inside their retention window;
-overflow storage is subject to normal disk capacity and physical reclamation.
-Client identities use UUIDv7 issuance time with a 24-hour admission window and
-30-second future-clock allowance. Retention starts at first admission and includes
-grace. Principal, digest and catalog context must match before REST replay;
-catalog replacement prevents old-body replay or rebinding. Terminal results are
-immutable, while transient failures retain recoverable state. Requests without
-client keys receive distinct internal identities, not cross-request deduplication.
+Management and audit ledgers use 4096 deterministic fast-hash slots with
+exact-identity overflow keys. An occupied slot routes a different identity to
+its own durable key. Their retention and authority checks belong to the
+management operation contract. Client write identities use UUIDv7 issuance
+time with a 30-second future-clock allowance; requests without a client key
+receive independent internal identities.
+
+REST namespace and table writes do not allocate a shared HTTP retry binding
+or cache terminal HTTP results. Each request validates its current authority
+and input. Existing business drivers bind operation identities to their stable
+resources and validate their own request preconditions; direct expected-base
+table updates retain their head CAS contract. A failed request without a
+business operation can be submitted again after the resource state changes.
+Legacy HTTP bindings, overflow keys and response payloads remain decodable
+for retention cleanup, with no producer on new request paths.
 
 Immutable operation payloads use 32-KiB pages with a 2-MiB aggregate limit. Each
 reference binds catalog, operation, content digest and total size; readers validate
-every page and the complete digest. Small retry responses remain inline. Larger
-responses publish one immutable manifest only after all pages are durable, then
-complete the system retry binding. A lost reply resumes page writes or replays the
-published manifest without changing the original response.
+every page and the complete digest. Business operation drivers use these
+references for their existing inputs and results. Legacy large HTTP response
+manifests remain readable by cleanup; independent requests do not create them.
 
 Namespace operation journals occupy a separate key scope from HTTP responses.
 They preserve request identity, principal, stable target and parent IDs, immutable
@@ -250,7 +253,8 @@ so a repeated removal can move from removed to missing. Repeating assignments
 can overwrite a concurrent assignment to the same property. Other properties
 are retained. Old property journals remain readable by recovery, including the
 holder-bound marker dispatcher used before new updates. Creation and drop
-currently use their durable drivers and the shared HTTP retry ledger.
+currently use their durable drivers, whose simplification is independent of
+the removed outer HTTP response ledger.
 The catalog configuration does not advertise a universal idempotency-key
 lifetime, since independent property updates do not retain operation responses.
 

@@ -286,7 +286,6 @@ async fn discovery_uses_installed_routes_and_unsupported_paths_leave_no_record()
             assert_eq!(snapshot.routes[2][0].requests, 1);
             assert_eq!(snapshot.routes[2][0].request_bytes, bytes);
             assert!(snapshot.routes[2][0].response_bytes > 0);
-            assert_eq!(snapshot.retry_new, 1);
             assert_eq!(snapshot.routes[1][0].requests, 1);
             assert_eq!(snapshot.routes[1][0].response_bytes, 0);
         }

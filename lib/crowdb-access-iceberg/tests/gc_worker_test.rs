@@ -516,13 +516,6 @@ async fn retired_cleanup_removes_expired_primary_binding_and_projection_without_
         StorageRecord::decode(&overflow, &value.bytes).unwrap(),
         StorageRecord::Retry(Box::new(new.clone()))
     );
-    assert!(matches!(
-        crowdb_access_iceberg::operation::RetryLedger::new(fixture.store.clone())
-            .begin(new, 1_000_000)
-            .await
-            .unwrap(),
-        crowdb_access_iceberg::operation::RetryAdmission::Resume(_)
-    ));
 }
 
 #[tokio::test]

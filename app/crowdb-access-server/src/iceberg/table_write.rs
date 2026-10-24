@@ -5,7 +5,7 @@ use crowdb_access_iceberg::{
     commit::{CommitProofLimits, StagedCommitLimits, TableCreator},
     file::FileBlockStore,
     namespace::{NamespaceRepository, NamespaceStore},
-    operation::{PayloadStore, RetryAdmission, RetryLedger, RetryRecord},
+    operation::{PayloadStore, RequestIdentity},
     table::TableRepository,
     wire::{IcebergErrorResponse, Principal, RequestKey},
 };
@@ -15,13 +15,20 @@ use sha2::{Digest, Sha256};
 use super::{
     body::{IcebergBody, SpoolPermit},
     http::{bad_request, response, service_unavailable},
-    namespace_write::{mutation_error, now_ms, read_body},
+    namespace_write::{now_ms, read_body},
     table_limits,
 };
 
 mod lifecycle;
 mod mutation;
 pub(super) mod request;
+
+pub(super) struct TableMutation {
+    context: CatalogContext,
+    identity: RequestIdentity,
+    principal: String,
+    digest: [u8; 32],
+}
 
 pub(super) struct TableWrites {
     store: Arc<dyn CatalogStore>,
@@ -30,7 +37,6 @@ pub(super) struct TableWrites {
     namespaces: NamespaceRepository,
     tables: TableRepository,
     lifecycles: crowdb_access_iceberg::table::TableLifecycles,
-    ledger: RetryLedger,
     payloads: PayloadStore,
     limits: CommitProofLimits,
     active: Arc<AtomicUsize>,
@@ -56,7 +62,6 @@ impl TableWrites {
                 }),
             namespaces: NamespaceRepository::new(store.clone()),
             tables: TableRepository::new(store.clone()),
-            ledger: RetryLedger::new(store.clone()),
             payloads: PayloadStore::new(store),
             limits,
             active: Arc::new(AtomicUsize::new(0)),
@@ -114,15 +119,11 @@ impl TableWrites {
             digest.update((value.len() as u64).to_be_bytes());
             digest.update(value);
         }
-        let mut record = RetryRecord {
+        let record = TableMutation {
             identity: key.identity(),
             principal: principal.name.into(),
-            route: route.into(),
             digest: digest.finalize().into(),
             context,
-            retained_until_ms: 0,
-            status: 0,
-            body: Vec::new(),
         };
         if method == Method::POST && uri.path() != "/v1/tables/rename" {
             if let Some(body) = self
@@ -141,39 +142,11 @@ impl TableWrites {
                 return Ok(response(200, body));
             }
         }
-        let admission = self.admit(&mut record, key, now).await?;
-        let (record, resuming) = match admission {
-            RetryAdmission::Replay(record) => {
-                super::metrics::record_retry(3);
-                let body = self.decorate_response(
-                    record.status,
-                    record.body,
-                    configuration_target,
-                    context,
-                    authority,
-                    principal,
-                    request_host.as_deref(),
-                )?;
-                return Ok(response(record.status, body));
-            }
-            RetryAdmission::New(record) => {
-                super::metrics::record_retry(1);
-                (record, false)
-            }
-            RetryAdmission::Resume(record) => {
-                super::metrics::record_retry(2);
-                (record, true)
-            }
-        };
         if method == Method::DELETE || uri.path() == "/v1/tables/rename" {
             let result = self
-                .mutate_lifecycle(&record, capabilities, resuming, &method, &uri, &bytes)
+                .mutate_lifecycle(&record, capabilities, &method, &uri, &bytes)
                 .await;
             let (status, body) = self.outcome_response(result).await?;
-            self.ledger
-                .finish(record, status, body.clone(), now_ms()?)
-                .await
-                .map_err(|error| mutation_error(&error))?;
             return Ok(response(status, body));
         }
         let target = request::parse(&uri);
@@ -182,10 +155,6 @@ impl TableWrites {
             Err(error) => Err(error),
         };
         let (status, body) = self.outcome_response(result).await?;
-        self.ledger
-            .finish(record, status, body.clone(), now_ms()?)
-            .await
-            .map_err(|error| mutation_error(&error))?;
         let body = self.decorate_response(
             status,
             body,
@@ -302,31 +271,5 @@ impl TableWrites {
             (create.name().to_owned(), create.stage_create())
         };
         Some((target.namespace, name, staged))
-    }
-
-    async fn admit(
-        &self,
-        record: &mut RetryRecord,
-        key: RequestKey,
-        now: u64,
-    ) -> Result<RetryAdmission, IcebergErrorResponse> {
-        for _ in 0..8 {
-            match self.ledger.begin(record.clone(), now).await {
-                Err(crowdb_access_iceberg::catalog::CatalogError::Busy)
-                    if matches!(key, RequestKey::Internal(_)) =>
-                {
-                    record.identity = RequestKey::parse(None, now)
-                        .map_err(|_| bad_request())?
-                        .identity();
-                }
-                result => {
-                    return result.map_err(|error| {
-                        tracing::warn!(%error, "table retry ledger admission failed");
-                        mutation_error(&error)
-                    })
-                }
-            }
-        }
-        Err(service_unavailable())
     }
 }

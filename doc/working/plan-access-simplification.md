@@ -320,10 +320,8 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 
 ### P8 — Iceberg RetryLedger（执行 D3；按 route 判定必要性）
 
-- [ ] **P8.1 清掉确定冲突后的查询**：begin 使用返回 binding，仅真实碰撞才查 overflow；finish
-  使用已返回 result，不重新 GET。Files: Iceberg `operation/{retry,ledger,result}.rs`。
-- [ ] **P8.2 按实际用途删除重试账本**：按 route 对照业务 journal 与 HTTP binding/input/result，判定实际重试效果；
-  普通覆盖删除 ledger/body/状态，条件或多资源操作按 R2/R3 处理；不默认保留“最小回执”。迁移测试和 SDK。Files: `operation/{retry,result,payload}.rs`、Access `iceberg/{table_write,namespace_write}`。
+HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。旧格式仅供解码/GC；
+内部业务 driver 的清理继续由 R2/R3/P9/P10 跟踪，不再优化已删除的账本路径。
 
 ### P9 — Iceberg namespace / table 多阶段操作
 
@@ -436,6 +434,19 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P8.2（P8.1 随路径删除）**：namespace/table 写入口不再 begin/finish
+  通用 HTTP RetryLedger，删除 admission 重试、New/Resume/Replay 状态、response 编码/装载
+  driver 及对应指标。表生命周期从真实业务操作读取恢复所需版本，不依赖外层 Resume 提示；
+  changed request 冲突映射保留。写者鉴权、context、direct commit expected base 均保留。
+  旧 Retry/RetryResult 格式仍由 codec 和 GC 识别；没有新写入口，不批量删除未过期记录。
+  namespace create 的缺失父目录/无业务记录错误在父目录建好后可用原 key 成功，
+  malformed 输入可修正重试；已有业务操作仍验证其身份，不靠 HTTP 缓存遮住新状态。
+  相同 hash slot 的两个 UUID 请求不创建 retry binding/overflow，仍独立成功。
+  namespace HTTP 4、table write 8、lifecycle 5、route 2 项通过；组件 GC 21、namespace
+  update 11/create 4/drop 6、request identity 1 项通过。两 crate all-target/all-feature clippy、
+  fmt 与 diff 检查通过。内部 journal 尚未删除，不能把本项当作 R2/R3 已完成。
+
 
 - **2026-10-24，P9.3，R1 的 namespace 属性场景**：属性请求直接修改现有 authority，
   删除新请求的 NamespaceOperation、输入/响应 payload、pending marker 和 HTTP RetryLedger。

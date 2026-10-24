@@ -7,7 +7,6 @@ use crowdb_access_iceberg::{
     commit::TableCommitOutcome,
     key::NameSuffix,
     namespace::NamespaceIdentifier,
-    operation::RetryRecord,
     table::{TableLifecycleAction, TableLifecycleRequest},
     wire::IcebergErrorResponse,
 };
@@ -43,9 +42,8 @@ impl Identifier {
 impl TableWrites {
     pub(super) async fn mutate_lifecycle(
         &self,
-        record: &RetryRecord,
+        record: &super::TableMutation,
         capabilities: Capabilities,
-        resuming: bool,
         method: &Method,
         uri: &Uri,
         bytes: &[u8],
@@ -81,14 +79,11 @@ impl TableWrites {
                 TableLifecycleAction::Drop { purge_requested },
             )
         };
-        let existing = if resuming {
-            self.lifecycles
-                .load(record.context, record.identity.operation)
-                .await
-                .map_err(|_| service_unavailable())?
-        } else {
-            None
-        };
+        let existing = self
+            .lifecycles
+            .load(record.context, record.identity.operation)
+            .await
+            .map_err(|_| service_unavailable())?;
         let version = if let Some(operation) = existing {
             operation.before.format_version
         } else {
@@ -111,8 +106,12 @@ impl TableWrites {
         }
         self.lifecycles.execute(&TableLifecycleRequest { context: record.context, identity: record.identity,
             principal: record.principal.clone(), namespace, name, action }).await.map_err(|error| {
-                tracing::error!(%error, "table lifecycle remains recoverable; retry with the same request key");
-                service_unavailable()
+                if matches!(error, crowdb_access_iceberg::catalog::CatalogError::Conflict) {
+                    IcebergErrorResponse::new(409, "CommitFailedException", "Table lifecycle request conflicts")
+                } else {
+                    tracing::error!(%error, "table lifecycle remains recoverable; retry with the same request key");
+                    service_unavailable()
+                }
             })
     }
 }
