@@ -32,6 +32,8 @@ use tokio::sync::{mpsc, oneshot};
 mod cost;
 #[path = "common/multipart_progress.rs"]
 mod progress;
+#[path = "common/multipart_unknown.rs"]
+mod unknown;
 
 struct Catalog(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>);
 
@@ -46,6 +48,7 @@ enum ActorRequest {
     Point(PointOperation, oneshot::Sender<Result<ChunkKvResponse>>),
     Scan(ScanRequest, oneshot::Sender<Result<ChunkKvResponse>>),
     Inject(TestConflict),
+    LoseAfter(usize),
 }
 
 struct TestConflict {
@@ -73,6 +76,10 @@ impl TestProbe {
         self.sender
             .send(ActorRequest::Inject(TestConflict { key, value, skip }))
             .unwrap();
+    }
+
+    fn lose_after(&self, mutations: usize) {
+        self.sender.send(ActorRequest::LoseAfter(mutations)).unwrap();
     }
 }
 
@@ -204,6 +211,7 @@ fn spawn_actor(
         let mut values = HashMap::new();
         let mut conflict: Option<TestConflict> = None;
         let mut forbidden_get: Option<Vec<u8>> = None;
+        let mut lose_after = None;
         while let Some(request) = receiver.recv().await {
             match request {
                 ActorRequest::Point(operation, response) => {
@@ -243,7 +251,20 @@ fn spawn_actor(
                         }
                     }
                     let result = reply(operation, &mut values);
-                    if is_mutation && lose_reply.swap(false, Ordering::SeqCst) {
+                    let lost = is_mutation
+                        && (lose_reply.swap(false, Ordering::SeqCst)
+                            || match lose_after.as_mut() {
+                                Some(0) => {
+                                    lose_after = None;
+                                    true
+                                }
+                                Some(remaining) => {
+                                    *remaining -= 1;
+                                    false
+                                }
+                                None => false,
+                            });
+                    if lost {
                         let _ = response.send(Err(ClientError::Transport("committed reply lost".into())));
                     } else {
                         let _ = response.send(Ok(result));
@@ -256,6 +277,7 @@ fn spawn_actor(
                     conflict = Some(fault);
                     forbidden_get = None;
                 }
+                ActorRequest::LoseAfter(remaining) => lose_after = Some(remaining),
             }
         }
     });
@@ -317,6 +339,7 @@ async fn repository_with_probe() -> (MultipartRepository, Arc<TestProbe>, Arc<Ch
             ClientConfig {
                 operation_timeout: Duration::from_secs(1),
                 retry_backoff: Duration::from_millis(1),
+                max_attempts: 1,
                 ..ClientConfig::default()
             },
             Arc::new(Catalog(head, vec![page])),
@@ -447,7 +470,7 @@ async fn session_cas_and_independent_part_replacement_obey_the_freeze() {
     frozen.completion_request_digest = Some([5; 32]);
     frozen.publication_ms = None;
     lose_reply.store(true, Ordering::SeqCst);
-    assert!(repository.exchange(&current, &frozen).await.unwrap());
+    unknown::assert_unknown(repository.exchange(&current, &frozen).await);
     assert!(repository.exchange(&current, &frozen).await.unwrap());
     assert!(matches!(
         repository.put_stream_part(&session, &part(), 112).await,
@@ -627,6 +650,7 @@ async fn publication_recovers_a_lost_reply_without_replacing_a_competing_object(
         .unwrap()
         .unwrap();
     lose_reply.store(true, Ordering::SeqCst);
+    unknown::assert_unknown(repository.publish_completion(&frozen).await);
     let published = repository.publish_completion(&frozen).await.unwrap();
     assert_eq!(published.phase, MultipartPhase::Published);
     assert_eq!(repository.publish_completion(&frozen).await.unwrap(), published);
@@ -722,12 +746,13 @@ fn part_for(session: &MultipartSessionRecord) -> MultipartPartRecord {
 }
 
 #[tokio::test]
-async fn abort_confirms_lost_reply_and_rejects_part_publication() {
+async fn abort_retry_observes_terminal_state_and_rejects_part_publication() {
     let (repository, lose_reply, _) = repository().await;
     let session = session();
     repository.begin(&session).await.unwrap();
     repository.put_stream_part(&session, &part(), 110).await.unwrap();
     lose_reply.store(true, Ordering::SeqCst);
+    unknown::assert_unknown(repository.abort(&session).await);
     let aborted = repository.abort(&session).await.unwrap();
     assert_eq!(aborted.phase, MultipartPhase::Aborted);
     assert_eq!(repository.abort(&session).await.unwrap(), aborted);

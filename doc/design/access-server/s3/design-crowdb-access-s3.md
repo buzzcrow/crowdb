@@ -174,6 +174,11 @@ consume and validate the whole response. The body owns the copy future, cancels
 it on disconnect, and caps execution at 300 seconds. A retry after response loss
 can select a newer source generation; copy is not an exactly-once operation.
 
+Destination mutation conditions (`If-Match`, `If-None-Match` and date conditions)
+are rejected before dispatch. Object GET/HEAD and copy-source conditions remain
+supported. Ordinary object publication and deletion do not acquire a preliminary
+object read or conditional mutation.
+
 DeleteObjects validates its entire request before issuing a mutation: at most
 1,000 nonempty UTF-8/XML keys of 1,024 bytes each, a 2 MiB body, and no versions
 or conditional object selectors. Content-MD5 is supported; verified CRC32 may
@@ -213,8 +218,10 @@ numbers therefore increase monotonically and can have gaps. Retained candidates
 remain immutable, and accounting changes only through the session fence.
 Session and part-pointer replay checks consume the CAS conflict observation;
 a confirmed conflict does not require another GET to test whether the exact
-proposed bytes were installed. An uncertain transport outcome still requires
-reconciliation. Part publication carries its latest loaded session into the next
+proposed bytes were installed. Once the routed client exhausts its retry budget,
+an uncertain mutation returns to the caller without a confirmation GET. A later
+request retries the same input and validates the retained resource facts.
+Part publication carries its latest loaded session into the next
 iteration instead of discarding it and reading again. This coordination is scoped
 to one upload and preserves exact staged-byte accounting and completion selection;
 independent uploads share no reservation record.

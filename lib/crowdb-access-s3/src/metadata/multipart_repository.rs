@@ -53,7 +53,7 @@ impl MultipartRepository {
         Self { store, tenant }
     }
 
-    /// Creates one upload or confirms the exact record after a lost reply.
+    /// Creates one upload or reuses the exact record on an explicit retry.
     ///
     /// # Errors
     /// Rejects a different record at the same upload key or unavailable store.
@@ -72,34 +72,15 @@ impl MultipartRepository {
             &session.object_key,
             &session.upload_id,
         )?;
-        let indexed = self.store.put_if_absent(index.clone(), key.clone()).await;
-        match indexed {
-            Ok(PutIfAbsentOutcome::Inserted { .. }) => {}
-            Ok(PutIfAbsentOutcome::Existing(existing)) if existing.value == key => {}
-            Ok(PutIfAbsentOutcome::Existing(_)) => return Err(MultipartRepositoryError::Conflict),
-            Err(error) => {
-                if !self
-                    .store
-                    .get(index)
-                    .await?
-                    .is_some_and(|entry| entry.value == key)
-                {
-                    return Err(error.into());
-                }
-            }
+        match self.store.put_if_absent(index, key.clone()).await? {
+            PutIfAbsentOutcome::Inserted { .. } => {}
+            PutIfAbsentOutcome::Existing(existing) if existing.value == key => {}
+            PutIfAbsentOutcome::Existing(_) => return Err(MultipartRepositoryError::Conflict),
         }
-        let result = self.store.put_if_absent(key, value.clone()).await;
-        match result {
-            Ok(PutIfAbsentOutcome::Inserted { .. }) => Ok(session.clone()),
-            Ok(PutIfAbsentOutcome::Existing(existing)) if existing.value == value => Ok(session.clone()),
-            Ok(PutIfAbsentOutcome::Existing(_)) => Err(MultipartRepositoryError::Conflict),
-            Err(error) => {
-                if self.load(session).await?.as_ref() == Some(session) {
-                    Ok(session.clone())
-                } else {
-                    Err(error.into())
-                }
-            }
+        match self.store.put_if_absent(key, value.clone()).await? {
+            PutIfAbsentOutcome::Inserted { .. } => Ok(session.clone()),
+            PutIfAbsentOutcome::Existing(existing) if existing.value == value => Ok(session.clone()),
+            PutIfAbsentOutcome::Existing(_) => Err(MultipartRepositoryError::Conflict),
         }
     }
 

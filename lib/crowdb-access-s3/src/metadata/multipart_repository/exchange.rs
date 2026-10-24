@@ -42,10 +42,10 @@ impl MultipartRepository {
         match self
             .store
             .compare_exchange_observed(self.session_key(previous), expected, value)
-            .await
+            .await?
         {
-            Ok((true, _)) => Ok(MultipartExchange::Applied),
-            Ok((false, observed)) => Ok(MultipartExchange::Conflict(
+            (true, _) => Ok(MultipartExchange::Applied),
+            (false, observed) => Ok(MultipartExchange::Conflict(
                 observed
                     .map(|observed| {
                         MultipartSessionRecord::decode(
@@ -58,13 +58,6 @@ impl MultipartRepository {
                     .transpose()?
                     .map(Box::new),
             )),
-            Err(error) => {
-                if self.load(next).await?.as_ref() == Some(next) {
-                    Ok(MultipartExchange::Applied)
-                } else {
-                    Err(error.into())
-                }
-            }
         }
     }
 }

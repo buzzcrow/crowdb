@@ -44,6 +44,44 @@ fn rejects_extensions_before_dispatch() {
 }
 
 #[test]
+fn conditional_mutations_are_rejected_instead_of_becoming_unconditional_writes() {
+    for header in [
+        "if-match",
+        "if-none-match",
+        "if-modified-since",
+        "if-unmodified-since",
+    ] {
+        let headers = HeaderMap::from_iter([(
+            hyper::header::HeaderName::from_static(header),
+            HeaderValue::from_static("*"),
+        )]);
+        for (method, path) in [
+            (Method::PUT, "/bucket/key"),
+            (Method::DELETE, "/bucket/key"),
+            (Method::POST, "/bucket?delete"),
+            (Method::POST, "/bucket/key?uploads"),
+            (
+                Method::POST,
+                "/bucket/key?uploadId=abababababababababababababababab",
+            ),
+            (
+                Method::PUT,
+                "/bucket/key?uploadId=abababababababababababababababab&partNumber=1",
+            ),
+        ] {
+            assert_eq!(
+                classify_request(&method, &path.parse().unwrap(), &headers),
+                Err(RouteError::NotImplemented),
+                "{method} {path}: {header}"
+            );
+        }
+        for method in [Method::GET, Method::HEAD] {
+            assert!(classify_request(&method, &"/bucket/key".parse().unwrap(), &headers).is_ok());
+        }
+    }
+}
+
+#[test]
 fn copy_headers_select_only_object_or_multipart_part_puts() {
     let mut headers = HeaderMap::new();
     headers.insert("x-amz-copy-source", HeaderValue::from_static("source/key"));

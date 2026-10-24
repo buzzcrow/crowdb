@@ -173,6 +173,18 @@ pub fn classify_request(method: &Method, uri: &Uri, headers: &HeaderMap) -> Resu
 }
 
 fn validate_publication_headers(operation: S3Operation, headers: &HeaderMap) -> Result<(), RouteError> {
+    if !matches!(operation, S3Operation::GetObject | S3Operation::HeadObject)
+        && [
+            "if-match",
+            "if-none-match",
+            "if-modified-since",
+            "if-unmodified-since",
+        ]
+        .iter()
+        .any(|name| headers.contains_key(*name))
+    {
+        return Err(RouteError::NotImplemented);
+    }
     let storage_class = headers.get_all("x-amz-storage-class");
     let mut values = storage_class.iter();
     if let Some(value) = values.next() {

@@ -157,9 +157,9 @@ impl MultipartRepository {
                 after.revision,
             )?;
             let value = after.encode()?;
-            match self.store.put_if_absent(key.clone(), value.clone()).await {
-                Ok(PutIfAbsentOutcome::Inserted { .. }) => return Ok(after),
-                Ok(PutIfAbsentOutcome::Existing(existing)) => {
+            match self.store.put_if_absent(key, value).await? {
+                PutIfAbsentOutcome::Inserted { .. } => return Ok(after),
+                PutIfAbsentOutcome::Existing(existing) => {
                     let retained = MultipartPartRecord::decode(
                         &existing.value,
                         after.bucket_id,
@@ -176,17 +176,6 @@ impl MultipartRepository {
                     // Preserve it and select a fresh monotonically increasing revision.
                     after.revision =
                         next_part_revision(Some(after.revision)).ok_or(MultipartRepositoryError::Conflict)?;
-                }
-                Err(error) => {
-                    if self
-                        .store
-                        .get(key)
-                        .await?
-                        .is_some_and(|entry| entry.value == value)
-                    {
-                        return Ok(after);
-                    }
-                    return Err(error.into());
                 }
             }
         }
@@ -308,25 +297,13 @@ impl MultipartRepository {
                     PutIfAbsentOutcome::Existing(value) => (false, Some(value)),
                 }),
         };
-        match mutation {
-            Ok((true, _)) => Ok(()),
-            Ok((false, observed)) => {
+        match mutation? {
+            (true, _) => Ok(()),
+            (false, observed) => {
                 if observed.is_some_and(|observed| observed.value == value) {
                     Ok(())
                 } else {
                     Err(MultipartRepositoryError::InvalidPart)
-                }
-            }
-            Err(error) => {
-                if self
-                    .store
-                    .get(key)
-                    .await?
-                    .is_some_and(|entry| entry.value == value)
-                {
-                    Ok(())
-                } else {
-                    Err(error.into())
                 }
             }
         }

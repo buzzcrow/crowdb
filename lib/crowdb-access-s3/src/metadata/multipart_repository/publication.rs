@@ -106,16 +106,11 @@ impl MultipartRepository {
                     PutIfAbsentOutcome::Existing(observed) => (false, Some(observed)),
                 })
         };
-        match mutation {
-            Ok((true, _)) => {}
-            Ok((false, observed)) => {
+        match mutation? {
+            (true, _) => {}
+            (false, observed) => {
                 if observed.as_ref().map(|entry| &entry.value) != Some(&value) {
                     return Err(MultipartRepositoryError::Conflict);
-                }
-            }
-            Err(error) => {
-                if self.store.get(key).await?.as_ref().map(|entry| &entry.value) != Some(&value) {
-                    return Err(error.into());
                 }
             }
         }
