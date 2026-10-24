@@ -24,6 +24,7 @@ pub struct TestStore {
     pub reads: AtomicUsize,
     pub cas_attempts: AtomicUsize,
     pub projection_reads: AtomicUsize,
+    pub legacy_admission_calls: AtomicUsize,
     pub file_scans: AtomicUsize,
     pub fencing_delay_ms: AtomicUsize,
     pub fencing_barrier: Option<Arc<tokio::sync::Barrier>>,
@@ -229,6 +230,15 @@ impl CatalogStore for TestStore {
         }
         self.reads.fetch_add(1, Ordering::SeqCst);
         if matches!(
+            IcebergKey::decode(key),
+            Ok(IcebergKey::Catalog {
+                scope: CatalogScope::MultipartAdmission,
+                ..
+            })
+        ) {
+            self.legacy_admission_calls.fetch_add(1, Ordering::SeqCst);
+        }
+        if matches!(
             StorageKey::decode(key),
             Ok(StorageKey::Legacy(IcebergKey::Catalog {
                 scope: CatalogScope::MetadataProjection,
@@ -251,6 +261,15 @@ impl CatalogStore for TestStore {
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
         self.cas_attempts.fetch_add(1, Ordering::SeqCst);
+        if matches!(
+            IcebergKey::decode(key),
+            Ok(IcebergKey::Catalog {
+                scope: CatalogScope::MultipartAdmission,
+                ..
+            })
+        ) {
+            self.legacy_admission_calls.fetch_add(1, Ordering::SeqCst);
+        }
         identity.validate().unwrap();
         if self.yield_operations {
             tokio::task::yield_now().await;

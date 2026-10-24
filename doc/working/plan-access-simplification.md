@@ -375,8 +375,7 @@ credit/revision，不改变已发布文件，故也无需回放。旧 policy、p
 metadata 扫描。没有活跃硬配额需求，不触发 D4。测试覆盖遗留/损坏 policy 对空页与已存在
 上传零影响、过期与终态资源不丢失，恢复总读取由空页 5G 降至 2G，零 policy GET/写。
 
-- [ ] **P6.2 删除确证无用的协调**：没有调用/恢复义务的代码可删；有旧记录则给出迁移/结算方案。
-  只有仍有全局硬配额需求才触发 D4。Files: `file/multipart_admission.rs`、`file/multipart_credits/settle.rs` 及恢复测试。
+P6.2 已删除全局配额 driver；迁移与验证见记录。旧格式仅用于解码，不再参与生产恢复。
 
 ### P7 — Iceberg 物理写入（执行 D2；必要安全例外先 review）
 
@@ -424,6 +423,8 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
 
 - [ ] **P13.2 审查 cleanup 持久化**：将 claim/phase/cursor/tombstone 分为可重做进度与不可丢的
   义务/代际；即使重扫昂贵也先优化发现/预算；新增持久化信息必须 review，用途和额外前台写均写明。Files: Dataset `authority/access/`、Split/Composition cleanup、Iceberg `gc/`、S3 terminal cleanup。
+  包含已停止执行的 legacy MultipartAdmission policy 和其 before/after payload：从已存在的
+  session/最终文件事实判定可删，不能为清这些 key 恢复全局计数器或重建上传。
 - [ ] **P13.3 量化回收滞后**：稀疏过期、大 upload、多 cleaner、频繁重启、损坏记录下测 backlog、
   前台 p99 和孤儿收敛；如需确定完成时限再讨论 D5。Files: 相关 cleanup 测试、负载工具。
 
@@ -478,6 +479,9 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   无条件覆盖与 expected-base 重试测试。断言总 GET+写，不仅是零写。Files: Dataset `tests/*cost*`、`read_query*`、upload/Composition/Split/inspection；S3/Iceberg 对应 repository 测试。
 - [ ] **V2 HTTP/native/SDK 集成**：各受影响 route 的鉴权、错误、协议/SDK 一致性；保留删除准入、
   迟到写者、非空 namespace、共享 owner、held buffer、cancel/drop 和损坏内容测试。Files: Access/native tests、`sdk/tests/`、native Python consumer。
+- [~] **V2.4 Iceberg 配额清理后容器复验**：构建本批源码镜像，运行
+  `access_iceberg::native_files::native_file_tree_publication_and_ranges_survive_catalog_storage_restart`，
+  覆盖普通上传的后台过期、part 保留和文件重启读取；记录来源与结果，不能复用清理前镜像。
 - [ ] **V3 工程门禁与文档**：每批执行适用 fmt/clippy/测试，全部经 `pixi run`；同步 owning
   design/spec/OpenAPI/SDK。只修改文档时检查 diff、引用和任务状态，不为此跑整套服务测试。
 - [ ] **V4 同源真实负载验收**：重新构建当前源码的镜像，运行现有 HTTP/native Rust/native Python
@@ -504,6 +508,19 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P6.2**：删除 `MultipartAdmission`、reserve/release/settle driver、journal
+  proposal 和相关 test-util 写入口。后台每页不再读全局 policy，终态 upload 不再写 snapshot、
+  pending 或 released receipt；新 begin 拒绝 legacy credit 输入。旧记录仍可解码；已存在的
+  上传按自身 part/publish 事实继续处理。未创建 session 的旧 pending reserve 不重建上传，
+  pending release 不回放；旧计数器已无业务使用者，保留物理文件和其正式引用不依赖它。
+  用真实 legacy pending Reserve payload、缺失/损坏 policy、过期旧 session、已发布文件、
+  新请求拒绝旧 credit 验证迁移；空页和终态页均 2G、零 mutation、零 policy 访问，原空页
+  为 5G。30 项 metadata/part/发布/恢复/预算测试及 HTTP 跨进程全 durable-write 切断矩阵
+  通过；Iceberg/Access all-target/all-feature clippy、e2e-client all-target clippy、fmt 和
+  diff 检查通过，均经 pixi。容器 worker fixture 改用普通 upload，不再人为创建 global
+  policy；它的当前源码容器复验由 V2.4 跟进。旧 policy/payload key 清理归 P13.2，未宣称
+  独立物理孤儿 GC 或全部 multipart 中间状态已清理。
 
 - **2026-10-24，V2.3**：当前 Snapshot 源码镜像
   `crowdb-node:access-cleanup-snapshot-head-20261024` 的 Dataset 全部五项容器用例通过，

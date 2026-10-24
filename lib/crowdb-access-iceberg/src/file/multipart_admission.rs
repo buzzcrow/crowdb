@@ -1,3 +1,5 @@
+//! Legacy global multipart credit formats, retained only for metadata decoding.
+
 use crate::catalog::CatalogContext;
 use crate::error::ValidationError;
 use crate::key::{CatalogScope, IcebergKey, OperationId};
@@ -88,37 +90,6 @@ impl MultipartAdmissionRecord {
             pending.validate(self)?;
         }
         Ok(())
-    }
-
-    /// Constructs one bounded journal proposal; the caller must CAS it before child mutation.
-    /// # Errors
-    /// Rejects occupied journals, exhausted credits, counter underflow and revision overflow.
-    pub fn proposed(&self, mutation: MultipartCreditMutation) -> Result<Self, ValidationError> {
-        self.validate()?;
-        if self.pending.is_some() {
-            return Err(ValidationError::Record);
-        }
-        let mut next = self.clone();
-        next.revision = self.revision.checked_add(1).ok_or(ValidationError::Record)?;
-        match mutation.action {
-            MultipartCreditAction::Reserve => {
-                next.sessions = self.sessions.checked_add(1).ok_or(ValidationError::Record)?;
-                next.reserved_bytes = self
-                    .reserved_bytes
-                    .checked_add(mutation.reservation_bytes)
-                    .ok_or(ValidationError::Record)?;
-            }
-            MultipartCreditAction::Release => {
-                next.sessions = self.sessions.checked_sub(1).ok_or(ValidationError::Record)?;
-                next.reserved_bytes = self
-                    .reserved_bytes
-                    .checked_sub(mutation.reservation_bytes)
-                    .ok_or(ValidationError::Record)?;
-            }
-        }
-        next.pending = Some(mutation);
-        next.validate()?;
-        Ok(next)
     }
 }
 

@@ -19,7 +19,6 @@ mod location;
 pub use listing::{FileListPage, FileListRequest, FileListTokens, FileLocationScan, ListedFile};
 mod multipart;
 mod multipart_admission;
-mod multipart_credits;
 mod multipart_list;
 mod multipart_recovery;
 mod multipart_repository;
@@ -76,7 +75,6 @@ pub use multipart_admission::{
     MultipartAdmissionLimits, MultipartAdmissionRecord, MultipartCredit, MultipartCreditAction,
     MultipartCreditMutation,
 };
-pub use multipart_credits::MultipartAdmission;
 pub use multipart_list::{MultipartLister, MultipartPartPage, MultipartPartScan, MultipartPartStore};
 pub use multipart_recovery::{
     MultipartRecovery, MultipartRecoveryObservation, MultipartRecoveryPage, MultipartRecoveryScan,

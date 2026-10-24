@@ -42,6 +42,7 @@ impl MultipartRepository {
             || session.revision != 1
             || session.part_count != 0
             || session.pending.is_some()
+            || session.credit.is_some()
         {
             return Err(ValidationError::Record.into());
         }

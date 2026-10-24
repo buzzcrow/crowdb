@@ -41,18 +41,7 @@ fn mutation(record: &MultipartAdmissionRecord, bytes: u64) -> MultipartCreditMut
 }
 
 #[test]
-fn admission_limits_independently_bound_sessions_and_reserved_bytes() {
-    let initial = record();
-    let mut first = initial.proposed(mutation(&initial, 60)).unwrap();
-    assert_eq!((first.sessions, first.reserved_bytes), (1, 60));
-    assert!(first.proposed(mutation(&first, 1)).is_err());
-    first.pending = None;
-    assert!(first.proposed(mutation(&first, 41)).is_err());
-    let mut second = first.proposed(mutation(&first, 40)).unwrap();
-    second.pending = None;
-    assert!(second.proposed(mutation(&second, 1)).is_err());
-    second.reserved_bytes = 2;
-    assert!(second.proposed(mutation(&second, 1)).is_err());
+fn legacy_limits_and_counter_records_reject_invalid_bounds() {
     for limits in [
         MultipartAdmissionLimits {
             max_sessions: 0,
@@ -73,18 +62,32 @@ fn admission_limits_independently_bound_sessions_and_reserved_bytes() {
     ] {
         assert!(limits.validate().is_err());
     }
+    for (sessions, bytes) in [(3, 3), (1, 101), (1, 0), (0, 1)] {
+        let mut value = record();
+        value.sessions = sessions;
+        value.reserved_bytes = bytes;
+        assert!(value.validate().is_err());
+    }
 }
 
 #[test]
 fn bounded_credit_journals_round_trip_and_reject_foreign_keys() {
     let initial = record();
-    let mut reserved = initial.proposed(mutation(&initial, 100)).unwrap();
+    let mut reserved = initial.clone();
+    reserved.revision = 2;
+    reserved.sessions = 1;
+    reserved.reserved_bytes = 100;
+    reserved.pending = Some(mutation(&initial, 100));
     let mut release = reserved.pending.clone().unwrap();
     release.action = MultipartCreditAction::Release;
     release.before = Some(release.after.clone());
     release.after.digest = [2; 32];
     reserved.pending = None;
-    let released = reserved.proposed(release).unwrap();
+    let mut released = reserved.clone();
+    released.revision += 1;
+    released.sessions = 0;
+    released.reserved_bytes = 0;
+    released.pending = Some(release);
     assert_eq!((released.sessions, released.reserved_bytes), (0, 0));
     for value in [initial, reserved, released] {
         let key = value.key();
@@ -109,23 +112,24 @@ fn bounded_credit_journals_round_trip_and_reject_foreign_keys() {
 }
 
 #[test]
-fn malformed_credit_snapshots_and_counter_underflow_fail_closed() {
-    let initial = record();
-    let valid = mutation(&initial, 1);
-    let mut invalid = valid.clone();
-    invalid.after.catalog = CatalogId::random();
-    assert!(initial.proposed(invalid).is_err());
-    let mut invalid = valid.clone();
-    invalid.after.operation = OperationId::random();
-    assert!(initial.proposed(invalid).is_err());
-    let mut invalid = valid.clone();
-    invalid.after.length = 0;
-    assert!(initial.proposed(invalid).is_err());
-    let mut invalid = valid.clone();
-    invalid.action = MultipartCreditAction::Release;
-    invalid.before = Some(invalid.after.clone());
-    assert!(initial.proposed(invalid).is_err());
-    let mut overflow = initial;
-    overflow.revision = u64::MAX;
-    assert!(overflow.proposed(valid).is_err());
+fn malformed_legacy_credit_payloads_fail_closed() {
+    let mut valid = record();
+    valid.revision = 2;
+    valid.sessions = 1;
+    valid.reserved_bytes = 1;
+    valid.pending = Some(mutation(&valid, 1));
+    valid.validate().unwrap();
+    for case in 0..5 {
+        let mut invalid = valid.clone();
+        let pending = invalid.pending.as_mut().unwrap();
+        match case {
+            0 => pending.after.catalog = CatalogId::random(),
+            1 => pending.after.operation = OperationId::random(),
+            2 => pending.after.length = 0,
+            3 => pending.before = Some(pending.after.clone()),
+            4 => invalid.revision = u64::MAX,
+            _ => unreachable!(),
+        }
+        assert!(invalid.validate().is_err());
+    }
 }

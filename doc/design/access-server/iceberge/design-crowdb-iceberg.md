@@ -560,10 +560,15 @@ separate catalog key scopes, retaining only bounded checkpoint references and
 current-part digest state. Unknown phases and invalid revisions fail closed.
 New multipart sessions publish their own authority without a catalog-wide
 credit reserve or release. Persisted per-session limits bound staged bytes and
-part count. Legacy admission journals and credit receipts remain recoverable in
-the background; ordinary new sessions never contend on those shared records.
-Creating or reserving a legacy global credit policy is available only through
-explicit compatibility test hooks. Production admission exposes no such path.
+part count. Global credit reserve/release/journal drivers have been removed,
+including compatibility write hooks. New sessions reject legacy credit input;
+existing session and policy formats remain decodable. Recovery never reads or
+settles a global policy. A legacy pending reservation without a session is ignored:
+session admission preceded any permitted part writes. A pending credit release
+does not change the published FileId or part references and is not replayed.
+Existing sessions still expire or finish from their own resource facts; obsolete
+policy/payload metadata remains available to legacy metadata cleanup without
+keeping accounting alive or creating another upload.
 The legacy tree multipart repository reserves one part mutation in the session before
 changing its part authority. A bounded before/after snapshot and monotonically
 increasing revisions make the write and fence release recoverable across servers.
@@ -613,10 +618,10 @@ context/session CAS checks remain authoritative. An observation does not retain
 file bytes or survive a restart. It resets its cursor when the active context changes and bounds each
 session by the persisted catalog request deadline. Timeout defers only that session,
 allowing later entries in the page to progress. A separate outer budget bounds the
-whole page and context/scan work. One separately bounded admission-journal recovery
-step runs before scanning, including a reservation whose session is not yet present.
-Legacy terminal sessions settle retained credits on a later recovery visit;
-new sessions have no global credit release.
+whole page and context/scan work. There is no admission-journal recovery step or
+global credit release. Empty and terminal-only sweeps perform the two context
+checks and the bounded session scan, with no policy GET or mutation; legacy
+credit fields do not delay expiry or modify complete file resources.
 The HTTP driver composes this durable state machine with physical sealing;
 recovery remains the authority for abandoned or uncertain work.
 
