@@ -124,19 +124,19 @@ impl PayloadStorage for ChunkPayloadStorage {
     }
 
     async fn read(&self, locations: &[Location]) -> Result<Bytes, UploadError> {
-        let mut stream = self
+        let length = locations
+            .iter()
+            .filter(|location| location.length != 0)
+            .try_fold(0usize, |total, location| {
+                total.checked_add(usize::try_from(location.logical_length).ok()?)
+            })
+            .filter(|length| *length > 0 && *length <= MAX_UPLOAD_PART_BYTES)
+            .ok_or(UploadError::Integrity)?;
+        let stream = self
             .chunks
             .read_stream(locations)
             .map_err(|error| UploadError::Storage(error.to_string()))?;
-        let mut output = bytes::BytesMut::new();
-        while let Some(data) = stream.next_chunk().await {
-            let data = data.map_err(|error| UploadError::Storage(error.to_string()))?;
-            if output.len().saturating_add(data.len()) > MAX_UPLOAD_PART_BYTES {
-                return Err(UploadError::Integrity);
-            }
-            output.extend_from_slice(&data);
-        }
-        Ok(output.freeze())
+        stream::collect(&mut stream::ChunkStream(stream), length).await
     }
 
     async fn durability(&self, locations: &[Location]) -> Result<PayloadDurability, UploadError> {
@@ -198,4 +198,15 @@ impl PayloadStorage for ChunkPayloadStorage {
         }
         Ok(complete)
     }
+}
+
+/// Exercises the compatibility collector with bounded storage streams.
+/// # Errors
+/// Returns invalid lengths, incomplete/oversized streams and storage failures.
+#[cfg(feature = "test-util")]
+pub async fn collect_payload_for_tests(
+    stream: &mut dyn PayloadStream,
+    length: usize,
+) -> Result<Bytes, UploadError> {
+    stream::collect(stream, length).await
 }

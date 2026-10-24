@@ -130,6 +130,14 @@ read. Request order, missing fields, tombstones and locator integrity checks rem
 independent of completion order. All windows share the request deadline and
 cancellation; no reader state is persisted.
 
+The bounded compatibility part reader checks the declared logical length before
+allocation. A single buffer covering that complete object is transferred with its
+allocation owner after successful EOF. Fragmented objects allocate their final
+buffer once; each source buffer is copied and released before the next storage
+pull, so a one-slot reader can make progress. Short, oversized and failed terminal
+reads remain errors. Whole-part digest verification still runs on the returned
+bytes before acceptance.
+
 Old snapshots without projections require explicit resumable inspection preparation.
 Unsupported or oversized legacy state is reported, never represented as an empty
 Snapshot. Field preview is explicit and capped at 64 KiB after read-only admission; it

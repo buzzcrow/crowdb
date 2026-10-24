@@ -18,6 +18,8 @@ mod key;
 mod manifest;
 mod namespace;
 mod payload;
+#[cfg(feature = "test-util")]
+pub use payload::collect_payload_for_tests;
 mod planner;
 mod publication;
 mod record;

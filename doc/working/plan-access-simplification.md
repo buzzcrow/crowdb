@@ -479,6 +479,17 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
 
 ## 已完成与验证记录
 
+- **F8.3（2026-10-24）**：`ChunkPayloadStorage::read` 在读前按逻辑长度限制最大 4 MiB，
+  单块完整结果确认 EOF 后直接移交 Bytes owner；多块只按最终长度分配一次，复制当前片段后
+  立即释放其读 credit 再 pull，避免单 slot 死等。没有新增 metadata/RPC/持久化，仍检查
+  空/短/超长片段和迟到 EOF 错误，后续 whole-part MD5 校验保留。三项 collector 回归用
+  实际 allocation pointer 验证单块未复制、owner 随返回 Bytes 存活；多块模拟单 credit，
+  覆盖非整齐长度、4 MiB、失败后释放。非法“完整对象后额外数据”的故障流单独允许越界输出，
+  不套用合法对象的 credit 假设；collector 仍明确拒绝，未降低该错误断言。
+  upload read/stream/完整性共十三例、HTTP batch 与独立 SDK payload 两例、native
+  digest/payload/read 八例通过；Dataset all-target/all-feature clippy、fmt/diff 通过。
+  尚无本项的同源性能测量，F8 的 HTTP 收整 body 和其他产品复制继续审查。
+
 - **P6.1（2026-10-24）**：核实新前台上传不调用全局 credits；旧 `initialize/reserve` 创建
   接口限于 test-util 并命名 `*_for_tests`，生产仅保留历史资源的 load/settle/release。
   不删除未结算的旧 pending reserve：该记录可能是尚未建立 MultipartSession 的唯一恢复入口；
