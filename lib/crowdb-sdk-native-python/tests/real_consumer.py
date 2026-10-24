@@ -2,6 +2,7 @@
 # Licensed under the Apache License, Version 2.0.
 """Installed native binding acceptance over the HTTP workload's exact snapshot."""
 import gc
+import base64
 import hashlib
 import json
 import os
@@ -9,6 +10,8 @@ from pathlib import Path
 import uuid
 import time
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 import crowdb_dataset_native as native
 
@@ -34,35 +37,114 @@ def native_data():
     return (b"native-producer" * 300000)[:(4 << 20) + 17]
 
 
-def bind(client, snapshot, worker=0, workers=1, ids=None, split=None):
-    spec = {"snapshot": snapshot,
+def read_spec(snapshot, worker=0, workers=1, ids=None, split=None):
+    return {"snapshot": snapshot,
             "selection": {"Explicit": [list(item) for item in ids] if ids is not None else
                           [list(f"size-{i}".encode()) for i in range(8)]},
             "fields": ["value"], "batch_size": 2,
             "partition": {"worker": worker, "workers": workers, "rank": 0, "world_size": 1},
             "shuffle": None, "split": split}
-    return call(client, "bind_read", spec=spec)
+
+
+def bind(client, snapshot, worker=0, workers=1, ids=None, split=None):
+    return call(client, "bind_read", spec=read_spec(snapshot, worker, workers, ids, split))
+
+
+def http_read(name, suffix, body):
+    endpoint = os.environ["CROWDB_DATASET_ENDPOINT"].rstrip("/")
+    url = f"{endpoint}/api/dataset/v2/namespaces/dataset-ns/datasets/{quote(name, safe='')}/reads/{suffix}"
+    headers = {"Content-Type": "application/json",
+               "Authorization": "Bearer " + os.environ["CROWDB_DATASET_READ_TOKEN"]}
+    with urlopen(Request(url, json.dumps(body).encode(), headers=headers), timeout=60) as response:
+        data = response.read(16 * 1024 * 1024 + 1)
+    assert len(data) <= 16 * 1024 * 1024, "semantic fixture response exceeded its bound"
+    return data
+
+
+def http_binding(name, spec):
+    plan = dict(spec, selection={"kind": "explicit", "ids": [
+        base64.b64encode(bytes(item)).decode() for item in spec["selection"]["Explicit"]]})
+    if plan["split"] is not None:
+        revision = plan["split"]["revision"]
+        plan["split"] = dict(plan["split"], revision=bytes(revision).hex() if revision is not None else None)
+    return json.loads(http_read(name, "bind", plan))
+
+
+def http_batch(name, cursor):
+    data = http_read(name, "next", {"cursor": cursor})
+    assert data[:8] == b"CDBDS001"
+    offset, header, fields, values, index = 8, None, [], {}, 0
+    while offset < len(data):
+        assert offset + 5 <= len(data), "truncated frame prefix"
+        kind, length = data[offset], int.from_bytes(data[offset + 1:offset + 5], "big")
+        offset += 5
+        assert offset + length <= len(data), "truncated frame body"
+        body = data[offset:offset + length]
+        offset += length
+        if kind == 1:
+            assert header is None and 0 < length <= 8 * 1024 * 1024
+            header = json.loads(body)
+            fields = [i for i, field in enumerate(header["fields"]) if field["state"] == "value"]
+        elif kind == 2:
+            assert header is not None and index < len(fields) and 16 < length <= (4 << 20) + 16
+            assert hashlib.md5(body[16:]).digest() == body[:16]
+            values.setdefault(fields[index], bytearray()).extend(body[16:])
+        elif kind == 3:
+            assert length == 0 and header is not None and index < len(fields)
+            field = header["fields"][fields[index]]
+            value = values.get(fields[index], b"")
+            assert len(value) == field["length"] and hashlib.md5(value).hexdigest() == field["md5"]
+            index += 1
+        elif kind == 0:
+            assert length == 0 and header is not None and index == len(fields) and offset == len(data)
+            return header, values
+        else:
+            raise AssertionError(f"unexpected Dataset frame {kind}: {body[:256]!r}")
+    raise AssertionError("Dataset stream omitted verified EOF")
+
+
+def http_header(header):
+    return dict(header, snapshot=bytes(header["snapshot"]).hex(), sample_ids=[
+        base64.b64encode(bytes(item)).decode() for item in header["sample_ids"]], fields=[dict(
+            sample=base64.b64encode(bytes(field["sample_id"])).decode(), field=field["name"],
+            state=field["state"], length=field["length"],
+            md5=bytes(field["md5"]).hex() if field["md5"] is not None else None)
+        for field in header["fields"]])
 
 
 def continuation_parity(client, snapshot):
     selections = []
+    other = native.NativeRuntime(os.environ["CROWDB_MANAGEMENT_SEEDS"].split(","))
+    try:
+        independent = other.dataset(os.environ["CROWDB_DATASET_NAME"])
+        return compare_queries(client, independent, snapshot, selections)
+    finally:
+        other.close()
+
+
+def compare_queries(client, independent, snapshot, selections):
+    name = os.environ["CROWDB_DATASET_NAME"]
     for worker in range(2):
         cursor = bind(client, snapshot, worker, 2)["cursor"]
+        assert http_binding(name, read_spec(snapshot, worker, 2))["cursor"] == cursor
         batch = client.next_batch(cursor, timeout=60)
         header = json.loads(batch.header)
         first = drain(batch)
         replay = client.next_batch(cursor, timeout=60)
         assert json.loads(replay.header) == header
         assert drain(replay) == first
+        replay = independent.next_batch(cursor, timeout=60)
+        assert json.loads(replay.header) == header and drain(replay) == first
         selected = []
         while True:
+            assert http_batch(name, cursor) == (http_header(header), first)
             selected.extend(bytes(item) for item in header["sample_ids"])
             if header["end"]:
                 break
             cursor = header["next"]
             batch = client.next_batch(cursor, timeout=60)
             header = json.loads(batch.header)
-            drain(batch)
+            first = drain(batch)
         selections.append(set(selected))
     assert not selections[0].intersection(selections[1])
     assert selections[0] | selections[1] == {f"size-{i}".encode() for i in range(8)}
@@ -135,8 +217,18 @@ def publish_native(runtime, root):
     check_head_conflicts(client, snapshot, request, head)
     split_binding = bind(client, bytes(snapshot).hex(), ids=[b"one"], split={"revision": None, "name": "train"})
     split_batch = client.next_batch(split_binding["cursor"])
-    assert json.loads(split_batch.header)["sample_ids"] == [list(b"one")]
-    assert drain(split_batch)[0] == data
+    header = json.loads(split_batch.header)
+    values = drain(split_batch)
+    assert header["sample_ids"] == [list(b"one")] and values[0] == data
+    if "CROWDB_DATASET_ENDPOINT" in os.environ:
+        spec = read_spec(bytes(snapshot).hex(), ids=[b"one"], split={"revision": None, "name": "train"})
+        remote = http_binding("native-python-write", spec)
+        assert remote["cursor"] == split_binding["cursor"]
+        assert remote["split"]["revision"] == bytes(split_binding["split"]["revision"]).hex()
+        assert http_batch("native-python-write", remote["cursor"]) == (http_header(header), values)
+    root.joinpath("python-continuation.json").write_text(json.dumps(dict(
+        cursor=split_binding["cursor"], header=header,
+        fields={str(field): hashlib.sha256(value).hexdigest() for field, value in values.items()})))
     try:
         call(client, "abort_upload", upload=upload)
     except native.ConflictError:
@@ -186,6 +278,11 @@ def verify_native(runtime, root):
     snapshot = bytes(json.loads(root.joinpath("python-snapshot.json").read_text()))
     batch = client.read_batch(snapshot, [list(b"one")], ["value"])
     assert drain(batch)[0] == native_data()
+    saved = json.loads(root.joinpath("python-continuation.json").read_text())
+    batch = client.next_batch(saved["cursor"])
+    assert json.loads(batch.header) == saved["header"]
+    values = drain(batch)
+    assert {str(field): hashlib.sha256(value).hexdigest() for field, value in values.items()} == saved["fields"]
 
 
 def main():

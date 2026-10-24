@@ -95,3 +95,29 @@ current shared service image. It uses one snapshot for HTTP and native clients,
 then validates native publication after storage restart.
 Use `--semantics-only` to run installed-binding semantics and restart separately;
 that mode produces no performance comparison.
+
+The semantic consumer compares HTTP/native ReadSpec and Split batch headers,
+sample IDs and verified field bytes, replays an unchanged continuation on a
+second native runtime, and saves a Split continuation for replay after restart.
+HTTP is an explicitly selected comparison client in this test; the native
+runtime does not use it for fallback.
+
+Each workload trial contains only 16 or 48 latency observations per size.
+Treat p99 as a short workload observation. Client CPU and RSS are reported per
+process; the HTTP phase's service CPU counters also include initial publication.
+Service `memory.peak` is cumulative across the shared fixture, not an independent
+peak for each client path. The pinned same-host comparison does not establish
+isolated production performance.
+
+Run the explicit local-HCA functional profile with a current service image and
+the host's actual RDMA address and device:
+
+```sh
+pixi run -- python tools/rdma/run-native-dataset.py --image crowdb-node:dev --address 10.200.1.1 --device rocep35s0f0
+```
+
+This profile publishes through strict RDMA transport, restarts storage, verifies
+the persisted payload and saved continuation, and checks registered receive
+ownership through runtime shutdown. It records logs and transport/resource
+snapshots under `.crowdb-runtime/artifacts/native-dataset-hca/`. This is same-host
+HCA functional evidence; throughput and latency come from the separate workload.
