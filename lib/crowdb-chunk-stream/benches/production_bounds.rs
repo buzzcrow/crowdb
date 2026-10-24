@@ -78,6 +78,16 @@ async fn run(config: BenchConfig) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let cpus = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Cpus_allowed_list:").map(str::trim))
+        .unwrap_or("unsupported");
+    println!(
+        "bench-runtime: pid={} allowed_cpus={cpus} tokio_workers={}",
+        std::process::id(),
+        std::env::var("TOKIO_WORKER_THREADS").unwrap_or_else(|_| "default".into()),
+    );
     match workload::run(&stream_runtime, &config).await {
         Ok(result) => {
             println!("{result}");
