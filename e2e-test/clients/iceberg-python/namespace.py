@@ -53,7 +53,7 @@ def main():
             "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials",
         }
     assert set(response.json()["endpoints"]) == expected_endpoints, response.json()["endpoints"]
-    assert response.json()["idempotency-key-lifetime"] == "PT24H"
+    assert "idempotency-key-lifetime" not in response.json()
     catalog = load_catalog("crowdb", **properties)
     namespaces = catalog.list_namespaces()
     assert isinstance(namespaces, list)
@@ -89,6 +89,9 @@ def verify_namespaces(uri, properties):
     assert writer.list_namespaces(namespace) == [child]
     update = writer.update_namespace_properties(namespace, removals={"owner", "absent"}, updates={"owner2": "retained"})
     assert update.removed == ["owner"] and update.missing == ["absent"]
+    assert writer.load_namespace_properties(namespace) == {"owner2": "retained"}
+    repeated = writer.update_namespace_properties(namespace, removals={"owner", "absent"}, updates={"owner2": "retained"})
+    assert repeated.removed == [] and repeated.missing == ["absent", "owner"]
     assert writer.load_namespace_properties(namespace) == {"owner2": "retained"}
     try:
         writer.drop_namespace(namespace)

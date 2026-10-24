@@ -1,16 +1,19 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_access_iceberg::catalog::{CatalogContext, CatalogStore};
+use crowdb_access_iceberg::catalog::{CatalogContext, CatalogStore, RoutedCatalogStore};
 use crowdb_access_iceberg::key::{NamespaceId, OperationId};
 use crowdb_access_iceberg::namespace::{
     NamespaceAction, NamespaceIdentifier, NamespaceJournal, NamespaceOperation, NamespacePhase,
 };
 use crowdb_access_iceberg::operation::{
-    PayloadStore, RequestIdentity, RetryAdmission, RetryLedger, RetryRecord,
+    mutation_identity, PayloadStore, RequestIdentity, RetryRecord, RetryResult,
 };
 
 use super::{now_ms, TestNativeStorage};
+use crowdb_access_iceberg::key::SystemScope;
+use crowdb_access_iceberg::record::StorageRecord;
+use std::sync::Arc;
 
 pub async fn verify_recovery(stack: &mut TestNativeStorage, context: CatalogContext) {
     let store = stack.store().await;
@@ -20,7 +23,7 @@ pub async fn verify_recovery(stack: &mut TestNativeStorage, context: CatalogCont
     let identity = fresh_identity(store.as_ref()).await;
     let body = vec![23; 70 * 1024];
     let input = PayloadStore::new(store.clone())
-        .put(context.catalog, identity.operation, &body)
+        .put(context.catalog, identity.operation, b"{}")
         .await
         .unwrap();
     let mut operation = NamespaceOperation {
@@ -51,16 +54,11 @@ pub async fn verify_recovery(stack: &mut TestNativeStorage, context: CatalogCont
         route: "POST /namespaces".into(),
         digest: operation.input.digest,
         context,
-        retained_until_ms: 0,
-        status: 0,
+        retained_until_ms: now_ms() + 300_000,
+        status: 200,
         body: Vec::new(),
     };
-    let ledger = RetryLedger::new(store);
-    ledger.begin(request.clone(), now_ms()).await.unwrap();
-    ledger
-        .finish(request.clone(), 200, body.clone(), now_ms())
-        .await
-        .unwrap();
+    let legacy = seed_legacy_result(store, &request, &body).await;
     stack.restart_catalog().await;
     let recovered_store = stack.store().await;
     super::property::verify(recovered_store.clone(), &property_request).await;
@@ -75,15 +73,24 @@ pub async fn verify_recovery(stack: &mut TestNativeStorage, context: CatalogCont
             .unwrap(),
         operation
     );
-    let RetryAdmission::Replay(result) = RetryLedger::new(recovered_store)
-        .begin(request, now_ms())
+    let key = request.result_key();
+    let value = recovered_store
+        .get(&key.encode().unwrap())
         .await
         .unwrap()
-    else {
-        panic!("large response replay")
+        .unwrap();
+    assert_eq!(StorageRecord::decode(&key, &value.bytes).unwrap(), legacy);
+    let StorageRecord::RetryResult(result) = legacy else {
+        panic!("legacy paged response")
     };
-    assert_eq!(result.body, body);
-    assert_eq!(result.principal, "writer");
+    assert_eq!(result.binding, request);
+    assert_eq!(
+        PayloadStore::new(recovered_store)
+            .get(&result.body)
+            .await
+            .unwrap(),
+        body
+    );
 }
 
 async fn fresh_identity(store: &dyn CatalogStore) -> RequestIdentity {
@@ -104,4 +111,41 @@ async fn fresh_identity(store: &dyn CatalogStore) -> RequestIdentity {
         }
     }
     panic!("no free retry slot for fixture");
+}
+
+async fn seed_legacy_result(
+    store: Arc<RoutedCatalogStore>,
+    request: &RetryRecord,
+    body: &[u8],
+) -> StorageRecord {
+    let response = PayloadStore::new(store.clone())
+        .put(request.context.catalog, request.identity.operation, body)
+        .await
+        .unwrap();
+    let legacy = StorageRecord::RetryResult(Box::new(RetryResult {
+        binding: request.clone(),
+        body: response,
+    }));
+    for (key, record) in [
+        (
+            crowdb_access_iceberg::operation::ledger_key(
+                SystemScope::RetryBinding,
+                request.identity.operation,
+            )
+            .unwrap(),
+            StorageRecord::Retry(Box::new(request.clone())),
+        ),
+        (request.result_key(), legacy.clone()),
+    ] {
+        let key = key.encode().unwrap();
+        let value = record.encode().unwrap();
+        assert!(matches!(
+            store
+                .compare_exchange(&key, None, &value, mutation_identity(&key, None, &value))
+                .await
+                .unwrap(),
+            crowdb_access_iceberg::catalog::CasOutcome::Applied(_)
+        ));
+    }
+    legacy
 }

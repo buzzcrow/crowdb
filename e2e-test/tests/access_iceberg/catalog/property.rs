@@ -7,26 +7,21 @@ use std::sync::{atomic::AtomicU8, Arc};
 use crowdb_access_iceberg::catalog::{CatalogContext, CatalogStore, RoutedCatalogStore};
 use crowdb_access_iceberg::key::{NamespaceId, OperationId};
 use crowdb_access_iceberg::namespace::{
-    authority_key, name_key, NamespaceAuthority, NamespaceIdentifier, NamespaceJournal, NamespaceLifecycle,
-    NamespaceMapping, NamespaceMappingState, NamespacePhase, NamespaceProperties, NamespacePropertyRequest,
-    NamespaceRepository, PropertyChanges,
+    authority_key, name_key, NamespaceAuthority, NamespaceIdentifier, NamespaceLifecycle, NamespaceMapping,
+    NamespaceMappingState, NamespaceProperties, NamespacePropertyRequest, NamespaceRepository,
+    PropertyChanges,
 };
-use crowdb_access_iceberg::operation::{mutation_identity, PayloadStore, RequestIdentity};
+use crowdb_access_iceberg::operation::mutation_identity;
 use crowdb_access_iceberg::record::StorageRecord;
 
-use super::{fault::TestFaultStore, now_ms};
+use super::fault::TestFaultStore;
 
 pub async fn prepare(store: Arc<RoutedCatalogStore>, context: CatalogContext) -> NamespacePropertyRequest {
     let request = NamespacePropertyRequest {
         context,
-        identity: RequestIdentity {
-            operation: OperationId::random(),
-            issued_ms: now_ms(),
-        },
-        principal: "writer".into(),
         identifier: NamespaceIdentifier::new(vec!["property-recovery".into()]).unwrap(),
         changes: PropertyChanges {
-            removals: Vec::new(),
+            removals: vec!["gone".into()],
             updates: BTreeMap::from([("owner".into(), "survives-restart".into())]),
         },
     };
@@ -41,7 +36,8 @@ pub async fn prepare(store: Arc<RoutedCatalogStore>, context: CatalogContext) ->
         mutation_revision: 1,
         lifecycle: NamespaceLifecycle::Ready,
         pending_operation: None,
-        properties: NamespaceProperties::default(),
+        rename: None,
+        properties: NamespaceProperties::new(BTreeMap::from([("gone".into(), "old".into())])).unwrap(),
     };
     let mapping = NamespaceMapping {
         catalog: context.catalog,
@@ -69,6 +65,7 @@ pub async fn prepare(store: Arc<RoutedCatalogStore>, context: CatalogContext) ->
             .await
             .unwrap();
     }
+    let before = super::scan::catalog_keys(&store, context).await;
     let fault = Arc::new(TestFaultStore {
         inner: store.clone(),
         mode: AtomicU8::new(3),
@@ -77,29 +74,25 @@ pub async fn prepare(store: Arc<RoutedCatalogStore>, context: CatalogContext) ->
         .update_properties(&request)
         .await
         .is_err());
-    assert_eq!(
-        NamespaceJournal::new(store)
-            .load(context, request.identity.operation)
-            .await
-            .unwrap()
-            .unwrap()
-            .phase,
-        NamespacePhase::Publishing
-    );
+    let applied = NamespaceRepository::new(store.clone())
+        .load(context, &request.identifier)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(applied.property_revision, 2);
+    assert!(applied.pending_operation.is_none());
+    assert!(applied.rename.is_none());
+    assert!(!applied.properties.entries().contains_key("gone"));
+    assert_eq!(before, super::scan::catalog_keys(&store, context).await);
     request
 }
 
 pub async fn verify(store: Arc<RoutedCatalogStore>, request: &NamespacePropertyRequest) {
     let repository = NamespaceRepository::new(store.clone());
     let outcome = repository.update_properties(request).await.unwrap().unwrap();
-    assert_eq!(outcome.status, 200);
-    let body = PayloadStore::new(store).get(&outcome.body).await.unwrap();
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-        serde_json::json!({
-            "removed": [], "updated": ["owner"], "missing": [],
-        })
-    );
+    assert!(outcome.removed.is_empty());
+    assert_eq!(outcome.updated, ["owner"]);
+    assert_eq!(outcome.missing, ["gone"]);
     assert_eq!(
         repository.update_properties(request).await.unwrap(),
         Some(outcome)

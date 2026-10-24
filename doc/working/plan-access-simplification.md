@@ -130,6 +130,24 @@ CAS 不再满足只证明“本次条件不成立”，不能谎称“第一次�
 不为每次请求添加历史查询或回执；只有某个具体调用者必须识别被后续提交遮住的历史成功，
 才提出该场景需要的最小方案及代价，交用户 review。
 
+**资源可见性约束 review（2026-10-24，等待决定）**：现代码把“内容已完整生成”与“曾经成功
+切换 head”区分。Snapshot 的 `Published` 标记在 head CAS 之前写，不能单独证明成功；
+`require_committed_snapshot`、历史读取、parent/stable 准入和 Split revision 历史依赖
+`DS\0SC\0` / `DS\0SRC\0`。每次发布还写 `DS\0CA\0` attempt、`DS\0CR\0` response receipt；
+同一成功证据写两份，head 被替换前还帮前一个写者补齐。CA/CR 是请求账本；SC/SRC 在当前
+合同下承担资源可见性，不能把三者一起删后仍声称保留原合同。
+
+- 场景：完整结果 S1 已经生成；客户端以 H0 发布 S1 的 CAS 输给 S2。现在 S1 既不可按 ID
+  读取，也不可成为新 Snapshot 的 parent/stable。另一个场景是 S1 曾赢 head、回复丢失、
+  又被 S2 替换；S1 必须可作历史资源。为区分两者，现实现保存上述成功证明。
+- 建议：完整不可变结果按资源 ID 即可读取/引用；head CAS 只决定 latest/stable 指针是否
+  按指定 base 更新。未完成内容仍不可读；未引用结果按明确期限过期，过期请求失败并重做。
+  这可删除“曾切换 head”证明、attempt/response 账本与相应 helper；GC/期限隔离仍须按 R4
+  单独证明，不能仅凭本地超时回收。它改变现有可见性合同，不能未经决定直接放开。
+- 保持严格语义的备选：保留每个资源一份最小成功事实，删除 CA/CR 及按 attempt 查询。
+  沿用当前独立键存储时，每个发布仍需额外一次条件写成功事实及覆盖 head 前的帮助检查；
+  这份记录仅用于历史资源可见性，读取不登记，不保存编辑/计算过程或原响应。
+
 - [ ] **R2 审查条件发布的回复丢失窗口**：用 H0→H1→H2 测试区分条件失败、相同结果与历史未知；
   列出确实依赖历史精确结果的调用者，没有这种需求就移除相应 ledger/response replay。
   Files: Iceberg `commit/direct.rs`、Dataset `authority/publication/`、Split head、SDK。
@@ -434,11 +452,6 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   无条件覆盖与 expected-base 重试测试。断言总 GET+写，不仅是零写。Files: Dataset `tests/*cost*`、`read_query*`、upload/Composition/Split/inspection；S3/Iceberg 对应 repository 测试。
 - [ ] **V2 HTTP/native/SDK 集成**：各受影响 route 的鉴权、错误、协议/SDK 一致性；保留删除准入、
   迟到写者、非空 namespace、共享 owner、held buffer、cancel/drop 和损坏内容测试。Files: Access/native tests、`sdk/tests/`、native Python consumer。
-- [ ] **V2.1 迁移旧容器 fixture 并验证当前源码**：`cargo check -p e2e-test --tests` 已发现
-  catalog fixture 仍调用已删除 RetryLedger、旧 property journal/响应 API，ChunkDB fixture
-  仍断言 DeleteChunkRange Unimplemented。改为验证资源结果、无新过程记录、legacy 解码与
-  GC 兼容，以及已接受的范围退休语义；不恢复生产 ledger 来通过旧测试。
-  Files: `e2e-test/tests/access_iceberg/catalog/{journal,property}.rs`、`catalog.rs`、`chunkdb/lifecycle.rs`。
 - [ ] **V3 工程门禁与文档**：每批执行适用 fmt/clippy/测试，全部经 `pixi run`；同步 owning
   design/spec/OpenAPI/SDK。只修改文档时检查 diff、引用和任务状态，不为此跑整套服务测试。
 - [ ] **V4 同源真实负载验收**：重新构建当前源码的镜像，运行现有 HTTP/native Rust/native Python
@@ -446,6 +459,11 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   记录 p50/p99、TPS、CPU/RSS、RPC、复制/摘要、清理积压，不缩小负载掩盖失败。
   Files: `tools/sdk/dataset_workload.py`、相关 examples、`e2e-test/`、本机 HCA runner。
   物理多主机验证继续留在独立计划，不并回此处。
+- [~] **V4.1 同源 TCP 混合负载与 native 绑定验收**：使用当前镜像运行
+  `tools/sdk/dataset_workload.py` 完整模式；client CPU 2、server CPU 4–15、metadata 节点
+  2 GiB，三条路径同 Snapshot、相同 0–4 MiB size 集合、并发 1/3、完整摘要校验及 restart。
+  保留原 trial 数与全部失败日志，记录延迟/CPU/RSS/复制及精确 image/source 身份；本机 HCA
+  和改动前后吞吐对比仍由 V4 跟踪，不把本项当作全部性能验收。
 
 ## 成本口径与集中代码索引
 
@@ -465,6 +483,24 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **V2.1（2026-10-24）**：迁移旧 RetryLedger/property journal fixture，不恢复生产请求账本。
+  property 在实际 authority CAS 丢回复后检查资源已落地且 key 集合未增加，重启后重试返回
+  当前 missing 状态；手工构造 legacy inline/paged response 验证存储兼容。范围通知保留精确
+  revision/byte range，重复接受不声称物理容量释放，dedicated chunk 仍拒绝错误范围调用。
+  新源码镜像 `crowdb-node:access-cleanup-5195dfff`，OCI digest
+  `sha256:7bffacfc3824f55e06d6b109070207965af5ad2c4bee0de25594a9f7971c271b`，source tree
+  `95d97a857d52552128d439baf08f00e0b1988120`；Docker import identity
+  `sha256:31f9acf7749663e987d0de8ee143d87f1af8d727aaed35725525f8582b3e509f`。
+  catalog 重启 `run-67ab0f42fd984da290d8d222fea37b38`、ChunkDB lifecycle/range 通知
+  `run-bd3471d493434467b60c6679e60f51f1`、全部五个 Dataset HTTP/Rust/安装后 Python SDK 用例
+  `run-0731e2669f5042db81212c94a59e6ab2`、namespace CRUD/restart
+  `run-97eb01b45c2c4ebe91af5f73e66eef84` 全部通过。记录位于
+  `.crowdb-runtime/artifacts/container-e2e/`。E2E check/clippy、fmt/diff 通过。
+  首轮 catalog 失败是 Python fixture 仍要求已删除的 idempotency 广告，已改为检查不广告
+  和重复删除的当前资源效果。首轮 Dataset 发现 Python iterable 把合法 worker 空窗口交给
+  应用；已修复本地推进，保留非空和零长度字段的显式 ack，补空终页/无进展/隐藏 payload
+  回归，重新打包安装 wheel 后整套通过。两个失败 run 均保留，未增 timeout 或降低校验。
 
 - **P14.3（2026-10-24）**：Group CAS 的首次比较、foreign slot 后重比较、失败 slot
   结算后重比较及 owner value 比较，均直接移交同一 engine lookup 的 key/revision/value。

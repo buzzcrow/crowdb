@@ -75,10 +75,71 @@ async fn allocate_seal_delete_preserves_physical_placement_and_free_facts() {
                 chunk_id: Some(id),
                 chunk_offset: 0,
                 chunk_size: 1,
+                expected_modify_ts: queried.modify_ts,
             })
             .await,
-        Err(ChunkdbClientError::Unimplemented(_))
+        Err(ChunkdbClientError::InvalidArgument(_))
     ));
+    verify_range_notification(&client).await;
+}
+
+async fn verify_range_notification(client: &ChunkdbClient) {
+    let allocated = client
+        .allocate_chunk(AllocateChunkRequest {
+            write_granularity: 1,
+            strip_count: 1,
+            strip_type: StripType::Mirror as i32,
+            copy_count: 3,
+            chunk_type: ChunkType::S3 as i32,
+            writer_epoch: 17,
+            writer_lease_ms: 60_000,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .chunk
+        .unwrap();
+    let id = allocated.id.unwrap();
+    let sealed = client
+        .seal_chunk(SealChunkRequest {
+            chunk_id: Some(id),
+            seal_bytes: 8192,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .chunk
+        .unwrap();
+    let request = DeleteChunkRangeRequest {
+        chunk_id: Some(id),
+        chunk_offset: 134,
+        chunk_size: 234,
+        expected_modify_ts: sealed.modify_ts,
+    };
+    assert!(
+        !client
+            .delete_chunk_range(request.clone())
+            .await
+            .unwrap()
+            .reclaimed
+    );
+    assert!(!client.delete_chunk_range(request).await.unwrap().reclaimed);
+    assert_eq!(
+        client
+            .query_chunk(QueryChunkRequest { chunk_id: Some(id) })
+            .await
+            .unwrap()
+            .chunk
+            .unwrap(),
+        sealed
+    );
+    let retired = client
+        .delete_chunk(DeleteChunkRequest { chunk_id: Some(id) })
+        .await
+        .unwrap()
+        .chunk
+        .unwrap();
+    assert_eq!(retired.state, ChunkState::Deleted as i32);
 }
 
 async fn assert_free_facts(segments: &[crowdb_protocol::diskdb::rpc::Segment]) {
