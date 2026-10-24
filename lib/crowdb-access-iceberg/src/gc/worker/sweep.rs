@@ -68,7 +68,9 @@ impl GcWorker {
             };
             match progress {
                 DeleteProgress::Advanced => {}
-                DeleteProgress::Accounted => next.scan_after.clone_from(&item.key),
+                DeleteProgress::Accounted | DeleteProgress::Protected => {
+                    next.scan_after.clone_from(&item.key);
+                }
                 DeleteProgress::Complete => {
                     next.scan_after.clone_from(&item.key);
                     next.deleted = next
@@ -153,7 +155,9 @@ impl GcWorker {
             return Err(CatalogError::Busy.into());
         }
         self.verify_assembly(task, candidate, now_ms).await?;
-        self.verify_deleted_authority(task, candidate).await?;
+        if !self.verify_deleted_authority(task, candidate).await? {
+            return Ok(DeleteProgress::Protected);
+        }
         if let Some(part) = &candidate.part {
             let key = part.key();
             let stored = self
@@ -242,12 +246,12 @@ impl GcWorker {
         &self,
         task: &GcTask,
         candidate: &GcCandidate,
-    ) -> Result<(), GcWorkError> {
+    ) -> Result<bool, GcWorkError> {
         if task.kind != GcTaskKind::MultipartCleanup
             || candidate.part.is_some()
             || candidate.assembly.is_some()
         {
-            return Ok(());
+            return Ok(true);
         }
         let key = canonical_file_key(&candidate.file.location);
         let value = self
@@ -261,10 +265,22 @@ impl GcWorker {
                 StorageRecord::DeletedFile(deleted) if deleted.file == candidate.file => {}
                 StorageRecord::File(current) if current.file != candidate.file.file => {}
                 StorageRecord::FileMapping(current) if current.file != candidate.file.file => {}
+                StorageRecord::File(current)
+                    if *current == candidate.file && GcCandidate::is_initial_metadata(&current) =>
+                {
+                    return Ok(matches!(
+                        crate::table::retire_absent_table(
+                            self.repository.store.as_ref(),
+                            current.location.table()
+                        )
+                        .await?,
+                        crate::table::TableSlot::Retired
+                    ));
+                }
                 _ => return Err(CatalogError::Busy.into()),
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     async fn delete_location_candidate(
@@ -372,4 +388,5 @@ enum DeleteProgress {
     Accounted,
     Complete,
     Deferred,
+    Protected,
 }

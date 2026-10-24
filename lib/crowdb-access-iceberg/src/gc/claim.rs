@@ -88,24 +88,32 @@ impl GcRepository {
             .task(task.context.catalog, candidate.task)
             .await?
             .ok_or(ValidationError::Record)?;
+        let retained_initial = previous.kind == GcTaskKind::MultipartCleanup
+            && previous.phase == GcPhase::Complete
+            && GcCandidate::is_initial_metadata(&candidate.file)
+            && candidate.part.is_none()
+            && candidate.assembly.is_none();
         if previous.context != task.context
             || previous.paused
             || previous.phase == GcPhase::Quarantined
-            || (previous.phase == GcPhase::Complete && previous.kind != GcTaskKind::LiveTable)
+            || (previous.phase == GcPhase::Complete
+                && previous.kind != GcTaskKind::LiveTable
+                && !retained_initial)
             || previous
                 .head
                 .as_ref()
                 .is_some_and(|head| head.storage_location() != candidate.file.location.table())
-            || !matches!(
-                (task.kind, previous.kind),
-                (
-                    GcTaskKind::RetiredCatalog,
-                    GcTaskKind::PurgeTable | GcTaskKind::LiveTable
-                ) | (
-                    GcTaskKind::PurgeTable | GcTaskKind::LiveTable | GcTaskKind::MultipartCleanup,
-                    GcTaskKind::LiveTable
-                )
-            )
+            || (!retained_initial
+                && !matches!(
+                    (task.kind, previous.kind),
+                    (
+                        GcTaskKind::RetiredCatalog,
+                        GcTaskKind::PurgeTable | GcTaskKind::LiveTable
+                    ) | (
+                        GcTaskKind::PurgeTable | GcTaskKind::LiveTable | GcTaskKind::MultipartCleanup,
+                        GcTaskKind::LiveTable
+                    )
+                ))
             || (matches!(task.kind, GcTaskKind::LiveTable | GcTaskKind::MultipartCleanup)
                 && previous.phase != GcPhase::Complete)
             || candidate.phase == CandidatePhase::Complete
