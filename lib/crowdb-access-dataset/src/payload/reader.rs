@@ -3,7 +3,6 @@
 
 use crate::{ChunkReadError, ChunkReader, DatasetUploads, ReadCancellation, UploadError};
 use async_trait::async_trait;
-use bytes::BytesMut;
 use std::ops::Range;
 
 /// Compatibility reader for bounded native/legacy reads. Large fields use streams.
@@ -34,7 +33,9 @@ impl ChunkReader for UploadedChunkReader {
         {
             return Err(ChunkReadError::Failed("bounded field range required".into()));
         }
-        let mut output = BytesMut::new();
+        let mut output = Vec::with_capacity(
+            usize::try_from(range.end - range.start).map_err(|_| ChunkReadError::Truncated)?,
+        );
         let first = range.start / u64::from(record.part_size());
         let end = range.end.div_ceil(u64::from(record.part_size()));
         for index in first..end {
@@ -55,7 +56,7 @@ impl ChunkReader for UploadedChunkReader {
         if cancel.is_cancelled() {
             return Err(ChunkReadError::Cancelled);
         }
-        Ok(output.to_vec())
+        Ok(output)
     }
 }
 fn map_error(error: &UploadError) -> ChunkReadError {

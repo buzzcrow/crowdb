@@ -97,6 +97,14 @@ metadata and separate value bindings. Ordinary inspection and indexed read plann
 do not load a complete Manifest or chunk payload. Inventory and parent/child indexes
 filter visibility through commit evidence, not merely candidate record state.
 
+Preparing an index overlaps at most sixteen immutable row writes, with at most
+2 MiB of encoded keys and values queued. Encoding holds at most one additional
+row under the existing per-row bound. No row is copied into another batch buffer.
+All row writes must succeed before inventory, parent/child and ready summaries
+are installed. Failure leaves the index unavailable; repeating the request checks
+the same immutable rows. This bounds parallel work while preserving the existing
+number of conditional mutations and each row's identity.
+
 List pages default to twenty items and cap at one hundred with a 1 MiB metadata
 window. Exact matrices admit twenty IDs by twelve fields. IDs preserve up to 16 KiB
 of binary data; Schema admits up to 256 fields with names up to 1024 bytes. Projection

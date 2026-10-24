@@ -345,9 +345,11 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
 
 ### P12 — Dataset inspection 索引
 
-- [ ] **P12.1 降低索引写入粒度**：当前 F 个 schema field、N 个 sample、E 个非空 sample-field
-  产生 `F + N + 2E` 行写和 3 个 summary/index 写，不含 Manifest/publication。
-  比较批量与有界并发，保留顺序、预算和未完整索引不可见性。Files: Dataset `inspection/{index,preparation}.rs`。
+- [ ] **P12.1 比较 routed batch 与已完成的有界并发**：当前 F 个 schema field、N 个 sample、
+  E 个非空 sample-field 仍有 `F + N + 2E` 行写和 3 个 summary/index 写。
+  已完成 16 条/2 MiB 的并发准备，消除逐行串行等待；后续测 grouped RPC 能否进一步减少
+  RTT 与消息数量，计入 batch 输入复制、分区分组和失败重试成本，不能把并发算成 RPC 数减少。
+  Files: Dataset `inspection/{index,preparation}.rs`、`chunk_store.rs`、Chunk-KV batch 接口。
 - [ ] **P12.2 精简索引准备/回收检查点**：保留服务必需的不可变索引，按 D1 删除辅助恢复进度，失败重做；
   未发布索引/候选纳入 R4 孤儿清理。显式 legacy preparation 仍是 mutation，读 miss 不自动持久化构建。Files: `inspection/{legacy,retirement,reclaim}.rs` 及索引恢复测试。
 
@@ -384,7 +386,7 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
 - [ ] **F7 比较预读与 create-CAS 总成本**：新 immutable 页的 GET+CAS 可能比直接 CAS 更贵，
   replay 则可能相反；比较新写/重放比例，复用本请求已知值，不能无证明改普通 PUT。Files: Dataset Composition/Split receipts、Iceberg `operation/payload.rs`、journal validation。
 - [ ] **F8 减少 payload 复制**：审查 HTTP 收整 part、`BytesMut` 拼接、inline copy、兼容
-  UploadedChunkReader 的拼接后 `to_vec` 和 S3 coalescing；先查活跃调用，再移交 owner 或流式
+  reader 之外的 S3 coalescing；UploadedChunkReader 已改为最终 Vec 一次拼接。先查活跃调用，再移交 owner 或流式
   发送。Files: Dataset payload/upload、Access HTTP batch、S3/native 接收路径。验证部分帧、非整齐 size、held buffer 和实际复制字节。
 - [ ] **F9 分解摘要/编码/分配 CPU**：complete 重读 part 并做 part/whole MD5，native part 与
   field 还各有摘要；MD5 不能直接拼合，只有同范围可信校验证据才可复用。测大 owner/part-index
@@ -434,6 +436,16 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P12.1a / F8.1**：新建索引同时推进最多 16 条 immutable row CAS、
+  队列最多 2 MiB 编码 key/value，另有一条正在编码的有界 row；没有额外拼接或复制批次。
+  所有 row 成功后才写 inventory/child/ready。延迟 store 证明存在并发、条数与字节界限
+  都生效；12 个 sample 的 37 条 row mutation 保持不变，不能据此宣称 RPC 数减少。
+  中间行失败保持索引不可见，重建 authority 后可验证并重做 immutable rows。
+  UploadedChunkReader 直接填最终预分配 Vec，删除 BytesMut→Vec 的整段复制和扩容。
+  新增 inspection write 两项及 Dataset `--all-targets` 全部通过；包含既有跨 part range、
+  digest、cancel、Composition/Split 及不可见性回归。Dataset all-target/all-feature clippy、
+  workspace fmt 与 diff 检查通过。grouped RPC 比较及其他活跃 payload 路径继续在待办中。
 
 - **2026-10-24，P8.2（P8.1 随路径删除）**：namespace/table 写入口不再 begin/finish
   通用 HTTP RetryLedger，删除 admission 重试、New/Resume/Replay 状态、response 编码/装载

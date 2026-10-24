@@ -5,9 +5,13 @@ use super::{key, InspectionState, SnapshotSummary};
 use crate::{
     AuthorityError, CasOutcome, DatasetAuthority, DatasetIdentity, FieldLocator, ManifestRecord, SnapshotId,
 };
+use futures::{stream::FuturesUnordered, StreamExt};
 use sha2::{Digest, Sha256};
 
 use super::rows::{encode, next_row, EncodedRow, IndexPosition};
+
+const MAX_PENDING_ROWS: usize = 16;
+const MAX_PENDING_BYTES: usize = 2 * 1024 * 1024;
 
 impl DatasetAuthority {
     pub(crate) async fn persist_inspection_index(
@@ -42,8 +46,20 @@ impl DatasetAuthority {
         manifest: &ManifestRecord,
     ) -> Result<(), AuthorityError> {
         let mut position = IndexPosition::default();
+        let mut pending = FuturesUnordered::new();
+        let mut pending_bytes = 0;
         while let Some(row) = next_row(identity, manifest, &mut position)? {
-            self.put_inspection_bytes(row).await?;
+            let size = row.key.len() + row.bytes.len();
+            while pending.len() >= MAX_PENDING_ROWS || pending_bytes + size > MAX_PENDING_BYTES {
+                let (size, result) = pending.next().await.ok_or(AuthorityError::Corrupt)?;
+                pending_bytes -= size;
+                result?;
+            }
+            pending_bytes += size;
+            pending.push(async move { (size, self.put_inspection_bytes(row).await) });
+        }
+        while let Some((_, result)) = pending.next().await {
+            result?;
         }
         Ok(())
     }
