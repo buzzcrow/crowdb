@@ -60,7 +60,7 @@ impl DatasetAuthority {
         Ok(true)
     }
 
-    /// Checks live publication proof, resolving bounded legacy ancestry when needed.
+    /// Checks a live complete result, resolving bounded legacy publication evidence when needed.
     /// # Errors
     /// Returns unavailable or retired snapshots, corrupt proof or storage limits.
     pub async fn require_committed_snapshot(
@@ -69,12 +69,16 @@ impl DatasetAuthority {
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
         self.ensure_snapshot_live(identity, snapshot).await?;
+        let candidate = self.snapshot_candidate(identity, snapshot).await?;
+        if candidate.as_ref().is_some_and(|c| c.version == 2) {
+            return Ok(());
+        }
         if self.snapshot_commit(identity, snapshot).await?.is_some()
             || self.legacy_commit_exists(identity, snapshot).await?
         {
             return Ok(());
         }
-        if self.snapshot_candidate(identity, snapshot).await?.is_some() {
+        if candidate.is_some() {
             return Err(AuthorityError::SnapshotNotFound);
         }
         let cancel = ReadCancellation::new();

@@ -167,22 +167,6 @@ impl DatasetAuthority {
         if record.snapshot != snapshot || record.revision != revision {
             return Err(AuthorityError::Corrupt);
         }
-        let (_, state) =
-            self.load_split_draft(identity, record.operation)
-                .await
-                .map_err(|error| match error {
-                    SplitLifecycleError::Authority(error) => error,
-                    SplitLifecycleError::Store(error) => error.into(),
-                    _ => AuthorityError::Corrupt,
-                })?;
-        if !state.initial
-            || state.record.progress
-                != (DraftProgress::Prepared {
-                    target: crate::CommitTarget::SplitRevision { snapshot, revision },
-                })
-        {
-            return Err(AuthorityError::SnapshotNotFound);
-        }
         Ok(())
     }
     pub(crate) async fn initial_split_revision(
@@ -190,9 +174,10 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
     ) -> Result<Option<SplitRevisionId>, AuthorityError> {
-        Ok(self
-            .snapshot_candidate(identity, snapshot)
-            .await?
-            .and_then(|candidate| candidate.initial_split))
+        match self.snapshot_candidate(identity, snapshot).await {
+            Ok(candidate) => Ok(candidate.and_then(|candidate| candidate.initial_split)),
+            Err(AuthorityError::SnapshotProtected) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 }

@@ -21,7 +21,8 @@ pub(crate) struct CandidateBinding {
 }
 
 impl DatasetAuthority {
-    /// Prepares immutable content from an arbitrary committed parent or a new root.
+    /// Prepares complete immutable content from an available parent or a new root.
+    /// Callers supplying external chunk locators must acquire their payload owners first.
     /// The expected Dataset head belongs to a later commit attempt.
     /// # Errors
     /// Rejects invalid content, unavailable parents and divergent operation retries.
@@ -39,14 +40,17 @@ impl DatasetAuthority {
         if let Some(parent) = parent {
             self.require_committed_snapshot(identity, parent).await?;
         }
-        self.write_publication(
-            identity,
-            parent,
-            manifest,
-            operation,
-            PublicationMode::Candidate(None),
-        )
-        .await
+        let snapshot = self
+            .write_publication(
+                identity,
+                parent,
+                manifest,
+                operation,
+                PublicationMode::Candidate(None),
+            )
+            .await?;
+        self.complete_snapshot_candidate(identity, snapshot).await?;
+        Ok(snapshot)
     }
 
     pub(crate) async fn prepare_candidate_with_split(
@@ -55,7 +59,7 @@ impl DatasetAuthority {
         parent: Option<SnapshotId>,
         manifest: Vec<u8>,
         operation: OperationId,
-        initial: SplitRevisionId,
+        initial: Option<SplitRevisionId>,
     ) -> Result<SnapshotId, AuthorityError> {
         if manifest.len() > 8 * 1024 * 1024 {
             return Err(DatasetError::ReadLimitExceeded.into());
@@ -69,7 +73,7 @@ impl DatasetAuthority {
             parent,
             manifest,
             operation,
-            PublicationMode::Candidate(Some(initial)),
+            PublicationMode::Candidate(initial),
         )
         .await
     }
@@ -84,6 +88,15 @@ impl DatasetAuthority {
         match self.store.compare_exchange(&key, None, &bytes).await? {
             CasOutcome::Applied(_) => Ok(()),
             CasOutcome::Conflict(Some(value)) if value.bytes == bytes => Ok(()),
+            CasOutcome::Conflict(Some(value)) => {
+                let mut existing = decode_candidate(&value.bytes, binding.snapshot)?;
+                existing.version = binding.version;
+                if existing == *binding {
+                    Ok(())
+                } else {
+                    Err(AuthorityError::AlreadyExists)
+                }
+            }
             CasOutcome::Conflict(_) => Err(AuthorityError::AlreadyExists),
         }
     }
@@ -96,24 +109,33 @@ impl DatasetAuthority {
         let Some(value) = self.store.get(&candidate_key(identity, snapshot)?).await? else {
             return Ok(None);
         };
-        if value.bytes.len() > 4096 {
-            return Err(AuthorityError::Corrupt);
-        }
-        let binding: CandidateBinding =
-            serde_json::from_slice(&value.bytes).map_err(|_| AuthorityError::Corrupt)?;
-        if binding.version != 1 || binding.snapshot != snapshot || binding.parent == Some(snapshot) {
-            return Err(AuthorityError::Corrupt);
-        }
-        SnapshotId::from_bytes(binding.snapshot.as_bytes())?;
-        OperationId::from_bytes(binding.operation.as_bytes())?;
-        if let Some(parent) = binding.parent {
-            SnapshotId::from_bytes(parent.as_bytes())?;
-        }
-        if let Some(revision) = binding.initial_split {
-            SplitRevisionId::from_bytes(revision.as_bytes())?;
-        }
-        Ok(Some(binding))
+        decode_candidate(&value.bytes, snapshot).map(Some)
     }
+}
+
+pub(crate) fn decode_candidate(
+    bytes: &[u8],
+    snapshot: SnapshotId,
+) -> Result<CandidateBinding, AuthorityError> {
+    if bytes == super::complete::RETIRED {
+        return Err(AuthorityError::SnapshotProtected);
+    }
+    if bytes.len() > 4096 {
+        return Err(AuthorityError::Corrupt);
+    }
+    let binding: CandidateBinding = serde_json::from_slice(bytes).map_err(|_| AuthorityError::Corrupt)?;
+    if !matches!(binding.version, 1 | 2) || binding.snapshot != snapshot || binding.parent == Some(snapshot) {
+        return Err(AuthorityError::Corrupt);
+    }
+    SnapshotId::from_bytes(binding.snapshot.as_bytes())?;
+    OperationId::from_bytes(binding.operation.as_bytes())?;
+    if let Some(parent) = binding.parent {
+        SnapshotId::from_bytes(parent.as_bytes())?;
+    }
+    if let Some(revision) = binding.initial_split {
+        SplitRevisionId::from_bytes(revision.as_bytes())?;
+    }
+    Ok(binding)
 }
 
 pub(in crate::authority) fn binding(

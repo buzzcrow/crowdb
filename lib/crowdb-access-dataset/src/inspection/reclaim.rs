@@ -65,12 +65,9 @@ impl DatasetAuthority {
                     }
                     continue;
                 }
-                if self
-                    .snapshot_has_commit_proof(identity, summary.snapshot, &mut work)
-                    .await?
-                {
-                    return Ok(true);
-                }
+                // The child index precedes its complete root. Protecting it until
+                // terminal retirement closes the parent-delete/finalization race.
+                return Ok(true);
             }
             after = page.after;
             if after.is_none() {

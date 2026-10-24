@@ -66,9 +66,6 @@ impl DatasetReadService {
             return Err(ReadTransportError::WindowFull);
         }
         let permit = WindowPermit(Arc::clone(&self.window));
-        self.authority
-            .check_snapshot_readable(&self.identity, request.snapshot)
-            .await?;
         let fields: Vec<&str> = request.fields.iter().map(String::as_str).collect();
         let samples = self
             .authority
@@ -106,9 +103,6 @@ impl DatasetReadService {
             return Err(ReadTransportError::WindowFull);
         }
         let permit = WindowPermit(Arc::clone(&self.window));
-        self.authority
-            .check_snapshot_readable(&self.identity, request.plan.snapshot)
-            .await?;
         let cursor = request.cursor.unwrap_or_else(|| ReadCursor::start(&request.plan));
         cursor.validate_for(&request.plan)?;
         let planned = match request.shuffle.as_ref() {
@@ -146,6 +140,9 @@ impl DatasetReadService {
         let ids: Vec<_> = planned.into_iter().skip(range.start).take(range.len()).collect();
         let fields: Vec<&str> = request.plan.projection.iter().map(String::as_str).collect();
         let samples = if ids.is_empty() {
+            self.authority
+                .get_snapshot(&self.identity, request.plan.snapshot)
+                .await?;
             Vec::new()
         } else {
             self.authority

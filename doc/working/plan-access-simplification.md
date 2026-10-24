@@ -152,11 +152,6 @@ CAS 不再满足只证明“本次条件不成立”，不能谎称“第一次�
   单独证明，不能仅凭本地超时回收。用户在 S0→S1/S2 竞争和回复丢失例子后明确选择此合同，
   不采用“必须曾发布才能读”的备选。
 
-- [ ] **R2.1 统一完整资源准入**：只在 Manifest/inspection、初始 Split 与必要 payload owner
-  已完整就绪后按 ID 开放；准备记录本身不等于结果完整。Snapshot/Split 按 ID、parent/stable、
-  history/inventory、continuation 与 legacy 路径统一，删除状态仍拒绝新请求。
-  不能只将 SC/SRC lookup 改成 true：Composition 在 CB 之后还准备初始 Split、claim upload
-  owner，obsolete/abandon cleanup 和 child 保护也依赖旧“曾发布”区分，须同步调整。
 - [ ] **R2.2 删除发布过程账本**：移除新 CA/CR/SC/SRC 写入、覆盖 head 前的帮助与按 attempt
   历史回复查询；Composition/Split 的 Committing 恢复与 P2/P3 一起删除，客户端保留完整输入。
   旧记录只作为兼容解码/GC 输入，不让旧账本控制新请求。head 保留 expected base；同一
@@ -494,6 +489,25 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，R2.1/R2.1b**：新 Snapshot 最后将已有 CB 条件替换为 version 2 完整根，
+  Manifest/index、初始 Split 与必要 upload owners 就绪后，才能按 ID 读取/引用、列入
+  inventory/history、retain 或设 stable。版本 1 准备绑定和 Published 标志本身不够；旧成功
+  记录仍只读兼容。放弃/替换草稿保留完整结果及 owner；未完成清理先竞争同一 CB 封口，
+  迟到完成失败。清理 CAS 观察到完成者后直接保留，无补 GET；完成回复未知直接传播，
+  不确认查询。子索引先写，完成前再检查 parent；未终态退休的子索引保守保护 parent。
+  完整 ID summary 实测三次 bounded GET（删除标记、CB、summary）、零 mutation，
+  不查 head/SC/CA/CR/LC。六项新测试覆盖完成丢回复、双方竞争、父删除两个顺序、
+  跨实例 continuation、retention 与删除。上传测试覆盖 owner 未就绪时 ID/原始发布均拒绝，
+  放弃后仅释放 staging owner；初始 Split 的完整成员可保留并清理 scratch。
+  JSON 与旧 bincode Manifest 入口新增统一只读准入，未完成 404、完成未发布 200、删除 409。
+  legacy scan/空结果仍独立准入，移除与 Snapshot 读取重复的外层删除检查；单窗口仍一次
+  删除标记读取。修复 prepare→重启→publish 对完整结果误早退，以及当前旧 head 补 Manifest
+  后漏安装最终根的问题，均有回归。
+  Dataset 全目标与受影响追加回归、Access HTTP/安装 SDK、11 项 native 读取测试通过；
+  三 crate all-target/all-feature clippy、fmt、diff 检查通过，均经 pixi。
+  Snapshot CA/CR/SC/helper 尚未删除，R2.2 继续处理；未引用结果期限/独立孤儿 GC 仍属 R4。
+  同源码容器最终复验由 V2/V4 跟踪，此批不声称 TPS 或 GC 完成。
 
 - **2026-10-24，F1.1**：同一 SDK client/clone/control wrapper 共享固定有界 atomic bitset，
   复用已成功发现的路由能力。连续五次 head 读取实测由十次 HTTP 请求降为六次；Split

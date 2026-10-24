@@ -10,11 +10,19 @@ use inspection::{budget, fixture, prepare, publish};
 use std::sync::atomic::Ordering;
 
 #[tokio::test]
-async fn visibility_uses_cas_proof_and_never_published_state_alone() {
+async fn visibility_uses_complete_roots_and_never_published_state_alone() {
     let (store, authority, identity) = fixture().await;
     let committed = prepare(&authority, &identity, None, 1).await;
     publish(&authority, &identity, committed).await;
-    let uncommitted = prepare(&authority, &identity, None, 2).await;
+    let uncommitted = authority
+        .prepare_snapshot_with_operation(
+            &identity,
+            Some(committed),
+            publication::publication_manifest(2),
+            OperationId::random(),
+        )
+        .await
+        .unwrap();
     let record_key = [
         b"DS\0S\0".as_slice(),
         identity.key().unwrap().as_slice(),

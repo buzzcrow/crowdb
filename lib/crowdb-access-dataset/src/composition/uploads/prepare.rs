@@ -58,6 +58,8 @@ impl DatasetAuthority {
             return Err(CompositionError::Corrupt);
         }
         if candidate.complete {
+            self.complete_snapshot_candidate(identity, candidate.snapshot)
+                .await?;
             return super::state::status(&state);
         }
         let page = self
@@ -96,6 +98,16 @@ impl DatasetAuthority {
         candidate.after = page.after;
         self.replace_composition(identity, &stored, &current, &completed)
             .await?;
+        if completed
+            .uploads
+            .as_ref()
+            .ok_or(CompositionError::Corrupt)?
+            .candidates[position]
+            .complete
+        {
+            self.complete_snapshot_candidate(identity, preparation.candidate)
+                .await?;
+        }
         super::state::status(&completed)
     }
 }

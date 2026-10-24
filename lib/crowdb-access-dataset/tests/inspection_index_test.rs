@@ -137,6 +137,14 @@ struct TestInterruptedStore {
 }
 #[async_trait::async_trait]
 impl DatasetStore for TestInterruptedStore {
+    async fn get_bounded(
+        &self,
+        key: &[u8],
+        budget: crowdb_access_dataset::MetadataScanBudget,
+        cancel: &crowdb_access_dataset::ReadCancellation,
+    ) -> Result<Option<crowdb_access_dataset::StoredValue>, crowdb_access_dataset::StoreError> {
+        self.inner.get_bounded(key, budget, cancel).await
+    }
     async fn get(
         &self,
         key: &[u8],

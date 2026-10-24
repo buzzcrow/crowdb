@@ -3,6 +3,7 @@
 
 mod candidate;
 mod commit;
+mod complete;
 mod legacy;
 mod legacy_reclaim;
 mod opaque;
@@ -199,8 +200,15 @@ impl DatasetAuthority {
                     return Err(AuthorityError::AlreadyExists);
                 }
                 if existing.publication.state == PublicationState::Published
-                    && self.snapshot_commit(identity, snapshot).await?.is_some()
+                    && (self
+                        .snapshot_candidate(identity, snapshot)
+                        .await?
+                        .is_some_and(|c| c.version == 2)
+                        || self.snapshot_commit(identity, snapshot).await?.is_some())
                 {
+                    if matches!(mode, PublicationMode::LegacyPublish) {
+                        return self.advance_head(identity, None, parent, snapshot).await;
+                    }
                     return Ok(snapshot);
                 }
                 if existing.publication.state == PublicationState::Published
@@ -245,31 +253,7 @@ impl DatasetAuthority {
         if !matches!(mode, PublicationMode::LegacyPublish) {
             return Ok(snapshot);
         }
-        let published = SnapshotPublication {
-            state: PublicationState::Published,
-            ..prepared
-        };
-        let published_bytes = encode(&SnapshotRecord {
-            publication: published,
-        })?;
-        match self.store.get(&snapshot_key).await? {
-            Some(value) => {
-                let existing: SnapshotRecord = decode(&value.bytes)?;
-                if existing.publication.state == PublicationState::Prepared {
-                    match self
-                        .store
-                        .compare_exchange(&snapshot_key, Some(&value.bytes), &published_bytes)
-                        .await?
-                    {
-                        CasOutcome::Applied(_) => {}
-                        CasOutcome::Conflict(_) => return Err(AuthorityError::HeadConflict),
-                    }
-                } else if existing.publication.state != PublicationState::Published {
-                    return Err(AuthorityError::Invalid(DatasetError::InvalidPublicationState));
-                }
-            }
-            None => return Err(AuthorityError::Corrupt),
-        }
+        self.complete_snapshot_candidate(identity, snapshot).await?;
         self.advance_head(identity, None, parent, snapshot).await
     }
 

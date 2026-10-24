@@ -10,7 +10,7 @@ mod split_store;
 use crowdb_access_dataset::{composition::*, *};
 
 #[tokio::test]
-async fn abandoned_prepared_composition_fences_raw_candidate_and_initial_split() {
+async fn abandoned_complete_composition_preserves_raw_candidate_and_initial_split() {
     let (_, authority, identity, parent) = split_store::fixture().await;
     let operation = OperationId::random();
     common::begin_evaluated(
@@ -36,13 +36,9 @@ async fn abandoned_prepared_composition_fences_raw_candidate_and_initial_split()
         DraftProgress::Abandoned
     );
     assert!(authority
-        .publish_snapshot_candidate(&identity, &attempt)
-        .await
-        .is_err());
-    assert!(authority
         .prepare_split_draft(&identity, preparation.split_operation.unwrap(), 1)
         .await
-        .is_err());
+        .is_ok());
     assert_eq!(
         authority.inspect_head(&identity).await.unwrap().latest,
         Some(parent)
@@ -66,7 +62,17 @@ async fn abandoned_prepared_composition_fences_raw_candidate_and_initial_split()
     }
     assert!(split_cleaned);
     authority
-        .reclaim_snapshot_metadata(&identity, preparation.candidate)
+        .get_snapshot(&identity, preparation.candidate)
+        .await
+        .unwrap();
+    assert!(authority
+        .inspect_split_head(&identity, preparation.candidate)
+        .await
+        .unwrap()
+        .revision
+        .is_some());
+    authority
+        .publish_snapshot_candidate(&identity, &attempt)
         .await
         .unwrap();
 }

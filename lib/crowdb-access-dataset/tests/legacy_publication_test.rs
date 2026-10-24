@@ -132,3 +132,36 @@ async fn unindexed_legacy_child_protects_parent_after_latest_moves_to_new_root()
     authority.begin_reclaim(&identity, child).await.unwrap();
     authority.begin_reclaim(&identity, root).await.unwrap();
 }
+
+#[tokio::test]
+async fn completing_an_already_current_legacy_manifest_installs_a_readable_resource_root() {
+    let store = Arc::new(dataset_store::TestDatasetStore::default());
+    let authority = DatasetAuthority::new(store.clone());
+    let identity = DatasetIdentity::new(NamespacePath::root(), "legacy-complete").unwrap();
+    authority.create_dataset(identity.clone()).await.unwrap();
+    let snapshot = authority
+        .publish_snapshot(&identity, None, publication_manifest(1))
+        .await
+        .unwrap();
+    let manifest = authority.get_manifest(&identity, snapshot).await.unwrap();
+    legacy::emulate_legacy(store.as_ref(), &authority, &identity, &[snapshot], snapshot).await;
+    let head = authority.inspect_head(&identity).await.unwrap();
+    authority
+        .persist_manifest(&identity, snapshot, &manifest, 1024)
+        .await
+        .unwrap();
+    assert_eq!(authority.inspect_head(&identity).await.unwrap(), head);
+    let cb = [
+        b"DS\0CB\0".as_slice(),
+        &identity.key().unwrap(),
+        snapshot.as_bytes(),
+    ]
+    .concat();
+    let root: serde_json::Value =
+        serde_json::from_slice(&store.get(&cb).await.unwrap().unwrap().bytes).unwrap();
+    assert_eq!(root["version"], 2);
+    assert!(DatasetAuthority::new(store)
+        .read_manifest(&identity, snapshot)
+        .await
+        .is_ok());
+}

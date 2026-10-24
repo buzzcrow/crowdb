@@ -56,7 +56,8 @@ impl DatasetHttpService {
                 .publish_snapshot_with_operation(identity, parent, bytes, operation)
                 .await
         };
-        let _snapshot = result?;
+        let snapshot = result?;
+        authority.complete_snapshot_candidate(identity, snapshot).await?;
         json(&conversion::snapshot(
             authority.publication_status(identity, operation).await?,
             authority.latest(identity).await?,

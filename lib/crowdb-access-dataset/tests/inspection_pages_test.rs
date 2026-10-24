@@ -10,7 +10,7 @@ mod publication;
 use publication::publication_manifest;
 
 #[tokio::test]
-async fn paged_forest_excludes_prepared_candidates_without_manifest_or_payload_reads() {
+async fn paged_forest_includes_complete_unpublished_results_and_excludes_staging() {
     let (store, authority, identity) = fixture().await;
     let root = prepare(&authority, &identity, None, 1).await;
     publish(&authority, &identity, root).await;
@@ -19,6 +19,15 @@ async fn paged_forest_excludes_prepared_candidates_without_manifest_or_payload_r
     let new_root = prepare(&authority, &identity, None, 3).await;
     publish(&authority, &identity, new_root).await;
     let prepared = prepare(&authority, &identity, Some(root), 4).await;
+    let incomplete = authority
+        .prepare_snapshot_with_operation(
+            &identity,
+            Some(new_root),
+            publication_manifest(5),
+            OperationId::random(),
+        )
+        .await
+        .unwrap();
     store.inspecting.store(true, Ordering::Relaxed);
     let cancel = ReadCancellation::new();
     let mut after = None;
@@ -35,15 +44,16 @@ async fn paged_forest_excludes_prepared_candidates_without_manifest_or_payload_r
         }
     }
     visible.sort();
-    let mut expected = vec![root, child, new_root];
+    let mut expected = vec![root, child, new_root, prepared];
     expected.sort();
     assert_eq!(visible, expected);
     let children = authority
         .snapshot_children_page(&identity, Some(root), None, budget(100), &cancel)
         .await
         .unwrap();
-    assert_eq!(children.entries.len(), 1);
-    assert_eq!(children.entries[0].snapshot, child);
+    assert_eq!(children.entries.len(), 2);
+    assert!(children.entries.iter().any(|entry| entry.snapshot == child));
+    assert!(children.entries.iter().any(|entry| entry.snapshot == prepared));
     let roots = authority
         .snapshot_children_page(&identity, None, None, budget(100), &cancel)
         .await
@@ -51,7 +61,7 @@ async fn paged_forest_excludes_prepared_candidates_without_manifest_or_payload_r
     assert_eq!(roots.entries.len(), 2);
     assert!(matches!(
         authority
-            .snapshot_inspection_summary(&identity, prepared, budget(1), &cancel)
+            .snapshot_inspection_summary(&identity, incomplete, budget(1), &cancel)
             .await,
         Err(InspectionError::Authority(AuthorityError::SnapshotNotFound))
     ));

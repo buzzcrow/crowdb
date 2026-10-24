@@ -198,7 +198,7 @@ impl DatasetHttpService {
         match self
             .reads
             .authority()
-            .get_manifest(self.reads.identity(), request.snapshot)
+            .read_manifest(self.reads.identity(), request.snapshot)
             .await
         {
             Ok(manifest) => encode(StatusCode::OK, &DatasetManifestResponse { manifest }),

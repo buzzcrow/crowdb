@@ -152,12 +152,12 @@ async fn legacy_inspection_fallback_obeys_aggregate_budget_and_cancellation() {
 
 #[tokio::test]
 async fn unpublished_modern_candidate_cannot_fall_back_to_legacy_visibility() {
-    let (store, identity, _, _) = fixture().await;
+    let (store, identity, _, child) = fixture().await;
     let authority = DatasetAuthority::new(store.clone());
     let snapshot = authority
-        .prepare_snapshot_candidate(
+        .prepare_snapshot_with_operation(
             &identity,
-            None,
+            Some(child),
             publication::publication_manifest(3),
             OperationId::random(),
         )

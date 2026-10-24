@@ -101,7 +101,7 @@ async fn temporary_child_reclaim_fence_is_not_terminal_retirement() {
 }
 
 #[tokio::test]
-async fn prepared_uncommitted_children_do_not_pin_unrelated_history() {
+async fn complete_unpublished_children_protect_parent_until_their_retirement() {
     let (_, authority, identity, parent) = split_store::fixture().await;
     let candidate = authority
         .prepare_snapshot_candidate(
@@ -125,6 +125,11 @@ async fn prepared_uncommitted_children_do_not_pin_unrelated_history() {
         .publish_snapshot_candidate(&identity, &common::attempt(&authority, &identity, root).await)
         .await
         .unwrap();
+    assert!(matches!(
+        authority.begin_reclaim(&identity, parent).await,
+        Err(AuthorityError::SnapshotProtected)
+    ));
+    authority.begin_reclaim(&identity, candidate).await.unwrap();
     authority.begin_reclaim(&identity, parent).await.unwrap();
     assert!(authority
         .publish_snapshot_candidate(

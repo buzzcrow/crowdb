@@ -5,6 +5,17 @@ use super::DatasetAuthority;
 use crate::authority::{decode, decode_head, encode_head};
 use crate::{key, AuthorityError, CasOutcome, DatasetIdentity, HeadRecord, OperationId, SnapshotId};
 
+pub(crate) enum CandidateRetirement {
+    Retired,
+    Complete,
+    LegacyCommitted(crate::SuccessfulCommit),
+}
+impl CandidateRetirement {
+    pub(crate) fn retained(&self) -> bool {
+        !matches!(self, Self::Retired)
+    }
+}
+
 impl DatasetAuthority {
     pub(super) async fn fence_reclaim(
         &self,
@@ -183,39 +194,24 @@ impl DatasetAuthority {
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
-    ) -> Result<Option<crate::SuccessfulCommit>, AuthorityError> {
-        if self.snapshot_candidate(identity, snapshot).await?.is_none() {
-            let value = self
-                .store
-                .get_bounded(
-                    &key::snapshot(identity, snapshot)?,
-                    crate::MetadataScanBudget {
-                        items: 1,
-                        bytes: 9 * 1024 * 1024,
-                        timeout: std::time::Duration::from_secs(2),
-                    },
-                    &crate::ReadCancellation::new(),
-                )
-                .await?
-                .ok_or(AuthorityError::SnapshotNotFound)?;
-            let record: crate::SnapshotRecord = decode(&value.bytes)?;
-            if record.publication.state != crate::PublicationState::Prepared
-                && record.publication.state != crate::PublicationState::Aborted
-            {
-                return Err(AuthorityError::SnapshotNotFound);
-            }
+    ) -> Result<CandidateRetirement, AuthorityError> {
+        if let Some(receipt) = self.snapshot_commit(identity, snapshot).await? {
+            return Ok(CandidateRetirement::LegacyCommitted(receipt));
+        }
+        if self.seal_incomplete_snapshot(identity, snapshot).await? {
+            return Ok(CandidateRetirement::Complete);
         }
         if let Some(owner) = self.fence_reclaim(identity, snapshot).await? {
             if let Some(receipt) = self.snapshot_commit(identity, snapshot).await? {
                 self.unfence_reclaim(identity, snapshot, owner).await?;
-                return Ok(Some(receipt));
+                return Ok(CandidateRetirement::LegacyCommitted(receipt));
             }
             self.begin_terminal_retirement(identity, snapshot, owner, 0)
                 .await?;
         } else if let Some(receipt) = self.snapshot_commit(identity, snapshot).await? {
-            return Ok(Some(receipt));
+            return Ok(CandidateRetirement::LegacyCommitted(receipt));
         }
         self.retire_snapshot_record(identity, snapshot).await?;
-        Ok(None)
+        Ok(CandidateRetirement::Retired)
     }
 }

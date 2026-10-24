@@ -22,9 +22,15 @@ bounded control operations. Payload delivery retains the existing binary framing
 ## 1. Identity and authority
 
 A Dataset has opaque latest/stable Snapshot references. A Snapshot may declare any
-committed same-Dataset parent or no parent. Its parent is independent of the head
+complete available same-Dataset parent or no parent. Its parent is independent of the head
 generation used for publication CAS. Multiple roots and off-latest branches remain
-discoverable. Prepared records are not committed evidence.
+discoverable. A preparation binding or a Published flag alone is not a complete result.
+The final Snapshot resource root is installed after Manifest/index rows, the initial
+Split revision and necessary payload ownership are ready. The current root uses
+version 2 of the existing candidate binding; version 1 remains an incomplete legacy
+preparation unless old successful-publication evidence exists. Complete results are
+readable, enumerable, retainable and usable as parents/stable targets without winning
+latest. ID reads consult this root rather than publication receipts or mutable heads.
 
 Publication has a candidate identity and a separate caller-owned attempt identity.
 Each attempt binds its target and exact expected head generation. Successful commit
@@ -65,7 +71,8 @@ Evaluation advances revision-bound windows of at most twenty Samples. Durable
 redo windows precede row writes; CAS progress and content bindings prevent stale
 work from becoming the accepted result. Preparation validates the server-assembled
 Manifest, initial Split set and all candidate upload claims before publication.
-The data head transition makes data and initial Splits visible together.
+The complete resource root makes data and initial Splits available together; the
+independent data head transition selects that resource as latest.
 
 ## 3. Split evaluation and publication
 
@@ -115,10 +122,11 @@ automatic head query or a mutation downgrade.
 
 ## 4. Bounded observation and reads
 
-Inspection projections contain committed summaries, Schema rows, Sample IDs, field
+Inspection projections contain complete summaries, Schema rows, Sample IDs, field
 metadata and separate value bindings. Ordinary inspection and indexed read planning
 do not load a complete Manifest or chunk payload. Inventory and parent/child indexes
-filter visibility through commit evidence, not merely candidate record state.
+filter visibility through the complete resource root, with read-only compatibility
+for old publication evidence, not merely candidate record state.
 
 Preparing an index overlaps at most sixteen immutable row writes, with at most
 2 MiB of encoded keys and values queued. Encoding holds at most one additional
@@ -174,6 +182,20 @@ continuation after processing; acknowledgement is local. Cancel stops the curren
 request without a reader registry or remote close.
 
 ## 5. Ownership and cleanup
+
+Incomplete-candidate cleanup and finalization conditionally replace the same
+resource root. A cleanup seal prevents a delayed finalizer from exposing retired
+rows. If the complete root wins, abandoning or superseding the draft preserves its
+Manifest, initial Split members and payload owners; ordinary Snapshot reclamation
+later retires them under deletion admission and grace rules. Completion transport
+errors propagate without confirmation reads. Definite cleanup conflicts use the
+returned value without reloading the root.
+
+The parent/child index is installed before the child's complete root. Finalization
+rechecks parent availability after that index write. Parent deletion conservatively
+protects any indexed child without terminal retirement, including an incomplete
+child awaiting cleanup. Thus deletion either observes the child or the child's
+last parent check rejects completion. Readers never register in this protocol.
 
 Uploads are Dataset-scoped and content-verified. Composition registers staging and
 candidate upload IDs durably before claims. Publication is gated on complete ownership

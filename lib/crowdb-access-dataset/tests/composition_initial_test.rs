@@ -35,13 +35,13 @@ async fn initial_split_and_data_share_visibility_and_later_revision_is_independe
     assert!(authority.inspect_split_head(&identity, snapshot).await.is_err());
     let prepared = common::prepare(&authority, &identity, operation, 1).await;
     assert!(matches!(prepared.record.progress, DraftProgress::Prepared { .. }));
-    assert!(authority.inspect_split_head(&identity, snapshot).await.is_err());
+    let initial = authority.inspect_split_head(&identity, snapshot).await.unwrap();
+    assert!(initial.revision.is_some());
+    assert_eq!(authority.latest(&identity).await.unwrap(), Some(parent));
     let receipt = authority
         .publish_composition(&identity, operation, &attempt)
         .await
         .unwrap();
-    let initial = authority.inspect_split_head(&identity, snapshot).await.unwrap();
-    assert!(initial.revision.is_some());
     assert_eq!(initial.generation, None);
     let record = authority
         .get_split_revision(

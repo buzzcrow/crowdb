@@ -230,20 +230,20 @@ async fn head_mutators_help_pending_success_before_replacing_its_marker() {
     assert_eq!(authority.inspect_head(&identity).await.unwrap(), changed);
 }
 #[tokio::test]
-async fn uncommitted_parent_and_divergent_attempt_cannot_publish() {
+async fn complete_unpublished_parent_is_usable_and_divergent_attempt_is_rejected() {
     let (_, authority, identity) = fixture().await;
     let parent = prepare(&authority, &identity, None, 7).await;
-    assert!(matches!(
+    let child = prepare(&authority, &identity, Some(parent), 8).await;
+    assert_eq!(
         authority
-            .prepare_snapshot_candidate(
-                &identity,
-                Some(parent),
-                publication_manifest(8),
-                OperationId::random()
-            )
-            .await,
-        Err(AuthorityError::SnapshotNotFound)
-    ));
+            .get_snapshot(&identity, child)
+            .await
+            .unwrap()
+            .publication
+            .parent,
+        Some(parent)
+    );
+    assert_eq!(authority.latest(&identity).await.unwrap(), None);
     let committed = attempt(&authority, &identity, parent).await;
     authority
         .publish_snapshot_candidate(&identity, &committed)
@@ -262,7 +262,7 @@ async fn uncommitted_parent_and_divergent_attempt_cannot_publish() {
 }
 
 #[tokio::test]
-async fn lost_cas_candidate_is_not_a_committed_parent_or_stable_target() {
+async fn lost_cas_candidate_remains_a_complete_parent_and_stable_target() {
     let (store, authority, identity) = fixture().await;
     let snapshot = prepare(&authority, &identity, None, 10).await;
     let stale = attempt(&authority, &identity, snapshot).await;
@@ -285,21 +285,17 @@ async fn lost_cas_candidate_is_not_a_committed_parent_or_stable_target() {
         .await
         .unwrap()
         .is_none());
-    assert!(matches!(
-        authority.set_stable(&identity, snapshot).await,
-        Err(AuthorityError::SnapshotNotFound)
-    ));
-    assert!(matches!(
+    authority.set_stable(&identity, snapshot).await.unwrap();
+    let child = prepare(&authority, &identity, Some(snapshot), 11).await;
+    assert_eq!(
         authority
-            .prepare_snapshot_candidate(
-                &identity,
-                Some(snapshot),
-                publication_manifest(11),
-                OperationId::random()
-            )
-            .await,
-        Err(AuthorityError::SnapshotNotFound)
-    ));
+            .get_snapshot(&identity, child)
+            .await
+            .unwrap()
+            .publication
+            .parent,
+        Some(snapshot)
+    );
     let retry = attempt(&authority, &identity, snapshot).await;
     authority
         .publish_snapshot_candidate(&identity, &retry)

@@ -28,6 +28,18 @@ impl DatasetAuthority {
             return Err(CompositionError::Conflict);
         }
         if matches!(state.draft.record.progress, DraftProgress::Prepared { .. }) {
+            if state.uploads.is_none() {
+                self.complete_snapshot_candidate(
+                    identity,
+                    state
+                        .draft
+                        .preparation
+                        .as_ref()
+                        .ok_or(CompositionError::Corrupt)?
+                        .candidate,
+                )
+                .await?;
+            }
             return Ok(state.draft);
         }
         if !matches!(state.draft.record.progress, DraftProgress::Evaluated { .. }) {
@@ -77,6 +89,17 @@ impl DatasetAuthority {
         }
         next.draft.preparation = Some(preparation);
         self.replace_composition(identity, &old, &state, &next).await?;
+        if complete && next.uploads.is_none() {
+            self.complete_snapshot_candidate(
+                identity,
+                next.draft
+                    .preparation
+                    .as_ref()
+                    .ok_or(CompositionError::Corrupt)?
+                    .candidate,
+            )
+            .await?;
+        }
         Ok(next.draft)
     }
     async fn create_composition_candidate(
@@ -96,19 +119,12 @@ impl DatasetAuthority {
         } else {
             Some(candidate_operation(operation, 1)?)
         };
-        let snapshot = if let Some(split_operation) = split_operation {
-            self.prepare_candidate_with_split(
-                identity,
-                state.draft.record.parent,
-                bytes,
-                operation,
-                crate::split::candidate_revision(split_operation, 1)?,
-            )
-            .await?
-        } else {
-            self.prepare_snapshot_candidate(identity, state.draft.record.parent, bytes, operation)
-                .await?
-        };
+        let initial = split_operation
+            .map(|operation| crate::split::candidate_revision(operation, 1))
+            .transpose()?;
+        let snapshot = self
+            .prepare_candidate_with_split(identity, state.draft.record.parent, bytes, operation, initial)
+            .await?;
         Ok(CompositionPreparation {
             candidate: snapshot,
             split_operation,

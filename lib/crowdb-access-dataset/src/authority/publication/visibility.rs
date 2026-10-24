@@ -35,6 +35,20 @@ impl DatasetAuthority {
         work: &mut InspectionWork<'_>,
     ) -> Result<bool, InspectionError> {
         use crate::AuthorityError;
+        let candidate = work
+            .get(
+                &super::candidate::candidate_key(identity, snapshot).map_err(AuthorityError::from)?,
+                4096,
+            )
+            .await?;
+        if let Some(candidate) = &candidate {
+            if candidate.bytes == super::complete::RETIRED {
+                return Ok(false);
+            }
+            if super::candidate::decode_candidate(&candidate.bytes, snapshot)?.version == 2 {
+                return Ok(true);
+            }
+        }
         if let Some(value) = work
             .get(
                 &snapshot_commit_key(identity, snapshot).map_err(AuthorityError::from)?,
@@ -69,14 +83,7 @@ impl DatasetAuthority {
         }
         // A prepared modern candidate is not a legacy publication, even when
         // a malformed old head happens to name it.
-        if work
-            .get(
-                &super::candidate::candidate_key(identity, snapshot).map_err(AuthorityError::from)?,
-                4096,
-            )
-            .await?
-            .is_some()
-        {
+        if candidate.is_some() {
             return Ok(false);
         }
         Ok(self
@@ -101,11 +108,10 @@ impl DatasetAuthority {
         else {
             return Ok(None);
         };
-        let binding: super::candidate::CandidateBinding =
-            serde_json::from_slice(&value.bytes).map_err(|_| InspectionError::Corrupt)?;
-        if binding.version != 1 || binding.snapshot != snapshot {
-            return Err(InspectionError::Corrupt);
+        if value.bytes == super::complete::RETIRED {
+            return Ok(None);
         }
+        let binding = super::candidate::decode_candidate(&value.bytes, snapshot)?;
         Ok(Some(binding.operation))
     }
 }

@@ -166,7 +166,7 @@ async fn catalog_continuations_do_not_cross_scope_or_repeat_entries() {
 }
 
 #[tokio::test]
-async fn prepared_snapshot_is_hidden_from_metadata_and_preparation_status() {
+async fn complete_prepared_snapshot_is_visible_without_updating_latest() {
     let test = TestDatasetHttp::start(Arc::new(TestStore::default())).await;
     let client = Client::new();
     let (root, parent) = fixture(&client, &test).await;
@@ -185,11 +185,11 @@ async fn prepared_snapshot_is_hidden_from_metadata_and_preparation_status() {
     .await;
     let id = prepared["id"].as_str().unwrap();
     let inventory = response(client.get(format!("{root}/snapshot-inventory")), 200).await;
-    assert_eq!(inventory["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(inventory["entries"].as_array().unwrap().len(), 2);
     for action in ["summary", "schema", "samples", "inspection"] {
-        response(client.get(format!("{root}/snapshots/{id}/{action}")), 404).await;
+        response(client.get(format!("{root}/snapshots/{id}/{action}")), 200).await;
     }
-    response(client.post(format!("{root}/snapshots/{id}/inspection")), 404).await;
+    response(client.post(format!("{root}/snapshots/{id}/inspection")), 200).await;
     drop(client);
     test.stop().await;
 }

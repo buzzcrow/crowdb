@@ -73,7 +73,7 @@ the resolved Snapshot ID and never stores a mutable name in its place.
 A Snapshot has zero or one declared parent. Parentage is explicit; ID ordering
 never implies ancestry. A child may add, replace, or tombstone samples and
 fields while inheriting all values not overridden by its visible parent chain.
-Any committed same-Dataset Snapshot may be the parent, independently of latest.
+Any complete available same-Dataset Snapshot may be the parent, independently of latest.
 Multiple parentless roots are permitted. Sample IDs are opaque bytes, represented
 as canonical padded base64 in JSON; they MUST NOT be normalized as text or paths.
 
@@ -169,21 +169,29 @@ The authority MUST perform publication in this order:
 2. Allocate or recover one candidate Snapshot ID for the operation.
 3. Persist the prepared Snapshot record.
 4. Persist every Manifest partition and the Snapshot binding.
-5. Persist the published Snapshot record.
-6. Advance `latest` atomically to the complete Snapshot.
+5. Finish inspection metadata, initial Split membership and required payload owners.
+6. Persist the published Snapshot record and install the final complete resource root.
+7. Advance `latest` atomically to the complete Snapshot.
 
 Prepare completes the durable candidate without advancing latest. A failure
-before step 5 leaves the candidate invisible and recoverable by the same
-operation token. The Published record may exist before step 6 succeeds; an
+before step 6 leaves the candidate invisible and recoverable by the same
+operation token. The Published flag alone does not authorize reads. A complete root
+allows ID reads and references before step 7 succeeds; an
 operation status alone is not proof that the head advanced. A successful Publish
 completes the head transition. Retry identical content to finish an ambiguous
 outcome; retries of historical publication MUST NOT rewind a newer head. A reader of `latest` MUST see either the previous
 complete Snapshot or the new complete Snapshot, never a prepared or partial
 Manifest.
 
-`stable` may be set only to an existing published Snapshot. Publishing a new
+`stable` may be set only to an existing complete available Snapshot. Publishing a new
 Snapshot never changes `stable` implicitly. A published Snapshot remains
 addressable by ID until reclamation removes its metadata under Section 9.
+Complete results that never won latest, including head-CAS losers, MUST also be
+readable by ID, enumerable and usable as parents or stable targets. Preparation
+records alone MUST NOT authorize these operations. Draft abandonment or supersession
+MUST preserve the complete result and its payload owners. Incomplete cleanup MUST
+seal the same final resource key that completion conditionally installs, preventing
+late finalization from exposing reclaimed data.
 
 Control v2 separates candidate creation from publication attempts. An attempt MUST
 bind the exact candidate and expected opaque head generation. Initial Split
@@ -260,8 +268,11 @@ equivalent.
 ## 9. Retention and reclamation
 
 `retain` and `release` apply to an immutable Snapshot ID. The latest Snapshot,
-stable Snapshot, retained Snapshots, parents of live committed Snapshots on any
+stable Snapshot, retained Snapshots, parents of live complete Snapshots on any
 branch are protected from reclamation. Active reads do not prevent deletion.
+The parent/child index MUST precede final child completion, which MUST recheck parent
+availability. An indexed child protects its parent until terminal retirement even
+while its own completion is pending; cleanup removes this conservative protection.
 
 Deletion first persists a terminal mark and a five-minute `reclaim_after` deadline.
 Cleanup MUST NOT remove snapshot-owned metadata or payload references before

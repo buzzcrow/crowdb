@@ -1,4 +1,5 @@
 mod access;
+pub(crate) use access::CandidateRetirement;
 pub use access::{
     MetadataCleanupProgress, SnapshotLifecycle, SnapshotReclaimError, SnapshotReclaimPhase,
     SnapshotReclaimStatus,
@@ -164,16 +165,7 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
-        let value = self
-            .store
-            .get(&key::snapshot(identity, snapshot)?)
-            .await?
-            .ok_or(AuthorityError::SnapshotNotFound)?;
-        let record: SnapshotRecord = decode(&value.bytes)?;
-        if record.publication.state != PublicationState::Published {
-            return Err(AuthorityError::SnapshotNotFound);
-        }
-        self.ensure_snapshot_live(identity, snapshot).await?;
+        self.get_snapshot(identity, snapshot).await?;
         let marker = encode(&snapshot)?;
         match self
             .store
@@ -210,7 +202,6 @@ impl DatasetAuthority {
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
         self.get_snapshot(identity, snapshot).await?;
-        self.require_committed_snapshot(identity, snapshot).await?;
         let key = key::head(identity)?;
         let current = self.store.get(&key).await?;
         if let Some(current) = &current {
@@ -254,22 +245,14 @@ impl DatasetAuthority {
             if !seen.insert(id) {
                 return Err(AuthorityError::AncestryCycle);
             }
-            let value = self
-                .store
-                .get(&key::snapshot(identity, id)?)
-                .await?
-                .ok_or(AuthorityError::SnapshotNotFound)?;
-            let record: SnapshotRecord = decode(&value.bytes)?;
-            if record.publication.state != PublicationState::Published {
-                return Err(AuthorityError::SnapshotNotFound);
-            }
+            let record = self.get_snapshot(identity, id).await?;
             current = record.publication.parent;
             chain.push(record);
         }
         Ok(chain)
     }
 
-    /// Opens one published Snapshot without changing the current head.
+    /// Opens one complete Snapshot without changing the current head.
     ///
     /// # Errors
     /// Returns a missing, unpublished, or malformed Snapshot.
@@ -284,9 +267,13 @@ impl DatasetAuthority {
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
         let record: SnapshotRecord = decode(&value.bytes)?;
+        if record.publication.snapshot != snapshot {
+            return Err(AuthorityError::Corrupt);
+        }
         if record.publication.state != PublicationState::Published {
             return Err(AuthorityError::SnapshotNotFound);
         }
+        self.require_committed_snapshot(identity, snapshot).await?;
         Ok(record)
     }
 
@@ -397,11 +384,15 @@ impl DatasetAuthority {
                 CasOutcome::Applied(_) => {}
                 CasOutcome::Conflict(_) => return Err(AuthorityError::HeadConflict),
             }
+            self.complete_snapshot_candidate(identity, snapshot).await?;
             self.advance_head(identity, None, snapshot_record.publication.parent, snapshot)
                 .await?;
         } else if self.current_latest(identity).await? != Some(snapshot) {
+            self.complete_snapshot_candidate(identity, snapshot).await?;
             self.advance_head(identity, None, snapshot_record.publication.parent, snapshot)
                 .await?;
+        } else {
+            self.complete_snapshot_candidate(identity, snapshot).await?;
         }
         Ok(decode::<ManifestBinding>(&binding)?.partitions)
     }
@@ -424,7 +415,8 @@ impl DatasetAuthority {
         decode(&value.bytes)
     }
 
-    /// Loads the lightweight manifest index for bounded planning and shuffle.
+    /// Loads stored Manifest partitions for internal planning and cleanup.
+    /// Public read handlers use `read_manifest` to enforce resource admission.
     ///
     /// # Errors
     /// Returns missing or malformed manifest partitions and storage failures.
@@ -473,6 +465,18 @@ impl DatasetAuthority {
             return Err(AuthorityError::Corrupt);
         }
         Ok(manifest)
+    }
+
+    /// Reads the complete Manifest of an available Snapshot without changing any state.
+    /// # Errors
+    /// Rejects incomplete or deleted resources, corrupt content and storage failures.
+    pub async fn read_manifest(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+    ) -> Result<ManifestRecord, AuthorityError> {
+        self.require_committed_snapshot(identity, snapshot).await?;
+        self.get_manifest(identity, snapshot).await
     }
 
     /// Plans a scan directly from persisted manifest partitions. Only the
@@ -734,6 +738,9 @@ impl DatasetAuthority {
         if sample_ids.len() > crate::MAX_BATCH_SIZE {
             return Err(DatasetError::InvalidManifest.into());
         }
+        if sample_ids.is_empty() || fields.is_empty() {
+            self.get_snapshot(identity, snapshot).await?;
+        }
         let mut batch = Vec::with_capacity(sample_ids.len());
         for sample_id in sample_ids {
             batch.push(SampleView {
@@ -786,6 +793,9 @@ impl DatasetAuthority {
     ) -> Result<Vec<SampleView>, AuthorityError> {
         if cancel.is_cancelled() {
             return Err(DatasetError::ReadCancelled.into());
+        }
+        if sample_ids.is_empty() || fields.is_empty() {
+            self.get_snapshot(identity, snapshot).await?;
         }
         let mut batch = Vec::with_capacity(sample_ids.len());
         for sample_id in sample_ids {

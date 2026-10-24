@@ -44,6 +44,9 @@ impl DatasetAuthority {
             .snapshot_candidate(identity, snapshot)
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
+        if candidate.version != 2 {
+            return Err(AuthorityError::SnapshotNotFound);
+        }
         self.persist_attempt(identity, attempt).await?;
         if let Some(receipt) = self.snapshot_commit(identity, snapshot).await? {
             return Ok(receipt);
@@ -106,7 +109,7 @@ impl DatasetAuthority {
         }
     }
 
-    async fn mark_candidate_published(
+    pub(super) async fn mark_candidate_published(
         &self,
         identity: &DatasetIdentity,
         candidate: &super::candidate::CandidateBinding,

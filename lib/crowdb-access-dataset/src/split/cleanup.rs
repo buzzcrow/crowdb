@@ -73,14 +73,19 @@ impl DatasetAuthority {
         let retired = self
             .inspection_snapshot_retired(identity, state.record.snapshot, &mut work)
             .await?;
-        if state.initial && !retired {
+        let complete_initial = state.initial
+            && !retired
+            && self
+                .snapshot_has_commit_proof(identity, state.record.snapshot, &mut work)
+                .await?;
+        if state.initial && !retired && !complete_initial {
             return Err(SplitLifecycleError::Frozen);
         }
         let end = state
             .record
             .revision
             .checked_add(u64::from(
-                retired || matches!(state.record.progress, DraftProgress::Abandoned),
+                retired || complete_initial || matches!(state.record.progress, DraftProgress::Abandoned),
             ))
             .ok_or(SplitLifecycleError::Limit)?;
         let cursor_key = state_key(b"DS\0SCG\0", identity, operation, None)?;

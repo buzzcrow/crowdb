@@ -118,12 +118,23 @@ async fn publication_requires_candidate_owners_and_preserves_payload_after_stagi
     let snapshot = f.prepare().await;
     let attempt = common::attempt(&f.authority, &f.identity, snapshot).await;
     assert!(matches!(
+        f.authority.get_snapshot(&f.identity, snapshot).await,
+        Err(AuthorityError::SnapshotNotFound)
+    ));
+    assert!(matches!(
+        f.authority
+            .publish_snapshot_candidate(&f.identity, &attempt)
+            .await,
+        Err(AuthorityError::SnapshotNotFound)
+    ));
+    assert!(matches!(
         f.authority
             .publish_composition(&f.identity, f.operation, &attempt)
             .await,
         Err(CompositionError::Conflict)
     ));
     f.own().await;
+    assert!(f.authority.get_snapshot(&f.identity, snapshot).await.is_ok());
     f.authority
         .publish_composition(&f.identity, f.operation, &attempt)
         .await
@@ -161,9 +172,9 @@ async fn publication_requires_candidate_owners_and_preserves_payload_after_stagi
 }
 
 #[tokio::test]
-async fn cancelling_prepared_composition_retires_both_owners_and_is_restartable() {
+async fn cancelling_complete_composition_retires_staging_and_preserves_resource_owner() {
     let f = TestComposition::new().await;
-    f.prepare().await;
+    let snapshot = f.prepare().await;
     f.own().await;
     f.authority
         .abandon_composition(&f.identity, f.operation, 2)
@@ -171,9 +182,13 @@ async fn cancelling_prepared_composition_retires_both_owners_and_is_restartable(
         .unwrap();
     let cleanup = f.cleanup().await;
     assert!(cleanup.complete);
-    assert_eq!(cleanup.retired_owners, 2);
+    assert_eq!(cleanup.retired_owners, 1);
     assert_eq!(f.cleanup().await, cleanup);
-    assert!(f.uploads.abort(&f.location).await.unwrap().cleanup_complete);
+    assert!(matches!(
+        f.uploads.abort(&f.location).await,
+        Err(UploadError::Conflict)
+    ));
+    assert!(f.authority.get_snapshot(&f.identity, snapshot).await.is_ok());
     assert!(f
         .authority
         .prepare_composition_uploads(&f.identity, f.operation, &f.uploads, &ReadCancellation::new())
@@ -234,7 +249,7 @@ async fn child_candidate_claims_inherited_upload_and_cancellation_preserves_pare
         .await
         .unwrap();
     assert!(cleanup.complete);
-    assert_eq!(cleanup.retired_owners, 1);
+    assert_eq!(cleanup.retired_owners, 0);
     assert!(matches!(
         f.uploads.abort(&f.location).await,
         Err(UploadError::Conflict)

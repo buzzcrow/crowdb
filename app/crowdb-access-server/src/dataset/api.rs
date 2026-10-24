@@ -141,7 +141,7 @@ impl DatasetHttpService {
                 json(&conversion::snapshot(record, authority.latest(&identity).await?))
             }
             (Method::GET, ["snapshots", id, "manifest"]) => {
-                let manifest = authority.get_manifest(&identity, snapshot(id)?).await?;
+                let manifest = authority.read_manifest(&identity, snapshot(id)?).await?;
                 json(&conversion::public_manifest(manifest, &identity)?)
             }
             (Method::PUT, ["names", "stable"]) => {

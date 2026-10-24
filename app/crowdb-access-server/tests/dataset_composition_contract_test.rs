@@ -50,7 +50,7 @@ async fn uploaded_composition_publishes_initial_splits_and_branches_from_a_froze
     response(client.delete(format!("{root}/uploads/{upload}")), 409).await;
     let prepared = composition::prepare(&client, &draft, "2", "1").await;
     let snapshot = prepared["preparation"]["snapshot"].as_str().unwrap();
-    response(client.get(format!("{root}/snapshots/{snapshot}/summary")), 404).await;
+    response(client.get(format!("{root}/snapshots/{snapshot}/summary")), 200).await;
     let receipt = composition::publish(
         &client,
         &root,
