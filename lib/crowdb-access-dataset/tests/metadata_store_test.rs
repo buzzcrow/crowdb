@@ -83,12 +83,44 @@ impl ChunkKvRangeCatalogSource for TestCatalog {
 struct TestTransport {
     stall: AtomicBool,
     calls: AtomicUsize,
+    deletion: AtomicUsize,
     values: Vec<RpcValue>,
 }
 #[async_trait]
 impl ChunkKvTransport for TestTransport {
-    async fn point(&self, _: &str, _: &PointRequest) -> Result<ChunkKvResponse> {
-        panic!("unbounded point read")
+    async fn point(&self, _: &str, request: &PointRequest) -> Result<ChunkKvResponse> {
+        assert!(matches!(request.operation, PointOperation::Delete { .. }));
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let result = match self.deletion.load(Ordering::Relaxed) {
+            0 => Ok(OperationResult::Mutation {
+                applied: true,
+                revision: Some(8),
+                observed: None,
+            }),
+            1 => Err(RpcFailure {
+                code: ChunkKvRpcErrorCode::InvalidRequest,
+                message: "delete rejected".into(),
+                retry_after_ms: None,
+                latest_map_revision: None,
+                owner_hint: None,
+            }),
+            2 => Ok(OperationResult::Mutation {
+                applied: false,
+                revision: None,
+                observed: None,
+            }),
+            3 => Ok(OperationResult::Value(None)),
+            _ => {
+                return Err(crowdb_chunk_kv_client::ClientError::Transport(
+                    "lost reply".into(),
+                ))
+            }
+        };
+        Ok(ChunkKvResponse {
+            map_revision: 1,
+            journal_position: None,
+            result,
+        })
     }
     async fn scan(&self, _: &str, _: &ScanRequest) -> Result<ChunkKvResponse> {
         panic!("unbounded scan")
@@ -139,6 +171,7 @@ fn fixture() -> (ChunkKvDatasetStore, Arc<TestTransport>) {
     let transport = Arc::new(TestTransport {
         stall: AtomicBool::new(false),
         calls: AtomicUsize::new(0),
+        deletion: AtomicUsize::new(0),
         values: [b"p\0a".as_slice(), b"p\0b", b"q\0a"]
             .into_iter()
             .map(|key| RpcValue {
@@ -164,6 +197,17 @@ fn budget() -> MetadataScanBudget {
         items: 1,
         bytes: 64,
         timeout: Duration::from_secs(1),
+    }
+}
+
+#[tokio::test]
+async fn metadata_delete_requires_an_applied_result_without_confirmation_reads() {
+    for outcome in 0..=4 {
+        let (store, transport) = fixture();
+        transport.deletion.store(outcome, Ordering::Relaxed);
+        let result = store.delete(b"retired metadata").await;
+        assert_eq!(result.is_ok(), outcome == 0, "outcome={outcome}, {result:?}");
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 1);
     }
 }
 #[tokio::test]
