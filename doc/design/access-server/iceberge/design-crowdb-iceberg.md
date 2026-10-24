@@ -234,20 +234,25 @@ epochs, missing targets and tombstones are not visible; corruption is an error.
 Active-context checks bracket resolution so retirement cannot turn an old-domain
 lookup into a response from the replacement catalog.
 
-Property updates persist their input and immutable before/after snapshots, then
-CAS the whole namespace authority. Publication advances the property and mutation
-revisions but preserves the name epoch and admission fence. An operation marker
-protects uncertain publication evidence until the terminal result is durable;
-another writer can finish that operation before replacing its marker. Cleanup
-uses a conditional write and advances the mutation revision again. After a
-definitive CAS conflict proves the input revision is obsolete, a property update
-may return to preparation with fresh snapshots; unknown outcomes never take that
-path. Work is bounded and exhaustion remains retryable, not a terminal conflict.
-Property preparation uses the same holder-bound marker dispatcher as creation
-and drop. It can finish interrupted child admission or a nonempty drop before
-publishing properties; recursive helpers consume the caller's phase budget.
-Namespace mutations use the shared HTTP retry ledger before executing their
-durable operation driver; terminal client errors are retained alongside success.
+Property updates apply the request's assignments and removals directly to the
+current namespace authority through one conditional write. This advances the
+property and mutation revisions once, preserving the name epoch and admission
+fence. A definite conflict supplies the next authority; the request reapplies its
+changes while preserving other properties. Deletion, changed identity or a
+pending lifecycle operation blocks that update. Active-context validation
+brackets resolution and checks completion. Retry work is bounded.
+
+Property requests persist no input, operation journal, marker, response payload
+or HTTP retry binding. A request that leaves the properties unchanged performs
+no write. A lost reply is returned as an error; the client can submit its changes
+again. Each response describes that request's actual removed and missing keys,
+so a repeated removal can move from removed to missing. Repeating assignments
+can overwrite a concurrent assignment to the same property. Other properties
+are retained. Old property journals remain readable by recovery, including the
+holder-bound marker dispatcher used before new updates. Creation and drop
+currently use their durable drivers and the shared HTTP retry ledger.
+The catalog configuration does not advertise a universal idempotency-key
+lifetime, since independent property updates do not retain operation responses.
 
 Namespace creation installs a recoverable parent/name reservation before a parent
 authority CAS. Nested admission leaves a pending-operation marker and advances only

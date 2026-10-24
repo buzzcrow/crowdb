@@ -135,8 +135,6 @@ async fn setup() -> (TestNamespace, NamespaceIdentifier) {
 async fn update(fixture: &TestNamespace, identifier: NamespaceIdentifier) {
     let request = NamespacePropertyRequest {
         context: fixture.context,
-        identity: identity(),
-        principal: "writer".into(),
         identifier,
         changes: PropertyChanges {
             removals: Vec::new(),
@@ -147,7 +145,7 @@ async fn update(fixture: &TestNamespace, identifier: NamespaceIdentifier) {
     for _ in 0..4 {
         match repository.update_properties(&request).await {
             Ok(Some(outcome)) => {
-                assert_eq!(outcome.status, 200);
+                assert_eq!(outcome.updated, ["updated"]);
                 let authority = repository
                     .load(fixture.context, &request.identifier)
                     .await

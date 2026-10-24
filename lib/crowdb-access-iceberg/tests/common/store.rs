@@ -129,12 +129,27 @@ impl TestStore {
         }
     }
 
-    async fn pause_namespace_authority(&self, key: &[u8], expected: Option<&[u8]>, value: &[u8]) {
+    async fn pause_namespace_update(&self, key: &[u8], expected: Option<&[u8]>, value: &[u8]) {
         if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceAuthority(authority)) =
             crowdb_access_iceberg::key::IcebergKey::decode(key)
                 .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
         {
-            if authority.pending_operation.is_some() && expected.is_some() {
+            if expected.is_some()
+                && (authority.pending_operation.is_some()
+                    || expected
+                        .and_then(|bytes| {
+                            crowdb_access_iceberg::key::IcebergKey::decode(key)
+                                .ok()
+                                .and_then(|key| {
+                                    crowdb_access_iceberg::record::StorageRecord::decode(&key, bytes).ok()
+                                })
+                        })
+                        .is_some_and(|record| {
+                            matches!(record,
+                        crowdb_access_iceberg::record::StorageRecord::NamespaceAuthority(before)
+                            if before.property_revision < authority.property_revision)
+                        }))
+            {
                 if let Some(barrier) = &self.namespace_update_barrier {
                     if self.namespace_update_visits.fetch_add(1, Ordering::SeqCst) < 2 {
                         barrier.wait().await;
@@ -267,7 +282,7 @@ impl CatalogStore for TestStore {
                 }
             }
         }
-        self.pause_namespace_authority(key, expected, value).await;
+        self.pause_namespace_update(key, expected, value).await;
         if let Ok(crowdb_access_iceberg::record::StorageRecord::Active(root)) =
             crowdb_access_iceberg::key::IcebergKey::decode(key)
                 .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))

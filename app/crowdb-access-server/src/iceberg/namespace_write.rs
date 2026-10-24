@@ -70,6 +70,15 @@ impl NamespaceWrites {
         let request_key = RequestKey::parse(header, now).map_err(|_| bad_request())?;
         let uri = request.uri().clone();
         let bytes = read_body(request.into_body()).await?;
+        if route == "POST /namespaces/{namespace}/properties" {
+            let NamespaceMutation::Update(identifier, changes) =
+                namespace_request::parse(route, &uri, &bytes)?
+            else {
+                return Err(bad_request());
+            };
+            let (status, body) = self.update_properties(context, identifier, changes).await?;
+            return Ok(response(status, body));
+        }
         let mut digest = Sha256::new();
         for value in [route.as_bytes(), uri.to_string().as_bytes(), bytes.as_slice()] {
             digest.update((value.len() as u64).to_be_bytes());
@@ -155,17 +164,9 @@ impl NamespaceWrites {
                     .await
                     .map_err(|error| mutation_error(&error))?,
             ),
-            NamespaceMutation::Update(identifier, changes) => self
-                .repository
-                .update_properties(&NamespacePropertyRequest {
-                    context: retry.context,
-                    identity: retry.identity,
-                    principal: retry.principal.clone(),
-                    identifier,
-                    changes,
-                })
-                .await
-                .map_err(|error| mutation_error(&error))?,
+            NamespaceMutation::Update(identifier, changes) => {
+                return self.update_properties(retry.context, identifier, changes).await;
+            }
             NamespaceMutation::Drop(identifier) => self
                 .dropper
                 .drop_namespace(&NamespaceDropRequest {
@@ -186,6 +187,33 @@ impl NamespaceWrites {
             .await
             .map_err(|_| service_unavailable())?;
         Ok((outcome.status, bytes))
+    }
+
+    async fn update_properties(
+        &self,
+        context: CatalogContext,
+        identifier: crowdb_access_iceberg::namespace::NamespaceIdentifier,
+        changes: crowdb_access_iceberg::namespace::PropertyChanges,
+    ) -> Result<(u16, Vec<u8>), IcebergErrorResponse> {
+        let outcome = self
+            .repository
+            .update_properties(&NamespacePropertyRequest {
+                context,
+                identifier,
+                changes,
+            })
+            .await
+            .map_err(|error| mutation_error(&error))?
+            .ok_or_else(|| {
+                IcebergErrorResponse::new(404, "NoSuchNamespaceException", "Namespace does not exist")
+            })?;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "removed": outcome.removed,
+            "updated": outcome.updated,
+            "missing": outcome.missing,
+        }))
+        .map_err(|_| service_unavailable())?;
+        Ok((200, body))
     }
 }
 

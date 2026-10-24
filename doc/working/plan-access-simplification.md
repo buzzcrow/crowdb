@@ -437,6 +437,19 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 
 ## 已完成与验证记录
 
+- **2026-10-24，P9.3，R1 的 namespace 属性场景**：属性请求直接修改现有 authority，
+  删除新请求的 NamespaceOperation、输入/响应 payload、pending marker 和 HTTP RetryLedger。
+  请求不再携带 operation/principal 作为存储层属性参数；入口仍逐次鉴权。CAS 用于保留未提及
+  的属性及删除/名称代际；连续四次真实冲突直用 observed authority，零额外 GET。
+  单层 namespace 实测正常 5G + 1C（含三次 context 检查），无变化重试 5G + 0C；
+  元数据 key 总数不增加。unknown 无确认 GET，客户端重试得到当次 removed/missing，
+  可重写同属性，并不保证重放原响应。旧 property journal 仍可由恢复器结清，正常请求不创建。
+  配置移除全局 PT24H 响应重放广告，避免把部分旧路由的能力宣称为所有 mutation 的合同。
+  namespace update 11、recovery 4、HTTP write 4、route 2 项通过；create/drop/admission/model
+  回归通过。两 crate all-target/all-feature clippy、workspace fmt 与 diff 检查通过。
+  HTTP 服务测试已在允许本地监听的环境验证；初次沙箱 bind 拒绝不属于代码失败。
+
+
 - **2026-10-24，P5.2 与 P5.1 装载部分**：S3 MPU 的内部 exchange 保留并校验 typed
   observation；freeze、abort、settle、发布完成标记和 object predecessor 冲突不再 GET
   同一 key。绑定 upload 后直读权威记录，校验 bucket/object/upload，阶段间不重读列表索引；

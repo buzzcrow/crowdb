@@ -163,6 +163,7 @@ async fn namespace_writes_use_distinct_credentials_and_replay_success_and_termin
 
 async fn verify_property_replay(store: &common::TestStore, address: std::net::SocketAddr) {
     let update_key = fresh_key(store).await;
+    let records = store.values.load().len();
     let changes = r#"{"removals":["owner","missing"],"updates":{"value":"kept"}}"#;
     let updated = send(
         address,
@@ -174,17 +175,24 @@ async fn verify_property_replay(store: &common::TestStore, address: std::net::So
     )
     .await;
     assert_eq!(updated.0, 200);
+    let repeated = send(
+        address,
+        "POST",
+        "/v1/namespaces/parent/properties",
+        "w",
+        Some(&update_key),
+        changes,
+    )
+    .await;
+    assert_eq!(repeated.0, 200);
     assert_eq!(
-        send(
-            address,
-            "POST",
-            "/v1/namespaces/parent/properties",
-            "w",
-            Some(&update_key),
-            changes
-        )
-        .await,
-        updated
+        serde_json::from_str::<serde_json::Value>(&repeated.1).unwrap(),
+        serde_json::json!({"removed": [], "updated": ["value"], "missing": ["missing", "owner"]})
+    );
+    assert_eq!(
+        store.values.load().len(),
+        records,
+        "property updates must not create journals or response records"
     );
     assert_eq!(
         send(
