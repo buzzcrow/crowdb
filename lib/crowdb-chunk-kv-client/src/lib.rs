@@ -16,7 +16,8 @@ pub use catalog::{
 };
 pub use client::ChunkKvClient;
 pub use compose::{
-    BatchItem, ComposedItemError, MultiGetItemResult, MultiScanContinuation, MultiScanPage, MultiScanRequest,
+    BatchItem, ComposedItemError, MultiGetItemResult, MultiScanContinuation, MultiScanOutcome, MultiScanPage,
+    MultiScanRequest,
 };
 pub use config::ClientConfig;
 pub use error::{ClientError, Result};
