@@ -11,6 +11,7 @@ mod read;
 pub use read::UploadReadDescriptor;
 mod retirement;
 mod stream;
+mod verification;
 pub use stream::VerifiedUploadPart;
 
 use bytes::Bytes;

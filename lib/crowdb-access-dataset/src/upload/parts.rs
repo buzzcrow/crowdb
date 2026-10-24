@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_client::{FramedWriteBuffer, IoError, SmallWriteIntent};
 use crowdb_protocol::chunkdb::rpc::Location;
-use md5::{Digest, Md5};
 use std::sync::Arc;
 
 impl DatasetUploads {
@@ -187,16 +186,7 @@ impl DatasetUploads {
         if parts.len() != part_count(&session) as usize {
             return Err(UploadError::Conflict);
         }
-        let mut hash = Md5::new();
-        let mut length = 0;
-        for part in &parts {
-            let bytes = self.verified_part(part).await?;
-            hash.update(&bytes);
-            length += part.length;
-        }
-        if length != session.length || <[u8; 16]>::from(hash.finalize()) != session.md5 {
-            return Err(UploadError::Integrity);
-        }
+        self.verify_completion(&session, &parts).await?;
         session.state = UploadState::Complete;
         match self
             .store

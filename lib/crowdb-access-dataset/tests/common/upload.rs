@@ -147,6 +147,7 @@ pub struct TestPayload {
     pub defer_reclaim: AtomicBool,
     pub unconfirmed: AtomicBool,
     pub abandoned: AtomicBool,
+    pub corrupt_read: AtomicBool,
 }
 #[async_trait]
 impl PayloadStorage for TestPayload {
@@ -187,11 +188,19 @@ impl PayloadStorage for TestPayload {
             .and_then(|l| l.chunk_id)
             .ok_or(UploadError::Integrity)?
             .low;
-        self.data
+        let bytes = self
+            .data
             .load()
             .get(&index)
             .cloned()
-            .ok_or(UploadError::Storage("missing bytes".into()))
+            .ok_or(UploadError::Storage("missing bytes".into()))?;
+        if self.corrupt_read.load(Ordering::Relaxed) {
+            let mut bytes = bytes.to_vec();
+            bytes[0] ^= 1;
+            Ok(Bytes::from(bytes))
+        } else {
+            Ok(bytes)
+        }
     }
     async fn durability(
         &self,

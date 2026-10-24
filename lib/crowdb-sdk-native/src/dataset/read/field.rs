@@ -22,7 +22,12 @@ pub(super) struct FieldReader {
     source: Source,
     length: u64,
     expected: [u8; 16],
-    digest: Md5,
+    digest: FieldDigest,
+}
+
+enum FieldDigest {
+    Incremental(Md5),
+    SinglePart { verified: bool },
 }
 
 impl FieldReader {
@@ -58,7 +63,7 @@ impl FieldReader {
             source,
             length,
             expected,
-            digest: Md5::new(),
+            digest: FieldDigest::Incremental(Md5::new()),
         })
     }
 
@@ -82,6 +87,9 @@ impl FieldReader {
                     if record.length() != self.length || record.md5() != self.expected {
                         return Err(Error::Integrity);
                     }
+                    if record.part_count() == 1 {
+                        self.digest = FieldDigest::SinglePart { verified: false };
+                    }
                     *metadata = Some(record);
                 }
                 let record = metadata.as_ref().ok_or(Error::Integrity)?;
@@ -100,16 +108,27 @@ impl FieldReader {
                     if let Some(payload) = request.run(async { Ok(reader.next().await?) }).await? {
                         break Some(payload);
                     }
+                    if record.part_count() == 1 {
+                        if reader.verified_digest() != Some((self.length, self.expected)) {
+                            return Err(Error::Integrity);
+                        }
+                        self.digest = FieldDigest::SinglePart { verified: true };
+                    }
                     *stream = None;
                     *part += 1;
                 }
             }
         };
-        if payload.is_none()
-            && (self.offset != self.length
-                || <[u8; 16]>::from(self.digest.clone().finalize()) != self.expected)
-        {
-            return Err(Error::Integrity);
+        if payload.is_none() {
+            let verified = match &self.digest {
+                FieldDigest::Incremental(digest) => {
+                    <[u8; 16]>::from(digest.clone().finalize()) == self.expected
+                }
+                FieldDigest::SinglePart { verified } => *verified,
+            };
+            if self.offset != self.length || !verified {
+                return Err(Error::Integrity);
+            }
         }
         Ok(payload)
     }
@@ -122,7 +141,9 @@ impl FieldReader {
         if self.offset > self.length {
             return Err(Error::Integrity);
         }
-        self.digest.update(bytes);
+        if let FieldDigest::Incremental(digest) = &mut self.digest {
+            digest.update(bytes);
+        }
         Ok(())
     }
 }

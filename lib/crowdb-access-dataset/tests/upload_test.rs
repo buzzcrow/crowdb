@@ -18,6 +18,32 @@ fn location(name: &str) -> Vec<u8> {
     )
     .unwrap()
 }
+
+#[tokio::test]
+async fn single_part_completion_still_verifies_actual_stored_bytes() {
+    let payloads = Arc::new(TestPayload::default());
+    let uploads = DatasetUploads::new(Arc::new(TestStore::default()), payloads.clone());
+    let key = location("single-corruption");
+    uploads
+        .create(&key, 4, 4, Md5::digest(b"data").into(), 100)
+        .await
+        .unwrap();
+    uploads
+        .put_part(&key, 0, Bytes::from_static(b"data"), 1)
+        .await
+        .unwrap();
+    payloads.corrupt_read.store(true, Ordering::Relaxed);
+    assert!(matches!(
+        uploads.complete(&key, 2).await,
+        Err(UploadError::Integrity)
+    ));
+    assert_eq!(uploads.metadata(&key).await.unwrap().state, UploadState::Open);
+    payloads.corrupt_read.store(false, Ordering::Relaxed);
+    assert_eq!(
+        uploads.complete(&key, 3).await.unwrap().state,
+        UploadState::Complete
+    );
+}
 #[tokio::test]
 async fn lost_storage_reply_recovers_exact_intent_without_another_allocation() {
     let store = Arc::new(TestStore::default());

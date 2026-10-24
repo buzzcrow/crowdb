@@ -227,6 +227,9 @@ only after the chunk's acknowledged cursor covers the location and the bytes
 pass integrity checks. Readable but unconfirmed bytes remain pending. A fenced
 abandoned allocation is reclaimed before replacing it under the same part ID.
 Completion verifies every part and the whole declared MD5 with bounded buffers.
+For one part whose declared length and MD5 match the whole upload, verification
+hashes the stored bytes once and reuses that exact-range result. Multiple part
+digests cannot be concatenated into the whole-upload MD5.
 
 Expiry scans bounded pages of upload authorities directly. Each caller retains
 its scan cursor locally; restart repeats the scan and loses no cleanup obligation.
@@ -294,6 +297,10 @@ description per request, then fetch each part record once. Part indices, lengths
 and payload digests remain checked; EOF does not reload metadata. The description
 is request-owned and registers no remote reader or retention. New requests still
 perform admission, and reclaimed parts fail instead of producing successful EOF.
+Native delivery reuses a single part's successful-EOF length and MD5 proof only
+when the part is the complete field range and matches the field's expected digest.
+Partial data and failed streams provide no proof. Multiple parts still require
+the independent whole-field digest, and inline fields remain checked directly.
 The internal legacy scan adapter also returns a caller-owned cursor without
 loading or persisting progress. Requests have no shared inactivity TTL.
 

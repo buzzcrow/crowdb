@@ -416,8 +416,8 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
 - [ ] **F8 减少 payload 复制**：审查 HTTP 收整 part、`BytesMut` 拼接、inline copy、兼容
   reader 之外的 S3 coalescing；UploadedChunkReader 已改为最终 Vec 一次拼接。先查活跃调用，再移交 owner 或流式
   发送。Files: Dataset payload/upload、Access HTTP batch、S3/native 接收路径。验证部分帧、非整齐 size、held buffer 和实际复制字节。
-- [ ] **F9 分解摘要/编码/分配 CPU**：complete 重读 part 并做 part/whole MD5，native part 与
-  field 还各有摘要；MD5 不能直接拼合，只有同范围可信校验证据才可复用。测大 owner/part-index
+- [ ] **F9 分解剩余摘要/编码/分配 CPU**：单 part complete/native field 已复用同范围的已验证
+  MD5，multipart 仍校验各 part 和整体，不能拼合摘要。继续测大 owner/part-index
   编码、JSON/base64、header clone 和 allocations。Files: Dataset upload、native `dataset/read/field.rs`、inspection response。
 - [ ] **F10 混合大小准入与调度**：测 count/bytes 限制、慢消费者占用、单线程多个 in-flight、
   有界 prefetch、batch 等待、1 ms arena 重试和 10 ms cancellation 轮询。区分 Access、CQ/WR、
@@ -464,6 +464,15 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，F9.1**：单 part 完成仍读取并验证实际存储内容，但其长度/MD5 与整个 upload
+  相同时不再重复哈希同一范围。VerifiedUploadPart 仅在成功 EOF 后给出长度＋MD5 证据；
+  native 单 part 字段消费该证据并核对字段期望值，不再次计算整体 MD5。两条路径的逻辑
+  摘要输入由 2L 变为 L，IO/元数据 RPC 未减少；multipart 与 inline 继续原有整体摘要。
+  失败/部分读取没有证据；同长度替换内容且伪造 part MD5 仍不能冒充原字段的整体证明，
+  native EOF 报 sticky integrity error，已交付 owner 保持有效。没有放宽完整性合同或新增状态。
+  upload stream 2/upload 7、native digest 1/payload 3/read 4 项及两 crate
+  all-target/all-feature clippy、fmt、diff 检查通过。尚无本项的同源 CPU/TPS 实测。
 
 - **2026-10-24，F2.2 / F8.2**：增加 `next_with_locators`，HTTP/native continuation 在同一
   调用内复用 Snapshot 准入、schema 和已扫描成员。私有准备结果绑定 authority/identity/

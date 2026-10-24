@@ -48,6 +48,14 @@ impl UploadReadDescriptor {
 }
 
 impl VerifiedUploadPart {
+    /// Returns the exact verified byte range and digest only after successful EOF.
+    /// Partial data, cancellation and failed integrity checks do not certify a part.
+    #[must_use]
+    pub fn verified_digest(&self) -> Option<(u64, [u8; 16])> {
+        (!self.failed && self.stream.is_none() && self.delivered == self.expected.length)
+            .then_some((self.expected.length, self.expected.md5))
+    }
+
     /// Failure is terminal; subsequent pulls cannot report successful EOF.
     /// # Errors
     /// Returns storage failures, truncated/oversized payloads or digest mismatch.

@@ -32,9 +32,11 @@ async fn stream_retains_allocation_without_collecting_and_verifies_at_eof() {
     assert!(uploads.read_part_stream(&location, 0).await.is_err());
     uploads.complete(&location, 2).await.unwrap();
     let mut stream = uploads.read_part_stream(&location, 0).await.unwrap();
+    assert!(stream.verified_digest().is_none());
     assert_eq!(payloads.pulls.load(Ordering::Relaxed), 0);
     let first = stream.next().await.unwrap().unwrap();
     let second = stream.next().await.unwrap().unwrap();
+    assert!(stream.verified_digest().is_none());
     assert!(Arc::ptr_eq(
         first.allocation().unwrap(),
         second.allocation().unwrap()
@@ -43,6 +45,7 @@ async fn stream_retains_allocation_without_collecting_and_verifies_at_eof() {
     assert_eq!(first.as_ref(), b"da");
     assert_eq!(second.as_ref(), b"ta");
     assert!(stream.next().await.unwrap().is_none());
+    assert_eq!(stream.verified_digest(), Some((4, Md5::digest(b"data").into())));
     assert!(stream.next().await.unwrap().is_none());
     drop(stream);
     drop(uploads);
@@ -65,6 +68,7 @@ async fn corruption_truncation_overrun_and_partial_transport_failure_stay_termin
         }
         let pulls = payloads.pulls.load(Ordering::Relaxed);
         assert!(stream.next().await.is_err());
+        assert!(stream.verified_digest().is_none());
         assert_eq!(payloads.pulls.load(Ordering::Relaxed), pulls);
     }
 }
