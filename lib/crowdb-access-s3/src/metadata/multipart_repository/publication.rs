@@ -7,8 +7,8 @@ use crowdb_access_multipart::{next_revision, MultipartComposer};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    MetadataKey, MultipartPhase, MultipartRepository, MultipartRepositoryError, MultipartSessionRecord,
-    PutIfAbsentOutcome,
+    MetadataKey, MultipartExchange, MultipartPhase, MultipartRepository, MultipartRepositoryError,
+    MultipartSessionRecord, PutIfAbsentOutcome,
 };
 use crate::integrity::multipart_checksum_marker;
 use crate::metadata::ObjectRecord;
@@ -95,18 +95,21 @@ impl MultipartRepository {
         }
         let mutation = if let Some(before) = observed {
             self.store
-                .compare_exchange(key.clone(), before.value, value.clone())
+                .compare_exchange_observed(key.clone(), before.value, value.clone())
                 .await
         } else {
             self.store
                 .put_if_absent(key.clone(), value.clone())
                 .await
-                .map(|outcome| matches!(outcome, PutIfAbsentOutcome::Inserted { .. }))
+                .map(|outcome| match outcome {
+                    PutIfAbsentOutcome::Inserted { .. } => (true, None),
+                    PutIfAbsentOutcome::Existing(observed) => (false, Some(observed)),
+                })
         };
         match mutation {
-            Ok(true) => {}
-            Ok(false) => {
-                if self.store.get(key).await?.as_ref().map(|entry| &entry.value) != Some(&value) {
+            Ok((true, _)) => {}
+            Ok((false, observed)) => {
+                if observed.as_ref().map(|entry| &entry.value) != Some(&value) {
                     return Err(MultipartRepositoryError::Conflict);
                 }
             }
@@ -126,13 +129,12 @@ impl MultipartRepository {
         let mut next = current.clone();
         next.revision = next_revision(current.revision).ok_or(MultipartRepositoryError::Conflict)?;
         next.phase = MultipartPhase::Published;
-        if self.exchange(current, &next).await? {
-            Ok(next)
-        } else {
-            self.load(current)
-                .await?
-                .filter(|record| record.phase == MultipartPhase::Published)
-                .ok_or(MultipartRepositoryError::Conflict)
+        match self.exchange_observed(current, &next).await? {
+            MultipartExchange::Applied => Ok(next),
+            MultipartExchange::Conflict(Some(observed)) if observed.phase == MultipartPhase::Published => {
+                Ok(*observed)
+            }
+            MultipartExchange::Conflict(_) => Err(MultipartRepositoryError::Conflict),
         }
     }
 }

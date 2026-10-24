@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,6 +28,8 @@ use crowdb_protocol::common::ChunkId;
 use sha2::{Digest as _, Sha256};
 use tokio::sync::{mpsc, oneshot};
 
+#[path = "common/multipart_cost.rs"]
+mod cost;
 #[path = "common/multipart_progress.rs"]
 mod progress;
 
@@ -43,6 +45,35 @@ impl ChunkKvRangeCatalogSource for Catalog {
 enum ActorRequest {
     Point(PointOperation, oneshot::Sender<Result<ChunkKvResponse>>),
     Scan(ScanRequest, oneshot::Sender<Result<ChunkKvResponse>>),
+    Inject(TestConflict),
+}
+
+struct TestConflict {
+    key: Vec<u8>,
+    value: Vec<u8>,
+    skip: usize,
+}
+
+struct TestProbe {
+    reads: Arc<AtomicUsize>,
+    writes: Arc<AtomicUsize>,
+    lose_reply: Arc<AtomicBool>,
+    sender: mpsc::UnboundedSender<ActorRequest>,
+}
+
+impl TestProbe {
+    fn counts(&self) -> (usize, usize) {
+        (
+            self.reads.load(Ordering::Relaxed),
+            self.writes.load(Ordering::Relaxed),
+        )
+    }
+
+    fn conflict(&self, key: Vec<u8>, value: Vec<u8>, skip: usize) {
+        self.sender
+            .send(ActorRequest::Inject(TestConflict { key, value, skip }))
+            .unwrap();
+    }
 }
 
 struct ActorTransport(mpsc::UnboundedSender<ActorRequest>);
@@ -159,17 +190,60 @@ fn scan_reply(request: &ScanRequest, values: &HashMap<Vec<u8>, RpcValue>) -> Chu
 }
 
 async fn repository() -> (MultipartRepository, Arc<AtomicBool>, Arc<ChunkKvMetadataStore>) {
-    let (sender, mut receiver) = mpsc::unbounded_channel::<ActorRequest>();
-    let lose_reply = Arc::new(AtomicBool::new(false));
-    let actor_lose_reply = Arc::clone(&lose_reply);
+    let (repository, probe, store) = repository_with_probe().await;
+    (repository, probe.lose_reply.clone(), store)
+}
+
+fn spawn_actor(
+    mut receiver: mpsc::UnboundedReceiver<ActorRequest>,
+    reads: Arc<AtomicUsize>,
+    writes: Arc<AtomicUsize>,
+    lose_reply: Arc<AtomicBool>,
+) {
     tokio::spawn(async move {
         let mut values = HashMap::new();
+        let mut conflict: Option<TestConflict> = None;
+        let mut forbidden_get: Option<Vec<u8>> = None;
         while let Some(request) = receiver.recv().await {
             match request {
                 ActorRequest::Point(operation, response) => {
                     let is_mutation = !matches!(operation, PointOperation::Get { .. });
+                    if let PointOperation::Get { key } = &operation {
+                        reads.fetch_add(1, Ordering::Relaxed);
+                        assert_ne!(
+                            Some(key),
+                            forbidden_get.as_ref(),
+                            "GET after definite CAS conflict"
+                        );
+                    } else {
+                        writes.fetch_add(1, Ordering::Relaxed);
+                    }
+                    let mutation_key = match &operation {
+                        PointOperation::CompareExchange { key, .. }
+                        | PointOperation::PutIfAbsent { key, .. } => Some(key),
+                        _ => None,
+                    };
+                    if let Some(fault) = conflict.as_mut().filter(|fault| Some(&fault.key) == mutation_key) {
+                        if fault.skip == 0 {
+                            let fault = conflict.take().unwrap();
+                            let revision = values
+                                .get(&fault.key)
+                                .map_or(1, |value: &RpcValue| value.revision + 1);
+                            forbidden_get = Some(fault.key.clone());
+                            values.insert(
+                                fault.key.clone(),
+                                RpcValue {
+                                    key: fault.key,
+                                    value: fault.value,
+                                    revision,
+                                },
+                            );
+                        } else {
+                            fault.skip -= 1;
+                        }
+                    }
                     let result = reply(operation, &mut values);
-                    if is_mutation && actor_lose_reply.swap(false, Ordering::SeqCst) {
+                    if is_mutation && lose_reply.swap(false, Ordering::SeqCst) {
                         let _ = response.send(Err(ClientError::Transport("committed reply lost".into())));
                     } else {
                         let _ = response.send(Ok(result));
@@ -178,9 +252,29 @@ async fn repository() -> (MultipartRepository, Arc<AtomicBool>, Arc<ChunkKvMetad
                 ActorRequest::Scan(request, response) => {
                     let _ = response.send(Ok(scan_reply(&request, &values)));
                 }
+                ActorRequest::Inject(fault) => {
+                    conflict = Some(fault);
+                    forbidden_get = None;
+                }
             }
         }
     });
+}
+
+async fn repository_with_probe() -> (MultipartRepository, Arc<TestProbe>, Arc<ChunkKvMetadataStore>) {
+    let (sender, receiver) = mpsc::unbounded_channel::<ActorRequest>();
+    let probe = Arc::new(TestProbe {
+        reads: Arc::new(AtomicUsize::new(0)),
+        writes: Arc::new(AtomicUsize::new(0)),
+        lose_reply: Arc::new(AtomicBool::new(false)),
+        sender: sender.clone(),
+    });
+    spawn_actor(
+        receiver,
+        probe.reads.clone(),
+        probe.writes.clone(),
+        probe.lose_reply.clone(),
+    );
     let mut page = ChunkKvRangeCatalogPage {
         generation: 1,
         page_index: 0,
@@ -234,7 +328,7 @@ async fn repository() -> (MultipartRepository, Arc<AtomicBool>, Arc<ChunkKvMetad
     let store = Arc::new(ChunkKvMetadataStore::new(client));
     (
         MultipartRepository::new(Arc::clone(&store), TenantId::new(b"tenant".to_vec()).unwrap()),
-        lose_reply,
+        probe,
         store,
     )
 }

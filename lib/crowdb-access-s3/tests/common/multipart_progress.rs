@@ -40,6 +40,36 @@ async fn concurrent_distinct_parts_publish_without_reuploading() {
 }
 
 #[tokio::test]
+async fn concurrent_replacements_return_their_own_part_content() {
+    let (repository, _, _) = repository().await;
+    let repository = Arc::new(repository);
+    let session = session();
+    repository.begin(&session).await.unwrap();
+    let mut tasks = Vec::new();
+    for digest in 1..=10 {
+        let repository = repository.clone();
+        let session = session.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut value = part();
+            value.raw_md5 = [digest; 16];
+            let saved = repository
+                .put_stream_part(&session, &value, 110)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(saved.raw_md5, value.raw_md5);
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap();
+    }
+    let current = repository.load(&session).await.unwrap().unwrap();
+    assert_eq!(current.part_count, 1);
+    assert_eq!(current.staged_bytes, 5);
+    assert!(current.pending.is_none());
+}
+
+#[tokio::test]
 async fn orphan_generation_does_not_poison_retry_or_changed_part() {
     for identical in [true, false] {
         let (repository, _, store) = repository().await;

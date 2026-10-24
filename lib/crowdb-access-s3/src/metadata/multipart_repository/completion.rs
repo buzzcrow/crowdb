@@ -8,7 +8,9 @@ use crowdb_access_multipart::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::{MultipartPhase, MultipartRepository, MultipartRepositoryError, MultipartSessionRecord};
+use super::{
+    MultipartExchange, MultipartPhase, MultipartRepository, MultipartRepositoryError, MultipartSessionRecord,
+};
 
 const MIN_NONFINAL_PART_BYTES: u64 = 5 * 1024 * 1024;
 
@@ -106,7 +108,18 @@ impl MultipartRepository {
                 .map(|value| Sha256::digest(value.value).into()),
         );
         next.etag = Some(assembled.etag);
-        Ok(self.exchange(&current, &next).await?.then_some(next))
+        Ok(match self.exchange_observed(&current, &next).await? {
+            MultipartExchange::Applied => Some(next),
+            MultipartExchange::Conflict(Some(observed))
+                if matches!(
+                    observed.phase,
+                    MultipartPhase::Publishing | MultipartPhase::Published
+                ) && observed.completion_request_digest == Some(request_digest) =>
+            {
+                Some(*observed)
+            }
+            MultipartExchange::Conflict(_) => None,
+        })
     }
 }
 

@@ -299,10 +299,10 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
 ### P5 — S3 multipart（客户端控制 part；协议资源与过程状态分开审查）
 
 - [ ] **P5.1 精简 MPU 持久化与重复装载**：先说明 UploadId/ListParts/Complete 所需资源事实，
-  删除无用过程阶段；复核旧实现新 part `7G + 4C` 路径，把已知 session/generation/
-  pointer 传给 settle；验证 identity index 是否只是列表元数据，不能未经证明删除权威检查。Files: S3 `metadata/multipart_repository{.rs,/parts.rs}`。
-- [ ] **P5.2 保留 typed CAS 结果**：exchange 返回 applied/observed，消除 complete/abort/settle
-  对同 key 的 conflict 后 GET；同时覆盖同 part 替换、不同 part 并发、complete/abort 和不确定写入。Files: S3 `metadata/multipart_repository/{completion,publication,terminal}.rs`。
+  删除无用过程阶段。已完成正常 part 的 session/generation/pointer 直传，repository 成本
+  从旧 `7G + 4C` 降至实测 `2G + 4C`；独立 identity 查询仍验证 listing index。
+  剩余任务是客户端最终清单与 pending/accounting/generation 的必要性审查及删除，
+  ListParts、完成数据和最终对象引用不能丢失。Files: S3 `metadata/multipart_repository{.rs,/parts.rs}`。
 
 ### P6 — Iceberg 旧 multipart / 全局 credits
 
@@ -436,6 +436,17 @@ P1.1 已完成，见验证记录；当前 TableLoader 直接解析 canonical 内
   下层改造应由 profiling 证据触发。共享 `crowdb-access-multipart` 主要做计算/验证，不发 storage RPC。
 
 ## 已完成与验证记录
+
+- **2026-10-24，P5.2 与 P5.1 装载部分**：S3 MPU 的内部 exchange 保留并校验 typed
+  observation；freeze、abort、settle、发布完成标记和 object predecessor 冲突不再 GET
+  同一 key。绑定 upload 后直读权威记录，校验 bucket/object/upload，阶段间不重读列表索引；
+  reserve 成功复用本次 generation 与 pointer，后续帮助恢复仍加载其证据。
+  routed actor 实测新 part `2G + 4C`、相同内容重试 `2G + 0C`、单 part freeze `3G + 1C`、
+  publish `4G + 2C`；不含外层 bucket/auth/payload IO。unknown 保留现有核对语义。
+  固定次数会把帮助其他 part 的有效进展算作失败，改用五秒工作期限，不放大重试次数。
+  MPU repository 20 项含同 part 十个覆盖者、不同 part 十个写者、两类 object 冲突、
+  终态 observation、丢回复与 exact generation；S3 `--all-targets` 及 native MPU 五项通过。
+  all-target/all-feature clippy、fmt 和 diff 检查通过；没有新增过程记录、锁或 wire 字段。
 
 - **2026-10-24，P4.2**：part 索引、abort、cleanup 完成标记、part 清理均直接沿 CAS 的
   observed value 重试；初始 part 枚举的结果也直接交给清理，不重复 GET。

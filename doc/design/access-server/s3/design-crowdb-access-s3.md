@@ -199,6 +199,15 @@ iteration instead of discarding it and reading again. This coordination is scope
 to one upload and preserves exact staged-byte accounting and completion selection;
 independent uploads share no reservation record.
 
+After a successful reservation, the writer reuses its known part pointer and
+immutable generation to publish and settle it. Recovery loads that evidence
+when a later request helps the reservation. A bound upload is loaded directly
+through its authoritative key and validated against its bucket, object, and
+upload identity; the listing index is not reread at every stage. Definite
+conflicts retain the typed upload record for the next operation. Part progress
+has a five-second work deadline so continuous contention cannot run forever;
+expiration of this local work budget returns a retryable busy result.
+
 Completion validates the ordered selected part numbers, raw MD5 values,
 minimum nonfinal size, and current generations. It freezes the selection under
 the session compare-and-swap, composes chunk locations with adjusted logical

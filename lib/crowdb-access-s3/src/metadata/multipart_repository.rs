@@ -3,7 +3,6 @@
 
 //! CAS-backed multipart authority in the S3 Chunk-KV namespace.
 
-use crowdb_access_multipart::next_revision;
 use std::sync::Arc;
 
 use super::{
@@ -12,12 +11,14 @@ use super::{
 };
 
 mod completion;
+mod exchange;
 mod listing;
 mod parts;
 mod publication;
 mod terminal;
 
 pub use completion::CompletionPart;
+use exchange::MultipartExchange;
 pub use listing::{MultipartPartPage, MultipartUploadPage};
 pub use terminal::MultipartExpiryPage;
 
@@ -110,8 +111,19 @@ impl MultipartRepository {
         &self,
         identity: &MultipartSessionRecord,
     ) -> Result<Option<MultipartSessionRecord>, MultipartRepositoryError> {
-        self.load_identity(identity.bucket_id, &identity.object_key, &identity.upload_id)
-            .await
+        self.store
+            .get(self.session_key(identity))
+            .await?
+            .map(|value| {
+                MultipartSessionRecord::decode(
+                    &value.value,
+                    identity.bucket_id,
+                    &identity.object_key,
+                    &identity.upload_id,
+                )
+                .map_err(Into::into)
+            })
+            .transpose()
     }
 
     /// Reads one session through its bucket, object and upload identity.
@@ -139,43 +151,6 @@ impl MultipartRepository {
                 MultipartSessionRecord::decode(&value.value, bucket, object, upload_id).map_err(Into::into)
             })
             .transpose()
-    }
-
-    /// Moves one session phase under an exact-value CAS fence.
-    ///
-    /// # Errors
-    /// Rejects invalid revisions, changed identity and uncertain storage
-    /// writes that cannot be confirmed by a matching read.
-    pub async fn exchange(
-        &self,
-        previous: &MultipartSessionRecord,
-        next: &MultipartSessionRecord,
-    ) -> Result<bool, MultipartRepositoryError> {
-        if previous.bucket_id != next.bucket_id
-            || previous.object_key != next.object_key
-            || previous.upload_id != next.upload_id
-            || next_revision(previous.revision) != Some(next.revision)
-        {
-            return Err(MultipartRepositoryError::Conflict);
-        }
-        let key = self.session_key(previous);
-        let expected = previous.encode()?;
-        let value = next.encode()?;
-        match self
-            .store
-            .compare_exchange_observed(key, expected, value.clone())
-            .await
-        {
-            Ok((true, _)) => Ok(true),
-            Ok((false, observed)) => Ok(observed.is_some_and(|observed| observed.value == value)),
-            Err(error) => {
-                if self.load(next).await?.as_ref() == Some(next) {
-                    Ok(true)
-                } else {
-                    Err(error.into())
-                }
-            }
-        }
     }
 
     /// Reads one current part generation.

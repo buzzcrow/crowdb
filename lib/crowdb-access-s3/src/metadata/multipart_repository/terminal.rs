@@ -4,7 +4,8 @@
 //! Terminal multipart session transitions.
 
 use super::{
-    MetadataKey, MultipartPhase, MultipartRepository, MultipartRepositoryError, MultipartSessionRecord,
+    MetadataKey, MultipartExchange, MultipartPhase, MultipartRepository, MultipartRepositoryError,
+    MultipartSessionRecord,
 };
 use crate::metadata::BucketId;
 use crowdb_access_multipart::next_revision;
@@ -105,11 +106,7 @@ impl MultipartRepository {
             .await?
             .ok_or(MultipartRepositoryError::Conflict)?;
         if current.pending.is_some() {
-            self.settle_pending_part(&current).await?;
-            current = self
-                .load(session)
-                .await?
-                .ok_or(MultipartRepositoryError::Conflict)?;
+            current = self.settle_current_part(&current).await?.current;
             if current.pending.is_some() {
                 return Err(MultipartRepositoryError::Busy);
             }
@@ -123,13 +120,12 @@ impl MultipartRepository {
         let mut next = current.clone();
         next.revision = next_revision(current.revision).ok_or(MultipartRepositoryError::Conflict)?;
         next.phase = MultipartPhase::Aborted;
-        if self.exchange(&current, &next).await? {
-            Ok(next)
-        } else {
-            self.load(session)
-                .await?
-                .filter(|record| record.phase == MultipartPhase::Aborted)
-                .ok_or(MultipartRepositoryError::Conflict)
+        match self.exchange_observed(&current, &next).await? {
+            MultipartExchange::Applied => Ok(next),
+            MultipartExchange::Conflict(Some(observed)) if observed.phase == MultipartPhase::Aborted => {
+                Ok(*observed)
+            }
+            MultipartExchange::Conflict(_) => Err(MultipartRepositoryError::Conflict),
         }
     }
 }
