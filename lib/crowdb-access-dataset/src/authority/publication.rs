@@ -9,6 +9,7 @@ mod legacy;
 mod legacy_candidate;
 mod legacy_reclaim;
 mod opaque;
+mod partitions;
 mod receipt;
 mod resource;
 mod retirement;
@@ -24,8 +25,8 @@ enum PublicationMode {
 
 use super::{decode, decode_head, decode_manifest, encode, DatasetAuthority};
 use crate::{
-    key, AuthorityError, CasOutcome, DatasetError, DatasetIdentity, ManifestBinding, ManifestRecord,
-    OperationId, PublicationState, SnapshotId, SnapshotPublication, SnapshotRecord,
+    key, AuthorityError, DatasetError, DatasetIdentity, ManifestBinding, OperationId, PublicationState,
+    SnapshotId, SnapshotPublication, SnapshotRecord,
 };
 
 impl DatasetAuthority {
@@ -180,7 +181,7 @@ impl DatasetAuthority {
             snapshot,
             parent,
             operation,
-            manifest: manifest_bytes.clone(),
+            manifest: manifest_bytes,
             state: PublicationState::Prepared,
         };
         prepared.validate()?;
@@ -199,7 +200,7 @@ impl DatasetAuthority {
                 snapshot,
                 parent,
                 operation,
-                &manifest_bytes,
+                &prepared.manifest,
                 match mode {
                     PublicationMode::Candidate(initial) | PublicationMode::Resource(initial) => initial,
                     _ => None,
@@ -252,38 +253,6 @@ impl DatasetAuthority {
             return Err(AuthorityError::Corrupt);
         }
         Ok(())
-    }
-
-    async fn persist_manifest_parts(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-        manifest: &ManifestRecord,
-    ) -> Result<u32, AuthorityError> {
-        let partitions = manifest.partition(1024)?;
-        if partitions.is_empty() {
-            return Err(DatasetError::InvalidManifest.into());
-        }
-        for partition in &partitions {
-            let partition_key = key::manifest_partition(identity, snapshot, partition.partition)?;
-            let bytes = encode(partition)?;
-            match self.store.compare_exchange(&partition_key, None, &bytes).await? {
-                CasOutcome::Applied(_) => {}
-                CasOutcome::Conflict(Some(existing)) if existing.bytes == bytes => {}
-                CasOutcome::Conflict(_) => return Err(AuthorityError::AlreadyExists),
-            }
-        }
-        let binding = encode(&ManifestBinding {
-            snapshot,
-            partitions: u32::try_from(partitions.len()).map_err(|_| DatasetError::InvalidManifest)?,
-        })?;
-        let binding_key = key::manifest_binding(identity, snapshot)?;
-        match self.store.compare_exchange(&binding_key, None, &binding).await? {
-            CasOutcome::Applied(_) => {}
-            CasOutcome::Conflict(Some(existing)) if existing.bytes == binding => {}
-            CasOutcome::Conflict(_) => return Err(AuthorityError::AlreadyExists),
-        }
-        Ok(decode::<ManifestBinding>(&binding)?.partitions)
     }
 
     pub(super) async fn advance_head(
