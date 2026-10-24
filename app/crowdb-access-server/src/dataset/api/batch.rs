@@ -116,8 +116,11 @@ impl DatasetHttpService {
         if encoded.len() > 8 * 1024 * 1024 {
             return Err(ApiError::too_large());
         }
-        let mut prefix = Vec::from(b"CDBDS001".as_slice());
-        prefix.extend_from_slice(&frame(1, &Bytes::from(encoded))?);
+        let length = u32::try_from(encoded.len()).map_err(|_| ApiError::too_large())?;
+        let mut prefix = Vec::with_capacity(13);
+        prefix.extend_from_slice(b"CDBDS001");
+        prefix.push(1);
+        prefix.extend_from_slice(&length.to_be_bytes());
         let locators = samples
             .into_iter()
             .flat_map(|mut sample| {
@@ -136,6 +139,7 @@ impl DatasetHttpService {
             part: 0,
             upload: None,
             pending: Some(Bytes::from(prefix)),
+            metadata: Some(Bytes::from(encoded)),
             finished: false,
         };
         Ok(Response::builder()
@@ -188,6 +192,7 @@ struct BatchState {
     part: u32,
     upload: Option<UploadReadDescriptor>,
     pending: Option<Bytes>,
+    metadata: Option<Bytes>,
     finished: bool,
 }
 fn stream_body(state: BatchState) -> DatasetBody {
@@ -211,6 +216,9 @@ fn stream_body(state: BatchState) -> DatasetBody {
 impl BatchState {
     async fn next(&mut self) -> Result<Bytes, ApiError> {
         if let Some(bytes) = self.pending.take() {
+            return Ok(bytes);
+        }
+        if let Some(bytes) = self.metadata.take() {
             return Ok(bytes);
         }
         let Some(locator) = self.locators.get_mut(self.index) else {
