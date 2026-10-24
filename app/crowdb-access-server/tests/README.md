@@ -126,6 +126,29 @@ The explicit local-HCA profile remains a separate gate. Its current host setup
 needs restoration; environment-gated unit cases are not counted as hardware
 acceptance.
 
+## Bounded immutable write comparison
+
+Build/import the matching service image, then run:
+
+```sh
+pixi run clean-env && pixi run python e2e-test/write_batch_comparison.py --image crowdb-node:access-cleanup-20261025
+```
+
+The owned persistent Chunk-KV fixture compares release point writes and routed
+batch writes on client CPU 2 and service CPUs 4–15. Both paths admit at most
+16 rows / 2 MiB of logical key/value input, plus one prepared row. Three warmups
+precede three paired, alternating trials for small schema/membership/field rows
+and 64-KiB inline payloads with their actual JSON encoding. The test records typed
+results, routes, owner RPC attempts, completed TCP frames and protocol bytes,
+client CPU ticks and RSS. Artifacts include the image/source identity, client
+binary/source hashes, original output and `comparison.json`.
+
+This comparison does not publish a Dataset head. Logical admission bytes exclude
+transport copies; TCP protocol bytes exclude IP/retransmissions. Allocation and
+copied-byte counts are unmeasured. Process memory peaks are cumulative, and
+short trials can report zero CPU ticks without having zero CPU cost. Report
+the measured routing scope rather than assuming multiple partitions or owners.
+
 ## Verification and execution notes
 
 - Library: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`.
