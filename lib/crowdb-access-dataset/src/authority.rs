@@ -487,6 +487,18 @@ impl DatasetAuthority {
         plan: &crate::ReadPlan,
         limits: crate::ReadLimits,
     ) -> Result<Vec<Vec<Vec<u8>>>, AuthorityError> {
+        Ok(crate::planner::into_batches(
+            self.plan_ids(identity, plan, limits).await?,
+            plan.batch_size,
+        ))
+    }
+
+    pub(crate) async fn plan_ids(
+        &self,
+        identity: &DatasetIdentity,
+        plan: &crate::ReadPlan,
+        limits: crate::ReadLimits,
+    ) -> Result<Vec<Vec<u8>>, AuthorityError> {
         plan.validate()?;
         limits.validate()?;
         let binding = self
@@ -523,11 +535,10 @@ impl DatasetAuthority {
             }
         }
         ids.sort();
-        let batches: Vec<_> = ids.chunks(plan.batch_size).map(<[Vec<u8>]>::to_vec).collect();
-        if batches.len() > limits.max_batches {
+        if ids.len().div_ceil(plan.batch_size) > limits.max_batches {
             return Err(DatasetError::ReadLimitExceeded.into());
         }
-        Ok(batches)
+        Ok(ids)
     }
 
     /// Deletes one unreachable snapshot's Dataset metadata idempotently.

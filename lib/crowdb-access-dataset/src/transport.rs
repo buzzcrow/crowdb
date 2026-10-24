@@ -109,17 +109,19 @@ impl DatasetReadService {
         self.authority
             .check_snapshot_readable(&self.identity, request.plan.snapshot)
             .await?;
-        let windows = match request.shuffle.as_ref() {
+        let cursor = request.cursor.unwrap_or_else(|| ReadCursor::start(&request.plan));
+        cursor.validate_for(&request.plan)?;
+        let planned = match request.shuffle.as_ref() {
             Some(spec) => {
                 let manifest = self
                     .authority
                     .get_manifest(&self.identity, request.plan.snapshot)
                     .await?;
-                SampleShuffle::execute_windows(&request.plan, &manifest, spec)?
+                SampleShuffle::execute(&request.plan, &manifest, spec)?
             }
             None => {
                 self.authority
-                    .plan_batches(
+                    .plan_ids(
                         &self.identity,
                         &request.plan,
                         crate::ReadLimits {
@@ -133,21 +135,15 @@ impl DatasetReadService {
                     .await?
             }
         };
-        let cursor = request.cursor.unwrap_or_else(|| ReadCursor::start(&request.plan));
-        cursor.validate_for(&request.plan)?;
+        let windows = planned.len().div_ceil(request.plan.batch_size);
         let group = usize::try_from(cursor.group).map_err(|_| DatasetError::CursorMismatch)?;
-        if group > windows.len() || (group == windows.len() && cursor.offset != 0) {
-            return Err(DatasetError::CursorMismatch.into());
-        }
-        let ids = if group == windows.len() {
-            Vec::new()
-        } else {
-            let offset = usize::try_from(cursor.offset).map_err(|_| DatasetError::CursorMismatch)?;
-            if offset > windows[group].len() {
-                return Err(DatasetError::CursorMismatch.into());
-            }
-            windows[group][offset..].to_vec()
-        };
+        let range = crate::planner::batch_range(
+            planned.len(),
+            request.plan.batch_size,
+            cursor.group,
+            cursor.offset,
+        )?;
+        let ids: Vec<_> = planned.into_iter().skip(range.start).take(range.len()).collect();
         let fields: Vec<&str> = request.plan.projection.iter().map(String::as_str).collect();
         let samples = if ids.is_empty() {
             Vec::new()
@@ -166,7 +162,7 @@ impl DatasetReadService {
             snapshot: request.plan.snapshot,
             samples,
             cursor: next,
-            end: group >= windows.len().saturating_sub(1),
+            end: group >= windows.saturating_sub(1),
         })
     }
 

@@ -313,12 +313,19 @@ Partial data and failed streams provide no proof. Multiple parts still require
 the independent whole-field digest, and inline fields remain checked directly.
 The internal legacy scan adapter also returns a caller-owned cursor without
 loading or persisting progress. Requests have no shared inactivity TTL.
+Legacy scan planning retains one flat ordered ID vector, extracts only the
+current window by moving its IDs, and releases the remaining vector before
+payload delivery. Batch adapters move IDs into windows. Selection and budget
+accounting share one pass; sample shuffle computes its plan identity once and
+orders by the existing MD5 seed/epoch/plan/ID key with binary-ID tie breaking.
+The legacy path still scans its full selection; flat planning does not provide
+the incremental metadata behavior of inspection-backed reads.
 
-Binding reuses its committed-Snapshot admission. Inspection-backed selection,
-preview and nonempty batch delivery perform admission inside their bounded
-resolver; wrappers do not repeat the same deletion lookup. Empty and legacy
-batch entry points retain independent admission. Selection and delivery remain
-separate bounded operations, each with its own admission.
+Binding reuses its committed-Snapshot admission. Independent selection, preview
+and batch calls retain their own admission. Combined continuation selection and
+delivery share one request-local Snapshot/schema/membership proof under separate
+work budgets; wrappers do not repeat the same deletion lookup. Empty and legacy
+batch entry points retain independent admission. No proof is cached across requests.
 
 Legacy Snapshots without a stored visibility proof are checked against head and
 anchor ancestry using bounded, cancellable reads. The traversal validates the

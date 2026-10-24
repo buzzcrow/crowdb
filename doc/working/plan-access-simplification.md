@@ -465,6 +465,16 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
 
 ## 已完成与验证记录
 
+- **F4.1 / F9.2（2026-10-24）**：legacy scan 只移交当前窗口的 ID，public batch adapter
+  移交 ID allocation；ReadPlan limits/shuffle 一次选择累计预算，shuffle 每次执行只计算一次
+  plan identity，删除逐 sample 的选中集合反查和逐 ID 的 plan 序列化/哈希。保持既有 MD5
+  顺序、二进制 ID、各入口独立的预算口径和 group/offset/end cursor 合同。legacy 全量
+  Manifest/选择集规划仍未消除，由 F4 跟踪；未增加跨请求缓存或持久化。
+  `legacy_planning_test` 新增两例独立参考排序、边界预算和实际 service 分页验证；
+  Dataset `--all-targets`、Access `dataset_contract_test`/`dataset_read_query_contract_test`
+  共六个 HTTP 用例通过；Dataset all-target/all-feature clippy、workspace fmt、diff check 通过。
+  本批为 CPU/复制路径改进，没有减少正常请求 RPC 或测得端到端 TPS 提升的声明。
+
 - **2026-10-24，P13.4**：Snapshot 回收 head fence 与固定 Snapshot 退休都只初读一次，
   CAS conflict 直接接 observed，不再循环 GET。四次实际 head nonce 竞争及一次竞争退休
   中禁止读取对应 key，仍成功；合计省去五次逻辑 GET。fence 不改变 latest/stable，固定
