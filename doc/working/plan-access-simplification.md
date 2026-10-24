@@ -19,6 +19,8 @@ Upstream: [Dataset SDK](../backlog/R220-dataset-fat-client-plan.md)、
   静态发现、提出方案、代码完成、性能验收不能互相代替。
 - 当前实施基线为 `489ae507`；旧性能审查来自 `878ee901`，
   涉及已删除 session 的结论已移除。下面的成本数字只描述注明的函数路径，需动态复核。
+- 用户要求暂时离开后继续。交接时 46 个未完成 checkbox，
+  包含条件决策、交叉审查和总体验收，不代表 46 个独立功能；没有正在运行的实施步骤。
 
 ## 已确定的约束
 
@@ -31,6 +33,10 @@ Upstream: [Dataset SDK](../backlog/R220-dataset-fat-client-plan.md)、
 - **非空 Iceberg namespace 删除必须失败**，已由用户决定，不再提出放宽选项。
 - **用户决定（2026-10-24）**：允许 rename 在参与父目录中保存最小有界占位，用于严格非空
   删除和迟到 CAS 隔离；删除新 rename 的完整 journal、输入和响应。普通读取不登记。
+- **用户决定（2026-10-24）**：完整 Snapshot/Split 结果即使没有赢 head CAS，也允许按 ID
+  读取和引用。head CAS 仅切换 latest/stable/currentSplit，失败仍返回冲突，不覆盖后来者。
+  未完成资源不开放；无正式引用的结果按期限清理，GC 隔离按 R4 实施。移除“曾发布”证明
+  与请求账本，不能只放宽入口后遗留 CA/CR/SC/SRC/helper。
 - definite CAS conflict 立即使用返回的 observed value 计算合法重试，无“三次后才更新”。
   返回值可能随后又变旧，因此仍需期限/重试上限；transport timeout 不等于 CAS 失败。
   明确 expected revision 的业务操作不能擅自改 base 重放。
@@ -130,7 +136,7 @@ CAS 不再满足只证明“本次条件不成立”，不能谎称“第一次�
 不为每次请求添加历史查询或回执；只有某个具体调用者必须识别被后续提交遮住的历史成功，
 才提出该场景需要的最小方案及代价，交用户 review。
 
-**资源可见性约束 review（2026-10-24，等待决定）**：现代码把“内容已完整生成”与“曾经成功
+**资源可见性约束 review（2026-10-24，用户已选择完整结果按 ID 可用）**：旧实现把“内容已完整生成”与“曾经成功
 切换 head”区分。Snapshot 的 `Published` 标记在 head CAS 之前写，不能单独证明成功；
 `require_committed_snapshot`、历史读取、parent/stable 准入和 Split revision 历史依赖
 `DS\0SC\0` / `DS\0SRC\0`。每次发布还写 `DS\0CA\0` attempt、`DS\0CR\0` response receipt；
@@ -140,13 +146,21 @@ CAS 不再满足只证明“本次条件不成立”，不能谎称“第一次�
 - 场景：完整结果 S1 已经生成；客户端以 H0 发布 S1 的 CAS 输给 S2。现在 S1 既不可按 ID
   读取，也不可成为新 Snapshot 的 parent/stable。另一个场景是 S1 曾赢 head、回复丢失、
   又被 S2 替换；S1 必须可作历史资源。为区分两者，现实现保存上述成功证明。
-- 建议：完整不可变结果按资源 ID 即可读取/引用；head CAS 只决定 latest/stable 指针是否
+- 已确认：完整不可变结果按资源 ID 即可读取/引用；head CAS 只决定 latest/stable 指针是否
   按指定 base 更新。未完成内容仍不可读；未引用结果按明确期限过期，过期请求失败并重做。
   这可删除“曾切换 head”证明、attempt/response 账本与相应 helper；GC/期限隔离仍须按 R4
-  单独证明，不能仅凭本地超时回收。它改变现有可见性合同，不能未经决定直接放开。
-- 保持严格语义的备选：保留每个资源一份最小成功事实，删除 CA/CR 及按 attempt 查询。
-  沿用当前独立键存储时，每个发布仍需额外一次条件写成功事实及覆盖 head 前的帮助检查；
-  这份记录仅用于历史资源可见性，读取不登记，不保存编辑/计算过程或原响应。
+  单独证明，不能仅凭本地超时回收。用户在 S0→S1/S2 竞争和回复丢失例子后明确选择此合同，
+  不采用“必须曾发布才能读”的备选。
+
+- [ ] **R2.1 统一完整资源准入**：只在 Manifest/inspection、初始 Split 与必要 payload owner
+  已完整就绪后按 ID 开放；准备记录本身不等于结果完整。Snapshot/Split 按 ID、parent/stable、
+  history/inventory、continuation 与 legacy 路径统一，删除状态仍拒绝新请求。
+  不能只将 SC/SRC lookup 改成 true：Composition 在 CB 之后还准备初始 Split、claim upload
+  owner，obsolete/abandon cleanup 和 child 保护也依赖旧“曾发布”区分，须同步调整。
+- [ ] **R2.2 删除发布过程账本**：移除新 CA/CR/SC/SRC 写入、覆盖 head 前的帮助与按 attempt
+  历史回复查询；Composition/Split 的 Committing 恢复与 P2/P3 一起删除，客户端保留完整输入。
+  旧记录只作为兼容解码/GC 输入，不让旧账本控制新请求。head 保留 expected base；同一
+  candidate 的当前结果可判断相同，已被后续 head 遮住时不保证历史请求结果重放。
 
 - [ ] **R2 审查条件发布的回复丢失窗口**：用 H0→H1→H2 测试区分条件失败、相同结果与历史未知；
   列出确实依赖历史精确结果的调用者，没有这种需求就移除相应 ledger/response replay。
@@ -459,6 +473,13 @@ HTTP RetryLedger 的新请求入口与执行代码已删除，见验证记录。
   记录 p50/p99、TPS、CPU/RSS、RPC、复制/摘要、清理积压，不缩小负载掩盖失败。
   Files: `tools/sdk/dataset_workload.py`、相关 examples、`e2e-test/`、本机 HCA runner。
   物理多主机验证继续留在独立计划，不并回此处。
+- [ ] **V4.2 验证并发 metadata 与单块 owner 移交的真实链路**：由 `acd25325` 生产源码重新
+  构建独立本地镜像，运行 Dataset 全部容器用例与同参数 TCP workload。与 V4.1 使用相同
+  client/server CPU、metadata 内存、size 集合、并发和校验，保留精确 artifact/source 身份；
+  不把单 sample-field 的当前 workload 当作宽投影并发性能证明，后者继续由 F6/F1 验证。
+  首次 build 的 release/C++/frontend 均完成，但构建期间修改了本计划与成本测试，触发
+  `Source tree changed while building; rebuild the shared OCI image`，退出 1；没有生成新 OCI。
+  恢复时先提交完整稳定树，重跑 build 期间不改任何非忽略文件，保留 source guard。
 
 ## 成本口径与集中代码索引
 

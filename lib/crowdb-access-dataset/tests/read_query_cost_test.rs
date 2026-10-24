@@ -74,13 +74,18 @@ async fn legacy_scan_replays_only_the_caller_checkpoint_without_writes() {
         shuffle: None,
         cursor: None,
     };
+    let admissions = store.admission_reads.load(Ordering::Relaxed);
     let first = DatasetReadService::new(authority.clone(), identity.clone(), 1)
         .unwrap()
         .scan(request.clone())
         .await
         .unwrap();
+    assert_eq!(store.admission_reads.load(Ordering::Relaxed) - admissions, 1);
     let restarted = DatasetReadService::new(authority, identity, 1).unwrap();
+    let admissions = store.admission_reads.load(Ordering::Relaxed);
     assert_eq!(restarted.scan(request.clone()).await.unwrap(), first);
+    assert_eq!(store.admission_reads.load(Ordering::Relaxed) - admissions, 1);
+    let admissions = store.admission_reads.load(Ordering::Relaxed);
     let completed = restarted
         .scan(DatasetScanRequest {
             cursor: Some(first.cursor),
@@ -88,6 +93,7 @@ async fn legacy_scan_replays_only_the_caller_checkpoint_without_writes() {
         })
         .await
         .unwrap();
+    assert_eq!(store.admission_reads.load(Ordering::Relaxed) - admissions, 1);
     assert!(completed.samples.is_empty());
     assert!(completed.end);
     assert_eq!(store.writes.load(Ordering::Relaxed), writes);
