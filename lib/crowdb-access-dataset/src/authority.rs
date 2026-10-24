@@ -752,19 +752,9 @@ impl DatasetAuthority {
         if sample_ids.len() > crate::MAX_BATCH_SIZE {
             return Err(DatasetError::InvalidManifest.into());
         }
-        if sample_ids.is_empty() || fields.is_empty() {
-            self.get_snapshot(identity, snapshot).await?;
-        }
-        let mut batch = Vec::with_capacity(sample_ids.len());
-        for sample_id in sample_ids {
-            batch.push(SampleView {
-                sample_id: sample_id.clone(),
-                fields: self
-                    .resolve_projection(identity, snapshot, sample_id, fields)
-                    .await?,
-                values: BTreeMap::new(),
-            });
-        }
+        let mut batch = self
+            .legacy_batch_locators(identity, snapshot, sample_ids, fields)
+            .await?;
         self.materialize_batch(identity, snapshot, &mut batch).await?;
         Ok(batch)
     }
@@ -808,19 +798,9 @@ impl DatasetAuthority {
         if cancel.is_cancelled() {
             return Err(DatasetError::ReadCancelled.into());
         }
-        if sample_ids.is_empty() || fields.is_empty() {
-            self.get_snapshot(identity, snapshot).await?;
-        }
-        let mut batch = Vec::with_capacity(sample_ids.len());
-        for sample_id in sample_ids {
-            batch.push(SampleView {
-                sample_id: sample_id.clone(),
-                fields: self
-                    .resolve_projection(identity, snapshot, sample_id, fields)
-                    .await?,
-                values: BTreeMap::new(),
-            });
-        }
+        let mut batch = self
+            .legacy_batch_locators(identity, snapshot, sample_ids, fields)
+            .await?;
         for sample in &mut batch {
             for (name, locator) in &sample.fields {
                 if cancel.is_cancelled() {
