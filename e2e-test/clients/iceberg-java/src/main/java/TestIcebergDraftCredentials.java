@@ -29,7 +29,7 @@ public final class TestIcebergDraftCredentials {
   private static final String TOKEN = "w".repeat(32);
   private static final AtomicInteger DRAFTS = new AtomicInteger();
   private static final AtomicInteger REFRESHES = new AtomicInteger();
-  private static final AtomicBoolean EXPIRED = new AtomicBoolean();
+  private static final AtomicBoolean RETIRED = new AtomicBoolean();
   private static final Schema SCHEMA =
       new Schema(Types.NestedField.required(1, "id", Types.LongType.get()));
 
@@ -52,15 +52,15 @@ public final class TestIcebergDraftCredentials {
       verify(second, endpoint, "2");
       require(REFRESHES.get() == 2, "one refresh per exact draft");
       require(DRAFTS.get() == 2, "two invisible same-name drafts");
-      EXPIRED.set(true);
+      RETIRED.set(true);
       boolean rejected = false;
       try {
         verify(first, endpoint, "1");
       } catch (RuntimeException failure) {
-        require(failure.getMessage().contains("Draft expired"), "precise expired draft failure");
+        require(failure.getMessage().contains("Table identity retired"), "precise retired resource failure");
         rejected = true;
       }
-      require(rejected, "expired draft must not fall back to another same-name table");
+      require(rejected, "retired identity must not fall back to another same-name table");
       System.out.println("Official staged RESTCatalog credential refresh acceptance passed");
     } finally {
       server.stop(0);
@@ -69,7 +69,7 @@ public final class TestIcebergDraftCredentials {
 
   private static void verify(Transaction transaction, String endpoint, String draft) {
     Map<String, String> properties = new HashMap<>(transaction.table().io().properties());
-    require(properties.get("client.refresh-credentials-endpoint").equals(CREDENTIALS + "?table-id=" + draft),
+    require(properties.get("client.refresh-credentials-endpoint").equals(refreshEndpoint(draft)),
         "stage response config reaches S3FileIO unchanged");
     require(transaction.table().location().equals("s3://test-bucket/t/" + draft), "draft location");
     require(properties.get("uri").equals(endpoint), "catalog URI inherited by FileIO");
@@ -101,14 +101,15 @@ public final class TestIcebergDraftCredentials {
             SCHEMA, PartitionSpec.unpartitioned(), "s3://test-bucket/t/" + draft, Map.of());
         respond(exchange, Map.of(
             "metadata", JSON.readTree(TableMetadataParser.toJson(metadata)),
-            "config", Map.of("client.refresh-credentials-endpoint", CREDENTIALS + "?table-id=" + draft)));
+            "config", Map.of("client.refresh-credentials-endpoint", refreshEndpoint(draft))));
       } else if (path.equals(CREDENTIALS) && exchange.getRequestMethod().equals("GET")) {
         String query = exchange.getRequestURI().getRawQuery();
-        require(query.equals("table-id=1") || query.equals("table-id=2"), "exact refresh query");
-        String draft = query.substring("table-id=".length());
-        if (draft.equals("1") && EXPIRED.get()) {
+        require(query.equals("table-id=1&format-version=2") || query.equals("table-id=2&format-version=2"),
+            "complete client-owned selector query");
+        String draft = query.substring("table-id=".length(), query.indexOf('&'));
+        if (draft.equals("1") && RETIRED.get()) {
           byte[] bytes = JSON.writeValueAsBytes(Map.of("error", Map.of(
-              "code", 404, "type", "NoSuchTableException", "message", "Draft expired")));
+              "code", 404, "type", "NoSuchTableException", "message", "Table identity retired")));
           exchange.getResponseHeaders().set("Content-Type", "application/json");
           exchange.sendResponseHeaders(404, bytes.length);
           exchange.getResponseBody().write(bytes);
@@ -132,6 +133,10 @@ public final class TestIcebergDraftCredentials {
     } finally {
       exchange.close();
     }
+  }
+
+  private static String refreshEndpoint(String identity) {
+    return CREDENTIALS + "?table-id=" + identity + "&format-version=2";
   }
 
   private static void respond(HttpExchange exchange, Object value) throws IOException {

@@ -66,7 +66,7 @@ async fn official_rest_catalog_reads_fixture_generations_without_fileio() {
 
 #[tokio::test]
 #[ignore = "requires Maven and pinned Apache Iceberg Java dependencies"]
-async fn official_staged_catalog_preserves_exact_draft_credential_refresh_uri() {
+async fn official_staged_catalog_preserves_complete_client_credential_refresh_uri() {
     let status = tokio::task::spawn_blocking(|| {
         let maven = std::env::var_os("CROWDB_ICEBERG_E2E_MVN").unwrap_or_else(|| "mvn".into());
         std::process::Command::new("timeout")
