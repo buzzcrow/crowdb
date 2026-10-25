@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::DatasetAuthority;
-use crate::authority::{decode, decode_head, encode_head};
+use crate::authority::{decode_head, encode_head, snapshot_resource::SnapshotResource};
 use crate::{key, AuthorityError, CasOutcome, DatasetIdentity, HeadRecord, OperationId, SnapshotId};
 
 impl DatasetAuthority {
@@ -126,7 +126,9 @@ impl DatasetAuthority {
             )
             .await?;
         }
-        self.retire_snapshot_record(identity, snapshot).await
+        let record = self.retire_snapshot_record(identity, snapshot).await?;
+        self.retire_snapshot_binding(identity, snapshot).await?;
+        Ok(record)
     }
     async fn begin_terminal_retirement(
         &self,
@@ -157,20 +159,21 @@ impl DatasetAuthority {
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
         for _ in 0..64 {
-            let mut record: crate::SnapshotRecord = decode(&old.bytes)?;
+            let mut resource = SnapshotResource::decode(&old.bytes)?;
+            let record = &mut resource.record;
             if record.publication.state == crate::PublicationState::Aborted {
                 self.mark_snapshot_retired(identity, snapshot).await?;
-                return Ok(record);
+                return Ok(resource.record);
             }
             record.publication.state = crate::PublicationState::Aborted;
             match self
                 .store
-                .compare_exchange(&key, Some(&old.bytes), &crate::authority::encode(&record)?)
+                .compare_exchange(&key, Some(&old.bytes), &resource.encode()?)
                 .await?
             {
                 CasOutcome::Applied(_) => {
                     self.mark_snapshot_retired(identity, snapshot).await?;
-                    return Ok(record);
+                    return Ok(resource.record);
                 }
                 CasOutcome::Conflict(Some(observed)) => old = observed,
                 CasOutcome::Conflict(None) => return Err(AuthorityError::SnapshotNotFound),

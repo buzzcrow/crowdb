@@ -37,7 +37,7 @@ async fn fixed_resource_deadline_survives_retries_restart_and_deletion_grace() {
             .snapshot_reclaim_after(&f.identity, snapshot)
             .await
             .unwrap(),
-        EXPIRES + 300
+        EXPIRES + 1200
     );
     let restarted = DatasetAuthority::new(f.store.clone()).with_reclaim_clock_for_tests(f.clock.clone());
     f.clock.store(EXPIRES + 100, Ordering::Relaxed);
@@ -52,7 +52,7 @@ async fn fixed_resource_deadline_survives_retries_restart_and_deletion_grace() {
             .snapshot_reclaim_after(&f.identity, snapshot)
             .await
             .unwrap(),
-        EXPIRES + 300
+        EXPIRES + 1200
     );
     assert!(restarted.get_snapshot(&f.identity, f.root).await.is_ok());
 }
@@ -64,6 +64,7 @@ async fn heads_pins_children_and_legacy_resources_need_no_mutations_when_expiry_
     f.authority.retain_snapshot(&f.identity, pinned).await.unwrap();
     let parent = f.candidate(None, 3).await;
     let legacy = f.candidate(None, 4).await;
+    f.authority.retain_snapshot(&f.identity, legacy).await.unwrap();
     let cb_key = key(&f.identity, legacy);
     let old = f.store.get(&cb_key).await.unwrap().unwrap();
     let mut binding: serde_json::Value = serde_json::from_slice(&old.bytes).unwrap();
@@ -177,7 +178,7 @@ async fn an_unknown_mark_returns_without_confirmation_and_the_next_sweep_retries
             .snapshot_reclaim_after(&f.identity, snapshot)
             .await
             .unwrap(),
-        EXPIRES + 300
+        EXPIRES + 1200
     );
 }
 
@@ -185,7 +186,7 @@ async fn an_unknown_mark_returns_without_confirmation_and_the_next_sweep_retries
 async fn corrupt_rows_do_not_pin_discovery_and_cancellation_creates_no_mark() {
     let f = TestExpiryFixture::new().await;
     let snapshot = f.candidate(None, 2).await;
-    let bad = key(&f.identity, SnapshotId::from_bytes(&[1; 16]).unwrap());
+    let bad = [b"DS\0S\0".as_slice(), &f.identity.key().unwrap(), &[1; 16]].concat();
     f.store.compare_exchange(&bad, None, b"{").await.unwrap();
     f.clock.store(EXPIRES, Ordering::Relaxed);
     let cancel = ReadCancellation::new();

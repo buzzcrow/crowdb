@@ -116,7 +116,7 @@ async fn failed_index_fence_retries_the_same_row_without_a_checkpoint_write() {
     });
     let authority = DatasetAuthority::new(fault.clone()).with_reclaim_clock_for_tests(clock.clone());
     let uploads = DatasetUploads::new(fault, Arc::new(upload::TestPayload::default()));
-    clock.store(1300, Ordering::Release);
+    clock.store(2200, Ordering::Release);
     for prefix in CHECKPOINTS {
         store
             .compare_exchange(
@@ -184,7 +184,7 @@ async fn completed_snapshots(
         authority.mark_snapshot_reclaim(identity, snapshot).await.unwrap();
         completed.push(snapshot);
     }
-    clock.store(1300, Ordering::Release);
+    clock.store(2200, Ordering::Release);
     for snapshot in &completed {
         finish(authority, uploads, identity, *snapshot).await;
     }

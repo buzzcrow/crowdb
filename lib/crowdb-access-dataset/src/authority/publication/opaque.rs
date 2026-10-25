@@ -1,10 +1,11 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{decode, encode, DatasetAuthority};
+use super::DatasetAuthority;
+use crate::authority::snapshot_resource::{decode_snapshot, encode_snapshot, CANDIDATE_LIFETIME_SECONDS};
 use crate::{
     key, AuthorityError, CasOutcome, DatasetIdentity, OperationId, PublicationState, SnapshotId,
-    SnapshotPublication, SnapshotRecord,
+    SnapshotPublication,
 };
 
 impl DatasetAuthority {
@@ -21,7 +22,7 @@ impl DatasetAuthority {
             if value.bytes == super::retirement::RETIRED {
                 return Err(crate::DatasetError::InvalidPublicationState.into());
             }
-            let record: SnapshotRecord = decode(&value.bytes)?;
+            let record = decode_snapshot(&value.bytes)?;
             if record.publication.operation != operation
                 || record.publication.parent != parent
                 || record.publication.manifest != manifest
@@ -44,7 +45,10 @@ impl DatasetAuthority {
             state: PublicationState::Prepared,
         };
         publication.validate()?;
-        let bytes = encode(&SnapshotRecord { publication })?;
+        let bytes = encode_snapshot(
+            &publication,
+            Some(self.reclaim_time().saturating_add(CANDIDATE_LIFETIME_SECONDS)),
+        )?;
         match self
             .store
             .compare_exchange(&key::snapshot(identity, snapshot)?, None, &bytes)

@@ -29,7 +29,7 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
     let foreign = split_store::prepared(&authority, &identity, root, None).await;
     split_store::publish_revision(&authority, &identity, &foreign).await;
     authority.begin_reclaim(&identity, snapshot).await.unwrap();
-    clock.store(1300, std::sync::atomic::Ordering::Release);
+    clock.store(2200, std::sync::atomic::Ordering::Release);
     let cancel = ReadCancellation::new();
     let mut metadata_cursor = MetadataCleanupProgress::new(snapshot);
     let partial = authority
@@ -37,7 +37,7 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
         .await
         .unwrap();
     assert!(!partial.complete);
-    clock.store(1300, std::sync::atomic::Ordering::Release);
+    clock.store(2200, std::sync::atomic::Ordering::Release);
     let restarted = DatasetAuthority::new(store.clone()).with_reclaim_clock_for_tests(clock);
     let mut completed = false;
     for _ in 0..100 {
@@ -113,7 +113,7 @@ async fn cleanup_completion_is_helped_after_final_status_write_failure() {
         .unwrap();
     split_store::publish_snapshot_head(&authority, &identity, root).await;
     authority.begin_reclaim(&identity, snapshot).await.unwrap();
-    clock.store(1300, std::sync::atomic::Ordering::Release);
+    clock.store(2200, std::sync::atomic::Ordering::Release);
     store
         .reject_cleanup_finish
         .store(true, std::sync::atomic::Ordering::Relaxed);

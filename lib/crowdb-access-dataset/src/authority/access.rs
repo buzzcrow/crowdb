@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub use sweep::SnapshotReclaimSweep;
 
 /// Default delay between logical deletion and destructive cleanup.
-const RECLAIM_GRACE_SECONDS: u64 = 300;
+const RECLAIM_GRACE_SECONDS: u64 = 20 * 60;
 
 #[derive(Default, Serialize, Deserialize)]
 struct Access {
@@ -231,7 +231,7 @@ impl DatasetAuthority {
 
     // The per-authority clock override exists only in test builds.
     #[cfg_attr(not(feature = "test-util"), allow(clippy::unused_self))]
-    pub(in crate::authority) fn reclaim_time(&self) -> u64 {
+    pub(crate) fn reclaim_time(&self) -> u64 {
         #[cfg(feature = "test-util")]
         if let Some(clock) = &self.reclaim_clock {
             return clock.load(std::sync::atomic::Ordering::Acquire);

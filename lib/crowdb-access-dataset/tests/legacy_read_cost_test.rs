@@ -8,6 +8,9 @@ mod legacy;
 #[path = "common/publication.rs"]
 mod publication;
 
+#[path = "common/snapshot_resource.rs"]
+#[allow(dead_code)]
+mod resource;
 use crowdb_access_dataset::*;
 use std::{
     sync::{atomic::Ordering, Arc},
@@ -72,43 +75,15 @@ async fn repeated_legacy_authority_and_inspection_reads_never_fill_visibility_re
     assert_eq!(store.writes.load(Ordering::Relaxed), writes);
 }
 
-async fn replace_snapshot(
-    store: &dyn DatasetStore,
-    identity: &DatasetIdentity,
-    snapshot: SnapshotId,
-    update: impl FnOnce(&mut SnapshotRecord),
-) {
-    let key = [
-        b"DS\0S\0".as_slice(),
-        identity.key().unwrap().as_slice(),
-        snapshot.as_bytes(),
-    ]
-    .concat();
-    let stored = store.get(&key).await.unwrap().unwrap();
-    let (version, mut record): (u16, SnapshotRecord) = bincode::deserialize(&stored.bytes).unwrap();
-    update(&mut record);
-    assert!(matches!(
-        store
-            .compare_exchange(
-                &key,
-                Some(&stored.bytes),
-                &bincode::serialize(&(version, record)).unwrap()
-            )
-            .await
-            .unwrap(),
-        CasOutcome::Applied(_)
-    ));
-}
-
 #[tokio::test]
 async fn legacy_fallback_rejects_unpublished_corrupt_and_cyclic_authority_without_writes() {
     for case in 0..4 {
         let (store, identity, _, child) = fixture().await;
-        replace_snapshot(store.as_ref(), &identity, child, |record| match case {
-            0 => record.publication.state = PublicationState::Prepared,
-            1 => record.publication.state = PublicationState::Aborted,
-            2 => record.publication.snapshot = SnapshotId::random(),
-            _ => record.publication.parent = Some(child),
+        resource::mutate(store.as_ref(), &identity, child, |publication| match case {
+            0 => publication.state = PublicationState::Prepared,
+            1 => publication.state = PublicationState::Aborted,
+            2 => publication.snapshot = SnapshotId::random(),
+            _ => publication.parent = Some(child),
         })
         .await;
         let target = if case == 3 { SnapshotId::random() } else { child };

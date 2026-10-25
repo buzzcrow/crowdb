@@ -25,7 +25,8 @@ enum PublicationMode {
     Resource(Option<crate::SplitRevisionId>),
 }
 
-use super::{decode, decode_head, decode_manifest, encode, DatasetAuthority};
+use super::snapshot_resource::decode_snapshot;
+use super::{decode, decode_head, decode_manifest, DatasetAuthority};
 use crate::{
     key, AuthorityError, DatasetError, DatasetIdentity, ManifestBinding, OperationId, PublicationState,
     SnapshotId, SnapshotPublication, SnapshotRecord,
@@ -124,7 +125,7 @@ impl DatasetAuthority {
         if record.bytes == retirement::RETIRED {
             return Err(DatasetError::InvalidPublicationState.into());
         }
-        decode(&record.bytes)
+        decode_snapshot(&record.bytes)
     }
 
     async fn write_publication(
@@ -187,10 +188,10 @@ impl DatasetAuthority {
             state: PublicationState::Prepared,
         };
         prepared.validate()?;
-        if let Some(snapshot) = self
+        let resource = self
             .ensure_publication_resource(identity, &prepared, &resolved, mode)
-            .await?
-        {
+            .await?;
+        if let Some(snapshot) = resource.reused {
             return Ok(snapshot);
         }
 
@@ -208,6 +209,7 @@ impl DatasetAuthority {
                     _ => None,
                 },
             ),
+            resource.gc_after,
         )
         .await?;
         if !matches!(mode, PublicationMode::LegacyPublish) {
@@ -241,7 +243,7 @@ impl DatasetAuthority {
             .get(&key::snapshot(identity, parent)?)
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
-        let record: SnapshotRecord = decode(&value.bytes)?;
+        let record = decode_snapshot(&value.bytes)?;
         if record.publication.state != PublicationState::Published {
             return Err(AuthorityError::ParentConflict);
         }

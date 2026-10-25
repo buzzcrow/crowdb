@@ -11,6 +11,38 @@ use std::time::Duration;
 pub(crate) const RETIRED: &[u8] = b"retired-snapshot-content-v1";
 
 impl DatasetAuthority {
+    /// Seals the content root after the durable Snapshot deletion fence exists.
+    /// Missing roots are sealed too, preventing an interrupted preparer from creating one later.
+    pub(in crate::authority) async fn retire_snapshot_binding(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+    ) -> Result<(), AuthorityError> {
+        let key = candidate_key(identity, snapshot)?;
+        let mut observed = self.store.get(&key).await?;
+        for _ in 0..64 {
+            if let Some(value) = &observed {
+                if value.bytes == RETIRED {
+                    return Ok(());
+                }
+                decode_candidate(&value.bytes, snapshot)?;
+            }
+            match self
+                .store
+                .compare_exchange(
+                    &key,
+                    observed.as_ref().map(|value| value.bytes.as_slice()),
+                    RETIRED,
+                )
+                .await?
+            {
+                CasOutcome::Applied(_) => return Ok(()),
+                CasOutcome::Conflict(value) => observed = value,
+            }
+        }
+        Err(AuthorityError::HeadConflict)
+    }
+
     /// Installs the complete immutable resource root after payload ownership is acquired.
     /// It does not change latest/stable or create a publication receipt.
     /// # Errors

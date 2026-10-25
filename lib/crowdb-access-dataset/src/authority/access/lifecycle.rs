@@ -3,7 +3,7 @@
 
 use crate::{
     AuthorityError, DatasetAuthority, DatasetIdentity, DatasetUploads, MetadataScanBudget, ReadCancellation,
-    SnapshotId, SnapshotRecord, SnapshotUploadCleanup, StoreError, UploadReclaimError,
+    SnapshotId, SnapshotUploadCleanup, StoreError, UploadReclaimError,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -155,7 +155,7 @@ impl DatasetAuthority {
             )
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
-        let record: SnapshotRecord = crate::authority::decode(&stored.bytes)?;
+        let record = crate::authority::snapshot_resource::decode_snapshot(&stored.bytes)?;
         status.phase = SnapshotReclaimPhase::IndexFences;
         if !self
             .retire_candidate_metadata_step(identity, &record, &mut cursor.indexes, cancel)

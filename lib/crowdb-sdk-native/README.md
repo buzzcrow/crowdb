@@ -107,7 +107,7 @@ async fn read_object(seeds: Vec<String>) -> Result<(), Box<dyn std::error::Error
   end. There is no server-side progress, ack, TTL, resume or close operation.
 - Reads check snapshot deletion state at admission and perform no persistent
   reader registration, renewal or release. Deletion rejects new requests and
-  defers cleanup for five minutes. Admitted transfers may finish; overdue reads
+  defers cleanup for twenty minutes. Admitted transfers may finish; overdue reads
   can fail when their remaining data is reclaimed. EOF/cancel/drop return local
   request credits without a remote cleanup wait. Caller-held buffers remain
   valid and charged independently.

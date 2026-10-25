@@ -34,7 +34,7 @@ async fn unreferenced_complete_results_expire_through_the_normal_http_deletion_c
     response(client.get(format!("{snapshot}/summary")), 404).await;
     let marked = response(client.post(format!("{snapshot}/reclaim")), 200).await;
     assert_eq!(marked["phase"], "grace_period");
-    assert_eq!(marked["reclaim_after"], 1000 + 86400 + 300);
+    assert_eq!(marked["reclaim_after"], 1000 + 86400 + 1200);
     assert_eq!(
         response(client.get(format!("{root}/head")), 200).await["latest"],
         latest
@@ -49,7 +49,7 @@ async fn unreferenced_complete_results_expire_through_the_normal_http_deletion_c
         false
     );
     test.clock
-        .store(1000 + 86400 + 300, std::sync::atomic::Ordering::Release);
+        .store(1000 + 86400 + 1200, std::sync::atomic::Ordering::Release);
     for _ in 0..100 {
         test.authority
             .reclaim_due_page(&test.uploads, &mut cursor, &ReadCancellation::new())
@@ -83,9 +83,9 @@ async fn retirement_respects_retention_and_finishes_split_and_composition_cleanu
     let marked = response(client.post(format!("{snapshot}/reclaim")), 200).await;
     assert_eq!(marked["phase"], "grace_period");
     assert_eq!(marked["complete"], false);
-    assert_eq!(marked["reclaim_after"], 1300);
+    assert_eq!(marked["reclaim_after"], 2200);
     response(client.get(format!("{snapshot}/summary")), 404).await;
-    test.clock.store(1300, std::sync::atomic::Ordering::Release);
+    test.clock.store(2200, std::sync::atomic::Ordering::Release);
     response(
         client
             .post(format!("{snapshot}/reclaim"))
@@ -192,7 +192,7 @@ async fn legacy_reclaim_marks_deletion_without_bypassing_payload_owner_cleanup()
         .await
         .unwrap();
     assert!(!client.reclaim(snapshot).await.unwrap().reclaimed);
-    test.clock.store(1300, std::sync::atomic::Ordering::Release);
+    test.clock.store(2200, std::sync::atomic::Ordering::Release);
     let writes = store.mutations.load(std::sync::atomic::Ordering::Relaxed);
     for _ in 0..3 {
         assert!(!client.reclaim(snapshot).await.unwrap().reclaimed);

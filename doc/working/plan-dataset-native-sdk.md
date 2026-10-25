@@ -500,6 +500,10 @@ remaining user design decision and no requirement `Blocked` condition.
 
 ## Approved deletion redesign
 
+- User update 2026-10-25: new deletion marks use a twenty-minute grace period.
+  Existing persisted absolute deadlines remain fixed across retries and restart.
+  Earlier five-minute observations below are historical verification records.
+
 - The user replaced active-read GC protection with durable deletion admission and
   a five-minute grace deadline. Remove per-reader activity CAS, renewal tasks and
   asynchronous release writes; reads may fail if reclamation interrupts them.
@@ -545,6 +549,18 @@ remaining user design decision and no requirement `Blocked` condition.
   then final real-service restart/local-HCA acceptance. R220 stays open.
 
 ## Current acceptance preparation (2026-10-25)
+
+- New Snapshot resources now store their fixed internal `gc_after` in the first
+  resource write. Bounded direct Snapshot scanning covers interruption before
+  the content binding; legacy resources inherit an existing deadline or receive
+  one fixed background deadline. No foreground discovery RPC or task is added.
+- Dataset regression gate: 317 tests passed, including the twenty-minute grace,
+  old absolute-deadline compatibility, interrupted first Manifest write, late
+  writes after retirement, legacy deadline migration, unknown-outcome stopping,
+  versioned-record rejection and large-resource scan paging. All-target,
+  all-feature Dataset clippy passed. The Access HTTP retirement target passed
+  all three cases. These focused checks do not replace the pending final-image
+  TCP/restart and HCA acceptance.
 
 - Subsequent source `be5eca5c` passes the affected 823 Iceberg tests, 201 Access
   tests (11 ignored), workspace all-feature clippy, normal lint, formatting and

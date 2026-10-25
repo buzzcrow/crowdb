@@ -91,9 +91,10 @@ impl DatasetAuthority {
         &self,
         identity: &DatasetIdentity,
         binding: &CandidateBinding,
+        gc_after: Option<u64>,
     ) -> Result<(), AuthorityError> {
         let mut binding = binding.clone();
-        binding.expires_at = Some(self.reclaim_time().saturating_add(86400));
+        binding.expires_at = gc_after;
         let bytes = serde_json::to_vec(&binding).map_err(|_| AuthorityError::Corrupt)?;
         let key = candidate_key(identity, binding.snapshot)?;
         match self.store.compare_exchange(&key, None, &bytes).await? {
@@ -179,11 +180,12 @@ impl DatasetAuthority {
     pub(in crate::authority) async fn bind_completed_manifest(
         &self,
         identity: &DatasetIdentity,
-        snapshot_record: &crate::SnapshotRecord,
+        resource: &crate::authority::snapshot_resource::SnapshotResource,
         manifest: &crate::ManifestRecord,
     ) -> Result<(), AuthorityError> {
         use super::super::encode;
         use crate::{key, PublicationState};
+        let snapshot_record = &resource.record;
         let snapshot = snapshot_record.publication.snapshot;
         if let Some(head) = self.store.get(&key::head(identity)?).await? {
             self.preserve_legacy_head(identity, &head).await?;
@@ -210,6 +212,7 @@ impl DatasetAuthority {
                 &candidate_manifest,
                 None,
             ),
+            resource.gc_after,
         )
         .await?;
         Ok(())

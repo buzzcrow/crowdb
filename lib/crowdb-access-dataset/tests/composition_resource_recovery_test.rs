@@ -144,7 +144,7 @@ async fn final_snapshot_owners_keep_shared_uploads_without_staging_or_cleanup_jo
         Err(UploadError::Conflict)
     ));
     store.reject_workflow_writes.store(false, Ordering::Relaxed);
-    for (snapshot, now) in [(a, 1300), (b, 1600)] {
+    for (snapshot, now) in [(a, 2200), (b, 3400)] {
         let mut upload_cursor = SnapshotUploadCleanup::default();
         authority.begin_reclaim(&identity, snapshot).await.unwrap();
         clock.store(now, Ordering::Release);

@@ -260,7 +260,7 @@ async fn reclaimed_snapshot_retires_its_upload_owner_after_index_cleanup() {
         .await
         .unwrap();
     f.authority.begin_reclaim(&f.identity, snapshot).await.unwrap();
-    clock.store(1300, std::sync::atomic::Ordering::Release);
+    clock.store(2200, std::sync::atomic::Ordering::Release);
     f.authority
         .reclaim_snapshot_metadata_for_tests(&f.identity, snapshot)
         .await

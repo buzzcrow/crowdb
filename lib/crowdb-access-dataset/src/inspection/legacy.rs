@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     AuthorityError, DatasetAuthority, DatasetIdentity, ManifestRecord, PublicationState, ReadCancellation,
-    SnapshotId, SnapshotRecord,
+    SnapshotId,
 };
 use bincode::Options;
 use serde::Deserialize;
@@ -89,11 +89,12 @@ impl DatasetAuthority {
             )
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
-        let record: LegacyRecord<SnapshotRecord> = decode_legacy(&legacy.bytes, limits.source_bytes)?;
-        if record.version != 1 || record.payload.publication.snapshot != snapshot {
+        let record = crate::authority::snapshot_resource::decode_snapshot(&legacy.bytes)
+            .map_err(|_| InspectionError::Corrupt)?;
+        if record.publication.snapshot != snapshot {
             return Err(InspectionError::Corrupt);
         }
-        let publication = record.payload.publication;
+        let publication = record.publication;
         publication.validate().map_err(AuthorityError::from)?;
         if publication.state != PublicationState::Published {
             return Err(AuthorityError::SnapshotNotFound.into());

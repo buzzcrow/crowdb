@@ -166,7 +166,7 @@ async fn thirty_two_failed_snapshots_keep_discovery_and_successful_index_progres
     let clock = Arc::new(AtomicU64::new(1000));
     let authority = DatasetAuthority::new(test.store.clone()).with_reclaim_clock_for_tests(clock.clone());
     let snapshots = pressure::snapshots(&test, &authority).await;
-    clock.store(1300, Ordering::Release);
+    clock.store(2200, Ordering::Release);
     let operations: Vec<_> = snapshots
         .iter()
         .map(|snapshot| OperationId::from_bytes(snapshot.as_bytes()).unwrap())

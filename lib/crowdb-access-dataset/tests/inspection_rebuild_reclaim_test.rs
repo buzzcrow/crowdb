@@ -67,7 +67,7 @@ async fn retire(
     clock: &AtomicU64,
 ) {
     authority.begin_reclaim(identity, snapshot).await.unwrap();
-    clock.store(1300, Ordering::Release);
+    clock.store(2200, Ordering::Release);
     let uploads = DatasetUploads::new(store, Arc::new(upload::TestPayload::default()));
     let mut cursor = SnapshotReclaimCursor::new(identity.clone(), snapshot);
     for _ in 0..64 {

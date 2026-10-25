@@ -1,13 +1,12 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::super::{head::decode_head, VersionedRecord};
+use super::super::{head::decode_head, snapshot_resource::decode_snapshot};
 use crate::inspection::{work::InspectionWork, InspectionError};
 use crate::{
     key, AuthorityError, CasOutcome, DatasetAuthority, DatasetError, DatasetIdentity, HeadRecord,
-    MetadataScanBudget, PublicationState, ReadCancellation, SnapshotId, SnapshotRecord, StoredValue,
+    MetadataScanBudget, PublicationState, ReadCancellation, SnapshotId, StoredValue,
 };
-use bincode::Options;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -151,16 +150,7 @@ impl DatasetAuthority {
                     .await
                     .map_err(legacy_read_error)?
                     .ok_or(AuthorityError::Corrupt)?;
-                let record: VersionedRecord<SnapshotRecord> = bincode::DefaultOptions::new()
-                    .with_fixint_encoding()
-                    .with_limit(stored.bytes.len() as u64)
-                    .reject_trailing_bytes()
-                    .deserialize(&stored.bytes)
-                    .map_err(|_| AuthorityError::Corrupt)?;
-                if record.version != 1 {
-                    return Err(AuthorityError::Corrupt);
-                }
-                let record = record.payload;
+                let record = decode_snapshot(&stored.bytes)?;
                 if record.publication.snapshot != snapshot
                     || record.publication.state == PublicationState::Prepared
                 {

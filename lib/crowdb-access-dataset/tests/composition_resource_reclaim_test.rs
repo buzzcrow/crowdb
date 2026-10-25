@@ -53,7 +53,7 @@ async fn interrupted_resource_is_discoverable_and_retirement_blocks_recomputatio
     assert!(pages.after.is_none());
     store.reject_workflow_writes.store(false, Ordering::Relaxed);
     authority.begin_reclaim(&identity, snapshot).await.unwrap();
-    clock.store(1300, Ordering::Release);
+    clock.store(2200, Ordering::Release);
     let restarted = DatasetAuthority::new(store.clone()).with_reclaim_clock_for_tests(clock);
     let mut complete = false;
     let mut metadata_cursor = MetadataCleanupProgress::new(snapshot);

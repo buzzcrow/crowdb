@@ -185,7 +185,8 @@ async fn reclaim_reuses_four_split_head_observations_without_reloading_or_helpin
         assert_eq!(store.split_head_mutations.load(Ordering::Relaxed) - cas, 5);
         assert_eq!(
             store.candidate_reads.load(Ordering::Relaxed) - candidate,
-            usize::from(!has_split)
+            // Final resource retirement also loads and seals the content-binding key.
+            usize::from(!has_split) + 1
         );
     }
 }

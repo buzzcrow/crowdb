@@ -45,7 +45,7 @@ async fn retired_owner_recovers_all_draft_work_without_touching_other_snapshots(
     let foreign = legacy::prepared(store.as_ref(), &authority, &identity, root, None).await;
     split_store::publish_revision(&authority, &identity, &foreign).await;
     authority.begin_reclaim(&identity, snapshot).await.unwrap();
-    clock.store(1300, std::sync::atomic::Ordering::Release);
+    clock.store(2200, std::sync::atomic::Ordering::Release);
     let restarted = DatasetAuthority::new(store.clone()).with_reclaim_clock_for_tests(clock);
     let mut complete = false;
     let mut lost_cursor = false;

@@ -81,7 +81,7 @@ impl TestCleanup {
             .mark_snapshot_reclaim(&identity, snapshot)
             .await
             .unwrap();
-        clock.store(1300, Ordering::Release);
+        clock.store(2200, Ordering::Release);
         Self {
             store,
             clock,

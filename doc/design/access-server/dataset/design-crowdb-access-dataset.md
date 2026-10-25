@@ -139,7 +139,7 @@ may replay the last unconfirmed batch, but may not skip or change the snapshot.
 Epoch and sampler state remain client state.
 
 Read admission checks the selected snapshot's authoritative deletion state without
-registering a reader. Deletion durably fences new reads and records a five-minute
+registering a reader. Deletion durably fences new reads and records a twenty-minute
 `reclaim_after` deadline; retries and restarts preserve that deadline. Existing
 streams can finish using resolved metadata and payloads during the grace period.
 Unusually long reads may fail after reclamation; partial delivery is never complete
@@ -284,16 +284,20 @@ and CAS-advances the head. A Published Snapshot record can precede head
 advancement; a successful publish response establishes the completed operation.
 Lost responses are resolved by inspecting status and retrying identical content
 with the same operation token. Historical retries cannot rewind a newer head.
-Divergent retries conflict. Snapshot content bindings carry a fixed retirement
-eligibility deadline twenty-four hours after their first creation. Identical
-retries preserve that deadline. A bounded background scan discovers expired
-bindings, including prepared content whose dependency or owner step failed
-before completion. It checks head, retention and ancestry protection without
-mutations, then uses the ordinary authoritative reclamation fence and five-minute
-deletion grace. The deadline alone does not revoke reads or reclaim protected
-resources. Legacy bindings without a deadline require explicit reclaim. The
-binding follows immutable metadata preparation; resources that never reached
-that binding still require their existing abandonment discovery facts.
+Divergent retries conflict. The first Snapshot resource write includes a fixed
+internal `gc_after` deadline twenty-four hours after creation; content bindings
+inherit it. Retries and publication-state changes preserve that deadline. The
+background worker scans Snapshot resources directly, including writes interrupted
+before the content binding exists. Each page has at most twenty rows, nine MiB
+and a two-second deadline; its position is discardable and restarts from the
+beginning. Head, retention and ancestry checks protect referenced resources
+without writes. Eligible resources use the ordinary authoritative reclamation
+fence and twenty-minute deletion grace. Eligibility alone does not revoke reads.
+An old resource inherits its existing content-binding deadline. If neither
+record has one, the worker assigns a fixed deadline twenty-four hours after its
+first observation. Legacy opaque resources without a supported Manifest remain
+excluded from automatic retirement because their payload references are unknown.
+No per-resource discovery task is created.
 Upload expiry does not reclaim claimed candidate payloads.
 
 ### 10.2 Read flow

@@ -99,8 +99,10 @@ new chunk patches must be valid managed upload locators.
 
 Resource prefixes and the immutable Snapshot record expose interrupted output to
 owner retirement. Existing member pages are sealed after the grace period, and
-recomputation cannot complete a retired Snapshot. Independent unused-resource
-expiry and discovery of arbitrarily late unseen keys remain separate work.
+recomputation cannot complete a retired Snapshot. The first Snapshot write stores
+its fixed internal `gc_after`; a bounded full scan discovers abandoned resources
+even before their content binding exists. Terminal deletion seals that binding,
+including a missing key, so delayed creation cannot complete the resource.
 `PUT snapshots/{snapshot}` exposes this operation with `composition-preparation`,
 when an upload service is configured. Rust `PrepareSnapshot` and sync/async Python
 `prepare_snapshot` preserve the same ID/input and never query workflow status or
@@ -325,7 +327,8 @@ Sources use read-only availability checks. Legacy `source_lease_deadline` is onl
 a compatibility field; resource preparation has no reader lease or draft.
 
 Snapshot reclaim checks latest/stable, retained Snapshots, live children, candidate
-ownership under a terminal owner fence. A durable five-minute grace deadline
+ownership under a terminal owner fence. New deletion marks have a durable twenty-minute grace deadline;
+existing marks keep their persisted absolute deadline. The grace period
 separates deletion admission from cleanup. After that deadline it retires upload owners,
 Snapshot-scoped Split drafts, possible index writes and ordinary metadata in phases.
 Completion reports logical retirement; physical upload deletion remains deferred

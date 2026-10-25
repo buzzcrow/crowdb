@@ -39,7 +39,7 @@ and [SDK API guide](../../lib/crowdb-sdk-native/README.md).
 4. Compare native Chunk-KV and chunk-range reads with the HTTP baseline,
    including topology refresh, stale owners, failures, digest costs, and the
    snapshot deletion contract: reject new reads after a durable deletion mark,
-   preserve a five-minute cleanup grace period, and allow overdue reads to fail.
+   preserve a twenty-minute cleanup grace period, and allow overdue reads to fail.
    Ordinary reads must not register, renew or release persistent reader leases. Keep placement, fencing,
    durability, and publication rules in their existing components.
 5. Expose native Dataset through an opt-in main-workspace Python extension

@@ -324,17 +324,21 @@ The parent/child index MUST precede final child completion, which MUST recheck p
 availability. An indexed child protects its parent until terminal retirement even
 while its own completion is pending; cleanup removes this conservative protection.
 
-A new Snapshot content binding MUST retain its first fixed twenty-four-hour
-retirement eligibility deadline. Identical retries MUST NOT renew it. Background
-expiry MAY mark an expired complete result only through the same authoritative
+A new Snapshot resource MUST persist its fixed twenty-four-hour `gc_after`
+retirement eligibility deadline in its first write; content bindings inherit it.
+Identical retries and publication-state changes MUST NOT renew it. Bounded
+background scanning includes resources without a content binding and MAY mark
+an expired complete or interrupted result only through the same authoritative
 reference checks and publication fencing as explicit reclamation. Protected
 results remain available; expiry eligibility alone is not a read-admission TTL.
-Legacy bindings without this resource fact require explicit reclamation. This
-scan does not establish discovery of partial resources missing their content binding.
+Legacy resources inherit an existing binding deadline; otherwise their first
+background observation assigns a fixed twenty-four-hour deadline. Unsupported
+legacy opaque Manifest formats remain excluded from automatic retirement.
 
-Deletion first persists a terminal mark and a five-minute `reclaim_after` deadline.
+Deletion first persists a terminal mark and a twenty-minute `reclaim_after` deadline.
 Cleanup MUST NOT remove snapshot-owned metadata or payload references before
-that deadline. Restart and retry MUST preserve it. No Access Server or client
+that deadline. The default applies to new marks; existing persisted absolute
+deadlines remain unchanged. Restart and retry MUST preserve it. No Access Server or client
 acknowledgements are required. Reads that exceed the grace period may return
 an error after partial delivery; they MUST NOT report successful completion or
 switch snapshots. Deletion completion does not revoke bytes already delivered.

@@ -1,7 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::candidate::{decode_candidate, CANDIDATE_PREFIX};
+mod migration;
+use crate::authority::snapshot_resource::SnapshotResource;
 use crate::{
     authority::decode_head, key, AuthorityError, DatasetAuthority, DatasetIdentity, MetadataScan,
     MetadataScanBudget, ReadCancellation, SnapshotId,
@@ -21,7 +22,7 @@ impl SnapshotExpirySweep {
 }
 
 impl DatasetAuthority {
-    /// Marks expired content bindings for ordinary delayed reclamation.
+    /// Scans Snapshot resources and marks expired unreferenced content for delayed reclamation.
     /// Heads, retained resources and live ancestry remain protected.
     /// # Errors
     /// Returns malformed resources, cancellation, bounded-work or storage failures.
@@ -47,11 +48,11 @@ impl DatasetAuthority {
             .store
             .scan_page(
                 &MetadataScan {
-                    prefix: CANDIDATE_PREFIX.to_vec(),
+                    prefix: key::SNAPSHOT_PREFIX.to_vec(),
                     after: cursor.after.clone(),
                     budget: MetadataScanBudget {
                         items: 20,
-                        bytes: 512 * 1024,
+                        bytes: 9 * 1024 * 1024,
                         timeout: Duration::from_secs(2),
                     },
                 },
@@ -64,22 +65,39 @@ impl DatasetAuthority {
             }
             // A corrupt or slow resource cannot permanently pin discovery before healthy rows.
             cursor.after = Some(key.clone());
-            let (identity, operation) = key::decode_scoped_operation(&key, CANDIDATE_PREFIX)?;
+            let (identity, operation) = key::decode_scoped_operation(&key, key::SNAPSHOT_PREFIX)?;
             let snapshot = SnapshotId::from_bytes(operation.as_bytes())?;
-            if value.bytes == super::complete::RETIRED {
+            if value.bytes == super::retirement::RETIRED {
                 continue;
             }
-            let candidate = decode_candidate(&value.bytes, snapshot)?;
-            // Both modern bindings follow all immutable metadata. A staged binding
-            // can outlive a failed dependency/owner step without ever becoming complete.
-            if !matches!(candidate.version, 2 | 3)
-                || !candidate
-                    .expires_at
-                    .is_some_and(|time| time <= self.reclaim_time())
+            let resource = SnapshotResource::decode(&value.bytes)?;
+            resource.record.publication.validate()?;
+            if resource.record.publication.snapshot != snapshot {
+                return Err(AuthorityError::Corrupt);
+            }
+            if resource.record.publication.state == crate::PublicationState::Aborted
+                || resource
+                    .gc_after
+                    .is_some_and(|deadline| deadline > self.reclaim_time())
             {
                 continue;
             }
+            // Old opaque publications do not describe their payload references.
+            // They cannot safely enter automatic Manifest-based retirement.
+            let manifest = match super::super::decode_manifest(&resource.record.publication.manifest) {
+                Ok(manifest) => manifest,
+                Err(AuthorityError::Invalid(crate::DatasetError::InvalidManifest)) => continue,
+                Err(error) => return Err(error),
+            };
+            manifest.validate()?;
             if self.expired_snapshot_protected(&identity, snapshot).await? {
+                continue;
+            }
+            let deadline = match resource.gc_after {
+                Some(deadline) => deadline,
+                None => self.migrate_snapshot_deadline(&identity, snapshot, value).await?,
+            };
+            if deadline > self.reclaim_time() {
                 continue;
             }
             match self.begin_reclaim(&identity, snapshot).await {
@@ -91,7 +109,7 @@ impl DatasetAuthority {
         Ok(())
     }
 
-    async fn expired_snapshot_protected(
+    pub(super) async fn expired_snapshot_protected(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,

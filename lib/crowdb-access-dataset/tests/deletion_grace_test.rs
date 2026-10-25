@@ -23,7 +23,7 @@ async fn a_slow_snapshot_yields_the_sweep_and_keeps_its_durable_cleanup_obligati
         .begin_reclaim(&fixture.identity, fixture.snapshot)
         .await
         .unwrap();
-    fixture.clock.store(1300, Ordering::Release);
+    fixture.clock.store(2200, Ordering::Release);
     let store = Arc::new(stall::TestSnapshotCleanupStall {
         inner: fixture.store.clone(),
         stall: std::sync::atomic::AtomicBool::new(true),
@@ -82,7 +82,7 @@ async fn a_permanently_slow_snapshot_does_not_block_other_pending_cleanup() {
             .await
             .unwrap();
     }
-    fixture.clock.store(1300, Ordering::Release);
+    fixture.clock.store(2200, Ordering::Release);
     let mut target = b"DS\0S\0".to_vec();
     target.extend(fixture.identity.key().unwrap());
     target.extend(fixture.snapshot.as_bytes());
@@ -135,14 +135,14 @@ async fn deletion_rejects_new_reads_and_keeps_the_grace_deadline_across_restarts
             .snapshot_reclaim_after(&identity, snapshot)
             .await
             .unwrap(),
-        1300
+        2200
     );
     assert!(matches!(
         authority.check_snapshot_readable(&identity, snapshot).await,
         Err(AuthorityError::SnapshotNotFound)
     ));
     assert!(!held.samples.is_empty());
-    clock.store(1299, Ordering::Release);
+    clock.store(2199, Ordering::Release);
     let restarted = DatasetAuthority::new(store.clone()).with_reclaim_clock_for_tests(clock.clone());
     restarted.begin_reclaim(&identity, snapshot).await.unwrap();
     assert_eq!(
@@ -150,7 +150,7 @@ async fn deletion_rejects_new_reads_and_keeps_the_grace_deadline_across_restarts
             .snapshot_reclaim_after(&identity, snapshot)
             .await
             .unwrap(),
-        1300
+        2200
     );
     let writes = store.writes.load(Ordering::Relaxed);
     let uploads = DatasetUploads::new(store.clone(), Arc::new(upload::TestPayload::default()));
@@ -172,10 +172,10 @@ async fn deletion_rejects_new_reads_and_keeps_the_grace_deadline_across_restarts
                 &ReadCancellation::new()
             )
             .await,
-        Err(AuthorityError::ReclaimPending { reclaim_after: 1300 })
+        Err(AuthorityError::ReclaimPending { reclaim_after: 2200 })
     ));
     assert_eq!(store.writes.load(Ordering::Relaxed), writes);
-    clock.store(1300, Ordering::Release);
+    clock.store(2200, Ordering::Release);
     loop {
         if restarted
             .reclaim_snapshot_metadata_step_for_tests(
@@ -251,7 +251,7 @@ async fn corrupt_deletion_marks_do_not_starve_other_snapshots() {
         .begin_reclaim(&fixture.identity, fixture.snapshot)
         .await
         .unwrap();
-    fixture.clock.store(1300, Ordering::Release);
+    fixture.clock.store(2200, Ordering::Release);
     let corrupt_key = b"DS\0L\0".to_vec();
     fixture
         .store

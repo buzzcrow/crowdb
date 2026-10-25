@@ -6,6 +6,8 @@ pub use access::{
 mod discovery;
 mod head;
 mod projection;
+pub(crate) mod snapshot_resource;
+use snapshot_resource::{decode_snapshot, SnapshotResource};
 
 use head::{decode_head, encode_head};
 pub use head::{DatasetHead, SnapshotHeadUpdate};
@@ -280,7 +282,7 @@ impl DatasetAuthority {
             .get(&key::snapshot(identity, snapshot)?)
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
-        let record: SnapshotRecord = decode(&value.bytes)?;
+        let record = decode_snapshot(&value.bytes)?;
         if record.publication.snapshot != snapshot {
             return Err(AuthorityError::Corrupt);
         }
@@ -326,7 +328,8 @@ impl DatasetAuthority {
             .get(&key::snapshot(identity, snapshot)?)
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
-        let snapshot_record: SnapshotRecord = decode(&snapshot_value.bytes)?;
+        let mut snapshot_resource = SnapshotResource::decode(&snapshot_value.bytes)?;
+        let snapshot_record = &snapshot_resource.record;
         if !matches!(
             snapshot_record.publication.state,
             PublicationState::Prepared | PublicationState::Published
@@ -373,7 +376,7 @@ impl DatasetAuthority {
         }
         self.persist_inspection_index(identity, snapshot_record.publication.parent, manifest)
             .await?;
-        self.bind_completed_manifest(identity, &snapshot_record, manifest)
+        self.bind_completed_manifest(identity, &snapshot_resource, manifest)
             .await?;
         if snapshot_record.publication.state == PublicationState::Prepared {
             let published = SnapshotRecord {
@@ -385,7 +388,8 @@ impl DatasetAuthority {
                     state: PublicationState::Published,
                 },
             };
-            let published_bytes = encode(&published)?;
+            snapshot_resource.record = published;
+            let published_bytes = snapshot_resource.encode()?;
             match self
                 .store
                 .compare_exchange(
@@ -399,8 +403,13 @@ impl DatasetAuthority {
                 CasOutcome::Conflict(_) => return Err(AuthorityError::HeadConflict),
             }
             self.complete_snapshot_candidate(identity, snapshot).await?;
-            self.advance_head(identity, None, snapshot_record.publication.parent, snapshot)
-                .await?;
+            self.advance_head(
+                identity,
+                None,
+                snapshot_resource.record.publication.parent,
+                snapshot,
+            )
+            .await?;
         } else if self.current_latest(identity).await? != Some(snapshot) {
             self.complete_snapshot_candidate(identity, snapshot).await?;
             self.advance_head(identity, None, snapshot_record.publication.parent, snapshot)
@@ -448,7 +457,7 @@ impl DatasetAuthority {
         if binding.snapshot != snapshot || binding.partitions == 0 {
             return Err(AuthorityError::Corrupt);
         }
-        let snapshot_record: SnapshotRecord = decode(
+        let snapshot_record = decode_snapshot(
             &self
                 .store
                 .get(&key::snapshot(identity, snapshot)?)
@@ -631,7 +640,7 @@ impl DatasetAuthority {
             let Some(value) = self.store.get(&key::snapshot(identity, snapshot)?).await? else {
                 break;
             };
-            current = decode::<SnapshotRecord>(&value.bytes)?.publication.parent;
+            current = decode_snapshot(&value.bytes)?.publication.parent;
         }
         Ok(false)
     }

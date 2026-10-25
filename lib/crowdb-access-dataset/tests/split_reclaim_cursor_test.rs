@@ -78,7 +78,7 @@ async fn readable_snapshot_members_wait_for_persisted_grace_and_keep_late_write_
             .advance_split_reclaim(&mut cursor, &ReadCancellation::new())
             .await,
         Err(SplitLifecycleError::Authority(AuthorityError::ReclaimPending {
-            reclaim_after: 1300
+            reclaim_after: 2200
         }))
     ));
     assert_eq!(test.store.get(&key).await.unwrap().unwrap().bytes, original);
@@ -91,7 +91,7 @@ async fn readable_snapshot_members_wait_for_persisted_grace_and_keep_late_write_
         !sweep.has_more(),
         "grace waiting must not keep a busy local queue"
     );
-    clock.store(1300, Ordering::Release);
+    clock.store(2200, Ordering::Release);
     cursor = SplitReclaimCursor::new(test.identity.clone(), record.operation);
     finish(&authority, &mut cursor).await;
     assert_eq!(

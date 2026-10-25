@@ -6,6 +6,9 @@ mod access_store;
 
 use std::sync::{atomic::Ordering, Arc};
 
+#[path = "common/snapshot_resource.rs"]
+#[allow(dead_code)]
+mod resource;
 use crowdb_access_dataset::*;
 use md5::{Digest, Md5};
 
@@ -208,30 +211,14 @@ async fn an_invalid_ancestor_and_a_missing_member_are_rejected_without_writes() 
     for cycle in [false, true] {
         let f = TestBatch::new().await;
         let ancestor = f.chain[0];
-        let key = [
-            b"DS\0S\0".as_slice(),
-            f.identity.key().unwrap().as_slice(),
-            ancestor.as_bytes(),
-        ]
-        .concat();
-        let stored = f.store.get(&key).await.unwrap().unwrap();
-        let (version, mut record): (u16, SnapshotRecord) = bincode::deserialize(&stored.bytes).unwrap();
-        if cycle {
-            record.publication.parent = Some(f.snapshot());
-        } else {
-            record.publication.state = PublicationState::Prepared;
-        }
-        assert!(matches!(
-            f.store
-                .compare_exchange(
-                    &key,
-                    Some(&stored.bytes),
-                    &bincode::serialize(&(version, record)).unwrap()
-                )
-                .await
-                .unwrap(),
-            CasOutcome::Applied(_)
-        ));
+        resource::mutate(f.store.as_ref(), &f.identity, ancestor, |publication| {
+            if cycle {
+                publication.parent = Some(f.snapshot());
+            } else {
+                publication.state = PublicationState::Prepared;
+            }
+        })
+        .await;
         let writes = f.store.writes.load(Ordering::Relaxed);
         assert!(f
             .authority

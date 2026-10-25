@@ -1,10 +1,14 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+
 #[path = "common/inspection.rs"]
 #[allow(dead_code)]
 mod inspection;
 #[path = "common/publication.rs"]
 mod publication;
+#[path = "common/snapshot_resource.rs"]
+#[allow(dead_code)]
+mod resource;
 use crowdb_access_dataset::{inspection::InspectionError, *};
 use inspection::{budget, fixture, prepare, publish};
 use std::sync::atomic::Ordering;
@@ -23,24 +27,10 @@ async fn visibility_uses_complete_roots_and_never_published_state_alone() {
         )
         .await
         .unwrap();
-    let record_key = [
-        b"DS\0S\0".as_slice(),
-        identity.key().unwrap().as_slice(),
-        uncommitted.as_bytes(),
-    ]
-    .concat();
-    let old = store.storage().get(&record_key).await.unwrap().unwrap();
-    let (version, mut record): (u16, SnapshotRecord) = bincode::deserialize(&old.bytes).unwrap();
-    record.publication.state = PublicationState::Published;
-    store
-        .storage()
-        .compare_exchange(
-            &record_key,
-            Some(&old.bytes),
-            &bincode::serialize(&(version, record)).unwrap(),
-        )
-        .await
-        .unwrap();
+    resource::mutate(store.storage(), &identity, uncommitted, |publication| {
+        publication.state = PublicationState::Published;
+    })
+    .await;
     // Lose the secondary receipt row, retaining the successful head CAS marker.
     let receipt_key = [
         b"DS\0SC\0".as_slice(),

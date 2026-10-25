@@ -40,7 +40,7 @@ impl DatasetAuthority {
         else {
             return Ok(None);
         };
-        let record: SnapshotRecord = super::super::decode(&value)?;
+        let record = crate::authority::snapshot_resource::decode_snapshot(&value)?;
         if record.publication.snapshot != snapshot || record.publication.operation != operation {
             return Err(AuthorityError::Corrupt);
         }

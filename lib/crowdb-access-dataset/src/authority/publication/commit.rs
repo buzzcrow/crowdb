@@ -2,13 +2,13 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::super::{
-    decode, encode,
     head::{encode_head, reference},
+    snapshot_resource::SnapshotResource,
 };
 use crate::{
     key, AuthorityError, CasOutcome, CommitAttempt, CommitGeneration, CommitTarget, DatasetAuthority,
     DatasetError, DatasetHead, DatasetIdentity, HeadRecord, PublicationState, SnapshotHeadUpdate, SnapshotId,
-    SnapshotRecord, StoredValue, SuccessfulCommit,
+    StoredValue, SuccessfulCommit,
 };
 use sha2::{Digest, Sha256};
 
@@ -127,7 +127,8 @@ impl DatasetAuthority {
             .get(&key)
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
-        let mut record: SnapshotRecord = decode(&stored.bytes)?;
+        let mut resource = SnapshotResource::decode(&stored.bytes)?;
+        let record = &mut resource.record;
         let digest: [u8; 32] = Sha256::digest(&record.publication.manifest).into();
         if record.publication.snapshot != candidate.snapshot
             || record.publication.parent != candidate.parent
@@ -143,7 +144,7 @@ impl DatasetAuthority {
             return Ok(());
         }
         record.publication.state = PublicationState::Published;
-        let published = encode(&record)?;
+        let published = resource.encode()?;
         match self
             .store
             .compare_exchange(&key, Some(&stored.bytes), &published)

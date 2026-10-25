@@ -3,13 +3,12 @@
 
 use super::candidate::CandidateBinding;
 use crate::{
-    authority::VersionedRecord,
+    authority::snapshot_resource::decode_snapshot,
     inspection::{work::InspectionWork, InspectionError},
     key,
     split::SplitRevisionRecord,
-    AuthorityError, DatasetAuthority, DatasetIdentity, PublicationState, SnapshotRecord,
+    AuthorityError, DatasetAuthority, DatasetIdentity, PublicationState,
 };
-use bincode::Options;
 use sha2::{Digest, Sha256};
 
 impl DatasetAuthority {
@@ -56,16 +55,11 @@ impl DatasetAuthority {
         else {
             return Ok(false);
         };
-        let stored: VersionedRecord<SnapshotRecord> = bincode::DefaultOptions::new()
-            .with_fixint_encoding()
-            .with_limit(value.bytes.len() as u64)
-            .reject_trailing_bytes()
-            .deserialize(&value.bytes)
-            .map_err(|_| InspectionError::Corrupt)?;
-        let record = stored.payload.publication;
+        let record = decode_snapshot(&value.bytes)
+            .map_err(|_| InspectionError::Corrupt)?
+            .publication;
         let digest: [u8; 32] = Sha256::digest(&record.manifest).into();
-        if stored.version != 1
-            || record.snapshot != candidate.snapshot
+        if record.snapshot != candidate.snapshot
             || record.parent != candidate.parent
             || record.operation != candidate.operation
             || digest != candidate.manifest_sha256

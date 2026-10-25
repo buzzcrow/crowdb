@@ -46,7 +46,7 @@ async fn interrupted_preparation_expires_without_extending_its_original_deadline
             .snapshot_reclaim_after(&f.identity, snapshot)
             .await
             .expect("expired CB3 must enter durable delayed reclamation"),
-        EXPIRES + 300
+        EXPIRES + 1200
     );
 }
 
@@ -73,7 +73,7 @@ async fn restart_finishes_due_preparation_and_seals_a_delayed_index_retry() {
     wait_for_pause(&f).await;
     f.clock.store(EXPIRES, Ordering::Relaxed);
     f.expire().await.unwrap();
-    f.clock.store(EXPIRES + 299, Ordering::Relaxed);
+    f.clock.store(EXPIRES + 1199, Ordering::Relaxed);
     let uploads = uploads(&f);
     let writes = f.store.writes();
     f.authority
@@ -85,7 +85,7 @@ async fn restart_finishes_due_preparation_and_seals_a_delayed_index_retry() {
         .await
         .unwrap();
     assert_eq!(f.store.writes(), writes, "cleanup must wait for persisted grace");
-    f.clock.store(EXPIRES + 300, Ordering::Relaxed);
+    f.clock.store(EXPIRES + 1200, Ordering::Relaxed);
     let restarted = finish_reclaim(&f, &uploads, snapshot).await;
     let row = index_row(&f, snapshot);
     let fence = f.store.get(&row).await.unwrap().unwrap();
@@ -203,9 +203,9 @@ async fn unknown_expiry_mark_stops_and_restart_recovers_the_incomplete_resource(
             .snapshot_reclaim_after(&f.identity, snapshot)
             .await
             .unwrap(),
-        EXPIRES + 300
+        EXPIRES + 1200
     );
-    f.clock.store(EXPIRES + 300, Ordering::Relaxed);
+    f.clock.store(EXPIRES + 1200, Ordering::Relaxed);
     finish_reclaim(&f, &uploads(&f), snapshot).await;
 }
 
@@ -217,7 +217,7 @@ async fn interrupted_claimed_preparation_retires_only_its_owner() {
     let shared = prepared.prepare_shared_owner(&f).await;
     f.clock.store(EXPIRES, Ordering::Relaxed);
     f.expire().await.unwrap();
-    f.clock.store(EXPIRES + 300, Ordering::Relaxed);
+    f.clock.store(EXPIRES + 1200, Ordering::Relaxed);
     let authority = finish_reclaim(&f, &prepared.uploads, prepared.snapshot).await;
     let upload = prepared.uploads.metadata(&prepared.location).await.unwrap();
     assert_eq!(
@@ -227,7 +227,7 @@ async fn interrupted_claimed_preparation_retires_only_its_owner() {
     assert!(matches!(
         prepared
             .uploads
-            .claim(&prepared.location, prepared.operation, EXPIRES + 300)
+            .claim(&prepared.location, prepared.operation, EXPIRES + 1200)
             .await,
         Err(UploadError::Conflict)
     ));
@@ -252,7 +252,7 @@ async fn delayed_claim_cannot_acquire_ownership_after_incomplete_expiry_cleanup(
     wait_for_pause(&f).await;
     f.clock.store(EXPIRES, Ordering::Relaxed);
     f.expire().await.unwrap();
-    f.clock.store(EXPIRES + 300, Ordering::Relaxed);
+    f.clock.store(EXPIRES + 1200, Ordering::Relaxed);
     finish_reclaim(&f, &prepared.uploads, prepared.snapshot).await;
     f.store.resume.notify_one();
     assert!(matches!(pending.await.unwrap(), Err(UploadError::Conflict)));
@@ -269,7 +269,7 @@ async fn unknown_owner_retirement_does_not_advance_to_index_cleanup() {
     prepared.claim().await;
     f.clock.store(EXPIRES, Ordering::Relaxed);
     f.expire().await.unwrap();
-    f.clock.store(EXPIRES + 300, Ordering::Relaxed);
+    f.clock.store(EXPIRES + 1200, Ordering::Relaxed);
     f.store.lose_owner_retirement.store(true, Ordering::Relaxed);
     assert!(f
         .authority
@@ -303,7 +303,7 @@ async fn unknown_owner_retirement_does_not_advance_to_index_cleanup() {
 }
 
 #[tokio::test]
-async fn legacy_staged_binding_without_a_deadline_is_not_automatically_reclaimed() {
+async fn removing_the_binding_deadline_does_not_remove_the_snapshot_deadline() {
     let f = TestExpiryFixture::new().await;
     let snapshot = staged(&f, 2).await;
     let cb_key = key(&f.identity, snapshot);
@@ -322,14 +322,14 @@ async fn legacy_staged_binding_without_a_deadline_is_not_automatically_reclaimed
         CasOutcome::Applied(_)
     ));
     f.clock.store(EXPIRES + 86400, Ordering::Relaxed);
-    let writes = f.store.writes();
     f.expire().await.unwrap();
-    assert_eq!(f.store.writes(), writes);
-    assert!(f
-        .authority
-        .snapshot_reclaim_after(&f.identity, snapshot)
-        .await
-        .is_err());
+    assert_eq!(
+        f.authority
+            .snapshot_reclaim_after(&f.identity, snapshot)
+            .await
+            .unwrap(),
+        EXPIRES + 86400 + 1200
+    );
     assert_eq!(
         f.authority
             .publication_status(&f.identity, OperationId::from_bytes(snapshot.as_bytes()).unwrap())
@@ -337,6 +337,6 @@ async fn legacy_staged_binding_without_a_deadline_is_not_automatically_reclaimed
             .unwrap()
             .publication
             .state,
-        PublicationState::Prepared
+        PublicationState::Aborted
     );
 }

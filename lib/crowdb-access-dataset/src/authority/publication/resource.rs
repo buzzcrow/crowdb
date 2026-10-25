@@ -3,14 +3,14 @@
 
 use super::{candidate, identity::PublicationIdentity, retirement, PublicationMode};
 use crate::{
-    authority::{decode, encode},
+    authority::snapshot_resource::{encode_snapshot, SnapshotResource, CANDIDATE_LIFETIME_SECONDS},
     key, AuthorityError, CasOutcome, DatasetAuthority, DatasetError, DatasetIdentity, PublicationState,
     SnapshotId, SnapshotPublication, SnapshotRecord,
 };
 
-#[derive(serde::Serialize)]
-struct BorrowedSnapshotRecord<'a> {
-    publication: &'a SnapshotPublication,
+pub(super) struct PublicationResource {
+    pub reused: Option<SnapshotId>,
+    pub gc_after: Option<u64>,
 }
 
 impl DatasetAuthority {
@@ -20,13 +20,20 @@ impl DatasetAuthority {
         prepared: &SnapshotPublication,
         resolved: &PublicationIdentity,
         mode: PublicationMode,
-    ) -> Result<Option<SnapshotId>, AuthorityError> {
+    ) -> Result<PublicationResource, AuthorityError> {
         let snapshot = prepared.snapshot;
         let snapshot_key = key::snapshot(identity, snapshot)?;
         if let Some(value) = self.store.get(&snapshot_key).await? {
-            return self
-                .reuse_publication_resource(identity, prepared, &value.bytes, mode)
-                .await;
+            if value.bytes == retirement::RETIRED {
+                return Err(DatasetError::InvalidPublicationState.into());
+            }
+            let stored = SnapshotResource::decode(&value.bytes)?;
+            return Ok(PublicationResource {
+                reused: self
+                    .reuse_publication_resource(identity, prepared, &stored.record, mode)
+                    .await?,
+                gc_after: stored.gc_after,
+            });
         }
         if resolved.retired {
             return Err(DatasetError::InvalidPublicationState.into());
@@ -45,11 +52,13 @@ impl DatasetAuthority {
                 });
             }
         }
-        let bytes = encode(&BorrowedSnapshotRecord {
-            publication: prepared,
-        })?;
+        let gc_after = Some(self.reclaim_time().saturating_add(CANDIDATE_LIFETIME_SECONDS));
+        let bytes = encode_snapshot(prepared, gc_after)?;
         match self.store.compare_exchange(&snapshot_key, None, &bytes).await? {
-            CasOutcome::Applied(_) => Ok(None),
+            CasOutcome::Applied(_) => Ok(PublicationResource {
+                reused: None,
+                gc_after,
+            }),
             CasOutcome::Conflict(_) => Err(AuthorityError::AlreadyExists),
         }
     }
@@ -58,7 +67,7 @@ impl DatasetAuthority {
         &self,
         identity: &DatasetIdentity,
         prepared: &SnapshotPublication,
-        stored: &[u8],
+        existing: &SnapshotRecord,
         mode: PublicationMode,
     ) -> Result<Option<SnapshotId>, AuthorityError> {
         let snapshot = prepared.snapshot;
@@ -66,10 +75,6 @@ impl DatasetAuthority {
         let operation = prepared.operation;
         let manifest_bytes = &prepared.manifest;
 
-        if stored == retirement::RETIRED {
-            return Err(DatasetError::InvalidPublicationState.into());
-        }
-        let existing: SnapshotRecord = decode(stored)?;
         if existing.publication.operation != operation
             || existing.publication.parent != parent
             || existing.publication.manifest != *manifest_bytes
