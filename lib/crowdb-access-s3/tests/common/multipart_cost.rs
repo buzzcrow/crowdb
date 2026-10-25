@@ -43,13 +43,17 @@ async fn normal_part_and_completion_have_no_post_write_metadata_reload() {
         .unwrap()
         .unwrap();
     let freeze = probe.counts();
-    assert_eq!((freeze.0 - replay.0, freeze.1 - replay.1), (3, 1));
+    assert_eq!((freeze.0 - replay.0, freeze.1 - replay.1), (2, 1));
     assert_eq!(
-        repository.publish_completion(&frozen).await.unwrap().phase,
-        MultipartPhase::Published
+        repository
+            .publish_completion(&frozen)
+            .await
+            .unwrap()
+            .logical_length,
+        part().length
     );
     let published = probe.counts();
-    assert_eq!((published.0 - freeze.0, published.1 - freeze.1), (4, 2));
+    assert_eq!((published.0 - freeze.0, published.1 - freeze.1), (3, 1));
 }
 
 #[tokio::test]
@@ -162,7 +166,7 @@ async fn completion_reuses_a_concurrent_identical_freeze_observation() {
 }
 
 #[tokio::test]
-async fn publication_finish_reuses_the_published_observation() {
+async fn object_publication_never_writes_a_success_receipt() {
     let (repository, probe, _) = repository_with_probe().await;
     let session = session();
     repository.begin(&session).await.unwrap();
@@ -172,19 +176,15 @@ async fn publication_finish_reuses_the_published_observation() {
         .await
         .unwrap()
         .unwrap();
-    let mut published = frozen.clone();
-    published.revision += 1;
-    published.phase = MultipartPhase::Published;
-    probe.conflict(
-        MetadataKey::multipart_session(&tenant(), session.bucket_id, &session.upload_id),
-        published.encode().unwrap(),
-        0,
-    );
-    assert_eq!(repository.publish_completion(&frozen).await.unwrap(), published);
+    let before = probe.counts();
+    repository.publish_completion(&frozen).await.unwrap();
+    let after = probe.counts();
+    assert_eq!((after.0 - before.0, after.1 - before.1), (3, 1));
+    assert_eq!(repository.load(&session).await.unwrap(), Some(frozen));
 }
 
 #[tokio::test]
-async fn object_conflict_returns_without_get_or_overwriting_a_competitor() {
+async fn object_publication_overwrites_any_previous_value_without_loading_it() {
     for predecessor in [None, Some(b"old".to_vec())] {
         let (repository, probe, store) = repository_with_probe().await;
         let session = session();
@@ -192,18 +192,23 @@ async fn object_conflict_returns_without_get_or_overwriting_a_competitor() {
         repository.put_stream_part(&session, &part(), 110).await.unwrap();
         let key = MetadataKey::object(&tenant(), session.bucket_id, &session.object_key).unwrap();
         if let Some(value) = predecessor {
-            store.put_if_absent(key.clone(), value).await.unwrap();
+            store.put(key.clone(), value).await.unwrap();
         }
         let frozen = repository
             .freeze_completion(&session, &completion(), 120)
             .await
             .unwrap()
             .unwrap();
-        probe.conflict(key, b"concurrent replacement".to_vec(), 0);
-        assert!(matches!(
-            repository.publish_completion(&frozen).await,
-            Err(MultipartRepositoryError::Conflict)
-        ));
+        store
+            .put(key.clone(), b"concurrent replacement".to_vec())
+            .await
+            .unwrap();
+        let before = probe.counts();
+        let result = repository.publish_completion(&frozen).await.unwrap();
+        let after = probe.counts();
+        assert_eq!((after.0 - before.0, after.1 - before.1), (3, 1));
+        let object = super::ObjectRecord::decode(&store.get(key).await.unwrap().unwrap().value).unwrap();
+        assert_eq!(object.etag, result.etag);
     }
 }
 

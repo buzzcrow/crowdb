@@ -37,7 +37,7 @@ impl MultipartRepository {
         {
             return Err(MultipartRepositoryError::Conflict);
         }
-        let expected = previous.encode()?;
+        let expected = previous.expected_value()?;
         let value = next.encode()?;
         match self
             .store

@@ -330,3 +330,61 @@ async fn unconfirmed_publication_is_uncertain_and_retry_confirms_the_frozen_gene
     assert_eq!(read(&client, b"uncertain").await, b"retained");
     runtime.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn explicit_completion_retry_overwrites_a_later_ordinary_put_without_reuploading_parts() {
+    for lost_reply in [false, true] {
+        let fault = Arc::new(metadata::TestMutationBlackout::default());
+        let (runtime, client, backend) =
+            fixture::fixture_with_metadata(metadata::client_with_blackout(fault.clone()).await).await;
+        let upload = client
+            .begin_multipart(context(70), b"bucket", b"overwrite", attributes())
+            .await
+            .unwrap();
+        let saved = part(&runtime, &client, &upload, 1, b"original A".to_vec(), 71).await;
+        if lost_reply {
+            let bucket = client.head_bucket(context(72), b"bucket").await.unwrap();
+            let tenant = crowdb_access_s3::metadata::TenantId::new(b"tenant".to_vec()).unwrap();
+            let key = crowdb_access_s3::metadata::MetadataKey::object(&tenant, bucket, b"overwrite").unwrap();
+            fault.key.store(Some(Arc::new(key)));
+        }
+        let completed = client
+            .complete_multipart(context(73), &upload, &[selection(&saved)])
+            .await;
+        if lost_reply {
+            assert!(matches!(
+                completed,
+                Err(Error::UncertainMutation { request_id: 73, .. })
+            ));
+        } else {
+            assert_eq!(completed.unwrap().logical_length, 10);
+        }
+        fault.key.store(None);
+        fault.blocked.store(false, Ordering::Release);
+        for id in [74, 77] {
+            client
+                .put_vec(
+                    context(id),
+                    b"bucket",
+                    b"overwrite",
+                    b"later B".to_vec(),
+                    options(7),
+                )
+                .await
+                .unwrap();
+            assert_eq!(read(&client, b"overwrite").await, b"later B");
+            let writes = backend.writes.load(Ordering::Acquire);
+            let restored = client
+                .complete_multipart(context(id + 1), &upload, &[selection(&saved)])
+                .await
+                .unwrap();
+            assert_eq!(restored.logical_length, 10);
+            assert_eq!(read(&client, b"overwrite").await, b"original A");
+            assert_eq!(backend.writes.load(Ordering::Acquire), writes);
+        }
+        assert_eq!(backend.deletes.load(Ordering::Acquire), 0);
+        assert_eq!(runtime.resources().status().requests, 0);
+        assert_eq!(runtime.resources().status().held_bytes, 0);
+        runtime.shutdown().await.unwrap();
+    }
+}

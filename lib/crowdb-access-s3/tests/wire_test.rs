@@ -116,10 +116,7 @@ fn multipart_upload_listing_emits_stable_markers_and_initiation_time() {
         staged_bytes: 0,
         pending: None,
         selection: None,
-        completion_request_digest: None,
-        publication_ms: None,
-        object_predecessor: None,
-        etag: None,
+        legacy_observation: None,
     };
     let page = MultipartUploadPage {
         uploads: vec![session],

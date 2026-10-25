@@ -23,6 +23,8 @@ mod cost;
 mod expiry;
 #[path = "common/multipart_expiry_sweep.rs"]
 mod expiry_sweep;
+#[path = "common/multipart_legacy.rs"]
+mod legacy;
 #[path = "common/multipart_progress.rs"]
 mod progress;
 #[path = "common/retrieval_storage.rs"]
@@ -55,10 +57,7 @@ fn session() -> MultipartSessionRecord {
         staged_bytes: 0,
         pending: None,
         selection: None,
-        completion_request_digest: None,
-        publication_ms: None,
-        object_predecessor: None,
-        etag: None,
+        legacy_observation: None,
     }
 }
 
@@ -133,7 +132,7 @@ async fn session_cas_and_independent_part_replacement_obey_the_freeze() {
     let current = repository.load(&session).await.unwrap().unwrap();
     let mut frozen = current.clone();
     frozen.revision += 1;
-    frozen.phase = MultipartPhase::Completing;
+    frozen.phase = MultipartPhase::Publishing;
     frozen.part_count = 1;
     frozen.staged_bytes = 5;
     frozen.selection = Some(vec![SelectedPart {
@@ -141,8 +140,6 @@ async fn session_cas_and_independent_part_replacement_obey_the_freeze() {
         revision: 2,
         digest: [4; 32],
     }]);
-    frozen.completion_request_digest = Some([5; 32]);
-    frozen.publication_ms = None;
     lose_reply.store(true, Ordering::SeqCst);
     unknown::assert_unknown(repository.exchange(&current, &frozen).await);
     assert!(repository.exchange(&current, &frozen).await.unwrap());
@@ -173,7 +170,6 @@ async fn completion_freezes_exact_part_revision_and_replays_the_same_request() {
         .unwrap();
     assert_eq!(frozen.phase, MultipartPhase::Publishing);
     assert_eq!(frozen.selection.as_ref().unwrap()[0].revision, first.revision);
-    assert!(frozen.etag.as_ref().unwrap().ends_with("-1"));
     assert_eq!(
         repository
             .freeze_completion(&session, &requested, 121)
@@ -186,7 +182,7 @@ async fn completion_freezes_exact_part_revision_and_replays_the_same_request() {
         Err(MultipartRepositoryError::Conflict)
     ));
     let published = repository.publish_completion(&frozen).await.unwrap();
-    assert_eq!(published.phase, MultipartPhase::Published);
+    assert!(published.etag.ends_with("-1"));
     assert_eq!(repository.publish_completion(&session).await.unwrap(), published);
     let key = MetadataKey::object(
         &TenantId::new(b"tenant".to_vec()).unwrap(),
@@ -197,7 +193,7 @@ async fn completion_freezes_exact_part_revision_and_replays_the_same_request() {
     let object = ObjectRecord::decode(&store.get(key).await.unwrap().unwrap().value).unwrap();
     assert_eq!(object.attributes, session.attributes);
     assert_eq!(object.logical_length, 5);
-    assert_eq!(object.etag, frozen.etag.unwrap());
+    assert_eq!(object.etag, published.etag);
     assert_eq!(object.checksum.len(), 18);
     let locations: Vec<Location> = bincode::deserialize(&object.data_reference).unwrap();
     assert_eq!(locations, part().locations);
@@ -309,7 +305,7 @@ async fn completion_rejects_undersized_nonfinal_and_wrong_etag() {
 }
 
 #[tokio::test]
-async fn publication_recovers_a_lost_reply_without_replacing_a_competing_object() {
+async fn publication_retry_overwrites_a_competing_object_after_a_lost_reply() {
     let (repository, lose_reply, store) = repository().await;
     let session = session();
     repository.begin(&session).await.unwrap();
@@ -326,7 +322,7 @@ async fn publication_recovers_a_lost_reply_without_replacing_a_competing_object(
     lose_reply.store(true, Ordering::SeqCst);
     unknown::assert_unknown(repository.publish_completion(&frozen).await);
     let published = repository.publish_completion(&frozen).await.unwrap();
-    assert_eq!(published.phase, MultipartPhase::Published);
+    assert!(published.etag.ends_with("-1"));
     assert_eq!(repository.publish_completion(&frozen).await.unwrap(), published);
 
     let mut second = session.clone();
@@ -352,14 +348,10 @@ async fn publication_recovers_a_lost_reply_without_replacing_a_competing_object(
         .compare_exchange(key.clone(), previous.value, b"competing generation".to_vec())
         .await
         .unwrap());
-    assert!(matches!(
-        repository.publish_completion(&frozen_second).await,
-        Err(MultipartRepositoryError::Conflict)
-    ));
-    assert_eq!(
-        store.get(key).await.unwrap().unwrap().value,
-        b"competing generation"
-    );
+    let completed = repository.publish_completion(&frozen_second).await.unwrap();
+    let object = ObjectRecord::decode(&store.get(key).await.unwrap().unwrap().value).unwrap();
+    assert_eq!(object.etag, completed.etag);
+    assert_eq!(object.logical_length, part().length);
 }
 
 #[tokio::test]

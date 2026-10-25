@@ -13,13 +13,15 @@ use sha2::{Digest as _, Sha256};
 
 use super::BucketId;
 
-const SESSION_MAGIC: [u8; 5] = *b"S3MS\x03";
+const SESSION_MAGIC: [u8; 5] = *b"S3MS\x04";
 const PART_MAGIC: [u8; 5] = *b"S3MP\x01";
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
 const MAX_OBJECT_KEY_BYTES: usize = 1024;
 const MAX_CONTENT_TYPE_BYTES: usize = 1024;
 
 pub use crowdb_access_multipart::MultipartPhase;
+
+mod legacy;
 
 /// Creates a random upload identity whose byte order follows initiation time.
 /// Uploads created in the same millisecond have an unspecified relative order.
@@ -30,7 +32,7 @@ pub fn new_upload_id(now_ms: u64) -> [u8; 16] {
     id
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MultipartSessionRecord {
     pub bucket_id: BucketId,
     pub object_key: Vec<u8>,
@@ -49,11 +51,35 @@ pub struct MultipartSessionRecord {
     pub staged_bytes: u64,
     pub pending: Option<PendingPartMutation>,
     pub selection: Option<Vec<SelectedPart>>,
-    pub completion_request_digest: Option<[u8; 32]>,
-    pub publication_ms: Option<u64>,
-    pub object_predecessor: Option<Option<[u8; 32]>>,
-    pub etag: Option<String>,
+    /// Original legacy authority for an exact-value CAS, never persisted.
+    #[serde(skip)]
+    pub legacy_observation: Option<(u64, Vec<u8>)>,
 }
+
+impl PartialEq for MultipartSessionRecord {
+    fn eq(&self, other: &Self) -> bool {
+        // Encoding provenance does not change the resource's identity.
+        self.bucket_id == other.bucket_id
+            && self.object_key == other.object_key
+            && self.upload_id == other.upload_id
+            && self.revision == other.revision
+            && self.phase == other.phase
+            && self.created_ms == other.created_ms
+            && self.expires_ms == other.expires_ms
+            && self.content_type == other.content_type
+            && self.attributes == other.attributes
+            && self.max_parts == other.max_parts
+            && self.max_part_bytes == other.max_part_bytes
+            && self.max_object_bytes == other.max_object_bytes
+            && self.max_staged_bytes == other.max_staged_bytes
+            && self.part_count == other.part_count
+            && self.staged_bytes == other.staged_bytes
+            && self.pending == other.pending
+            && self.selection == other.selection
+    }
+}
+
+impl Eq for MultipartSessionRecord {}
 
 /// A durable session fence for publishing one current-part pointer.
 /// The immutable after-generation is stored before reserving this mutation.
@@ -109,8 +135,7 @@ impl MultipartSessionRecord {
         object: &[u8],
         upload_id: &[u8; 16],
     ) -> Result<Self, MultipartRecordError> {
-        let record: Self = decode(SESSION_MAGIC, bytes)?;
-        record.validate()?;
+        let record = Self::decode_unbound(bytes)?;
         if record.bucket_id != bucket || record.object_key != object || &record.upload_id != upload_id {
             return Err(MultipartRecordError::Identity);
         }
@@ -118,9 +143,22 @@ impl MultipartSessionRecord {
     }
 
     pub(crate) fn decode_unbound(bytes: &[u8]) -> Result<Self, MultipartRecordError> {
-        let record: Self = decode(SESSION_MAGIC, bytes)?;
+        let record: Self = if bytes.starts_with(b"S3MS\x03") {
+            legacy::decode_session(bytes)?
+        } else {
+            decode(SESSION_MAGIC, bytes)?
+        };
         record.validate()?;
         Ok(record)
+    }
+
+    pub(crate) fn expected_value(&self) -> Result<Vec<u8>, MultipartRecordError> {
+        if let Some((revision, bytes)) = &self.legacy_observation {
+            if *revision == self.revision && legacy::decode_session(bytes)? == *self {
+                return Ok(bytes.clone());
+            }
+        }
+        self.encode()
     }
 
     fn validate(&self) -> Result<(), MultipartRecordError> {
@@ -163,41 +201,12 @@ impl MultipartSessionRecord {
                 return Err(MultipartRecordError::Invalid);
             }
         }
-        let selected_count = self.selection.as_ref().map_or(0, Vec::len);
         match self.phase {
-            MultipartPhase::Open
-                if self.selection.is_none()
-                    && self.completion_request_digest.is_none()
-                    && self.publication_ms.is_none()
-                    && self.object_predecessor.is_none()
-                    && self.etag.is_none() =>
-            {
-                Ok(())
-            }
-            MultipartPhase::Completing
-                if self.selection.is_some()
-                    && self.completion_request_digest.is_some()
-                    && self.publication_ms.is_none()
-                    && self.object_predecessor.is_none()
-                    && self.etag.is_none() =>
-            {
-                Ok(())
-            }
-            MultipartPhase::Publishing | MultipartPhase::Published
-                if self.selection.is_some()
-                    && self.completion_request_digest.is_some()
-                    && self
-                        .publication_ms
-                        .is_some_and(|time| time >= self.created_ms && time < self.expires_ms)
-                    && self.object_predecessor.is_some()
-                    && self
-                        .etag
-                        .as_ref()
-                        .is_some_and(|etag| valid_etag(etag, selected_count)) =>
-            {
-                Ok(())
-            }
-            MultipartPhase::Aborted if self.etag.is_none() => Ok(()),
+            MultipartPhase::Open if self.selection.is_none() => Ok(()),
+            // This state binds immutable part resources; it records no result
+            // of an object-key PUT and has no subsequent success transition.
+            MultipartPhase::Publishing if self.selection.is_some() => Ok(()),
+            MultipartPhase::Aborted => Ok(()),
             _ => Err(MultipartRecordError::Invalid),
         }
     }
@@ -250,19 +259,6 @@ impl MultipartPartRecord {
         composer.finish().map_err(|_| MultipartRecordError::Invalid)?;
         Ok(())
     }
-}
-
-fn valid_etag(etag: &str, selected_count: usize) -> bool {
-    let Some((digest, count)) = etag.split_once('-') else {
-        return false;
-    };
-    digest.len() == 32
-        && digest
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        && count
-            .parse::<u16>()
-            .is_ok_and(|count| count > 0 && usize::from(count) == selected_count)
 }
 
 fn encode<T: Serialize>(magic: [u8; 5], value: &T) -> Result<Vec<u8>, MultipartRecordError> {

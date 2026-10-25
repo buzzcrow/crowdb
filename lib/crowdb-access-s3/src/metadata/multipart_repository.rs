@@ -20,6 +20,7 @@ mod terminal;
 pub use completion::CompletionPart;
 use exchange::MultipartExchange;
 pub use listing::{MultipartPartPage, MultipartUploadPage};
+pub use publication::MultipartCompletion;
 pub use terminal::{MultipartExpiryError, MultipartExpiryPage, MultipartExpiryStep, MultipartExpirySweep};
 
 #[derive(Debug, thiserror::Error)]

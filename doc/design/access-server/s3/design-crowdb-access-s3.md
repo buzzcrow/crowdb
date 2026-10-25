@@ -239,9 +239,14 @@ expiration of this local work budget returns a retryable busy result.
 
 Completion validates the ordered selected part numbers, raw MD5 values,
 minimum nonfinal size, and current generations. It freezes the selection under
-the session compare-and-swap, composes chunk locations with adjusted logical
-offsets, and publishes one object record through a predecessor-fenced
-object-key mutation. Publication checks the current pointers and immutable
+the upload-resource compare-and-swap, composes chunk locations with adjusted logical
+offsets, and publishes one object record through an unconditional object-key PUT.
+Every Complete retry repeats this PUT, including after an earlier success; it may
+overwrite a later ordinary PUT to the same name. The selected part numbers,
+revisions and digests remain immutable. No predecessor, request digest, cached
+response or publication-success transition is persisted. Legacy records are
+decoded into that selection and retain their exact observed bytes only within
+the request for conditional updates. Publication checks the current pointers and immutable
 generation digests again. It never reads or concatenates part bytes. The
 multipart ETag is the hexadecimal MD5 of the selected raw part MD5 values in
 order, followed by the part count suffix. Abort and expiry mark the session

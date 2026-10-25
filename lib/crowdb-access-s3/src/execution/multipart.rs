@@ -8,8 +8,8 @@ pub use part::PreparedPart;
 
 use super::{CopyMetadata, S3Executor};
 use crate::metadata::{
-    new_upload_id, CompletionPart, MetadataStoreError, MultipartPhase, MultipartRepository,
-    MultipartRepositoryError, MultipartSessionRecord,
+    new_upload_id, CompletionPart, MetadataStoreError, MultipartCompletion, MultipartPhase,
+    MultipartRepository, MultipartRepositoryError, MultipartSessionRecord,
 };
 use crate::S3ErrorCode;
 use crowdb_chunk_kv_client::ClientError;
@@ -68,10 +68,7 @@ impl S3Executor {
             staged_bytes: 0,
             pending: None,
             selection: None,
-            completion_request_digest: None,
-            publication_ms: None,
-            object_predecessor: None,
-            etag: None,
+            legacy_observation: None,
         };
         self.multipart_repository()
             .begin(&session)
@@ -138,7 +135,7 @@ impl S3Executor {
         &self,
         session: &MultipartSessionRecord,
         requested: &[CompletionPart],
-    ) -> Result<MultipartSessionRecord, MultipartFailure> {
+    ) -> Result<MultipartCompletion, MultipartFailure> {
         if requested.is_empty() || requested.len() > 10_000 {
             return Err(MultipartFailure::S3(S3ErrorCode::InvalidRequest));
         }
@@ -152,7 +149,10 @@ impl S3Executor {
             .await
             .map_err(mutation_error)?
             .ok_or(MultipartFailure::S3(S3ErrorCode::ServiceUnavailable))?;
-        repository.publish_frozen(frozen).await.map_err(mutation_error)
+        repository
+            .publish_frozen(frozen, Some(requested))
+            .await
+            .map_err(mutation_error)
     }
 
     /// # Errors

@@ -34,10 +34,7 @@ fn session() -> MultipartSessionRecord {
         staged_bytes: 0,
         pending: None,
         selection: None,
-        completion_request_digest: None,
-        publication_ms: None,
-        object_predecessor: None,
-        etag: None,
+        legacy_observation: None,
     }
 }
 
@@ -96,7 +93,7 @@ fn session_and_part_records_round_trip_only_under_their_own_keys() {
 }
 
 #[test]
-fn completed_session_requires_a_matching_selected_count_and_etag() {
+fn bound_upload_requires_a_nonempty_selection_and_keeps_no_success_phase() {
     let mut session = session();
     session.phase = MultipartPhase::Publishing;
     session.part_count = 1;
@@ -106,13 +103,12 @@ fn completed_session_requires_a_matching_selected_count_and_etag() {
         revision: 2,
         digest: [4; 32],
     }]);
-    session.completion_request_digest = Some([5; 32]);
-    session.publication_ms = Some(150);
-    session.object_predecessor = Some(None);
-    session.etag = Some("11111111111111111111111111111111-2".into());
+    assert!(session.encode().unwrap().starts_with(b"S3MS\x04"));
+    session.phase = MultipartPhase::Published;
     assert_eq!(session.encode(), Err(MultipartRecordError::Invalid));
-    session.etag = Some("11111111111111111111111111111111-1".into());
-    assert!(session.encode().is_ok());
+    session.phase = MultipartPhase::Publishing;
+    session.selection = Some(Vec::new());
+    assert_eq!(session.encode(), Err(MultipartRecordError::Invalid));
     session.phase = MultipartPhase::Open;
     assert_eq!(session.encode(), Err(MultipartRecordError::Invalid));
 }

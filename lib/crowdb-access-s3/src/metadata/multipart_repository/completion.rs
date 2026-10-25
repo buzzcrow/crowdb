@@ -3,13 +3,11 @@
 
 //! Freeze the exact selected part generations before object publication.
 
-use crowdb_access_multipart::{
-    live_at, next_revision, validate_selected_parts, MultipartComposer, SelectedPart,
-};
-use sha2::{Digest as _, Sha256};
-
 use super::{
     MultipartExchange, MultipartPhase, MultipartRepository, MultipartRepositoryError, MultipartSessionRecord,
+};
+use crowdb_access_multipart::{
+    live_at, next_revision, validate_selected_parts, MultipartComposer, SelectedPart,
 };
 
 const MIN_NONFINAL_PART_BYTES: u64 = 5 * 1024 * 1024;
@@ -36,13 +34,28 @@ impl MultipartRepository {
         requested: &[CompletionPart],
         now_ms: u64,
     ) -> Result<Option<MultipartSessionRecord>, MultipartRepositoryError> {
-        let request_digest = request_digest(requested)?;
         let current = self
             .load(session)
             .await?
             .ok_or(MultipartRepositoryError::Conflict)?;
-        self.freeze_selection(current, requested, request_digest, now_ms)
-            .await
+        let already_bound = current.phase == MultipartPhase::Publishing;
+        let bound = self.freeze_current(current, requested, now_ms).await?;
+        if already_bound {
+            if let Some(current) = &bound {
+                for (selected, request) in current.selection.iter().flatten().zip(requested) {
+                    let part = self
+                        .part_generation(current, selected.number, selected.revision)
+                        .await?
+                        .ok_or(MultipartRepositoryError::InvalidPart)?;
+                    if part.selection_digest()? != selected.digest
+                        || !etag_matches(&request.etag, &part.raw_md5)
+                    {
+                        return Err(MultipartRepositoryError::Conflict);
+                    }
+                }
+            }
+        }
+        Ok(bound)
     }
 
     // Only continues the authority freshly loaded by this request. The exact
@@ -53,23 +66,22 @@ impl MultipartRepository {
         requested: &[CompletionPart],
         now_ms: u64,
     ) -> Result<Option<MultipartSessionRecord>, MultipartRepositoryError> {
-        let request_digest = request_digest(requested)?;
-        self.freeze_selection(current, requested, request_digest, now_ms)
-            .await
-    }
-
-    async fn freeze_selection(
-        &self,
-        current: MultipartSessionRecord,
-        requested: &[CompletionPart],
-        request_digest: [u8; 32],
-        now_ms: u64,
-    ) -> Result<Option<MultipartSessionRecord>, MultipartRepositoryError> {
-        if matches!(
-            current.phase,
-            MultipartPhase::Publishing | MultipartPhase::Published
-        ) && current.completion_request_digest == Some(request_digest)
-        {
+        validate_request(requested)?;
+        if current.phase == MultipartPhase::Publishing {
+            let selection = current
+                .selection
+                .as_ref()
+                .ok_or(MultipartRepositoryError::Conflict)?;
+            if selection.len() != requested.len()
+                || selection
+                    .iter()
+                    .zip(requested)
+                    .any(|(selected, request)| selected.number != request.number)
+            {
+                return Err(MultipartRepositoryError::Conflict);
+            }
+            // The active caller validates ETags against the generation records
+            // in the same publication read, without a duplicate metadata load.
             return Ok(Some(current));
         }
         if current.pending.is_some() {
@@ -122,23 +134,10 @@ impl MultipartRepository {
             u16::try_from(selection.len()).map_err(|_| MultipartRepositoryError::InvalidPart)?;
         next.staged_bytes = assembled.length;
         next.selection = Some(selection);
-        next.completion_request_digest = Some(request_digest);
-        next.publication_ms = Some(now_ms);
-        let object_key = super::MetadataKey::object(&self.tenant, current.bucket_id, &current.object_key)?;
-        next.object_predecessor = Some(
-            self.store
-                .get(object_key)
-                .await?
-                .map(|value| Sha256::digest(value.value).into()),
-        );
-        next.etag = Some(assembled.etag);
         Ok(match self.exchange_observed(&current, &next).await? {
             MultipartExchange::Applied => Some(next),
             MultipartExchange::Conflict(Some(observed))
-                if matches!(
-                    observed.phase,
-                    MultipartPhase::Publishing | MultipartPhase::Published
-                ) && observed.completion_request_digest == Some(request_digest) =>
+                if observed.phase == MultipartPhase::Publishing && observed.selection == next.selection =>
             {
                 Some(*observed)
             }
@@ -147,22 +146,22 @@ impl MultipartRepository {
     }
 }
 
-fn etag_matches(value: &str, raw_md5: &[u8; 16]) -> bool {
+pub(super) fn etag_matches(value: &str, raw_md5: &[u8; 16]) -> bool {
     parse_raw_md5(value).is_some_and(|actual| &actual == raw_md5)
 }
 
-fn request_digest(requested: &[CompletionPart]) -> Result<[u8; 32], MultipartRepositoryError> {
-    let mut sha = Sha256::new();
-    sha.update(
-        u16::try_from(requested.len())
-            .map_err(|_| MultipartRepositoryError::InvalidPart)?
-            .to_be_bytes(),
-    );
-    for part in requested {
-        sha.update(part.number.to_be_bytes());
-        sha.update(parse_raw_md5(&part.etag).ok_or(MultipartRepositoryError::InvalidPart)?);
+fn validate_request(requested: &[CompletionPart]) -> Result<(), MultipartRepositoryError> {
+    if requested.is_empty() || requested.len() > 10_000 {
+        return Err(MultipartRepositoryError::InvalidPart);
     }
-    Ok(sha.finalize().into())
+    let mut previous = 0;
+    for part in requested {
+        if part.number <= previous || part.number > 10_000 || parse_raw_md5(&part.etag).is_none() {
+            return Err(MultipartRepositoryError::InvalidPart);
+        }
+        previous = part.number;
+    }
+    Ok(())
 }
 
 fn parse_raw_md5(value: &str) -> Option<[u8; 16]> {

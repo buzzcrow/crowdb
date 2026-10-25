@@ -38,6 +38,7 @@ enum TestActorRequest {
     Scan(ScanRequest, oneshot::Sender<Result<ChunkKvResponse>>),
     Inject(TestConflict),
     LoseAfter(usize),
+    FailBefore(usize),
     ScanControl(TestScanAction),
 }
 
@@ -72,6 +73,10 @@ impl TestProbe {
 
     pub(super) fn lose_after(&self, mutations: usize) {
         self.sender.send(TestActorRequest::LoseAfter(mutations)).unwrap();
+    }
+
+    pub(super) fn fail_before(&self, mutations: usize) {
+        self.sender.send(TestActorRequest::FailBefore(mutations)).unwrap();
     }
 
     pub(super) fn scan_counts(&self) -> (usize, usize) {
@@ -131,6 +136,15 @@ impl ChunkKvTransport for TestActorTransport {
 
 fn reply(operation: PointOperation, values: &mut HashMap<Vec<u8>, RpcValue>) -> ChunkKvResponse {
     let result = match operation {
+        PointOperation::Put { key, value } => {
+            let revision = values.get(&key).map_or(1, |old| old.revision + 1);
+            values.insert(key.clone(), RpcValue { key, value, revision });
+            OperationResult::Mutation {
+                applied: true,
+                revision: Some(revision),
+                observed: None,
+            }
+        }
         PointOperation::Get { key } => OperationResult::Value(values.get(&key).cloned()),
         PointOperation::PutIfAbsent { key, value } => {
             let observed = values.get(&key).cloned();
@@ -235,6 +249,7 @@ fn spawn_actor(
         let mut conflict: Option<TestConflict> = None;
         let mut forbidden_get: Option<Vec<u8>> = None;
         let mut lose_after = None;
+        let mut fail_before = None;
         let mut scan_control = TestScans::default();
         while let Some(request) = receiver.recv().await {
             match request {
@@ -249,6 +264,18 @@ fn spawn_actor(
                         );
                     } else {
                         writes.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if is_mutation {
+                        match fail_before.as_mut() {
+                            Some(0) => {
+                                fail_before = None;
+                                let _ = response
+                                    .send(Err(ClientError::Transport("request lost before apply".into())));
+                                continue;
+                            }
+                            Some(remaining) => *remaining -= 1,
+                            None => {}
+                        }
                     }
                     let mutation_key = match &operation {
                         PointOperation::CompareExchange { key, .. }
@@ -304,6 +331,7 @@ fn spawn_actor(
                     forbidden_get = None;
                 }
                 TestActorRequest::LoseAfter(remaining) => lose_after = Some(remaining),
+                TestActorRequest::FailBefore(remaining) => fail_before = Some(remaining),
                 TestActorRequest::ScanControl(action) => scan_control.configure(action, &values),
             }
         }

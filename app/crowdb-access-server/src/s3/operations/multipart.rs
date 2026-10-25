@@ -284,7 +284,7 @@ impl ProductionS3Operations {
             &location,
             required_bucket(&route)?,
             required_key(&route)?,
-            published.etag.as_deref().ok_or(S3ErrorCode::InternalError)?,
+            &published.etag,
         ))
     }
 }

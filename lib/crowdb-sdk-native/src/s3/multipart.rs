@@ -91,10 +91,10 @@ impl S3Client {
         Ok(self.bind_upload(session))
     }
 
-    /// Freezes exact part generations and publishes through the shared CAS engine.
+    /// Binds exact part generations and publishes one unconditional overwrite.
     /// # Errors
     /// Returns part validation/conflict or uncertain completion; a retry with the
-    /// same selection confirms that publication instead of replaying payloads.
+    /// same selection repeats the metadata overwrite without replaying payloads.
     pub async fn complete_multipart(
         &self,
         context: OperationContext,
@@ -114,10 +114,8 @@ impl S3Client {
         Ok(CompletedMultipart {
             upload_id: session.upload_id,
             key: session.object_key,
-            logical_length: session.staged_bytes,
-            etag: session
-                .etag
-                .ok_or_else(|| Error::Storage("published multipart object has no ETag".into()))?,
+            logical_length: session.logical_length,
+            etag: session.etag,
         })
     }
 
