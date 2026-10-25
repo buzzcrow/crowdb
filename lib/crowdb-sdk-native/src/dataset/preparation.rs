@@ -5,11 +5,30 @@ use super::DatasetClient;
 use crate::{OperationContext, Result};
 use crowdb_access_dataset::{
     composition::{CompositionRequest, CompositionResult},
-    split::{SplitHeadUpdate, SplitPreparation, SplitReference, SplitRevisionRecord},
-    DatasetHead, ReadCancellation, SnapshotHeadUpdate, SnapshotId,
+    split::{SplitHeadUpdate, SplitPreparation, SplitReference, SplitRevisionDeletion, SplitRevisionRecord},
+    DatasetHead, ReadCancellation, SnapshotHeadUpdate, SnapshotId, SplitRevisionId,
 };
 
 impl DatasetClient {
+    /// Marks one complete historical revision for deletion after its fixed grace period.
+    /// Retry the same Snapshot and revision after an uncertain outcome.
+    /// # Errors
+    /// Rejects protected or missing revisions, admission failures and uncertain mutations.
+    pub async fn delete_split_revision(
+        &self,
+        context: OperationContext,
+        snapshot: SnapshotId,
+        revision: SplitRevisionId,
+    ) -> Result<SplitRevisionDeletion> {
+        self.control(context, |scope| async move {
+            Ok(scope
+                .authority
+                .delete_split_revision(&scope.identity, snapshot, revision, &ReadCancellation::new())
+                .await?)
+        })
+        .await
+    }
+
     /// Prepares a complete immutable Snapshot and claims its final payload owners.
     /// Retry with the same resource ID and complete input after an uncertain outcome.
     /// # Errors

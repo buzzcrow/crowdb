@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crate::{
-    inspection::work::InspectionWork, split::SplitLifecycleError, split::SplitRevisionRecord, AuthorityError,
-    CasOutcome, DatasetAuthority, DatasetIdentity, OperationId, SnapshotId, SplitRevisionId,
+    inspection::work::InspectionWork, split::SplitLifecycleError, AuthorityError, CasOutcome,
+    DatasetAuthority, DatasetIdentity, OperationId, SnapshotId, SplitRevisionId,
 };
 
 impl DatasetAuthority {
@@ -68,7 +68,12 @@ fn complete(
     if bytes == super::SEALED {
         return Ok(false);
     }
-    let record = SplitRevisionRecord::decode(bytes)?;
+    let record =
+        match crate::split::retirement::resource::RevisionResource::decode(bytes, snapshot, revision)? {
+            crate::split::retirement::resource::RevisionResource::Complete(record) => record,
+            crate::split::retirement::resource::RevisionResource::Deleting(value) => value.record,
+            crate::split::retirement::resource::RevisionResource::Sealed => return Ok(false),
+        };
     if record.snapshot != snapshot || record.revision != revision || record.operation != operation {
         return Err(SplitLifecycleError::Corrupt);
     }

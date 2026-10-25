@@ -49,6 +49,7 @@ impl DatasetHttpService {
                 "inspection-preparation",
                 "dataset-management",
                 "split-revisions",
+                "split-revision-delete",
                 "split-preparation",
                 "split-head-update",
                 "stateless-reads",

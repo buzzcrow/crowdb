@@ -66,6 +66,8 @@ class ControlClient:
     def update_split_head(self, snapshot, request): return self._call("update_split_head", {"id": snapshot, "request": request})
     def split_head(self, snapshot): return self._call("split_head", {"id": snapshot})
     def split_revision(self, snapshot, revision): return self._call("split_revision", {"id": snapshot, "revision": revision})
+    def delete_split_revision(self, snapshot, revision):
+        return self._call("delete_split_revision", {"id": snapshot, "revision": revision})
 
     def create_upload(self, request): return self._call("create_upload", {"request": request})
     def upload_status(self, id): return self._call("upload_status", {"id": id})

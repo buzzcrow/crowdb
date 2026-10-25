@@ -102,7 +102,8 @@ async fn update_requires_explicit_nullable_conditions_and_auth_before_storage() 
     common::response(client.put(&url).json(&invalid), 400).await;
     let before = counts(&store);
     common::response(client.put(&url).json(&body), 404).await;
-    assert_eq!(delta(&store, before), (1, 0));
+    // Observe the head before the revision so concurrent retirement fences publication.
+    assert_eq!(delta(&store, before), (2, 0));
     drop(client);
     test.stop().await;
 }

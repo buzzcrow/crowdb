@@ -20,6 +20,16 @@ class TestControlPeer:
     def __enter__(self):
         owner = self
         class Handler(http.server.BaseHTTPRequestHandler):
+            def do_DELETE(self):
+                body = self.rfile.read(int(self.headers.get("content-length", "0")))
+                owner.requests.put((self.path, body.decode()))
+                status, value = owner.head_replies.get(timeout=10)
+                body = json.dumps(value).encode()
+                self.send_response(status)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             def do_PUT(self):
                 request = json.loads(self.rfile.read(int(self.headers["content-length"])))
                 owner.requests.put((self.path, request))
@@ -61,6 +71,43 @@ class TestControlPeer:
 
 
 class TestControl(unittest.TestCase):
+    def test_delete_split_revision_preserves_both_ids_deadline_and_error_identity(self):
+        snapshot, revision = new_id(), new_id()
+        marked = {"snapshot": snapshot, "revision": revision, "reclaim_after": "2200", "complete": False}
+        error = {"code": "conflict", "message": "current revision", "request_id": "test", "retryable": False}
+        with TestControlPeer(["split-revision-delete"], head_replies=[(409, error), (200, marked), (200, marked)]) as peer, DatasetClient(peer.endpoint, "test") as owner:
+            control = owner.control()
+            with self.assertRaises(ConflictError) as failure: control.delete_split_revision(snapshot, revision)
+            self.assertEqual(failure.exception.identity, revision)
+            self.assertEqual(control.delete_split_revision(snapshot, revision), marked)
+            self.assertEqual(control.delete_split_revision(snapshot, revision), marked)
+            self.assertTrue(peer.requests.get(timeout=10).endswith("/capabilities"))
+            path = f"/api/dataset/v2/namespaces/dataset-ns/datasets/test/snapshots/{snapshot}/split-revisions/{revision}"
+            for _ in range(3): self.assertEqual(peer.requests.get(timeout=10), (path, ""))
+            self.assertTrue(peer.requests.empty())
+
+    def test_delete_split_revision_requires_its_own_capability(self):
+        with TestControlPeer(["split-revisions"]) as peer, DatasetClient(peer.endpoint, "test") as owner:
+            revision = new_id()
+            with self.assertRaises(DatasetError) as failure: owner.control().delete_split_revision(new_id(), revision)
+            self.assertEqual(failure.exception.identity, revision)
+            self.assertIn("split-revision-delete", str(failure.exception))
+            self.assertTrue(peer.requests.get(timeout=10).endswith("/capabilities"))
+            self.assertTrue(peer.requests.empty())
+
+    def test_async_delete_split_revision_uses_the_same_two_id_operation(self):
+        snapshot, revision = new_id(), new_id()
+        terminal = {"snapshot": snapshot, "revision": revision, "reclaim_after": None, "complete": True}
+        with TestControlPeer(["split-revision-delete"], head_replies=[(200, terminal)]) as peer:
+            async def run():
+                async with AsyncDatasetClient(peer.endpoint, "test") as owner:
+                    self.assertEqual(await owner.control().delete_split_revision(snapshot, revision), terminal)
+            asyncio.run(run())
+            self.assertTrue(peer.requests.get(timeout=10).endswith("/capabilities"))
+            path = f"/api/dataset/v2/namespaces/dataset-ns/datasets/test/snapshots/{snapshot}/split-revisions/{revision}"
+            self.assertEqual(peer.requests.get(timeout=10), (path, ""))
+            self.assertTrue(peer.requests.empty())
+
     def test_snapshot_preparation_keeps_resource_identity_and_exact_input(self):
         snapshot = new_id()
         request = {"parent": None, "source": {"kind": "all"}, "schema": None, "samples": [], "splits": [],

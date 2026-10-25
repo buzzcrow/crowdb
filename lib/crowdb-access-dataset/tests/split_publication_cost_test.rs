@@ -202,7 +202,9 @@ async fn legacy_head_attempts_remain_readable_without_creating_receipts() {
         .unwrap();
     let key = key::head(&identity, snapshot).unwrap();
     let current = store.get(&key).await.unwrap().unwrap();
-    let head = SplitHead::decode(&current.bytes).unwrap();
+    let mut head = SplitHead::decode(&current.bytes).unwrap();
+    // Historical wrapped heads contained the original version-one plain head.
+    head.version = 1;
     let legacy = serde_json::to_vec(&serde_json::json!({"version":2,"head":head,"attempt":attempt})).unwrap();
     store
         .compare_exchange(&key, Some(&current.bytes), &legacy)

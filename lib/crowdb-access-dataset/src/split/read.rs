@@ -42,6 +42,9 @@ impl DatasetAuthority {
             .await?;
         let mut entries = Vec::new();
         for (key, value) in page.entries {
+            if value.bytes == super::RETIRED_RECORD {
+                continue;
+            }
             let summary: SplitRevisionSummary = super::codec::decode(&value.bytes)?;
             if summary.version != 1
                 || summary.snapshot != snapshot
@@ -123,7 +126,7 @@ impl DatasetAuthority {
         else {
             return Ok(None);
         };
-        if value.bytes == super::cleanup::SEALED {
+        if super::retirement::resource::is_closed(&value.bytes) {
             return Ok(None);
         }
         let record = SplitRevisionRecord::decode(&value.bytes)?;

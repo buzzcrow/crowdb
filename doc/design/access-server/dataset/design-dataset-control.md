@@ -66,7 +66,8 @@ clients. Missing capability never invokes a composition or v1 publication fallba
 Each Snapshot owns immutable Split-set revisions and an independently fenced
 currentSplit pointer. Names are scoped to Dataset/Snapshot/revision. Publishing a
 new revision replaces the complete set, including rename/removal; old revisions
-remain readable. An empty set is a revision, distinct from an absent pointer.
+remain readable until explicit deletion or owner retirement closes admission.
+An empty set is a revision, distinct from an absent pointer.
 
 ## 2. Composition and inheritance
 
@@ -181,7 +182,8 @@ resource is reusable without recomputation; different input at that ID conflicts
 Unknown writes propagate without confirmation reads. Frozen inherited sources use
 the supplied revision, regardless of later head changes. Snapshot retirement
 finds both complete and partial output through resource prefixes without drafts;
-independent unused-revision expiry and delayed-write resweeps remain separate work.
+complete revisions have no independent automatic expiry. Explicit revision deletion
+and its bounded resweeps are described under ownership and cleanup.
 The complete `SplitRevisionRecord` is the final result: an explicit revision ID
 can be read, listed or used as an inherited source without winning currentSplit.
 Read admission still checks the owning Snapshot. Reads load that immutable record
@@ -317,8 +319,8 @@ receipts and progress can be decoded and reclaimed, but resource preparation nev
 creates or resumes them. Their independent discovery and replacement remain part
 of migration work; removing the last discovery path would lose owned garbage.
 
-Split cleanup competes with preparation on the final revision key. If the complete
-root already exists, including a root returned by a failed cleanup CAS, cleanup
+Legacy draft cleanup competes with preparation on the final revision key. If the
+complete root already exists, including a root returned by a failed cleanup CAS, cleanup
 preserves its member pages and summary while retiring evaluation intents. If
 cleanup seals an absent root first, a delayed preparation cannot publish it.
 Abandoning the draft does not delete an already complete revision. Retiring the
@@ -326,13 +328,47 @@ owning Snapshot still permits revision cleanup and closes new read admission.
 Sources use read-only availability checks. Legacy `source_lease_deadline` is only
 a compatibility field; resource preparation has no reader lease or draft.
 
+Complete Split revisions normally remain owned by their Snapshot and are reclaimed
+with it; there is no independent revision TTL. Explicit
+`DELETE snapshots/{snapshot}/split-revisions/{revision}` takes only those two IDs
+and an empty body. It rejects the current head and the Snapshot's immutable
+initial revision with 409, including an initial revision that is no longer current.
+A missing revision returns 404. A successful mark immediately closes new revision
+reads and frozen-source admission; ordinary requests return 404. Existing bounded
+read limits still apply and may return a limit error before the closed record is
+decoded. Previously admitted
+work may continue until cleanup, and may fail if it outlives the grace period.
+
+Deletion state and the fixed twenty-minute deadline replace the complete root on
+the same revision key, retaining its page bindings for cleanup. The head generation
+is fenced against a publisher that observed the revision before deletion. There
+is no separate deletion task, reader session or request ledger. Repeating DELETE
+preserves the stored deadline; an unknown mutation returns without a confirmation
+read, and the client retries the same two IDs. The bounded background worker scans
+revision resources using discardable local cursors, seals membership metadata and
+rescans terminal resources for delayed member writes. It does not delete Samples,
+upload owners or chunk payloads. If Snapshot deletion has already closed every
+owner read and its own twenty-minute grace has elapsed, revision cleanup may use
+that earlier owner fence without waiting for the revision's later deadline.
+
+DELETE returns 200 with `snapshot`, `revision`, `complete` and `reclaim_after`.
+Pending deletion reports `complete=false` and the fixed absolute Unix-seconds
+deadline as a canonical decimal string. A terminal resource reports
+`complete=true` and an explicit null deadline; it retains no historical response
+from which to reconstruct the old deadline. The `split-revision-delete` capability
+is independent of revision reads and preparation. Rust and synchronous/async Python
+expose `delete_split_revision(snapshot, revision)`; missing capability never invokes
+legacy draft abandonment. The native adapter calls the same authority under local
+admission with no additional metadata GET and no automatic unknown-outcome retry.
+
 Snapshot reclaim checks latest/stable, retained Snapshots, live children, candidate
 ownership under a terminal owner fence. New deletion marks have a durable twenty-minute grace deadline;
 existing marks keep their persisted absolute deadline. The grace period
 separates deletion admission from cleanup. After that deadline it retires upload owners,
 Snapshot-scoped Split drafts, possible index writes and ordinary metadata in phases.
 Completion reports logical retirement; physical upload deletion remains deferred
-to the bounded upload-authority scan. There is no independent complete Split revision pruning.
+to the bounded upload-authority scan. Complete Split metadata also supports the
+explicit revision deletion described above.
 
 `GET snapshots/{snapshot}/reclaim` is bounded, read-only observation. It returns
 publication operation identity where available, latest/stable/retained flags,

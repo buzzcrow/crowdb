@@ -214,7 +214,8 @@ def publish_native(runtime, root):
     assert call(client, "prepare_snapshot", snapshot=snapshot, input=request) == prepared
     head = call(client, "update_snapshot_head", snapshot=snapshot, expected_head=None)
     assert head["latest"] == snapshot and head["stable"] is None
-    check_head_conflicts(client, snapshot, request, head)
+    deletion = check_head_conflicts(client, snapshot, request, head)
+    root.joinpath("python-split-deletion.json").write_text(json.dumps(deletion))
     split_binding = bind(client, bytes(snapshot).hex(), ids=[b"one"], split={"revision": None, "name": "train"})
     split_batch = client.next_batch(split_binding["cursor"])
     header = json.loads(split_batch.header)
@@ -271,6 +272,15 @@ def check_head_conflicts(client, snapshot, request, head):
     updated = call(client, "update_split_head", snapshot=snapshot, revision=revision,
                    expected_revision=observed["revision"], expected_head=observed["generation"])
     assert updated["revision"] == revision
+    unused = identity()
+    call(client, "prepare_split_revision", snapshot=snapshot,
+         input=dict(preparation, revision=unused))
+    deletion = call(client, "delete_split_revision", snapshot=snapshot, revision=unused)
+    assert deletion["snapshot"] == bytes(snapshot).hex()
+    assert deletion["revision"] == bytes(unused).hex()
+    assert not deletion["complete"] and int(deletion["reclaim_after"]) > 0
+    assert call(client, "delete_split_revision", snapshot=snapshot, revision=unused) == deletion
+    return deletion
 
 
 def verify_native(runtime, root):
@@ -283,6 +293,13 @@ def verify_native(runtime, root):
     assert json.loads(batch.header) == saved["header"]
     values = drain(batch)
     assert {str(field): hashlib.sha256(value).hexdigest() for field, value in values.items()} == saved["fields"]
+    deletion = json.loads(root.joinpath("python-split-deletion.json").read_text())
+    observed = call(client, "delete_split_revision",
+                    snapshot=list(bytes.fromhex(deletion["snapshot"])),
+                    revision=list(bytes.fromhex(deletion["revision"])))
+    assert observed == deletion or (observed["complete"] and observed["reclaim_after"] is None
+                                    and observed["snapshot"] == deletion["snapshot"]
+                                    and observed["revision"] == deletion["revision"])
 
 
 def main():

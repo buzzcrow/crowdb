@@ -1,9 +1,32 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-use super::{ControlClient, OpaqueId, SplitHead, SplitRevision};
+use super::{ControlClient, OpaqueId, SplitHead, SplitRevision, SplitRevisionDeletion};
 use crate::Error;
 
 impl ControlClient {
+    /// Marks a complete historical revision for deletion; retries preserve both resource IDs.
+    /// The fixed deadline is not extended by repeating this request.
+    /// # Errors
+    /// Returns missing capability, protected or missing revision, transport or service errors.
+    pub async fn delete_split_revision(
+        &self,
+        snapshot: &OpaqueId,
+        revision: &OpaqueId,
+    ) -> Result<SplitRevisionDeletion, Error> {
+        self.call::<(), _>(
+            "split-revision-delete",
+            "DELETE",
+            &[
+                "snapshots",
+                snapshot.as_str(),
+                "split-revisions",
+                revision.as_str(),
+            ],
+            None,
+        )
+        .await
+    }
+
     /// Reads the current Split reference for one available Snapshot.
     /// # Errors
     /// Returns capability, missing owner or service failures.

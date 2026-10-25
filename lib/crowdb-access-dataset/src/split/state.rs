@@ -91,7 +91,7 @@ impl DatasetAuthority {
                 key,
                 MetadataScanBudget {
                     items: 1,
-                    bytes: 1024 * 1024 + 64 * 1024,
+                    bytes: super::retirement::resource::RESOURCE_CAP + 64 * 1024,
                     timeout: Duration::from_secs(2),
                 },
                 &ReadCancellation::new(),

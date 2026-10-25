@@ -68,7 +68,11 @@ runtime.close()
   `prepare_split_revision` takes `snapshot` and `input: SplitPreparation`.
   `update_snapshot_head` requires `snapshot` and `expected_head` (nullable).
   `update_split_head` requires `snapshot`, `revision`, `expected_revision` and
-  `expected_head` (both conditions nullable). The JSON envelope is bounded to
+  `expected_head` (both conditions nullable). `delete_split_revision` takes only
+  `snapshot` and `revision`, using the same 16-byte JSON ID arrays. It returns
+  hex-string IDs, `complete` and the fixed `reclaim_after` as a decimal string,
+  or null after cleanup. Retry those same two IDs after an uncertain outcome;
+  current and initial revisions remain protected. The JSON envelope is bounded to
   8 MiB + 64 KiB; native preparation independently bounds content and work.
   `upload_location` returns the authority's opaque field location.
   No command is retried automatically.

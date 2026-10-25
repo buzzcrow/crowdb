@@ -95,7 +95,8 @@ async fn head_updates_use_complete_resource_ids_and_return_the_failed_condition(
     authority.begin_reclaim(&identity, snapshots[0]).await.unwrap();
     let before = counts(&store);
     common::response(client.put(&url).json(&first), 409).await;
-    assert_eq!(delta(&store, before), (3, 0));
+    // The terminal content binding rejects publication before another admission lookup.
+    assert_eq!(delta(&store, before), (2, 0));
     drop(client);
     test.stop().await;
 }

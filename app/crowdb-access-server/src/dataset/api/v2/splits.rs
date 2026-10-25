@@ -81,6 +81,25 @@ impl DatasetHttpService {
                         .await?,
                 ))
             }
+            (Method::DELETE, ["snapshots", owner, "split-revisions", rev]) => {
+                if !read_body(request, false).await?.is_empty() {
+                    return Err(ApiError::invalid());
+                }
+                json(&output::deletion(
+                    &authority
+                        .delete_split_revision(
+                            identity,
+                            snapshot(owner)?,
+                            revision(rev)?,
+                            &ReadCancellation::new(),
+                        )
+                        .await
+                        .map_err(|error| match error {
+                            crowdb_access_dataset::split::SplitLifecycleError::Frozen => ApiError::conflict(),
+                            error => error.into(),
+                        })?,
+                ))
+            }
             (Method::GET, ["snapshots", owner, "split-revisions", rev, "splits", name, "members"]) => {
                 read_body(request, false).await?;
                 let name = SplitName::new(*name).map_err(|_| ApiError::invalid())?;

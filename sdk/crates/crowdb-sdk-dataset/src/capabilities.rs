@@ -7,7 +7,7 @@ use crate::{DatasetClient, Error};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 
-const KNOWN_CAPABILITIES: [&str; 12] = [
+const KNOWN_CAPABILITIES: [&str; 13] = [
     "head-inspection",
     "bounded-inspection",
     "inspection-preparation",
@@ -20,6 +20,7 @@ const KNOWN_CAPABILITIES: [&str; 12] = [
     "snapshot-head-update",
     "split-preparation",
     "composition-preparation",
+    "split-revision-delete",
 ];
 
 fn capability_bit(capability: &str) -> u64 {

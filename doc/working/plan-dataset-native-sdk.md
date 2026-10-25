@@ -550,6 +550,30 @@ remaining user design decision and no requirement `Blocked` condition.
 
 ## Current acceptance preparation (2026-10-25)
 
+- Complete Split revisions now have an explicit ID-based DELETE in HTTP,
+  native Rust, both Python bindings and the portable SDK. Current and initial
+  revisions remain protected. Deletion closes the resource, fences concurrent
+  publication and preserves a fixed twenty-minute grace across retries and
+  restarts; bounded background discovery retires metadata without deleting
+  sample payloads. No request ledger or deletion task is added.
+- Focused Split deletion evidence passes: 19 new core cases, three native
+  facade cases, four real HTTP cases, five portable SDK cases and 21 installed
+  portable Python cases. Workspace all-target/all-feature clippy, standard Rust
+  lint, formatting, SDK dependency boundaries and C++ tree lint pass. The v2
+  OpenAPI document parses with all 298 local references resolved. These are
+  component gates; current-image workload/restart acceptance remains pending.
+- The affected five-crate all-target/all-feature regression coverage passes
+  across the full runs and corrected HTTP targets: 1,644 tests passed and 13
+  were ignored by their configured external prerequisites. The old HTTP
+  receipt expectations now follow the approved stateless Namespace CREATE and
+  table DELETE contracts; Namespace DROP retains its existing recreated-name
+  protection pending a separate decision. No production behavior was changed
+  to satisfy those historical assertions.
+- The shared native-Python semantic consumer now prepares an independent
+  complete revision, marks it deleted, checks identical retry deadlines, then
+  repeats the same two-ID DELETE after storage restart. This adds a semantic
+  check without changing the 18 performance trials, sizes, concurrency or
+  resource budgets. Its current-source runtime acceptance remains pending.
 - New Snapshot resources now store their fixed internal `gc_after` in the first
   resource write. Bounded direct Snapshot scanning covers interruption before
   the content binding; legacy resources inherit an existing deadline or receive

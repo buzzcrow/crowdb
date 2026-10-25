@@ -48,21 +48,21 @@ impl DatasetAuthority {
         if let Some(expected) = update.expected_revision {
             SplitRevisionId::from_bytes(expected.as_bytes()).map_err(crate::AuthorityError::from)?;
         }
+        let key = key::head(identity, snapshot).map_err(crate::AuthorityError::from)?;
+        let current = self.split_state_get(&key).await?;
         let stored = self
             .split_state_get(
                 &key::revision(identity, snapshot, revision).map_err(crate::AuthorityError::from)?,
             )
             .await?
             .ok_or(SplitLifecycleError::NotFound)?;
-        if stored.bytes == super::cleanup::SEALED {
+        if super::retirement::resource::is_closed(&stored.bytes) {
             return Err(SplitLifecycleError::NotFound);
         }
         let candidate = SplitRevisionRecord::decode(&stored.bytes)?;
         if candidate.snapshot != snapshot || candidate.revision != revision {
             return Err(SplitLifecycleError::Corrupt);
         }
-        let key = key::head(identity, snapshot).map_err(crate::AuthorityError::from)?;
-        let current = self.split_state_get(&key).await?;
         // Closing Snapshot admission invalidates this exact head generation before reclaim.
         self.require_committed_snapshot(identity, snapshot).await?;
         let observed = self
@@ -78,7 +78,7 @@ impl DatasetAuthority {
             });
         }
         let bytes = SplitHead {
-            version: 1,
+            version: 3,
             snapshot,
             revision: Some(revision),
             fence: OperationId::random(),

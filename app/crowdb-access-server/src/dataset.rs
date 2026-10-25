@@ -214,7 +214,7 @@ pub async fn run_with_shutdown(
         service = service.with_bearer(Arc::<str>::from(token));
     }
     let listener = TcpListener::bind(address).await?;
-    let expiry = start_cleanup(authority, uploads);
+    let expiry = start_cleanup(authority, Some(uploads));
     let result = serve(listener, Arc::new(service), shutdown).await;
     expiry.abort();
     let _ = expiry.await;
@@ -225,7 +225,7 @@ pub async fn run_with_shutdown(
 
 fn start_cleanup(
     authority: Arc<DatasetAuthority>,
-    uploads: Arc<DatasetUploads>,
+    uploads: Option<Arc<DatasetUploads>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut snapshot_cursor = crowdb_access_dataset::SnapshotReclaimSweep::default();
@@ -236,10 +236,23 @@ fn start_cleanup(
         let mut next_composition = tokio::time::Instant::now();
         let mut split_cursor = crowdb_access_dataset::split::SplitReclaimSweep::default();
         let mut next_split = tokio::time::Instant::now();
+        let mut revision_cursor = crowdb_access_dataset::split::SplitRevisionReclaimSweep::default();
+        let mut next_revision = tokio::time::Instant::now();
         let mut upload_cursor = UploadExpiryCursor::default();
         let mut next_upload = tokio::time::Instant::now();
         loop {
             tokio::select! {
+                () = tokio::time::sleep_until(next_revision) => {
+                    let result = authority.reclaim_split_revisions_page(&mut revision_cursor,
+                        &crowdb_access_dataset::ReadCancellation::new()).await;
+                    let delay = if revision_cursor.has_more() {
+                        if result.is_ok() { Duration::from_millis(50) } else { Duration::from_millis(500) }
+                    } else { Duration::from_secs(15) };
+                    next_revision = tokio::time::Instant::now() + delay;
+                    if let Err(error) = result {
+                        tracing::error!(%error, "Dataset Split revision cleanup failed; deletion marks retained for retry");
+                    }
+                }
                 () = tokio::time::sleep_until(next_candidate) => {
                     let result = authority.expire_snapshot_candidates_page(&mut candidate_cursor,
                         &crowdb_access_dataset::ReadCancellation::new()).await;
@@ -262,8 +275,9 @@ fn start_cleanup(
                         tracing::error!(%error, "Dataset legacy Split cleanup failed; resource facts retained for retry");
                     }
                 }
-                () = tokio::time::sleep_until(next_composition) => {
-                    let result = authority.reclaim_compositions_page(&uploads, &mut composition_cursor,
+                () = tokio::time::sleep_until(next_composition), if uploads.is_some() => {
+                    let Some(uploads) = &uploads else { continue };
+                    let result = authority.reclaim_compositions_page(uploads, &mut composition_cursor,
                         &crowdb_access_dataset::ReadCancellation::new()).await;
                     let delay = if composition_cursor.has_more() {
                         if result.is_ok() { Duration::from_millis(50) } else { Duration::from_millis(500) }
@@ -273,8 +287,9 @@ fn start_cleanup(
                         tracing::error!(%error, "Dataset legacy Composition cleanup failed; resource facts retained for retry");
                     }
                 }
-                () = tokio::time::sleep_until(next_snapshot) => {
-                    let result = authority.reclaim_due_page(&uploads, &mut snapshot_cursor,
+                () = tokio::time::sleep_until(next_snapshot), if uploads.is_some() => {
+                    let Some(uploads) = &uploads else { continue };
+                    let result = authority.reclaim_due_page(uploads, &mut snapshot_cursor,
                         &crowdb_access_dataset::ReadCancellation::new()).await;
                     let delay = if snapshot_cursor.has_more() {
                         if result.is_ok() { Duration::from_millis(50) } else { Duration::from_millis(500) }
@@ -288,7 +303,8 @@ fn start_cleanup(
                         }
                     }
                 }
-                () = tokio::time::sleep_until(next_upload) => {
+                () = tokio::time::sleep_until(next_upload), if uploads.is_some() => {
+                    let Some(uploads) = &uploads else { continue };
                     let result = uploads.expire_step(unix_seconds(), &mut upload_cursor).await;
                     let delay = if upload_cursor.has_more() {
                         if result.is_ok() { Duration::from_millis(50) } else { Duration::from_millis(500) }
@@ -301,6 +317,16 @@ fn start_cleanup(
             }
         }
     })
+}
+
+/// Starts the real bounded cleanup loop without opening a listener.
+#[cfg(feature = "test-util")]
+#[must_use]
+pub fn start_dataset_cleanup_for_tests(
+    authority: Arc<DatasetAuthority>,
+    uploads: Option<Arc<DatasetUploads>>,
+) -> tokio::task::JoinHandle<()> {
+    start_cleanup(authority, uploads)
 }
 
 async fn connect_payloads(

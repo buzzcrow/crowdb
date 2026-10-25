@@ -69,7 +69,7 @@ impl DatasetAuthority {
             .await?;
         let root = key::revision(identity, snapshot, input.revision).map_err(AuthorityError::from)?;
         if let Some(stored) = self.split_state_get(&root).await? {
-            if stored.bytes == super::RETIRED_RECORD {
+            if super::retirement::resource::is_closed(&stored.bytes) {
                 return Err(SplitLifecycleError::Frozen);
             }
             let record = SplitRevisionRecord::decode(&stored.bytes)?;

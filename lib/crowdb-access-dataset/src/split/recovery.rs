@@ -49,12 +49,15 @@ impl DatasetAuthority {
                 initial.flatten()
             };
             let bytes = SplitHead {
-                version: 1,
+                version: 3,
                 snapshot,
                 revision,
                 fence: OperationId::random(),
             }
             .encode()?;
+            if old.as_ref().is_some_and(|value| value.bytes == bytes) {
+                continue;
+            }
             match self
                 .store
                 .compare_exchange(&key, old.as_ref().map(|v| v.bytes.as_slice()), &bytes)

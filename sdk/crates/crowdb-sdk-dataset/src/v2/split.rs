@@ -91,6 +91,14 @@ pub struct SplitRevision {
     pub policy: SplitPolicy,
     pub splits: Vec<PublishedSplit>,
 }
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SplitRevisionDeletion {
+    pub snapshot: OpaqueId,
+    pub revision: OpaqueId,
+    #[serde(deserialize_with = "required_option")]
+    pub reclaim_after: Option<Decimal>,
+    pub complete: bool,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SplitHead {
     #[serde(deserialize_with = "required_option")]

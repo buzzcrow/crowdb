@@ -35,6 +35,10 @@ pub enum Command {
         snapshot: SnapshotId,
         input: SplitPreparation,
     },
+    DeleteSplitRevision {
+        snapshot: SnapshotId,
+        revision: SplitRevisionId,
+    },
     UpdateSplitHead {
         snapshot: SnapshotId,
         revision: SplitRevisionId,
@@ -76,16 +80,7 @@ pub async fn execute(client: &DatasetClient, context: OperationContext, command:
         Command::Create => encoded(client.create(context).await?),
         Command::Open => encoded(client.open(context).await?),
         Command::Snapshot { snapshot } => encoded(client.snapshot(context, snapshot).await?),
-        Command::Head => {
-            client
-                .control(context, |s| async move {
-                    {
-                        let head = s.authority.inspect_head(&s.identity).await?;
-                        Ok(json!({"latest":head.latest,"stable":head.stable,"generation":head.generation}))
-                    }
-                })
-                .await
-        }
+        Command::Head => inspect_head(client, context).await,
         Command::CommitStatus { attempt } => {
             client
                 .control(context, |s| async move {
@@ -113,6 +108,9 @@ pub async fn execute(client: &DatasetClient, context: OperationContext, command:
         }
         Command::PrepareSplitRevision { snapshot, input } => {
             encoded(client.prepare_split_revision(context, snapshot, &input).await?)
+        }
+        Command::DeleteSplitRevision { snapshot, revision } => {
+            delete_revision(client, context, snapshot, revision).await
         }
         Command::UpdateSplitHead {
             snapshot,
@@ -168,4 +166,26 @@ pub async fn execute(client: &DatasetClient, context: OperationContext, command:
                 .await
         }
     }
+}
+
+async fn inspect_head(client: &DatasetClient, context: OperationContext) -> Result<Value> {
+    client
+        .control(context, |scope| async move {
+            let head = scope.authority.inspect_head(&scope.identity).await?;
+            Ok(json!({"latest":head.latest,"stable":head.stable,"generation":head.generation}))
+        })
+        .await
+}
+
+async fn delete_revision(
+    client: &DatasetClient,
+    context: OperationContext,
+    snapshot: SnapshotId,
+    revision: SplitRevisionId,
+) -> Result<Value> {
+    let value = client.delete_split_revision(context, snapshot, revision).await?;
+    Ok(
+        json!({"snapshot":value.snapshot.to_string(), "revision":value.revision.to_string(),
+        "reclaim_after":value.reclaim_after.map(|deadline|deadline.to_string()), "complete":value.complete}),
+    )
 }

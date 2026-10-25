@@ -122,6 +122,13 @@ async fn read_object(seeds: Vec<String>) -> Result<(), Box<dyn std::error::Error
   a head. `Error::SnapshotHeadConflict` and `Error::SplitHeadConflict` preserve the
   observed pointer and generation; use that observation for a deliberate retry
   without another head query. Helpers never rebase or retry automatically.
+- `delete_split_revision(context, snapshot, revision)` marks a complete historical
+  Split revision with the authority's fixed twenty-minute grace. Current and
+  initial revisions conflict; new reads of a closed revision are unavailable.
+  Repeat both IDs after `UncertainMutation`; the adapter adds no metadata GET or
+  implicit retry. `SplitRevisionDeletion` reports the original `reclaim_after`
+  until completion, then `complete=true` and no deadline. Complete revisions have
+  no independent TTL, and deleting membership metadata does not delete payloads.
 - Advanced authority operations and inspection run through
   `control(context, callback)`. Its scoped authority, uploads and identity share
   the same admission and typed contracts. Keep the complete input, resource ID

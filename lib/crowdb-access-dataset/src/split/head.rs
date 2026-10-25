@@ -37,6 +37,7 @@ impl CommittedSplitHead {
         self.head.encode()?;
         self.attempt.validate()?;
         if self.version != 2
+            || self.head.version != 1
             || self.attempt.target
                 != (CommitTarget::SplitRevision {
                     snapshot: self.head.snapshot,

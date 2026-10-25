@@ -61,6 +61,9 @@ mod publication;
 
 mod recovery;
 
+mod retirement;
+pub use retirement::{SplitRevisionDeletion, SplitRevisionReclaimCursor, SplitRevisionReclaimSweep};
+
 mod read;
 pub use read::SplitRevisionSummary;
 

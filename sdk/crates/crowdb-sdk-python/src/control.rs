@@ -80,6 +80,11 @@ async fn lifecycle(client: &v2::ControlClient, name: &str, value: &Value) -> Res
                 .split_revision(&id()?, &self::id(value, "revision")?)
                 .await?,
         ),
+        "delete_split_revision" => encode(
+            &client
+                .delete_split_revision(&id()?, &self::id(value, "revision")?)
+                .await?,
+        ),
         _ => return Ok(None),
     }?;
     Ok(Some(result))

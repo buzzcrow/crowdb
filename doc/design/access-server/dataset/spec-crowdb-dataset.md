@@ -54,8 +54,8 @@ The following terms have one meaning throughout this specification:
   shuffle to one immutable Snapshot.
 - **Cursor** records progress for one Read Plan and is acknowledged only after
   the corresponding batch is accepted by the caller.
-- **Deletion grace period** separates a durable snapshot deletion mark from
-  destructive cleanup; it does not guarantee completion of every admitted read.
+- **Deletion grace period** separates a durable Snapshot or Split revision deletion
+  mark from destructive cleanup; it does not guarantee completion of every admitted read.
 
 Dataset does not infer semantics from a locator, a Snapshot ID's numeric
 ordering, a sample ID's encoding, or an external source URI.
@@ -239,7 +239,8 @@ shape. Unsupported direct updates MUST NOT fall back to composition or v1 writes
 
 Publishing an independent Split revision MUST update only its Snapshot's currentSplit
 pointer with an expected revision/head CAS. It MUST NOT create a data Snapshot or
-change latest/stable. Old revisions remain addressable until owner reclamation.
+change latest/stable. Old revisions remain addressable until explicit deletion
+or owner reclamation.
 Every complete immutable Split revision MUST also be readable by ID, enumerable
 and usable as a frozen source before publication or after a publication conflict.
 Abandoning a draft MUST NOT remove its complete result. A missing or cleanup-sealed
@@ -335,7 +336,8 @@ Legacy resources inherit an existing binding deadline; otherwise their first
 background observation assigns a fixed twenty-four-hour deadline. Unsupported
 legacy opaque Manifest formats remain excluded from automatic retirement.
 
-Deletion first persists a terminal mark and a twenty-minute `reclaim_after` deadline.
+Snapshot deletion first persists a terminal mark and a twenty-minute
+`reclaim_after` deadline.
 Cleanup MUST NOT remove snapshot-owned metadata or payload references before
 that deadline. The default applies to new marks; existing persisted absolute
 deadlines remain unchanged. Restart and retry MUST preserve it. No Access Server or client
@@ -353,6 +355,23 @@ A reclaim status record reports the Snapshot, pending or completed state, and
 reclaimed-count progress. Repeated requests and authority restarts preserve
 that status and do not double-delete a payload.
 
+Complete Split revisions MUST default to reclamation with their owning Snapshot;
+they MUST NOT acquire an independent automatic TTL. Explicit revision deletion
+MUST name both Snapshot and revision IDs. The current Split head and the Snapshot's
+initial Split revision MUST be protected, even when the initial revision is no
+longer current. Deletion MUST close new revision reads and source admission,
+preserve its fixed twenty-minute grace across retries and restart, and fence
+publishers admitted against an older head generation. Deletion state and exact
+page bindings MUST reside on the existing revision resource. Deletion MUST NOT
+create a reader session, request ledger or separate deletion task.
+
+Background cleanup MUST discover marked and terminal revision resources in bounded
+pages with local cursors and preserve permanent fences against delayed member
+writes. If the owning Snapshot has closed all read admission and completed its
+own twenty-minute grace, cleanup MAY use that owner fence before the revision's
+later deadline. Revision deletion removes only Split membership and revision
+metadata; it MUST NOT delete Samples, payload ownership or chunk data.
+
 ## 10. HTTP and native surfaces
 
 The versioned public wire schemas, resource paths, binary framing and retry
@@ -365,6 +384,19 @@ Control v2 MUST negotiate capabilities before mutation and MUST NOT downgrade
 Split-aware inputs to v1. Required nullable preconditions MUST be supplied explicitly.
 Unsigned 64-bit control values use canonical decimal strings. Legacy routes and
 read-plan interpretations remain compatible; binary framing is unchanged.
+
+`DELETE snapshots/{snapshot}/split-revisions/{revision}` MUST accept an empty body
+and require `split-revision-delete` in portable SDKs. A protected current or initial
+revision returns 409; an absent resource or a new read of a closed revision returns
+404. Existing bounded-work errors may take precedence over the closed-revision
+404 response. Successful deletion and repeated deletion of a terminal resource return 200
+with `snapshot`, `revision`, `complete` and required nullable `reclaim_after`.
+Pending status MUST carry the original absolute Unix-seconds deadline as a
+canonical decimal string and `complete=false`; terminal status MUST carry null
+and `complete=true`. Clients MUST NOT substitute legacy draft abandonment when
+the capability or route is unavailable. Retrying after an unknown outcome uses
+the same two IDs without a status or head query. The native adapter MUST add no
+metadata lookup or implicit mutation retry to the shared authority operation.
 
 Composition takes retained complete caller inputs and creates an immutable
 resource without edit/evaluation progress. Parent data defaults to all Samples;

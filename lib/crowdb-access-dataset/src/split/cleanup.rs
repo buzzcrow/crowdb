@@ -265,7 +265,10 @@ impl DatasetAuthority {
         work: &mut InspectionWork<'_>,
     ) -> Result<(), SplitLifecycleError> {
         let stored = work.get(key, RECORD_CAP).await?;
-        if stored.as_ref().is_some_and(|v| v.bytes == bytes) {
+        if stored
+            .as_ref()
+            .is_some_and(|v| v.bytes == bytes || v.bytes == SEALED)
+        {
             return Ok(());
         }
         match self

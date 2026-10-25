@@ -229,7 +229,8 @@ permission or promise that a redeployed endpoint still supports the operation.
   resume. Dropping the cursor stops further requests.
 - Complete Split revisions can be read or used as frozen sources before updating
   currentSplit, after a head conflict, or after abandoning their draft. Each new
-  read still checks Snapshot availability; incomplete revisions remain unavailable.
+  read still checks Snapshot and revision availability; incomplete or closed
+  revisions remain unavailable.
 - `prepare_split_revision(snapshot, revision, request)` submits the complete policy
   and definitions to an immutable resource PUT. Keep the revision ID and exact
   input for retries. It requires `split-preparation`; different input at a complete
@@ -246,6 +247,17 @@ permission or promise that a redeployed endpoint still supports the operation.
   and does not read a draft. Rust's `SplitHead::from_conflict` and Python's
   `ConflictError.observed_head` return the failed condition's observation. Review
   that base before retrying; the SDK does not rebase automatically.
+- `delete_split_revision(snapshot, revision)` marks a complete historical revision
+  using `split-revision-delete`; revision-read capability alone is insufficient.
+  The current revision and the Snapshot's initial revision return 409. New reads
+  of a marked revision are rejected, normally with 404; existing bounded-read
+  limits may fail first. DELETE returns 200 with both IDs, `complete`
+  and the fixed twenty-minute `reclaim_after` as a decimal string, or null after
+  completion. Retries keep the original deadline and both IDs. Existing transport
+  retry limits apply without head/status queries or legacy draft abandonment.
+  Rust uses `SplitRevisionDeletion`; synchronous and async Python return the same
+  fields. Complete revisions otherwise follow Snapshot cleanup without a separate
+  TTL. Cleanup removes Split metadata, leaving Sample payloads unchanged.
 - `update_snapshot_head(request)` selects an existing complete Snapshot with
   `snapshot` and explicit nullable `expected_head`; it requires
   `snapshot-head-update`, preserves stable and reads no draft or attempt ID.
