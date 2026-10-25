@@ -593,6 +593,18 @@ Those partial rates are not accepted comparative performance.
 
 ## Current acceptance (2026-10-25)
 
+- Image `access-cleanup-v7-20261025` from `a78e981f`, tree
+  `32ac07470397bb295e58d58abf79d72f3dbb15a1`, passes all 16 selected real-service
+  cases: six S3, five Dataset and five GC. The complete TCP/installed-Python/
+  storage-restart workload passes in `dataset-workload/419095e911824fdc9aefe50bbc5bacc9`
+  with 18 trials, 4,608 requests, zero errors and all 18 trial observations.
+  The unchanged 128-file inline GC case completes in 2,396,811 ms at revision 792,
+  with all original keys absent and bounded successful foreground overlap.
+  Raw records, immutable image/source identity and summaries are preserved in
+  `/tmp/crowdb-access-cleanup-v7-evidence-20261025`. The
+  [Access record](../../app/crowdb-access-server/tests/README.md#dataset-httpnative-comparison)
+  reports measured CPU/RSS/sent-counter scope and trade-offs. Local HCA remains
+  blocked by the missing test address/sudo setup; TCP does not replace that gate.
 - Finite trial-boundary observation is implemented for the unchanged HTTP,
   native Rust and installed Python workload. Raw owned cgroup/proc snapshots
   and selected cached sent counters share each trial's identity. Inner client
@@ -600,7 +612,7 @@ Those partial rates are not accepted comparative performance.
   peaks and missing counters are not presented as per-trial peaks or zeros.
   All 179 fixture unit checks pass, including 16 protocol/resource cases;
   release example builds, workspace clippy, normal lint and formatting pass.
-  Matching-image observation and current-source service acceptance remain open.
+  Matching v7 observation and current-source service acceptance pass as above.
 - Source `d400ae21` fixes multipart expiry discovery after bucket recreation;
   the affected S3/Access/native gate passes 495 tests, with 12 configured cases
   ignored. Final multipart coverage passes all 64 cases. This is logical expiry,
@@ -609,9 +621,8 @@ Those partial rates are not accepted comparative performance.
   (1,709 tests across five crates, 13 configured cases ignored) and the later
   Dataset/Access/native request-local delivery gates (669 tests, 13 configured
   cases ignored). Counts overlap. Workspace clippy, normal lint and formatting
-  pass. The new matching-image service/TCP/restart run remains pending; the
-  accepted v6 image below is the preceding source, not evidence for the new
-  binary upload-resource format or inline GC shortcut. Upload format deployment
+  pass. Matching v7 service/TCP/restart acceptance passes; the accepted v6 image
+  below remains evidence only for its preceding source. Upload format deployment
   requires coordinating JSON-only Access and direct native readers/writers.
 - Image `access-cleanup-v6-20261025` from source `c22bc40e`, tree
   `e2d0f660762290085649081fd2b437b53cd343da`, passes six S3 protocol cases,

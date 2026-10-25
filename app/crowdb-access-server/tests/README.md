@@ -91,8 +91,9 @@ batch passes 1,709 tests across five affected crates, with 13 independently
 configured cases ignored. The subsequent Dataset/Access/native batch passes
 669 tests, with the same 13 configured cases ignored. These suites overlap;
 their counts are not additive. Workspace all-target/all-feature clippy, normal
-lint, formatting and focused final regressions pass. Matching-image acceptance
-for these newer sources is pending; the v6 results below cover `c22bc40e`.
+lint, formatting and focused final regressions pass. The matching v7 image from
+`a78e981f` passes six S3, five Dataset and five GC cases, plus the complete
+TCP/installed-Python/restart workload. The v6 results below cover `c22bc40e`.
 
 Source `d400ae21` also discovers expired multipart uploads by immutable bucket
 identity after a bucket name is deleted and recreated. A production-actor
@@ -101,7 +102,7 @@ S3/Access/native suite passes 495 tests, with 12 separately configured cases
 ignored; the final multipart target passes all 64 cases. Only expired Open
 uploads are marked Aborted. Index, part and generation rows remain, and this
 does not establish physical space recovery. Workspace all-feature clippy,
-normal lint and formatting pass. Matching-image service acceptance is pending.
+normal lint and formatting pass. Matching v7 service acceptance passes.
 
 The upload codec keeps all owner identities and the public JSON contract while
 writing a fixed 52-byte header plus 16 bytes per identity. Its maximum record is
@@ -218,7 +219,28 @@ rate or end-to-end throughput benefit of forwarding complete S3 body owners.
 
 ## GC scheduling and foreground observations
 
-The v6 five-case scope passes in
+The v7 five-case scope passes in
+`container-e2e/run-35fb5dec04fa4fe69dc9200665a10519`. The unchanged 128-file,
+1,554-logical-byte case completes in 2,396,811 ms, with final revision 792.
+All original canonical keys are absent and all candidates/task are Complete;
+no deferred range, retry, stall or fence remains. First deletion occurs at
+2,002,959 ms, revision 663. The observer records 2,393 task GETs and 256 final
+verification GETs, preserving all 792 observed revisions.
+
+The separate v6 run below completes at revision 920 in 2,785,403 ms. The current
+inline path removes 128 checkpoint-only worker steps, consistent with the
+128-revision difference. These independent same-host runs are not an isolated
+timing comparison or a general GC capacity/SLO guarantee.
+
+Four SDK workers complete 48 table lifecycles while 64 native writes succeed;
+two observed deletion intervals overlap the finite load. SDK create/commit/drop
+p50/p99 are 89.42/338.77, 47.15/56.36 and 41.39/46.37 ms. Native write p50/p99
+are 0.72/84.88 ms. Full per-operation samples and exact image identity are in
+`/tmp/crowdb-access-cleanup-v7-evidence-20261025`. This proves inline metadata
+convergence and bounded overlap, without external range/tree notification or
+physical capacity recovery evidence.
+
+The preceding v6 five-case scope passes in
 `container-e2e/run-d56438cb607349f3a4d819402ee8d484`. Its separate expired-inline
 case starts with 128 canonical files (1,554 logical bytes), a genuinely elapsed
 fixed deletion deadline, one-item pages and the production 30-minute idle
@@ -309,8 +331,8 @@ and process counters. A second handshake captures the end before the independent
 digest kernel or next trial. The original mixed sizes, concurrency, warmups,
 three repeats, 4,608 requests, verification and 600-second child bound remain.
 Direct child execution without the observation environment variable stays
-standalone. The new tool passes all 179 fixture unit checks, including 16
-protocol/resource cases; matching-image execution is pending.
+standalone. The tool passes all 179 fixture unit checks, including 16
+protocol/resource cases, and all 18 matching-image trial observations complete.
 
 Each path writes its raw log and `*-observations.json`. Service CPU deltas include
 background work and the explicitly timed sequential capture interval. Actual
@@ -322,7 +344,36 @@ identities remain unavailable. Receive traffic, all-copy bytes, layout queries
 and per-request header/first-byte/EOF timing remain unmeasured. The enclosing
 service and inner client windows are not additive total-system CPU measurements.
 
-The current complete same-host TCP workload and installed Python/storage-restart
+The current v7 complete TCP/installed-Python/storage-restart acceptance passes in
+`dataset-workload/419095e911824fdc9aefe50bbc5bacc9`: 18 trials, 4,608 requests,
+zero errors. Source revision is `a78e981fdb8f3f8251aa3bc99e7beb88aa078d80`, tree
+`32ac07470397bb295e58d58abf79d72f3dbb15a1`, imported Docker ID
+`sha256:979f2646dc189f3c0cb6e8a936faf2e9380716b404372c680b87d40863f060a2`.
+The same eight sizes, CPU placement, concurrency, warmups and budgets as the
+preceding v6 run below are retained. Raw records, validated summaries and hashes
+are backed up in `/tmp/crowdb-access-cleanup-v7-evidence-20261025`.
+
+| Path          | Concurrency | MiB/s  | Inner client CPU (s) | Lifetime client RSS (MiB) |
+| ------------- | ----------- | ------ | -------------------- | ------------------------- |
+| HTTP          | 1           | 175.26 | 0.87                 | 11.59                     |
+| Native Rust   | 1           | 207.31 | 0.91                 | 28.55                     |
+| Native Python | 1           | 208.53 | 0.95                 | 55.21                     |
+| HTTP          | 3           | 249.01 | 2.55                 | 17.07                     |
+| Native Rust   | 3           | 280.41 | 2.68                 | 30.56                     |
+| Native Python | 3           | 275.40 | 2.76                 | 60.90                     |
+
+Service capture spans are 5.80–10.18 ms. For the three concurrency-one trials,
+HTTP/native-Rust enclosing Access CPU is 0.809512/0.002916 s; metadata/control
+CPU is 0.286016/0.336947 s. These are separate role windows including background
+work and capture slack, not exact total-system CPU. The native metadata,
+aggregate and data groups send 192/1,024/288 frames per 128-request trial.
+Aggregate here names the bounded metadata transport, not business-message
+aggregation. These groups omit control/layout RPCs and expose outgoing request
+bytes rather than payload receive bytes. The observed compatibility fallback
+copy counter stays zero; Python byte copies remain included in client work.
+Differences from v6 are independent observations, not isolated patch effects.
+
+The preceding v6 complete same-host TCP workload and installed Python/storage-restart
 acceptance pass in `dataset-workload/d1fa8f646f124426b6c9e24688d92786` under
 `.crowdb-runtime/artifacts/`. The manifest records image labels, CPU placement
 and per-phase service counters; client logs retain all per-size p50/p99 and
