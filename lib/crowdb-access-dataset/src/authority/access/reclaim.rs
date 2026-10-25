@@ -113,6 +113,7 @@ impl DatasetAuthority {
                     self.unfence_reclaim(identity, snapshot, owner).await?;
                     return Err(AuthorityError::SnapshotProtected);
                 }
+                Err(error @ AuthorityError::Store(_)) => return Err(error),
                 Err(error) => {
                     self.unfence_reclaim(identity, snapshot, owner).await?;
                     return Err(error);

@@ -305,6 +305,16 @@ rechecks parent availability after that index write. Parent deletion conservativ
 protects any indexed child without terminal retirement, including an incomplete
 child awaiting cleanup. Thus deletion either observes the child or the child's
 last parent check rejects completion. Readers never register in this protocol.
+Reclaim admission may remove an exact child-index entry after validating its
+binding and the child's permanent retirement authority. Completed removals shrink
+later bounded scans; the retirement authority remains even if a delayed writer
+recreates the derived index. A failed or timed-out index deletion returns its
+unknown outcome without compensation writes. A fresh request rechecks authority
+and can resume this resource cleanup; ordinary inspection remains read-only.
+Discovery and per-resource positions stay in memory. Restart may repeat already
+sealed prefixes, so progress requires enough consecutive bounded windows to pass
+those prefixes. Grace deadlines specify earliest reclamation, not a completion
+time or a guarantee under arbitrary restart frequency.
 
 Uploads are Dataset-scoped and content-verified. Resource preparation claims only
 the final Snapshot owner for each unique managed upload in its final Manifest,

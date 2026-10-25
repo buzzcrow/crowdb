@@ -61,6 +61,20 @@ impl<'a> InspectionWork<'a> {
         self.remaining = self.remaining.checked_sub(used).ok_or(InspectionError::Limit)?;
         Ok(value)
     }
+    /// A permanent retirement authority makes this exact child index disposable.
+    pub(super) async fn delete_retired_index(&mut self, key: &[u8]) -> Result<(), InspectionError> {
+        let budget = self.budget(key.len(), 1)?;
+        self.remaining = self
+            .remaining
+            .checked_sub(key.len())
+            .ok_or(InspectionError::Limit)?;
+        tokio::time::timeout(budget.timeout, self.store.delete(key))
+            .await
+            .map_err(|_| {
+                crate::StoreError::Failure("retired child index deletion timed out; outcome unknown".into())
+            })??;
+        Ok(())
+    }
     /// Reserve response capacity before polling each read, including completed responses
     /// waiting behind an earlier request. Returned rows consume the shared request budget.
     pub(crate) async fn get_many(

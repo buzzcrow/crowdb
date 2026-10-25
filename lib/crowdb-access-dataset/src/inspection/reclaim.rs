@@ -21,6 +21,7 @@ impl DatasetAuthority {
                 InspectionError::Authority(error) => error,
                 InspectionError::Store(error) => error.into(),
                 InspectionError::Limit => DatasetError::ReadLimitExceeded.into(),
+                InspectionError::Cancelled => DatasetError::ReadCancelled.into(),
                 _ => AuthorityError::Corrupt,
             })
     }
@@ -63,6 +64,8 @@ impl DatasetAuthority {
                     if retired.bytes != [1] {
                         return Err(InspectionError::Corrupt);
                     }
+                    // Terminal authority survives a late recreation of this derived index.
+                    work.delete_retired_index(&key).await?;
                     continue;
                 }
                 // The child index precedes its complete root. Protecting it until
