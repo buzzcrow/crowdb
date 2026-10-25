@@ -15,6 +15,12 @@ const disklessNodes = [4, 5, 6];
 export async function disklessExpansion(context: UIContext) {
   const { page, request, baseURL, deployments } = context;
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  type Process = { id: string; node_id: number; pid: number };
+  const observed = await request.get('/api/servers');
+  expect(observed.ok(), await observed.text()).toBe(true);
+  const original: Process[] = (await observed.json()).map(({ id, node_id, pid }: Process) => ({ id, node_id, pid }));
+  expect(original).toHaveLength(18);
+  expect(original.every(server => server.pid > 0)).toBe(true);
   await step('diskless: admit three release candidates through UI', async () => {
     await page.getByTestId('domain-cluster').click();
     const candidates: { node_id: number; discovery_id: string }[] = JSON.parse(process.env.CROWDB_NATIVE_PENDING_CANDIDATES!);
@@ -57,6 +63,11 @@ export async function disklessExpansion(context: UIContext) {
       await expect(sidebar.getByTestId(`tree-node-SERVICE-${server.id}`).getByTitle('Healthy', { exact: true })).toBeVisible();
     }
     expect(servers.filter((server: { pid: number }) => server.pid)).toHaveLength(36);
+    const processes: Process[] = servers.map(({ id, node_id, pid }: Process) => ({ id, node_id, pid }));
+    for (const process of original) {
+      expect(processes.find(server => server.id === process.id && server.node_id === process.node_id),
+        `Adding nodes preserves the healthy process ${process.id}`).toEqual(process);
+    }
     // New local KV processes need not host Group 0. DiskDB still registers
     // through the cluster seeds while owning no disk groups.
     await expect.poll(async () => {

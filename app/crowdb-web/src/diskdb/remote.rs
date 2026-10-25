@@ -69,6 +69,9 @@ pub(crate) fn configuration(
         writeln!(configuration, "\n[heartbeat]\ninterval_secs = {interval}")
             .expect("writing configuration to a String cannot fail");
     }
+    // Managed setup advances as ownership and provisional disks are published.
+    // Their change notifications avoid a full polling interval at each step.
+    configuration.push_str("\n[notify]\nnotify_enabled = true\n");
     Ok(configuration)
 }
 

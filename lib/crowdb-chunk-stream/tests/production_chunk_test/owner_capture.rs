@@ -247,3 +247,78 @@ async fn failed_reopen_releases_its_assignment_before_retrying_in_the_same_proce
     );
     recovered.release_writer().await.unwrap();
 }
+
+#[tokio::test]
+async fn release_during_a_pending_claim_wakes_the_successor_without_process_expiry() {
+    let (_server, kv) = runtime_kv().await;
+    let first = crowdb_chunk_stream::KvStreamRegistry::new(kv.clone());
+    let second = crowdb_chunk_stream::KvStreamRegistry::new(kv);
+    let name = StreamName::generate();
+    first
+        .create(StreamRecord {
+            state: StreamRecordState::Active,
+            ..StreamRecord::creating(name, None, StreamPurpose::Stream)
+        })
+        .await
+        .unwrap();
+    let owner = first.claim_writer(name, 1).await.unwrap();
+    let pending = second.claim_writer(name, 2);
+    tokio::pin!(pending);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), pending.as_mut())
+            .await
+            .is_err(),
+        "a live writer cannot be preempted"
+    );
+    owner.release().await.unwrap();
+    let successor = tokio::time::timeout(std::time::Duration::from_secs(1), pending)
+        .await
+        .expect("durable release must wake an already waiting claim")
+        .unwrap();
+    assert!(owner.capture().is_err());
+    successor.release().await.unwrap();
+}
+
+#[tokio::test]
+async fn recovery_waiting_for_release_loads_the_final_published_tail() {
+    let (_server, kv) = runtime_kv().await;
+    let first = Arc::new(crowdb_chunk_stream::KvStreamRegistry::new(kv.clone()));
+    let second = Arc::new(crowdb_chunk_stream::KvStreamRegistry::new(kv));
+    let memory = Arc::new(MemoryStreamStore::new(1024));
+    let name = StreamName::generate();
+    let writer = ChunkStream::create(
+        StreamRecord {
+            metadata_group_id: 1,
+            state: StreamRecordState::Active,
+            ..StreamRecord::creating(name, None, StreamPurpose::Stream)
+        },
+        1,
+        StreamConfig::default(),
+        first,
+        memory.clone(),
+        memory.clone(),
+    )
+    .await
+    .unwrap();
+    writer.append(&[Bytes::from_static(b"before")]).await.unwrap();
+    let pending = ChunkStream::open(name, 2, StreamConfig::default(), second, memory.clone(), memory);
+    tokio::pin!(pending);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), pending.as_mut())
+            .await
+            .is_err(),
+        "recovery must wait for the live writer"
+    );
+    writer.append(&[Bytes::from_static(b"-after")]).await.unwrap();
+    writer.release_writer().await.unwrap();
+    let successor = tokio::time::timeout(std::time::Duration::from_secs(1), pending)
+        .await
+        .unwrap()
+        .expect("recovery must use the checkpoint published by the release it awaited");
+    assert_eq!(
+        successor.read_at(0, 12).await.unwrap(),
+        Bytes::from_static(b"before-after")
+    );
+    successor.append(&[Bytes::from_static(b"-next")]).await.unwrap();
+    successor.release_writer().await.unwrap();
+}

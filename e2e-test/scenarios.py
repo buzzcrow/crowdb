@@ -4,6 +4,7 @@
 
 import concurrent.futures
 import json
+import threading
 from dataclasses import dataclass
 from contextlib import nullcontext
 
@@ -750,7 +751,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                    advertise=case.advertise)
 
 
-def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all", node_cpus=1.0, partition=None):
+def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all", node_cpus=1.0, partition=None, fail_fast=False):
     selected = select_cases(layer, scope, case_name, partition)
     if not selected:
         raise ValueError(f"no migrated cases for scope {scope}")
@@ -766,7 +767,19 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
             "scope": case.scope, "case": case.name}, indent=2))
         return cluster
 
+    stopped = threading.Event()
+
     def run(case, owned=None):
+        if owned is None and stopped.is_set():
+            return
+        try:
+            execute(case, owned)
+        except Exception:
+            if fail_fast:
+                stopped.set()
+            raise
+
+    def execute(case, owned=None):
         cluster = owned if owned is not None else prepare(case)
         with nullcontext(cluster) if owned is not None else cluster:
             if case.oci_reference:
@@ -824,12 +837,16 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                     future.result()
                 except Exception as error:
                     errors.append(error)
+                    if fail_fast:
+                        stopped.set()
+                        break
         except BaseException:
             for future in futures:
                 future.cancel()
             raise
-        errors.extend(run_browser_batches([case for case in selected if stable_network(case)],
-                                          slots, prepare, run))
+        if not stopped.is_set():
+            errors.extend(run_browser_batches([case for case in selected if stable_network(case)],
+                                              slots, prepare, run, fail_fast=fail_fast))
         if errors:
             for error in errors[1:]:
                 errors[0].add_note(f"another independent fixture failed: {error}")

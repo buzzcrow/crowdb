@@ -114,15 +114,21 @@ pub(in crate::node::runtime) async fn prepare_admitted(root: &Path, accepted: &A
         durable::write(&path, &operation)?;
     }
     initial.seal(&root.join("member-trust.json"))?;
-    admitted.seal(&root.join("admitted-member-trust.json"))?;
+    admitted.seal(&admitted_path(root, accepted)?)?;
     Ok(())
+}
+
+pub(super) fn admitted_path(root: &Path, accepted: &AcceptedNode) -> Result<std::path::PathBuf> {
+    let grant = accepted.admission.as_ref().ok_or("node has no admission grant")?;
+    let operation = uuid::Uuid::parse_str(&grant.operation_id)?;
+    Ok(root.join(format!("admitted-member-trust-{operation}.json")))
 }
 
 pub(super) fn admitted(root: &Path, accepted: &AcceptedNode) -> Result<MemberTrust> {
     let operation = PreparedBootstrap::load(&root.join("prepared-bootstrap.json"))?;
     let initial = MemberTrust::load(&root.join("member-trust.json"))?;
     initial.validate_bootstrap(&operation)?;
-    let admitted = MemberTrust::load(&root.join("admitted-member-trust.json"))?;
+    let admitted = MemberTrust::load(&admitted_path(root, accepted)?)?;
     if admitted.bootstrap != accepted.bootstrap
         || admitted.members.len() != initial.members.len() + 1
         || initial

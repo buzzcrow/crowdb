@@ -151,6 +151,17 @@ async fn rebind(
     {
         return Ok(false);
     }
+    // New confirmed contacts leave all existing service seeds usable. Update
+    // the monitor binding without replacing healthy service launch operations.
+    if old == current
+        && binding.as_ref().is_some_and(|binding| {
+            !binding.management_seeds.is_empty()
+                && binding.management_seeds.iter().all(|seed| seeds.contains(seed))
+        })
+    {
+        durable::write(&path, &current)?;
+        return Ok(true);
+    }
     for intent in services::list(client).await? {
         if intent.node_id != node
             || intent.cluster_id != operation.identity.cluster_id

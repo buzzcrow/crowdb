@@ -97,6 +97,8 @@ def main():
                         help="complete CI partition within Console or Iceberg")
     parser.add_argument("--list", action="store_true", help="list implemented named flows without starting servers")
     parser.add_argument("--require-isolation", action="store_true")
+    parser.add_argument("--fail-fast", action="store_true",
+                        help="stop dispatching cases after the first failure; retain completed artifacts")
     parser.add_argument("--cpus", type=float, default=4)
     parser.add_argument("--node-cpus", type=float, default=os.environ.get("CROWDB_E2E_NODE_CPUS", "1"), help="Relative CPU weight per server (1 CPU = 1024 shares); no hard quota")
     parser.add_argument("--memory-mib", type=int, default=4096)
@@ -184,7 +186,8 @@ def main():
     run_root.mkdir()
     (run_root / "identity.json").write_text(json.dumps({"image": args.image, "id": identity["Id"],
         "repo_digests": identity.get("RepoDigests", []), "labels": labels, "client_revision": revision,
-        "layer": args.layer, "scope": args.scope, "partition": args.partition, "slots": slots, "case_slots": case_slots,
+        "layer": args.layer, "scope": args.scope, "partition": args.partition, "fail_fast": args.fail_fast,
+        "slots": slots, "case_slots": case_slots,
         "largest_case_nodes": largest, "case_cpu_reservation": needed_cpu,
         "case_memory_reservation_mib": needed_memory, "selected_cases": [case.name for case in selected],
         "node_cpus": args.node_cpus, "cpu_policy": "shares", "tokio_worker_threads": 1, "node_cpu_shares": round(args.node_cpus * 1024),
@@ -243,7 +246,7 @@ def main():
             if slots >= 2:
                 run_mixed(identity["Id"], run_root, bundle, args.data_root, args.node_cpus)
         if selected:
-            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope, args.case, args.layer, args.node_cpus, args.partition)
+            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope, args.case, args.layer, args.node_cpus, args.partition, fail_fast=args.fail_fast)
         if args.layer in ("kv", "deployment", "all") and args.scope == "all" and not args.case:
             check_startup(identity["Id"], run_root)
         timings["status"] = "pass"

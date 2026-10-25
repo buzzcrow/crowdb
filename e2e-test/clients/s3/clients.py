@@ -30,13 +30,24 @@ def run(client, args, env):
     binary = Path(sys.executable).parent / client
     result = subprocess.run([str(binary), *args], env=env, capture_output=True, timeout=120)
     if result.returncode:
-        diagnostic = result.stderr.decode(errors="replace")
+        diagnostic = f"command: {client} {args!r}\nstdout:\n{result.stdout.decode(errors='replace')}\nstderr:\n{result.stderr.decode(errors='replace')}"
         for name in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]:
             if env.get(name):
                 diagnostic = diagnostic.replace(env[name], "<redacted>")
         diagnostic = re.sub(r"[?&]X-Amz-[^\s]+", "?<redacted>", diagnostic, flags=re.I)
         raise AssertionError(f"{client} {args[0]} failed ({result.returncode}): {diagnostic}")
     return result.stdout.decode()
+
+
+def aws_failure_snapshot(endpoint, env, error, probes):
+    for probe in probes:
+        try:
+            detail = run("aws", ["--endpoint-url", endpoint, "--no-cli-pager",
+                "--cli-connect-timeout", "2", "--cli-read-timeout", "2",
+                "s3api", *probe], env | {"AWS_MAX_ATTEMPTS": "1"})
+        except (AssertionError, subprocess.SubprocessError, OSError) as diagnostic:
+            detail = str(diagnostic)
+        error.add_note(f"post-failure {probe}: {detail}")
 
 
 def aws_workflow(endpoint, phase="all"):
@@ -58,10 +69,28 @@ def aws_workflow(endpoint, phase="all"):
         (source / "small.txt").write_bytes(b"CLI exact bytes")
         if phase in ["all", "write"]:
             aws("s3api", "create-bucket", "--bucket", bucket)
-            assert bucket in aws("s3", "ls")
+            try:
+                buckets = aws("s3", "ls")
+                assert bucket in buckets, f"new bucket missing from CLI listing: {buckets!r}"
+            except AssertionError as error:
+                aws_failure_snapshot(endpoint, env, error, [
+                    ["head-bucket", "--bucket", bucket], ["list-buckets"],
+                ])
+                raise
             aws("s3", "cp", str(source / "large.bin"), f"s3://{bucket}/prefix/large.bin")
             aws("s3", "cp", str(source / "small.txt"), f"s3://{bucket}/prefix/small.txt")
-            assert "large.bin" in aws("s3", "ls", f"s3://{bucket}/prefix/", "--recursive")
+            try:
+                listed = aws("s3", "ls", f"s3://{bucket}/prefix/", "--recursive")
+            except AssertionError as error:
+                probes = [
+                    ["list-objects-v2", "--bucket", bucket],
+                    ["list-objects-v2", "--bucket", bucket, "--prefix", "prefix/"],
+                    ["head-object", "--bucket", bucket, "--key", "prefix/large.bin"],
+                    ["head-object", "--bucket", bucket, "--key", "prefix/small.txt"],
+                ]
+                aws_failure_snapshot(endpoint, env, error, probes)
+                raise
+            assert "large.bin" in listed
             aws("s3", "cp", f"s3://{bucket}/prefix/small.txt", f"s3://{bucket}/copied.txt", "--metadata-directive", "COPY")
             aws("s3", "cp", f"s3://{bucket}/prefix/large.bin", f"s3://{bucket}/copied-large.bin", "--metadata-directive", "COPY")
             aws("s3", "sync", str(source), f"s3://{bucket}/synced/", "--delete")

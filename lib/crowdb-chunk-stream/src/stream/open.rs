@@ -187,14 +187,31 @@ impl ChunkStream {
         }
         let authority = registry.claim_writer(stream_name, writer_epoch).await?;
         chunks.bind_writer(stream_name, writer_epoch, authority.clone());
-        let recovered = Self::recover_owned(
-            writer_epoch,
-            config,
-            metadata,
-            chunks,
-            snapshot,
-            authority.clone(),
-        )
+        let recovered = async {
+            // Claiming may wait for the old writer to drain and publish its
+            // final checkpoint. Recover from that completed publication.
+            let snapshot = metadata
+                .load_tail(stream_name)
+                .await?
+                .ok_or_else(|| StreamError::Corruption("Stream tail record does not exist".into()))?;
+            if snapshot.record().purpose != record.purpose {
+                return Err(StreamError::Corruption(
+                    "Stream purpose differs from identity record".into(),
+                ));
+            }
+            if snapshot.record().writer_epoch > writer_epoch {
+                return Err(StreamError::StaleWriter);
+            }
+            Self::recover_owned(
+                writer_epoch,
+                config,
+                metadata,
+                chunks,
+                snapshot,
+                authority.clone(),
+            )
+            .await
+        }
         .await;
         if recovered.is_err() {
             if let Err(error) = authority.release().await {

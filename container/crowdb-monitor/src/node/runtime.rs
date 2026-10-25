@@ -19,6 +19,9 @@ use crate::{DeploymentProfile, ProcessManager, ServiceProfile};
 
 mod cleanup;
 mod control;
+mod dispatch;
+#[cfg(feature = "test-util")]
+pub use dispatch::NodeDispatch as NodeDispatchForTests;
 mod health;
 #[cfg(feature = "test-util")]
 pub use health::node_health_for_tests;
@@ -151,18 +154,15 @@ pub async fn run_node_with_inputs(
     let mut storage_health = storage_health::StorageHealth::default();
     let mut setup = setup::NodeSetup::default();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
+    let mut dispatch = dispatch::NodeDispatch::default();
     let result = async {
         loop {
             tokio::select! {
-                _ = heartbeat.tick() => {
-                    file_allocator.tick(&root)?;
-                    supplied_storage.tick(&root)?;
-                    storage_health.tick(&root).await;
-                    setup.tick(&profile).await?;
-                    health.tick(&profile, &web, &mut processes).await?;
-                }
-                connection = listener.accept() => {
-                    let (mut stream, _) = connection?;
+                biased;
+                _ = terminate.recv() => break,
+                _ = tokio::signal::ctrl_c() => break,
+                outcome = &mut discovery => { outcome??; return Err("discovery unexpectedly stopped".into()); },
+                work = dispatch.next(&listener, &mut heartbeat) => if let Some(mut stream) = work? {
                     let reply = match read_request(&mut stream).await {
                         Ok(request) => match control::execute(&profile, &mut processes, &mut initialization, &mut file_allocator, &mut supplied_storage, &mut setup, request).await {
                             Ok(value) => json!({"ok": true, "value": value}),
@@ -175,9 +175,13 @@ pub async fn run_node_with_inputs(
                     }
                     let _ = stream.shutdown().await;
                 }
-                _ = terminate.recv() => break,
-                _ = tokio::signal::ctrl_c() => break,
-                outcome = &mut discovery => { outcome??; return Err("discovery unexpectedly stopped".into()); },
+                else {
+                    file_allocator.tick(&root)?;
+                    supplied_storage.tick(&root)?;
+                    storage_health.tick(&root).await;
+                    setup.tick(&profile).await?;
+                    health.tick(&profile, &web, &mut processes).await?;
+                }
             }
         }
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
@@ -338,3 +342,6 @@ pub use recovery::read_recovery_identity;
 
 #[cfg(feature = "test-util")]
 pub use cleanup::cleanup_node_for_tests;
+
+#[cfg(feature = "test-util")]
+pub use recovery::capture_recovery_owners_for_tests;

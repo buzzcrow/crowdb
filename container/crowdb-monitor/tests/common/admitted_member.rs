@@ -46,7 +46,12 @@ pub fn fixture(root: &Path) -> ConfirmedMemberTrust {
     std::fs::write(root.join("ssh/ssh_host_ed25519_key.pub"), &own.host_key).unwrap();
     let mut admitted = initial.clone();
     admitted.members.push(own.clone());
-    admitted.seal(&root.join("admitted-member-trust.json")).unwrap();
+    admitted
+        .seal(&root.join(format!(
+            "admitted-member-trust-{}.json",
+            own.admission_operation_id
+        )))
+        .unwrap();
     super::trust::write(
         &root.join("accepted-node.json"),
         &json!({"node_id":4,"bootstrap":operation.identity,"prepared":true,

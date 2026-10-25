@@ -23,6 +23,9 @@ test('Docker default setup: submit storage and services then close the initiatin
     await expect(dialog.getByLabel('Initial SSH password', { exact: true })).toHaveValue('');
     for (const checkbox of await dialog.getByRole('region', { name: 'Node service choices' }).getByRole('checkbox').all()) await expect(checkbox).toBeChecked();
     await expect(dialog.getByLabel('Managed file capacity (GiB)', { exact: true })).toHaveValue('16');
+    await expect(dialog.getByLabel('Managed file capacity (GiB)', { exact: true })).toBeDisabled();
+    await expect(dialog.getByLabel('crowdb-disk-db RPC port', { exact: true })).toHaveValue('7100');
+    await expect(dialog.getByLabel('crowdb-disk-db RPC port', { exact: true })).toBeDisabled();
     await dialog.getByRole('button', { name: 'Join and start', exact: true }).click();
     await expect(dialog).toHaveCount(0, { timeout: 10_000 });
   }
@@ -165,5 +168,7 @@ test('Docker node update: authenticated rack and endpoint changes preserve alloc
   expect(after.node_id).toBe(before.node_id);
   expect(after.physical_host_id).toBe(before.physical_host_id);
   expect(after.rack_id).toBe(2);
-  expect(after.host).not.toBe(before.host);
+  // Independent monitor recovery may publish the new address before the dialog.
+  expect(after.host).toBe(process.env.CROWDB_NODE_UI_NEW_HOST);
+  expect(after.host).not.toBe(process.env.CROWDB_NODE_UI_OLD_HOST);
 });

@@ -281,3 +281,82 @@ async fn confirmed_nonvoter_can_prove_identity_without_live_group_zero_but_pendi
     assert!(crowdb_monitor::read_recovery_identity(root).await.is_err());
     drop(liveness);
 }
+
+#[tokio::test]
+async fn adding_management_seeds_preserves_unchanged_service_operations() {
+    let dir = tempdir_in_test_data("monitor-added-recovery-contacts");
+    let root = dir.path();
+    let _ = trust::fixture(root);
+    let operation =
+        crowdb_console_shared::deployment::PreparedBootstrap::load(&root.join("prepared-bootstrap.json"))
+            .unwrap();
+    let seeds: Vec<_> = (1..=3).map(|n| format!("http://192.0.2.{n}:10000")).collect();
+    let binding = crowdb_protocol::mgmt::node::NodeBinding {
+        node_id: 1,
+        bootstrap: operation.identity.clone(),
+        management_seeds: seeds.clone(),
+    };
+    trust::write(&root.join("node-binding.json"), &binding);
+    let mut expanded = seeds;
+    expanded.push("http://192.0.2.4:10000".into());
+    assert!(crowdb_monitor::rebind_recovery_services_for_tests(
+        root,
+        &operation,
+        1,
+        "192.0.2.1",
+        &expanded,
+        true,
+    )
+    .await
+    .expect("adding contacts cannot publish replacement service operations"));
+    let address: String =
+        serde_json::from_slice(&std::fs::read(root.join("service-address.json")).unwrap()).unwrap();
+    assert_eq!(address, "192.0.2.1");
+}
+
+#[test]
+fn a_new_admission_keeps_the_cancelled_operations_pins_and_fence() {
+    let dir = tempdir_in_test_data("nonvoter-readmission-trust");
+    let root = dir.path();
+    let mut snapshot = admitted::fixture(root);
+    let old_operation = snapshot.registry.nodes[3].operation_id.clone();
+    let old_path = root.join(format!("admitted-member-trust-{old_operation}.json"));
+    let old_bytes = std::fs::read(&old_path).unwrap();
+    trust::write(
+        &root.join(format!("ssh/cancelled-{old_operation}.json")),
+        &old_operation,
+    );
+    let new_operation = uuid::Uuid::new_v4().to_string();
+    snapshot.registry.nodes[3].operation_id.clone_from(&new_operation);
+    let mut pins = snapshot.current.clone();
+    pins.members[3].admission_operation_id.clone_from(&new_operation);
+    pins.seal(&root.join(format!("admitted-member-trust-{new_operation}.json")))
+        .unwrap();
+    trust::write(
+        &root.join("accepted-node.json"),
+        &serde_json::json!({
+            "node_id":4,"bootstrap":snapshot.initial.bootstrap,"prepared":true,
+            "admission":{"operation_id":new_operation,"management_seeds":["http://192.0.2.1:10000"]}
+        }),
+    );
+    check_member_trust_for_tests(root).expect("a fresh admission must use its own immutable pins");
+    assert!(
+        !crowdb_monitor::member_trust_ready_for_tests(root).unwrap(),
+        "the new operation cannot inherit the cancelled operation's confirmation"
+    );
+    snapshot.current = pins;
+    trust::write(&root.join("confirmed-member-trust.json"), &snapshot);
+    assert!(crowdb_monitor::member_trust_ready_for_tests(root).unwrap());
+    assert_eq!(std::fs::read(&old_path).unwrap(), old_bytes);
+    trust::write(
+        &root.join("accepted-node.json"),
+        &serde_json::json!({
+            "node_id":4,"bootstrap":snapshot.initial.bootstrap,"prepared":true,
+            "admission":{"operation_id":old_operation,"management_seeds":["http://192.0.2.1:10000"]}
+        }),
+    );
+    assert!(
+        check_member_trust_for_tests(root).is_err(),
+        "the cancelled operation remains fenced"
+    );
+}

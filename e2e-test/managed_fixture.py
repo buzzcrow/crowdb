@@ -94,6 +94,14 @@ class ManagedCluster(Cluster):
                 if report["phase"] == "failed":
                     raise AssertionError(f"normal selected release services failed: {report}")
                 if report["phase"] == "ready":
+                    setup = json.loads(self.command("exec", self.servers[0], "cat",
+                                                    "/opt/crowdb/data/node-setup.json"))
+                    last = {"cluster": report, "setup": setup["status"]}
+                    if setup["status"]["phase"] == "failed":
+                        raise AssertionError(f"selected service setup failed: {last}")
+                    if setup["status"]["phase"] != "ready":
+                        time.sleep(0.1)
+                        continue
                     status = self.monitor_status()
                     expected = {"web", "kv"} | {role + "-1" for role in self.services
                                                    if role not in ("web", "kv")}

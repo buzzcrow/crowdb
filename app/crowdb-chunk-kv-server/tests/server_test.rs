@@ -913,6 +913,7 @@ async fn prepared_split_lineage_suppresses_catalog_recovery() {
     assert_all_partition_loads_recoverable(&service, true).await;
     assert_old_parent_ordered_reads(&service).await;
     assert_old_parent_scan_continuation(&service).await;
+    split_scan::assert_old_parent_right_interval(&service).await;
     assert_retained_seek_needs_no_child_grant(&service).await;
 
     service.remove_partition(Id128 { high: 1, low: 2 });
@@ -1354,3 +1355,6 @@ mod bounded_scan;
 mod lease;
 #[path = "common/serving_lease.rs"]
 mod serving_fixture;
+
+#[path = "server_test/split_scan.rs"]
+mod split_scan;

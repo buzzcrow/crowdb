@@ -14,8 +14,25 @@ async function main() {
   ].find(existsSync);
   if (!executablePath) throw new Error('Container acceptance requires an installed system browser');
   const browser = await chromium.launch({ executablePath, headless: true });
+  const requests = new Map();
   try {
     const page = await browser.newPage();
+    page.on('request', request => {
+      const path = new URL(request.url()).pathname;
+      if (path.startsWith('/api/') && requests.size < 100) requests.set(request, { path, method: request.method(), started: Date.now() });
+    });
+    page.on('response', response => {
+      const observed = requests.get(response.request());
+      if (observed) Object.assign(observed, { status: response.status(), response_ms: Date.now() - observed.started });
+    });
+    page.on('requestfinished', request => {
+      const observed = requests.get(request);
+      if (observed) observed.completed_ms = Date.now() - observed.started;
+    });
+    page.on('requestfailed', request => {
+      const observed = requests.get(request);
+      if (observed) observed.failure = request.failure()?.errorText;
+    });
     const pageErrors = [];
     page.on('pageerror', error => pageErrors.push(error.message));
     // Exercise the HTTP-origin path even when acceptance uses localhost.
@@ -41,6 +58,11 @@ async function main() {
     }
     expect(pageErrors).toEqual([]);
     console.log('Container managed Web browser acceptance passed');
+  } catch (error) {
+    console.error('[MANAGED WEB REQUESTS]', JSON.stringify([...requests.values()].map(observed => ({
+      ...observed, elapsed_ms: Date.now() - observed.started,
+    }))));
+    throw error;
   } finally {
     await browser.close();
   }

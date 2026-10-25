@@ -35,7 +35,7 @@ fn spawn_cancel_bridge(parent: CancellationToken, child: CancellationToken) {
     );
 }
 
-use crate::cluster::group::{PendingReadBarrier, PxGroup, RemoteReplicaKind};
+use crate::cluster::group::{PendingReadBarrier, PxGroup, RemoteReplicaKind, RepairOutcome};
 use crate::cluster::group_election::{
     HeartbeatOutcome, LeaderElection, PendingLeaderHandoff, ReadBarrierOutcome, StepDownReason,
 };
@@ -376,11 +376,22 @@ impl PxGroup {
         }
         let group = Arc::clone(self);
         let cancel = cancel.clone();
+        let ceiling = self.local_replica().last_chosen_slot();
         Some(tokio::spawn(async move {
-            tokio::select! {
-                biased;
-                () = cancel.cancelled() => {},
-                _ = group.repair_once() => {},
+            // Drain the observed backlog in one independent pass. Tying each
+            // hole to a heartbeat tick makes a brief outage stall apply fences
+            // for heartbeat_interval * abandoned_slots after quorum returns.
+            while group.local_replica().contiguous_chosen() < ceiling {
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => return,
+                    outcome = group.repair_once() => {
+                        if !matches!(outcome, RepairOutcome::Filled { .. }) {
+                            return;
+                        }
+                    }
+                }
+                tokio::task::yield_now().await;
             }
         }))
     }

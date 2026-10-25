@@ -23,6 +23,11 @@ def verify(docker, request, wait, names, origins):
             steps[node] = wait(lambda node=node: request(selected[0], f"/api/nodes/{node}/setup"),
                 lambda status: next(step for step in status["services"] if step["kind"] == kind)["phase"] == "ready",
                 f"default node {node} {kind} ready without browser")
+    owner_key = "/api/stores/0/groups/0/kv/get?key=%2Fdeployment%2Fdefault-preparation"
+    ownership = json.loads(request(selected[0], owner_key)["value_utf8"])
+    assert not ownership["retired"] and ownership["metadata"]["group_id"] == 1, ownership
+    assert sorted(replica["node_id"] for replica in ownership["metadata"]["replicas"]) == sorted(
+        record["node_id"] for record in records), ownership
     operations = {node: {step["kind"]: step["operation_id"] for step in status["services"]
                          if step["operation_id"]} for node, status in steps.items()}
     files = {}
@@ -54,6 +59,7 @@ def verify(docker, request, wait, names, origins):
             for step in status["services"]:
                 if step["kind"] in operations[node]:
                     assert step["operation_id"] == operations[node][step["kind"]], step
+    assert json.loads(request(selected[0], owner_key)["value_utf8"]) == ownership
     for node, file in files.items():
         status = request(selected[0], f"/api/nodes/{node}/setup")
         assert status["phase"] == "ready" and status["storage_mode"] == "automatic", status

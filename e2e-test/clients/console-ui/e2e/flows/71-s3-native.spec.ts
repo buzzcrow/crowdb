@@ -46,7 +46,17 @@ test('S3 native multipart upload, HEAD, bounded preview and full round trip', as
       await page.getByLabel('Object file').setInputFiles({ name: 'multipart.txt', mimeType: 'text/plain', buffer: bytes });
     });
     await step('native 9 MiB multipart mutation and DOM refresh', async () => {
-      await page.getByRole('button', { name: 'Upload', exact: true }).click();
+      const [completed] = await Promise.all([
+        page.waitForResponse(response => {
+          const url = new URL(response.url());
+          return response.request().method() === 'POST'
+            && url.pathname === objectPath && url.searchParams.has('uploadId');
+        }),
+        page.getByRole('button', { name: 'Upload', exact: true }).click(),
+      ]);
+      const completion = await completed.text();
+      expect(completed.status(), completion).toBe(200);
+      expect(completion).toContain('<CompleteMultipartUploadResult');
       await expect(page.getByRole('table', { name: 'S3 objects' }).getByRole('button', { name: key, exact: true })).toBeVisible();
     });
     await step('native object HEAD and bounded preview', async () => {

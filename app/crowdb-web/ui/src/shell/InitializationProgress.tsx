@@ -22,13 +22,15 @@ export function InitializationProgress({ readonly = false }: { readonly?: boolea
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const refresh = async () => {
+      let interval = 2000;
       try {
         const result = await clusterInitialization({ signal: controller.signal });
+        if (!['idle', 'active', 'failed'].includes(result.phase)) interval = 500;
         if (!controller.signal.aborted) { setStatus(result); setUnavailable(false); }
       } catch {
         if (!controller.signal.aborted) setUnavailable(true);
       } finally {
-        if (!controller.signal.aborted) timer = setTimeout(refresh, 2000);
+        if (!controller.signal.aborted) timer = setTimeout(refresh, interval);
       }
     };
     void refresh();

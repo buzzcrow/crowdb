@@ -13,7 +13,7 @@ export interface SetupMedium { path: string; backend: DiskBackend; backing_ident
 export type SetupStorage = { mode: 'automatic'; capacity_bytes: number; reserve_bytes: number; sparse: boolean }
   | { mode: 'diskless' } | { mode: 'supplied'; disks: SetupMedium[] };
 export interface NodeSetupChoices { storage: SetupStorage; services: SetupService[] }
-export interface PreparedNodeAccess { operation_id: string; inventory: DiskInventory; accepted_choices?: NodeSetupChoices | null }
+export interface PreparedNodeAccess { operation_id: string; inventory: DiskInventory; accepted_choices?: NodeSetupChoices | null; policy_choices?: NodeSetupChoices | null }
 export interface NodeAdmissionRequest { discovery_id: string; rack_id: number; ssh_user: string; ssh_port: number; ssh_password: string | null;
   preflight_operation_id?: string; setup?: NodeSetupChoices }
 export type SetupStepPhase = 'pending' | 'waiting' | 'preparing' | 'accepted' | 'ready' | 'failed' | 'warning' | 'disabled';

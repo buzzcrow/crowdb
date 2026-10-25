@@ -81,7 +81,7 @@ def services(docker, request, wait, origins, fourth, joined):
                      {"instance_id": 71, "rpc_port": 19070})
     assert diskdb["pid"], diskdb
     service = request(origins[0], f"/api/nodes/{joined['node_id']}/services/deploy",
-                      {"kind":"diskio", "instance_id":71, "rpc_port":19071})
+                      {"kind":"diskio", "instance_id":71, "rpc_port":19072})
     assert service["pid"]
     wait(lambda: json.loads(docker("exec", fourth, "cat", "/opt/crowdb/run/status/monitor.json")),
          lambda status: status["services"].get("diskio-71", {}).get("healthy") is True, "remote DiskIO application readiness")

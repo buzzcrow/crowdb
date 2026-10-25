@@ -187,7 +187,7 @@ async function selectActiveJournal(page: Page, request: APIRequestContext, initi
   };
   const changed = async (response: APIResponse | Response) => {
     if (response.status() !== 409) return false;
-    expect((await response.json()).error).toMatch(/^(Chunk-KV catalog changed; refresh the range map|Catalog changed during runtime observation|Owner, catalog or tree page observation changed; refresh the catalog or page root)$/);
+    expect((await response.json()).error).toMatch(/^(Chunk-KV catalog changed(?: during observation)?; refresh the range map|Catalog changed during runtime observation|Owner, catalog or tree page observation changed; refresh the catalog or page root)$/);
     await refresh(() => page.getByRole('button', { name: 'Refresh catalog', exact: true }).click());
     return true;
   };

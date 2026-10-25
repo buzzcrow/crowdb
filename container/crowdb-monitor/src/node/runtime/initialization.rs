@@ -213,7 +213,7 @@ async fn execute(profile: &DeploymentProfile, request: &Request, local: u64) -> 
     }
     if request.create_data_group {
         progress(root, request, "data-group", None)?;
-        ensure_data_group(&ctx, operation.intent.members()).await?;
+        ensure_data_group(&ctx, operation).await?;
     }
     progress(root, request, "active", None)
 }
@@ -265,24 +265,11 @@ async fn prepare_members(
     Ok(())
 }
 
-async fn ensure_data_group(ctx: &OpContext, nodes: &[u64]) -> Result<()> {
-    if ctx.sysmd().get_group(0, 1).await?.is_some() {
-        let mut actual: Vec<_> = ctx
-            .sysmd()
-            .list_replicas_in_group(0, 1)
-            .await?
-            .iter()
-            .map(|replica| replica.node_id)
-            .collect();
-        let mut expected = nodes.to_vec();
-        actual.sort_unstable();
-        expected.sort_unstable();
-        if actual != expected {
-            return Err("existing Group 1 membership differs from initialization nodes".into());
-        }
-        return Ok(());
-    }
-    crowdb_console_shared::ops::kv_logical::add_group(ctx, 0, 1, 1, nodes).await?;
+async fn ensure_data_group(ctx: &OpContext, operation: &PreparedBootstrap) -> Result<()> {
+    // Manual initialization and accepted node setup share the same durable
+    // ownership before either runner creates the ordinary metadata group.
+    let accepted = crowdb_console_shared::deployment::preparation::reserve(ctx, &operation.identity).await?;
+    crowdb_console_shared::ops::kv_logical::ensure_default_group(ctx, &accepted).await?;
     Ok(())
 }
 

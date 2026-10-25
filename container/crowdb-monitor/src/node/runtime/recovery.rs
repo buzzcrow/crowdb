@@ -209,13 +209,13 @@ pub(super) fn check(root: &Path, accepted: &AcceptedNode) -> Result<()> {
 
 pub(super) fn ready(root: &Path, accepted: &AcceptedNode) -> Result<bool> {
     if accepted.admission.is_some() {
-        for name in [
-            "prepared-bootstrap.json",
-            "member-trust.json",
-            "admitted-member-trust.json",
-            "confirmed-member-trust.json",
+        for path in [
+            root.join("prepared-bootstrap.json"),
+            root.join("member-trust.json"),
+            confirmed::admitted_path(root, accepted)?,
+            root.join("confirmed-member-trust.json"),
         ] {
-            match std::fs::symlink_metadata(root.join(name)) {
+            match std::fs::symlink_metadata(path) {
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
                 Err(error) => return Err(error.into()),
@@ -278,3 +278,6 @@ pub async fn read_recovery_identity(
     crate::probe_liveness(root).await?;
     identity(root)
 }
+
+#[cfg(feature = "test-util")]
+pub use owners::capture_recovery_owners_for_tests;

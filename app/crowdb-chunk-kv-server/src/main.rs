@@ -356,7 +356,7 @@ async fn main() -> std::process::ExitCode {
                             continue;
                         }
                     };
-                    match refresh_service.install_catalog_and_reconcile(&head, &pages, &recovered) {
+                    match refresh_service.reconcile_catalog(&head, &pages, &recovered).await {
                         Ok(()) => info!(
                             generation = head.generation,
                             recovered = recovered.len(),

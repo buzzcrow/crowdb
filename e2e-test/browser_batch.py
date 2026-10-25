@@ -22,7 +22,7 @@ class BatchFixture:
         return self.cluster.__exit__(kind, error, traceback)
 
 
-def run_browser_batches(cases, slots, prepare, execute):
+def run_browser_batches(cases, slots, prepare, execute, fail_fast=False):
     errors = []
     for offset in range(0, len(cases), slots):
         batch = cases[offset:offset + slots]
@@ -43,4 +43,6 @@ def run_browser_batches(cases, slots, prepare, execute):
                             errors.append(error)
         except Exception as error:
             errors.append(error)
+        if fail_fast and errors:
+            break
     return errors

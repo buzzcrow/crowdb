@@ -83,6 +83,41 @@ impl ChunkKvService {
         Ok(())
     }
 
+    /// Install a catalog and drain WALs whose ownership moved to another instance.
+    /// # Errors
+    /// Returns validation or reconciliation failures before publication. A WAL
+    /// drain failure after publication fences this process for supervisor recovery.
+    pub async fn reconcile_catalog(
+        &self,
+        head: &ChunkKvRangeCatalogHead,
+        pages: &[ChunkKvRangeCatalogPage],
+        recovered: &[Partition],
+    ) -> Result<(), ChunkKvRangeCatalogReconcileError> {
+        let previous = self.partitions.load_full();
+        self.install_catalog_and_reconcile(head, pages, recovered)?;
+        let mut first_error = None;
+        for (id, partition) in previous.iter() {
+            let epoch = partition.snapshot().ownership_epoch;
+            let moved = pages.iter().flat_map(|page| &page.entries).any(|entry| {
+                entry.partition_id == *id
+                    && entry.owner.instance_id != self.instance_id
+                    && entry.owner_epoch > epoch
+            });
+            if moved {
+                if let Err(error) = partition.suspend_for_shutdown(epoch).await {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            // A live process cannot retain an uncertain, unassigned WAL forever.
+            // Stop renewal and let the supervisor restart under lease exclusion.
+            self.authority.process().fence();
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
     fn reconciled_partition_snapshot(
         &self,
         pages: &[ChunkKvRangeCatalogPage],

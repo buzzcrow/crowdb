@@ -65,3 +65,9 @@ pub use node::read_recovery_identity;
 
 #[cfg(feature = "test-util")]
 pub use node::cleanup_node_for_tests;
+
+#[cfg(feature = "test-util")]
+pub use node::capture_recovery_owners_for_tests;
+
+#[cfg(feature = "test-util")]
+pub use node::NodeDispatchForTests;

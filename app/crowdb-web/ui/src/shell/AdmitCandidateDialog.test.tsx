@@ -121,3 +121,23 @@ it('resumes previously accepted choices without replacing them with new defaults
   await waitFor(() => expect(admitCandidate).toHaveBeenCalledOnce());
   expect(vi.mocked(admitCandidate).mock.calls[0][0].setup).toEqual(choices);
 });
+
+it('reviews and submits the target startup choices without substituting browser defaults', async () => {
+  const choices = defaultNodeSetup();
+  choices.storage = { mode: 'automatic', capacity_bytes: 8 * 1024 ** 3, reserve_bytes: 1024 ** 3, sparse: false };
+  choices.services.forEach(service => { service.enabled = service.kind === 'diskdb'; });
+  choices.services.find(service => service.kind === 'diskdb')!.listeners.rpc_port = 29920;
+  vi.mocked(prepareCandidate).mockResolvedValue({ operation_id: 'policy-admission', inventory: empty, policy_choices: choices });
+  render(<AdmitCandidateDialog discoveryId="candidate" racks={[{ id: 1, nodes: [] }]} onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Verify and review' }));
+  await screen.findByText(/Access verified/);
+  expect(screen.getByLabelText('Managed file capacity (GiB)')).toHaveValue('8');
+  expect(screen.getByLabelText('Managed file capacity (GiB)')).toBeDisabled();
+  expect(screen.getByLabelText('crowdb-disk-db RPC port')).toHaveValue('29920');
+  expect(screen.getByLabelText('crowdb-disk-db RPC port')).toBeDisabled();
+  expect(screen.getByRole('checkbox', { name: 'crowdb-disk-db' })).toBeChecked();
+  expect(screen.getByRole('checkbox', { name: 'crowdb-disk-io' })).not.toBeChecked();
+  fireEvent.click(screen.getByRole('button', { name: 'Join and start' }));
+  await waitFor(() => expect(admitCandidate).toHaveBeenCalledOnce());
+  expect(vi.mocked(admitCandidate).mock.calls[0][0].setup).toEqual(choices);
+});

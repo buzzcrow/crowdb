@@ -52,7 +52,8 @@ and transport exposed through FFI.
   aliases or compatibility symlinks such as `.devin`.
 - Code changes: `/coding`; add `/console-ui-e2e` only for visible UI or
   Playwright work.
-- Test diagnosis: `/debug-test`, or `/console-ui-e2e` for browser/UI failures.
+- Test execution and CI progression: `/debug-test`; use `/console-ui-e2e` for
+  browser/UI diagnosis.
 - Docs: one matched `/doc-*` guide; `/doc` only for general or unclear targets.
 - Requirements: `/implement-requirement`; open the detail directly and consult
   the backlog index only for selection, ordering, or status.

@@ -84,6 +84,7 @@ pub async fn publish(kv: &CrowdbKvClient, registry: &NodeRegistry) -> Result<()>
 /// Rejects duplicate UUID endpoints, changed clusters and unavailable authority.
 pub async fn admit(kv: &CrowdbKvClient, cluster: &str, mut node: NodeRecord) -> Result<NodeRecord> {
     super::node_update::check_admission(kv, &node.discovery_id).await?;
+    let mut last_conflict = None;
     for attempt in 0..32 {
         let (mut registry, revision) = read(kv)
             .await?
@@ -149,15 +150,16 @@ pub async fn admit(kv: &CrowdbKvClient, cluster: &str, mut node: NodeRecord) -> 
         let bytes = serde_json::to_vec(&registry).map_err(config_error)?;
         match kv.put_cas(0, 0, NODES_KEY, &bytes, revision).await {
             Ok(_) => return Ok(node),
-            Err(KvError::CasFailed { .. } | KvError::OutcomeUnknown | KvError::CasBusy) => {
+            Err(conflict @ (KvError::CasFailed { .. } | KvError::OutcomeUnknown | KvError::CasBusy)) => {
+                last_conflict = Some((revision, conflict));
                 tokio::time::sleep(std::time::Duration::from_millis(5 + attempt * 2)).await;
             }
             Err(error) => return Err(error.into()),
         }
     }
-    Err(Error::Config(
-        "concurrent admission did not converge; retry".into(),
-    ))
+    Err(Error::Config(format!(
+        "concurrent admission did not converge; last conditional outcome: {last_conflict:?}"
+    )))
 }
 
 fn cancellation_key(operation: &str) -> Vec<u8> {

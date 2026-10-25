@@ -20,6 +20,7 @@ export function AdmitCandidateDialog({ discoveryId, racks, initialRackId, curren
   const [choices, setChoices] = useState<NodeSetupChoices>(defaultNodeSetup);
   const [submitted, setSubmitted] = useState<NodeAdmissionRequest>();
   const credential = useRef<string | null>(null);
+  const fixedSetup = !!prepared?.accepted_choices || !!prepared?.policy_choices;
   const close = async () => {
     if (busy) return;
     const operation = prepared?.operation_id ?? preparedNode?.operation_id;
@@ -40,7 +41,7 @@ export function AdmitCandidateDialog({ discoveryId, racks, initialRackId, curren
       if (!current && !prepared) {
         const result = await prepareCandidate({ ...access, preflight_operation_id: preparedNode?.operation_id });
         credential.current = initialPassword || null;
-        setPrepared(result); setChoices(previous => result.accepted_choices ?? { ...previous, storage: discoveredStorage(result.inventory) });
+        setPrepared(result); setChoices(previous => result.accepted_choices ?? result.policy_choices ?? { ...previous, storage: discoveredStorage(result.inventory) });
         return;
       }
       if (current) await updateCandidate(access);
@@ -66,7 +67,8 @@ export function AdmitCandidateDialog({ discoveryId, racks, initialRackId, curren
       {!current && !prepared && <p className="tw-text-xs tw-text-muted">Verify access first to review actual disks. This step does not admit the node or initialize storage.</p>}
       {prepared && <><p role="status" className="tw-text-sm">Access verified · {prepared.accepted_choices ? 'resuming the previously accepted setup.' : 'node remains a candidate until you submit.'} Accepted setup continues after this dialog or browser closes.</p>
         {prepared.accepted_choices && <p className="tw-text-xs tw-text-muted">Previously accepted choices are fixed. This submission resumes the same setup.</p>}
-        <NodeSetupOptions choices={choices} inventory={prepared.inventory} disabled={busy || !!submitted || !!prepared.accepted_choices} onChange={setChoices} />
+        {!prepared.accepted_choices && prepared.policy_choices && <p className="tw-text-xs tw-text-muted">This node's startup settings fix these choices.</p>}
+        <NodeSetupOptions choices={choices} inventory={prepared.inventory} disabled={busy || !!submitted || fixedSetup} onChange={setChoices} />
         {!validNodeSetup(choices) && <p role="status" className="tw-text-xs tw-text-failed">Resolve listener conflicts, storage capacity or selected-device agreement before joining.</p>}
       </>}
       {error && <p role="alert" className="tw-text-sm tw-text-failed">{error}</p>}

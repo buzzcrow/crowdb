@@ -72,3 +72,9 @@ pub use runtime::read_recovery_identity;
 
 #[cfg(feature = "test-util")]
 pub use runtime::cleanup_node_for_tests;
+
+#[cfg(feature = "test-util")]
+pub use runtime::capture_recovery_owners_for_tests;
+
+#[cfg(feature = "test-util")]
+pub use runtime::NodeDispatchForTests;

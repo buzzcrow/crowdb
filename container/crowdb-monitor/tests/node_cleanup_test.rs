@@ -45,6 +45,9 @@ async fn retired_cleanup_restarts_its_local_worker_after_a_failed_deletion() {
     let mut manager = ProcessManager::new(profile.paths.log_root.clone(), profile.logs.clone())
         .await
         .unwrap();
+    let contacts = root.join("confirmed-member-trust.json");
+    let retained_contacts = serde_json::to_vec(&serde_json::json!({"bootstrap":bootstrap})).unwrap();
+    std::fs::write(&contacts, &retained_contacts).unwrap();
     let retired = root.join(format!("retired-bootstrap-{}.json", bootstrap.operation_id));
     assert!(
         cleanup_node_for_tests(&profile, &mut manager, bootstrap.clone(), false)
@@ -68,6 +71,7 @@ async fn retired_cleanup_restarts_its_local_worker_after_a_failed_deletion() {
     );
     assert!(retired.exists());
     assert!(root.join("accepted-node.json").exists());
+    assert_eq!(std::fs::read(&contacts).unwrap(), retained_contacts);
     assert!(!manager.owns("kv"));
     cleanup_node_for_tests(&profile, &mut manager, bootstrap.clone(), true)
         .await
@@ -75,6 +79,10 @@ async fn retired_cleanup_restarts_its_local_worker_after_a_failed_deletion() {
     endpoint.await.unwrap();
     assert!(retired.exists());
     assert!(!root.join("accepted-node.json").exists());
+    assert!(
+        !contacts.exists(),
+        "retired cluster contact pins cannot poison a later admission"
+    );
     assert!(root.join("node-cleaned.json").exists());
     assert!(!manager.owns("kv"));
     cleanup_node_for_tests(&profile, &mut manager, bootstrap, true)

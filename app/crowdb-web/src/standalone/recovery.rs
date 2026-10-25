@@ -7,11 +7,11 @@ use std::path::Path;
 
 use crowdb_console_shared::clients::http::ServerClient;
 use crowdb_console_shared::config::{
-    GroupEntry, NodeEntry, ReplicaEntry, ServerEntry, ServiceType, StoreEntry,
+    DiskEntry, DiskGroupEntry, GroupEntry, NodeEntry, ReplicaEntry, ServerEntry, ServiceType, StoreEntry,
 };
 use crowdb_console_shared::error::{Error, Result};
 use crowdb_console_shared::lifecycle::{self, DeployRequest};
-use crowdb_console_shared::ops::hardware;
+use crowdb_console_shared::ops::{hardware, OpContext};
 
 use crate::state::AppState;
 
@@ -192,8 +192,11 @@ impl AppState {
 
     pub(crate) async fn reload_group0(&self) -> Result<()> {
         let ctx = self.op_context().await?;
-        let racks = hardware::list_racks_from_group0(&ctx).await?;
-        let mut nodes = hardware::list_nodes_from_group0(&ctx, None).await?;
+        let (racks, mut nodes, (stores, groups)) = tokio::try_join!(
+            hardware::list_racks_from_group0(&ctx),
+            hardware::list_nodes_from_group0(&ctx, None),
+            logical_topology(&ctx),
+        )?;
         // Private SSH material remains local; Group 0 owns connection identity.
         let previous = ctx.config().nodes.clone();
         for node in &mut nodes {
@@ -205,39 +208,7 @@ impl AppState {
                 node.ssh_password.clone_from(&local.ssh_password);
             }
         }
-        let sysmd = ctx.sysmd();
-        let mut stores = Vec::new();
-        let mut groups = Vec::new();
-        for store in sysmd.list_stores().await? {
-            for group in sysmd.list_groups_in_store(store.store_id).await? {
-                let replicas = sysmd
-                    .list_replicas_in_group(store.store_id, group.group_id)
-                    .await?
-                    .into_iter()
-                    .map(|replica| ReplicaEntry {
-                        replica_id: replica.replica_id,
-                        node_id: replica.node_id,
-                    })
-                    .collect();
-                groups.push(GroupEntry {
-                    store_id: store.store_id,
-                    group_id: group.group_id,
-                    replicas,
-                });
-            }
-            stores.push(StoreEntry {
-                store_id: store.store_id,
-                nodes: store.node_ids,
-            });
-        }
-        let mut disk_groups = Vec::new();
-        let mut disks = Vec::new();
-        for node in &nodes {
-            for group in hardware::list_disk_groups_from_group0(&ctx, node.id).await? {
-                disks.extend(hardware::list_disks_from_group0(&ctx, node.id, group.id).await?);
-                disk_groups.push(group);
-            }
-        }
+        let (disk_groups, disks) = disk_topology(&ctx, &nodes).await?;
         if self.node_monitor_url.is_some() {
             crate::services::remote::refresh(self).await?;
         }
@@ -253,4 +224,66 @@ impl AppState {
         config.disks = disks;
         Ok(())
     }
+}
+
+async fn logical_topology(ctx: &OpContext) -> Result<(Vec<StoreEntry>, Vec<GroupEntry>)> {
+    let sysmd = ctx.sysmd();
+    let raw_stores = sysmd.list_stores().await?;
+    let groups = futures::future::try_join_all(raw_stores.iter().map(|store| {
+        let sysmd = &sysmd;
+        async move {
+            let groups = sysmd.list_groups_in_store(store.store_id).await?;
+            futures::future::try_join_all(groups.into_iter().map(|group| async move {
+                let replicas = sysmd
+                    .list_replicas_in_group(store.store_id, group.group_id)
+                    .await?
+                    .into_iter()
+                    .map(|replica| ReplicaEntry {
+                        replica_id: replica.replica_id,
+                        node_id: replica.node_id,
+                    })
+                    .collect();
+                Ok::<_, Error>(GroupEntry {
+                    store_id: store.store_id,
+                    group_id: group.group_id,
+                    replicas,
+                })
+            }))
+            .await
+        }
+    }))
+    .await?
+    .into_iter()
+    .flatten()
+    .collect();
+    let stores = raw_stores
+        .into_iter()
+        .map(|store| StoreEntry {
+            store_id: store.store_id,
+            nodes: store.node_ids,
+        })
+        .collect();
+    Ok((stores, groups))
+}
+
+async fn disk_topology(
+    ctx: &OpContext,
+    nodes: &[NodeEntry],
+) -> Result<(Vec<DiskGroupEntry>, Vec<DiskEntry>)> {
+    let groups = futures::future::try_join_all(nodes.iter().map(|node| async move {
+        let groups = hardware::list_disk_groups_from_group0(ctx, node.id).await?;
+        futures::future::try_join_all(groups.into_iter().map(|group| async move {
+            let disks = hardware::list_disks_from_group0(ctx, node.id, group.id).await?;
+            Ok::<_, Error>((group, disks))
+        }))
+        .await
+    }))
+    .await?;
+    let mut disk_groups = Vec::new();
+    let mut disks = Vec::new();
+    for (group, group_disks) in groups.into_iter().flatten() {
+        disk_groups.push(group);
+        disks.extend(group_disks);
+    }
+    Ok((disk_groups, disks))
 }

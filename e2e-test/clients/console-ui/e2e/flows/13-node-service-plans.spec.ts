@@ -17,7 +17,10 @@ async function occupyDiskdbPort(request: APIRequestContext) {
   expect(group.status(), await group.text()).toBe(201);
   const added = await request.post('/api/nodes/1/disk-groups', { data: { id: 1, store_id: 0, group_id: 1 } });
   expect(added.status(), await added.text()).toBe(201);
-  // Port ownership needs the actual DiskIO listener, without admitting media.
+  // The real DiskIO listener requires a live local DiskDB, even without media.
+  const dependency = await request.post('/api/nodes/1/diskdb/deploy', { data: { rpc_port: 29920 } });
+  expect(dependency.status(), await dependency.text()).toBe(201);
+  const diskdb = await dependency.json();
   const defaults = await json(request, '/api/deployment-defaults?node_id=1');
   const deployed = await request.post('/api/nodes/1/services/deploy', { data: {
     ...defaults.diskio, kind: 'diskio', instance_id: '99', rpc_port: 7102, disk_group_id: 1,
@@ -25,6 +28,9 @@ async function occupyDiskdbPort(request: APIRequestContext) {
   expect(deployed.status(), await deployed.text()).toBe(201);
   const guard = await deployed.json();
   expect(await nativeProcessAlive(0, guard.pid)).toBe(true);
+  const removed = await request.delete('/api/services/diskdb-1');
+  expect(removed.ok(), await removed.text()).toBe(true);
+  await expect.poll(() => nativeProcessAlive(0, diskdb.pid), { intervals: [100] }).toBe(false);
   return guard;
 }
 

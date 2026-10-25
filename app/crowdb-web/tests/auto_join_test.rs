@@ -292,3 +292,42 @@ async fn choosing_a_new_draft_requires_matching_completed_cleanup_for_a_pinned_t
     assert!(body["target_cluster_id"].is_null());
     assert_eq!(body["enabled"], true);
 }
+
+#[tokio::test]
+async fn completed_cleanup_retires_console_credentials_before_another_cluster_is_imported() {
+    let workspace = TestWorkspace::new();
+    let console = workspace.0.join("console");
+    let old = crowdb_monitor::ServerCredentials::load_or_create(&console).unwrap();
+    let old_body = std::fs::read(console.join("secrets/server.env")).unwrap();
+    let operation = uuid::Uuid::new_v4().to_string();
+    let cleaned = workspace.0.join("node-cleaned.json");
+    std::fs::write(
+        &cleaned,
+        json!({
+            "cluster_id":uuid::Uuid::new_v4().to_string(),"operation_id":operation,
+            "configuration_digest":"a".repeat(64)
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::set_permissions(&cleaned, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let (status, body) = request(router(workspace.state()), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        !console.join("secrets").exists(),
+        "completed cleanup retained the previous cluster's Console credentials"
+    );
+    let archived = console.join(format!("retired-secrets-{operation}/server.env"));
+    assert!(std::fs::read(archived).unwrap().eq(&old_body));
+    let current = crowdb_monitor::ServerCredentials::load_or_create(&workspace.0).unwrap();
+    assert!(!current.s3_master_key().eq(old.s3_master_key()));
+    crowdb_monitor::ServerCredentials::import(&console, &current.server_env()).unwrap();
+    assert_eq!(request(router(workspace.state()), None).await.0, StatusCode::OK);
+    assert!(
+        crowdb_monitor::ServerCredentials::load_existing(&console)
+            .unwrap()
+            .server_env()
+            == current.server_env(),
+        "observing an acknowledged cleanup must preserve the new cluster's credentials"
+    );
+}

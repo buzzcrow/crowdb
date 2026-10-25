@@ -1197,9 +1197,19 @@ impl ChunkKvService {
         let Some(entry) = catalog.entry_for_partition(request.routing.partition_id) else {
             return not_my_range(catalog.generation, None);
         };
-        let logical_range = self
-            .logical_range_for_request(request.routing.partition_id, &catalog)
-            .unwrap_or_else(|| entry.range.clone());
+        // Select the routed assignment before clipping. A historical parent
+        // scan can start wholly inside the child and still needs both writers.
+        let partition = self.partition_for_request(&request.routing, &entry.range.start, entry);
+        let logical_range = partition.as_ref().map_or_else(
+            || entry.range.clone(),
+            |partition| {
+                let range = partition.snapshot().range;
+                KeyRange {
+                    start: range.start.unwrap_or_default(),
+                    end: range.end,
+                }
+            },
+        );
         let clipped = match validate_and_clip_scan(&request, &logical_range) {
             Ok(clipped) => clipped,
             Err(ScanValidationError::RefreshRequired) => {
@@ -1228,7 +1238,7 @@ impl ChunkKvService {
         ) {
             return authority_failure(catalog.generation, &error, Some(entry));
         }
-        let Some(partition) = self.partition_for_request(&request.routing, &clipped.start, entry) else {
+        let Some(partition) = partition else {
             return failure(
                 catalog.generation,
                 ChunkKvRpcErrorCode::Recovering,

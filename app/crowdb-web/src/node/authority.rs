@@ -215,6 +215,7 @@ fn reconcile_cleanup(state: &AppState) -> Result<(), Failure> {
     if acknowledged.exists() {
         return Ok(());
     }
+    super::cleanup::retire_credentials(state, &bootstrap)?;
     for name in [
         "prepared-bootstrap.json",
         "confirmed-cluster.json",

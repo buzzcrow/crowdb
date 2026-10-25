@@ -191,3 +191,25 @@ async fn lost_prepare_reply_resumes_the_exact_durable_owner_without_storage_crea
     assert_eq!(std::fs::read(node.ownership()).unwrap(), bytes);
     node.assert_no_execution();
 }
+
+#[tokio::test]
+async fn wiring_a_fresh_multireplica_group_requires_an_elected_leader() {
+    let fixture = TestGroupCreation::start(false).await;
+    fixture.create(&request(), StatusCode::CREATED).await;
+    let remotes = serde_json::json!([
+        {"replica_id":8,"endpoint":"127.0.0.1:1","voting":true},
+        {"replica_id":9,"endpoint":"127.0.0.1:2","voting":true}
+    ]);
+    let (status, bytes) = fixture
+        .request(Method::POST, "/stores/0/groups/1/remotes", Some(&remotes))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&bytes));
+    let group = fixture.store.get_group(1).unwrap();
+    assert_eq!(group.quorum(), 2);
+    assert_eq!(
+        group.leader_id(),
+        0,
+        "a bootstrap role at term zero is not a quorum-elected leader"
+    );
+    assert_ne!(group.local_replica().role(), PxLocalReplicaRole::Leader);
+}

@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
 use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -73,6 +74,7 @@ async fn prepare_storage(http: &Client, base: &str) {
     sysmd.add_group(0, 0).await.unwrap();
     sysmd.add_group(0, 1).await.unwrap();
     register_voters(http, &sysmd, &addresses[..3]).await;
+    let registry = crowdb_kv_client::ServiceRegistryClient::from_shared(kv.clone());
     let hardware = crowdb_kv_client::HardwareClient::from_shared(kv);
     hardware
         .add_rack(
@@ -111,6 +113,7 @@ async fn prepare_storage(http: &Client, base: &str) {
     post(http, base, "/api/nodes/1/services/deploy",
         json!({"kind":"diskio","instance_id":"902","rpc_port":7200,"disk_group_id":1,"local_deployment":true}),
         StatusCode::CREATED).await;
+    prepare_diskdb(http, base, &hardware, &registry).await;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         let readiness: Value = http
@@ -129,6 +132,46 @@ async fn prepare_storage(http: &Client, base: &str) {
         assert!(std::time::Instant::now() < deadline, "{readiness}");
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+}
+
+async fn prepare_diskdb(
+    http: &Client,
+    base: &str,
+    hardware: &HardwareClient,
+    registry: &ServiceRegistryClient,
+) {
+    post(
+        http,
+        base,
+        "/api/nodes/1/diskdb/deploy",
+        json!({"rpc_port":7100,"keepalive_interval_secs":1}),
+        StatusCode::CREATED,
+    )
+    .await;
+    let instance_id = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let instances = registry.read_all_diskdb_instances().await.unwrap();
+            if let Some((instance_id, _)) = instances.first() {
+                assert_eq!(instances.len(), 1);
+                break *instance_id;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the actual DiskDB process registers its generated identity");
+    let expires_at_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+        + 60_000;
+    hardware
+        .set_owner(1, 1, 1, instance_id, expires_at_ms)
+        .await
+        .unwrap();
 }
 
 async fn register_voters(http: &Client, sysmd: &crowdb_kv_client::CrowdbSysmdClient, addresses: &[String]) {

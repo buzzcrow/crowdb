@@ -18,6 +18,7 @@ pub(super) async fn prepare(context: &TestNativeContext) {
     let profile = crate::common::control::request(json!({"action":"native-storage-profile"})).await;
     let capacity = profile["spare_disk_gib"].as_u64().unwrap() * 1024u64.pow(3);
     assert_eq!(capacity, 4 * 1024u64.pow(4));
+    let loaded_by = tokio::time::Instant::now() + Duration::from_secs(3);
     context
         .api(
             Method::POST,
@@ -38,6 +39,17 @@ pub(super) async fn prepare(context: &TestNativeContext) {
         .find(|(_, node, _)| *node == 1)
         .unwrap()
         .0;
+    tokio::time::timeout_at(loaded_by, async {
+        loop {
+            let group = hardware.get_disk_group(rack_id, 1, 581).await.unwrap().unwrap();
+            if group.value.status == HwStatus::Up as i32 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the actual DiskDB initializes the new group before its media is admitted");
     // This is a fresh, exclusively owned truncated fixture, matching the normal
     // native fixture's trusted legacy bootstrap rather than a public bypass.
     let record = DiskStorageRecord {
@@ -66,7 +78,7 @@ pub(super) async fn prepare(context: &TestNativeContext) {
     record.validate().unwrap();
     hardware.admit_disk_storage(&record).await.unwrap();
     hardware.activate_disk_storage(&record).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout_at(loaded_by, async {
         loop {
             let response = context
                 .http

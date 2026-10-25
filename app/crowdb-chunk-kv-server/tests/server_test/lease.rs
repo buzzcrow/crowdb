@@ -269,3 +269,31 @@ async fn graceful_drain_releases_an_unactivated_prepared_writer() {
     service.drain_writers().await.unwrap();
     assert_eq!(partition.lifecycle(), PartitionLifecycle::TransferQuiesced);
 }
+
+#[tokio::test]
+async fn a_published_remote_assignment_drains_the_previous_local_wal() {
+    let fixture = TestServingLease::start().await;
+    let stream = fixture.partition.snapshot().stream_name;
+    let (mut head, mut page) = catalog(Id128 { high: 1, low: 2 }, stream, EPOCH + 1, 2, Some(1));
+    page.entries[0].owner.instance_id = INSTANCE_ID + 1;
+    page.entries[0].owner.rpc_endpoint = "127.0.0.1:9901".into();
+    page.seal().unwrap();
+    head.pages[0].page_checksum = page.checksum;
+    head.seal().unwrap();
+    fixture
+        .service
+        .reconcile_catalog(&head, &[page], &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture.partition.lifecycle(),
+        PartitionLifecycle::TransferQuiesced,
+        "a removed writer must release ownership while its process serves other partitions"
+    );
+    assert!(fixture.service.health(50_000).partitions.is_empty());
+    let published = fixture.store.load_tail_for_tests(stream).await.unwrap().unwrap();
+    assert_eq!(
+        published.record().logical_end,
+        Some(fixture.partition.snapshot().journal_durable_offset)
+    );
+}

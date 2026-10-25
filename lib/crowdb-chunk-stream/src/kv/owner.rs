@@ -140,6 +140,7 @@ impl KvStreamRegistry {
             .capture(Instant::now())
             .map_err(|_| StreamError::StaleWriter)?;
         let previous = read_owner(&self.kv, name).await?;
+        let mut revision = previous.as_ref().map_or(0, |(_, revision)| *revision);
         if let Some((owner, _)) = &previous {
             if owner.process.purpose != purpose {
                 return Err(StreamError::Corruption(
@@ -150,7 +151,7 @@ impl KvStreamRegistry {
                 return Err(StreamError::StaleWriter);
             }
             if !owner.released {
-                exclude_previous(&self.kv, &process.authority, owner).await?;
+                revision = exclude_previous(&self.kv, &process.authority, owner).await?;
             }
         }
         process
@@ -165,7 +166,6 @@ impl KvStreamRegistry {
                 .map_err(|error| StreamError::Internal(error.to_string()))?,
             released: false,
         };
-        let revision = previous.as_ref().map_or(0, |(_, revision)| *revision);
         write_owner(&self.kv, &owner, revision).await?;
         Ok(StreamWriterSession::new(Arc::new(AssignedOwner {
             kv: self.kv.clone(),
@@ -212,12 +212,24 @@ async fn exclude_previous(
     kv: &Arc<CrowdbKvClient>,
     current: &StreamProcessAuthority,
     owner: &StreamWriterOwner,
-) -> Result<()> {
+) -> Result<u64> {
     let client = StreamProcessLeaseClient::new(kv.clone());
     loop {
         current
             .capture(Instant::now())
             .map_err(|_| StreamError::StaleWriter)?;
+        let (assignment, revision) = read_owner(kv, owner.stream_name)
+            .await?
+            .ok_or(StreamError::StaleWriter)?;
+        if assignment.process != owner.process
+            || assignment.writer_epoch != owner.writer_epoch
+            || assignment.assignment_nonce != owner.assignment_nonce
+        {
+            return Err(StreamError::StaleWriter);
+        }
+        if assignment.released {
+            return Ok(revision);
+        }
         let previous = client
             .load(owner.process.purpose, owner.process.instance_id)
             .await
@@ -234,7 +246,7 @@ async fn exclude_previous(
             .saturating_add(MAX_WRITE_CLOCK_SKEW_MS)
             .saturating_add(MAX_WRITE_REQUEST_AGE_MS);
         if wall_ms() >= safe {
-            return Ok(());
+            return Ok(revision);
         }
         tokio::time::sleep(Duration::from_millis((safe - wall_ms()).min(500))).await;
     }

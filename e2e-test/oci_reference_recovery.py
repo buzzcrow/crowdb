@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import socket
 import time
+import uuid
 from urllib.parse import urlparse
 
 from fixture import HTTP, LABEL, request, wait
@@ -60,7 +61,8 @@ def identity(cluster, name):
     paths = ['node-identity', 'node-policy.json', 'prepared-bootstrap.json', 'member-trust.json',
              'ssh/id_ed25519.pub', 'ssh/ssh_host_ed25519_key.pub']
     if accepted.get('admission'):
-        paths.append('admitted-member-trust.json')
+        operation = uuid.UUID(accepted['admission']['operation_id'])
+        paths.append(f'admitted-member-trust-{operation}.json')
     hashes = cluster.command('exec', name, 'sha256sum', *['/opt/crowdb/data/' + path for path in paths])
     return dict(node_id=accepted['node_id'], bootstrap=accepted['bootstrap'], hashes=hashes)
 
