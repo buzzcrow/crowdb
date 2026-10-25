@@ -216,12 +216,13 @@ impl FileBlockStore for BudgetedGcBlocks {
     }
 
     async fn reclaim(&self, root: &ChunkRoot) -> Result<ReclaimOutcome, FileIoError> {
-        self.budget.reserve_chunk(root.physical_length)?;
+        // The control notification transfers no bytes from the referenced payload.
+        self.budget.reserve_chunk(0)?;
         self.inner.reclaim(root).await
     }
 
     async fn reclaim_location(&self, location: &Location) -> Result<ReclaimOutcome, FileIoError> {
-        self.budget.reserve_chunk(location.length)?;
+        self.budget.reserve_chunk(0)?;
         self.inner.reclaim_location(location).await
     }
 }

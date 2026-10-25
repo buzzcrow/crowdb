@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-mod pressure;
+pub(in crate::access_iceberg::gc) mod pressure;
 use pressure::TestGcPressure;
 
 struct TestGcConvergence {

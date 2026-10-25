@@ -64,13 +64,33 @@ async fn restart_discovers_only_deleted_file_and_observes_the_original_grace_per
                 .step_after_restart(&task, candidate.not_before_ms - 1)
                 .await
                 .unwrap();
-            if task.retry_at_ms == candidate.not_before_ms {
+            if task.phase == GcPhase::Complete {
                 break;
             }
         }
-        assert_eq!(task.retry_at_ms, candidate.not_before_ms);
+        assert_eq!(task.phase, GcPhase::Complete, "{task:?}");
+        assert_eq!(fixture.candidate().await.unwrap(), candidate);
+        assert!(matches!(fixture.authority(), StorageRecord::DeletedFile(_)));
         assert_eq!(fixture.blocks.notifications.load(Ordering::SeqCst), 0);
-        fixture.finish(task).await;
+        let previous = task;
+        let next_period_ms = DELETED_MS + 30 * 60_000;
+        task = GcRepository::new(fixture.store.clone())
+            .admit_multipart(fixture.context, next_period_ms, fixture.limits)
+            .await
+            .unwrap();
+        assert_eq!(task.identity, previous.identity);
+        assert_eq!(task.created_ms, previous.created_ms);
+        assert_eq!(task.not_before_ms, previous.not_before_ms);
+        assert_eq!(task.sweep_round, previous.sweep_round);
+        for _ in 0..100 {
+            task = fixture.step_after_restart(&task, next_period_ms).await.unwrap();
+            if task.phase == GcPhase::Complete {
+                break;
+            }
+        }
+        assert_eq!(task.phase, GcPhase::Complete, "{task:?}");
+        assert_eq!(task.deleted, 1);
+        assert_eq!(task.sweep_round, previous.sweep_round + 1);
         assert_eq!(fixture.blocks.notifications.load(Ordering::SeqCst), 1);
         assert_eq!(fixture.blocks.accepted.load().len(), 1);
         assert_eq!(fixture.candidate().await.unwrap().phase, CandidatePhase::Complete);

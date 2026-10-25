@@ -5,7 +5,7 @@ use std::sync::{atomic::Ordering, Arc};
 use crowdb_access_iceberg::{
     catalog::{CatalogAuthority, CatalogLifecycle, CatalogStore, RootState},
     file::{FileBlockStore, MultipartPhase, MultipartSession},
-    gc::{GcLimits, GcPhase, GcRepository, GcStalledReason, GcTask, GcWorker},
+    gc::{CandidatePhase, GcCandidate, GcLimits, GcPhase, GcRepository, GcStalledReason, GcTask, GcWorker},
     key::{CatalogId, CatalogScope, IcebergKey, OperationId},
     operation::{mutation_identity, PayloadStore},
     record::StorageRecord,
@@ -128,11 +128,15 @@ impl TestAssembly {
     }
 
     async fn run(&mut self) {
+        self.run_at(1_000_000).await;
+    }
+
+    async fn run_at(&mut self, now_ms: u64) {
         for _ in 0..2000 {
             let repository = GcRepository::new(self.file.store.clone());
             let worker = GcWorker::new(repository.clone(), self.blocks.clone(), self.limits).unwrap();
             self.task = worker
-                .run(&self.task, 1_000_000.max(self.task.retry_at_ms))
+                .run(&self.task, now_ms.max(self.task.retry_at_ms))
                 .await
                 .unwrap();
             self.task = repository
@@ -145,6 +149,70 @@ impl TestAssembly {
             }
         }
         panic!("assembly did not terminate: {:?}", self.task);
+    }
+
+    async fn finish_next_multipart_period(&mut self) {
+        assert_eq!(self.task.phase, GcPhase::Complete);
+        assert_eq!(self.task.deleted, 0);
+        assert_eq!(self.blocks.deletes.load(Ordering::Relaxed), 0);
+        let candidates: Vec<GcCandidate> = self
+            .file
+            .store
+            .values
+            .load()
+            .iter()
+            .filter_map(|(key, value)| {
+                let key = IcebergKey::decode(key).unwrap();
+                match StorageRecord::decode(&key, &value.bytes).unwrap() {
+                    StorageRecord::GcCandidate(candidate)
+                        if matches!(
+                            key,
+                            IcebergKey::Catalog {
+                                scope: CatalogScope::GcCandidate,
+                                ..
+                            }
+                        ) && candidate.task == self.task.identity =>
+                    {
+                        Some(*candidate)
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        assert_eq!(candidates.len(), 1);
+        let candidate = &candidates[0];
+        assert_eq!(candidate.phase, CandidatePhase::Retained);
+        assert_eq!(candidate.first_seen_ms, 1_000_000);
+        assert_eq!(candidate.not_before_ms, 1_000_000 + GcTask::PURGE_DELAY_MS);
+        let previous = self.task.clone();
+        let next_period_ms = candidate.first_seen_ms + 30 * 60_000;
+        self.task = GcRepository::new(self.file.store.clone())
+            .admit_multipart(self.file.context, next_period_ms, self.limits)
+            .await
+            .unwrap();
+        assert_eq!(self.task.phase, GcPhase::Discover);
+        assert_eq!(self.task.identity, previous.identity);
+        assert_eq!(self.task.created_ms, previous.created_ms);
+        assert_eq!(self.task.not_before_ms, previous.not_before_ms);
+        assert_eq!(self.task.sweep_round, previous.sweep_round);
+        self.run_at(next_period_ms).await;
+        let key = candidate.key();
+        let value = self
+            .file
+            .store
+            .get(&key.encode().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let StorageRecord::GcCandidate(completed) = StorageRecord::decode(&key, &value.bytes).unwrap() else {
+            panic!("candidate")
+        };
+        assert_eq!(completed.phase, CandidatePhase::Complete);
+        assert_eq!(completed.first_seen_ms, candidate.first_seen_ms);
+        assert_eq!(completed.not_before_ms, candidate.not_before_ms);
+        assert_eq!(self.task.deleted, 1);
+        assert_eq!(self.task.sweep_round, previous.sweep_round + 1);
+        assert_eq!(completed.completed_round, self.task.sweep_round);
     }
 }
 
@@ -182,6 +250,8 @@ async fn legacy_complete_progress_is_rejected_without_copy_and_expiry_preserves_
     assert_eq!(current.completion, fixture.session.completion);
     assert_eq!(*fixture.blocks.blocks.values.load_full(), *before);
     fixture.run().await;
+    assert_eq!(*fixture.blocks.blocks.values.load_full(), *before);
+    fixture.finish_next_multipart_period().await;
     assert_eq!(fixture.task.phase, GcPhase::Complete);
     assert!(fixture.blocks.blocks.values.load().is_empty());
 }
@@ -260,6 +330,9 @@ async fn active_cleanup_reclaims_aborted_assembly_before_session_metadata() {
         .encode()
         .unwrap();
     fixture.run().await;
+    assert!(fixture.file.store.get(&key).await.unwrap().is_some());
+    assert!(fixture.file.store.get(&selection).await.unwrap().is_some());
+    fixture.finish_next_multipart_period().await;
     assert_eq!(fixture.task.phase, GcPhase::Complete);
     assert!(fixture.file.store.get(&key).await.unwrap().is_none());
     assert!(fixture.file.store.get(&selection).await.unwrap().is_none());

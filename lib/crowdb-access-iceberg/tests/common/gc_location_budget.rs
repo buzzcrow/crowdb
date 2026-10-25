@@ -11,22 +11,29 @@ use crowdb_protocol::{chunkdb::rpc::Location, common::ChunkId};
 pub struct TestRangeBlocks {
     pub calls: AtomicUsize,
     pub reads: AtomicUsize,
+    pub roots: AtomicUsize,
     pub result: AtomicU8,
     expected: Location,
+    expected_root: ChunkRoot,
 }
 
 impl Default for TestRangeBlocks {
     fn default() -> Self {
-        Self {
-            calls: AtomicUsize::new(0),
-            reads: AtomicUsize::new(0),
-            result: AtomicU8::new(0),
-            expected: Self::location(),
-        }
+        Self::new(Self::location(), Self::root())
     }
 }
 
 impl TestRangeBlocks {
+    pub fn new(expected: Location, expected_root: ChunkRoot) -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            reads: AtomicUsize::new(0),
+            roots: AtomicUsize::new(0),
+            result: AtomicU8::new(0),
+            expected,
+            expected_root,
+        }
+    }
     pub fn location() -> Location {
         Location {
             chunk_id: Some(ChunkId { high: 1, low: 2 }),
@@ -67,6 +74,16 @@ impl FileBlockStore for TestRangeBlocks {
             "range identity and both coordinate bindings must survive"
         );
         self.calls.fetch_add(1, Ordering::Relaxed);
+        match self.result.load(Ordering::Relaxed) {
+            0 => Ok(ReclaimOutcome::Accepted),
+            1 => Ok(ReclaimOutcome::Deferred),
+            _ => Err(IoError::Internal("lost range notification reply".into()).into()),
+        }
+    }
+
+    async fn reclaim(&self, root: &ChunkRoot) -> Result<ReclaimOutcome, FileIoError> {
+        assert_eq!(root, &self.expected_root);
+        self.roots.fetch_add(1, Ordering::Relaxed);
         match self.result.load(Ordering::Relaxed) {
             0 => Ok(ReclaimOutcome::Accepted),
             1 => Ok(ReclaimOutcome::Deferred),

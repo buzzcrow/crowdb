@@ -984,8 +984,13 @@ Unfinished table operations and active multipart work defer table purge.
 Completed operation retry records and terminal multipart sessions do not extend
 the 20-minute purge delay. Background task advancement is enabled by default;
 it uses a separate storage client pool, one-step concurrency admission, bounded
-KV and chunk request/byte budgets, and durable retry state. The enabled
-scheduler admits persisted table purge markers and completed catalog clears;
+KV and chunk request/byte budgets, and durable retry state. The
+chunk byte budget covers payload reads and writes. Range retirement sends a
+bounded control descriptor and consumes one chunk-operation request without
+charging the referenced range as transferred payload. Large ranges therefore
+remain eligible for notification under the same limits. These are logical
+operation and payload budgets, not exact routed-RPC or wire-byte accounting.
+enabled scheduler admits persisted table purge markers and completed catalog clears;
 management may also start inactive tasks. Operators can disable the scheduler
 or adjust validated resource limits. Discovery starts at startup. Each catalog
 with unfinished discovery or runnable work continues after the retry-base delay
@@ -1012,6 +1017,15 @@ most the 64 configured catalogs and the current catalog; retired identities rema
 discoverable through durable system markers. Restart loses these hints and rescans the unchanged
 durable markers, ledgers and tasks. These hints grant no deletion authority and
 do not replace task proof, permanent retirement fences or retry state.
+
+Active multipart and deleted-file cleanup skips candidates whose fixed retention
+deadline has not arrived, so later eligible files can advance in the same pass.
+Those candidates and their deadlines remain unchanged. Complete denotes the end
+of that eligibility pass; periodic admission reopens it to discover newly eligible
+resources. Eligibility may therefore wait for the next scan interval and bounded
+drain time. Reopened passes retain a monotonically increasing sweep round, so a
+completed candidate contributes to deletion totals once. Inactive table purge
+and retired-catalog cleanup retain their task-wide retention and fence rules.
 
 The dedicated read-only local scan retains validated catalog/scope/prefix bounds,
 strict ordering, positive revisions and item/byte limits while allowing an

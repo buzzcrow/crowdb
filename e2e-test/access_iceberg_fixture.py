@@ -12,13 +12,14 @@ from fixture import HTTP, wait
 
 
 class AccessIcebergCluster(ChunkKvCluster):
-    def __init__(self, image, artifacts, bundle, native_files=False, catalog_lifecycle=False, gc_worker=False, gc_page_items=None, gc_interval_ms=100, deferred_access=False, **kwargs):
+    def __init__(self, image, artifacts, bundle, native_files=False, catalog_lifecycle=False, gc_worker=False, gc_page_items=None, gc_interval_ms=100, gc_catalogs=(), deferred_access=False, **kwargs):
         self.native_files = native_files
         self.catalog_lifecycle = catalog_lifecycle or gc_worker
         self.deferred_access = deferred_access
         self.gc_worker = gc_worker
         self.gc_page_items = gc_page_items
         self.gc_interval_ms = gc_interval_ms
+        self.gc_catalogs = tuple(gc_catalogs)
         super().__init__(image, artifacts, bundle, **kwargs)
 
     def start(self):
@@ -41,6 +42,8 @@ class AccessIcebergCluster(ChunkKvCluster):
                 "CROWDB_ICEBERG_GC_ENABLED=" + ("1" if (self.native_files and index == 13) or self.gc_worker else "0"),
             )
             if self.gc_worker:
+                if self.gc_catalogs:
+                    environment += ("CROWDB_ICEBERG_GC_CATALOGS=" + ",".join(self.gc_catalogs),)
                 if self.gc_interval_ms is not None:
                     environment += (f"CROWDB_ICEBERG_GC_INTERVAL_MS={self.gc_interval_ms}",)
                 if self.gc_page_items is not None:

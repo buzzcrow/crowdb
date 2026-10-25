@@ -86,6 +86,7 @@ class Case:
     iceberg_gc: bool = False
     iceberg_gc_page_items: int | None = None
     iceberg_gc_interval_ms: int | None = 100
+    iceberg_gc_catalogs: tuple = ()
     iceberg_deferred_access: bool = False
     console_web: bool = False
     preserve_network: bool = False
@@ -375,6 +376,7 @@ ICEBERG_CASES = (
     Case("iceberg.gc", "access_iceberg::gc::foreground::official_sdk_foreground_progresses_under_gc_backlog", iceberg_gc=True, iceberg_gc_page_items=1, iceberg_gc_interval_ms=None, client_timeout=180),
     Case("iceberg.gc", "access_iceberg::gc::convergence::expired_inline_backlog_completes_with_foreground_progress", iceberg_gc=True, iceberg_gc_page_items=1, iceberg_gc_interval_ms=None, client_timeout=3600),
     Case("iceberg.gc", "access_iceberg::gc::notifications::mixed_external_and_tree_notifications_complete_without_reclaiming_live_ranges", iceberg_gc=True, iceberg_gc_page_items=1, iceberg_gc_interval_ms=None, client_timeout=600),
+    Case("iceberg.gc", "access_iceberg::gc::notifications::matrix::restarted_cleaners_finish_large_and_sparse_backlogs_beside_an_invalid_catalog", iceberg_gc=True, iceberg_gc_page_items=1, iceberg_gc_interval_ms=None, iceberg_gc_catalogs=("01010101010101010101010101010101",), client_timeout=900),
     Case("iceberg.sdk.rust", "access_iceberg::rust_sdk::official_rust_client_lost_reply_survives_native_storage_restart", iceberg_deferred_access=True, client_timeout=1200),
     Case("iceberg.sdk.rust", "access_iceberg::rust_retired::official_rust_client_rejects_retired_native_catalog_after_full_grace", iceberg_deferred_access=True, client_timeout=1500),
     Case("iceberg.gc", "access_iceberg::gc::authenticated_gc_controls_survive_separate_processes", iceberg_gc=True),
@@ -719,6 +721,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
         return AccessIcebergCluster(image, artifacts, bundle, native_files=case.iceberg_native_files, catalog_lifecycle=case.iceberg_catalog_lifecycle,
                                     gc_worker=case.iceberg_gc, gc_page_items=case.iceberg_gc_page_items,
                                     gc_interval_ms=case.iceberg_gc_interval_ms,
+                                    gc_catalogs=case.iceberg_gc_catalogs,
                                     deferred_access=case.iceberg_deferred_access,
                                     data_root=data_root)
     if case.access_protocol:

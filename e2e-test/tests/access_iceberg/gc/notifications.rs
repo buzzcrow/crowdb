@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 use super::seed::{seed_expired_backlog, seed_head, seed_table};
 use crate::access_iceberg::{frontend::TestFrontend, native::TestNativeStorage, now_ms};
 
+mod large;
+mod matrix;
 mod proof;
 mod setup;
 mod storage;

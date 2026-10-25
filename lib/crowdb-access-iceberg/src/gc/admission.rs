@@ -69,7 +69,6 @@ impl GcRepository {
             next.phase = super::GcPhase::Discover;
             next.discovery_scope = 0;
             next.scan_after.clear();
-            next.sweep_round = 0;
             return self.exchange_admission_task(Some(&existing), &next).await;
         }
         let mut task = GcTask::plan(context, identity, None, now_ms, limits)?;

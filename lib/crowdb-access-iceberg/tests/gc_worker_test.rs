@@ -4,10 +4,7 @@ use std::sync::{atomic::Ordering, Arc};
 
 use crowdb_access_iceberg::{
     catalog::{CatalogAuthority, CatalogLifecycle, CatalogStore, RootState},
-    file::{
-        file_key, ContentFormat, FileContent, FileIdentity, FileKind, FileRepository, FileTreeWriter,
-        MultipartPart, MultipartPhase,
-    },
+    file::{file_key, ContentFormat, FileContent, FileIdentity, FileKind, FileRepository, FileTreeWriter},
     gc::{GcLimits, GcPhase, GcRepository, GcStalledReason, GcTask, GcWorker},
     key::{CatalogId, CatalogScope, FileId, IcebergKey, OperationId},
     operation::mutation_identity,
@@ -15,6 +12,8 @@ use crowdb_access_iceberg::{
 };
 use crowdb_protocol::{chunkdb::rpc::Location, common::ChunkId};
 
+#[path = "gc_worker/active_multipart.rs"]
+mod active_multipart;
 #[path = "common/gc_adoption.rs"]
 mod adoption;
 #[path = "common/file_blocks.rs"]
@@ -126,70 +125,6 @@ async fn published_file_exists(fixture: &common::file::TestFile, file: FileId) -
     fixture.store.get(&key.encode().unwrap()).await.unwrap().is_some_and(|value| {
         matches!(StorageRecord::decode(&key, &value.bytes), Ok(StorageRecord::File(record)) if record.file == file)
     })
-}
-
-#[tokio::test]
-async fn active_multipart_cleanup_reclaims_expired_part_without_touching_published_file() {
-    let (fixture, blocks, _, limits, published) = fixture(false).await;
-    let mut session = multipart_fixtures::session();
-    session.context = fixture.context;
-    session.owner.table = fixture.table;
-    session.location = fixture.table.file("multipart/object.parquet").unwrap();
-    session.phase = MultipartPhase::Aborted;
-    session.part_count = 1;
-    session.staged_bytes = 20;
-    let owner = FileIdentity {
-        table: fixture.table,
-        file: FileId::random(),
-    };
-    let mut writer = FileTreeWriter::new(blocks.clone(), owner, 128).unwrap();
-    writer.push(&[7; 20]).await.unwrap();
-    let part = MultipartPart {
-        upload: session.upload,
-        number: 1,
-        revision: 1,
-        modified_ms: 100,
-        owner,
-        tree: Some(writer.finish().await.unwrap()),
-        stream: None,
-    };
-    let session_key = session.key().encode().unwrap();
-    for (key, record) in [
-        (session.key(), StorageRecord::MultipartSession(Box::new(session))),
-        (part.key(), StorageRecord::MultipartPart(Box::new(part.clone()))),
-    ] {
-        let key = key.encode().unwrap();
-        let bytes = record.encode().unwrap();
-        fixture
-            .store
-            .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
-            .await
-            .unwrap();
-    }
-    let repository = GcRepository::new(fixture.store.clone());
-    let mut task = repository
-        .admit_multipart(fixture.context, 2000, limits)
-        .await
-        .unwrap();
-    for _ in 0..200 {
-        let worker = GcWorker::new(repository.clone(), blocks.clone(), limits).unwrap();
-        task = worker
-            .step(&task, (2_000 + 2 * GcTask::PURGE_DELAY_MS).max(task.retry_at_ms))
-            .await
-            .unwrap();
-        if task.phase == GcPhase::Complete {
-            break;
-        }
-    }
-    assert_eq!(task.phase, GcPhase::Complete, "{task:?}");
-    assert!(fixture
-        .store
-        .get(&part.key().encode().unwrap())
-        .await
-        .unwrap()
-        .is_none());
-    assert!(fixture.store.get(&session_key).await.unwrap().is_none());
-    assert!(published_file_exists(&fixture, published).await);
 }
 
 #[tokio::test]

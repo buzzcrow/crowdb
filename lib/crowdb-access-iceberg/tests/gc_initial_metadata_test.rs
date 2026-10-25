@@ -94,6 +94,20 @@ impl TestInitial {
         GcRepository::new(self.file.store.clone())
     }
 
+    async fn candidate(&self, key: &IcebergKey) -> GcCandidate {
+        let value = self
+            .file
+            .store
+            .get(&key.encode().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let StorageRecord::GcCandidate(candidate) = StorageRecord::decode(key, &value.bytes).unwrap() else {
+            panic!("candidate")
+        };
+        *candidate
+    }
+
     async fn step(&self, task: &GcTask, now: u64) -> Result<GcTask, crowdb_access_iceberg::gc::GcWorkError> {
         GcWorker::new(self.repository(), self.blocks.clone(), self.limits)
             .unwrap()
@@ -198,8 +212,36 @@ async fn initial_metadata_gc_waits_across_restart_and_fences_a_late_first_head()
             .await
             .unwrap()
             .is_none());
-        let task = test.finish(task, candidate.not_before_ms).await;
+        let completed = test.finish(task, candidate.not_before_ms - 1).await;
+        assert_eq!(completed.phase, GcPhase::Complete);
+        assert_eq!(completed.deleted, 0);
+        assert_eq!(test.blocks.deletes.load(Ordering::Relaxed), 0);
+        assert!(test
+            .file
+            .store
+            .get(&head.encode().unwrap())
+            .await
+            .unwrap()
+            .is_none());
+        let candidate_key = candidate.key();
+        assert_eq!(test.candidate(&candidate_key).await, candidate);
+        let next_period_ms = candidate.first_seen_ms + 30 * 60_000;
+        let task = test
+            .repository()
+            .admit_multipart(test.file.context, next_period_ms, test.limits)
+            .await
+            .unwrap();
+        assert_eq!(task.phase, GcPhase::Discover);
+        assert_eq!(task.identity, completed.identity);
+        assert_eq!(task.sweep_round, completed.sweep_round);
+        assert_eq!(task.created_ms, completed.created_ms);
+        assert_eq!(task.not_before_ms, completed.not_before_ms);
+        let task = test.finish(task, next_period_ms).await;
         assert_eq!(task.deleted, 1);
+        assert_eq!(task.sweep_round, completed.sweep_round + 1);
+        let final_candidate = test.candidate(&candidate_key).await;
+        assert_eq!(final_candidate.first_seen_ms, candidate.first_seen_ms);
+        assert_eq!(final_candidate.not_before_ms, candidate.not_before_ms);
         assert_eq!(test.blocks.deletes.load(Ordering::Relaxed), expected_deletes);
         assert!(test
             .file

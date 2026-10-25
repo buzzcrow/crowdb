@@ -129,12 +129,14 @@ class SelectionTest(unittest.TestCase):
                                  else 5 if case["scope"].startswith("console.web.")
                                  else 1 if case["scope"] in ("console.managed", "console.browser.shell", "console.browser.registry", "console.browser.lifecycle", "console.browser.kv", "console.browser.canvas", "console.browser.inspector", "console.clients") else 3)
         iceberg = json.loads(self.invoke("--list", "--layer", "iceberg"))
-        self.assertEqual(len(iceberg), 34)
+        self.assertEqual(len(iceberg), 35)
         gc = [case for case in iceberg if case["scope"] == "iceberg.gc"]
-        self.assertEqual(len(gc), 6)
+        self.assertEqual(len(gc), 7)
         self.assertIn("access_iceberg::gc::convergence::expired_inline_backlog_completes_with_foreground_progress",
                       [case["case"] for case in gc])
         self.assertIn("access_iceberg::gc::notifications::mixed_external_and_tree_notifications_complete_without_reclaiming_live_ranges",
+                      [case["case"] for case in gc])
+        self.assertIn("access_iceberg::gc::notifications::matrix::restarted_cleaners_finish_large_and_sparse_backlogs_beside_an_invalid_catalog",
                       [case["case"] for case in gc])
         self.assertTrue(all(case["scope"].startswith("iceberg.") and case["nodes"] == 14
                             for case in iceberg))
@@ -153,3 +155,15 @@ class CaseResourcesTest(unittest.TestCase):
             self.assertEqual(case_nodes(case), 1)
             self.assertEqual(case_resources(case, 0.25), (1.5, 2560))
             self.assertEqual(case_resources(case, 3), (1.5, 2560))
+
+    def test_gc_matrix_alone_enables_the_independent_invalid_catalog(self):
+        from scenarios import ICEBERG_CASES
+        selected = [case for case in ICEBERG_CASES if case.name.endswith("restarted_cleaners_finish_large_and_sparse_backlogs_beside_an_invalid_catalog")]
+        self.assertEqual(len(selected), 1)
+        case = selected[0]
+        self.assertTrue(case.iceberg_gc)
+        self.assertEqual(case.iceberg_gc_page_items, 1)
+        self.assertIsNone(case.iceberg_gc_interval_ms)
+        self.assertEqual(case.iceberg_gc_catalogs, ("01010101010101010101010101010101",))
+        self.assertEqual(case.client_timeout, 900)
+        self.assertTrue(all(not other.iceberg_gc_catalogs for other in ICEBERG_CASES if other != case))

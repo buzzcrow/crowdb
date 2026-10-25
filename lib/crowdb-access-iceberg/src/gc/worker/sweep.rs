@@ -45,7 +45,7 @@ impl GcWorker {
         }
         if candidate.task == task.identity {
             if now_ms < candidate.not_before_ms {
-                if task.kind == GcTaskKind::LiveTable {
+                if matches!(task.kind, GcTaskKind::LiveTable | GcTaskKind::MultipartCleanup) {
                     next.scan_after.clone_from(&item.key);
                     next.stalled = GcStalledReason::Retention;
                     self.repository.update(task, &next).await?;

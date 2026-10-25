@@ -12,7 +12,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-pub(super) struct TestGcPressure {
+pub(in crate::access_iceberg::gc) struct TestGcPressure {
     sdk: std::process::Child,
     stdout: PathBuf,
     writes: Option<tokio::task::JoinHandle<()>>,
@@ -23,7 +23,7 @@ pub(super) struct TestGcPressure {
 }
 
 impl TestGcPressure {
-    pub(super) fn start(origin: &str, seeds: Vec<String>) -> Result<Self, String> {
+    pub(in crate::access_iceberg::gc) fn start(origin: &str, seeds: Vec<String>) -> Result<Self, String> {
         let stdout = PathBuf::from(std::env::var("CROWDB_E2E_ARTIFACTS").map_err(|error| error.to_string())?)
             .join(format!("gc-inline-sdk-{}.log", OperationId::random()));
         let output = std::fs::File::create(&stdout).map_err(|error| error.to_string())?;
@@ -50,7 +50,7 @@ impl TestGcPressure {
         })
     }
 
-    pub(super) async fn observe(&mut self, deleted: u64) -> Result<(), String> {
+    pub(in crate::access_iceberg::gc) async fn observe(&mut self, deleted: u64) -> Result<(), String> {
         if let Some(status) = self.sdk.try_wait().map_err(|error| error.to_string())? {
             if !status.success() {
                 return Err(format!("official SDK foreground failed: {status}"));
@@ -85,11 +85,11 @@ impl TestGcPressure {
         Ok(())
     }
 
-    pub(super) fn complete(&self) -> bool {
+    pub(in crate::access_iceberg::gc) fn complete(&self) -> bool {
         self.sdk_complete && self.writes.is_none()
     }
 
-    pub(super) async fn stop(&mut self) {
+    pub(in crate::access_iceberg::gc) async fn stop(&mut self) {
         if let Some(writes) = self.writes.take() {
             writes.abort();
             let _ = writes.await;
@@ -104,7 +104,7 @@ impl TestGcPressure {
         }
     }
 
-    pub(super) fn finish(self) -> Result<(), String> {
+    pub(in crate::access_iceberg::gc) fn finish(self) -> Result<(), String> {
         if !self.complete() {
             return Err("foreground workloads did not finish".into());
         }
