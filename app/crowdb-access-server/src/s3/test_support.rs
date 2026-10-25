@@ -4,8 +4,9 @@
 //! Production HTTP body transfer with injected storage and placement.
 
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
+use crowdb_access_s3::{metrics::S3Metrics, streaming::PutOutcome};
 use crowdb_chunk_client::ChunkIoWriter;
-use hyper::body::Incoming;
+use hyper::body::{Body, Bytes, Incoming};
 use hyper::Request;
 
 /// Exercise the production S3 body transfer through a real HTTP listener.
@@ -28,4 +29,31 @@ pub async fn write_large_body_for_tests(
     super::operations::write_object_body(&mut body, writer, Some(&receiver), length, None, None, 4, None)
         .await
         .map_err(|error| format!("{error:?}"))
+}
+
+/// Exercises the production fallback handoff with caller-owned body frames.
+///
+/// # Errors
+/// Returns production body, checksum, writer and backpressure failures.
+pub async fn write_fallback_body_for_tests<B: Body<Data = Bytes> + Unpin>(
+    body: &mut crate::upload_flow::body_encoding::UploadBody<B>,
+    writer: &mut impl ChunkIoWriter,
+    held_buffers: usize,
+    expected_content_md5: Option<&str>,
+    expected_payload_sha256: Option<&str>,
+    metrics: Option<&S3Metrics>,
+) -> Result<(String, Vec<u8>), PutOutcome> {
+    body.defer_md5();
+    let length = body.decoded_length();
+    super::operations::write_object_body(
+        body,
+        writer,
+        None,
+        length,
+        expected_content_md5,
+        expected_payload_sha256,
+        held_buffers,
+        metrics,
+    )
+    .await
 }

@@ -13,7 +13,7 @@ use crowdb_access_s3::streaming::{PutErrorCode, PutOutcome};
 use crowdb_chunk_client::FramedWriteBuffer;
 use crowdb_protocol::frame::FrameMagic;
 use http_body_util::BodyExt;
-use hyper::body::{Bytes, Incoming};
+use hyper::body::{Body, Bytes};
 use tokio::sync::mpsc;
 
 use crate::upload_flow::body_encoding::{UploadBody, UploadEncodingError};
@@ -32,8 +32,8 @@ fn failed(code: PutErrorCode, message: &impl ToString) -> PutOutcome {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn write_object_body<W: ChunkIoWriter + ?Sized>(
-    body: &mut UploadBody<Incoming>,
+pub(crate) async fn write_object_body<B, W>(
+    body: &mut UploadBody<B>,
     writer: &mut W,
     native_receiver: Option<&NativeBodyReceiver>,
     declared_length: Option<u64>,
@@ -41,7 +41,11 @@ pub(crate) async fn write_object_body<W: ChunkIoWriter + ?Sized>(
     expected_payload_sha256: Option<&str>,
     held_buffers: usize,
     metrics: Option<&S3Metrics>,
-) -> Result<(String, Vec<u8>), PutOutcome> {
+) -> Result<(String, Vec<u8>), PutOutcome>
+where
+    B: Body<Data = Bytes> + Unpin,
+    W: ChunkIoWriter + ?Sized,
+{
     let (sender, receiver) = mpsc::channel(held_buffers);
     let progress = AtomicU64::new(0);
     let queued_peak = AtomicU64::new(0);
@@ -87,8 +91,8 @@ pub(crate) async fn write_object_body<W: ChunkIoWriter + ?Sized>(
     })
 }
 
-async fn receive_body(
-    body: &mut UploadBody<Incoming>,
+async fn receive_body<B: Body<Data = Bytes> + Unpin>(
+    body: &mut UploadBody<B>,
     native_receiver: Option<&NativeBodyReceiver>,
     declared_length: Option<u64>,
     flow: WriteFlow<'_>,
@@ -99,7 +103,7 @@ async fn receive_body(
         .unwrap_or(TARGET_BUFFER_BYTES)
         .clamp(1, TARGET_BUFFER_BYTES);
     let mut length = 0u64;
-    let mut pending = Vec::with_capacity(if native_receiver.is_some() { 0 } else { target });
+    let mut pending = Vec::new();
     let mut digest_pending = Vec::with_capacity(16);
     loop {
         let Some(frame) = body.frame().await else { break };
@@ -126,12 +130,27 @@ async fn receive_body(
             }
         } else {
             while !bytes.is_empty() {
+                if pending.is_empty() && bytes.len() >= target {
+                    let owner = bytes.split_to(target);
+                    digest_pending.push(owner.clone());
+                    handoff(
+                        &flow,
+                        digest,
+                        UploadBuffer::Data(owner),
+                        std::mem::take(&mut digest_pending),
+                    )
+                    .await?;
+                    continue;
+                }
+                if pending.capacity() == 0 {
+                    pending.reserve_exact(target);
+                }
                 let count = (target - pending.len()).min(bytes.len());
                 let piece = bytes.split_to(count);
                 pending.extend_from_slice(&piece);
                 digest_pending.push(piece);
                 if pending.len() == target {
-                    let owner = Bytes::from(std::mem::replace(&mut pending, Vec::with_capacity(target)));
+                    let owner = Bytes::from(std::mem::take(&mut pending));
                     handoff(
                         &flow,
                         digest,
