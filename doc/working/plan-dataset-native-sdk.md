@@ -339,15 +339,15 @@ This `--semantics-only` run is functional evidence, not performance acceptance.
 ### Next work, in order
 
 1. Restore the existing local-HCA test address/local-loop setup, then run the
-   strict native Dataset profile on `access-cleanup-v5-20261025`. The latest
+   strict native Dataset profile on `access-cleanup-v6-20261025`. The latest
    read-only host check finds an ACTIVE device but no test IP or network
    namespace. Do not count TCP or environment-gated unit cases as HCA evidence.
 2. Retain the unchanged complete TCP comparison and restart results at source
-   `ae4e1b8a`: 18 trials, 4,608 reads, zero errors, installed Python semantics
+   `c22bc40e`: 18 trials, 4,608 reads, zero errors, installed Python semantics
    and fixed Split-deletion deadlines across restart. CPU placement, eight
    sizes, warmups, repeats, budgets and integrity checks are unchanged. See the
    [accepted measurements](../../app/crowdb-access-server/tests/README.md#dataset-httpnative-comparison).
-   Native Rust gains about 36% at concurrency one and 5% at three in this run,
+   Native Rust gains about 19% at concurrency one and 5% at three in this run,
    with higher CPU and RSS; these are measured trade-offs, not an isolated
    before/after benefit of one cleanup patch.
 3. After the applicable HCA gate passes, retain its evidence and remove the
@@ -358,11 +358,11 @@ This `--semantics-only` run is functional evidence, not performance acceptance.
 Commands from the repository root (run long commands asynchronously and poll):
 
 ```bash
-pixi run image-build --output target/crowdb-access-cleanup-v5-20261025.oci.tar
-pixi run --manifest-path container/oci-image/pixi.toml import target/crowdb-access-cleanup-v5-20261025.oci.tar --image crowdb-node:access-cleanup-v5-20261025
-pixi run clean-env && pixi run python tools/sdk/dataset_workload.py --image crowdb-node:access-cleanup-v5-20261025
-pixi run python tools/rdma/run-native-dataset.py --image crowdb-node:access-cleanup-v5-20261025 --address 10.200.1.1 --device rocep35s0f0
-CROWDB_E2E_IMAGE=crowdb-node:access-cleanup-v5-20261025 pixi run test-e2e-dataset
+pixi run image-build --output target/crowdb-access-cleanup-v6-20261025.oci.tar
+pixi run --manifest-path container/oci-image/pixi.toml import target/crowdb-access-cleanup-v6-20261025.oci.tar --image crowdb-node:access-cleanup-v6-20261025
+pixi run clean-env && pixi run python tools/sdk/dataset_workload.py --image crowdb-node:access-cleanup-v6-20261025
+pixi run python tools/rdma/run-native-dataset.py --image crowdb-node:access-cleanup-v6-20261025 --address 10.200.1.1 --device rocep35s0f0
+CROWDB_E2E_IMAGE=crowdb-node:access-cleanup-v6-20261025 pixi run test-e2e-dataset
 ```
 
 The historical pre-retention image was
@@ -584,14 +584,35 @@ Those partial rates are not accepted comparative performance.
   logical inline metadata cleanup, not physical storage capacity recovery.
 - The six affected crate gates pass: 1,109 tests, 13 separately configured cases
   ignored. Workspace all-target/all-feature clippy, normal lint and formatting
-  pass. The E2E client builds; the new GC case and matching-image S3/Dataset/
-  complete TCP/restart acceptance still need execution on v6. Earlier v5
-  evidence below remains tied to its own source. HCA prerequisites and pending
+  pass. The E2E client builds. Matching-image v6 acceptance passes six S3 and
+  five Dataset cases plus the complete TCP/restart workload and all five GC
+  cases. The new expired-inline case verifies all 128 original files absent,
+  exact candidate/task completion and successful bounded foreground overlap.
+  Earlier v5 evidence remains tied to its own source. HCA prerequisites and pending
   Namespace DROP/MPU concurrency choices remain independently open.
 
 ## Current acceptance (2026-10-25)
 
-- Image `access-cleanup-v5-20261025` from source `ae4e1b8a`, tree
+- Image `access-cleanup-v6-20261025` from source `c22bc40e`, tree
+  `e2d0f660762290085649081fd2b437b53cd343da`, passes six S3 protocol cases,
+  all five Dataset cases (`container-e2e/run-8376c20aa6ea425583e2d8d6be33fcd9`)
+  and the unchanged complete TCP/restart workload in
+  `dataset-workload/d1fa8f646f124426b6c9e24688d92786`: 18 trials, 4,608 requests,
+  zero errors. Installed native Python semantics, HTTP/native Split parity,
+  cross-runtime and storage-restart cursor replay, held buffers and explicit
+  Split deletion all pass. Metadata replicas peak at 204.61/204.60/204.68 MiB
+  under the unchanged 2-GiB cap. Raw results and image identity are backed up
+  in `/tmp/crowdb-access-cleanup-v6-evidence-20261025`; exact measurements and
+  trade-offs are in the
+  [Access acceptance record](../../app/crowdb-access-server/tests/README.md#dataset-httpnative-comparison).
+  The five-case GC scope passes in
+  `container-e2e/run-d56438cb607349f3a4d819402ee8d484`: 128 inline files retire
+  in 2,785,403 ms with exact final facts and bounded successful foreground overlap.
+  This is metadata convergence, not physical capacity recovery; all 16 v6
+  real-service cases pass. The source-derived cadence estimate is not used as
+  a measured throughput claim.
+  Current-source HCA acceptance is still blocked on host prerequisites.
+- The preceding image `access-cleanup-v5-20261025` from source `ae4e1b8a`, tree
   `652168eeca88342b04068ddbf32a09ebb08f41dc`, passes 21 affected real-service
   cases and the unchanged complete TCP workload in
   `dataset-workload/def69a711d4e468880c5cb9fae82e32e`: 18 trials, 4,608 requests,

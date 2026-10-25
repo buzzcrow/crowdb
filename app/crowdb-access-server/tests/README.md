@@ -85,7 +85,26 @@ of the removed OCI archive.
 
 ## Current cleanup regression gates
 
-Source `ae4e1b8a` includes the bounded upload-retirement, Split-membership and
+Source `c22bc40e` additionally includes retained point-operation buffers across
+routed retries, observed-authority multipart expiry and reused validated inline
+digests. The six affected crates pass 1,109 tests, with 13 separately configured
+cases ignored. Workspace clippy, normal lint and formatting pass. Its matching
+`access-cleanup-v6-20261025` image passes six S3 protocol cases and all five
+Dataset cases (`run-8376c20aa6ea425583e2d8d6be33fcd9`), plus the complete
+[TCP/restart workload](#dataset-httpnative-comparison). The five-case GC scope also passes in
+`run-d56438cb607349f3a4d819402ee8d484`, including exact full inline-backlog
+convergence: 16 real-service cases in total.
+
+Boundary regressions preserve the caller's point payload allocations through
+first dispatch and routed retry. Expired multipart refresh uses one GET and one
+CAS instead of two GETs and one CAS; independent public abort still reads its
+own authority. Both native Dataset entry points verify inline corruption before
+reusing the immutable result. These are copy/scan and logical-operation results,
+not an isolated end-to-end throughput measurement of the changes. Raw v6
+artifacts and immutable image identity are independently retained in
+`/tmp/crowdb-access-cleanup-v6-evidence-20261025`.
+
+The preceding source `ae4e1b8a` includes the bounded upload-retirement, Split-membership and
 Iceberg receiver optimizations. All-target/all-feature Dataset/Access
 Server/native coverage passes: 645 tests, 13 separately configured cases
 ignored. Workspace clippy, `rs-lint` and formatting pass.
@@ -162,6 +181,48 @@ rate or end-to-end throughput benefit of forwarding complete S3 body owners.
 
 ## GC scheduling and foreground observations
 
+The v6 five-case scope passes in
+`container-e2e/run-d56438cb607349f3a4d819402ee8d484`. Its separate expired-inline
+case starts with 128 canonical files (1,554 logical bytes), a genuinely elapsed
+fixed deletion deadline, one-item pages and the production 30-minute idle
+interval. Other window, concurrency and I/O budgets remain unchanged.
+
+- First actual deletion: 2,005,848 ms, task revision 664.
+- Complete verification: 2,785,403 ms, final task revision 920, deleted 128 and
+  logical bytes 1,554. All 128 original file keys are absent and their exact
+  candidates are Complete; no deferred ranges, retry, stalled state or fence
+  remains. This is logical inline metadata retirement, not chunk notification
+  or physical capacity release.
+- The observer performs 2,781 task GETs and 256 separate final verification
+  GETs. All 919 observed revisions and phase transitions remain in the raw log.
+- After first deletion, four official SDK workers each process twelve tables
+  while the native writer completes 64 writes. Both loads remain active across
+  one observed interval with increasing deletion count, and a successful SDK
+  operation finishes inside it. This is finite overlap, not sustained traffic
+  throughout the 46-minute cleanup or an isolated GC performance baseline.
+- One supplemental admin metrics request is recorded separately. Those counters
+  belong to the foreground store; GC's independent store is not included.
+
+The new case retains raw latencies and nearest-rank quantiles. SDK table actions
+have 48 samples; namespace actions have four. Intentional 500-ms inter-table
+and 250-ms inter-write delays are excluded from the operation timings.
+
+| Operation          | Samples | p50 (ms) | p99 (ms) |
+| ------------------ | ------- | -------- | -------- |
+| Create namespace   | 4       | 75.22    | 75.38    |
+| Create table       | 48      | 78.82    | 318.43   |
+| Commit             | 48      | 42.87    | 50.72    |
+| Load table         | 48      | 2.71     | 4.26     |
+| Credentials        | 48      | 2.73     | 4.11     |
+| Read metadata      | 48      | 2.52     | 9.31     |
+| Drop table         | 48      | 38.53    | 51.99    |
+| Drop namespace     | 4       | 245.05   | 253.12   |
+| Native chunk write | 64      | 0.71     | 84.79    |
+
+Raw output, exact candidate checks, summaries and image identity are retained
+in `/tmp/crowdb-access-cleanup-v6-evidence-20261025`. The original foreground
+case remains independently unchanged. Its earlier v3 observations follow.
+
 The four GC container cases pass on `crowdb-node:access-cleanup-v3-20261025`
 in `container-e2e/run-15dee04958f34b6f9ad7207fcff1d679`. The imported Docker ID is
 `sha256:6636ec6d437cc3bbe32d4c0d355cd1b0a778fbc156797fb39f00ee8eed3cbe0d`,
@@ -205,18 +266,18 @@ pixi run clean-env && pixi run python e2e-test/run.py --layer iceberg --scope ic
 ## Dataset HTTP/native comparison
 
 The current complete same-host TCP workload and installed Python/storage-restart
-acceptance pass in `dataset-workload/def69a711d4e468880c5cb9fae82e32e` under
+acceptance pass in `dataset-workload/d1fa8f646f124426b6c9e24688d92786` under
 `.crowdb-runtime/artifacts/`. The manifest records image labels, CPU placement
 and per-phase service counters; client logs retain all per-size p50/p99 and
 digest timings. Raw trials and the aggregate summary are independently retained
-in `/tmp/crowdb-access-cleanup-v5-evidence-20261025`.
+in `/tmp/crowdb-access-cleanup-v6-evidence-20261025`.
 
-- Image: `crowdb-node:access-cleanup-v5-20261025`, imported Docker ID
-  `sha256:25d6d5de4485b9c42bbf701a29a08fcabc4bbb85e3170f109895960d670553aa`.
-- Source revision: `ae4e1b8ab05906cc8d72259b856672d850993161`; source tree:
-  `652168eeca88342b04068ddbf32a09ebb08f41dc`.
+- Image: `crowdb-node:access-cleanup-v6-20261025`, imported Docker ID
+  `sha256:cc1f879276f039a13a0ed0b7232833d176a1659fc10bf508700a43ef980b4e2f`.
+- Source revision: `c22bc40ebb6663b4b3cc4f0a89075a41f1c9f5a6`; source tree:
+  `e2d0f660762290085649081fd2b437b53cd343da`.
 - Client CPU 2; service CPUs 4–15; each metadata replica capped at 2 GiB.
-  Metadata cgroup peaks were 205/205/205 MiB, without a stopped replica.
+  Metadata cgroup peaks were 204.61/204.60/204.68 MiB, without a stopped replica.
 - Sizes: 0, 128, 513, 4,096, 65,535, 262,144, 1,048,576 and 4,194,321 bytes.
   Two warmup rounds precede three trials at each concurrency. Each worker
   performs 128 requests per trial: 4,608 measured requests, zero errors.
@@ -232,19 +293,19 @@ metadata; the product comparison includes this implementation difference.
 
 | Path          | Concurrency | MiB/s  | Client CPU (s) | Peak RSS (MiB) |
 | ------------- | ----------- | ------ | -------------- | -------------- |
-| HTTP          | 1           | 159.99 | 0.90           | 11.80          |
-| Native Rust   | 1           | 217.10 | 0.95           | 28.29          |
-| Native Python | 1           | 224.78 | 0.93           | 54.70          |
-| HTTP          | 3           | 260.38 | 2.47           | 17.57          |
-| Native Rust   | 3           | 272.43 | 2.79           | 31.12          |
-| Native Python | 3           | 281.23 | 2.72           | 60.13          |
+| HTTP          | 1           | 160.06 | 0.92           | 11.24          |
+| Native Rust   | 1           | 190.86 | 0.96           | 28.95          |
+| Native Python | 1           | 187.70 | 0.98           | 54.60          |
+| HTTP          | 3           | 255.21 | 2.55           | 16.73          |
+| Native Rust   | 3           | 268.17 | 2.77           | 31.21          |
+| Native Python | 3           | 266.02 | 2.86           | 61.30          |
 
-Native Rust throughput is about 36% higher at concurrency one and 5% higher at
+Native Rust throughput is about 19% higher at concurrency one and 5% higher at
 concurrency three in this execution. Client CPU and memory increase. Individual
 sizes also differ: at concurrency one, the median trial p50 for 128 bytes is
-781 µs over HTTP and 478 µs in native Rust; for 1 MiB it is 6,828 and 2,966 µs
-respectively. At concurrency three, the 128-byte p50 is 950 versus 1,227 µs,
-while its p99 is 12,488 versus 7,350 µs. These are medians of three trial
+557 µs over HTTP and 700 µs in native Rust; for 1 MiB it is 6,788 and 3,681 µs
+respectively. At concurrency three, the 128-byte p50 is 798 versus 3,854 µs,
+while its p99 is 9,548 versus 7,268 µs. These are medians of three trial
 quantiles, not pooled percentiles. Only 16/48 observations per size enter each trial, so these tails
 do not establish a production latency guarantee.
 The separately timed resident-buffer 64-MiB MD5 kernel takes approximately
@@ -265,14 +326,16 @@ runtime never uses HTTP as an implicit fallback.
 Reproduce after building/importing the matching service image:
 
 ```sh
-pixi run clean-env && pixi run python tools/sdk/dataset_workload.py --image crowdb-node:access-cleanup-v5-20261025
+pixi run clean-env && pixi run python tools/sdk/dataset_workload.py --image crowdb-node:access-cleanup-v6-20261025
 ```
 
 The explicit local-HCA profile remains a separate gate. Its current host setup
 needs restoration; environment-gated unit cases are not counted as hardware
 acceptance.
 
-The preceding v4 run was
+The preceding v5 run was
+`dataset-workload/def69a711d4e468880c5cb9fae82e32e`; its native Rust throughput
+was about 36%/5% above HTTP at concurrency one/three. The preceding v4 run was
 `dataset-workload/50925d2ddaf04a5da8fb1687132c4228`; its image and raw evidence
 remain preserved separately. Earlier accepted runs were
 `dataset-workload/9dbf56c386e142e995b8eb400305b467`
