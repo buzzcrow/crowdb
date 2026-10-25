@@ -18,6 +18,8 @@ from client import bundle_client
 from fixture import docker
 from image_identity import verify_server_sources
 from native_package import package
+from dataset_observation import run_observed
+from dataset_observation_resources import OwnedSources
 
 
 def interrupted(_signal, _frame):
@@ -103,16 +105,33 @@ def main():
         if args.semantics_only:
             commands = [("http-publication", [ROOT / "sdk/target/release/examples/workload", "--publish-only"]),
                         commands[-1]]
+        manifest["observation_roles"] = {
+            "access": [cluster.servers[12]],
+            "metadata_control": [*cluster.servers[:cluster.diskdb_index],
+                                 cluster.servers[cluster.chunk_kv_index]],
+            "storage_control": cluster.servers[cluster.diskdb_index:cluster.chunkdb_index + 1],
+            "storage_data": cluster.servers[cluster.chunkdb_index + 1:cluster.chunk_kv_index],
+        }
         try:
+            sources = None if args.semantics_only else OwnedSources.discover(
+                docker, cluster.servers, cluster.run_id, image["Id"], cluster.data_paths)
+            expected_snapshot = None
             for name, command in commands:
                 before = server_usage(cluster.servers)
-                with (output / f"{name}.log").open("w") as log:
-                    try:
-                        run(["taskset", "-c", args.client_cpu, *map(str, command)], env=environment,
-                            stdout=log, stderr=subprocess.STDOUT)
-                    finally:
-                        print((output / f"{name}.log").read_text(), end="", flush=True)
-                        manifest[name] = {"before": before, "after": server_usage(cluster.servers)}
+                try:
+                    pinned = ["taskset", "-c", args.client_cpu, *map(str, command)]
+                    if sources is not None and name in ("http", "native-rust", "native-python"):
+                        print("Workload:", " ".join(pinned), flush=True)
+                        observation = run_observed(pinned, environment=environment, output=output, path=name,
+                                                   run_id=output.name, capture=sources.capture,
+                                                   expected_snapshot=expected_snapshot)
+                        expected_snapshot = observation["trials"][0]["trial"]["snapshot"]
+                    else:
+                        with (output / f"{name}.log").open("w") as log:
+                            run(pinned, env=environment, stdout=log, stderr=subprocess.STDOUT)
+                finally:
+                    print((output / f"{name}.log").read_text(errors="replace"), end="", flush=True)
+                    manifest[name] = {"before": before, "after": server_usage(cluster.servers)}
             for node in (12, 11):
                 cluster.control({"action": "kill", "node": node})
             for node in (11, 12):

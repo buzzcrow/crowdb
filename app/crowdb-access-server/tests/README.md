@@ -94,6 +94,15 @@ their counts are not additive. Workspace all-target/all-feature clippy, normal
 lint, formatting and focused final regressions pass. Matching-image acceptance
 for these newer sources is pending; the v6 results below cover `c22bc40e`.
 
+Source `d400ae21` also discovers expired multipart uploads by immutable bucket
+identity after a bucket name is deleted and recreated. A production-actor
+regression fails on the preceding scanner and passes with the fix. The affected
+S3/Access/native suite passes 495 tests, with 12 separately configured cases
+ignored; the final multipart target passes all 64 cases. Only expired Open
+uploads are marked Aborted. Index, part and generation rows remain, and this
+does not establish physical space recovery. Workspace all-feature clippy,
+normal lint and formatting pass. Matching-image service acceptance is pending.
+
 The upload codec keeps all owner identities and the public JSON contract while
 writing a fixed 52-byte header plus 16 bytes per identity. Its maximum record is
 69,684 bytes. Legacy JSON keeps its original validation, and CAS conditions use
@@ -292,6 +301,26 @@ pixi run clean-env && pixi run python e2e-test/run.py --layer iceberg --scope ic
 ```
 
 ## Dataset HTTP/native comparison
+
+The workload runner now records finite observations around each original trial.
+The child captures local cached status, announces its exact run/path/concurrency/
+repeat/Snapshot identity, and waits while the parent reads owned service cgroups
+and process counters. A second handshake captures the end before the independent
+digest kernel or next trial. The original mixed sizes, concurrency, warmups,
+three repeats, 4,608 requests, verification and 600-second child bound remain.
+Direct child execution without the observation environment variable stays
+standalone. The new tool passes all 179 fixture unit checks, including 16
+protocol/resource cases; matching-image execution is pending.
+
+Each path writes its raw log and `*-observations.json`. Service CPU deltas include
+background work and the explicitly timed sequential capture interval. Actual
+member-process RSS, cumulative process HWM, charged cgroup memory and cumulative
+cgroup peaks are retained separately; none is a per-trial peak. Local native
+metadata, aggregate and data transport groups retain selected sent-frame/byte
+deltas without adding repeated process RUSAGE counters. Missing, reset or changed
+identities remain unavailable. Receive traffic, all-copy bytes, layout queries
+and per-request header/first-byte/EOF timing remain unmeasured. The enclosing
+service and inner client windows are not additive total-system CPU measurements.
 
 The current complete same-host TCP workload and installed Python/storage-restart
 acceptance pass in `dataset-workload/d1fa8f646f124426b6c9e24688d92786` under

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import sys
 import time
 
 import crowdb_dataset_native as native
@@ -56,6 +57,52 @@ def trial(client, snapshot, concurrency, rounds):
                 rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, latency=latencies, errors=0)
 
 
+
+def observation_trial(snapshot, concurrency, repeat):
+    run = os.environ.get("CROWDB_DATASET_OBSERVATION_RUN_ID")
+    if not run:
+        return None
+    if any(len(value) != 32 or any(char not in "0123456789abcdef" for char in value)
+           for value in (run, snapshot)):
+        raise ValueError("invalid workload observation identity")
+    return dict(run_id=run, path="native-python", concurrency=concurrency,
+                repeat=repeat, snapshot=snapshot)
+
+
+def local_observation(runtime):
+    started = str(time.time_ns())
+    values, unavailable = {}, {}
+    for name, capture in (("topology", lambda: runtime.topology(refresh=False)),
+                          ("resources", runtime.status)):
+        try:
+            values[name] = json.loads(capture())
+            if not isinstance(values[name], dict):
+                raise ValueError("native status is not an object")
+        except Exception as error:
+            values[name] = None
+            unavailable[name] = str(error)
+    return dict(started_unix_ns=started, finished_unix_ns=str(time.time_ns()),
+                topology=values["topology"], resources=values["resources"], unavailable=unavailable)
+
+
+def observe(trial, event, reply, runtime, result=None):
+    if trial is None:
+        return
+    record = dict(v=1, event=event, trial=trial, observation=local_observation(runtime))
+    if result is not None:
+        record["result"] = result
+    line = "CROWDB_DATASET_OBSERVATION " + json.dumps(record, separators=(",", ":")) + "\n"
+    if len(line.encode()) > 1024 * 1024:
+        raise ValueError("workload observation exceeds the line limit")
+    sys.stdout.write(line)
+    sys.stdout.flush()
+    line = sys.stdin.readline(1024 * 1024 + 1)
+    if len(line.encode()) > 1024 * 1024 or not line.endswith("\n"):
+        raise ValueError("missing or oversized workload observation reply")
+    if json.loads(line) != dict(v=1, event=reply, trial=trial):
+        raise ValueError("mismatched workload observation reply")
+
+
 def main():
     root = Path(os.environ["CROWDB_DATASET_CONSUMER_ROOT"])
     snapshot = bytes.fromhex(root.joinpath("snapshot").read_text())
@@ -65,7 +112,10 @@ def main():
         for concurrency in (1, 3):
             trial(client, snapshot, concurrency, 2)
             for repeat in range(3):
+                observation = observation_trial(snapshot.hex(), concurrency, repeat)
+                observe(observation, "ready", "go", runtime)
                 result = trial(client, snapshot, concurrency, 16)
+                observe(observation, "done", "ack", runtime, result)
                 data = bytes([93]) * 1024 * 1024
                 start = time.perf_counter_ns()
                 for _ in range(64):

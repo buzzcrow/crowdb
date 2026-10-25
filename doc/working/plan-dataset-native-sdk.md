@@ -593,6 +593,18 @@ Those partial rates are not accepted comparative performance.
 
 ## Current acceptance (2026-10-25)
 
+- Finite trial-boundary observation is implemented for the unchanged HTTP,
+  native Rust and installed Python workload. Raw owned cgroup/proc snapshots
+  and selected cached sent counters share each trial's identity. Inner client
+  and enclosing service windows are explicitly nonadditive; cumulative memory
+  peaks and missing counters are not presented as per-trial peaks or zeros.
+  All 179 fixture unit checks pass, including 16 protocol/resource cases;
+  release example builds, workspace clippy, normal lint and formatting pass.
+  Matching-image observation and current-source service acceptance remain open.
+- Source `d400ae21` fixes multipart expiry discovery after bucket recreation;
+  the affected S3/Access/native gate passes 495 tests, with 12 configured cases
+  ignored. Final multipart coverage passes all 64 cases. This is logical expiry,
+  not part-row deletion or physical resource reclamation.
 - Newer source `b566fdcd` passes compact-upload/inline-GC component gates
   (1,709 tests across five crates, 13 configured cases ignored) and the later
   Dataset/Access/native request-local delivery gates (669 tests, 13 configured

@@ -44,7 +44,14 @@ async fn main() -> Result<(), Failure> {
     for concurrency in [1, 3] {
         trial(&client, &snapshot, concurrency, 2).await?;
         for repeat in 0..3 {
+            let observation = observation_trial("native-rust", &snapshot, concurrency, repeat)?;
+            observe(observation.as_ref(), "ready", "go", None, || {
+                local_observation(&runtime)
+            })?;
             let result = trial(&client, &snapshot, concurrency, 16).await?;
+            observe(observation.as_ref(), "done", "ack", Some(&result), || {
+                local_observation(&runtime)
+            })?;
             let report = json!({"path":"native-rust", "snapshot":snapshot, "sizes":SIZES,
                 "concurrency":concurrency, "repeat":repeat, "result":result,
                 "digest":digest_cost(), "load":"closed-loop", "warmup_rounds":2,
@@ -175,4 +182,99 @@ fn digest_cost() -> serde_json::Value {
     }
     json!({"algorithm":"md5", "bytes":64 * data.len(), "microseconds":start.elapsed().as_micros(),
         "scope":"separate resident-buffer kernel; real reads always verify integrity"})
+}
+
+fn observation_trial(
+    path: &str,
+    snapshot: &str,
+    concurrency: usize,
+    repeat: usize,
+) -> Result<Option<serde_json::Value>, Failure> {
+    let run = match std::env::var("CROWDB_DATASET_OBSERVATION_RUN_ID") {
+        Ok(run) if !run.is_empty() => run,
+        Ok(_) | Err(std::env::VarError::NotPresent) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if [run.as_str(), snapshot].iter().any(|value| {
+        value.len() != 32
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }) {
+        return Err("invalid workload observation identity".into());
+    }
+    Ok(Some(
+        json!({"run_id":run,"path":path,"concurrency":concurrency,"repeat":repeat,"snapshot":snapshot}),
+    ))
+}
+
+fn observe(
+    trial: Option<&serde_json::Value>,
+    event: &str,
+    reply: &str,
+    result: Option<&serde_json::Value>,
+    capture: impl FnOnce() -> Result<serde_json::Value, Failure>,
+) -> Result<(), Failure> {
+    use std::io::{BufRead, Read, Write};
+    let Some(trial) = trial else { return Ok(()) };
+    let mut record = json!({"v":1,"event":event,"trial":trial,"observation":capture()?});
+    if let Some(result) = result {
+        record["result"] = result.clone();
+    }
+    let line = format!("CROWDB_DATASET_OBSERVATION {record}\n");
+    if line.len() > 1024 * 1024 {
+        return Err("workload observation exceeds the line limit".into());
+    }
+    std::io::stdout().write_all(line.as_bytes())?;
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin()
+        .lock()
+        .take(1024 * 1024 + 1)
+        .read_line(&mut line)?;
+    if line.len() > 1024 * 1024 || !line.ends_with('\n') {
+        return Err("missing or oversized workload observation reply".into());
+    }
+    if serde_json::from_str::<serde_json::Value>(&line)? != json!({"v":1,"event":reply,"trial":trial}) {
+        return Err("mismatched workload observation reply".into());
+    }
+    Ok(())
+}
+
+fn observation_time() -> Result<String, Failure> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos()
+        .to_string())
+}
+
+fn local_observation(runtime: &ClientRuntime) -> Result<serde_json::Value, Failure> {
+    let started = observation_time()?;
+    let (topology, unavailable) = match local_topology(runtime) {
+        Ok(topology) => (topology, json!({})),
+        Err(error) => (serde_json::Value::Null, json!({"topology":error.to_string()})),
+    };
+    let resource = runtime.resources().status();
+    let resources = json!({"closed":resource.closed,"requests":resource.requests,
+        "producer_bytes":resource.producer_bytes,"producer_bytes_high_water":resource.producer_bytes_high_water,
+        "held_bytes":resource.held_bytes,"held_bytes_high_water":resource.held_bytes_high_water,
+        "compatibility_copy_bytes":resource.compatibility_copy_bytes});
+    Ok(
+        json!({"started_unix_ns":started,"finished_unix_ns":observation_time()?,
+        "topology":topology,"resources":resources,"unavailable":unavailable}),
+    )
+}
+
+fn local_topology(runtime: &ClientRuntime) -> Result<serde_json::Value, Failure> {
+    let view = runtime.topology()?;
+    let metadata: serde_json::Value = serde_json::from_slice(&view.metadata_transport_json)?;
+    let data: Option<serde_json::Value> = view
+        .data_transport_json
+        .as_deref()
+        .map(serde_json::from_slice)
+        .transpose()?;
+    if !metadata.is_object() || data.as_ref().is_some_and(|value| !value.is_object()) {
+        return Err("native transport status is not an object".into());
+    }
+    Ok(json!({"metadata":metadata,"data":data}))
 }
