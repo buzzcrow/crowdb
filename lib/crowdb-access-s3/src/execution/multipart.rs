@@ -120,7 +120,7 @@ impl S3Executor {
     ) -> Result<MultipartSessionRecord, MultipartFailure> {
         let repository = self.multipart_repository();
         if session.phase == MultipartPhase::Open && session.expires_ms <= unix_millis() {
-            let expired = repository.abort(&session).await.map_err(mutation_error)?;
+            let expired = repository.abort_observed(session).await.map_err(mutation_error)?;
             if !abort {
                 return Err(MultipartFailure::S3(S3ErrorCode::NoSuchUpload));
             }

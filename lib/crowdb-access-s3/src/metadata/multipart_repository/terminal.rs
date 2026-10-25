@@ -121,7 +121,7 @@ impl MultipartRepository {
         self.abort_observed(current).await
     }
 
-    async fn abort_observed(
+    pub(crate) async fn abort_observed(
         &self,
         mut current: MultipartSessionRecord,
     ) -> Result<MultipartSessionRecord, MultipartRepositoryError> {
