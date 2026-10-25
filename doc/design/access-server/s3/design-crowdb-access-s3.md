@@ -256,23 +256,32 @@ entry and consumes the abort CAS observation without another confirmation read.
 An uncertain mutation remains an error; later scanning rechecks the durable
 resource state.
 
-The background expiry worker owns discardable bucket and upload key positions
-for one tenant. Each two-second step scans one raw bucket mapping or at most
-20 upload-index entries, with a four-MiB aggregate result budget. The legacy
+The background expiry worker owns discardable tenant and upload key positions
+for one configured tenant. Each two-second step scans one raw tenant metadata
+key or at most 20 upload-index entries, with a four-MiB aggregate result budget. The legacy
 scan transport materializes values before applying that aggregation limit; it
 does not enforce the budget on wire responses or native value materialization.
-Bucket discovery continues after filtered tombstones and legacy object entries even when none
-of those rows is an active bucket. It has no bucket-count cutoff. Raw positions
-advance before decoding a row or dispatching its point operations, so a corrupt
-returned row or uncertain abort cannot pin later uploads. A failed or cancelled
-upload scan drops that bucket hint, allowing later buckets to advance; a later full
-round discovers the skipped bucket again. A process restart starts a fresh
-scan without loading a persistent progress record.
+The first sixteen bytes after the tenant prefix supply a BucketId hint; the
+name mapping and its payload are not discovery authority. An old bucket remains
+discoverable after deletion or same-name recreation. The worker then scans that
+identity's existing listing index, validating each canonical index and upload
+authority before expiry. Upload creation persists the index before its authority.
+Long name keys may supply harmless extra hints; short keys advance by their
+observed raw position. There is no bucket-count cutoff.
+
+Selecting a hint also saves the inclusive successor of the entire bucket
+prefix. Finishing, failing or cancelling its index scan can therefore move to
+later identities without scanning retained object, part and generation rows
+one by one. A later complete round retries discarded hints. Successful partial
+index progress advances before its point operation, so a corrupt row or
+uncertain abort cannot pin subsequent uploads. A process restart scans the
+configured tenant again without loading a persistent progress record.
 
 Bucket discovery requests one raw row at a time. If a materialized first row
 exceeds the aggregate budget, the client returns only its validated key. The
-worker advances that position and reports an oversized-row error, retains the
-original metadata, and revisits it in later rounds. A transport failure that
+worker retains its identity hint for the next window and reports an oversized-row
+error, preserving the original metadata for later rounds. A short key instead
+advances its raw position. A transport failure that
 provides no validated key cannot be skipped safely and remains retryable.
 Obtaining discovery keys without materializing their values requires a separate
 key-only or native bounded-scan capability.

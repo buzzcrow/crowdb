@@ -21,6 +21,8 @@ mod completion_request;
 mod cost;
 #[path = "common/multipart_expiry.rs"]
 mod expiry;
+#[path = "multipart_repository/expiry_discovery.rs"]
+mod expiry_discovery;
 #[path = "common/multipart_expiry_sweep.rs"]
 mod expiry_sweep;
 #[path = "common/multipart_legacy.rs"]

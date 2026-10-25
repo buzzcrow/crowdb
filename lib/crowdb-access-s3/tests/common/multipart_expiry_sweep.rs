@@ -109,7 +109,8 @@ async fn more_than_a_thousand_buckets_are_eventually_expired_without_a_full_drai
     }
     let before = probe.counts();
     let mut sweep = MultipartExpirySweep::new(store, tenant());
-    assert_eq!(drain(&mut sweep, 2_100).await, (1_003, 0));
+    // Short name keys also take one raw-key window; each ID takes discovery plus I.
+    assert_eq!(drain(&mut sweep, 3_200).await, (1_003, 0));
     let after = probe.counts();
     assert_eq!((after.0 - before.0, after.1 - before.1), (1_003, 1_003));
     assert!(probe.scan_counts().1 <= 20);
@@ -157,7 +158,7 @@ async fn empty_active_pages_and_large_legacy_object_rows_advance_by_their_raw_ke
 }
 
 #[tokio::test]
-async fn bad_bucket_and_index_rows_cannot_pin_later_healthy_uploads() {
+async fn name_payloads_do_not_supply_authority_and_bad_indexes_cannot_pin_healthy_uploads() {
     let (repository, _, store) = repository_with_probe().await;
     let session = upload(1);
     store
@@ -178,7 +179,8 @@ async fn bad_bucket_and_index_rows_cannot_pin_later_healthy_uploads() {
         .await
         .unwrap();
     let mut sweep = MultipartExpirySweep::new(store, tenant());
-    assert_eq!(drain(&mut sweep, 20).await, (1, 2));
+    // Discovery uses only raw IDs; the bad canonical I binding still fails.
+    assert_eq!(drain(&mut sweep, 20).await, (1, 1));
     assert_eq!(
         repository.load(&session).await.unwrap().unwrap().phase,
         MultipartPhase::Aborted
@@ -204,7 +206,8 @@ async fn a_bad_index_keeps_successful_partial_progress_and_does_not_reload_earli
         .await
         .unwrap();
     let mut sweep = MultipartExpirySweep::new(store, tenant());
-    sweep.step(250).await.unwrap();
+    sweep.step(250).await.unwrap(); // Short name row.
+    sweep.step(250).await.unwrap(); // First retained bucket ID.
     assert!(sweep.step(250).await.is_err());
     let before = probe.counts();
     assert_eq!(drain(&mut sweep, 10).await, (1, 0));
@@ -233,7 +236,8 @@ async fn a_lost_abort_reply_preserves_local_progress_and_restart_rechecks_durabl
     part.bucket_id = first.bucket_id;
     repository.put_stream_part(&first, &part, 110).await.unwrap();
     let mut sweep = MultipartExpirySweep::new(store.clone(), tenant());
-    sweep.step(250).await.unwrap();
+    sweep.step(250).await.unwrap(); // Short name row.
+    sweep.step(250).await.unwrap(); // First retained bucket ID.
     probe.lose_after(0);
     assert!(sweep.step(250).await.is_err());
     let before = probe.counts();
@@ -297,7 +301,9 @@ async fn cancelled_bucket_scan_is_discardable_and_restarting_recovers_the_skippe
         repository.begin(session).await.unwrap();
     }
     let mut sweep = MultipartExpirySweep::new(store.clone(), tenant());
-    sweep.step(250).await.unwrap();
+    sweep.step(250).await.unwrap(); // First short name row.
+    sweep.step(250).await.unwrap(); // Second short name row.
+    sweep.step(250).await.unwrap(); // First retained bucket ID.
     let paused = probe.pause_scan(MetadataKey::multipart_session_prefix(&tenant(), first.bucket_id));
     let mut work = Box::pin(sweep.step(250));
     tokio::select! {
@@ -332,7 +338,8 @@ async fn large_upload_sets_keep_bounded_pages_and_binary_raw_continuation() {
         repository.begin(&session).await.unwrap();
     }
     let mut sweep = MultipartExpirySweep::new(store, tenant());
-    sweep.step(250).await.unwrap();
+    sweep.step(250).await.unwrap(); // Short name row.
+    sweep.step(250).await.unwrap(); // First retained bucket ID.
     for expected in [20, 20, 3] {
         let before = probe.counts();
         let scans = probe.scan_counts().0;

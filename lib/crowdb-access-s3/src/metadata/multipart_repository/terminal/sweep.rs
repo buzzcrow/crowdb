@@ -8,8 +8,8 @@ use crowdb_chunk_kv_client::MultiScanOutcome;
 use crate::{
     bucket::BucketError,
     metadata::{
-        BucketId, BucketNameRecord, ChunkKvMetadataStore, MetadataKey, MetadataRecordError,
-        MultipartRepository, MultipartRepositoryError, ObjectRecord, TenantId,
+        BucketId, ChunkKvMetadataStore, MetadataKey, MetadataRecordError, MultipartRepository,
+        MultipartRepositoryError, TenantId,
     },
 };
 
@@ -23,7 +23,7 @@ struct BucketPosition {
 /// Discardable bucket and upload positions; all cleanup obligations stay in metadata.
 pub struct MultipartExpirySweep {
     repository: MultipartRepository,
-    bucket_after: Option<Vec<u8>>,
+    bucket_start: Option<Vec<u8>>,
     current: Option<BucketPosition>,
     scanning_uploads: bool,
 }
@@ -51,13 +51,13 @@ impl MultipartExpirySweep {
     pub fn new(store: Arc<ChunkKvMetadataStore>, tenant: TenantId) -> Self {
         Self {
             repository: MultipartRepository::new(store, tenant),
-            bucket_after: None,
+            bucket_start: None,
             current: None,
             scanning_uploads: false,
         }
     }
 
-    /// Processes one raw bucket mapping or one bounded upload-index page.
+    /// Processes one tenant raw-key hint or one bounded upload-index page.
     ///
     /// # Errors
     /// Retains local raw-key progress across corrupt rows and uncertain mutations.
@@ -83,59 +83,64 @@ impl MultipartExpirySweep {
             return self.advance_uploads(now_ms).await;
         }
         let tenant = &self.repository.tenant;
-        let start = after_key(self.bucket_after.as_deref(), || {
-            MetadataKey::bucket_name_prefix(tenant)
-        });
+        let start = self
+            .bucket_start
+            .clone()
+            .unwrap_or_else(|| MetadataKey::tenant_prefix(tenant));
+        let end = MetadataKey::tenant_end(tenant);
+        if start >= end {
+            return Ok(self.finish_round());
+        }
         let page = self
             .repository
             .store
-            .scan_one_observed(
-                start,
-                MetadataKey::bucket_name_end(tenant),
-                super::MAX_EXPIRY_SCAN_BYTES,
-            )
+            .scan_one_observed(start, end, super::MAX_EXPIRY_SCAN_BYTES)
             .await
             .map_err(BucketError::from)?;
         let page = match page {
             MultiScanOutcome::Page(page) => page,
             MultiScanOutcome::OversizedRow { key } => {
-                self.bucket_after = Some(key);
+                self.observe_hint(&key)?;
                 return Err(MultipartExpiryError::OversizedBucketRow);
             }
         };
         let Some(item) = page.items.into_iter().next() else {
-            self.bucket_after = None;
-            return Ok(MultipartExpiryStep {
-                expired: 0,
-                more: false,
-            });
+            return Ok(self.finish_round());
         };
-        self.bucket_after = Some(item.key.clone());
-        let record = match BucketNameRecord::decode(&item.value) {
-            Ok(record) => record,
-            Err(_) if ObjectRecord::decode(&item.value).is_ok() => {
-                return Ok(MultipartExpiryStep {
-                    expired: 0,
-                    more: true,
-                });
-            }
-            Err(error) => return Err(BucketError::Record(error).into()),
-        };
-        if record.tenant != *tenant
-            || MetadataKey::bucket_name(tenant, &record.name).map_err(BucketError::from)? != item.key
-        {
-            return Err(BucketError::Record(MetadataRecordError::Invalid).into());
-        }
-        if !record.tombstone {
-            self.current = Some(BucketPosition {
-                id: record.bucket_id,
-                after: None,
-            });
-        }
+        self.observe_hint(&item.key)?;
         Ok(MultipartExpiryStep {
             expired: 0,
             more: true,
         })
+    }
+
+    fn finish_round(&mut self) -> MultipartExpiryStep {
+        self.bucket_start = None;
+        MultipartExpiryStep {
+            expired: 0,
+            more: false,
+        }
+    }
+
+    fn observe_hint(&mut self, key: &[u8]) -> Result<(), MultipartExpiryError> {
+        let tenant = &self.repository.tenant;
+        let prefix = MetadataKey::tenant_prefix(tenant);
+        let suffix = key
+            .strip_prefix(prefix.as_slice())
+            .ok_or(BucketError::Record(MetadataRecordError::Invalid))?;
+        let Some(bytes) = suffix.get(..16) else {
+            self.bucket_start = Some(after_key(Some(key), Vec::new));
+            return Ok(());
+        };
+        let mut id = [0; 16];
+        id.copy_from_slice(bytes);
+        let id = BucketId::new(id);
+        // This is an inclusive next seek, already past every raw row for this ID.
+        // Failed or cancelled upload scans may discard the hint without hot-looping
+        // on its retained session, part and generation rows.
+        self.bucket_start = Some(MetadataKey::bucket_end(tenant, id));
+        self.current = Some(BucketPosition { id, after: None });
+        Ok(())
     }
 
     async fn advance_uploads(&mut self, now_ms: u64) -> Result<MultipartExpiryStep, MultipartExpiryError> {
