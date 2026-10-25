@@ -85,6 +85,34 @@ of the removed OCI archive.
 
 ## Current cleanup regression gates
 
+Source `b566fdcd` adds compact upload-resource storage, one-step ordinary inline
+purge completion and request-local Dataset delivery reductions. The upload/GC
+batch passes 1,709 tests across five affected crates, with 13 independently
+configured cases ignored. The subsequent Dataset/Access/native batch passes
+669 tests, with the same 13 configured cases ignored. These suites overlap;
+their counts are not additive. Workspace all-target/all-feature clippy, normal
+lint, formatting and focused final regressions pass. Matching-image acceptance
+for these newer sources is pending; the v6 results below cover `c22bc40e`.
+
+The upload codec keeps all owner identities and the public JSON contract while
+writing a fixed 52-byte header plus 16 bytes per identity. Its maximum record is
+69,684 bytes. Legacy JSON keeps its original validation, and CAS conditions use
+the actual stored bytes. JSON-only Access servers and direct native clients
+require a coordinated upgrade. No resource key or foreground RPC is added.
+The fixed legacy authority-read budget is retained.
+
+An exclusive CPU-2 release measurement uses seven samples of 128 iterations,
+with the same logical 4,095 retired and two live owners. Canned retirement
+includes GET cloning and exact CAS comparisons, without KV, WAL or network.
+Compact input takes a median 25.644 us after sorted insertion, compared with
+29.395 us using append-and-sort; validated compact round trips take 7.589 us.
+Legacy JSON migration takes 654.204 us in the later run and 629.274 us in the
+preceding run, so it is not reported as an insertion speedup. Raw samples,
+timer-boundary measurements, source/binary hashes and scope are retained in
+`/tmp/crowdb-c12-owner-cpu-20261025` and
+`/tmp/crowdb-c12-owner-cpu-insert-20261025`. These are CPU observations, not TPS
+or total-system efficiency claims.
+
 Source `c22bc40e` additionally includes retained point-operation buffers across
 routed retries, observed-authority multipart expiry and reused validated inline
 digests. The six affected crates pass 1,109 tests, with 13 separately configured

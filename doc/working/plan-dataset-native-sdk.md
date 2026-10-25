@@ -593,6 +593,14 @@ Those partial rates are not accepted comparative performance.
 
 ## Current acceptance (2026-10-25)
 
+- Newer source `b566fdcd` passes compact-upload/inline-GC component gates
+  (1,709 tests across five crates, 13 configured cases ignored) and the later
+  Dataset/Access/native request-local delivery gates (669 tests, 13 configured
+  cases ignored). Counts overlap. Workspace clippy, normal lint and formatting
+  pass. The new matching-image service/TCP/restart run remains pending; the
+  accepted v6 image below is the preceding source, not evidence for the new
+  binary upload-resource format or inline GC shortcut. Upload format deployment
+  requires coordinating JSON-only Access and direct native readers/writers.
 - Image `access-cleanup-v6-20261025` from source `c22bc40e`, tree
   `e2d0f660762290085649081fd2b437b53cd343da`, passes six S3 protocol cases,
   all five Dataset cases (`container-e2e/run-8376c20aa6ea425583e2d8d6be33fcd9`)
