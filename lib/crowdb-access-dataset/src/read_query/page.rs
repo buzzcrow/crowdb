@@ -199,17 +199,15 @@ impl DatasetReads {
                 .map_err(inspection_error)?;
             let mut work = InspectionWork::new(self.authority.store.as_ref(), cancel, limits)
                 .map_err(inspection_error)?;
-            for id in page.entries {
-                if let (Some(revision), Some(source)) = (&revision, &cursor.split) {
-                    if !self
-                        .authority
-                        .frozen_split_contains(identity, revision, &source.name, &id, &mut work)
-                        .await
-                        .map_err(split_error)?
-                    {
-                        continue;
-                    }
-                }
+            let entries = self
+                .split_member_window(
+                    identity,
+                    revision.as_ref().zip(cursor.split.as_ref()),
+                    page.entries,
+                    &mut work,
+                )
+                .await?;
+            for id in entries {
                 bytes = bytes
                     .checked_add(id.len())
                     .ok_or(DatasetError::ReadLimitExceeded)?;
@@ -230,5 +228,28 @@ impl DatasetReads {
                 .map_err(inspection_error)?;
         }
         Err(DatasetError::ReadLimitExceeded.into())
+    }
+
+    async fn split_member_window(
+        &self,
+        identity: &DatasetIdentity,
+        split: Option<(&crate::split::SplitRevisionRecord, &crate::split::SplitSource)>,
+        mut ids: Vec<Vec<u8>>,
+        work: &mut InspectionWork<'_>,
+    ) -> Result<Vec<Vec<u8>>, AuthorityError> {
+        if let Some((record, source)) = split {
+            let members = self
+                .authority
+                .frozen_split_window_contains(identity, record, &source.name, &ids, work)
+                .await
+                .map_err(split_error)?;
+            let mut index = 0;
+            ids.retain(|_| {
+                let member = members[index];
+                index += 1;
+                member
+            });
+        }
+        Ok(ids)
     }
 }

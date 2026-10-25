@@ -2,8 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    key, DraftSplit, MembershipOrigin, MembershipPage, SplitDraftRecord, SplitLifecycleError, SplitName,
-    SplitRevisionRecord,
+    DraftSplit, MembershipOrigin, SplitDraftRecord, SplitLifecycleError, SplitName, SplitRevisionRecord,
 };
 use crate::{
     inspection::work::InspectionWork, DatasetAuthority, DatasetIdentity, MetadataScanBudget,
@@ -13,6 +12,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     time::Duration,
 };
+
+mod membership;
 
 pub(super) fn source_owners(record: &SplitDraftRecord) -> BTreeSet<SnapshotId> {
     record
@@ -103,16 +104,9 @@ impl DatasetAuthority {
         while low < high {
             let index = low + (high - low) / 2;
             let binding = &split.pages[index];
-            let stored = work
-                .get(
-                    &key::membership_page(identity, record.snapshot, record.revision, name, binding.page)
-                        .map_err(crate::AuthorityError::from)?,
-                    1024 * 1024,
-                )
-                .await?
-                .ok_or(SplitLifecycleError::Corrupt)?;
-            let page = MembershipPage::decode(&stored.bytes)?;
-            page.verify_binding(record.snapshot, record.revision, name, binding)?;
+            let page = self
+                .read_frozen_split_page(identity, record, name, binding, work)
+                .await?;
             if sample
                 < page
                     .members
