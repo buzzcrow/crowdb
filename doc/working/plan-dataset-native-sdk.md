@@ -283,8 +283,9 @@ This `--semantics-only` run is functional evidence, not performance acceptance.
 - Branch: `task-rdma`. R5 is complete; retain its accepted evidence in
   [RDMA acceptance record](plan-rdma.md). Physical multi-node testing is only a
   refined [independent plan](plan-rdma-multi-node.md), not a remaining R5 gate.
-- R220 is not complete. Keep its requirement/backlog entry and this plan until
-  full workload acceptance and final cleanup. Do not restart R242 or R5 work.
+- R220 remains open for current-source HCA acceptance and final cleanup. The
+  complete current-source TCP workload has passed. Keep the requirement/backlog
+  entry and this plan until the HCA gate passes. Do not restart R242 or R5 work.
 
 ### Completed implementation and evidence
 
@@ -337,49 +338,44 @@ This `--semantics-only` run is functional evidence, not performance acceptance.
 
 ### Next work, in order
 
-1. Resume from the committed branch and check `git status` before editing.
-   Rebuild/import the server image from the current source before real-service
-   acceptance; the currently accepted image predates the retention change.
-2. Run the unchanged complete HTTP/native Rust/native Python workload. Keep
-   client CPU 2, server CPUs 4-15, metadata memory 2 GiB, all eight payload sizes,
-   warmups/repeats and exact-byte checks. The runner pins one common snapshot.
-   Do not use `--semantics-only` as the performance gate; do not raise memory,
-   shorten the workload, extend deadlines or add request retries to obtain a pass.
-3. Inspect retained slots, trim progress, per-container RSS/CPU and exit status
-   alongside throughput and per-size tails. Compare phase/state effects: an
-   HTTP phase earlier in the same accumulating fixture is not an isolated
-   transport-speed baseline. Report trade-offs even if native TPS does not win.
-4. If memory is still unbounded, diagnose the first growing owner. Separate
-   known remaining amplification: `ChunkStream::publish_state` rewrites all
-   historical extent pages per append, and `Partition::reclaim_published_checkpoint`
-   has no production caller. These paths are not changed by this commit.
-5. After final behavior changes, run affected real-service restart/TCP/local-HCA
-   acceptance and applicable gates. Only then remove the R220 detail, backlog
-   entry and this plan in a cleanup commit, moving final accepted evidence to
-   the retained record and fixing its links.
+1. Restore the existing local-HCA test address/local-loop setup, then run the
+   strict native Dataset profile on `access-cleanup-v4-20261025`. The latest
+   read-only host check finds an ACTIVE device but no test IP or network
+   namespace. Do not count TCP or environment-gated unit cases as HCA evidence.
+2. Retain the unchanged complete TCP comparison and restart results at source
+   `15efaaec`: 18 trials, 4,608 reads, zero errors, installed Python semantics
+   and fixed Split-deletion deadlines across restart. CPU placement, eight
+   sizes, warmups, repeats, budgets and integrity checks are unchanged. See the
+   [accepted measurements](../../app/crowdb-access-server/tests/README.md#dataset-httpnative-comparison).
+   Native Rust gains about 7% at concurrency one and loses about 2.5% at three,
+   with higher CPU and RSS; these are measured trade-offs, not an isolated
+   before/after benefit of one cleanup patch.
+3. After the applicable HCA gate passes, retain its evidence and remove the
+   completed R220 detail, backlog entry and this plan in a cleanup commit,
+   fixing links. Physical multi-node validation and the pending Access
+   Namespace DROP decision remain independently owned work.
 
 Commands from the repository root (run long commands asynchronously and poll):
 
 ```bash
-pixi run image-build
-pixi run image-import target/crowdb.oci.tar --image crowdb-node:dev
-pixi run -- python tools/sdk/dataset_workload.py
-pixi run -- python tools/rdma/run-native-dataset.py --address 10.200.1.1 --device rocep35s0f0
-pixi run clean-env && pixi run test-e2e-dataset
+pixi run image-build --output target/crowdb-access-cleanup-v4-20261025.oci.tar
+pixi run --manifest-path container/oci-image/pixi.toml import target/crowdb-access-cleanup-v4-20261025.oci.tar --image crowdb-node:access-cleanup-v4-20261025
+pixi run clean-env && pixi run python tools/sdk/dataset_workload.py --image crowdb-node:access-cleanup-v4-20261025
+pixi run python tools/rdma/run-native-dataset.py --image crowdb-node:access-cleanup-v4-20261025 --address 10.200.1.1 --device rocep35s0f0
+CROWDB_E2E_IMAGE=crowdb-node:access-cleanup-v4-20261025 pixi run test-e2e-dataset
 ```
 
-The currently imported pre-retention image is
+The historical pre-retention image was
 `sha256:6a840db3f06d2247d5827b2ed59e75fca3f547bb6427d8f6460db6831469f242`
-with revision `d3e285b2`; the runner must reject it after the server-source change.
+with revision `d3e285b2`; the runner rejects it after the server-source change.
 Docker, HCA and socket-based tests require the existing authorized execution
 environment. Do not run heavy builds concurrently with measured trials.
 
-The failed full comparison to reproduce is
+The historical failed full comparison is
 `dataset-workload/8cf0653d34f74e0c955f5ac5642d1316`: HTTP six trials and native
 Rust singleton trials completed, then native multi-flight failed with a Chunk-KV
 deadline; metadata replicas 1 and 2 exited 137 with `OOMKilled=true` at 2 GiB.
-Those partial rates are not accepted comparative performance. There is no
-remaining user design decision and no requirement `Blocked` condition.
+Those partial rates are not accepted comparative performance.
 
 ### Resumed verification
 
@@ -548,8 +544,20 @@ remaining user design decision and no requirement `Blocked` condition.
 - Next: rebuild/import the same source and rerun unchanged mixed-size workload,
   then final real-service restart/local-HCA acceptance. R220 stays open.
 
-## Current acceptance preparation (2026-10-25)
+## Current acceptance (2026-10-25)
 
+- Image `access-cleanup-v4-20261025` from source `15efaaec`, tree
+  `6b44e7a98e8857a8a8ea134611467a71ae00c989`, passes all 18 affected real-service
+  cases and the unchanged complete TCP workload in
+  `dataset-workload/50925d2ddaf04a5da8fb1687132c4228`. Installed native Python
+  semantics, HTTP/native Split parity, cross-runtime and storage-restart cursor
+  replay, held buffers and explicit Split deletion all pass. Metadata replicas
+  peak at about 205 MiB under the unchanged 2-GiB cap. Exact identity,
+  measurements and trade-offs are in the
+  [Access acceptance record](../../app/crowdb-access-server/tests/README.md#dataset-httpnative-comparison).
+  The image, Git bundle, raw logs and summaries are backed up outside runtime
+  and build directories. Only current-source HCA acceptance remains before
+  requirement cleanup; host prerequisites are still missing.
 - Complete Split revisions now have an explicit ID-based DELETE in HTTP,
   native Rust, both Python bindings and the portable SDK. Current and initial
   revisions remain protected. Deletion closes the resource, fences concurrent
@@ -561,10 +569,10 @@ remaining user design decision and no requirement `Blocked` condition.
   portable Python cases. Workspace all-target/all-feature clippy, standard Rust
   lint, formatting, SDK dependency boundaries and C++ tree lint pass. The v2
   OpenAPI document parses with all 298 local references resolved. These are
-  component gates; current-image workload/restart acceptance remains pending.
+  component gates; the matching-image TCP/restart result is recorded above.
 - The affected five-crate all-target/all-feature regression coverage passes
   across the full runs and corrected HTTP targets: 1,644 tests passed and 13
-  were ignored by their configured external prerequisites. The old HTTP
+  were ignored for separate environment or measurement prerequisites. The old HTTP
   receipt expectations now follow the approved stateless Namespace CREATE and
   table DELETE contracts; Namespace DROP retains its existing recreated-name
   protection pending a separate decision. No production behavior was changed
@@ -573,7 +581,7 @@ remaining user design decision and no requirement `Blocked` condition.
   complete revision, marks it deleted, checks identical retry deadlines, then
   repeats the same two-ID DELETE after storage restart. This adds a semantic
   check without changing the 18 performance trials, sizes, concurrency or
-  resource budgets. Its current-source runtime acceptance remains pending.
+  resource budgets. Its current-source runtime and storage-restart checks pass.
 - New Snapshot resources now store their fixed internal `gc_after` in the first
   resource write. Bounded direct Snapshot scanning covers interruption before
   the content binding; legacy resources inherit an existing deadline or receive
@@ -583,8 +591,8 @@ remaining user design decision and no requirement `Blocked` condition.
   writes after retirement, legacy deadline migration, unknown-outcome stopping,
   versioned-record rejection and large-resource scan paging. All-target,
   all-feature Dataset clippy passed. The Access HTTP retirement target passed
-  all three cases. These focused checks do not replace the pending final-image
-  TCP/restart and HCA acceptance.
+  all three cases. The matching-image TCP/restart acceptance now passes;
+  current-source HCA acceptance remains outstanding.
 
 - Subsequent source `be5eca5c` passes the affected 823 Iceberg tests, 201 Access
   tests (11 ignored), workspace all-feature clippy, normal lint, formatting and

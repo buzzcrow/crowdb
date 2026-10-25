@@ -8,7 +8,7 @@ Client recipes: [container development](../../../container/single-node-container
 
 - REST/official-SDK conformance, native durability and ecosystem compatibility
   are distinct evidence. Passing SDK tests cannot certify compute engines.
-- The [manual ecosystem fixture](../../../container/single-node-container/tests/ecosystem/README.md)
+- The [manual ecosystem fixture](../../../e2e-test/clients/ecosystem/README.md)
   uses a separate locked environment and workflow dispatch. Its matrix records
   only actual pinned client operations against the container and a volume restart.
 - [S3 language SDKs](../../../e2e-test/clients/S3-SDK.md) and the Rust Iceberg SDK retain
@@ -85,6 +85,35 @@ of the removed OCI archive.
 
 ## Current cleanup regression gates
 
+Source `15efaaec` passes the affected Dataset/Iceberg/S3/Access Server/native
+all-target/all-feature coverage across full runs and corrected HTTP targets:
+1,644 passed, 13 cases requiring a separate environment or measurement run
+ignored. Workspace clippy, `rs-lint`, formatting, SDK dependency boundaries
+and C++ tree lint pass.
+The installed portable Python package passes 21 contract tests.
+
+The matching `access-cleanup-v4-20261025` image passes 18 real-service cases.
+Artifact identifiers are relative to `.crowdb-runtime/artifacts/container-e2e/`:
+
+- Catalog creation/recovery: `run-3cbb504df0c6455e9613caf31be0ae1f`.
+- Namespace CRUD/restart: `run-c1b02d1e879e49a881fbccbfec31cb8d`.
+- Four GC cases: `run-5fb1fc306a394e59aefbc5393f3527b8`.
+- Table metadata budget: `run-45c57f6f283a40fcbf47b6619377d189`.
+- Five Dataset HTTP/SDK/restart cases: `run-05a9a16625e2492a84aab1953e2c7ec9`.
+- S3 checksums/multipart: `run-3bf48fc5107b4433a48da5a8b6ab2e3c`.
+- S3 fragmentation/boundaries: `run-f41c7b14cf57438fa374fd2393f3579d`.
+- Independent S3 frontends: `run-4eb57d28dbc84853ac86fd1b802f7666`.
+- Multipart copy/replaced parts: `run-76edf0fd31e341abb8f0cc3260254f82`.
+- Selected multipart publication: `run-1cd9d713bdea4fac8b6104bbd79a7f99`.
+- S3 metadata/copy/multipart: `run-51db5b3ff45340b18187286ca0a6cb65`.
+
+Logs, manifests, image identity and trial summaries are also retained outside
+the runtime/build directories in `/tmp/crowdb-access-cleanup-v4-evidence-20261025`.
+The [current Dataset comparison](#dataset-httpnative-comparison) records the
+same image's complete TCP workload and installed-binding restart acceptance.
+
+## Earlier cleanup regression gates
+
 At source `be5eca5c`, the affected Iceberg crate passes all 823 tests; Access
 Server passes 201 tests with 11 existing ignored cases. Workspace all-target /
 all-feature clippy, normal `rs-lint`, formatting, the 163 fixture unit tests and
@@ -150,17 +179,17 @@ pixi run clean-env && pixi run python e2e-test/run.py --layer iceberg --scope ic
 
 ## Dataset HTTP/native comparison
 
-The previous complete same-host TCP workload and installed Python/storage-restart
-acceptance passed in `dataset-workload/abea0a0568824233a32ba85a063e522a` under
-`.crowdb-runtime/artifacts/`. Its manifest recorded image labels, CPU placement
-and per-phase service counters; client logs recorded all per-size p50/p99
-observations and digest timings. Its summary aggregated the three trials.
-The shared-directory removal described above also removed these original files.
+The current complete same-host TCP workload and installed Python/storage-restart
+acceptance pass in `dataset-workload/50925d2ddaf04a5da8fb1687132c4228` under
+`.crowdb-runtime/artifacts/`. The manifest records image labels, CPU placement
+and per-phase service counters; client logs retain all per-size p50/p99 and
+digest timings. Raw trials and the aggregate summary are independently retained
+in `/tmp/crowdb-access-cleanup-v4-evidence-20261025`.
 
-- Image: `crowdb-node:access-cleanup-20261025`, imported Docker ID
-  `sha256:43e6d9e595055b506c664d3dcca018a9b62c7cb64d56bfdb286da695b97d5a14`.
-- Source revision: `7b2c61aa24ffa8068fc4f4197cd646d0480c0343`; source tree:
-  `aecf740ce52381d5b90843921b21608f494db30e`.
+- Image: `crowdb-node:access-cleanup-v4-20261025`, imported Docker ID
+  `sha256:b3e981cf64c8e9c7d4e20f5b1bae1dd471d70a63597f180531643b7d1e9c65b4`.
+- Source revision: `15efaaec375269e42faa271c7b9b6f744a1e2d6c`; source tree:
+  `6b44e7a98e8857a8a8ea134611467a71ae00c989`.
 - Client CPU 2; service CPUs 4–15; each metadata replica capped at 2 GiB.
   Metadata cgroup peaks were 205/205/205 MiB, without a stopped replica.
 - Sizes: 0, 128, 513, 4,096, 65,535, 262,144, 1,048,576 and 4,194,321 bytes.
@@ -174,21 +203,20 @@ Client CPU is the three-trial sum; RSS is the largest observed client value.
 
 | Path          | Concurrency | MiB/s  | Client CPU (s) | Peak RSS (MiB) |
 | ------------- | ----------- | ------ | -------------- | -------------- |
-| HTTP          | 1           | 159.65 | 0.93           | 12.29          |
-| Native Rust   | 1           | 191.64 | 0.92           | 28.73          |
-| Native Python | 1           | 188.94 | 0.98           | 54.36          |
-| HTTP          | 3           | 257.07 | 2.53           | 16.95          |
-| Native Rust   | 3           | 267.30 | 2.79           | 31.37          |
-| Native Python | 3           | 267.23 | 2.84           | 61.33          |
+| HTTP          | 1           | 170.70 | 0.87           | 11.00          |
+| Native Rust   | 1           | 182.68 | 1.00           | 28.27          |
+| Native Python | 1           | 183.86 | 0.98           | 54.67          |
+| HTTP          | 3           | 258.23 | 2.56           | 16.66          |
+| Native Rust   | 3           | 251.84 | 2.93           | 31.21          |
+| Native Python | 3           | 267.66 | 2.84           | 60.50          |
 
-Native Rust throughput is about 20% higher at concurrency one and 4% higher at
-concurrency three in this execution. Client memory increases, singleton CPU is
-similar, and multi-flight CPU increases. Individual sizes do not all improve:
-at concurrency one, the median trial p50 for 128 bytes is 561 µs over HTTP and
-703 µs in native Rust; for 1 MiB it is 6,407 and 3,686 µs respectively. At
-concurrency three, the 128-byte p50 is 804 versus 2,613 µs, while its p99 is
-12,450 versus 7,156 µs. These are medians of three trial quantiles, not pooled
-percentiles. Only 16/48 observations per size enter each trial, so these tails
+Native Rust throughput is about 7% higher at concurrency one and 2.5% lower at
+concurrency three in this execution. Client CPU and memory increase. Individual
+sizes also differ: at concurrency one, the median trial p50 for 128 bytes is
+544 µs over HTTP and 702 µs in native Rust; for 1 MiB it is 6,380 and 3,905 µs
+respectively. At concurrency three, the 128-byte p50 is 954 versus 1,554 µs,
+while its p99 is 9,301 versus 7,631 µs. These are medians of three trial
+quantiles, not pooled percentiles. Only 16/48 observations per size enter each trial, so these tails
 do not establish a production latency guarantee.
 The separately timed resident-buffer 64-MiB MD5 kernel takes approximately
 85 ms in Rust and 63 ms in Python; normal reads still perform integrity checks.
@@ -201,20 +229,23 @@ same-host functional workload, not cross-host RDMA performance evidence.
 The semantic phase compares HTTP/native ReadSpec and Split batch headers,
 sample IDs and bytes; replays the original cursor on a second runtime and after
 storage restart; and checks publication conflicts, multipart ownership, a
-65-second idle, cancellation and caller-held buffers. The native runtime never
-uses HTTP as an implicit fallback.
+65-second idle, cancellation, caller-held buffers and an explicit complete-Split
+deletion whose fixed deadline survives retry and storage restart. The native
+runtime never uses HTTP as an implicit fallback.
 
 Reproduce after building/importing the matching service image:
 
 ```sh
-pixi run clean-env && pixi run python tools/sdk/dataset_workload.py --image crowdb-node:access-cleanup-20261025
+pixi run clean-env && pixi run python tools/sdk/dataset_workload.py --image crowdb-node:access-cleanup-v4-20261025
 ```
 
 The explicit local-HCA profile remains a separate gate. Its current host setup
 needs restoration; environment-gated unit cases are not counted as hardware
 acceptance.
 
-The earlier accepted run was `dataset-workload/9dbf56c386e142e995b8eb400305b467`.
+Earlier accepted runs were `dataset-workload/9dbf56c386e142e995b8eb400305b467`
+and `dataset-workload/abea0a0568824233a32ba85a063e522a`; their original runtime
+directories were removed as described above.
 Differences between independent runs
 are not an isolated before/after measurement of any one code change.
 
