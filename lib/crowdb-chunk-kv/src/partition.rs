@@ -5,6 +5,7 @@
 //! Sub-modules: [`frame`] (wire codec), [`journal`] (durability),
 //! [`tree`] (ordered storage).
 
+mod drain;
 mod frame;
 mod frontier;
 mod ingress;

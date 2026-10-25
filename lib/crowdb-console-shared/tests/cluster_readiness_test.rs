@@ -252,3 +252,29 @@ async fn future_wait_cannot_extend_the_deadline_or_refresh_old_evidence() {
     assert_eq!(report.phase, ClusterPhase::Unavailable);
     assert_eq!(report.observation.dependencies[0], old);
 }
+
+#[test]
+fn diskless_kv_only_policy_requires_its_selected_services_without_inventing_protocols_or_disks() {
+    use crowdb_protocol::mgmt::node::{
+        deployment::NodeDeploymentPolicy,
+        setup::{SetupServiceKind, SetupStorage},
+    };
+    let mut input = observation();
+    let mut policy = NodeDeploymentPolicy::default();
+    policy.cluster.clone_from(&input.cluster);
+    policy.initial_voters = input.initial_voters;
+    policy.setup.storage = SetupStorage::Diskless;
+    for service in &mut policy.setup.services {
+        service.enabled = service.kind == SetupServiceKind::PaxosKv;
+    }
+    policy.validate().unwrap();
+    input.policy = Some(policy);
+    input
+        .dependencies
+        .retain(|fact| !matches!(fact.kind, DependencyKind::Storage | DependencyKind::Protocol));
+    assert_eq!(reduce(input.clone(), 1000).phase, ClusterPhase::Ready);
+    let mut remote_protocol = fact(DependencyKind::Protocol);
+    remote_protocol.state = DependencyState::Unknown;
+    input.dependencies.push(remote_protocol);
+    assert_eq!(reduce(input, 1000).phase, ClusterPhase::Degraded);
+}

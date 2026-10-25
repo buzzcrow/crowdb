@@ -2,11 +2,11 @@
 // Licensed under the Apache License, Version 2.0.
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { deployServer, deployDiskdb, listServers } from '../api';
+import { deployServer, deployDiskdb, listServers, restartServer, restartDiskdb } from '../api';
 import { serviceRequest } from './client';
 import { newPlan, serviceOrder, useNodeServicePlans } from './useNodeServicePlans';
 import type { EnrichedStoreView } from '../types';
-vi.mock('../api', () => ({ listServers: vi.fn(), deployServer: vi.fn(), deployDiskdb: vi.fn() }));
+vi.mock('../api', () => ({ listServers: vi.fn(), deployServer: vi.fn(), deployDiskdb: vi.fn(), restartServer: vi.fn(), restartDiskdb: vi.fn() }));
 vi.mock('./client', () => ({ serviceNames: {}, serviceRequest: vi.fn() }));
 const stores = [{ store_id: '0', groups: [{ group_id: '0' }, { group_id: '1' }] }] as unknown as EnrichedStoreView[];
 beforeEach(() => {
@@ -19,6 +19,41 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 describe('node service plans', () => {
+  it('observes an accepted start waiting for dependencies without declaring it stopped or relaunching it', async () => {
+    let started = false;
+    vi.mocked(listServers).mockImplementation(async () => [{
+      id: 'chunkdb-1', node_id: 1, service_type: 'chunkdb',
+      pid: started ? 42 : undefined, start_pending: !started,
+    }] as Awaited<ReturnType<typeof listServers>>);
+    const { result } = renderHook(() => useNodeServicePlans(stores, {}, async () => {}, true));
+    await act(async () => { await result.current.start(1, ['chunkdb']); });
+    expect(result.current.plans[1].chunkdb.state).toBe('waiting');
+    started = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(result.current.plans[1].chunkdb.state).toBe('deployed');
+    expect(vi.mocked(serviceRequest).mock.calls.some(([path, method]) => path.endsWith('/services/deploy') && method === 'POST')).toBe(false);
+    expect(restartServer).not.toHaveBeenCalled();
+  });
+
+  it('restarts a registered failed deployment only after explicit Retry', async () => {
+    const steps = newPlan();
+    for (const kind of serviceOrder) steps[kind] = { state: 'disabled' };
+    steps.diskdb = { state: 'failed', detail: 'Listener bind failed' };
+    vi.mocked(listServers).mockResolvedValue([{ id: 'diskdb-1', node_id: 1, service_type: 'diskdb' }] as Awaited<ReturnType<typeof listServers>>);
+    const request = vi.mocked(serviceRequest).getMockImplementation()!;
+    vi.mocked(serviceRequest).mockImplementation(async (path, method, body) => path === '/service-plans'
+      ? { 1: { revision: 4, steps, overrides: { diskdb: { rpc_port: 7100 } } } } : request(path, method, body));
+    const { result } = renderHook(() => useNodeServicePlans(stores, {}, async () => {}, true));
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+    expect(restartDiskdb).not.toHaveBeenCalled();
+    await act(async () => { await result.current.start(1); });
+    expect(restartDiskdb).toHaveBeenCalledTimes(1);
+    expect(restartDiskdb).toHaveBeenCalledWith(1);
+    expect(result.current.plans[1].diskdb.state).toBe('deployed');
+    expect(deployDiskdb).not.toHaveBeenCalled();
+    expect(restartServer).not.toHaveBeenCalled();
+  });
+
   it('keeps Access queued while DiskIO ownership is unavailable and resumes without Retry', async () => {
     const first = newPlan();
     for (const kind of serviceOrder) first[kind] = { state: 'deployed' };
@@ -276,7 +311,10 @@ describe('node service plans', () => {
     expect(result.current.plans[1]['access-server'].state).toBe('waiting');
     expect(result.current.plans[1].diskio.state).toBe('deployed');
     expect(result.current.plans[1]['chunk-kv'].state).toBe('waiting');
-    expect(serviceRequest).toHaveBeenCalledWith('/nodes/1/services/deploy', 'POST', expect.objectContaining({ kind: 'chunkdb', test_single_node: false }));
+    expect(serviceRequest).toHaveBeenCalledWith('/nodes/1/services/deploy', 'POST', expect.objectContaining({ kind: 'chunkdb' }));
+    const deployment = vi.mocked(serviceRequest).mock.calls.find(([path, method]) => path === '/nodes/1/services/deploy' && method === 'POST');
+    expect(deployment?.[2]).not.toHaveProperty('test_single_node');
+    expect(deployment?.[2]).not.toHaveProperty('local_deployment');
     vi.mocked(listServers).mockResolvedValue([{ node_id: 2, service_type: 'chunk-kv', pid: 100 }] as Awaited<ReturnType<typeof listServers>>);
     await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
     expect(result.current.plans[1]['access-server'].state).toBe('deployed');

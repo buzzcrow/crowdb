@@ -271,21 +271,23 @@ impl TopologyCache {
                     Ok(mut body) => {
                         valid_response = true;
                         address::resolve_local_endpoints(&mut body, seed);
-                        let endpoint = required_group.and_then(|(store_id, group_id)| {
-                            let store = body.stores.iter().find(|store| store.store_id == store_id)?;
-                            let group = store.groups.iter().find(|group| group.group_id == group_id)?;
-                            if group.leader_id == 0 {
-                                None
-                            } else if group.local_replica.id == group.leader_id {
-                                store.listen_addr.clone()
-                            } else {
-                                group
-                                    .remotes
-                                    .iter()
-                                    .find(|remote| remote.id == group.leader_id)
-                                    .map(|remote| remote.endpoint.clone())
-                            }
-                        });
+                        let endpoint = required_group
+                            .and_then(|(store_id, group_id)| {
+                                let store = body.stores.iter().find(|store| store.store_id == store_id)?;
+                                let group = store.groups.iter().find(|group| group.group_id == group_id)?;
+                                if group.leader_id == 0 {
+                                    None
+                                } else if group.local_replica.id == group.leader_id {
+                                    store.listen_addr.clone()
+                                } else {
+                                    group
+                                        .remotes
+                                        .iter()
+                                        .find(|remote| remote.id == group.leader_id)
+                                        .map(|remote| remote.endpoint.clone())
+                                }
+                            })
+                            .filter(|endpoint| !endpoint.is_empty());
                         if required_group.is_some() && endpoint.is_none() {
                             continue;
                         }
@@ -330,12 +332,17 @@ impl TopologyCache {
                         .find(|r| r.id == leader_id)
                         .map(|r| r.endpoint.clone())
                 };
+                // Recovery may fence an unverified peer by publishing no route.
+                // Such a peer is unavailable, not a usable RPC destination.
+                let leader = leader.filter(|endpoint| !endpoint.is_empty());
                 let mut replicas: Vec<String> = Vec::with_capacity(group.remotes.len() + 1);
-                if let Some(addr) = &local_endpoint {
+                if let Some(addr) = local_endpoint.as_ref().filter(|endpoint| !endpoint.is_empty()) {
                     replicas.push(addr.clone());
                 }
                 for r in &group.remotes {
-                    replicas.push(r.endpoint.clone());
+                    if !r.endpoint.is_empty() {
+                        replicas.push(r.endpoint.clone());
+                    }
                 }
                 fresh_routes.push(FreshRoute {
                     key,

@@ -66,7 +66,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
 
     def api(self, path, body=None, method=None, status=200):
         payload = None if body is None else json.dumps(body).encode()
-        request = urllib.request.Request(f"http://{self.addresses[0]}:9090" + path,
+        origin = getattr(self, "management_address", self.addresses[0])
+        request = urllib.request.Request(f"http://{origin}:9090" + path,
             data=payload, method=method, headers={"Content-Type": "application/json"})
         try:
             with HTTP.open(request, timeout=20) as response:
@@ -116,6 +117,15 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 headers={"Content-Type": "application/json"})
             with HTTP.open(request, timeout=5) as response:
                 assert json.load(response)["enabled"] is False
+        if self.auto_bootstrap:
+            discovered = wait(lambda: self.api("/api/node/candidates"),
+                lambda result: len(result["candidates"]) == self.node_count,
+                "complete automatic formation", seconds=10)["candidates"]
+            coordinator = min(discovered, key=lambda entry: entry["advertisement"]["discovery_id"])
+            self.management_address = next(
+                urlparse(endpoint).hostname
+                for endpoint in coordinator["advertisement"]["monitor_endpoints"]
+                if urlparse(endpoint).hostname in self.addresses)
         for rack in sorted(set(self.rack_ids)):
             self.api("/api/racks", {"id": rack, "name": "native acceptance"}, status=201)
         if self.auto_bootstrap:

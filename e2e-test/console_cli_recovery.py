@@ -61,6 +61,21 @@ def pause_and_write(cluster, pauses):
                     client.wait()
 
 
+def managed_processes(cluster):
+    processes = {}
+    for index, name in enumerate(cluster.servers):
+        identity = cluster.inspect_owned(name)["Id"]
+        node = cluster.read_owned("node-binding.json", index)["node_id"]
+        status = json.loads(cluster.command("exec", identity, "cat",
+                                          "/opt/crowdb/run/status/monitor.json"))
+        for kind in ("chunk-kv", "access"):
+            service = f"{kind}-{node}"
+            current = status["services"][service]
+            assert type(current.get("pid")) is int and current["pid"] > 1, current
+            processes[service] = {key: current[key] for key in ("pid", "generation")}
+    return processes
+
+
 def terminal_writer_recovery(cluster, cluster_id):
     origin = f"http://{cluster.addresses[0]}:9090"
     inputs = cluster.state()
@@ -69,6 +84,7 @@ def terminal_writer_recovery(cluster, cluster_id):
     cluster.invoke("s3", "object", "put", "writer-recovery", "before",
                    "--text", "acknowledged-before-fault")
     before = request(origin, "/api/servers")
+    processes_before = managed_processes(cluster)
     services = [service for service in before if service.get("service_type") == "diskio"]
     assert len(services) == 3, services
     pauses = []
@@ -93,16 +109,16 @@ def terminal_writer_recovery(cluster, cluster_id):
     assert all(value.get("observation", {}).get("state") == "current" for value in health), health
     assert inputs == cluster.state(), "fault recovery changed accepted launch inputs"
     assert identities == [cluster.inspect_owned(name)["Id"] for name in cluster.servers]
-    after = request(origin, "/api/servers")
-    old = {service["id"]: service.get("pid") for service in before
-           if service.get("service_type") == "chunk-kv"}
-    new = {service["id"]: service.get("pid") for service in after
-           if service.get("service_type") == "chunk-kv"}
+    processes_after = managed_processes(cluster)
+    (cluster.artifacts / "process-recovery.json").write_text(json.dumps({
+        "before": processes_before, "after": processes_after}, indent=2))
+    old = {key: value["pid"] for key, value in processes_before.items() if key.startswith("chunk-kv-")}
+    new = {key: value["pid"] for key, value in processes_after.items() if key.startswith("chunk-kv-")}
     restarted = [service for service in old if old[service] != new.get(service)]
     assert restarted, (old, new)
-    access = lambda rows: {service["id"]: service.get("pid") for service in rows
-                           if service.get("service_type") == "access-server"}
-    assert len(access(before)) == 3 and access(before) == access(after), "healthy Access processes restarted"
+    access = lambda rows: {key: value for key, value in rows.items() if key.startswith("access-")}
+    assert len(access(processes_before)) == 3 and access(processes_before) == access(processes_after), (
+        "healthy Access processes restarted", processes_before, processes_after)
     recovery_logs = []
     for index, name in enumerate(cluster.servers):
         node = cluster.read_owned("node-binding.json", index)["node_id"]
@@ -121,7 +137,7 @@ def terminal_writer_recovery(cluster, cluster_id):
             assert value == f"acknowledged-{key}-fault", value
     (cluster.artifacts / "recovery-proof.json").write_text(json.dumps({
         "cluster_id": cluster_id, "old_pids": old, "new_pids": new, "restarted": restarted,
-        "access_pids": access(after), "recovery_seconds": recovery_seconds,
+        "access_processes": access(processes_after), "recovery_seconds": recovery_seconds,
         "retained_reads": 3, "new_reads": 3}, indent=2))
     cluster.current_readiness(cluster_id)
     print("PASS automatic durable replay, cached Access recovery and operator stop fencing", restarted, flush=True)

@@ -222,7 +222,7 @@ async fn stale_stream_capacity_does_not_reject_a_newer_durable_chunk_layout() {
     reservation.logical_start = None;
     reservation.logical_end = None;
     reservation.generation = 0;
-    let reservation = metadata.reserve_initial(&reservation).await.unwrap();
+    let reservation = metadata.reserve_initial(&reservation, None).await.unwrap();
     metadata
         .publish(None, record.clone(), None, Some(&reservation))
         .await

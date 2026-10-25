@@ -14,6 +14,16 @@ pub struct NodeServiceForTests {
 
 impl NodeServiceForTests {
     /// # Errors
+    /// Runs the production dependency probes without launching a process.
+    pub async fn dependencies_ready_for_tests(
+        profile: &DeploymentProfile,
+        intent: &NodeServiceIntent,
+        intents: &[NodeServiceIntent],
+    ) -> Result<()> {
+        super::dependencies_ready(profile, intent, intents).await
+    }
+
+    /// # Errors
     /// Propagates production namespace validation and bounded read errors.
     pub fn processes_for_tests(
         root: &std::path::Path,

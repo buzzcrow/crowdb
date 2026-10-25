@@ -54,6 +54,10 @@ async fn verify(context: &TestNativeContext) {
         "[PHASE] native 32-MiB Chunk-KV load: {}ms",
         started.elapsed().as_millis()
     );
+    // Wait for a post-write heartbeat before comparing retained storage. A
+    // sample published during the load can omit its final packs and split child.
+    let load_completed_ms =
+        u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()).unwrap();
     // Observe across the normal 12-second serving lease, without changing cadence.
     let mut interval = tokio::time::interval(Duration::from_millis(100));
     let after = loop {
@@ -61,7 +65,11 @@ async fn verify(context: &TestNativeContext) {
         let current = observations(&registry).await;
         assert_progress(&mut previous, current.clone());
         check_value(&client, 0).await;
-        if started.elapsed() >= Duration::from_secs(13) {
+        if started.elapsed() >= Duration::from_secs(13)
+            && current
+                .iter()
+                .all(|row| row.last_heartbeat_ms > load_completed_ms)
+        {
             for previous in &before {
                 let latest = current
                     .iter()

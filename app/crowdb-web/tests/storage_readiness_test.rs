@@ -2,6 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 #[path = "common/memory_kv.rs"]
 mod memory_kv;
+#[path = "common/storage_readiness.rs"]
+mod storage_readiness;
 
 use axum::{body::Body, http::Request};
 use crowdb_console_shared::{
@@ -44,6 +46,7 @@ async fn chunk_storage_requires_live_complete_ownership_even_when_diskio_pid_is_
             .await
             .unwrap();
     }
+    storage_readiness::publish_disk(&hardware).await;
     let registry = ServiceRegistryClient::from_shared(kv.clone());
     let mut config = ConsoleConfig::default();
     let endpoint = "127.0.0.1:13010";
@@ -71,6 +74,34 @@ async fn chunk_storage_requires_live_complete_ownership_even_when_diskio_pid_is_
     assert_eq!(readiness(&app).await["ready"], false);
     registry
         .heartbeat_diskio(1, endpoint, &[11, 12], &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        readiness(&app).await["ready"],
+        false,
+        "DiskIO ownership cannot substitute for DiskDB's loaded media"
+    );
+    registry
+        .register_diskdb(1, "127.0.0.1:7102", &[11, 12], &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        readiness(&app).await["ready"],
+        false,
+        "DiskDB ownership cannot substitute for its loaded media"
+    );
+    registry
+        .heartbeat_diskdb(
+            1,
+            "127.0.0.1:7102",
+            &[11, 12],
+            &[crowdb_protocol::common::DiskGroupUsageSummary {
+                disk_group_id: 11,
+                usage_known: true,
+                disk_count: 1,
+                ..Default::default()
+            }],
+        )
         .await
         .unwrap();
     assert_eq!(readiness(&app).await["ready"], true);

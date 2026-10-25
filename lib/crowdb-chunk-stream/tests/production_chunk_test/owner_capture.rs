@@ -147,3 +147,103 @@ async fn drained_release_allows_another_runtime_to_take_over_without_waiting_for
     assert!(old.capture().is_err());
     new.release().await.unwrap();
 }
+
+#[tokio::test]
+async fn failed_initial_allocation_releases_the_unpublished_writer_assignment() {
+    let (_server, kv) = runtime_kv().await;
+    let registry = Arc::new(crowdb_chunk_stream::KvStreamRegistry::new(kv));
+    let memory = Arc::new(MemoryStreamStore::new(1024));
+    let name = StreamName::generate();
+    registry
+        .create(StreamRecord {
+            metadata_group_id: 1,
+            state: StreamRecordState::Active,
+            ..StreamRecord::creating(name, None, StreamPurpose::Stream)
+        })
+        .await
+        .unwrap();
+    memory.fail_allocation_for_tests(1);
+    let first = ChunkStream::create_registered(
+        name,
+        1,
+        StreamConfig::default(),
+        registry.clone(),
+        memory.clone(),
+        memory.clone(),
+    )
+    .await;
+    assert!(matches!(
+        first,
+        Err(crowdb_chunk_stream::StreamError::ReadUnavailable(_))
+    ));
+    let writer =
+        ChunkStream::create_registered(name, 1, StreamConfig::default(), registry, memory.clone(), memory)
+            .await
+            .unwrap();
+    writer.append(&[Bytes::from_static(b"ready")]).await.unwrap();
+    assert_eq!(writer.read_at(0, 5).await.unwrap(), Bytes::from_static(b"ready"));
+    writer.release_writer().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_reopen_releases_its_assignment_before_retrying_in_the_same_process() {
+    let (_server, kv) = runtime_kv().await;
+    let registry = Arc::new(crowdb_chunk_stream::KvStreamRegistry::new(kv));
+    let memory = Arc::new(MemoryStreamStore::new(1024));
+    let name = StreamName::generate();
+    registry
+        .create(StreamRecord {
+            metadata_group_id: 1,
+            state: StreamRecordState::Active,
+            ..StreamRecord::creating(name, None, StreamPurpose::Stream)
+        })
+        .await
+        .unwrap();
+    let writer = ChunkStream::create_registered(
+        name,
+        1,
+        StreamConfig::default(),
+        registry.clone(),
+        memory.clone(),
+        memory.clone(),
+    )
+    .await
+    .unwrap();
+    writer.append(&[Bytes::from_static(b"retained")]).await.unwrap();
+    writer.release_writer().await.unwrap();
+    let next = memory
+        .chunks_for_tests()
+        .await
+        .into_iter()
+        .map(|(id, ..)| id.low)
+        .max()
+        .unwrap()
+        + 1;
+    memory.fail_allocation_for_tests(next);
+    let failed = ChunkStream::open(
+        name,
+        2,
+        StreamConfig::default(),
+        registry.clone(),
+        memory.clone(),
+        memory.clone(),
+    )
+    .await;
+    assert!(matches!(
+        failed,
+        Err(crowdb_chunk_stream::StreamError::ReadUnavailable(_))
+    ));
+    let recovered = ChunkStream::open(name, 2, StreamConfig::default(), registry, memory.clone(), memory)
+        .await
+        .expect("a failed recovery cannot retain an unpublished writer assignment");
+    assert_eq!(
+        recovered.read_at(0, 8).await.unwrap(),
+        Bytes::from_static(b"retained")
+    );
+    recovered.append(&[Bytes::from_static(b"-after")]).await.unwrap();
+    assert_eq!(
+        recovered.read_at(0, 14).await.unwrap(),
+        Bytes::from_static(b"retained-after")
+    );
+    recovered.release_writer().await.unwrap();
+}

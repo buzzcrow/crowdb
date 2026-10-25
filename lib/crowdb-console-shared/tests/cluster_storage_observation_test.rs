@@ -257,3 +257,58 @@ async fn space_must_come_from_the_current_owner_instead_of_a_detached_summary() 
         .unwrap();
     storage_layer(&authority, "/space", None).await;
 }
+
+#[tokio::test]
+async fn diskless_member_does_not_require_an_unused_storage_reservation() {
+    use crowdb_console_shared::deployment::registry::{self, NodeRecord, NodeRegistry};
+    use crowdb_protocol::mgmt::{cluster::DependencyKind, node::setup::SetupStorage};
+    let authority = TestPreparationAuthority::start(&[2]).await;
+    preparation::reserve(&authority.ctx, &authority.bootstrap.identity)
+        .await
+        .unwrap();
+    let mut node = local(&authority);
+    node.policy.setup.storage = SetupStorage::Diskless;
+    node.observed_at_unix_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    registry::publish(
+        authority.ctx.kv(),
+        &NodeRegistry {
+            cluster_id: authority.bootstrap.identity.cluster_id.clone(),
+            nodes: vec![NodeRecord {
+                discovery_id: node.discovery_id.clone(),
+                node_id: 2,
+                rack_id: 4,
+                physical_host_id: "owned".into(),
+                host: "node-2".into(),
+                ssh_port: 2222,
+                ssh_user: "crowdb".into(),
+                operation_id: uuid::Uuid::new_v4().to_string(),
+                confirmed: true,
+                host_key: None,
+                cancelled: false,
+            }],
+        },
+    )
+    .await
+    .unwrap();
+    let report = collect(&authority.ctx, node).await.unwrap();
+    assert!(report
+        .observation
+        .dependencies
+        .iter()
+        .any(|fact| fact.id == "node/2" && fact.state == DependencyState::Ready));
+    assert!(
+        !report
+            .observation
+            .dependencies
+            .iter()
+            .any(|fact| fact.kind == DependencyKind::Storage),
+        "Diskless is an accepted choice, not missing disk evidence: {:?}",
+        report.observation.dependencies
+    );
+}

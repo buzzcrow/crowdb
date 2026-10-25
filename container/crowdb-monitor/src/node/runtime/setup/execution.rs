@@ -78,7 +78,15 @@ async fn advance(profile: &DeploymentProfile, state: &mut AcceptedSetup) -> Resu
     state.status.cluster_id = Some(binding.bootstrap.cluster_id.clone());
     state.status.phase = NodeSetupPhase::Running;
     journal::save(root, state)?;
-    if crate::node::read_node_policy(root)?.is_some() && !metadata::ready(root, &binding, &kv).await? {
+    let choices = &state.request.choices;
+    let preparation_needed = !matches!(
+        choices.storage,
+        crowdb_protocol::mgmt::node::setup::SetupStorage::Diskless
+    ) || choices.services.iter().any(|service| service.enabled);
+    if preparation_needed
+        && crate::node::read_node_policy(root)?.is_some()
+        && !metadata::ready(root, &binding, &kv).await?
+    {
         return Ok(());
     }
     // Storage and service prerequisites progress independently. In particular,
@@ -93,7 +101,14 @@ async fn advance(profile: &DeploymentProfile, state: &mut AcceptedSetup) -> Resu
         state.status.phase = NodeSetupPhase::Failed;
         return disk_ready.map(|_| ());
     }
-    let services_ready = services::advance(profile, state, &binding, &kv).await;
+    let services_ready = services::advance(
+        profile,
+        state,
+        &binding,
+        &kv,
+        disk_ready.as_ref().is_ok_and(|ready| *ready),
+    )
+    .await;
     let services_ready = services_ready?;
     if state
         .status

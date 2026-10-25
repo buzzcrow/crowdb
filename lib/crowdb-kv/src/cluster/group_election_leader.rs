@@ -370,6 +370,21 @@ impl PxGroup {
         }
     }
 
+    fn start_gap_repair(self: &Arc<Self>, cancel: &CancellationToken) -> Option<tokio::task::JoinHandle<()>> {
+        if self.local_replica().contiguous_chosen() >= self.local_replica().last_chosen_slot() {
+            return None;
+        }
+        let group = Arc::clone(self);
+        let cancel = cancel.clone();
+        Some(tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {},
+                _ = group.repair_once() => {},
+            }
+        }))
+    }
+
     /// Leader-state inner loop: tick heartbeats + lease bookkeeping
     /// until step-down (higher term, lease unrenewable, admin) or
     /// driver cancel.
@@ -442,6 +457,7 @@ impl PxGroup {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // First tick fires immediately; consume it so the loop starts clean.
         ticker.tick().await;
+        let mut gap_repair: Option<tokio::task::JoinHandle<()>> = None;
 
         info!(
             group_id,
@@ -502,12 +518,11 @@ impl PxGroup {
                                 self.step_down(&tenure_cancel, leader_term, StepDownReason::LeaseUnrenewable);
                                 return;
                             }
-                            // Opportunistic background repair: close the lowest
-                            // gap in the open prefix so the contiguous frontier
-                            // (and group safe-slot) can advance past abandoned
-                            // slots. A no-gap leader returns immediately without
-                            // any RPCs, so steady state pays nothing.
-                            let _ = self.repair_once().await;
+                            // Keep at most one repair in flight. Prepare or
+                            // persistence IO must not occupy the heartbeat loop.
+                            if gap_repair.as_ref().map_or(true, tokio::task::JoinHandle::is_finished) {
+                                gap_repair = self.start_gap_repair(&tenure_cancel);
+                            }
                         }
                         HeartbeatOutcome::SteppedDown { peer_term } => {
                             self.step_down(&tenure_cancel, leader_term, StepDownReason::HigherTerm(peer_term));

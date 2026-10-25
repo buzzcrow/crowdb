@@ -1,6 +1,6 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
-"""Pinned host Playwright checks of the normally configured readonly release UI."""
+"""Pinned host Playwright checks of the normally configured node UI."""
 
 import json
 import os

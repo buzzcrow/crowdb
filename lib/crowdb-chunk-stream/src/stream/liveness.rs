@@ -55,13 +55,46 @@ pub(super) fn start(state: &WorkerState) -> Renewal {
 }
 
 pub(super) async fn maintain(state: &mut WorkerState) {
-    if state
+    if !state
         .liveness_failed
         .swap(false, std::sync::atomic::Ordering::AcqRel)
     {
-        if let Err(error) = rollover(state).await {
+        return;
+    }
+    loop {
+        if state
+            .authority
+            .as_ref()
+            .map_or(true, |authority| authority.check().is_err())
+        {
             state.stalled = true;
-            tracing::warn!(%error, "stream cannot rotate after liveness renewal failure");
+            return;
         }
+        let Some(active) = state.progress.active.as_ref() else {
+            return;
+        };
+        match state
+            .chunks
+            .renew_liveness(active.chunk_id, state.writer_epoch)
+            .await
+        {
+            Ok(()) => return,
+            Err(crate::StreamError::StaleWriter) => {
+                if let Err(error) = rollover(state).await {
+                    state.stalled = true;
+                    tracing::warn!(%error, "stream cannot rotate its retired active chunk");
+                }
+                return;
+            }
+            Err(error @ (crate::StreamError::Corruption(_) | crate::StreamError::InvalidRequest(_))) => {
+                state.stalled = true;
+                tracing::warn!(%error, "stream liveness validation failed");
+                return;
+            }
+            Err(error) => state.log_unavailable("renew_liveness", &error),
+        }
+        // No payload has been submitted. Backpressure until the metadata owner
+        // can confirm this tail, within the unchanged local owner deadline.
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

@@ -94,7 +94,7 @@ test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and val
         await expect(dialog.getByLabel('Metadata store', { exact: true })).toHaveValue('1');
         await expect(dialog.getByLabel('Journal metadata group', { exact: true })).toHaveValue('1');
       }
-      await expect(dialog.getByLabel('Single-node test deployment (reduced redundancy)')).not.toBeChecked();
+      await expect(dialog.getByLabel('Local deployment (reduced redundancy)')).not.toBeChecked();
       await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
       await expect(dialog).toHaveCount(0);
     }

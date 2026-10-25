@@ -164,3 +164,26 @@ async fn the_current_five_copy_configuration_is_observed_without_an_artificial_t
     assert_eq!(selected.healthy_replicas(), 5);
     assert_eq!(selected.observation().summary().physical_end, layout.body_length);
 }
+
+#[tokio::test]
+async fn colocated_replicas_require_disjoint_allocations() {
+    let layout = Layout::new();
+    for offset in [0, 1, 2] {
+        let mut chunk = layout.chunk.clone();
+        for strip in &mut chunk.strips {
+            let Some(Strip::MirrorStrip(mirror)) = &mut strip.strip else {
+                panic!("mirror missing")
+            };
+            mirror.segments[1].disk_id = mirror.segments[0].disk_id;
+            mirror.segments[1].unit_offset = mirror.segments[0].unit_offset + offset;
+        }
+        let result = MirroredFrameReaders::new(
+            Arc::new(chunk),
+            Layout::NAME,
+            layout.disks.clone(),
+            Instant::now() + Duration::from_secs(5),
+        );
+        assert_eq!(result.is_ok(), offset == 2, "replica unit offset {offset}");
+    }
+    assert_eq!(layout.disks.calls.load(Ordering::Relaxed), 0);
+}

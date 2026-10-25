@@ -24,7 +24,14 @@ async fn selected_kv_services_recover_acknowledged_data() {
 #[tokio::test]
 #[ignore = "requires the normal release-monitor container fixture"]
 async fn selected_storage_services_recover_acknowledged_data() {
-    witness(true).await;
+    witness(false).await;
+    let address = crate::common::management::addresses(1)[0].clone();
+    let registry = crowdb_kv_client::ServiceRegistryClient::new(CrowdbKvClient::new(ClientConfig::new(
+        vec![format!("http://{address}:10000")],
+    )));
+    let instances = registry.read_all_diskdb_instances().await.unwrap();
+    assert_eq!(instances.len(), 1);
+    assert_eq!(instances[0].0, 1);
 }
 
 #[tokio::test]
@@ -59,13 +66,13 @@ async fn witness_with_write(storage: bool, write: bool) {
         )])));
     let disks = hardware.list_all_disks().await.unwrap();
     if storage {
-        assert_eq!(disks.len(), 4);
+        assert_eq!(disks.len(), 1);
         assert!(disks
             .iter()
             .all(|disk| disk.value.zone_count == 1 && disk.capacity_bytes() == 16 * 1024 * 1024 * 1024));
-        let owner = hardware.get_owner(1, 1, 101).await.unwrap().unwrap();
+        let owner = hardware.get_owner(1, 1, 1).await.unwrap().unwrap();
         assert_eq!(owner.instance_id, 1);
-        let binding = hardware.get_bind(1, 1, 101).await.unwrap().unwrap();
+        let binding = hardware.get_bind(1, 1, 1).await.unwrap().unwrap();
         assert_eq!((binding.store_id, binding.group_id), (0, 1));
     } else {
         assert!(disks.is_empty());

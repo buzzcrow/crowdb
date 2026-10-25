@@ -49,7 +49,7 @@ class AccessDatasetCluster(ChunkKvCluster):
             if body["node"] == 12:
                 self.ready_dataset()
             elif body["node"] == self.chunk_kv_index:
-                self.ready_chunk_kv()
+                self.ready_chunk_kv(recovering=True)
         return result
 
     def sdk_roundtrip(self):

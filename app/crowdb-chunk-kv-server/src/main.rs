@@ -560,6 +560,12 @@ async fn main() -> std::process::ExitCode {
     materialization_task.abort();
     transition_task.abort();
     refresh_task.abort();
+    let _ = tokio::join!(
+        heartbeat_task,
+        materialization_task,
+        transition_task,
+        refresh_task
+    );
     if let Err(error) = service.drain_writers().await {
         warn!(%error, "WAL writer drain incomplete; restart must retain lease exclusion");
     }

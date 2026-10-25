@@ -105,7 +105,7 @@ def verify_file_admission(cluster):
     assert {request["operation_id"] for request in requests} <= {row["request"]["operation_id"] for row in page["items"]}, page
     deployment = cluster.api(f"/api/deployment-defaults?node_id={node}")["diskio"]
     deployment.update({"kind": "diskio", "instance_id": str(node), "rpc_port": 7200,
-        "disk_group_id": 0, "test_single_node": False})
+        "disk_group_id": 0})
     cluster.api(f"/api/nodes/{node}/services/deploy", deployment, status=201)
     completed = [wait(lambda request=request: file_operation(cluster, node, request["operation_id"]),
         lambda result: result["phase"] == "registered", "DiskIO-verified file admission", seconds=10) for request in requests]

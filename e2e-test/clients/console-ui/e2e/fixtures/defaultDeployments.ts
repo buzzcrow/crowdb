@@ -7,7 +7,7 @@ import { dirname } from 'node:path';
 import { expect, test } from './realBackend';
 import { deploymentState, observeDeploymentDiagnostics } from './deploymentDiagnostics';
 
-/** Observe actual automatic deployment mutations before checking durable progress. */
+/** Observe accepted mutations and target-owned asynchronous deployment completion. */
 export function observeDefaultDeployments(page: Page) {
   const replies = new Map<string, Response[]>();
   const attempts = observeDeploymentDiagnostics(page);
@@ -23,10 +23,29 @@ export function observeDefaultDeployments(page: Page) {
     const identity = key(response);
     if (identity) replies.set(identity, [...(replies.get(identity) ?? []), response]);
   });
-  async function wait(nodes: number[], kind: string, predicate: (response: Response) => boolean) {
+  const expectedWait = (response: Response, kind: string) => response.status() === 409 && ['chunkdb', 'chunk-kv'].includes(kind);
+  async function completed(nodes: number[], kind: string) {
     const timeout = process.platform === 'darwin' ? 30_000 : 10_000;
+    let found: { node: number; response: Response } | undefined;
     try {
-      return await page.waitForResponse(predicate, { timeout });
+      await expect.poll(async () => {
+        for (const node of nodes) {
+          const unexpected = replies.get(`${node}:${kind}`)?.find(response => response.status() !== 201 && !expectedWait(response, kind));
+          if (unexpected) { found = { node, response: unexpected }; return true; }
+          const response = replies.get(`${node}:${kind}`)?.find(response => response.status() === 201);
+          if (response) { found = { node, response }; return true; }
+        }
+        const waiting = nodes.filter(node => replies.get(`${node}:${kind}`)?.some(response => expectedWait(response, kind)));
+        if (!waiting.length) return false;
+        const response = await page.request.get('/api/service-plans');
+        expect(response.ok(), await response.text()).toBe(true);
+        const plans = await response.json();
+        const node = waiting.find(node => plans[node]?.steps[kind]?.state === 'deployed');
+        if (node === undefined) return false;
+        found = { node, response: replies.get(`${node}:${kind}`)!.find(response => expectedWait(response, kind))! };
+        return true;
+      }, { timeout, intervals: [100] }).toBe(true);
+      return found!;
     } catch (error) {
       const evidence = { nodes, service: kind, failed_at: new Date().toISOString(), timeout_ms: timeout, attempts: attempts(),
         observations: await deploymentState(page) };
@@ -40,36 +59,27 @@ export function observeDefaultDeployments(page: Page) {
       } catch (diagnosticError) {
         console.log(`[DEPLOYMENT DIAGNOSTIC WRITE FAILED] ${String(diagnosticError)}`);
       }
-      if (error instanceof Error) error.message = `Deployment response missing: nodes=${nodes.join(',')} service=${kind}\n${error.message}`;
+      if (error instanceof Error) error.message = `Deployment completion missing: nodes=${nodes.join(',')} service=${kind}\n${error.message}`;
       throw error;
+    }
+  }
+  async function verifyResponse(response: Response, kind: string) {
+    if (expectedWait(response, kind)) {
+      expect((await response.json()).error).toMatch(/^Waiting: /);
+    } else {
+      expect(response.status(), await response.text()).toBe(201);
     }
   }
   return {
     async nextCompleted(nodes: number[], kind: string) {
-      const pending = new Set(nodes.map(node => `${node}:${kind}`));
-      const expectedWait = (response: Response) => response.status() === 409 && ['chunkdb', 'chunk-kv'].includes(kind);
-      const rejected = nodes.flatMap(node => replies.get(`${node}:${kind}`) ?? [])
-        .find(response => response.status() !== 201 && !expectedWait(response));
-      if (rejected) expect(rejected.status(), await rejected.text()).toBe(201);
-      const completed = nodes.find(node => replies.get(`${node}:${kind}`)?.some(response => response.status() === 201));
-      if (completed !== undefined) return completed;
-      const response = await wait(nodes, kind, response => pending.has(key(response) ?? '')
-        && (response.status() === 201 || !expectedWait(response)));
-      expect(response.status(), await response.text()).toBe(201);
-      return Number(key(response)!.split(':')[0]);
+      const result = await completed(nodes, kind);
+      await verifyResponse(result.response, kind);
+      return result.node;
     },
     async verify(node: number, kind: string) {
-      const identity = `${node}:${kind}`;
-      const response = replies.get(identity)?.find(response => response.status() === 201)
-        ?? await wait([node], kind, response => key(response) === identity && response.status() === 201);
-      for (const rejected of replies.get(identity) ?? []) {
-        if (rejected === response) break;
-        const body = await rejected.json();
-        expect(rejected.status(), JSON.stringify(body)).toBe(409);
-        expect(['chunkdb', 'chunk-kv']).toContain(kind);
-        expect(body.error).toMatch(/^Waiting: /);
-      }
-      expect(response.status(), `Node ${node} ${kind}: ${await response.text()}`).toBe(201);
+      const result = await completed([node], kind);
+      for (const response of replies.get(`${node}:${kind}`) ?? []) await verifyResponse(response, kind);
+      await verifyResponse(result.response, kind);
     },
   };
 }

@@ -126,6 +126,10 @@ async fn assert_failed_journal_recovers(wrong_position_count: bool) {
         partition.suspend_for_transfer(1).await,
         Err(ChunkKvError::Recovering)
     );
+    assert_eq!(
+        partition.suspend_for_shutdown(1).await,
+        Err(ChunkKvError::Recovering)
+    );
     assert!(matches!(
         partition.checkpoint_quiesced(1).await,
         Err(ChunkKvError::InvalidRequest(_))

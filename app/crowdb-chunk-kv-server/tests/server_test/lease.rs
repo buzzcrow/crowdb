@@ -193,3 +193,79 @@ async fn continuous_renewal_preserves_a_batch_waiting_on_its_first_wal_write() {
             .is_some());
     }
 }
+
+#[tokio::test]
+async fn graceful_drain_releases_writers_during_both_split_stages() {
+    for finalizing in [false, true] {
+        let fixture = TestServingLease::start().await;
+        let transition_id = TransitionId { high: 22, low: 23 };
+        fixture
+            .partition
+            .begin_split(SplitPlan {
+                transition_id,
+                parent_id: PartitionId { high: 1, low: 2 },
+                parent_epoch: EPOCH,
+                parent_range: fixture.partition.snapshot().range,
+                parent_next_epoch: EPOCH + 1,
+                split_key: b"m".to_vec(),
+                child: SplitChild {
+                    partition_id: PartitionId { high: 22, low: 25 },
+                    range: PartitionRange {
+                        start: Some(b"m".to_vec()),
+                        end: None,
+                    },
+                    ownership_epoch: EPOCH + 1,
+                },
+            })
+            .await
+            .unwrap();
+        if finalizing {
+            fixture
+                .partition
+                .begin_split_finalization(transition_id)
+                .await
+                .unwrap();
+        }
+        assert!(fixture.partition.suspend_for_transfer(EPOCH).await.is_err());
+        fixture.service.drain_writers().await.unwrap();
+        assert_eq!(
+            fixture.partition.lifecycle(),
+            PartitionLifecycle::TransferQuiesced
+        );
+        let name = fixture.partition.snapshot().stream_name;
+        assert!(fixture
+            .store
+            .record_store(7)
+            .unwrap()
+            .candidates(name)
+            .await
+            .unwrap()
+            .is_empty());
+        fixture.service.drain_writers().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn graceful_drain_releases_an_unactivated_prepared_writer() {
+    let partition = prepared_partition(
+        PartitionId { high: 1, low: 3 },
+        StreamName { high: 30, low: 32 },
+        EPOCH,
+    )
+    .await;
+    let service = ChunkKvService::new(test_process::TestProcess::authority(INSTANCE_ID), 4).unwrap();
+    let (head, page) = catalog(
+        Id128 { high: 1, low: 3 },
+        partition.snapshot().stream_name,
+        EPOCH,
+        1,
+        None,
+    );
+    service
+        .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
+        .unwrap();
+    assert_eq!(partition.lifecycle(), PartitionLifecycle::Prepared);
+    assert!(partition.suspend_for_transfer(EPOCH).await.is_err());
+    service.drain_writers().await.unwrap();
+    assert_eq!(partition.lifecycle(), PartitionLifecycle::TransferQuiesced);
+}

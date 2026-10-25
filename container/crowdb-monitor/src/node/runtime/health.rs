@@ -62,10 +62,15 @@ impl NodeHealth {
             if processes.owns(id) {
                 let mut healthy = processes.alive(id)?;
                 if healthy {
-                    if id == "kv" {
+                    if id == "web" || id == "kv" {
+                        let service = if id == "web" {
+                            web.clone()
+                        } else {
+                            super::service(profile, "kv")?
+                        };
                         healthy = self
                             .probes
-                            .probe_service(&super::service(profile, "kv")?, &BTreeMap::new())
+                            .probe_service(&service, &BTreeMap::new())
                             .await
                             .is_ok();
                     } else if let Some(intent) = retained
@@ -171,4 +176,19 @@ impl NodeHealth {
         self.store.publish(&mut self.status)?;
         Ok(())
     }
+}
+
+#[cfg(feature = "test-util")]
+/// Collect one production health pass for owned processes.
+///
+/// # Errors
+/// Propagates process, durable state and status publication failures.
+pub async fn node_health_for_tests(
+    profile: &DeploymentProfile,
+    web: &ServiceProfile,
+    processes: &mut ProcessManager,
+) -> Result<MonitorStatus> {
+    let mut health = NodeHealth::new(profile)?;
+    health.tick(profile, web, processes).await?;
+    Ok(health.status)
 }

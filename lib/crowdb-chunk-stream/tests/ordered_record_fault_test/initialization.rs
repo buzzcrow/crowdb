@@ -5,6 +5,15 @@ use super::*;
 
 #[tokio::test]
 async fn excluded_initializer_cannot_recreate_a_collected_first_record() {
+    replace_paused_initializer(2).await;
+}
+
+#[tokio::test]
+async fn same_epoch_process_recovery_replaces_the_initial_reservation_without_reviving_the_old_writer() {
+    replace_paused_initializer(1).await;
+}
+
+async fn replace_paused_initializer(writer_epoch: u64) {
     let store = Arc::new(MemoryStreamStore::new(128));
     let identity = StreamRecord {
         state: StreamRecordState::Active,
@@ -27,7 +36,7 @@ async fn excluded_initializer_cannot_recreate_a_collected_first_record() {
     store.wait_for_publication_for_tests().await;
     let current = ChunkStream::create_registered(
         name,
-        2,
+        writer_epoch,
         StreamConfig::default(),
         store.clone(),
         store.clone(),

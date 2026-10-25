@@ -96,6 +96,8 @@ pub type crowdb_rpc_handler_fn = Option<
     ),
 >;
 
+pub type crowdb_rpc_handler_release_fn = Option<unsafe extern "C" fn(user_data: *mut c_void)>;
+
 // ── Coroutine client (Option 3: C++ coroutine + Rust FFI) ────────
 pub type crowdb_rpc_co_build_request = Option<
     unsafe extern "C" fn(
@@ -259,6 +261,7 @@ extern "C" {
         msg_type: u16,
         callback: crowdb_rpc_handler_fn,
         user_data: *mut c_void,
+        release: crowdb_rpc_handler_release_fn,
     );
 
     pub fn crowdb_rpc_server_submit_response(
@@ -287,6 +290,7 @@ extern "C" {
         msg_type: u16,
         callback: crowdb_rpc_handler_fn,
         user_data: *mut c_void,
+        release: crowdb_rpc_handler_release_fn,
     );
     pub fn crowdb_rpc_client_clear_handlers(client: crowdb_rpc_client_t);
 

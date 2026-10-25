@@ -30,13 +30,16 @@ class Docker:
         return {"daemon": self.call("info", "--format", "{{.ID}}"), "context": context,
                 "endpoint": os.environ.get("DOCKER_HOST") or details["Endpoints"]["docker"]["Host"]}
 
-    def objects(self, kind):
+    def objects(self, kind, filters=()):
         args = ("ps", "-aq") if kind == "container" else (kind, "ls", "-q")
+        for condition in filters:
+            args += ("--filter", condition)
         ids = self.call(*args).splitlines()
         return json.loads(self.call(kind, "inspect", *ids)) if ids else []
 
     def owned(self, record, kind):
-        return [item for item in self.objects(kind) if labels(item, kind).get(CLUSTER) == record["cluster"]
+        filters = (f"label={CLUSTER}={record['cluster']}", f"label={OWNER}={record['owner']}")
+        return [item for item in self.objects(kind, filters) if labels(item, kind).get(CLUSTER) == record["cluster"]
                 and labels(item, kind).get(OWNER) == record["owner"]
                 and item.get("Name", "").lstrip("/") in resource_names(record, kind)]
 

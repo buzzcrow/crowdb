@@ -11,11 +11,15 @@ impl ChunkKvService {
     pub async fn drain_writers(&self) -> Result<(), ChunkKvError> {
         self.begin_drain();
         let partitions = self.partitions.load_full();
+        let mut first_error = None;
         for partition in partitions.values() {
-            partition
-                .suspend_for_transfer(partition.snapshot().ownership_epoch)
-                .await?;
+            if let Err(error) = partition
+                .suspend_for_shutdown(partition.snapshot().ownership_epoch)
+                .await
+            {
+                first_error.get_or_insert(error);
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 }

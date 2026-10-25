@@ -35,7 +35,7 @@ struct Evidence {
 pub fn reduce(mut observation: ClusterObservation, now_unix_ms: u64) -> ClusterStatus {
     observation.dependencies.sort();
     let mut evidence = collect_evidence(&observation, now_unix_ms);
-    for kind in REQUIRED {
+    for kind in REQUIRED.into_iter().filter(|kind| required(&observation, *kind)) {
         if !evidence.states.contains_key(&kind) {
             evidence.reasons.push(reason(
                 &format!("{kind:?}"),
@@ -150,7 +150,10 @@ fn classify(
     } else if observation.bound && !contains(DependencyKind::Authority, DependencyState::Ready) {
         ClusterPhase::Unavailable
     } else if observation.bound
-        && REQUIRED.iter().all(|kind| states.contains_key(kind))
+        && REQUIRED
+            .iter()
+            .filter(|kind| required(observation, **kind))
+            .all(|kind| states.contains_key(kind))
         && states
             .values()
             .flatten()
@@ -172,6 +175,23 @@ fn classify(
         ClusterPhase::Initializing
     } else {
         ClusterPhase::Waiting
+    }
+}
+
+fn required(observation: &ClusterObservation, kind: DependencyKind) -> bool {
+    use crowdb_protocol::mgmt::node::setup::{SetupServiceKind, SetupStorage};
+
+    let Some(policy) = &observation.policy else {
+        return true;
+    };
+    match kind {
+        DependencyKind::Storage => !matches!(policy.setup.storage, SetupStorage::Diskless),
+        DependencyKind::Protocol => policy
+            .setup
+            .services
+            .iter()
+            .any(|service| service.enabled && service.kind == SetupServiceKind::AccessServer),
+        _ => true,
     }
 }
 

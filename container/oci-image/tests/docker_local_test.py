@@ -54,6 +54,24 @@ class DockerLocalTest(unittest.TestCase):
                     clean(self.docker, self.record)
                 self.assertFalse(any(call.args[:2] == ("network", "rm") for call in self.docker.call.call_args_list))
 
+    def test_cleanup_inventory_does_not_inspect_unrelated_disappearing_containers(self):
+        docker = Docker()
+        owned = {"Id": "owned-id", "Name": "/crowdb-first-1", "Config": {"Labels": self.labels}}
+
+        def call(*args):
+            if args[:2] == ("ps", "-aq"):
+                scoped = (f"label={CLUSTER}=first" in args
+                          and f"label={OWNER}={self.record['owner']}" in args)
+                return "owned-id" if scoped else "owned-id\nretired-unrelated-id"
+            if args[:2] == ("container", "inspect"):
+                if "retired-unrelated-id" in args:
+                    raise RuntimeError("No such container: retired-unrelated-id")
+                return json.dumps([owned])
+            raise AssertionError(args)
+
+        with patch.object(docker, "call", side_effect=call):
+            self.assertEqual(docker.owned(self.record, "container"), [owned])
+
     def test_unknown_resource_names_are_not_adopted_from_copied_labels(self):
         docker = Docker()
         owned = self.network()

@@ -116,6 +116,14 @@ impl StorageSnapshot {
         let mut evidence = Vec::new();
         let now = now_ms();
         for expected in &self.accepted.storage {
+            if nodes.get(&expected.node_id).is_some_and(|node| {
+                matches!(
+                    node.policy.setup.storage,
+                    crowdb_protocol::mgmt::node::setup::SetupStorage::Diskless
+                )
+            }) {
+                continue;
+            }
             let bindings = if let Some(node) = nodes.get(&expected.node_id).filter(|node| {
                 matches!(
                     node.policy.setup.storage,

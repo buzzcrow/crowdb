@@ -84,7 +84,7 @@ impl StreamProcessLeaseClient {
             instance_id: identity.instance_id,
         }
         .to_path();
-        for _ in 0..8 {
+        for attempt in 0..8 {
             let Some((lease, revision)) = self.read(identity.purpose, identity.instance_id).await? else {
                 return Err(StreamProcessLeaseError::Replaced);
             };
@@ -109,7 +109,8 @@ impl StreamProcessLeaseClient {
                 .await
             {
                 Ok(_) => return Ok(()),
-                Err(Error::CasFailed { .. } | Error::CasBusy | Error::OutcomeUnknown) => {}
+                Err(Error::CasBusy) => super::wait_for_cas(attempt).await,
+                Err(Error::CasFailed { .. } | Error::OutcomeUnknown) => {}
                 Err(error) => return Err(error.into()),
             }
         }

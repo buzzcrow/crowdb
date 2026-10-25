@@ -175,22 +175,51 @@ async fn unbound_setup_survives_a_worker_restart_without_creating_disks_or_servi
 async fn diskless_setup_requires_the_exact_confirmed_admission_and_does_not_start_services() {
     let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-setup-diskless");
     let root = directory.path();
-    let mut intent = request(root);
-    intent.choices.storage = SetupStorage::Diskless;
-    for service in &mut intent.choices.services {
+    let mut choices = crowdb_protocol::mgmt::node::deployment::NodeDeploymentPolicy::default().setup;
+    choices.storage = SetupStorage::Diskless;
+    for service in &mut choices.services {
         service.enabled = false;
     }
+    let inputs = crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides {
+        storage: Some(choices.storage.clone()),
+        services: Some(choices.services.clone()),
+        ..Default::default()
+    };
+    crowdb_monitor::accept_node_policy(
+        root,
+        &inputs,
+        &crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides::default(),
+    )
+    .unwrap();
+    let mut intent = request(root);
+    intent.choices = choices;
     authorize(root, &intent);
     NodeSetupForTests::default()
         .accept_for_tests(root, intent.clone())
         .unwrap();
     let mut authority = node_setup::TestAuthority::start(root, &intent).await;
+    let preparation_key = crowdb_console_shared::deployment::preparation::DEFAULT_PREPARATION_KEY;
+    authority.kv.delete(0, 0, preparation_key, None).await.unwrap();
     let profile = profile(root);
     NodeSetupForTests::advance_for_tests(profile.clone())
         .await
         .unwrap();
     let status = NodeSetupForTests::status_for_tests(root).unwrap().unwrap();
     assert_eq!(status.phase, NodeSetupPhase::Ready);
+    assert!(matches!(
+        authority
+            .kv
+            .get(
+                0,
+                0,
+                preparation_key,
+                crowdb_kv_client::ReadMode::Linearizable,
+                None
+            )
+            .await
+            .unwrap(),
+        crowdb_kv_client::GetOutcome::NotFound,
+    ));
     assert_eq!(status.node_id, Some(2));
     assert_eq!(
         status.cluster_id.as_ref(),
@@ -513,12 +542,14 @@ async fn service_failure_budget_survives_restart_and_yields_to_a_new_operator_co
     profile.paths.log_root = root.join("log");
     std::fs::create_dir_all(&profile.paths.log_root).unwrap();
     profile.paths.run_root = root.join("run");
-    profile
+    let child = profile
         .services
         .iter_mut()
         .find(|service| service.id == "chunkdb")
-        .unwrap()
-        .program = root.join("absent-binary");
+        .unwrap();
+    child.program = root.join("absent-binary");
+    // Isolate launch-budget accounting from the separately tested dependency gate.
+    child.dependencies = vec!["kv".into()];
     let mut intent = NodeServiceIntent {
         cluster_id: authority.binding.bootstrap.cluster_id.clone(),
         operation_id: uuid::Uuid::new_v4().to_string(),

@@ -98,7 +98,7 @@ async fn idle_liveness_uses_the_configured_interval() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn idle_liveness_failures_rotate_without_fencing_the_stream() {
+async fn idle_liveness_failures_reconfirm_without_fencing_the_stream() {
     let store = Arc::new(MemoryStreamStore::new(64));
     let stream = create_stream(&store, 64, StreamConfig::default()).await;
     stream.append(&[Bytes::from_static(b"old")]).await.unwrap();

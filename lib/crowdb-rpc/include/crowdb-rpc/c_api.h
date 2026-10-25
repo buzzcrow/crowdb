@@ -264,6 +264,10 @@ typedef void (*crowdb_rpc_handler_fn)(uint64_t request_id, uint64_t rpc_create_n
                                       const uint8_t *control, uint32_t control_len, const uint8_t *data,
                                       uint32_t data_len, void *conn_handle, void *frame_handle, void *user_data);
 
+// Optional owner release callback. Registration takes ownership immediately;
+// replacement, clear and destruction release it after the last active dispatch.
+typedef void (*crowdb_rpc_handler_release_fn)(void *user_data);
+
 // Release a frame_handle previously passed to a crowdb_rpc_handler_fn.
 // Must be called exactly once per frame_handle. Passing nullptr is a no-op.
 void crowdb_rpc_frame_release(void *frame_handle);
@@ -274,7 +278,7 @@ void crowdb_rpc_frame_release(void *frame_handle);
 // a C++ HandlerFn. Re-registering the same msg_type replaces the prior
 // handler.
 void crowdb_rpc_server_register_handler(crowdb_rpc_server_t server, uint16_t msg_type, crowdb_rpc_handler_fn callback,
-                                        void *user_data);
+                                        void *user_data, crowdb_rpc_handler_release_fn release);
 
 // Submit a response on a server-side connection. Allocates buffers from
 // the pool, builds an OutFrame, and calls transport->submit (enqueue +
@@ -303,7 +307,7 @@ crowdb_rpc_status crowdb_rpc_server_submit_response_buffer(crowdb_rpc_server_t s
 // response via crowdb_rpc_server_submit_response (the Rust closure
 // captures the server handle). The callback must be non-blocking.
 void crowdb_rpc_client_register_handler(crowdb_rpc_client_t client, uint16_t msg_type, crowdb_rpc_handler_fn callback,
-                                        void *user_data);
+                                        void *user_data, crowdb_rpc_handler_release_fn release);
 // Clear all registered client-side handlers. Called during shutdown
 // to break reference cycles (Rust handler closures capture Arcs).
 void crowdb_rpc_client_clear_handlers(crowdb_rpc_client_t client);

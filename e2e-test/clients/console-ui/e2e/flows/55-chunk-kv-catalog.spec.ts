@@ -309,7 +309,7 @@ test('native diagnostics: production split displays actual inherited and current
   await expect(journal).toContainText(identity(overlay.source_stream_name));
   await expect(journal).toContainText(identity(partition.artifact.stream_name));
   expect(identity(overlay.source_stream_name)).not.toBe(identity(partition.artifact.stream_name));
-  for (const [label, value] of [['Replay offset (bytes)', overlay.replay_offset], ['Cutover offset (bytes)', overlay.cutover_offset], ['Manifest generation', overlay.source_stream_generation]]) {
+  for (const [label, value] of [['Replay offset (bytes)', overlay.replay_offset], ['Cutover offset (bytes)', overlay.cutover_offset], ['Stream chunk record generation', overlay.source_stream_generation]]) {
     await expect(inherited.locator('dt').filter({ hasText: label }).locator('..').locator('dd')).toHaveText(value);
   }
   await page.getByRole('tab', { name: 'Dependencies', exact: true }).click();

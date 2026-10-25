@@ -10,8 +10,7 @@ import subprocess
 import time
 
 from control import Control
-from managed_fixture import ManagedCluster, SOURCE
-from allocation import start_node
+from managed_fixture import ManagedCluster
 
 SERVICES = ("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")
 
@@ -20,20 +19,6 @@ class ConsoleCluster(ManagedCluster):
     def __init__(self, image, artifacts, bundle, **kwargs):
         super().__init__(image, artifacts, services=SERVICES, **kwargs)
         self.bundle = bundle
-
-    def profile(self):
-        # Exercise the supported managed Docker mode from the shipped web config.
-        return super().profile().replace(
-            ", \"--node-monitor\", \"http://127.0.0.1:9095\"", "")
-
-    def launch(self, data, profile):
-        template = self.artifacts / "crowdb-web.toml"
-        template.write_text((SOURCE / "templates/crowdb-web.toml").read_text().replace(
-            "readonly = true", "readonly = false"))
-        return start_node(self, 0, data, (), address=self.address, memory="2048m",
-            environment=("CROWDB_STARTUP_MODE=single", "CROWDB_PROFILE_PATH=/opt/crowdb/etc/e2e-profile.toml"),
-            mounts=(f"type=bind,source={profile},target=/opt/crowdb/etc/e2e-profile.toml,readonly",
-                    f"type=bind,source={template},target=/opt/crowdb/etc/templates/crowdb-web.toml,readonly"))
 
     def observation(self):
         return json.loads(self.command("exec", self.servers[0], "cat",

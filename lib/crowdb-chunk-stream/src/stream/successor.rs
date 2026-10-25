@@ -260,7 +260,19 @@ pub(super) async fn discard(state: &mut WorkerState) -> Result<()> {
             active.chunk_id,
         )
         .await?;
-    reclaim(state.chunks.as_ref(), state.writer_epoch, &active).await
+    if let Err(error) = reclaim(state.chunks.as_ref(), state.writer_epoch, &active).await {
+        if matches!(
+            error,
+            StreamError::StaleWriter | StreamError::Corruption(_) | StreamError::InvalidRequest(_)
+        ) {
+            return Err(error);
+        }
+        // The task has drained initialization and this detached candidate never
+        // admitted data. Keep its allocation for chunk expiry; cleanup cannot
+        // invalidate the attached stream's acknowledged prefix or release proof.
+        tracing::warn!(?active.chunk_id, %error, "unused candidate cleanup deferred to chunk expiry");
+    }
+    Ok(())
 }
 
 async fn reclaim(chunks: &dyn StreamChunkStore, epoch: u64, active: &ActiveChunkDescriptor) -> Result<()> {

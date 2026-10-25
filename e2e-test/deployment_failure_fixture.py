@@ -22,18 +22,20 @@ class DeploymentFailureCluster(ManagedCluster):
         if info["Config"]["Labels"].get(LABEL) != self.run_id or not info["State"]["Running"]:
             raise ValueError("monitor container ownership or running state changed")
         if action == "prepare-lifecycle":
-            super().control({"action": "recover-service", "node": 0,
-                             "service": "web", "signal": "STOP"})
+            accepted = self.command("exec", name, "cat", "/opt/crowdb/data/accepted-node.json")
             self.command("stop", "--time", "15", name)
             self.command("rm", name)
             self.servers.clear()
             self.containers.remove(name)
             self.launch(self.data_paths[0], self.artifacts / "profile.toml")
             self.ready()
+            retained = self.command("exec", self.servers[0], "cat", "/opt/crowdb/data/accepted-node.json")
+            if json.loads(accepted) != json.loads(retained):
+                raise AssertionError("graceful monitor replacement changed accepted bootstrap")
             return {"phase": "ready"}
         secrets = []
-        for file in ("server.env", "client.env"):
-            for line in self.command("exec", name, "cat", "/opt/crowdb/data/secrets/" + file).splitlines():
+        for file in ("secrets/server.env", "console/secrets/client.env"):
+            for line in self.command("exec", name, "cat", "/opt/crowdb/data/" + file).splitlines():
                 key, _, value = line.partition("=")
                 if value and any(word in key for word in ("TOKEN", "KEY")):
                     secrets.append(value)
@@ -42,18 +44,19 @@ class DeploymentFailureCluster(ManagedCluster):
             for _ in range(5):
                 super().control({"action": "recover-service", "node": 0,
                                  "service": "web", "signal": "KILL"})
-        events = self.command("exec", name, "cat", "/opt/crowdb/data/log/monitor/monitor.log")
-        before = sum(json.loads(line)["kind"] == "ready" for line in events.splitlines())
+        before = self.monitor_status()
         if action == "reject-changed-credentials":
             self.command("exec", "--user", "root", name, "/bin/sh", "-ec",
                          "printf 'invalid credentials\\n' > /opt/crowdb/data/secrets/server.env")
-        pid = self.monitor_status()["services"]["web"]["pid"]
-        if type(pid) is not int or pid <= 1:
-            raise ValueError("web PID must identify the observed monitor child")
-        executable = self.command("exec", name, "cat", f"/proc/{pid}/cmdline").split("\0")[0]
-        if Path(executable).name != "crowdb-web":
-            raise ValueError("observed web executable changed before monitor failure")
-        self.command("exec", name, "kill", "-KILL", str(pid))
+            self.command("restart", name)
+        else:
+            pid = self.monitor_status()["services"]["web"]["pid"]
+            if type(pid) is not int or pid <= 1:
+                raise ValueError("web PID must identify the observed monitor child")
+            executable = self.command("exec", name, "cat", f"/proc/{pid}/cmdline").split("\0")[0]
+            if Path(executable).name != "crowdb-web":
+                raise ValueError("observed web executable changed before monitor failure")
+            self.command("exec", name, "kill", "-KILL", str(pid))
         deadline = time.monotonic() + 40
         while time.monotonic() < deadline:
             state = json.loads(self.command("inspect", name))[0]["State"]
@@ -64,9 +67,10 @@ class DeploymentFailureCluster(ManagedCluster):
 
     def failure_result(self, action, state, before):
         log = self.command("logs", self.servers[0])
-        events = self.data_paths[0] / "log/monitor/monitor.log"
-        after = sum(json.loads(line)["kind"] == "ready" for line in events.read_text().splitlines())
-        kinds = set()
+        status_path = self.artifacts / "failed-monitor-status.json"
+        self.command("cp", f"{self.servers[0]}:/opt/crowdb/run/status/monitor.json", str(status_path))
+        after = json.loads(status_path.read_text())
+        credential_rejection = "server credentials are incomplete" in log
         assert self.private_values, "credential files contain no secret values to check"
         for path in (self.data_paths[0] / "log").rglob("*"):
             if not path.is_file():
@@ -74,9 +78,9 @@ class DeploymentFailureCluster(ManagedCluster):
             body = gzip.decompress(path.read_bytes()) if path.suffix == ".gz" else path.read_bytes()
             if any(value.encode() in body for value in self.private_values):
                 raise AssertionError("secret leaked into diagnostic logs")
-            if path.name.startswith("monitor.log"):
-                kinds.update(json.loads(line)["kind"] for line in body.splitlines())
+            credential_rejection |= b"server credentials are incomplete" in body
         if any(value in log for value in self.private_values):
             raise AssertionError("secret leaked into container logs")
-        return {"action": action, "state": state, "ready_before": before,
-                "ready_after": after, "log": log, "events": sorted(kinds), "secret_free": True}
+        return {"action": action, "state": state, "before": before,
+                "after": after, "log": log, "credential_rejection": credential_rejection,
+                "secret_free": True}

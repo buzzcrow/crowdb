@@ -10,7 +10,7 @@ use crowdb_kv::cluster::px_kv_store::PxKvStore;
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
 
 pub struct TestMetadataServer {
-    server: Arc<PxKvStore>,
+    pub server: Arc<PxKvStore>,
     pub client: Arc<CrowdbKvClient>,
 }
 

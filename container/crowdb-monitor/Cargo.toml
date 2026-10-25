@@ -17,6 +17,7 @@ test-util = []
 [dependencies]
 crowdb-console-shared = { path = "../../lib/crowdb-console-shared" }
 clap = { version = "4", features = ["derive", "env"] }
+crowdb-chunk-kv-client = { path = "../../lib/crowdb-chunk-kv-client" }
 crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
 crowdb-diskio-client = { path = "../../lib/crowdb-diskio-client" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }

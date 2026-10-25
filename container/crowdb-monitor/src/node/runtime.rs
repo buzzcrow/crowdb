@@ -20,6 +20,8 @@ use crate::{DeploymentProfile, ProcessManager, ServiceProfile};
 mod cleanup;
 mod control;
 mod health;
+#[cfg(feature = "test-util")]
+pub use health::node_health_for_tests;
 mod ipc;
 mod kv;
 mod observation;
@@ -35,6 +37,8 @@ mod file_admission;
 #[cfg(feature = "test-util")]
 pub use file_admission::publish_file_for_tests;
 mod file_preparation;
+#[cfg(feature = "test-util")]
+pub use file_preparation::resume_file_operations_for_tests;
 mod initialization;
 mod retained_storage;
 mod setup;
@@ -106,6 +110,7 @@ pub async fn run_node_with_inputs(
     let profile = kv::node_profile(&config)?;
     let root = profile.paths.data_root.clone();
     super::startup::accept_node_policy(&root, file, explicit)?;
+    validate_retained_startup(&profile)?;
     // Reuse the existing socket ownership guard on the shared durable root,
     // independently of each container's private runtime directory.
     let _root_liveness = crate::LivenessServer::start(&root)?;
@@ -190,6 +195,24 @@ pub async fn run_node_with_inputs(
     stop_services(&profile, &mut processes).await?;
     std::fs::remove_file(socket)?;
     result
+}
+
+fn validate_retained_startup(profile: &DeploymentProfile) -> Result<()> {
+    let root = &profile.paths.data_root;
+    // KV-only admissions can precede credential provisioning. Once secrets or
+    // an Access intent are retained, validate them before launching children.
+    if root.join("secrets").try_exists()?
+        || services::retained(profile)?
+            .iter()
+            .any(|intent| intent.kind == "access")
+    {
+        crate::ServerCredentials::load_existing(root)?;
+    }
+    if let Some(root) = std::env::var_os("CROWDB_CORE_DIR") {
+        let crashes = crate::CrashRetention::open(root.into())?;
+        std::env::set_current_dir(crashes.root())?;
+    }
+    Ok(())
 }
 
 async fn stop_services(profile: &DeploymentProfile, processes: &mut ProcessManager) -> Result<()> {

@@ -9,7 +9,7 @@ use crowdb_kv::cluster::{
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
 
 pub struct TestStreamLeaseKv {
-    store: Arc<PxKvStore>,
+    pub store: Arc<PxKvStore>,
     pub kv: Arc<CrowdbKvClient>,
 }
 

@@ -8,6 +8,13 @@ use russh::keys::key::{KeyPair, PublicKey};
 use russh::server::{Auth, Handler, Msg, Session};
 use russh::{Channel, ChannelId, CryptoVec};
 
+#[derive(Clone)]
+#[allow(dead_code)]
+pub enum TestReply {
+    Stdout(Vec<u8>),
+    Failure(String),
+}
+
 pub struct TestSshServer {
     pub port: u16,
     server: tokio::task::JoinHandle<()>,
@@ -19,6 +26,7 @@ impl Drop for TestSshServer {
     }
 }
 
+#[allow(dead_code)]
 impl TestSshServer {
     pub async fn start(key: PublicKey) -> Self {
         Self::start_with_reply(key, None).await
@@ -29,6 +37,14 @@ impl TestSshServer {
     }
 
     pub async fn start_with_host_key(key: PublicKey, reply: Option<Vec<u8>>, host: KeyPair) -> Self {
+        Self::start_server(key, reply.map(TestReply::Stdout), host).await
+    }
+
+    pub async fn start_with_result(key: PublicKey, reply: TestReply) -> Self {
+        Self::start_server(key, Some(reply), KeyPair::generate_ed25519().unwrap()).await
+    }
+
+    async fn start_server(key: PublicKey, reply: Option<TestReply>, host: KeyPair) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let config = Arc::new(russh::server::Config {
@@ -59,7 +75,7 @@ impl TestSshServer {
 
 struct TestHandler {
     key: PublicKey,
-    reply: Option<Vec<u8>>,
+    reply: Option<TestReply>,
 }
 
 #[async_trait]
@@ -88,8 +104,16 @@ impl Handler for TestHandler {
     ) -> Result<(), Self::Error> {
         session.channel_success(channel);
         if let Some(reply) = &self.reply {
-            session.data(channel, CryptoVec::from_slice(reply));
-            session.exit_status_request(channel, 0);
+            match reply {
+                TestReply::Stdout(bytes) => {
+                    session.data(channel, CryptoVec::from_slice(bytes));
+                    session.exit_status_request(channel, 0);
+                }
+                TestReply::Failure(error) => {
+                    session.extended_data(channel, 1, CryptoVec::from_slice(error.as_bytes()));
+                    session.exit_status_request(channel, 1);
+                }
+            }
             session.eof(channel);
             session.close(channel);
             return Ok(());

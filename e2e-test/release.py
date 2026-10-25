@@ -89,15 +89,21 @@ def check_startup(image, artifacts):
     check("invalid-profile", [], "failed to decode deployment profile", mounts=(
         f"type=bind,source={profile.resolve()},target=/opt/crowdb/etc/selected.toml,readonly",),
         environment=("CROWDB_PROFILE_PATH=/opt/crowdb/etc/selected.toml",))
-    source = Path(__file__).resolve().parents[1] / "container/single-node-container/profile.toml"
+    repository = Path(__file__).resolve().parents[1]
+    source = (repository / "container/oci-image/node-profile.toml").read_text()
+    catalog_error = "node profile requires the complete service catalog without preset topology or media"
     for case, body, expected in (
-            ("unknown-selected-service", source.read_text().replace('id = "web"', 'id = "unknown"'), "unknown release service"),
-            ("missing-selected-dependency", source.read_text().replace('dependencies = ["kv"]', 'dependencies = []'), "release service dependency is absent")):
+            ("unknown-selected-service", source.replace('[[services]]\nid = "web"',
+                '[[services]]\nid = "unknown"', 1), catalog_error),
+            ("missing-selected-dependency", source.replace('dependencies = ["kv"]',
+                'dependencies = ["missing"]', 1), "service diskdb has an invalid dependency"),
+            ("preset-selected-topology", (repository / "container/single-node-container/profile.toml").read_text(),
+                catalog_error)):
         profile = root / f"{case}.toml"
         profile.write_text(body)
         check(case, [], expected, mounts=(
             f"type=bind,source={profile.resolve()},target=/opt/crowdb/etc/selected.toml,readonly",),
-            environment=("CROWDB_PROFILE_PATH=/opt/crowdb/etc/selected.toml", "CROWDB_STARTUP_MODE=single"))
+            environment=("CROWDB_PROFILE_PATH=/opt/crowdb/etc/selected.toml",))
         for path in ("node-identity", "ssh", "bootstrap", "kv"):
             if (root / case / path).exists():
                 raise AssertionError(f"{case}: invalid selection created {path}")

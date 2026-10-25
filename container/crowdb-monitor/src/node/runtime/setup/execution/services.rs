@@ -19,6 +19,7 @@ pub(super) async fn advance(
     state: &mut AcceptedSetup,
     binding: &NodeBinding,
     kv: &CrowdbKvClient,
+    storage_ready: bool,
 ) -> Result<bool> {
     if state.status.services.iter().all(|step| {
         matches!(
@@ -73,6 +74,16 @@ pub(super) async fn advance(
                 return Ok(false);
             }
             continue;
+        }
+        if !storage_ready
+            && matches!(
+                kind,
+                SetupServiceKind::Chunkdb | SetupServiceKind::ChunkKv | SetupServiceKind::AccessServer
+            )
+        {
+            step.phase = SetupStepPhase::Waiting;
+            step.detail = Some("Waiting for accepted disks to finish registration".into());
+            return Ok(false);
         }
         if step.operation_id.is_none() {
             step.operation_id = Some(uuid::Uuid::new_v4().to_string());

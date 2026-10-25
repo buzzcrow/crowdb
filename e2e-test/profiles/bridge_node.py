@@ -31,6 +31,10 @@ def origin_for(name):
 def start_node(name):
     data = DATA / name.removeprefix(PREFIX + "-")
     data.mkdir(mode=0o755)
+    policy = DATA / (name.removeprefix(PREFIX + "-") + "-policy.toml")
+    kinds = ("paxos-kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access-server")
+    services = ", ".join(f'{{ kind = "{kind}", enabled = false }}' for kind in kinds)
+    policy.write_text(f'services = [{services}]\n[storage]\nmode = "diskless"\n')
     docker("run", "--rm", "--name", PREFIX + "-prepare", "--network", "none",
            "--label", f"org.crowdb.e2e.run={PREFIX}", "--user", "0",
            "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "32m", "--entrypoint", "/bin/chown",
@@ -41,7 +45,12 @@ def start_node(name):
            "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "1g",
            "--ulimit", "core=-1", "--pids-limit", "256",
            "--mount", f"type=bind,source={data},target=/opt/crowdb/data",
-           "-e", "CROWDB_STARTUP_MODE=manual",
+           "--mount", f"type=bind,source={policy},target=/run/bridge-policy.toml,readonly",
+           "-e", "CROWDB_DEPLOYMENT_MODE=production",
+           "-e", "CROWDB_INITIAL_VOTERS=3",
+           "-e", f"CROWDB_CLUSTER={PREFIX}",
+           "-e", "CROWDB_NODE_POLICY_FILE=/run/bridge-policy.toml",
+           "-e", "CROWDB_SSH_PASSWORD=crowdb",
            "-e", "CROWDB_PHYSICAL_HOST_ID=one-docker-host", IMAGE)
     return origin_for(name)
 

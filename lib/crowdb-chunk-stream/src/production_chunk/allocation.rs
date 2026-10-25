@@ -117,9 +117,12 @@ impl ProductionStreamChunkStore {
                     .checked_add(u64::from(segment.unit_count))
                     .and_then(|end| end.checked_mul(unit_bytes))
                     .is_none()
-                || mirror.segments[..index]
-                    .iter()
-                    .any(|previous| previous.disk_id == segment.disk_id)
+                || mirror.segments[..index].iter().any(|previous| {
+                    previous.disk_id == segment.disk_id
+                        && previous.zone_index == segment.zone_index
+                        && previous.unit_offset < segment.unit_offset + u64::from(segment.unit_count)
+                        && segment.unit_offset < previous.unit_offset + u64::from(previous.unit_count)
+                })
             {
                 return Err(StreamError::Corruption(
                     "fresh stream segment identity or geometry is invalid".into(),

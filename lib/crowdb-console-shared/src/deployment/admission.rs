@@ -305,10 +305,11 @@ async fn control(session: &mut Session, request: &NodeControl) -> Result<Value> 
         .await
         .map_err(config_error)??;
     if !output.success() {
-        return Err(Error::Config(format!(
-            "monitor SSH command failed: {}",
-            output.stderr_str()
-        )));
+        let message = output.stderr_str();
+        if let Some(reason) = message.trim().strip_prefix("Error: Waiting: ") {
+            return Err(Error::DependenciesNotReady(reason.into()));
+        }
+        return Err(Error::Config(format!("monitor SSH command failed: {message}")));
     }
     if output.stdout.len() > 65536 {
         return Err(Error::Config("monitor reply too large".into()));

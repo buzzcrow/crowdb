@@ -24,8 +24,14 @@ async fn managed_files_reserve_physical_identity_and_replay_old_receipts_without
     accept_file_for_tests(root.path(), &request).unwrap();
     let prepared = prepare_file_for_tests(root.path(), &request.operation_id).unwrap();
     let before = std::fs::metadata(&prepared.path).unwrap();
-    let progress = publish_file_for_tests(root.path(), &request.operation_id)
+    crowdb_monitor::resume_file_operations_for_tests(root.path())
         .await
+        .unwrap();
+    let progress = crowdb_monitor::file_operations_for_tests(root.path(), None, 32)
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|state| state.request.operation_id == request.operation_id)
         .unwrap();
     assert_eq!(progress.phase, FilePreparationPhase::WaitingForDiskIO);
     let (high, low) = uuid::Uuid::parse_str(&request.operation_id)

@@ -12,7 +12,12 @@ impl StreamChunkRecordStore {
     /// Reserves the first chunk under a concrete revision before attachment.
     /// # Errors
     /// Rejects an initialized stream, superseding owner or conflicting reservation.
-    pub async fn reserve_initial(&self, candidate: &StreamChunkRecord) -> Result<StreamChunkRecordSnapshot> {
+    /// The previous reservation must be captured before acquiring writer authority.
+    pub async fn reserve_initial(
+        &self,
+        candidate: &StreamChunkRecord,
+        previous: Option<&StreamChunkRecordSnapshot>,
+    ) -> Result<StreamChunkRecordSnapshot> {
         candidate.validate().map_err(super::codec_error)?;
         if candidate.state != StreamChunkState::Candidate || candidate.sequence != 0 {
             return Err(corrupt("initial reservation state or sequence"));
@@ -21,16 +26,15 @@ impl StreamChunkRecordStore {
             return Err(StreamError::StaleWriter);
         }
         let key = super::record_key(candidate)?;
-        let current = self.load_key(&key).await?;
-        if let Some(current) = &current {
-            if current.record.as_ref() == candidate {
-                return Ok(current.clone());
+        if let Some(previous) = previous {
+            if previous.key != key.to_bytes() {
+                return Err(corrupt("initial reservation guard belongs to another stream"));
             }
-            if current.record.writer_epoch >= candidate.writer_epoch {
+            if previous.record.writer_epoch > candidate.writer_epoch {
                 return Err(StreamError::StaleWriter);
             }
         }
-        let revision = current.as_ref().map_or(0, |current| current.revision);
+        let revision = previous.map_or(0, |previous| previous.revision);
         match self
             .backend
             .batch(&[put(candidate)?], &key.to_bytes(), revision)

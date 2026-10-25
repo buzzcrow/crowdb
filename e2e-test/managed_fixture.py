@@ -1,6 +1,6 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
-"""Normal release monitor startup with a mounted service-selection profile."""
+"""Normal node startup with a sealed service-selection policy."""
 
 import json
 import time
@@ -8,18 +8,14 @@ from pathlib import Path
 from allocation import create_network, node_data, start_node
 from fixture import Cluster, LABEL, request, wait
 
-SOURCE = Path(__file__).resolve().parents[1] / "container/single-node-container"
+SOURCE = Path(__file__).resolve().parents[1] / "container/oci-image"
 
 
 def selected_profile(services):
-    parts = (SOURCE / "profile.toml").read_text().split("[[services]]")
-    selected = [part for part in parts[1:] if any(
-        part.splitlines()[1] == f'id = "{service}"' for service in services)]
-    if len(selected) != len(services):
+    known = {"kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"}
+    if len(set(services)) != len(services) or not set(services) <= known:
         raise ValueError("unknown or duplicate release service selection")
-    profile = parts[0] + "".join("[[services]]" + part for part in selected)
-    return profile.replace('"--management-port", "10000"',
-                           '"--management-addr", "0.0.0.0", "--management-port", "10000"')
+    return (SOURCE / "node-profile.toml").read_text()
 
 
 class ManagedCluster(Cluster):
@@ -55,10 +51,32 @@ class ManagedCluster(Cluster):
         return selected_profile(self.services)
 
     def launch(self, data, profile):
+        listeners = {
+            "paxos-kv": ("kv", {"http_port": 10000, "rpc_port": 10100}),
+            "diskdb": ("diskdb", {"rpc_port": 7100}),
+            "diskio": ("diskio", {"rpc_port": 7200}),
+            "chunkdb": ("chunkdb", {"http_port": 7300, "rpc_port": 7301}),
+            "chunk-kv": ("chunk-kv", {"http_port": 7400, "rpc_port": 7401}),
+            "access-server": ("access", {"http_port": 9092, "s3_port": 9091,
+                                         "dataset_port": 9093, "health_port": 9094}),
+        }
+        policy = self.artifacts / "node-policy.toml"
+        choices = []
+        for kind, (role, ports) in listeners.items():
+            ports = ", ".join(f"{key} = {value}" for key, value in ports.items())
+            enabled = str(role in self.services).lower()
+            choices.append(f'{{ kind = "{kind}", enabled = {enabled}, listeners = {{ {ports} }} }}')
+        choices = ", ".join(choices)
+        storage = 'mode = "automatic"\ncapacity_bytes = 17179869184\nreserve_bytes = 1073741824\nsparse = true' \
+            if "diskio" in self.services else 'mode = "diskless"'
+        policy.write_text(f'services = [{choices}]\n[storage]\n{storage}\n')
         return start_node(self, 0, data, (), address=self.address,
             memory="2048m" if len(self.services) > 2 else "512m",
-            environment=("CROWDB_STARTUP_MODE=single", "CROWDB_PROFILE_PATH=/opt/crowdb/etc/e2e-profile.toml"),
-            mounts=(f"type=bind,source={profile},target=/opt/crowdb/etc/e2e-profile.toml,readonly",))
+            environment=("CROWDB_DEPLOYMENT_MODE=local", "CROWDB_INITIAL_VOTERS=1",
+                f"CROWDB_CLUSTER={self.run_id}", "CROWDB_PROFILE_PATH=/opt/crowdb/etc/e2e-profile.toml",
+                "CROWDB_NODE_POLICY_FILE=/run/e2e-node-policy.toml"),
+            mounts=(f"type=bind,source={profile},target=/opt/crowdb/etc/e2e-profile.toml,readonly",
+                    f"type=bind,source={policy},target=/run/e2e-node-policy.toml,readonly"))
 
     def ready(self):
         deadline = time.monotonic() + 60
@@ -71,33 +89,38 @@ class ManagedCluster(Cluster):
             if not state["Running"]:
                 raise AssertionError("normal release monitor exited: " + self.command("logs", self.servers[0]))
             try:
-                last = json.loads(self.command("exec", self.servers[0], "cat",
-                                              "/opt/crowdb/run/status/monitor.json"))
-                if last["phase"] == "ready":
-                    if set(last["services"]) != set(self.services):
-                        raise AssertionError(f"unexpected running services: {last}")
+                report = request(f"http://{self.addresses[0]}:9090", "/api/cluster/status")
+                last = report
+                if report["phase"] == "failed":
+                    raise AssertionError(f"normal selected release services failed: {report}")
+                if report["phase"] == "ready":
+                    status = self.monitor_status()
+                    expected = {"web", "kv"} | {role + "-1" for role in self.services
+                                                   if role not in ("web", "kv")}
+                    if set(status["services"]) != expected:
+                        raise AssertionError(f"unexpected running services: {status}")
                     self.command("exec", self.servers[0], "/opt/crowdb/bin/crowdb-monitor", "readiness")
-                    (self.artifacts / "managed-status.json").write_text(json.dumps(last, indent=2))
+                    (self.artifacts / "managed-status.json").write_text(json.dumps(status, indent=2))
                     self.client_configuration()
                     wait(lambda: request(self.origins[0], "/health"), lambda _: True,
                          "host management reachability")
                     return
-            except RuntimeError as error:
+            except (RuntimeError, OSError) as error:
                 last = str(error)
             time.sleep(0.1)
         raise AssertionError(f"normal selected release services never became ready: {last}")
 
     def client_configuration(self):
-        manifest = self.command("exec", self.servers[0], "cat",
-                                "/opt/crowdb/data/bootstrap/manifest.json")
-        (self.artifacts / "managed-manifest.json").write_text(manifest)
+        accepted = self.command("exec", self.servers[0], "cat",
+                                "/opt/crowdb/data/accepted-node.json")
+        (self.artifacts / "managed-node.json").write_text(accepted)
         config_root = self.artifacts / "runtime-config" / "config"
         config_root.mkdir(parents=True, exist_ok=True)
-        for service in ("chunkdb", "chunk-kv"):
-            if service in self.services:
+        for role in ("chunkdb", "chunk-kv"):
+            if role in self.services:
                 body = self.command("exec", self.servers[0], "cat",
-                                    f"/opt/crowdb/run/config/{service}.toml")
-                (config_root / f"{service}.toml").write_text(body)
+                                    f"/opt/crowdb/data/services/{role}-1/service.toml")
+                (config_root / f"{role}.toml").write_text(body)
         if "access" in self.services:
             credentials = self.artifacts / "client.env"
             credentials.touch(mode=0o600, exist_ok=True)
@@ -117,6 +140,10 @@ class ManagedCluster(Cluster):
         self.ready()
         self.timings["restart"] = time.monotonic() - started
 
+    def service_status(self, service, status=None):
+        key = service if service in ("kv", "web") else service + "-1"
+        return (self.monitor_status() if status is None else status)["services"][key]
+
     def control(self, body):
         if body.get("action") != "recover-service":
             return super().control(body)
@@ -127,7 +154,7 @@ class ManagedCluster(Cluster):
         info = json.loads(self.command("inspect", name))[0]
         if info["Config"]["Labels"].get(LABEL) != self.run_id or not info["State"]["Running"]:
             raise ValueError("service container ownership or running state changed")
-        before = self.monitor_status()["services"][service]
+        before = self.service_status(service)
         pid = before["pid"]
         if type(pid) is not int or pid <= 1:
             raise ValueError("service PID must identify a child of the release monitor")
@@ -139,6 +166,16 @@ class ManagedCluster(Cluster):
         if Path(executable).name != expected:
             raise ValueError("observed service PID executable changed")
         self.command("exec", name, "kill", "-" + signal, str(pid))
+        hung = None
+        if signal == "STOP":
+            try:
+                hung = self.observe_hang(name, service, before)
+            finally:
+                if self.service_status(service).get("pid") == pid:
+                    self.command("exec", name, "kill", "-CONT", str(pid))
+            # Readiness observes a live process; explicit termination triggers
+            # the monitor's eligible-exit recovery policy.
+            self.command("exec", name, "kill", "-KILL", str(pid))
         deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
             cancelled = getattr(self, "control_cancelled", None)
@@ -147,19 +184,35 @@ class ManagedCluster(Cluster):
             if not json.loads(self.command("inspect", name))[0]["State"]["Running"]:
                 raise AssertionError("release container exited during service recovery")
             state = self.monitor_status()
-            after = state["services"][service]
+            after = self.service_status(service, state)
             if (state["phase"] == "ready" and after.get("pid")
                     and after["pid"] != pid and after["generation"] > before["generation"]):
-                expected_event = "child_exited" if signal == "KILL" else "probe_failed"
-                events = [json.loads(line) for line in self.command(
-                    "exec", name, "cat", "/opt/crowdb/data/log/monitor/monitor.log").splitlines()]
-                if not any(event.get("service") == service and event.get("kind") == expected_event
-                           for event in events):
-                    raise AssertionError("service recovery did not record its original fault event")
+                if service not in ("kv", "web"):
+                    execution = json.loads(self.command("exec", name, "cat",
+                        f"/opt/crowdb/data/services/{service}-1/execution.json"))
+                    if (not execution["complete"] or execution["pid"] != after["pid"]
+                            or execution["intent"]["operation_id"] != before["operation_id"]):
+                        raise AssertionError("service recovery changed its accepted operation or durable process result")
                 self.command("exec", name, "/opt/crowdb/bin/crowdb-monitor", "readiness")
-                return {"before": before, "after": after, "event": expected_event}
+                return {"before": before, "after": after, "signal": signal, "hung": hung,
+                        "recovery_trigger": "explicit-termination" if hung else "exit"}
             time.sleep(0.1)
         raise AssertionError(f"{service} did not recover after {signal} within 90 seconds")
+
+    def observe_hang(self, name, service, before):
+        state = self.command("exec", name, "cat", f"/proc/{before['pid']}/status")
+        if "State:\tT" not in state:
+            raise AssertionError("owned process was not stopped by the injected fault")
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            current = self.service_status(service)
+            if (current.get("pid") != before["pid"]
+                    or current["generation"] != before["generation"]):
+                raise AssertionError("health observation restarted a live process")
+            if not current["healthy"]:
+                return current
+            time.sleep(0.1)
+        raise AssertionError(f"{service} hang was not reported by the independent monitor probe")
 
     def monitor_status(self):
         return json.loads(self.command("exec", self.servers[0], "cat",

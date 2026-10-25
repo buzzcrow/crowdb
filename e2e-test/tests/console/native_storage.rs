@@ -69,7 +69,7 @@ pub(super) async fn start_diskdb(context: &TestNativeContext, units: [u64; 3]) {
 }
 
 async fn groups(context: &TestNativeContext) {
-    retire_default_metadata(context).await;
+    verify_manual_metadata(context).await;
     context
         .api(
             Method::POST,
@@ -104,36 +104,24 @@ async fn groups(context: &TestNativeContext) {
     }
 }
 
-async fn retire_default_metadata(context: &TestNativeContext) {
-    // This fixture builds explicit storage geometry. Retire the accepted default
-    // preparation through its public deletion path, then use a fresh metadata ID.
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let response = context
-                .http
-                .get(format!("{}/api/stores/0/groups/1", context.base))
-                .send()
-                .await
-                .unwrap();
-            if response.status().is_success() {
-                let group: Value = response.json().await.unwrap();
-                if group["replicas"].as_array().is_some_and(|replicas| {
-                    replicas.len() == 3
-                        && replicas
-                            .iter()
-                            .all(|replica| matches!(replica["role"].as_str(), Some("leader" | "follower")))
-                }) {
-                    break;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("default metadata group becomes ready before explicit retirement");
+async fn verify_manual_metadata(context: &TestNativeContext) {
     context
-        .api(Method::DELETE, "/api/stores/0/groups/1", Value::Null, 204)
+        .api(Method::GET, "/api/stores/0/groups/1", Value::Null, 404)
         .await;
+    assert!(matches!(
+        context
+            .kv
+            .get(
+                0,
+                0,
+                crowdb_console_shared::deployment::preparation::DEFAULT_PREPARATION_KEY,
+                crowdb_kv_client::ReadMode::Linearizable,
+                None
+            )
+            .await
+            .unwrap(),
+        crowdb_kv_client::GetOutcome::NotFound,
+    ));
 }
 
 async fn disk_group(context: &TestNativeContext, node: u64) {
@@ -178,7 +166,11 @@ async fn wait_diskdb(context: &TestNativeContext) {
                         .unwrap_or_default()
                 })
                 .collect();
-            if groups == BTreeSet::from([1, 2, 3]) {
+            if groups == BTreeSet::from([1, 2, 3])
+                && crowdb_console_shared::deployment::services::diskdb_storage_ready(context.kv.clone())
+                    .await
+                    .is_ok()
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

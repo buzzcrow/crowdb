@@ -31,7 +31,7 @@ def run_recovery(cluster, service):
     elif service == "chunkdb":
         cluster.ready_chunkdb()
     elif service == "chunk-kv":
-        cluster.ready_chunk_kv()
+        cluster.ready_chunk_kv(recovering=True)
     elif service == "diskdb":
         wait(lambda: request(f"http://{cluster.addresses[3]}:7101", "/ready"),
              lambda _: True, "recovered Diskdb readiness")

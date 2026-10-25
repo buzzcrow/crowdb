@@ -29,9 +29,6 @@ pub struct Response {
 /// a future that resolves when the response arrives (or on error).
 pub struct RpcClient {
     handle: sys::crowdb_rpc_client_t,
-    // Raw pointers from Box::into_raw in register_handler. Freed in
-    // Drop to avoid leaking the Rust handler closures.
-    handler_ptrs: std::sync::Mutex<Vec<*mut std::ffi::c_void>>,
 }
 
 impl std::fmt::Debug for RpcClient {
@@ -46,10 +43,7 @@ impl RpcClient {
     /// Create a new RpcClient.
     pub fn new() -> Self {
         let handle = unsafe { sys::crowdb_rpc_client_create() };
-        RpcClient {
-            handle,
-            handler_ptrs: std::sync::Mutex::new(Vec::new()),
-        }
+        RpcClient { handle }
     }
 
     /// Attach the client to a connection so responses are routed to the
@@ -94,23 +88,11 @@ impl RpcClient {
         unsafe { sys::crowdb_rpc_client_stop_reaper(self.handle) };
     }
 
-    /// Clear all registered handlers and free the Rust closures.
+    /// Remove registered handlers; active invocations retain their Rust closures.
     /// Called automatically by `stop_reaper`. Safe to call multiple times.
     pub fn clear_handlers(&self) {
-        // Clear the C++ handler registry first so no dispatch can
-        // access the closures after we free them.
+        // Native dispatch retains each closure until its final invocation returns.
         unsafe { sys::crowdb_rpc_client_clear_handlers(self.handle) };
-        // Free the Rust handler closures.
-        let ptrs = std::mem::take(&mut *self.handler_ptrs.lock().unwrap());
-        for user_data in ptrs {
-            if !user_data.is_null() {
-                unsafe {
-                    drop(Box::from_raw(
-                        user_data.cast::<Box<dyn Fn(ClientRequest) + Send + 'static>>(),
-                    ));
-                }
-            }
-        }
     }
 
     /// Dump all pending request IDs + deadlines to the C++ log. For
@@ -417,9 +399,9 @@ impl RpcClient {
                 msg_type,
                 Some(rust_client_handler_trampoline),
                 user_data,
+                Some(release_handler),
             );
         }
-        self.handler_ptrs.lock().unwrap().push(user_data);
     }
 }
 
@@ -432,18 +414,6 @@ impl Default for RpcClient {
 impl Drop for RpcClient {
     fn drop(&mut self) {
         if !self.handle.is_null() {
-            // Free any handler closures not already freed by
-            // clear_handlers/stop_reaper (e.g. if stop was never called).
-            let ptrs = std::mem::take(&mut *self.handler_ptrs.lock().unwrap());
-            for user_data in ptrs {
-                if !user_data.is_null() {
-                    unsafe {
-                        drop(Box::from_raw(
-                            user_data.cast::<Box<dyn Fn(ClientRequest) + Send + 'static>>(),
-                        ));
-                    }
-                }
-            }
             unsafe { sys::crowdb_rpc_client_destroy(self.handle) };
             self.handle = ptr::null_mut();
         }
@@ -488,12 +458,14 @@ impl std::future::Future for CallFuture {
 // requires a non-null `on_complete` even when no reply is expected.
 unsafe extern "C" fn noop_on_complete(
     _request_id: u64,
-    _control: sys::crowdb_rpc_buffer_t,
-    _data: sys::crowdb_rpc_buffer_t,
+    control: sys::crowdb_rpc_buffer_t,
+    data: sys::crowdb_rpc_buffer_t,
     _status: i32,
     _user_data: *mut std::ffi::c_void,
 ) {
-    // Discard — fire-and-forget.
+    // Completion owns both handles even when the application discards its reply.
+    drop(Buffer::from_raw(control));
+    drop(Buffer::from_raw(data));
 }
 
 /// Get the no-op completion callback for fire-and-forget `send()` calls.
@@ -664,4 +636,12 @@ unsafe extern "C" fn rust_client_handler_trampoline(
         data_len,
     };
     closure(req);
+}
+
+unsafe extern "C" fn release_handler(user_data: *mut std::ffi::c_void) {
+    if !user_data.is_null() {
+        drop(Box::from_raw(
+            user_data.cast::<Box<dyn Fn(ClientRequest) + Send + 'static>>(),
+        ));
+    }
 }

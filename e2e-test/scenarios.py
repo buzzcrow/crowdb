@@ -183,7 +183,7 @@ DEPLOYMENT_CASES = (
     Case("deployment.reference", "deployment::reference::direct_docker_three_nodes", oci_reference="docker-three", oci_address_recovery=True),
     Case("deployment.reference", "deployment::reference::compose_one_node", oci_reference="compose-one"),
     Case("deployment.reference", "deployment::reference::compose_three_nodes", oci_reference="compose-three"),
-    Case("deployment.balance", "deployment::balance::single_node_disables_local_chunk_kv_split_planning", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.balance", "deployment::balance::single_node_preserves_default_chunk_kv_balance_policy", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.listeners", "deployment::listeners::fixed_s3_listener_recovers_after_explicit_termination", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.listeners", "deployment::listeners::fixed_iceberg_listener_recovers_after_explicit_termination", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.browser", "deployment::browser::readonly_release_ui_preserves_domains_and_live_authority", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
@@ -193,10 +193,10 @@ DEPLOYMENT_CASES = (
     Case("deployment.clients", "deployment::clients::official_clients_and_protocol_layout_survive_restart", restart=True, service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=420),
     Case("deployment.kv", "deployment::kv_bootstrap::monitor_creates_real_kv_groups_then_validates_after_restart", restart=True, service_selection=("kv",)),
     Case("deployment.validation", "deployment::validation::invalid_profile_is_rejected", service_selection=("kv",)),
-    Case("deployment.validation", "deployment::validation::invalid_manifest_is_rejected", service_selection=("kv",)),
+    Case("deployment.validation", "deployment::validation::invalid_node_policy_is_rejected", service_selection=("kv",)),
     Case("deployment.storage", "deployment::storage::chunk_services_validate_live_registration_and_logical_topology", restart=True, service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.storage", "deployment::storage::real_iceberg_catalog_and_listener_survive_restart", restart=True, service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
-    Case("deployment.bootstrap", "deployment::bootstrap::interrupted_bootstrap_preserves_completed_steps", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.bootstrap", "deployment::bootstrap::interrupted_setup_preserves_completed_steps", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.hardware", "deployment::hardware_bootstrap::writes_and_validates_hardware_with_real_group_zero", (0, 0, 0), True, groups=(0,)),
     Case("deployment.hardware", "deployment::hardware_bootstrap::conflicting_group_zero_record_rejects_without_creating_hardware", (0, 0, 0), True, groups=(0,)),
     Case("deployment.selection", "deployment::selected_kv_services_recover_acknowledged_data", restart=True),
@@ -430,7 +430,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.cli.container", "console::cli_container::hardware_round_trip", cli_replay="hardware"),
     Case("console.cli.container", "console::cli_container::logical_round_trip", cli_replay="logical"),
     Case("console.cli.container", "console::cli_container::data_round_trip", cli_replay="data"),
-    Case("console.managed", "console::managed::authority_outage", console_browser="Managed native authority outage hides stale topology and retains monitor observation"),
+    Case("console.managed", "console::managed::authority_outage", console_browser="Node authority outage rejects mutations and marks retained observations stale"),
     Case("console.managed", "console::managed::hardware_and_user_flows", console_browser="Managed native KV, Iceberg, S3 and Chunk operations retain hardware boundaries"),
     Case("console.browser.kv", "console::browser_kv::pagination", shell_browser="Group selection opens data directly; pages replace rows and expose complete values"),
     Case("console.browser.kv", "console::browser_kv::binary_bytes", shell_browser="binary byte runs retain printable fields and use distinct uppercase hex without a prefix"),
@@ -693,7 +693,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
     if case.scope == "deployment.clients":
         return DeploymentClientsCluster(image, artifacts, services=case.service_selection, data_root=data_root)
     if case.scope == "deployment.validation":
-        kind = "profile" if "invalid_profile" in case.name else "manifest"
+        kind = "profile" if "invalid_profile" in case.name else "policy"
         return RejectedBootstrapCluster(image, artifacts, kind, data_root=data_root)
     if case.scope == "deployment.bootstrap":
         return InterruptedBootstrapCluster(image, artifacts, services=case.service_selection, data_root=data_root)

@@ -1188,6 +1188,7 @@ version = "0.3.0"
 dependencies = [
  "axum",
  "clap",
+ "crowdb-chunk-kv-client",
  "crowdb-console-shared",
  "crowdb-diskio-client",
  "crowdb-kv",

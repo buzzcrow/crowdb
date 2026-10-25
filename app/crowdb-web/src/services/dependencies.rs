@@ -49,7 +49,7 @@ pub(super) async fn storage_wait_reason(state: &AppState) -> Option<String> {
     let Ok(instances) = registry.read_all_diskio_instances().await else {
         return Some("Waiting: live DiskIO ownership registry is unavailable".into());
     };
-    let hardware = HardwareClient::from_shared(client);
+    let hardware = HardwareClient::from_shared(client.clone());
     let Ok(groups) = hardware.list_disk_groups().await else {
         return Some("Waiting: disk-group hardware is unavailable".into());
     };
@@ -76,6 +76,9 @@ pub(super) async fn storage_wait_reason(state: &AppState) -> Option<String> {
     }
     if groups.iter().any(|group| !owned.contains(&group.dg_id)) {
         return Some("Waiting: every configured disk group needs live DiskIO ownership".into());
+    }
+    if let Err(error) = crowdb_console_shared::deployment::services::diskdb_storage_ready(client).await {
+        return Some(format!("Waiting: {error}"));
     }
     None
 }

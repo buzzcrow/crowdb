@@ -54,6 +54,9 @@ pub(in crate::node::runtime) async fn execute(
         NodeServiceAction::Start | NodeServiceAction::Restart
     ) && !continuing
     {
+        super::dependencies::committed_ready(profile, &intent, &binding)
+            .await
+            .map_err(|error| crowdb_console_shared::error::Error::DependenciesNotReady(error.to_string()))?;
         if attempts >= 5 {
             return Err(
                 "service operation exceeded its durable restart budget; use explicit service controls".into(),
@@ -72,7 +75,7 @@ pub(in crate::node::runtime) async fn execute(
         },
     )?;
     let result = if continuing {
-        wait_ready(profile, processes, &intent)
+        observe_ready(profile, &intent)
             .await
             .map(|()| processes.pid(process_id))
     } else {
@@ -164,6 +167,16 @@ async fn apply(
         None
     };
     Ok(pid)
+}
+
+// A live process has already had its initial startup window. Later health
+// observations must yield after one probe so control requests can make progress.
+async fn observe_ready(profile: &DeploymentProfile, intent: &NodeServiceIntent) -> Result<()> {
+    let service = super::super::probes::for_intent(profile, intent)?;
+    crate::ProbeExecutor::new(intent.kind == "diskio")?
+        .probe_service(&service, &std::collections::BTreeMap::new())
+        .await
+        .map_err(|error| format!("managed service {} readiness failed: {error}", intent.service_id).into())
 }
 
 async fn wait_ready(

@@ -92,39 +92,62 @@ impl ChunkStream {
         metadata: Arc<dyn StreamMetadataStore>,
         chunks: Arc<dyn StreamChunkStore>,
     ) -> Result<Self> {
+        let metadata = metadata.record_store(record.metadata_group_id)?;
+        let previous = metadata
+            .candidates(record.stream_name)
+            .await?
+            .into_iter()
+            .find(|candidate| candidate.record().sequence == 0);
         let authority = registry.claim_writer(record.stream_name, writer_epoch).await?;
         chunks.bind_writer(record.stream_name, writer_epoch, authority.clone());
-        let metadata = metadata.record_store(record.metadata_group_id)?;
-        let active = chunks
-            .allocate_mirrored(record.stream_name, writer_epoch, record.purpose)
-            .await?;
-        authority.check()?;
-        let record = crowdb_protocol::chunk_stream::StreamChunkRecord {
-            stream_id: record.stream_name,
-            purpose: record.purpose,
-            chunk_id: active.chunk_id,
-            state: crowdb_protocol::chunk_stream::StreamChunkState::Active,
-            logical_start: Some(0),
-            logical_end: Some(0),
-            sequence: 0,
-            writer_epoch,
-            generation: 1,
-            owner_session: owner_session()?,
-            trim_offset: 0,
-            closed: false,
-            mappings: crowdb_protocol::chunk_stream::StreamMappings::default(),
-        };
-        let _publication = PhaseTimer::start(&perf().publish);
-        let mut candidate = record.clone();
-        candidate.state = crowdb_protocol::chunk_stream::StreamChunkState::Candidate;
-        candidate.logical_start = None;
-        candidate.logical_end = None;
-        candidate.generation = 0;
-        let candidate = metadata.reserve_initial(&candidate).await?;
-        authority.check()?;
-        let snapshot = metadata.publish(None, record, None, Some(&candidate)).await?;
-        authority.check()?;
-        Self::start(config, metadata, chunks, snapshot, Some(active), Some(authority)).await
+        let initialized = async {
+            let active = chunks
+                .allocate_mirrored(record.stream_name, writer_epoch, record.purpose)
+                .await?;
+            authority.check()?;
+            let record = crowdb_protocol::chunk_stream::StreamChunkRecord {
+                stream_id: record.stream_name,
+                purpose: record.purpose,
+                chunk_id: active.chunk_id,
+                state: crowdb_protocol::chunk_stream::StreamChunkState::Active,
+                logical_start: Some(0),
+                logical_end: Some(0),
+                sequence: 0,
+                writer_epoch,
+                generation: 1,
+                owner_session: owner_session()?,
+                trim_offset: 0,
+                closed: false,
+                mappings: crowdb_protocol::chunk_stream::StreamMappings::default(),
+            };
+            let _publication = PhaseTimer::start(&perf().publish);
+            let mut candidate = record.clone();
+            candidate.state = crowdb_protocol::chunk_stream::StreamChunkState::Candidate;
+            candidate.logical_start = None;
+            candidate.logical_end = None;
+            candidate.generation = 0;
+            let candidate = metadata.reserve_initial(&candidate, previous.as_ref()).await?;
+            authority.check()?;
+            let snapshot = metadata.publish(None, record, None, Some(&candidate)).await?;
+            authority.check()?;
+            Self::start(
+                config,
+                metadata,
+                chunks,
+                snapshot,
+                Some(active),
+                Some(authority.clone()),
+            )
+            .await
+        }
+        .await;
+        if initialized.is_err() {
+            // No data has been admitted; retain chunk expiry fences for abandoned allocations.
+            if let Err(error) = authority.release().await {
+                tracing::warn!(%error, "failed initialization owner release is unconfirmed");
+            }
+        }
+        initialized
     }
 
     /// Opens an existing stream and recovers its durable active cursor.
@@ -164,6 +187,33 @@ impl ChunkStream {
         }
         let authority = registry.claim_writer(stream_name, writer_epoch).await?;
         chunks.bind_writer(stream_name, writer_epoch, authority.clone());
+        let recovered = Self::recover_owned(
+            writer_epoch,
+            config,
+            metadata,
+            chunks,
+            snapshot,
+            authority.clone(),
+        )
+        .await;
+        if recovered.is_err() {
+            if let Err(error) = authority.release().await {
+                tracing::warn!(%error, "failed recovery owner release is unconfirmed");
+            }
+        }
+        recovered
+    }
+
+    async fn recover_owned(
+        writer_epoch: u64,
+        config: StreamConfig,
+        metadata: crate::StreamChunkRecordStore,
+        chunks: Arc<dyn StreamChunkStore>,
+        snapshot: crate::StreamChunkRecordSnapshot,
+        authority: Arc<crate::StreamWriterSession>,
+    ) -> Result<Self> {
+        let base = snapshot.record();
+        let stream_name = base.stream_id;
         let session = owner_session()?;
         let mut completed = base.clone();
         let mut active = super::state::load_active(&snapshot, chunks.as_ref()).await?;
@@ -223,7 +273,15 @@ impl ChunkStream {
             .publish(Some(&snapshot), completed, previous, None)
             .await?;
         super::successor::reclaim_excluded(&metadata, chunks.as_ref(), stream_name, writer_epoch).await?;
-        Self::start(config, metadata, chunks, snapshot, active, Some(authority)).await
+        Self::start(
+            config,
+            metadata,
+            chunks,
+            snapshot,
+            active,
+            Some(authority.clone()),
+        )
+        .await
     }
 }
 

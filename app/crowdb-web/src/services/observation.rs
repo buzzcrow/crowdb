@@ -27,6 +27,8 @@ pub struct ServerSummary {
     /// Live pid if the console currently tracks the process.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// Accepted start awaits an owned PID observation and has not exhausted its launch budget.
+    pub start_pending: bool,
     /// Node process namespace for a remote PID; never a Web-host PID.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid_node_id: Option<u64>,
@@ -43,16 +45,27 @@ pub struct ServerSummary {
 /// # Panics
 /// Panics if the `RwLock` is poisoned.
 pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<ServerSummary>> {
-    if state.node_monitor_url.is_some() && crate::node::cluster_binding(&state).ok().flatten().is_some() {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), super::remote::refresh(&state)).await;
-    }
+    let intents = if state.node_monitor_url.is_some()
+        && crate::node::cluster_binding(&state).ok().flatten().is_some()
+    {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            super::remote::refresh_with_intents(&state),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let snap = state.monitor_cache.snapshot().await;
     let cfg = state.config.read().unwrap().clone();
     let remote = state.node_monitor_url.is_some();
     let remote_pids = if remote {
-        super::remote::processes(&state, &cfg).await
+        super::remote::processes(&state, &cfg, &intents).await
     } else {
-        std::collections::BTreeMap::new()
+        super::remote::ProcessObservations::default()
     };
     let rows = futures::future::join_all(cfg.servers.iter().map(|s| {
         let state = &state;
@@ -76,7 +89,7 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
                     &s.id
                 };
                 s.node_id
-                    .and_then(|node| remote_pids.get(&(node, process_id.to_owned())).copied())
+                    .and_then(|node| remote_pids.pids.get(&(node, process_id.to_owned())).copied())
             } else {
                 runtime_pid.or_else(|| {
                     s.pid
@@ -93,6 +106,7 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
                     .then(|| s.rpc_url.clone().unwrap_or_else(|| s.url.clone())),
                 rpc_url: s.rpc_url.clone(),
                 pid,
+                start_pending: remote_pids.start_pending(s, remote, pid),
                 pid_node_id: if remote && pid.is_some() { s.node_id } else { None },
                 health,
                 service_type: match s.service_type {

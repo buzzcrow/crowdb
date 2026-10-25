@@ -17,18 +17,19 @@ class RejectedBootstrapCluster(ManagedCluster):
         return "invalid = true\n" if self.kind == "profile" else super().profile()
 
     def launch(self, data, profile):
-        if self.kind == "manifest":
-            preparer = self.run_id + "-manifest-input"
+        if self.kind == "policy":
+            preparer = self.run_id + "-policy-input"
             self.containers.append(preparer)
             self.command("run", "--rm", "--name", preparer, "--label",
                 f"org.crowdb.e2e.run={self.run_id}", "--network", "none", "--user", "root",
                 "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "128m", "--pids-limit", "32",
                 "--mount", f"type=bind,source={data},target=/opt/crowdb/data",
                 "--entrypoint", "/bin/sh", self.image, "-ec",
-                "mkdir /opt/crowdb/data/bootstrap; printf 'invalid manifest' > /opt/crowdb/data/bootstrap/manifest.json; chown -R crowdb:crowdb /opt/crowdb/data/bootstrap; chmod 0600 /opt/crowdb/data/bootstrap/manifest.json")
+                "printf 'invalid policy' > /opt/crowdb/data/node-policy.json; chown crowdb:crowdb /opt/crowdb/data/node-policy.json; chmod 0600 /opt/crowdb/data/node-policy.json")
             self.containers.remove(preparer)
         address = start_node(self, 0, data, (), address=self.address, running=False,
-            environment=("CROWDB_STARTUP_MODE=single", "CROWDB_PROFILE_PATH=/opt/crowdb/etc/e2e-profile.toml"),
+            environment=("CROWDB_DEPLOYMENT_MODE=local", "CROWDB_INITIAL_VOTERS=1",
+                f"CROWDB_CLUSTER={self.run_id}", "CROWDB_PROFILE_PATH=/opt/crowdb/etc/e2e-profile.toml"),
             mounts=(f"type=bind,source={profile},target=/opt/crowdb/etc/e2e-profile.toml,readonly",))
         self.command("start", self.servers[0])
         return address

@@ -62,10 +62,14 @@ impl ChunkKvStorage {
             .await?;
         match self.create_registered_stream(stream_name, writer_epoch).await {
             Ok(stream) => Ok(stream),
-            Err(_) => self
+            Err(initialization) => self
                 .open_stream(stream_name, writer_epoch)
                 .await
-                .map_err(|error| storage_plan_error(&error.to_string())),
+                .map_err(|recovery| {
+                    storage_plan_error(&format!(
+                        "stream initialization failed: {initialization}; recovery failed: {recovery}"
+                    ))
+                }),
         }
     }
 }

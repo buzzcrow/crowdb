@@ -14,6 +14,12 @@ use crate::paxos::PxNodeId;
 /// repair step, and peer-applied injection — to integration tests under
 /// `tests/` without permanently widening the production public API.
 impl PxGroup {
+    /// Whether a conditional mutation currently owns one key's admission.
+    #[must_use]
+    pub fn conditional_write_pending_for_tests(&self, key: &[u8]) -> bool {
+        self.cas_transient_map.get(key).is_some()
+    }
+
     /// Run one heartbeat round without depending on the election timer.
     pub async fn heartbeat_round_for_tests(self: &std::sync::Arc<Self>) -> bool {
         matches!(
@@ -38,6 +44,20 @@ impl PxGroup {
     #[must_use]
     pub fn inflight_semaphore(&self) -> &tokio::sync::Semaphore {
         &self.inflight.semaphore
+    }
+
+    /// Hold the next gap repair to model slow prepare or persistence IO.
+    pub fn pause_repair_for_tests(&self) {
+        self.repair_gate.store(1, std::sync::atomic::Ordering::Release);
+    }
+
+    #[must_use]
+    pub fn repair_is_paused_for_tests(&self) -> bool {
+        self.repair_gate.load(std::sync::atomic::Ordering::Acquire) == 2
+    }
+
+    pub fn resume_repair_for_tests(&self) {
+        self.repair_gate.store(3, std::sync::atomic::Ordering::Release);
     }
 
     /// Run one background-repair step, returning the slot that was filled

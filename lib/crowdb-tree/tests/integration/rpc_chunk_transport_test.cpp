@@ -187,9 +187,9 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
     ASSERT_NE(server, nullptr);
     ASSERT_EQ(crowdb_rpc_server_listen(server, "127.0.0.1", 0), CROWDB_RPC_OK);
     AllocateHandlerState handler{.server = server};
-    crowdb_rpc_server_register_handler(server, FBMsgType_EAllocateChunkRequest, handle_allocate, &handler);
-    crowdb_rpc_server_register_handler(server, FBMsgType_EDiskReadRequest, handle_disk_read, &handler);
-    crowdb_rpc_server_register_handler(server, FBMsgType_EDiskWriteRequest, handle_disk_write, &handler);
+    crowdb_rpc_server_register_handler(server, FBMsgType_EAllocateChunkRequest, handle_allocate, &handler, nullptr);
+    crowdb_rpc_server_register_handler(server, FBMsgType_EDiskReadRequest, handle_disk_read, &handler, nullptr);
+    crowdb_rpc_server_register_handler(server, FBMsgType_EDiskWriteRequest, handle_disk_write, &handler, nullptr);
     crowdb_rpc_server_start(server);
 
     crowdb_rpc_client_t client = crowdb_rpc_client_create();

@@ -20,15 +20,24 @@ class S3NodeCluster(Cluster):
     def start(self):
         super().start()
         self.client(self.bundle, "seed", "access_s3::node_failure::seed")
+        # Service indexes are logical identities, independent of dependency order.
+        base = ipaddress.ip_address(self.addresses[0])
+        self.addresses = [str(base + index) for index in range(14)]
         for logical in range(3):
             self.diskdb(logical)
         for logical in range(3):
-            self.chunkdb(logical)
-        for logical in range(3):
             self.diskio(logical)
         self.client(self.bundle, "storage-ready", "access_s3::node_failure::seed")
+        for logical in range(3):
+            self.chunkdb(logical)
         self.chunk_kv()
         self.access()
+        mounted = dict(zip(self.servers, self.data_paths, strict=True))
+        self.servers.sort(key=lambda name: int(name.rsplit("node", 1)[1]))
+        self.data_paths = [mounted[name] for name in self.servers]
+        (self.artifacts / "mounts.json").write_text(json.dumps({
+            "container_data": "/opt/crowdb/data",
+            "host_data": [str(path) for path in self.data_paths]}, indent=2))
         (self.artifacts / "s3-node-endpoints.json").write_text(json.dumps({
             "endpoint": f"http://{self.addresses[13]}:7500",
             "nodes": [{"rack": n + 1, "node": n + 1, "services": [n, n + 3, n + 6, n + 9]}
@@ -46,7 +55,7 @@ class S3NodeCluster(Cluster):
                               mounts=mounts, environment=environment, preserve_network=preserve_network)
         if observed != address:
             raise AssertionError("inspected service endpoint changed")
-        self.addresses.append(observed)
+        self.addresses[index] = observed
         return address
 
     def diskdb(self, logical):

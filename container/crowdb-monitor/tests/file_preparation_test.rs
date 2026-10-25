@@ -271,3 +271,18 @@ fn invalid_geometry_or_operation_path_never_accepts_intent() {
     }
     assert_eq!(fs::read_dir(&root.0).unwrap().count(), 0);
 }
+
+#[tokio::test]
+async fn completed_preparation_without_admission_is_terminal_after_restart() {
+    let root = TestRoot::new();
+    let request = request();
+    accept_file_for_tests(&root.0, &request).unwrap();
+    let before = prepare_file_for_tests(&root.0, &request.operation_id).unwrap();
+    crowdb_monitor::resume_file_operations_for_tests(&root.0)
+        .await
+        .unwrap();
+    assert_eq!(
+        prepare_file_for_tests(&root.0, &request.operation_id).unwrap(),
+        before
+    );
+}

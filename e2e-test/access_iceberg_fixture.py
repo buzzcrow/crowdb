@@ -80,5 +80,5 @@ class AccessIcebergCluster(ChunkKvCluster):
             if body["node"] in (12, 13):
                 self.ready_iceberg(body["node"])
             elif body["node"] == self.chunk_kv_index:
-                self.ready_chunk_kv()
+                self.ready_chunk_kv(recovering=True)
         return result

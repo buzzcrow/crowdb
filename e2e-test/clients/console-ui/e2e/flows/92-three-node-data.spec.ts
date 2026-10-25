@@ -125,7 +125,6 @@ async function addDisks({ page, request }: UIContext) {
 
 async function verifyServices({ page, request, deployments }: UIContext) {
   await step('three-node: all six services resume without Retry', async () => {
-    await expect.poll(async () => (await (await request.get('/api/chunk-storage-readiness')).json()), { intervals: [100] }).toMatchObject({ ready: true });
     for (const kind of ['diskdb', 'diskio', 'chunkdb', 'chunk-kv', 'access-server']) {
       const pending = new Set([1, 2, 3]);
       while (pending.size) {
@@ -141,6 +140,8 @@ async function verifyServices({ page, request, deployments }: UIContext) {
         pending.delete(id);
       }
     }
+    // Completion observes the asynchronous startup before checking readiness.
+    await expect.poll(async () => (await (await request.get('/api/chunk-storage-readiness')).json()), { intervals: [100] }).toMatchObject({ ready: true });
     const servers = await (await request.get('/api/servers')).json();
     expect(servers.filter((server: { pid: number }) => server.pid)).toHaveLength(18);
     const bindings = await (await request.get('/api/hardware/disk-group-bindings')).json();

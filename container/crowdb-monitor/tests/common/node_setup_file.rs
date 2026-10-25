@@ -12,6 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub async fn prepare(
     root: &Path,
+    services: bool,
 ) -> (
     NodeSetupRequest,
     super::node_setup::TestAuthority,
@@ -29,7 +30,7 @@ pub async fn prepare(
         sparse: false,
     };
     for service in &mut request.choices.services {
-        service.enabled = false;
+        service.enabled = services;
     }
     std::fs::create_dir(root.join("ssh")).unwrap();
     std::fs::write(

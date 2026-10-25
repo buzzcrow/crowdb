@@ -20,7 +20,7 @@ async function occupyDiskdbPort(request: APIRequestContext) {
   // Port ownership needs the actual DiskIO listener, without admitting media.
   const defaults = await json(request, '/api/deployment-defaults?node_id=1');
   const deployed = await request.post('/api/nodes/1/services/deploy', { data: {
-    ...defaults.diskio, kind: 'diskio', instance_id: '99', rpc_port: 7102, disk_group_id: 1, test_single_node: false,
+    ...defaults.diskio, kind: 'diskio', instance_id: '99', rpc_port: 7102, disk_group_id: 1,
   } });
   expect(deployed.status(), await deployed.text()).toBe(201);
   const guard = await deployed.json();

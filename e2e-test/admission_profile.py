@@ -12,6 +12,7 @@ import time
 import uuid
 from fixture import docker, redact
 from image_identity import verify_server_sources
+from native_containerd_profile import client_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -74,15 +75,17 @@ def run_profile(args, parser):
     data = (args.data_root / run_root.name / "admission" if args.data_root else
             ROOT / ".crowdb-runtime/test-data/container-e2e" / run_root.name / "admission").resolve()
     data.mkdir(parents=True, mode=0o700)
-    prefix = "crowdb-e2e-admission-" + run_root.name.removeprefix("run-")
+    prefix = "crowdb-admit-" + run_root.name.removeprefix("run-")
     (run_root / "identity.json").write_text(json.dumps({"profile":"bridge-admission", "id":identity["Id"],
         "labels":labels, "sources":source, "cpus":cpus, "memory_mib":memory,
         "node_cpus":args.node_cpus, "host_data":str(data), "container_data":"/opt/crowdb/data",
         "ports":{"web":9090,"ssh":2222},
         "core_policy":Path("/proc/sys/kernel/core_pattern").read_text().strip()}, indent=2))
+    bundle = client_bundle(run_root / "host-client")
     env = os.environ.copy()
     env.update(CROWDB_CONTAINER_IMAGE=identity["Id"], CROWDB_E2E_PROFILE_DATA=str(data),
-               CROWDB_E2E_PROFILE_NAME=prefix, CROWDB_E2E_NODE_CPUS=str(args.node_cpus))
+               CROWDB_E2E_PROFILE_NAME=prefix, CROWDB_E2E_NODE_CPUS=str(args.node_cpus),
+               CROWDB_E2E_CLI_BUNDLE=str(bundle))
     print(f"Bridge admission: exact image {identity['Id']}; artifacts {run_root}", flush=True)
     started, status, code = time.monotonic(), "failed", None
     child = subprocess.Popen([sys.executable, str(ROOT / "e2e-test/profiles/node-containers.py")],

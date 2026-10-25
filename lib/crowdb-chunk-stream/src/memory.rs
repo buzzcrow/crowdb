@@ -83,6 +83,7 @@ pub struct MemoryStreamStore {
     max_active_reads: AtomicUsize,
     fail_next_writes: AtomicUsize,
     fail_next_release: AtomicBool,
+    fail_empty_release: AtomicBool,
     fail_next_renewals: AtomicUsize,
     fail_chunk_renewal: AtomicU64,
     write_started: Notify,
@@ -128,6 +129,7 @@ impl MemoryStreamStore {
             max_active_reads: AtomicUsize::new(0),
             fail_next_writes: AtomicUsize::new(0),
             fail_next_release: AtomicBool::new(false),
+            fail_empty_release: AtomicBool::new(false),
             fail_next_renewals: AtomicUsize::new(0),
             fail_chunk_renewal: AtomicU64::new(0),
             write_started: Notify::new(),
@@ -205,6 +207,10 @@ impl MemoryStreamStore {
     }
     pub fn fail_release_for_tests(&self) {
         self.fail_next_release.store(true, Ordering::Release);
+    }
+
+    pub fn fail_empty_release_for_tests(&self) {
+        self.fail_empty_release.store(true, Ordering::Release);
     }
 
     pub fn fail_next_write(&self) {
@@ -634,6 +640,11 @@ impl StreamChunkStore for MemoryStreamStore {
         _logical_end: u64,
         physical_end: u64,
     ) -> Result<TrimmedChunk> {
+        if physical_end == 0 && self.fail_empty_release.swap(false, Ordering::AcqRel) {
+            return Err(StreamError::ReadUnavailable(
+                "injected empty chunk release failure".into(),
+            ));
+        }
         if physical_end > 0 && self.fail_next_release.swap(false, Ordering::AcqRel) {
             return Err(StreamError::ReadUnavailable(
                 "injected chunk release failure".into(),

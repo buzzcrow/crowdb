@@ -483,18 +483,6 @@ impl super::Partition {
             }
             Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
         }
-        self.wait_for_admitted_mutations().await;
-        self.journal.release_writer().await?;
-        match self.lifecycle.compare_exchange(
-            lifecycle_code(PartitionLifecycle::TransferFencing),
-            lifecycle_code(PartitionLifecycle::TransferQuiesced),
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => {}
-            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferQuiesced => {}
-            Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
-        }
-        Ok(())
+        self.release_drained_writer().await
     }
 }

@@ -27,7 +27,11 @@ async function main() {
     for (const domain of ['cluster', 'kv', 'capacity', 'chunk', 'chunk-kv', 'iceberg', 's3']) {
       await expect(page.getByTestId(`domain-${domain}`)).toBeVisible({ timeout: 3000 });
     }
-    await expect(page.getByRole('button', { name: 'Add Rack' })).toHaveCount(0);
+    await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })
+      .getByRole('button', { name: 'Add Rack', exact: true })).toBeEnabled({ timeout: 3000 });
+    const capabilities = await page.request.get(new URL('/api/mode', process.argv[2]).href);
+    expect(capabilities.ok()).toBe(true);
+    expect(await capabilities.json()).toEqual({ mode: 'node', readonly: false });
     if (process.argv[3]) {
       await verifyAuthorityOutage(page, process.argv[3]);
     }
@@ -47,20 +51,25 @@ async function verifyAuthorityOutage(page, container) {
   await page.clock.install();
   await signalService('STOP', pid);
   try {
-    const failedSnapshot = page.waitForResponse(response =>
-      response.url().endsWith('/api/preview') && response.status() === 503,
+    const observed = page.waitForResponse(response =>
+      response.url().endsWith('/api/node/status') && response.status() === 200,
     { timeout: 10000 });
     await page.clock.runFor(3001);
-    const response = await failedSnapshot;
-    const body = await response.json();
-    expect(body.reason).toBe('group0_unavailable');
-    expect(body.monitor.services.kv.pid).toBe(Number(pid));
-    await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'N-1', exact: true })).toHaveCount(0, { timeout: 3000 });
+    expect((await (await observed).json()).phase).toBe('authority_unavailable');
+    await expect(page.getByTestId('deployment-phase')).toHaveText('Group 0 unavailable · confirmed view is stale', { timeout: 3000 });
+    const mutation = await page.request.post(new URL('/api/racks', process.argv[2]).href,
+      { data: { id: 2, name: 'must-not-commit' } });
+    expect(mutation.status()).toBe(502);
+    await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })
+      .getByRole('button', { name: 'N-1', exact: true })).toBeVisible({ timeout: 3000 });
   } finally {
     await signalService('CONT', pid);
+    await page.clock.resume();
   }
-  await page.clock.runFor(3001);
-  await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible({ timeout: 3000 });
+  await expect(page.getByTestId('deployment-phase')).toHaveText('Active cluster', { timeout: 3000 });
+  const racks = await page.request.get(new URL('/api/racks', process.argv[2]).href);
+  expect(racks.ok()).toBe(true);
+  expect((await racks.json()).some(rack => rack.id === 2)).toBe(false);
 }
 
 async function signalService(signal, pid) {

@@ -25,9 +25,9 @@ pub use storage::supplied::SuppliedOperationsForTests;
 mod trust;
 
 #[cfg(feature = "test-util")]
-pub use runtime::prepare_supplied_disk_for_tests;
+pub use runtime::node_health_for_tests;
 #[cfg(feature = "test-util")]
-pub use runtime::publish_file_for_tests;
+pub use runtime::prepare_supplied_disk_for_tests;
 #[cfg(feature = "test-util")]
 pub use runtime::runtime_observation_for_tests;
 #[cfg(feature = "test-util")]
@@ -41,6 +41,8 @@ pub use runtime::{
     accept_member_trust_for_tests, check_member_trust_for_tests, member_trust_ready_for_tests,
 };
 pub use runtime::{control_node, run_node, run_node_with_inputs, NodeRuntimeConfig};
+#[cfg(feature = "test-util")]
+pub use runtime::{publish_file_for_tests, resume_file_operations_for_tests};
 #[cfg(feature = "test-util")]
 pub use startup::accept_startup_mode_for_tests;
 pub use startup::{accept_node_policy, read_node_policy};

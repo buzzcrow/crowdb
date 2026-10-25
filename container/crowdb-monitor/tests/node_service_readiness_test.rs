@@ -32,12 +32,14 @@ async fn readiness_timeout_preserves_the_live_process_and_start_budget() {
     let program = root.join("starting-service");
     std::fs::write(&program, "#!/bin/sh\nexec sleep 60\n").unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    profile
+    let child = profile
         .services
         .iter_mut()
         .find(|service| service.id == "chunkdb")
-        .unwrap()
-        .program = program;
+        .unwrap();
+    child.program = program;
+    // This probe test owns a dummy child; the dependency gate is covered below.
+    child.dependencies = vec!["kv".into()];
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut intent = NodeServiceIntent {
         cluster_id: authority.binding.bootstrap.cluster_id.clone(),
@@ -74,6 +76,20 @@ async fn readiness_timeout_preserves_the_live_process_and_start_budget() {
         worker.failures_for_tests().unwrap()["chunkdb-2"]["exhausted"],
         false
     );
+    let pending_error = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        worker.execute_for_tests(intent.clone()),
+    )
+    .await
+    .expect("a continuing readiness observation must not occupy another full startup window")
+    .unwrap_err();
+    assert!(
+        pending_error.to_string().contains("readiness failed"),
+        "{pending_error}"
+    );
+    let observed: serde_json::Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+    assert_eq!(observed["pid"], pid);
+    assert_eq!(observed["attempts"], 5);
     let server = tokio::spawn(async move {
         axum::serve(
             listener,

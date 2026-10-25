@@ -251,10 +251,22 @@ bool RpcClient::send_one_way(Transport *transport, Connection *conn, uint64_t re
     return false;
 }
 
-void RpcClient::register_handler(uint16_t msg_type, crowdb_rpc_handler_fn callback, void *user_data)
+void RpcClient::register_handler(uint16_t msg_type, crowdb_rpc_handler_fn callback, std::shared_ptr<void> context)
 {
-    std::scoped_lock lock(handler_mu_);
-    request_handlers_[msg_type] = {callback, user_data};
+    std::pair<crowdb_rpc_handler_fn, std::shared_ptr<void>> retired{callback, std::move(context)};
+    {
+        std::scoped_lock lock(handler_mu_);
+        std::swap(request_handlers_[msg_type], retired);
+    }
+}
+
+void RpcClient::clear_handlers()
+{
+    decltype(request_handlers_) retired;
+    {
+        std::scoped_lock lock(handler_mu_);
+        retired.swap(request_handlers_);
+    }
 }
 
 void RpcClient::dispatch_request(Frame *frame, Connection *conn)
@@ -262,14 +274,14 @@ void RpcClient::dispatch_request(Frame *frame, Connection *conn)
     uint16_t msg_type   = frame->header.msg_type;
     bool     is_one_way = (frame->header.flags & FLAG_ONE_WAY) != 0;
 
-    crowdb_rpc_handler_fn cb        = nullptr;
-    void                 *user_data = nullptr;
+    crowdb_rpc_handler_fn cb = nullptr;
+    std::shared_ptr<void> context;
     {
         std::scoped_lock lock(handler_mu_);
         auto             it = request_handlers_.find(msg_type);
         if (it != request_handlers_.end()) {
-            cb        = it->second.first;
-            user_data = it->second.second;
+            cb      = it->second.first;
+            context = it->second.second;
         }
     }
 
@@ -277,7 +289,7 @@ void RpcClient::dispatch_request(Frame *frame, Connection *conn)
         // Same trampoline as server-side dispatch: extract fields,
         // invoke C callback, delete frame. The callback submits the
         // response later via crowdb_rpc_server_submit_response.
-        invoke_c_handler(cb, user_data, frame, conn);
+        invoke_c_handler(cb, context.get(), frame, conn);
         return;
     }
 

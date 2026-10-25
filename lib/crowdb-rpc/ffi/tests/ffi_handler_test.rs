@@ -175,3 +175,99 @@ async fn custom_rust_handler_with_data() {
 
     server.stop();
 }
+
+struct TestHandlerOwner(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for TestHandlerOwner {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+}
+
+fn check_active_handler_lifetime(client_side: bool) {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc, Barrier,
+    };
+    use std::time::Duration;
+
+    let server = Arc::new(RpcServer::new(None));
+    server.listen("127.0.0.1", 0).unwrap();
+    let client = RpcClient::new();
+    let released = Arc::new(AtomicUsize::new(0));
+    let owner = TestHandlerOwner(Arc::clone(&released));
+    let gate = Arc::new(Barrier::new(2));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let invoke = {
+        let gate = Arc::clone(&gate);
+        move || {
+            std::hint::black_box(&owner);
+            entered_tx.send(()).unwrap();
+            gate.wait();
+        }
+    };
+    if client_side {
+        client.register_handler(31002, move |_request| invoke());
+        server.register_handler(31001, {
+            let server = Arc::clone(&server);
+            let push = RpcClient::new();
+            move |request| {
+                push.send_one_way_to_handle(
+                    &server,
+                    request.conn_handle,
+                    2,
+                    handler_test_control(2),
+                    None,
+                    31002,
+                )
+                .unwrap();
+            }
+        });
+    } else {
+        server.register_handler(31001, move |_request| invoke());
+    }
+    server.start();
+    let connection = server.connect("127.0.0.1", server.port()).unwrap();
+    client.attach(&connection);
+    let call = client
+        .call(&server, &connection, 1, handler_test_control(1), None, 31001)
+        .unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    if client_side {
+        client.clear_handlers();
+    } else {
+        server.clear_handlers();
+    }
+    let released_while_running = released.load(Ordering::Acquire);
+    gate.wait();
+    server.stop();
+    drop(call);
+    assert_eq!(
+        released_while_running, 0,
+        "active dispatch must retain its Rust closure"
+    );
+    assert_eq!(released.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn clearing_server_handlers_retains_an_active_callback() {
+    check_active_handler_lifetime(false);
+}
+
+#[test]
+fn clearing_client_handlers_retains_an_active_callback() {
+    check_active_handler_lifetime(true);
+}
+
+fn handler_test_control(id: u64) -> crowdb_rpc_ffi::Buffer {
+    let mut builder = FlatBufferBuilder::new();
+    let value = ConnectionPingRequest::create(
+        &mut builder,
+        &ConnectionPingRequestArgs {
+            id,
+            rpc_create_nano: 0,
+        },
+    );
+    builder.finish(value, None);
+    crowdb_rpc_ffi::Buffer::from_bytes(builder.finished_data())
+}

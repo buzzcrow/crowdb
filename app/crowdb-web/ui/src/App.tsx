@@ -532,6 +532,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         addNodeRequest={addNodeRequest}
         onCandidatesChanged={handleRefresh}
         nodeManagement={nodeManagement}
+        nodeAuthority={nodeAuthority}
         allServers={allServers}
         racks={racks}
         servers={servers}

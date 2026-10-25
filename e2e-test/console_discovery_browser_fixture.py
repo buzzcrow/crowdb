@@ -27,7 +27,7 @@ class DiscoveryBrowserCluster(ShellBrowserCluster):
              "--ui-root", "/opt/crowdb/ui", "--log-dir", "/opt/crowdb/data/log/web",
              "--node-monitor", monitor), address=provider,
             environment=("CROWDB_RUNTIME_ROOT=/opt/crowdb/data",)))
-        data = node_data(self, 1)
+        data = node_data(self, 1, prepare_logs=False)
         preparation = self.run_id + "-provider-owner"
         self.containers.append(preparation)
         self.command("run", "--rm", "--name", preparation, "--label", f"{LABEL}={self.run_id}",
@@ -36,7 +36,9 @@ class DiscoveryBrowserCluster(ShellBrowserCluster):
             "--mount", f"type=bind,source={data},target=/opt/crowdb/data", self.image,
             "-R", "crowdb:crowdb", "/opt/crowdb/data")
         self.addresses.append(start_node(self, 1, data, (), address=provider,
-            environment=("CROWDB_STARTUP_MODE=manual", f"CROWDB_PHYSICAL_HOST_ID={host}"),
+            environment=("CROWDB_DEPLOYMENT_MODE=production", "CROWDB_INITIAL_VOTERS=3",
+                         "CROWDB_SSH_PASSWORD=crowdb", f"CROWDB_CLUSTER={self.run_id}",
+                         f"CROWDB_PHYSICAL_HOST_ID={host}"),
             network_container=self.servers[0]))
         wait(lambda: HTTP.open(f"http://{self.addresses[0]}:9091/healthz", timeout=5).read(),
              lambda body: body == b"ok", "independent release Web", seconds=20)

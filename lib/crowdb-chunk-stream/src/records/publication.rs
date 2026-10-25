@@ -66,9 +66,12 @@ impl StreamChunkRecordStore {
         });
         let guard = guarded.key.as_slice();
         let mut revision = guarded.revision;
-        for _ in 0..8 {
+        for attempt in 0_u32..8 {
             match self.backend.batch(&ops, guard, revision).await {
                 Ok(outcome) => return Self::decode(&key, &value, outcome.revision, tail.stream_id),
+                Err(Error::CasBusy) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(1 << attempt.min(4))).await;
+                }
                 Err(Error::CasFailed { .. } | Error::OutcomeUnknown) => {
                     let current = self.load_tail(tail.stream_id).await?;
                     if let Some(current) = &current {
@@ -105,11 +108,16 @@ impl StreamChunkRecordStore {
         mut ops: Vec<BatchOp>,
     ) -> Result<()> {
         ops.push(put(&expected.record)?);
-        self.backend
-            .batch(&ops, &expected.key, expected.revision)
-            .await
-            .map(|_| ())
-            .map_err(storage_error)
+        for attempt in 0_u32..8 {
+            match self.backend.batch(&ops, &expected.key, expected.revision).await {
+                Ok(_) => return Ok(()),
+                Err(Error::CasBusy) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(1 << attempt.min(4))).await;
+                }
+                Err(error) => return Err(storage_error(error)),
+            }
+        }
+        Err(StreamError::Backpressure)
     }
 }
 

@@ -68,7 +68,7 @@ impl StreamProcessLeaseClient {
         let epoch = predecessor
             .map_or(Some(1), |previous| previous.process_epoch.checked_add(1))
             .ok_or_else(|| invalid("process epoch overflow"))?;
-        for _ in 0..8 {
+        for attempt in 0..8 {
             let current = self.read(purpose, instance_id).await?;
             if let Some((record, _)) = &current {
                 if record.identity.boot_nonce == boot_nonce && record.identity.process_epoch == epoch {
@@ -102,7 +102,7 @@ impl StreamProcessLeaseClient {
                 record.grant_expires_at_ms = previous.grant_expires_at_ms;
             }
             let revision = current.as_ref().map_or(0, |(_, revision)| *revision);
-            if self.write(&record, revision).await? {
+            if self.write(&record, revision, attempt).await? {
                 return Ok(record);
             }
         }
@@ -119,7 +119,7 @@ impl StreamProcessLeaseClient {
         lease_ms: u64,
     ) -> Result<StreamProcessLease> {
         let expires_at_ms = expiry(now_ms, lease_ms)?;
-        for _ in 0..8 {
+        for attempt in 0..8 {
             let Some((mut record, revision)) = self.read(identity.purpose, identity.instance_id).await?
             else {
                 return Err(StreamProcessLeaseError::Replaced);
@@ -131,7 +131,7 @@ impl StreamProcessLeaseClient {
                 return Err(StreamProcessLeaseError::Expired);
             }
             record.expires_at_ms = record.expires_at_ms.max(expires_at_ms);
-            if self.write(&record, revision).await? {
+            if self.write(&record, revision, attempt).await? {
                 return Ok(record);
             }
         }
@@ -165,7 +165,7 @@ impl StreamProcessLeaseClient {
         }
     }
 
-    async fn write(&self, record: &StreamProcessLease, revision: u64) -> Result<bool> {
+    async fn write(&self, record: &StreamProcessLease, revision: u64, attempt: u32) -> Result<bool> {
         record.validate().map_err(|e| invalid(&e.to_string()))?;
         let identity = record.identity;
         let key = StreamProcessLeaseKey {
@@ -176,9 +176,21 @@ impl StreamProcessLeaseClient {
         let value = serde_json::to_vec(record).map_err(|e| invalid(&e.to_string()))?;
         match self.kv.put_cas(0, 0, key.as_bytes(), &value, revision).await {
             Ok(_) => Ok(true),
-            Err(Error::CasFailed { .. } | Error::CasBusy | Error::OutcomeUnknown) => Ok(false),
+            Err(Error::CasBusy) => {
+                wait_for_cas(attempt).await;
+                Ok(false)
+            }
+            Err(Error::CasFailed { .. } | Error::OutcomeUnknown) => Ok(false),
             Err(error) => Err(error.into()),
         }
+    }
+}
+
+// Renewal and discovery can contend on the same lease. Let the in-flight
+// conditional write complete instead of burning the bounded retry budget.
+async fn wait_for_cas(attempt: u32) {
+    if attempt < 7 {
+        tokio::time::sleep(std::time::Duration::from_millis(1 << attempt.min(4))).await;
     }
 }
 

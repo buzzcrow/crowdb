@@ -12,6 +12,8 @@ use serde_json::Value;
 mod identity;
 mod planned_start;
 pub use planned_start::publish_planned_start;
+mod readiness;
+pub use readiness::diskdb_storage_ready;
 
 /// Commit a current service intent before asking its monitor to execute it.
 /// Identical retries retain the accepted operation identity.

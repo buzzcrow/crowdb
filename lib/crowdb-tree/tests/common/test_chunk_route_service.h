@@ -152,7 +152,8 @@ struct TestChunkRouteFixture
             static_cast<void>(crowdb_rpc_server_listen(service.server, "127.0.0.1", 0));
             for (auto message : {FBMsgType_EAllocateChunkRequest, FBMsgType_EQueryChunkRequest,
                                  FBMsgType_EAdvanceChunkWriteRequest, FBMsgType_ESealChunkRequest}) {
-                crowdb_rpc_server_register_handler(service.server, message, TestChunkRouteService::handle, &service);
+                crowdb_rpc_server_register_handler(service.server, message, TestChunkRouteService::handle, &service,
+                                                   nullptr);
             }
             crowdb_rpc_server_start(service.server);
             auto *connection = crowdb_rpc_connect(service.server, "127.0.0.1", crowdb_rpc_server_port(service.server));

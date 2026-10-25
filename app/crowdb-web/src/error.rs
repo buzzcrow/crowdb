@@ -54,6 +54,7 @@ pub fn map_err(e: Error) -> (StatusCode, Json<ErrorBody>) {
 pub fn map_config_err(e: Error) -> (StatusCode, Json<ErrorBody>) {
     let msg = format!("{e}");
     match e {
+        Error::DependenciesNotReady(_) => err_409(msg),
         Error::Conflict { .. } => (StatusCode::CONFLICT, Json(ErrorBody { error: msg })),
         Error::UpstreamRpc { ref status, .. } if status.contains("HTTP 409") => {
             (StatusCode::CONFLICT, Json(ErrorBody { error: msg }))

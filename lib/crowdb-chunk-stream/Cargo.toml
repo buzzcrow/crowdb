@@ -38,5 +38,5 @@ tracing = { workspace = true }
 [dev-dependencies]
 crowdb-chunk-stream = { path = ".", features = ["test-util"] }
 crowdb-test-harness = { path = "../crowdb-test-harness" }
-crowdb-kv = { path = "../crowdb-kv" }
+crowdb-kv = { path = "../crowdb-kv", features = ["test-util"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }

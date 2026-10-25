@@ -59,6 +59,9 @@ mod allocated;
 #[path = "production_chunk_test/sealing.rs"]
 mod sealing;
 
+#[path = "production_chunk_test/colocated.rs"]
+mod colocated;
+
 struct Allocator {
     chunk: Mutex<Option<Chunk>>,
     successors: Mutex<HashMap<ChunkId, Chunk>>,
@@ -70,6 +73,7 @@ struct Allocator {
     replacement_calls: AtomicUsize,
     replacements: AtomicUsize,
     allocation_copy_limit: AtomicUsize,
+    colocated_offset: AtomicU64,
     pause_growth: AtomicBool,
     growth_started: tokio::sync::Notify,
     growth_resume: tokio::sync::Notify,
@@ -93,6 +97,7 @@ impl Allocator {
             replacement_calls: AtomicUsize::new(0),
             replacements: AtomicUsize::new(0),
             allocation_copy_limit: AtomicUsize::new(0),
+            colocated_offset: AtomicU64::new(u64::MAX),
             pause_growth: AtomicBool::new(false),
             growth_started: tokio::sync::Notify::new(),
             growth_resume: tokio::sync::Notify::new(),
@@ -156,14 +161,24 @@ impl ChunkAllocator for Allocator {
         } else {
             request.copy_count.min(u32::try_from(limit).unwrap())
         };
+        let colocated_offset = self.colocated_offset.load(Ordering::Acquire);
         let segments = (1..=copies)
             .map(|disk| Segment {
                 disk_id: Some(DiskId {
-                    high: (chunk_id.low - 8) * 1000 + u64::from(disk),
+                    high: (chunk_id.low - 8) * 1000
+                        + if colocated_offset == u64::MAX {
+                            u64::from(disk)
+                        } else {
+                            1
+                        },
                     low: 0,
                 }),
                 owner_chunk: Some(chunk_id),
-                unit_offset: 0,
+                unit_offset: if colocated_offset == u64::MAX {
+                    0
+                } else {
+                    u64::from(disk - 1) * colocated_offset
+                },
                 zone_index: 0,
                 unit_count: request.write_granularity / 4,
                 allocation_ts: 1,

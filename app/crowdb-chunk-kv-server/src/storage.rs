@@ -492,12 +492,15 @@ impl ChunkKvStorage {
                 true
             }
         };
-        let stream = if fresh {
-            self.create_registered_stream(config.stream_name, config.owner_epoch)
-                .await?
-        } else {
-            self.open_stream(config.stream_name, config.owner_epoch).await?
-        };
+        let stream = self
+            .open_or_create_stream(
+                config.stream_name,
+                config.partition_id,
+                config.owner_epoch,
+                config.metadata_group_id,
+            )
+            .await
+            .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?;
         let page_store = self
             .open_durable_tree_page_store(
                 ChunkPageStoreOptions {

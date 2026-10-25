@@ -218,3 +218,88 @@ async fn candidate_allocation_outage_backpressures_instead_of_poisoning_the_writ
     assert_eq!(stream.metrics().failed, 0);
     stream.close().await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn active_liveness_outage_backpressures_without_rotating_a_healthy_tail() {
+    let store = Arc::new(MemoryStreamStore::new(128));
+    let stream = stream(store.clone(), Duration::from_secs(10)).await;
+    stream.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    tokio::task::yield_now().await;
+    store.fail_next_renewals(100);
+    tokio::time::advance(Duration::from_secs(10)).await;
+    for _ in 0..4 {
+        tokio::time::advance(Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+    }
+    let writer = stream.clone();
+    let mut pending = tokio::spawn(async move { writer.append(&[Bytes::from_static(b"new")]).await });
+    assert!(
+        timeout(Duration::from_secs(1), &mut pending).await.is_err(),
+        "unconfirmed chunk liveness must apply backpressure without sealing the tail"
+    );
+    assert_eq!(stream.tail(), 3);
+    store.fail_next_renewals(0);
+    timeout(Duration::from_secs(1), pending)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(stream.metrics().rollovers, 0);
+    assert_eq!(stream.read_at(0, 6).await.unwrap(), Bytes::from_static(b"oldnew"));
+    stream.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn unused_candidate_cleanup_failure_does_not_prevent_durable_owner_release() {
+    let store = Arc::new(MemoryStreamStore::new(128));
+    let stream = stream(store.clone(), Duration::from_secs(60)).await;
+    stream.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    let name = stream.stream_name();
+    store.fail_empty_release_for_tests();
+    stream.release_writer().await.unwrap();
+    let chunks = store.chunks_for_tests().await;
+    assert!(!chunks[0].3, "attached data remains retained");
+    assert!(
+        chunks[1].2 && !chunks[1].3,
+        "failed candidate cleanup remains retained for expiry: {chunks:?}"
+    );
+    let next = ChunkStream::open(
+        name,
+        2,
+        StreamConfig::default(),
+        store.clone(),
+        store.clone(),
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    next.append(&[Bytes::from_static(b"new")]).await.unwrap();
+    assert_eq!(next.read_at(0, 6).await.unwrap(), Bytes::from_static(b"oldnew"));
+    next.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn unexpected_candidate_data_blocks_owner_release_instead_of_becoming_cleanup_backlog() {
+    let store = Arc::new(MemoryStreamStore::new(128));
+    let stream = stream(store.clone(), Duration::from_secs(60)).await;
+    stream.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    timeout(Duration::from_secs(1), async {
+        while store.chunks_for_tests().await.len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let chunks = store.chunks_for_tests().await;
+    let encoded = store.synchronized_bytes_for_tests(chunks[0].0).await;
+    store
+        .write_groups_for_tests(stream.stream_name(), 1, chunks[1].0, 0, encoded)
+        .await
+        .unwrap();
+    let released = stream.release_writer().await;
+    assert!(
+        matches!(released, Err(crowdb_chunk_stream::StreamError::Corruption(_))),
+        "a candidate with data violates the empty-candidate contract: {released:?}"
+    );
+    assert_eq!(stream.read_at(0, 3).await.unwrap(), Bytes::from_static(b"old"));
+}
