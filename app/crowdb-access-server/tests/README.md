@@ -344,7 +344,47 @@ identities remain unavailable. Receive traffic, all-copy bytes, layout queries
 and per-request header/first-byte/EOF timing remain unmeasured. The enclosing
 service and inner client windows are not additive total-system CPU measurements.
 
-The current v7 complete TCP/installed-Python/storage-restart acceptance passes in
+The v8 complete TCP/installed-Python/storage-restart acceptance passes in
+`dataset-workload/c660f7ea934540a3bcb527482ecc0da1`: 18 trials, 4,608 requests,
+zero errors and 18 completed observations. The five Dataset service cases pass
+in `container-e2e/run-7d55f126f179499fa00b288de78aae5f`. Image
+`crowdb-node:access-cleanup-v8-20261025` has source revision
+`0174f6b98b8cb5051cdeaff1c7436d9683806e28`, tree
+`394adb644056e73cf480a19005807796198a92fa` and Docker ID
+`sha256:daaf9de782e91b232ebb288ccaf479c4646c2c7529c9110d115ba90bbfca61e1`.
+The original eight sizes, CPU placement, concurrency, repeats, budgets and
+verification remain unchanged. Raw artifacts, validated summaries and hashes
+are retained in `/tmp/crowdb-access-cleanup-v8-evidence-20261025`.
+
+| Path          | Concurrency | MiB/s  | Inner client CPU (s) | Lifetime client RSS (MiB) |
+| ------------- | ----------- | ------ | -------------------- | ------------------------- |
+| HTTP          | 1           | 161.69 | 0.92                 | 11.78                     |
+| Native Rust   | 1           | 196.41 | 0.95                 | 28.55                     |
+| Native Python | 1           | 192.16 | 0.99                 | 54.78                     |
+| HTTP          | 3           | 253.58 | 2.56                 | 16.44                     |
+| Native Rust   | 3           | 270.53 | 2.75                 | 30.66                     |
+| Native Python | 3           | 264.55 | 2.88                 | 61.70                     |
+
+Native Rust throughput is about 21%/7% above HTTP in this run, with higher
+client CPU and RSS. For 128 bytes, HTTP/native Rust median-trial p50/p99 are
+563/1,071 versus 623/710 microseconds at concurrency one, and 818/15,919 versus
+1,080/7,105 at three. At 1 MiB and concurrency one, they are 6,561/9,286 versus
+3,503/3,870 microseconds. Full per-size quantiles remain in the summary and raw
+trials; each trial has only 16/48 observations per size. The separate resident
+64-MiB MD5 kernel takes about 86 ms in Rust and 63–67 ms in Python. Normal reads
+retain all integrity work and Python byte copies.
+
+All twelve native trials confirm one fewer bounded metadata request per read:
+aggregate sent frames are 896 per 128-request trial, versus v7's 1,024, and
+2,688 at concurrency three. Sent aggregate bytes are 273,664/820,992.
+Metadata and data groups remain 192/288 frames and 39,040/21,952 sent bytes
+at concurrency one, with exact threefold counts at three. The strict scan
+preserves a validated terminal owner page, removing its empty confirmation
+request. These selected sent counters prove the request reduction; independent
+v7/v8 throughput or CPU differences do not isolate its timing benefit. The
+observation-window, cumulative-memory and unmeasured-counter scopes above apply.
+
+The preceding v7 complete TCP/installed-Python/storage-restart acceptance passes in
 `dataset-workload/419095e911824fdc9aefe50bbc5bacc9`: 18 trials, 4,608 requests,
 zero errors. Source revision is `a78e981fdb8f3f8251aa3bc99e7beb88aa078d80`, tree
 `32ac07470397bb295e58d58abf79d72f3dbb15a1`, imported Docker ID
@@ -437,9 +477,28 @@ Reproduce after building/importing the matching service image:
 pixi run clean-env && pixi run python tools/sdk/dataset_workload.py --image crowdb-node:access-cleanup-v6-20261025
 ```
 
-The explicit local-HCA profile remains a separate gate. Its current host setup
-needs restoration; environment-gated unit cases are not counted as hardware
-acceptance.
+The strict same-host HCA profile passes on image
+`crowdb-node:access-cleanup-v8-20261025` in
+`native-dataset-hca/b8c70fd1b93443c8918e26122b168eb9`. Its immutable source is
+`0174f6b98b8cb5051cdeaff1c7436d9683806e28`, tree
+`394adb644056e73cf480a19005807796198a92fa`; imported Docker ID is
+`sha256:daaf9de782e91b232ebb288ccaf479c4646c2c7529c9110d115ba90bbfca61e1`.
+The installed native Python consumer publishes through the shared runtime,
+then verifies after all storage services restart. Each phase establishes twelve
+data connections with TCP fallback disabled. Write records 48 sent / 60 received
+RPC frames; verify records 18 / 30. Fallback, protocol, CQ, send and receive-post
+error counters remain zero. Registered memory is 436,404,224 bytes within the
+512-MiB budget. A registered receive lease remains valid through runtime shutdown,
+and its final release returns held credits. Raw observations and image/source
+identity are retained in `/tmp/crowdb-access-cleanup-v8-evidence-20261025`.
+This is local-HCA functional and ownership evidence, not a throughput or
+cross-host measurement; its counters have a separate scope from the TCP workload.
+The separately activated host test
+`hardware_accepted_dataset_read_failure_is_sticky_without_replay` also passes
+with `CROWDB_RDMA_E2E=1`, the same address and device. It verifies an accepted
+second read interrupted after a registered first buffer remains terminal,
+without reconnect, retry, metadata re-selection or loss of held ownership.
+Its complete output is retained alongside the HCA evidence.
 
 The preceding v5 run was
 `dataset-workload/def69a711d4e468880c5cb9fae82e32e`; its native Rust throughput

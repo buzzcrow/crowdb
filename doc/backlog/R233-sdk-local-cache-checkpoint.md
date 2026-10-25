@@ -55,7 +55,8 @@ Dependencies:
   dedicated workload metrics remain a prerequisite.
   HTTP streaming remains the fallback without local storage or when caching is
   disabled. No RDMA or fat client is required for this feature.
-- R220 may reuse these components after proving the same visibility contract.
+- Native Dataset integration may reuse these components after proving the
+  same visibility contract.
 
 Acceptance:
 

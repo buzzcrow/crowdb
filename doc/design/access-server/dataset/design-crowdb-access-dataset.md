@@ -32,8 +32,9 @@ selection, or reclamation authority.
 
 Dataset provides a stable logical model for samples and heterogeneous fields. It
 supports HTTP access through an independently packaged Rust SDK and Python
-native wrapper. Direct storage access is a future client mode with the same
-selection and integrity semantics. It does not own disk placement, replication,
+wrapper, plus trusted direct storage access through the shared native runtime
+and its optional Python extension. Both surfaces preserve the same selection
+and integrity semantics. It does not own disk placement, replication,
 erasure coding, repair, or physical chunk layout. It does not become a query
 engine or a training-framework-specific storage protocol.
 
@@ -120,9 +121,11 @@ would be exceeded. Shuffle never moves or rewrites published payload.
 ## 6. Access surfaces and bounded delivery
 
 HTTP is the portable Dataset surface used by the public Rust SDK and its
-Python native wrapper. In-process typed authority calls preserve the same
-Snapshot semantics. A future direct client uses a bounded versioned routing
-view to reach responsible metadata/data services; it cannot replace authority.
+Python wrapper. The trusted native facade reuses in-process Dataset authority
+and reaches Chunk-KV and ChunkIO/DiskIO through the shared runtime. Its bounded
+versioned routing observations do not replace storage authority. See the
+[native runtime contract](../design-crowdb-native-sdk.md) and
+[native SDK guide](../../../../lib/crowdb-sdk-native/README.md).
 
 `GetSample`, `GetBatch`, and bounded Scan resolve metadata first, apply field
 projection, and then read inline values or chunk ranges/streams. Batch size,
@@ -176,8 +179,11 @@ Python package calls that implementation through PyO3. Clients share pooled
 connections, atomic request/byte admission and process-owned runtime resources.
 Blocking native waits release the GIL; live handles inherited across fork are
 rejected. File transfers and batched iteration bound memory independently of
-file size. Tensor decoding and collation stay above the SDK. Direct Chunk-KV,
-chunk access, local staging and RDMA remain extensions.
+file size. The optional native Python extension calls the shared Rust native
+facade, retaining the same bounded ownership and runtime shutdown contracts.
+Direct metadata and chunk access use the runtime's configured TCP/RDMA policy
+without implicit HTTP fallback. Tensor decoding and collation stay above both
+SDK surfaces; optional local staging remains a separate extension.
 
 ## 9. Correctness invariants
 

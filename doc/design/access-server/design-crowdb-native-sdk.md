@@ -137,11 +137,13 @@ runtime. A Dataset facade attaches to the common runtime and delivery contracts
 while retaining Dataset authority, Snapshot/Split binding and caller-owned
 checkpoints. Buffer release, download completion and saving a processing
 checkpoint remain separate events. `BatchBody` delivers field metadata and
-lazy payload leases with per-part and whole-field integrity checks. Active
-reads renew the existing 60-second protection while live; cancellation stops
-renewal and releases the active handle, with TTL expiry bounding interrupted
-cleanup. There is no persistent read session or remote ack/close. A continuation replays
-the same batch on an independent client; only the caller saves the next position.
+lazy payload leases with per-part and whole-field integrity checks. Read
+admission checks authoritative Snapshot and Split deletion state without
+persistent reader registration, renewal or release. A durable deletion mark
+rejects new reads and records a fixed twenty-minute cleanup grace; admitted
+streams may finish, and overdue reads may fail after reclamation. There is no
+persistent read session or remote ack/close. A continuation replays the same
+batch on an independent client; only the caller saves the next position.
 
 The optional native Python extension owns a shared runtime and exposes retained
 immutable leases. Slicing shares allocation ownership; conversion to Python

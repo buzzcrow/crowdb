@@ -128,7 +128,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/access-server/dataset/openapi-crowdb-dataset-v1.yaml`             | Dataset REST v1 schemas, framing, bounds and retries.   |
 | `doc/design/access-server/dataset/openapi-crowdb-dataset-v2.yaml`             | Dataset REST v2 capability-gated control operations.    |
 | `doc/design/access-server/design-crowdb-native-sdk.md`                        | Trusted runtime, topology, S3 and host-lease ownership. |
-| `lib/crowdb-sdk-native/README.md`                                             | Native S3 configuration, streaming and HCA acceptance.  |
+| `lib/crowdb-sdk-native/README.md`                                             | Native S3/Dataset configuration, streaming and HCA.     |
 | `sdk/README.md`                                                               | Rust/Python SDK installation and resource ownership.    |
 
 Prefer the most specific match. Open a root design only for cross-topic work;

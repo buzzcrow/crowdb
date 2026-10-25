@@ -12,8 +12,10 @@ registered buffer ownership, and single-node shared-HCA verification.
 Persistent-plan exception: retain this root record for accepted local-HCA
 measurements. Completed child plans and implementation checklists are removed; the evidence remains reproducible.
 
-R5 is complete. Active Dataset work and its pause/resume handoff live in the
-[native Dataset plan](plan-dataset-native-sdk.md#handoff-2026-10-23).
+R5 is complete. The [native Dataset guide](../../lib/crowdb-sdk-native/README.md#dataset)
+and [Dataset design](../design/access-server/dataset/design-crowdb-access-dataset.md)
+define its supported contract. Dataset service and workload evidence remains
+in the [Access acceptance record](../../app/crowdb-access-server/tests/README.md#dataset-httpnative-comparison).
 [Physical multi-node verification](plan-rdma-multi-node.md) is an independent,
 plan-only follow-up and is outside the completed R5 acceptance.
 
@@ -256,11 +258,12 @@ copy remains explicitly identified.
 
 The [native SDK guide](../../lib/crowdb-sdk-native/README.md) and
 [architecture](../design/access-server/design-crowdb-native-sdk.md) define the
-supported API. [R220](../backlog/R220-dataset-fat-client-plan.md) attaches
-Dataset authority, Snapshot/Split binding and explicit acknowledgement to the
-same runtime. Its implementation and real-service Python/local-HCA semantics
-pass; complete workload acceptance and shared KV retention verification remain
-in the linked Dataset plan. GPUDirect remains a separate follow-up.
+supported API. The [Dataset facade](../../lib/crowdb-sdk-native/README.md#dataset)
+attaches shared Dataset authority, Snapshot/Split binding and caller-owned
+checkpoints to the same runtime, without persistent read sessions or remote
+acknowledgements. Its service, workload and local-HCA evidence is retained in
+the [Access acceptance record](../../app/crowdb-access-server/tests/README.md#dataset-httpnative-comparison).
+GPUDirect remains a separate follow-up.
 
 ## Verification commands
 

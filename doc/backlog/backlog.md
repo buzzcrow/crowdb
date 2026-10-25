@@ -16,10 +16,6 @@ live in the linked document; implementation follows
 - **[R233](R233-sdk-local-cache-checkpoint.md)** — optional local disk read cache
   and recoverable checkpoint staging with explicit remote durability.
   **Area:** SDK. **Complexity:** High. **Status:** Deferred until dedicated HTTP workload measurements.
-- **[R220](R220-dataset-fat-client-plan.md)** — trusted internal Dataset adapter
-  on the existing native runtime, measurements, and Python integration.
-  **Area:** Dataset SDK. **Complexity:** High. **Status:** Native Rust/Python and
-  same-source TCP workload/restart pass; local-HCA acceptance awaits host setup.
 
 ## Access server and external data
 

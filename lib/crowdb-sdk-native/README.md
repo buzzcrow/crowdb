@@ -181,6 +181,9 @@ single final release; releasing a freed handle again is invalid.
 
 ```sh
 pixi run -- cargo test -p crowdb-sdk-native --all-targets
+pixi run clean-env && pixi run python e2e-test/run.py --layer dataset --image crowdb-node:dev
+pixi run clean-env && pixi run python tools/sdk/dataset_workload.py --image crowdb-node:dev
+pixi run clean-env && pixi run python tools/rdma/run-native-dataset.py --image crowdb-node:dev --address 10.200.1.1 --device rocep35s0f0
 pixi run clean-env && pixi run -- python e2e-test/run.py --layer s3 --scope s3.native --concurrency 1 --cpus 4 --memory-mib 8192 --image crowdb-node:dev
 pixi run clean-env && pixi run -- python tools/rdma/run-native-s3.py --address 10.200.1.1 --device rocep35s0f0
 ```
@@ -192,3 +195,7 @@ loopback endpoints and CM ports. It validates mixed sizes, registered producers,
 held-capacity pressure, lease lifetime and restart; it is a local-loop functional
 profile, not a cross-host performance measurement. The TCP profile includes a
 separate HTTP/native semantic comparison and OCI consumers with no RDMA device.
+The Dataset workload compares the same immutable Snapshot through HTTP, native
+Rust and installed native Python. Its measurements and scope are retained in
+the [Access acceptance record](../../app/crowdb-access-server/tests/README.md#dataset-httpnative-comparison).
+Do not overlap these owned fixtures or run builds during measured trials.
