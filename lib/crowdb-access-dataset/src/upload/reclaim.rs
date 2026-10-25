@@ -5,7 +5,7 @@ use crate::{
     AuthorityError, DatasetAuthority, DatasetIdentity, DatasetUploads, FieldLocator, ManifestRecord,
     MetadataScanBudget, ReadCancellation, SnapshotId, StoreError, UploadError,
 };
-use std::time::Duration;
+use std::{collections::BTreeSet, time::Duration};
 
 #[derive(Debug, thiserror::Error)]
 pub enum UploadReclaimError {
@@ -97,6 +97,7 @@ impl DatasetAuthority {
         if progress.complete {
             return Ok(progress.clone());
         }
+        let mut retired = BTreeSet::new();
         for _ in 0..20 {
             let Some(sample) = manifest.samples.get(progress.sample) else {
                 progress.complete = true;
@@ -105,9 +106,12 @@ impl DatasetAuthority {
             if let Some(field) = sample.fields.get(progress.field) {
                 if let FieldLocator::Chunk { location, .. } = &field.value {
                     if DatasetUploads::upload_id(identity, location).is_ok() {
-                        uploads
-                            .retire_owner(location, record.publication.operation)
-                            .await?;
+                        if !retired.contains(location) {
+                            uploads
+                                .retire_owner(location, record.publication.operation)
+                                .await?;
+                            retired.insert(location);
+                        }
                         progress.retired_references = progress
                             .retired_references
                             .checked_add(1)

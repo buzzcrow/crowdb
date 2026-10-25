@@ -1,6 +1,13 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "snapshot_upload_cursor/retirement.rs"]
+mod retirement;
+#[path = "common/snapshot_upload_retirement.rs"]
+mod retirement_store;
+#[path = "common/snapshot_resource.rs"]
+#[allow(dead_code)]
+mod snapshot_resource;
 #[path = "common/upload.rs"]
 #[allow(dead_code)]
 mod upload;
