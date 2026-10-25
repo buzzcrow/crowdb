@@ -22,9 +22,102 @@ Client recipes: [container development](../../../container/single-node-container
   Provisioned allocation capacity bounds storage; cumulative orphan storage
   is not bounded by active request limits.
 
-## Evidence retention after shared-directory removal
+## Expanded cleanup and read observations
 
-During the subsequent Dataset run, the repository's `.crowdb-runtime` and
+The 2026-10-25 cleanup batch passes 1,842 tests across 407 targets in six
+affected crates, with zero failures and 13 separately configured cases ignored.
+Workspace all-target/all-feature clippy, normal lint, formatting, C++ tree lint,
+184 fixture unit checks and the independent HTTP SDK gates pass. These gates
+and the measurements below precede the subsequent rebase onto newer `main`.
+
+The measured image is `crowdb-node:access-cleanup-v10-20261025`, Docker ID
+`sha256:c54fca81a58c4255ee38668a95f0dfa615111c35eda574cc0c9895fc043446ce`.
+Its build revision is `8611270da82b1b49cf4619092f7961c3ff1c7ea5`, captured tree
+`b733912cba7ea0c88d2c4d6a8ceb23043694f45f`, and runtime SHA256
+`00189c332c7eafc461390b8f09266f441c9af7e3de4eeb7912fc5c1ccd3dcccc`.
+The later host-test correction changes no production source. Every selected
+service run verifies the matching image and server-source identity.
+
+Seven real-service cases pass with their original budgets and deadlines:
+
+- The new two-cleaner matrix passes in
+  `container-e2e/run-0c6216e0dd5b4d3297eb08926ad1986a`. Both Access processes
+  are killed and restarted three times. Nine dead canonical files disappear,
+  their candidates and purge task complete, and 16,777,304 logical bytes are
+  accounted. A future deleted file remains retained at its original deadline
+  while a higher-ID expired file completes. Each cleaner records ten errors
+  scanning an independent corrupt catalog; its original bytes remain intact
+  while the healthy catalog converges.
+- A real 16-MiB dedicated object is written and verified before cleanup. The
+  accepted retirement is exactly `[0,16785954)` within the unchanged sealed
+  extent of 16,786,432 bytes, with writer epoch zero. This verifies a range
+  larger than the unchanged 8-MiB payload budget: a deletion control notification
+  consumes one chunk-operation request and no referenced payload bytes.
+- The matrix takes 119.03 seconds; its final uninterrupted drain takes
+  105,874 ms. Forty-eight official-SDK table lifecycles and 64 native small
+  writes complete, with successful SDK requests inside three observed deletion
+  intervals. Table create/commit/load/read-metadata p99 values are
+  305.612/44.717/4.532/14.729 ms. Table actions have 48 samples each; namespace
+  create/drop have four. These are finite same-host observations, without an
+  isolated baseline, a physical-capacity claim or an arbitrary-restart SLO.
+- The unchanged external/tree/live-gap case passes in 167.38 seconds. All five
+  Dataset HTTP, SDK and restart cases also pass on this image.
+
+The first matrix execution fails its overlap assertion: sparse multipart
+cleanup starts pressure at 51.59 seconds, but purge deletion starts at
+106.92 seconds after the SDK load has ended. The host test now starts and
+observes pressure using the selected purge's deletion count. The original
+overlap assertion, deadlines, workload and production implementation remain.
+The failed run `run-5de26741afd24a4ba63215ddf20a9d04` is retained separately.
+
+Dataset workload `dataset-workload/fb782f743944466ea6193a148dc46e69` passes all
+18 trials, 4,608 complete requests and 18 completed observations, with zero
+errors. Installed Python byte/continuation/Split checks and storage restart
+also pass. The original eight sizes, concurrency one/three, two warmup rounds,
+three repeats, sixteen rounds, integrity checks and 600-second child bound
+remain. Client CPU is pinned to 2, services to 4–15, and metadata replicas retain
+their 2-GiB cap. This is the TCP profile; earlier HCA evidence retains its own
+image identity in [the Dataset/HCA record](#dataset-httpnative-comparison).
+
+| Path          | Concurrency | MiB/s  | Inner client CPU (s) | Lifetime client RSS (MiB) |
+| ------------- | ----------- | ------ | -------------------- | ------------------------ |
+| HTTP          | 1           | 152.98 | 0.95                 | 12.18                    |
+| Native Rust   | 1           | 202.25 | 0.94                 | 29.04                    |
+| Native Python | 1           | 190.04 | 0.97                 | 55.14                    |
+| HTTP          | 3           | 241.76 | 2.74                 | 16.88                    |
+| Native Rust   | 3           | 271.95 | 2.73                 | 31.54                    |
+| Native Python | 3           | 269.04 | 2.82                 | 63.96                    |
+
+Throughput divides summed bytes by summed inner trial time; client CPU sums
+inner ticks, while RSS is the maximum lifetime high-water observation. These
+independent runs do not isolate the speedup of any individual patch.
+
+Every trial now records cumulative client-visible batch-header, first nonempty
+delivery and verified-EOF offsets alongside the unchanged completion latency.
+They are not wire-first-byte timings or additive phase durations. Python's
+explicit `to_bytes` copies are counted separately. All twelve native trials
+validate the sixteen existing shared-reader counter deltas, including positive
+layout-query counts, against the raw boundary snapshots. Native metadata,
+aggregate and data sent groups remain separate from those shared-reader metrics.
+The selected counters are not all RPCs or all copies. Service CPU windows include
+background work and sequential capture; they cannot be added to inner client CPU
+as exact total-system cost. Process/cgroup peaks and held high-water observations
+are cumulative, not per-trial peaks. TCP receive totals, all-copy bytes, precise
+GC attribution and per-request server CPU remain unmeasured.
+
+The former `/tmp` summaries are absent when work resumes on 2026-10-26. The
+original repository artifacts and OCI receipt remain available. A read-only
+reconstruction verifies all eighteen raw phase/count/copy reports, resource and
+transport deltas, and the seven passing service cases without rerunning them.
+Raw records, reconstructed summaries, verification source, image/source archives
+and a verified Git checkpoint are preserved locally under
+`.crowdb-runtime/persistent/task-checkpoints/access-simplification-20261026`.
+The immutable image results above do not certify later production changes from
+rebasing onto `main`.
+
+## Historical evidence retention after shared-directory removal
+
+During an earlier Dataset run, the repository's `.crowdb-runtime` and
 `target` directories disappeared. The deletion source is unconfirmed. Artifact
 IDs below identify their completed executions; the original runtime directories
 are no longer present. Source commits and Git bundle backups remain intact.
@@ -83,9 +176,9 @@ of the removed OCI archive.
 - Create one consolidated optimization backlog later. No new performance backlog
   or latency guarantee is introduced by the functional-test split itself.
 
-## Current cleanup regression gates
+## Previous cleanup regression gates
 
-The final six-crate all-target/all-feature gate passes 1,828 tests across 403
+The preceding v9 six-crate all-target/all-feature gate passes 1,828 tests across 403
 targets, with zero failures and 13 separately configured cases ignored.
 Workspace all-feature clippy, normal lint, both workspace formatting checks,
 the container client build and 179 fixture unit tests pass. The matching local
@@ -407,8 +500,10 @@ member-process RSS, cumulative process HWM, charged cgroup memory and cumulative
 cgroup peaks are retained separately; none is a per-trial peak. Local native
 metadata, aggregate and data transport groups retain selected sent-frame/byte
 deltas without adding repeated process RUSAGE counters. Missing, reset or changed
-identities remain unavailable. Receive traffic, all-copy bytes, layout queries
-and per-request header/first-byte/EOF timing remain unmeasured. The enclosing
+identities remain unavailable. In this initial observation revision, receive
+traffic, all-copy bytes, layout queries and per-request header/first-byte/EOF
+timing remain unmeasured; the [expanded observations](#expanded-cleanup-and-read-observations)
+later add layout counters and client-visible delivery phases. The enclosing
 service and inner client windows are not additive total-system CPU measurements.
 
 The v8 complete TCP/installed-Python/storage-restart acceptance passes in
