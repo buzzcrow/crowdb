@@ -34,9 +34,6 @@ impl ChunkAllocator for TestReadStorage {
     async fn delete_chunk(&self, _: DeleteChunkRequest) -> Result<DeleteChunkResponse> {
         panic!("read deleted storage")
     }
-    async fn update_chunk_strip(&self, _: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        panic!("read updated storage")
-    }
     async fn query_chunk(&self, _: QueryChunkRequest) -> Result<QueryChunkResponse> {
         self.queries.fetch_add(1, Ordering::Relaxed);
         Err(IoError::Topology("test owner unavailable".into()))

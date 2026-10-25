@@ -60,7 +60,8 @@ signal.pause()
 import os, sys, time
 from pathlib import Path
 assert os.environ["CROWDB_RDMA_ALLOW_TCP_FALLBACK"] == "0"
-assert sys.argv[1:3] == ["bench", os.environ["RDMA_FIXTURE_VERB"]]
+assert sys.argv[1] == "--log-dir"
+assert ("--rdma" in sys.argv) == (os.environ["RDMA_FIXTURE_VERB"] == "rdma")
 for flag, expected in [("--mode", "coroutine"), ("--loader-count", "4"),
     ("--connection-count", "2"), ("--cq-count", "2"), ("--wire-slot-capacity", "1024")]:
     assert sys.argv[sys.argv.index(flag) + 1] == expected

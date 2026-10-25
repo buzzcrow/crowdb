@@ -9,13 +9,13 @@ use crowdb_rpc_ffi::co_bench::CoStats;
 use crowdb_rpc_ffi::sys::CrowdbRpcClientCounters;
 use serde_json::{json, Value};
 
-use super::workload::{Count, EchoWorkload};
+use super::echo::{Count, EchoWorkload};
 use super::RpcArgs;
 
 pub(super) fn base(args: &RpcArgs, rdma: bool) -> Value {
     let mut row = json!({
         "schema_version": 1, "case_id": args.case_id, "repeat_index": args.repeat_index,
-        "run_id": chrono::Utc::now().to_rfc3339(), "requested_path": if rdma {"rdma"} else {"tcp"},
+        "run_id": format!("unix-ns:{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()), "requested_path": if rdma {"rdma"} else {"tcp"},
         "control_path": "tcp", "client_mode": args.mode, "parameters": args,
         "loader_count": args.loader_count, "connection_count": args.connection_count,
         "producer_threads": 0, "coroutine_starter_threads": 1, "in_flight_per_loader": 1, "logical_ops_per_rpc": 1,

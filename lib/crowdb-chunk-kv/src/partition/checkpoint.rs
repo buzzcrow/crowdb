@@ -59,7 +59,7 @@ impl Partition {
         self.journal.checkpoint().await?;
         let stream_generation = self.journal.record_generation();
         let (tree_manifest, applied_seq) = self.tree.checkpoint(replay_offset).await?;
-        let root_manifest_generation = self.tree.root_record_generation()?;
+        let root_manifest_generation = self.tree.root_manifest_generation()?;
         if applied_seq > self.journal_durable_seq.load(Ordering::Acquire)
             || self.tree.last_applied_seq() < applied_seq
         {
@@ -104,6 +104,11 @@ impl Partition {
         {
             return Err(ChunkKvError::InvalidRequest(
                 "checkpoint does not belong to this frontier".into(),
+            ));
+        }
+        if checkpoint.replay_offset != 0 {
+            return Err(ChunkKvError::MaintenanceDegraded(
+                "WAL prefix trim requires durable expired-request floors".into(),
             ));
         }
         self.journal.trim_prefix(checkpoint.replay_offset).await

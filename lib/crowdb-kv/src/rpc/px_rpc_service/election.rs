@@ -2,11 +2,10 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    build_heartbeat_response, build_pre_vote_response, build_request_vote_response, build_step_down_response,
-    px_error_to_ret_code, record_group_context, spawn_request, submit_error, submit_fb_response, Arc,
-    FBHeartbeatRequest, FBKvRetCode, FBMsgType, FBPreVoteRequest, FBRequestVoteRequest, FBStepDownRequest,
-    HeartbeatRequestPayload, PxLocalReplica, PxRpcService, ReplicaHandler, RpcServer, ServerRequest,
-    StepDownRequestPayload, VoteRequestPayload,
+    build_pre_vote_response, build_request_vote_response, build_step_down_response, px_error_to_ret_code,
+    record_group_context, spawn_request, submit_error, submit_fb_response, Arc, FBKvRetCode, FBMsgType,
+    FBPreVoteRequest, FBRequestVoteRequest, FBStepDownRequest, PxLocalReplica, PxRpcService, ReplicaHandler,
+    RpcServer, ServerRequest, StepDownRequestPayload, VoteRequestPayload,
 };
 
 impl PxRpcService {

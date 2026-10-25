@@ -40,7 +40,7 @@ impl TestReadStorage {
                 .map(|(index, payload)| {
                     let mut frame = Vec::with_capacity(4096);
                     frame.extend_from_slice(
-                        &encode_frame(FrameMagic::RepoSmallV1, chunk_id(index), payload, 1).unwrap(),
+                        &encode_frame(FrameMagic::RepoSmallV2, chunk_id(index), payload, 1).unwrap(),
                     );
                     OwnedPayload::from(frame)
                 })
@@ -74,9 +74,6 @@ impl ChunkAllocator for TestReadStorage {
     }
     async fn delete_chunk(&self, _: DeleteChunkRequest) -> Result<DeleteChunkResponse> {
         panic!("read deleted")
-    }
-    async fn update_chunk_strip(&self, _: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        panic!("read updated")
     }
     async fn query_chunk(&self, request: QueryChunkRequest) -> Result<QueryChunkResponse> {
         self.queries.fetch_add(1, Ordering::Relaxed);

@@ -11,8 +11,8 @@ use crowdb_chunk_kv::{
 use crowdb_chunk_kv_server::ChunkKvService;
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamMetadataStore,
-    StreamName, StreamRegistry,
+    ChunkStream, StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName, StreamRecord,
+    StreamRecordState, StreamRegistry,
 };
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeBalancePolicy, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
@@ -21,6 +21,9 @@ use crowdb_protocol::chunk_kv::{
     ServingGrant,
 };
 
+#[path = "../process.rs"]
+mod test_process;
+
 pub(super) const PARTITION: Id128 = Id128 { high: 1, low: 2 };
 pub(super) const EPOCH: u64 = 4;
 
@@ -28,13 +31,15 @@ pub(super) async fn create(endpoint: &str) -> Arc<ChunkKvService> {
     let stream_name = StreamName { high: 30, low: 31 };
     let store = Arc::new(MemoryStreamStore::new(32 << 20));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
         },
         EPOCH,
         StreamConfig::default(),
@@ -68,7 +73,7 @@ pub(super) async fn create(endpoint: &str) -> Arc<ChunkKvService> {
         journal,
     )
     .unwrap();
-    let service = Arc::new(ChunkKvService::new(7, 8).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(7), 8).unwrap());
     let (head, page) = catalog(endpoint, stream_name);
     service
         .install_catalog_and_reconcile(&head, &[page], &[partition])
@@ -137,6 +142,7 @@ pub(super) fn renew(service: &ChunkKvService, sequence: u64) {
     let now = u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()).unwrap();
     let mut grant = ServingGrant {
         instance_id: 7,
+        process_epoch: 1,
         lease_sequence: sequence,
         catalog_generation: 1,
         issued_at_ms: now,

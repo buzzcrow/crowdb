@@ -671,8 +671,6 @@ void crowdb_rpc_server_register_echo_handler(crowdb_rpc_server_t server, uint16_
     }
 }
 
-
-
 // ── Logging ───────────────────────────────────────────────────────
 
 void crowdb_rpc_init_logging(const char *log_dir, const char *level, size_t max_file_mb, size_t max_files,

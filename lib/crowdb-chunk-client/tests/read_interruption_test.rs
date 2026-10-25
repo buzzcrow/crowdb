@@ -15,6 +15,7 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::frame::{FRAME_FOOTER_BYTES, FRAME_V2_HEADER_BYTES};
 use crowdb_rpc_ffi::OwnedPayload;
 use tokio::sync::Semaphore;
 
@@ -85,12 +86,14 @@ async fn interrupted_ec_recovery_does_not_fetch_additional_candidates() {
 #[tokio::test]
 async fn interrupted_framed_stream_preserves_type_without_layout_retry() {
     let id = ChunkId { high: 1, low: 1 };
+    let frame_length = (FRAME_V2_HEADER_BYTES + FRAME_FOOTER_BYTES + 8) as u64;
     let allocator = Arc::new(storage::TestPayloadStorage {
         chunk: Chunk {
             id: Some(id),
             state: ChunkState::Sealed as i32,
             capacity: 1,
             sealed_length: 1,
+            acknowledged_cursor: frame_length,
             strips: vec![strip(false)],
             ..Chunk::default()
         },
@@ -104,7 +107,7 @@ async fn interrupted_framed_stream_preserves_type_without_layout_retry() {
     let mut stream = reader
         .read_stream(&[Location {
             chunk_id: Some(id),
-            length: 42,
+            length: frame_length,
             logical_length: 8,
             ..Location::default()
         }])

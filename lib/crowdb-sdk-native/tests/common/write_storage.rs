@@ -188,7 +188,7 @@ impl ChunkAllocator for TestWriteStorage {
     async fn seal_chunk(&self, request: SealChunkRequest) -> Result<SealChunkResponse> {
         let chunk = self.update(request.chunk_id.unwrap(), |chunk| {
             chunk.state = ChunkState::Sealed as i32;
-            chunk.sealed_length = request.seal_length;
+            chunk.sealed_length = u32::try_from(request.seal_bytes.div_ceil(1024)).unwrap();
             chunk.acknowledged_cursor = request.seal_bytes;
         });
         Ok(SealChunkResponse { chunk: Some(chunk) })
@@ -213,12 +213,6 @@ impl ChunkAllocator for TestWriteStorage {
             chunk.state = ChunkState::Deleted as i32;
         });
         Ok(DeleteChunkResponse { chunk: Some(chunk) })
-    }
-    async fn update_chunk_strip(&self, request: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        let chunk = self.update(request.chunk_id.unwrap(), |chunk| {
-            chunk.strips[request.strip_index as usize] = request.strip.clone().unwrap();
-        });
-        Ok(UpdateChunkStripResponse { chunk: Some(chunk) })
     }
     async fn query_chunk(&self, request: QueryChunkRequest) -> Result<QueryChunkResponse> {
         Ok(QueryChunkResponse {

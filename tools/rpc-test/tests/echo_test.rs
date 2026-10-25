@@ -41,8 +41,10 @@ fn real_echo_transport_runs_both_schedulers_and_shuts_down_its_server() {
             String::from_utf8_lossy(&result.stderr)
         );
         let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
-        assert!(report["total_ops"].as_u64().unwrap() > 0);
-        assert_eq!(report["total_errors"], 0);
+        assert!(report["completed_in_window"].as_u64().unwrap() > 0);
+        assert_eq!(report["errors_total"], 0);
+        assert_eq!(report["valid"], true);
+        assert_eq!(report["latency_count"], report["completed_in_window"]);
         assert!(log.path().join("server.stdout.log").is_file());
     }
 }

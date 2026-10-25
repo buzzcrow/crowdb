@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crowdb_access_s3::S3ErrorCode;
+use crowdb_protocol::frame::FRAME_V2_HEADER_BYTES;
 use crowdb_sdk_native::s3::{CopyMetadata, CopyOptions, EtagSelection, ReadPreconditions, UserMetadata};
 use crowdb_sdk_native::Error;
 use fixture::{context, fixture, options, read};
@@ -120,7 +121,7 @@ async fn copy_conditions_and_corrupt_source_stop_before_destination_publication(
     let entry = backend.data.front().unwrap();
     let key = *entry.key();
     let mut corrupt = entry.value().to_vec();
-    corrupt[14] ^= 1;
+    corrupt[FRAME_V2_HEADER_BYTES] ^= 1;
     drop(entry);
     backend.data.insert(key, corrupt.into());
     assert_eq!(

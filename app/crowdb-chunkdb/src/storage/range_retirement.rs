@@ -92,7 +92,7 @@ impl ChunkStore {
         let ops = [
             BatchOp::Put {
                 key: Bytes::from(key.clone()),
-                value: Bytes::from(encode_chunk(&chunk)),
+                value: Bytes::from(encode_chunk(&chunk)?),
             },
             BatchOp::Put {
                 key: Bytes::from(resource_key(&id)),

@@ -100,7 +100,7 @@ void DiskioServer::send_error_response(crowdb::rpc::Connection *conn, uint64_t r
     send_response(transport_, conn->weak_from_this().lock(), request_id, rpc_create_nano, msg_type, ret_code);
 }
 
-void DiskioServer::send_response(const std::shared_ptr<crowdb::rpc::Transport> &transport,
+void DiskioServer::send_response(const std::shared_ptr<crowdb::rpc::Transport>  &transport,
                                  const std::shared_ptr<crowdb::rpc::Connection> &connection, uint64_t request_id,
                                  uint64_t created, uint16_t type, int16_t code, crowdb::rpc::Buffer *data,
                                  bool sync_completed)

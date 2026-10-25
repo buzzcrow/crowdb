@@ -13,7 +13,7 @@ use crowdb_access_s3::integrity::SinglePartIntegrity;
 use crowdb_access_s3::streaming::{PutErrorCode, PutOutcome};
 use crowdb_access_s3::S3ErrorCode;
 use crowdb_chunk_client::ChunkIoWriter;
-use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
+use crowdb_protocol::frame::MAX_FRAME_V2_PAYLOAD_BYTES;
 use session::{UploadResult, UploadSession};
 
 #[derive(Default)]
@@ -170,7 +170,7 @@ impl PutObject {
         }
         let length = buffer.length();
         let next = self.check_input(length)?;
-        if self.length % MAX_FRAME_PAYLOAD_BYTES as u64 != 0
+        if self.length % MAX_FRAME_V2_PAYLOAD_BYTES as u64 != 0
             || self.session.as_ref().is_some_and(|session| !session.is_large())
                 && (self.length != 0 || self.expected_length != Some(length))
         {
@@ -195,7 +195,7 @@ impl PutObject {
         for bytes in &payload {
             self.integrity.update(bytes);
         }
-        self.final_frame = length % MAX_FRAME_PAYLOAD_BYTES as u64 != 0;
+        self.final_frame = length % MAX_FRAME_V2_PAYLOAD_BYTES as u64 != 0;
         self.length = next;
         Ok(())
     }

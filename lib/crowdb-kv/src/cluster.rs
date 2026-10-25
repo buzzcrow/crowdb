@@ -19,8 +19,8 @@ pub mod group_operations;
 pub(crate) mod group_owner_fence;
 pub mod group_prepare;
 pub mod group_propose;
-mod group_routes;
 mod group_retention;
+mod group_routes;
 #[cfg(feature = "test-util")]
 mod group_tests;
 pub mod kv_server;

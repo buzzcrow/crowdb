@@ -8,7 +8,7 @@ use std::time::Duration;
 use crowdb_rpc_ffi::{Buffer, RdmaConfig, RpcClient, RpcServer};
 use serde_json::Value;
 
-use super::{workload::build_control, RpcArgs};
+use super::{echo::build_control, RpcArgs};
 
 pub(super) async fn remote_status(args: &RpcArgs) -> Result<Value, String> {
     let server = RpcServer::with_engines(None, 1, 1);

@@ -7,7 +7,7 @@ use super::{framed_chain::FramedChain, WritableLease};
 use crate::{Error, Result};
 use crowdb_access_s3::native_buffer::NativeFramedOwner;
 use crowdb_chunk_client::FramedWriteBuffer;
-use crowdb_protocol::frame::{MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES};
 
 impl crate::ClientRuntime {
     /// Copies caller bytes once into final frames across bounded allocations.
@@ -32,10 +32,10 @@ impl crate::RuntimeResources {
         allocator: &crowdb_rpc_ffi::ProducerBufferAllocator,
         data: &[u8],
     ) -> Result<FrozenObjectBuffer> {
-        let logical_capacity = (1 << 20) / MAX_FRAME_BYTES * MAX_FRAME_PAYLOAD_BYTES;
+        let logical_capacity = (1 << 20) / MAX_FRAME_BYTES * MAX_FRAME_V2_PAYLOAD_BYTES;
         let mut buffers = Vec::new();
         for payload in data.chunks(logical_capacity) {
-            let physical = payload.len().div_ceil(MAX_FRAME_PAYLOAD_BYTES) * MAX_FRAME_BYTES;
+            let physical = payload.len().div_ceil(MAX_FRAME_V2_PAYLOAD_BYTES) * MAX_FRAME_BYTES;
             let capacity = u32::try_from(physical).map_err(|_| Error::BufferRange)?;
             buffers.push(self.allocate(allocator, capacity)?.initialize_framed(
                 payload.len(),
@@ -104,7 +104,7 @@ impl FrozenObjectBuffer {
         for (index, buffer) in buffers.iter().enumerate() {
             if !std::sync::Arc::ptr_eq(&budget, &buffer.budget)
                 || (index + 1 < buffers.len()
-                    && buffer.length() != (buffer.owner.frame_count() * MAX_FRAME_PAYLOAD_BYTES) as u64)
+                    && buffer.length() != (buffer.owner.frame_count() * MAX_FRAME_V2_PAYLOAD_BYTES) as u64)
             {
                 return Err(Error::BufferRange);
             }
@@ -130,7 +130,7 @@ impl WritableLease {
     /// Maximum logical payload with the storage headers and footers reserved.
     #[must_use]
     pub fn framed_capacity(&self) -> usize {
-        self.capacity() / MAX_FRAME_BYTES * MAX_FRAME_PAYLOAD_BYTES
+        self.capacity() / MAX_FRAME_BYTES * MAX_FRAME_V2_PAYLOAD_BYTES
     }
 
     /// Prepares data directly in its final registered storage frame slots.

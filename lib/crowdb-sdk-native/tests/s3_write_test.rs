@@ -9,7 +9,7 @@ mod write_storage;
 #[path = "common/write_fixture.rs"]
 mod fixture;
 
-use crowdb_protocol::frame::{MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{FRAME_V2_HEADER_BYTES, MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES};
 use crowdb_sdk_native::Error;
 use fixture::{context, fixture, options, read};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,8 +22,8 @@ async fn ordinary_put_streams_mixed_sizes_and_returns_the_published_revision() {
     for (index, length) in [
         0,
         7,
-        MAX_FRAME_PAYLOAD_BYTES,
-        MAX_FRAME_PAYLOAD_BYTES + 1,
+        MAX_FRAME_V2_PAYLOAD_BYTES,
+        MAX_FRAME_V2_PAYLOAD_BYTES + 1,
         (1 << 20) + 13,
         (2 << 20) + 31,
     ]
@@ -58,7 +58,7 @@ async fn ordinary_put_streams_mixed_sizes_and_returns_the_published_revision() {
 #[tokio::test]
 async fn framed_put_keeps_original_payload_addresses_through_disk_completion() {
     let (runtime, client, backend) = fixture(None).await;
-    let length = 16 * MAX_FRAME_PAYLOAD_BYTES + 19;
+    let length = 16 * MAX_FRAME_V2_PAYLOAD_BYTES + 19;
     let mut put = client
         .begin_put(context(10), b"bucket", b"native", options(length))
         .await
@@ -66,8 +66,8 @@ async fn framed_put_keeps_original_payload_addresses_through_disk_completion() {
     let first = runtime
         .allocate_producer(1 << 20)
         .unwrap()
-        .initialize_framed(16 * MAX_FRAME_PAYLOAD_BYTES, 0x53, |offset, bytes| {
-            bytes[0] = u8::try_from(offset / MAX_FRAME_PAYLOAD_BYTES).unwrap();
+        .initialize_framed(16 * MAX_FRAME_V2_PAYLOAD_BYTES, 0x53, |offset, bytes| {
+            bytes[0] = u8::try_from(offset / MAX_FRAME_V2_PAYLOAD_BYTES).unwrap();
         })
         .unwrap();
     let first_payload = first.payload_views()[0].as_ptr() as usize;
@@ -84,21 +84,21 @@ async fn framed_put_keeps_original_payload_addresses_through_disk_completion() {
     assert!(backend
         .data
         .iter()
-        .any(|entry| entry.value().as_ptr() as usize + 14 == first_payload));
+        .any(|entry| entry.value().as_ptr() as usize + FRAME_V2_HEADER_BYTES == first_payload));
     let data = read(&client, b"native").await;
     assert_eq!(data.len(), length);
     for index in 0..16 {
         assert_eq!(
-            data[index * MAX_FRAME_PAYLOAD_BYTES],
+            data[index * MAX_FRAME_V2_PAYLOAD_BYTES],
             u8::try_from(index).unwrap()
         );
         assert!(
-            data[index * MAX_FRAME_PAYLOAD_BYTES + 1..(index + 1) * MAX_FRAME_PAYLOAD_BYTES]
+            data[index * MAX_FRAME_V2_PAYLOAD_BYTES + 1..(index + 1) * MAX_FRAME_V2_PAYLOAD_BYTES]
                 .iter()
                 .all(|byte| *byte == 0x53)
         );
     }
-    assert_eq!(&data[16 * MAX_FRAME_PAYLOAD_BYTES..], &[0x61; 19]);
+    assert_eq!(&data[16 * MAX_FRAME_V2_PAYLOAD_BYTES..], &[0x61; 19]);
     runtime.shutdown().await.unwrap();
     assert!(runtime.resources().status().producer_bytes > 0);
 }
@@ -179,7 +179,7 @@ async fn lost_publication_reply_preserves_uncertainty_and_durable_data() {
 async fn dropping_a_pending_input_terminates_the_writer_and_releases_request_admission() {
     let (runtime, client, backend) = fixture(None).await;
     backend.block_write.store(true, Ordering::Release);
-    let length = 32 * MAX_FRAME_PAYLOAD_BYTES;
+    let length = 32 * MAX_FRAME_V2_PAYLOAD_BYTES;
     let mut put = client
         .begin_put(context(81), b"bucket", b"dropped", options(length))
         .await
@@ -187,14 +187,14 @@ async fn dropping_a_pending_input_terminates_the_writer_and_releases_request_adm
     let first = runtime
         .allocate_producer(1 << 20)
         .unwrap()
-        .initialize_framed(16 * MAX_FRAME_PAYLOAD_BYTES, 0x61, |_, _| {})
+        .initialize_framed(16 * MAX_FRAME_V2_PAYLOAD_BYTES, 0x61, |_, _| {})
         .unwrap();
     put.write_framed(first).await.unwrap();
     backend.write_started.notified().await;
     let second = runtime
         .allocate_producer(1 << 20)
         .unwrap()
-        .initialize_framed(16 * MAX_FRAME_PAYLOAD_BYTES, 0x62, |_, _| {})
+        .initialize_framed(16 * MAX_FRAME_V2_PAYLOAD_BYTES, 0x62, |_, _| {})
         .unwrap();
     let mut pending = Box::pin(put.write_framed(second));
     assert!(tokio::time::timeout(Duration::from_millis(20), &mut pending)

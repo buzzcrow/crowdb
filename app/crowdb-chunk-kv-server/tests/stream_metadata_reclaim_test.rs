@@ -5,20 +5,21 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, KvStreamMetadataStore, StreamBinding, StreamBindingState,
-    StreamConfig, StreamMetadataStore, StreamName, StreamPurpose,
+    memory::MemoryStreamStore, ChunkStream, KvStreamMetadataStore, StreamConfig, StreamMetadataStore,
+    StreamName, StreamPurpose, StreamRecord, StreamRecordState,
 };
 use crowdb_kv_client::{CrowdbKvClient, ReadMode};
-use crowdb_protocol::key::{BinaryKey, StreamExtentPageKey};
+use crowdb_protocol::chunk_stream::decode_stream_chunk_record;
+use crowdb_protocol::key::{BinaryKey, StreamChunkRecordKey};
 
 #[path = "common/metadata.rs"]
 mod metadata;
 
-async fn pages(kv: &CrowdbKvClient, name: StreamName) -> Vec<StreamExtentPageKey> {
+async fn pages(kv: &CrowdbKvClient, name: StreamName) -> Vec<StreamChunkRecordKey> {
     kv.scan(
         0,
         1,
-        &StreamExtentPageKey::stream_prefix(name),
+        &StreamChunkRecordKey::attached_prefix(name),
         &[],
         &[],
         0,
@@ -31,75 +32,87 @@ async fn pages(kv: &CrowdbKvClient, name: StreamName) -> Vec<StreamExtentPageKey
     .unwrap()
     .items
     .into_iter()
-    .map(|(key, _)| StreamExtentPageKey::from_bytes(&key).unwrap())
+    .map(|(key, _)| StreamChunkRecordKey::from_bytes(&key).unwrap())
     .collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn production_page_reclaim_batches_only_keys_below_the_retained_generation() {
+async fn production_record_reclaim_respects_trim_and_retained_generation() {
     let fixture = metadata::TestMetadata::start().await;
     let chunks = Arc::new(MemoryStreamStore::new(512));
     let metadata = Arc::new(KvStreamMetadataStore::new(fixture.client.clone(), 0, 1).unwrap());
     let name = StreamName { high: 81, low: 82 };
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: StreamPurpose::Wal,
             stream_name: name,
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: None,
+            record_version: 1,
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
+            state: StreamRecordState::Active,
+            consumer_kind: None,
         },
         7,
-        StreamConfig {
-            extent_page_entries: 4,
-            ..StreamConfig::default()
-        },
+        StreamConfig::default(),
         chunks.clone(),
         metadata.clone(),
-        chunks,
+        chunks.clone(),
     )
     .await
     .unwrap();
     for byte in 0..16 {
-        stream.append(&[Bytes::from(vec![byte])]).await.unwrap();
+        stream.append(&[Bytes::from(vec![byte; 384])]).await.unwrap();
     }
-    let retained = metadata.load_current(name).await.unwrap().unwrap();
+    stream.checkpoint().await.unwrap();
+    let retained = stream.record_generation();
     for byte in 16..24 {
-        stream.append(&[Bytes::from(vec![byte])]).await.unwrap();
+        stream.append(&[Bytes::from(vec![byte; 384])]).await.unwrap();
     }
+    stream.checkpoint().await.unwrap();
+    let before_trim = pages(&fixture.client, name).await;
+    assert_eq!(before_trim.len(), 24);
+    assert_eq!(stream.reclaim_metadata_before(retained, 3).await.unwrap(), 0);
+    assert_eq!(pages(&fixture.client, name).await, before_trim);
+    let expected = fixture
+        .client
+        .scan(
+            0,
+            1,
+            &StreamChunkRecordKey::attached_prefix(name),
+            &[],
+            &[],
+            0,
+            ReadMode::Linearizable,
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let record = decode_stream_chunk_record(&value).unwrap();
+            (record.generation >= retained || record.logical_end.unwrap() > 23 * 384)
+                .then(|| StreamChunkRecordKey::from_bytes(&key).unwrap())
+        })
+        .collect::<Vec<_>>();
+    stream.trim_prefix(23 * 384).await.unwrap();
     let before = pages(&fixture.client, name).await.len();
-    assert_eq!(
-        stream
-            .reclaim_metadata_before(retained.generation, 3)
-            .await
-            .unwrap(),
-        3
-    );
-    assert_eq!(pages(&fixture.client, name).await.len(), before - 3);
+    assert_eq!(stream.reclaim_metadata_before(retained, 3).await.unwrap(), 1);
+    assert_eq!(pages(&fixture.client, name).await.len(), before - 1);
     for _ in 0..64 {
-        if stream
-            .reclaim_metadata_before(retained.generation, 3)
-            .await
-            .unwrap()
-            == 0
-        {
+        if pages(&fixture.client, name).await == expected {
             break;
         }
+        assert!(stream.reclaim_metadata_before(retained, 3).await.unwrap() <= 1);
+        let present = pages(&fixture.client, name).await;
+        assert!(expected.iter().all(|key| present.contains(key)));
     }
-    assert!(pages(&fixture.client, name)
-        .await
-        .iter()
-        .all(|key| key.generation >= retained.generation));
-    for fence in retained.extent_pages {
-        assert!(metadata
-            .load_extent_page(name, retained.writer_epoch, retained.generation, fence.page_index)
-            .await
-            .unwrap()
-            .is_some());
-    }
-    assert_eq!(
-        stream.read_at(0, 24).await.unwrap().as_ref(),
-        &(0..24).collect::<Vec<u8>>()
-    );
+    let retained_records = metadata.record_store(1).unwrap();
+    assert_eq!(pages(&fixture.client, name).await, expected);
+    let tail = retained_records.load_tail(name).await.unwrap().unwrap();
+    assert!(tail.record().generation >= retained);
+    assert_eq!(stream.read_at(23 * 384, 384).await.unwrap().as_ref(), &[23; 384]);
 }

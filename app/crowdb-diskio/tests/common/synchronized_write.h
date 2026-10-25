@@ -172,7 +172,7 @@ class TestSynchronizedWrite : public testing::Test
         : disks(std::make_shared<dio::DiskSet>()),
           disk(std::make_shared<TestWriteDisk>(&engine)),
           connection(std::make_shared<rpc::Connection>(1, "write-test", &pool)),
-          server(disks, &transport)
+          server(disks, transport_owner)
     {
         payload.fill(7);
         disks->add(disk);
@@ -206,15 +206,16 @@ class TestSynchronizedWrite : public testing::Test
         return frame;
     }
 
-    rpc::SystemBufferPool            pool;
-    TestWriteTransport               transport;
-    TestWriteEngine                  engine;
-    std::shared_ptr<dio::DiskSet>    disks;
-    std::shared_ptr<TestWriteDisk>   disk;
-    std::shared_ptr<rpc::Connection> connection;
-    dio::DiskioServer                server;
-    std::array<uint8_t, 32>          payload{};
-    size_t                           released = 0;
+    rpc::SystemBufferPool               pool;
+    std::shared_ptr<TestWriteTransport> transport_owner = std::make_shared<TestWriteTransport>();
+    TestWriteTransport                 &transport       = *transport_owner;
+    TestWriteEngine                     engine;
+    std::shared_ptr<dio::DiskSet>       disks;
+    std::shared_ptr<TestWriteDisk>      disk;
+    std::shared_ptr<rpc::Connection>    connection;
+    dio::DiskioServer                   server;
+    std::array<uint8_t, 32>             payload{};
+    size_t                              released = 0;
 };
 
 } // namespace crowdb::diskio::test

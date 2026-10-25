@@ -12,7 +12,7 @@ use std::sync::Arc;
 pub fn storage() -> (Arc<TestPayloadStorage>, Location) {
     let id = ChunkId { high: 13, low: 37 };
     let mut data = Vec::with_capacity(4096);
-    data.extend_from_slice(&encode_frame(FrameMagic::RepoSmallV1, id, b"payload", 1).unwrap());
+    data.extend_from_slice(&encode_frame(FrameMagic::RepoSmallV2, id, b"payload", 1).unwrap());
     let frame_length = data.len();
     let original = OwnedPayload::from(data);
     let segment = Segment {
@@ -26,6 +26,7 @@ pub fn storage() -> (Arc<TestPayloadStorage>, Location) {
             state: ChunkState::Sealed as i32,
             capacity: 1,
             sealed_length: 1,
+            acknowledged_cursor: frame_length as u64,
             strips: vec![ChunkStrip {
                 unit_kb: 1,
                 capacity: 1,

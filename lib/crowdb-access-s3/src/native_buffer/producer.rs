@@ -5,7 +5,7 @@
 
 use super::{NativeFramedOwner, NativeOwner, NativePayloadView};
 use crowdb_protocol::frame::{
-    FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+    FrameMagic, FRAME_FOOTER_BYTES, FRAME_V2_HEADER_BYTES, MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES,
 };
 use crowdb_rpc_ffi::WritableBuffer;
 use hyper::body::Bytes;
@@ -38,15 +38,15 @@ impl NativeFramedOwner {
             native: Some(buffer),
             _lifetime: Some(lifetime),
         };
-        if length == 0 || length > capacity / MAX_FRAME_BYTES * MAX_FRAME_PAYLOAD_BYTES {
+        if length == 0 || length > capacity / MAX_FRAME_BYTES * MAX_FRAME_V2_PAYLOAD_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid framed producer length",
             ));
         }
-        let mut lengths = Vec::with_capacity(length.div_ceil(MAX_FRAME_PAYLOAD_BYTES));
-        for (index, offset) in (0..length).step_by(MAX_FRAME_PAYLOAD_BYTES).enumerate() {
-            let count = (length - offset).min(MAX_FRAME_PAYLOAD_BYTES);
+        let mut lengths = Vec::with_capacity(length.div_ceil(MAX_FRAME_V2_PAYLOAD_BYTES));
+        for (index, offset) in (0..length).step_by(MAX_FRAME_V2_PAYLOAD_BYTES).enumerate() {
+            let count = (length - offset).min(MAX_FRAME_V2_PAYLOAD_BYTES);
             // SAFETY: this unique producer owns all slots. Initialize each
             // payload before exposing its mutable callback slice; reserved
             // headers/footers stay inaccessible until one-time finalization.
@@ -54,7 +54,7 @@ impl NativeFramedOwner {
                 let pointer = owner
                     .pointer
                     .as_ptr()
-                    .add(index * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES);
+                    .add(index * MAX_FRAME_BYTES + FRAME_V2_HEADER_BYTES);
                 pointer.write_bytes(initial, count);
                 std::slice::from_raw_parts_mut(pointer, count)
             };
@@ -66,12 +66,12 @@ impl NativeFramedOwner {
             owner: Arc::new(owner),
             logical_len: length as u64,
             physical_len: (lengths.len() - 1) * MAX_FRAME_BYTES
-                + FRAME_HEADER_PREFIX_BYTES
+                + FRAME_V2_HEADER_BYTES
                 + last
                 + FRAME_FOOTER_BYTES,
             prepared_slots: 0,
             prepared: false,
-            magic: FrameMagic::RepoLargeV1,
+            magic: FrameMagic::RepoLargeV2,
             finalized_chunks: vec![None; lengths.len()].into_boxed_slice(),
             payload_lengths: lengths.into_boxed_slice(),
         })
@@ -99,7 +99,7 @@ impl NativeFramedOwner {
             .map(|(index, length)| {
                 Bytes::from_owner(NativePayloadView {
                     owner: Arc::clone(&self.owner),
-                    payload_offset: index * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES,
+                    payload_offset: index * MAX_FRAME_BYTES + FRAME_V2_HEADER_BYTES,
                     initialized: usize::from(*length),
                 })
             })

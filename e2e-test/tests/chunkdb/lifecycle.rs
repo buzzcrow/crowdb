@@ -104,7 +104,6 @@ async fn verify_range_notification(client: &ChunkdbClient) {
         .seal_chunk(SealChunkRequest {
             chunk_id: Some(id),
             seal_bytes: 8192,
-            ..Default::default()
         })
         .await
         .unwrap()

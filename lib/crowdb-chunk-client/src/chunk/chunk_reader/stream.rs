@@ -4,8 +4,8 @@
 //! Ordered delivery and logical read-credit lifetime.
 
 use super::super::read_credit::{retain, ReadLease, StreamSlots};
-use super::layout::normalize_locations;
 use super::framing::object_layout;
+use super::layout::normalize_locations;
 use super::{ChunkReader, LayoutSnapshot, PartialReadResult, ReadRangeData, DEFAULT_STREAM_WINDOW};
 use crate::{ReadError, ReadResult};
 use bytes::Bytes;

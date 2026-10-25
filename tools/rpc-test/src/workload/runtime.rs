@@ -12,9 +12,9 @@ use crowdb_rpc_ffi::{Connection, RdmaConfig, RpcClient, RpcServer};
 use flatbuffers::FlatBufferBuilder;
 use serde_json::Value;
 
-use crate::args::BenchMode;
-use super::workload::{build_control, Count, EchoWorkload};
+use super::echo::{build_control, Count, EchoWorkload};
 use super::RpcArgs;
+use crate::args::BenchMode;
 
 pub(super) struct Session {
     pub server: Arc<RpcServer>,

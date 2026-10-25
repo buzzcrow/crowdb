@@ -15,7 +15,7 @@ use hyper::{body::Bytes, Method};
 use md5::{Digest, Md5};
 use sha2::Sha256;
 
-pub const TARGET: usize = 16 * crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
+pub const TARGET: usize = 16 * crowdb_protocol::frame::MAX_FRAME_V2_PAYLOAD_BYTES;
 
 pub fn admission(limit: u64) -> FileTransferAdmission {
     let grant = FileGrant {

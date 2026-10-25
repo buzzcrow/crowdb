@@ -21,8 +21,8 @@ use crate::{ChunkAllocator, DiskWriter, IoError, ReadError, ReadResult};
 
 mod frame_views;
 mod framing;
-mod layout_cache;
 mod layout;
+mod layout_cache;
 mod location;
 mod stream;
 mod verified_frame;

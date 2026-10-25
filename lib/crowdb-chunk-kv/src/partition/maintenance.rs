@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Reclamation of superseded extent directories for independently serving WALs.
+//! Reclamation of retired chunk records for independently serving WALs.
 
 use std::sync::{atomic::Ordering, Arc};
 
@@ -13,12 +13,12 @@ pub(super) struct MetadataReclaim {
 }
 
 impl Partition {
-    /// Reclaims one bounded batch of superseded WAL extent pages.
+    /// Reclaims one bounded batch of retired WAL chunk records.
     ///
-    /// The current manifest still maps the complete retained WAL, so existing
+    /// The current records still map the complete retained WAL, so existing
     /// tree checkpoints and retry history remain recoverable. This does not
     /// trim WAL bytes or advance tree retention. Transition pins retain their
-    /// exact manifest generations and suppress maintenance.
+    /// exact record generations and suppress maintenance.
     ///
     /// Returns true when another batch may remain. Callers revisit other
     /// hosted partitions before continuing backlog work.
@@ -38,7 +38,6 @@ impl Partition {
         let current = self.journal.record_generation();
         let generation = match self.metadata_reclaim.load_full() {
             Some(retained) if retained.pending => retained.generation,
-            Some(retained) if retained.generation == current => return Ok(false),
             _ => current,
         };
         self.metadata_reclaim.store(Some(Arc::new(MetadataReclaim {
@@ -50,7 +49,7 @@ impl Partition {
             .reclaim_metadata_before(generation, self.config.metadata_reclaim_records_per_pass)
             .await?;
         self.metrics.reclaim(0, reclaimed, 0, 0);
-        let pending = reclaimed >= self.config.metadata_reclaim_records_per_pass as u64;
+        let pending = reclaimed > 0;
         self.metadata_reclaim
             .store(Some(Arc::new(MetadataReclaim { generation, pending })));
         Ok(pending)

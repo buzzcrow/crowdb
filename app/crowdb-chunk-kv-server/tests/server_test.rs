@@ -1356,7 +1356,7 @@ mod lease;
 #[path = "common/serving_lease.rs"]
 mod serving_fixture;
 
-#[path = "server_test/split_scan.rs"]
-mod split_scan;
 #[path = "server_test/maintenance.rs"]
 mod maintenance;
+#[path = "server_test/split_scan.rs"]
+mod split_scan;

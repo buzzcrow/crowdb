@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crowdb_protocol::frame::{MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES};
 use crowdb_rpc_ffi::{ProducerBufferAllocator, RpcServer};
 use crowdb_sdk_native::{Error, RuntimeLimits, RuntimeResources};
 
@@ -22,10 +22,10 @@ fn immutable_framed_payloads_keep_actual_capacity_until_the_final_external_view(
     let writable = resources
         .allocate(&allocator, u32::try_from(2 * MAX_FRAME_BYTES).unwrap())
         .unwrap();
-    assert_eq!(writable.framed_capacity(), 2 * MAX_FRAME_PAYLOAD_BYTES);
+    assert_eq!(writable.framed_capacity(), 2 * MAX_FRAME_V2_PAYLOAD_BYTES);
     let mut addresses = Vec::new();
     let frozen = writable
-        .initialize_framed(MAX_FRAME_PAYLOAD_BYTES + 7, 0x32, |offset, bytes| {
+        .initialize_framed(MAX_FRAME_V2_PAYLOAD_BYTES + 7, 0x32, |offset, bytes| {
             addresses.push(bytes.as_ptr() as usize);
             bytes[0] = u8::from(offset != 0);
         })
@@ -49,7 +49,7 @@ fn immutable_framed_payloads_keep_actual_capacity_until_the_final_external_view(
 fn invalid_lengths_and_initializer_panics_release_native_storage_before_returning_credit() {
     let resources = resources();
     let allocator = ProducerBufferAllocator::new(Arc::new(RpcServer::new(None)), false);
-    for length in [0, MAX_FRAME_PAYLOAD_BYTES + 1] {
+    for length in [0, MAX_FRAME_V2_PAYLOAD_BYTES + 1] {
         let writable = resources
             .allocate(&allocator, u32::try_from(MAX_FRAME_BYTES).unwrap())
             .unwrap();
@@ -83,7 +83,7 @@ fn multi_allocation_producers_release_partial_work_and_keep_external_views_charg
     let large = vec![0x57; 2 << 20];
     assert!(resources.prepare_framed(&allocator, &large).is_err());
     assert_eq!(resources.status().producer_bytes, 0);
-    let length = 16 * MAX_FRAME_PAYLOAD_BYTES + 7;
+    let length = 16 * MAX_FRAME_V2_PAYLOAD_BYTES + 7;
     let frozen = resources.prepare_framed(&allocator, &large[..length]).unwrap();
     assert_eq!(frozen.length(), length as u64);
     let views = frozen.payload_views();
@@ -102,7 +102,7 @@ fn concatenation_rejects_partial_interior_frames_and_foreign_budgets() {
     let allocator = ProducerBufferAllocator::new(Arc::new(RpcServer::new(None)), false);
     let first = resources();
     let second = resources();
-    let full = vec![0; MAX_FRAME_PAYLOAD_BYTES];
+    let full = vec![0; MAX_FRAME_V2_PAYLOAD_BYTES];
     let partial = first.prepare_framed(&allocator, b"short").unwrap();
     let next = first.prepare_framed(&allocator, &full).unwrap();
     assert!(FrozenObjectBuffer::concatenate(vec![partial, next]).is_err());

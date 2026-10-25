@@ -119,6 +119,7 @@ maven = "3.9.*"
 [pypi-dependencies]
 maturin = ">=1.15, <2"
 pip = ">=25, <27"
+auditwheel = ">=6, <7"
 
 [tasks]
 

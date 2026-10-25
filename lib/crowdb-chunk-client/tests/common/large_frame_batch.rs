@@ -100,7 +100,7 @@ impl TestFrameBatch {
             let logical_start = logical_offset;
             while cursor < physical.len() {
                 let frame = parse_frame(&physical[cursor..], chunk).unwrap();
-                assert_eq!(frame.header.magic, FrameMagic::RepoLargeV1);
+                assert_eq!(frame.header.magic, FrameMagic::RepoLargeV2);
                 let canonical = encode_frame(
                     frame.header.magic,
                     chunk,

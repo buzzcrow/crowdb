@@ -10,8 +10,7 @@ use crowdb_chunk_kv::{
 };
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkStream, StreamBinding, StreamBindingState, StreamConfig, StreamMetadataStore, StreamName,
-    StreamPurpose,
+    ChunkStream, StreamConfig, StreamName, StreamPurpose, StreamRecord, StreamRecordState,
 };
 
 const EPOCH: u64 = 7;
@@ -29,19 +28,18 @@ impl TestPartition {
     async fn open() -> Self {
         let store = Arc::new(MemoryStreamStore::new(512));
         let stream = ChunkStream::create(
-            StreamBinding {
+            StreamRecord {
                 purpose: StreamPurpose::Wal,
                 stream_name: NAME,
                 metadata_group_id: 1,
-                binding_generation: 1,
-                state: StreamBindingState::Active,
-                owner_kind: Some("chunk-kv-partition".into()),
+                record_version: 1,
+                consumer_id: None,
+                created_at_ms: StreamRecord::creation_time_ms(),
+                state: StreamRecordState::Active,
+                consumer_kind: Some("chunk-kv-partition".into()),
             },
             EPOCH,
-            StreamConfig {
-                extent_page_entries: 4,
-                ..StreamConfig::default()
-            },
+            StreamConfig::default(),
             store.clone(),
             store.clone(),
             store.clone(),
@@ -52,7 +50,7 @@ impl TestPartition {
         let tree = Arc::new(MemoryPartitionTree::default());
         let config = PartitionConfig {
             retained_results: 2,
-            metadata_reclaim_pages_per_pass: 2,
+            metadata_reclaim_records_per_pass: 2,
             ..PartitionConfig::default()
         };
         let partition =
@@ -105,20 +103,20 @@ fn operation(sequence: u64) -> MutationOperation {
 }
 
 #[tokio::test]
-async fn superseded_directories_are_bounded_and_old_checkpoints_keep_retry_history() {
+async fn maintenance_preserves_referenced_records_and_old_checkpoint_retry_history() {
     let fixture = TestPartition::open().await;
     let checkpoint = fixture.partition.checkpoint(EPOCH).await.unwrap();
     for round in 0..20 {
         for sequence in (round * 8 + 1)..=(round * 8 + 8) {
             fixture.write(sequence).await;
         }
+        let records = fixture.store.chunk_records_for_tests(NAME).await.unwrap();
         let checkpoints = fixture.partition.metrics().snapshot().checkpoints;
         fixture.drain().await;
         assert_eq!(fixture.partition.metrics().snapshot().checkpoints, checkpoints);
-        let current = fixture.store.load_current(NAME).await.unwrap().unwrap();
         assert_eq!(
-            fixture.store.extent_page_count().await,
-            current.extent_pages.len()
+            fixture.store.chunk_records_for_tests(NAME).await.unwrap(),
+            records
         );
         fixture.drain().await;
         assert_eq!(fixture.partition.metrics().snapshot().checkpoints, checkpoints);
@@ -156,7 +154,7 @@ async fn superseded_directories_are_bounded_and_old_checkpoints_keep_retry_histo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn concurrent_transition_pin_keeps_source_wal_and_extent_pages() {
+async fn concurrent_transition_pin_keeps_source_wal_and_chunk_records() {
     let fixture = TestPartition::open().await;
     for sequence in 1..=16 {
         fixture.write(sequence).await;
@@ -167,13 +165,13 @@ async fn concurrent_transition_pin_keeps_source_wal_and_extent_pages() {
         fixture.partition.checkpoint_with_pin(EPOCH, transition),
     );
     let checkpoint = checkpoint.unwrap();
-    let retained = fixture.store.load_current(NAME).await.unwrap().unwrap();
+    let retained = fixture.store.chunk_records_for_tests(NAME).await.unwrap();
     for sequence in 17..=32 {
         fixture.write(sequence).await;
     }
-    let before = fixture.store.extent_page_count().await;
+    let before = fixture.store.chunk_records_for_tests(NAME).await.unwrap();
     assert!(!fixture.partition.maintain_serving_metadata(EPOCH).await.unwrap());
-    assert_eq!(fixture.store.extent_page_count().await, before);
+    assert_eq!(fixture.store.chunk_records_for_tests(NAME).await.unwrap(), before);
     assert!(matches!(
         fixture
             .partition
@@ -181,13 +179,9 @@ async fn concurrent_transition_pin_keeps_source_wal_and_extent_pages() {
             .await,
         Err(ChunkKvError::SplitRetry(_))
     ));
-    for fence in retained.extent_pages {
-        assert!(fixture
-            .store
-            .load_extent_page(NAME, retained.writer_epoch, retained.generation, fence.page_index)
-            .await
-            .unwrap()
-            .is_some());
+    let records = fixture.store.chunk_records_for_tests(NAME).await.unwrap();
+    for record in retained {
+        assert!(records.iter().any(|current| current.chunk_id == record.chunk_id));
     }
     assert!(!fixture
         .journal
@@ -197,7 +191,7 @@ async fn concurrent_transition_pin_keeps_source_wal_and_extent_pages() {
         .is_empty());
     fixture.partition.release_generation_pin(transition).unwrap();
     fixture.drain().await;
-    assert!(fixture.store.extent_page_count().await < before);
+    assert_eq!(fixture.store.chunk_records_for_tests(NAME).await.unwrap(), before);
     assert_eq!(
         fixture.partition.maintain_serving_metadata(EPOCH + 1).await,
         Err(ChunkKvError::StaleEpoch)
@@ -241,4 +235,32 @@ async fn physical_wal_trim_rejects_a_checkpoint_without_durable_retry_floors() {
         recovered.mutate(EPOCH, request(1), operation(1)).await,
         Err(ChunkKvError::RequestExpired)
     );
+}
+
+#[tokio::test]
+async fn one_retired_record_per_pass_keeps_same_generation_maintenance_progressing() {
+    let fixture = TestPartition::open().await;
+    for sequence in 1..=64 {
+        fixture.write(sequence).await;
+    }
+    let checkpoint = fixture.partition.checkpoint(EPOCH).await.unwrap();
+    assert!(checkpoint.replay_offset > 0);
+    fixture
+        .journal
+        .trim_prefix(checkpoint.replay_offset)
+        .await
+        .unwrap();
+    let generation = fixture.journal.record_generation();
+    let before = fixture.store.chunk_records_for_tests(NAME).await.unwrap().len();
+    assert!(before > 3);
+    for removed in 1..=2 {
+        assert!(fixture.partition.maintain_serving_metadata(EPOCH).await.unwrap());
+        assert_eq!(fixture.journal.record_generation(), generation);
+        assert_eq!(
+            fixture.store.chunk_records_for_tests(NAME).await.unwrap().len(),
+            before - removed
+        );
+    }
+    fixture.drain().await;
+    assert!(fixture.store.chunk_records_for_tests(NAME).await.unwrap().len() < before - 2);
 }

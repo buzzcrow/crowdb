@@ -18,7 +18,7 @@ use crowdb_rpc_ffi::{
     SelectedConnection,
 };
 
-use crate::client::{DiskIoRetCode, WireClient, WireError};
+use crate::client::{DiskIoRetCode, WireClient, WireError, WireWriteTarget};
 use crate::topology::{self, DiskRoute};
 use crate::{DiskId, DiskioError, DiskioResult, DiskioStatus, SegmentTarget};
 

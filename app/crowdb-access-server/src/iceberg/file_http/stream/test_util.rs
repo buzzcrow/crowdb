@@ -46,7 +46,7 @@ pub async fn write_iceberg_fallback_body_for_tests<B: Body<Data = Bytes> + Unpin
         None,
         length,
         target,
-        FrameMagic::RepoLargeV1,
+        FrameMagic::RepoLargeV2,
         WriteFlow::new(sender, &progress, &peak),
         &mut observation,
     );

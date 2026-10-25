@@ -15,7 +15,7 @@ use crowdb_access_s3::metadata::TenantId;
 use crowdb_access_s3::storage::{S3LargeWriteSettings, S3WriteSettings};
 use crowdb_chunk_client::SmallWritePolicy;
 use crowdb_protocol::chunkdb::rpc::ChunkType;
-use crowdb_protocol::frame::{MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES};
 use crowdb_sdk_native::s3::{
     GetOptions, ObjectMetadata, PutObjectInfo, PutOptions, S3Client, S3ClientConfig, S3WritePolicy,
 };
@@ -121,13 +121,13 @@ impl TestNativeS3 {
             )
             .await
             .unwrap();
-        let full = 16 * MAX_FRAME_PAYLOAD_BYTES;
+        let full = 16 * MAX_FRAME_V2_PAYLOAD_BYTES;
         for start in (0..length).step_by(full) {
             let count = (length - start).min(full);
             let frozen = self
                 .runtime
                 .allocate_producer(
-                    u32::try_from(count.div_ceil(MAX_FRAME_PAYLOAD_BYTES) * MAX_FRAME_BYTES).unwrap(),
+                    u32::try_from(count.div_ceil(MAX_FRAME_V2_PAYLOAD_BYTES) * MAX_FRAME_BYTES).unwrap(),
                 )
                 .unwrap()
                 .initialize_framed(count, 0, |offset, bytes| {

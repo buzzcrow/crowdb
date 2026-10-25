@@ -598,8 +598,9 @@ status caches immutable provider values before publication and retains them
 after close; it never dereferences a QP during teardown. Unsupported resource
 measurements are null.
 
-`bench rdma` requires strict RDMA workload connections and unique QPs.
-`bench rpc` explicitly selects TCP. Both use the same coroutine echo workload,
+The standalone `crowdb-rpc-test --rdma` client requires strict RDMA workload
+connections and unique QPs. Without `--rdma`, it explicitly selects TCP.
+Both use the same coroutine echo workload,
 nanosecond histogram and canonical result file. Each loader has one outstanding
 RPC; one startup thread creates the coroutines, and completion workers resume
 them. TPS counts validated response callbacks inside the measurement window;

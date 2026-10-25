@@ -83,7 +83,7 @@ async fn a_four_mib_body_keeps_sixteen_frame_groups_across_non_aligned_input_win
         let (writer, metrics) = checked(vec![original.clone()], declared).await;
         assert_eq!(
             writer.buffers.iter().map(Bytes::len).collect::<Vec<_>>(),
-            [TARGET, TARGET, TARGET, TARGET, 2193]
+            [TARGET, TARGET, TARGET, TARGET, original.len() - 4 * TARGET]
         );
         assert_eq!(writer.buffers[0].as_ptr(), original.as_ptr());
         for (index, buffer) in writer.buffers.iter().enumerate().skip(1) {

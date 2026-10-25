@@ -30,6 +30,7 @@ impl ChunkIoClient {
             disk_writer: Arc::clone(&self.disk_writer),
             topology: self.topology.clone(),
             metrics: self.metrics.clone(),
+            readiness: self.readiness.clone(),
             small_pool,
             reader: self.reader.clone(),
             failed_disks,

@@ -593,7 +593,6 @@ impl ChunkAllocator for MetricsChunkAllocator {
     }
 }
 
-
 async fn discover_current_range_bindings(
     service: &ServiceRegistryClient,
     kv: Arc<CrowdbKvClient>,

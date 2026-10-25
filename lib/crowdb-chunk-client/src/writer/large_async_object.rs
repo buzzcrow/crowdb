@@ -17,7 +17,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
 use crowdb_protocol::frame::{
-    encode_frame, encode_frame_regions, FrameMagic, FRAME_FOOTER_BYTES, FRAME_V2_HEADER_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES,
+    encode_frame, encode_frame_regions, FrameMagic, FRAME_FOOTER_BYTES, FRAME_V2_HEADER_BYTES,
+    MAX_FRAME_V2_PAYLOAD_BYTES,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;

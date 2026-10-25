@@ -126,8 +126,8 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
         return nullptr;
     }
     using crowdb::rpc::BufferOwnership;
-    const auto previous_owner = data_buf == nullptr ? BufferOwnership::Available
-                                                    : data_buf->ownership.load(std::memory_order_acquire);
+    const auto previous_owner =
+        data_buf == nullptr ? BufferOwnership::Available : data_buf->ownership.load(std::memory_order_acquire);
     if (data_buf != nullptr &&
         ((previous_owner != BufferOwnership::CallerOwned && previous_owner != BufferOwnership::Available) ||
          !data_buf->transition(previous_owner, BufferOwnership::DiskOwned))) {
@@ -136,7 +136,7 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
         conn->close();
         return nullptr;
     }
-    auto data = std::shared_ptr<crowdb::rpc::Buffer>(data_buf, [previous_owner](crowdb::rpc::Buffer *buffer) {
+    auto data     = std::shared_ptr<crowdb::rpc::Buffer>(data_buf, [previous_owner](crowdb::rpc::Buffer *buffer) {
         if (buffer != nullptr) {
             if (!buffer->transition(BufferOwnership::DiskOwned, previous_owner)) {
                 (void)buffer->quarantine();
@@ -152,8 +152,8 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
     auto     started              = std::chrono::steady_clock::now();
     aligned_writer_.submit_ordered(
         disk, phys_offset, data_buf != nullptr ? data_buf->payload_data() : nullptr, size, ordering_phys_offset,
-        [latency = write_latency_, flush_latency = fsync_latency_, disk, complete = std::move(complete),
-         sync, size, started](int res) mutable {
+        [latency = write_latency_, flush_latency = fsync_latency_, disk, complete = std::move(complete), sync, size,
+         started](int res) mutable {
             latency->observe(elapsed_nanos(started));
             if (res == -ETIMEDOUT) {
                 complete(static_cast<int16_t>(dproto::FBDiskIoRetCode_OldRequest), false);
@@ -169,13 +169,13 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
             }
             else {
                 auto flush_started = std::chrono::steady_clock::now();
-                disk->engine()->submit_fsync(
-                    disk.get(), [flush_latency, disk, complete = std::move(complete), flush_started](int result) mutable {
-                        flush_latency->observe(elapsed_nanos(flush_started));
-                        complete(static_cast<int16_t>(result < 0 ? dproto::FBDiskIoRetCode_FsyncFailed
-                                                                 : dproto::FBDiskIoRetCode_Success),
-                                 result >= 0);
-                    });
+                disk->engine()->submit_fsync(disk.get(), [flush_latency, disk, complete = std::move(complete),
+                                                          flush_started](int result) mutable {
+                    flush_latency->observe(elapsed_nanos(flush_started));
+                    complete(static_cast<int16_t>(result < 0 ? dproto::FBDiskIoRetCode_FsyncFailed
+                                                             : dproto::FBDiskIoRetCode_Success),
+                             result >= 0);
+                });
             }
         },
         *deadline);

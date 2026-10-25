@@ -83,7 +83,7 @@ impl S3Client {
                     .storage
                     .policy
                     .object_limit
-                    .min(16 * crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES),
+                    .min(16 * crowdb_protocol::frame::MAX_FRAME_V2_PAYLOAD_BYTES),
             )
         });
         if write_policy.small_object_limit > runtime.storage.policy.object_limit

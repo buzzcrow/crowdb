@@ -55,7 +55,11 @@ fn run(server: &TestServer, verb: &str, args: &[&str]) -> (Output, Value) {
             "--output",
             result.to_str().unwrap(),
         ])
-        .args(if verb == "rdma" { vec!["--rdma"] } else { Vec::new() })
+        .args(if verb == "rdma" {
+            vec!["--rdma"]
+        } else {
+            Vec::new()
+        })
         .args(args)
         .output()
         .unwrap();

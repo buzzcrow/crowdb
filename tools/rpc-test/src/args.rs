@@ -8,17 +8,11 @@ use std::path::PathBuf;
 use crowdb_rpc_ffi::RdmaConfig;
 use serde::Serialize;
 
-use clap::ValueEnum;
 use crate::workload::payload::PayloadProfile;
+use clap::ValueEnum;
 
 #[derive(clap::Args, Debug, Serialize)]
 pub struct RpcArgs {
-    /// Emit the structured result on stdout.
-    #[arg(long)]
-    pub json: bool,
-    /// Require RDMA and disable TCP fallback.
-    #[arg(long)]
-    pub rdma: bool,
     /// Measured completion window, excluding warmup and drain.
     #[arg(long, visible_alias = "measure-secs", default_value_t = 10)]
     pub duration_secs: u64,

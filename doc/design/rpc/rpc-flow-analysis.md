@@ -11,7 +11,7 @@ verify actual service and HTTP/DiskIO behavior.
 ## 1. Flow
 
 ```text
-crowdb-cli bench rpc / bench rdma
+crowdb-rpc-test / crowdb-rpc-test --rdma
   -> co_spawn native coroutine loaders, one in-flight request each
   -> Rust callback builds flatbuffer control and pooled data buffers
   -> RpcClient::send(..., callback)
@@ -51,8 +51,8 @@ measure a storage or zero-copy application path.
 ### Linux TCP/RDMA — 2026-10-23
 
 The common runners are `bench-rdma-rpc-regression.sh` and
-`bench-rpc-regression.sh`. They launch fb-server and `crowdb-cli bench rdma`
-or `bench rpc` from the same manifest and retain canonical JSON/CSV/TSV,
+`bench-rpc-regression.sh`. They launch fb-server and `crowdb-rpc-test --rdma`
+or `crowdb-rpc-test` from the same manifest and retain canonical JSON/CSV/TSV,
 complete logs, binary hashes, source identity, settings and raw peer status.
 Missing reports, process failures, nonzero errors, fallback or path mismatches
 fail the runner. RDMA remote request totals must equal accepted submissions.

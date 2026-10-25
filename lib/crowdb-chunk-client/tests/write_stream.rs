@@ -35,10 +35,10 @@ use crowdb_chunk_client::{
 use crowdb_common::ec::EcScheme;
 use crowdb_common::metrics::{MetricPoint, MetricsRegistry};
 use crowdb_diskio_client::DiskId;
+use crowdb_protocol::chunkdb::rpc::Strip as StripOneof;
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse,
-    DeleteChunkRequest, DeleteChunkResponse, QueryChunkRequest, QueryChunkResponse,
-    SealChunkRequest, SealChunkResponse,
+    AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, DeleteChunkRequest,
+    DeleteChunkResponse, QueryChunkRequest, QueryChunkResponse, SealChunkRequest, SealChunkResponse,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::{

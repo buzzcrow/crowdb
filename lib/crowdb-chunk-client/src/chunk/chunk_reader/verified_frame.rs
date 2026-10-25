@@ -3,17 +3,17 @@
 
 //! Verified frame reads under a persisted or owner-synchronized prefix.
 
-use super::{ChunkReader, ChunkId};
 use super::frame_views::extract_physical_range;
 use super::layout::mark_served_segments_corrupt;
+use super::{ChunkId, ChunkReader};
 use crate::{ReadError, ReadResult};
 use bytes::Bytes;
 use crowdb_protocol::chunkdb::rpc::ChunkState;
 use crowdb_protocol::diskdb::rpc::Segment;
-use std::time::Instant;
 use crowdb_protocol::frame::{
     parse_frame, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES,
 };
+use std::time::Instant;
 
 impl ChunkReader {
     /// Read and verify a frame under the ordinary persisted chunk boundary.

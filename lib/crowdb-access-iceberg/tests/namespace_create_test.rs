@@ -44,7 +44,11 @@ async fn simultaneous_creators_publish_one_complete_namespace() {
         creators[1].create(&request),
         creators[2].create(&request)
     );
-    let mut statuses = [first.unwrap().status, second.unwrap().status, third.unwrap().status];
+    let mut statuses = [first, second, third].map(|result| match result {
+        Ok(outcome) => outcome.status,
+        Err(CatalogError::Conflict) => 409,
+        Err(error) => panic!("namespace creation failed: {error:?}"),
+    });
     statuses.sort_unstable();
     assert_eq!(statuses, [200, 409, 409]);
     let selected = NamespaceRepository::new(fixture.store.clone())

@@ -4,8 +4,8 @@
 //! Logical location resolution and protected physical reads.
 
 use super::layout::{
-    failure_operation_id, segment_identity, strip_end, strip_read_parts,
-    validate_strip_layout, StripFailureObservation,
+    failure_operation_id, segment_identity, strip_end, strip_read_parts, validate_strip_layout,
+    StripFailureObservation,
 };
 use super::{ChunkReader, FailedReadRange, LayoutSnapshot, PartialReadResult, ReadRangeData, KIB};
 use crate::{ChunkAllocator, ReadError, ReadResult};

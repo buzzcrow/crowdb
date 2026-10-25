@@ -9,7 +9,9 @@ use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 use crowdb_chunk_client::FramedWriteBuffer;
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::fb::{ConnectionPingRequest, ConnectionPingRequestArgs};
-use crowdb_protocol::frame::{parse_frame, FrameMagic, MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{
+    parse_frame, FrameMagic, FRAME_V2_HEADER_BYTES, MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES,
+};
 use crowdb_rpc_ffi::{
     Buffer, BufferChain, BufferPool, ProducerBufferAllocator, RdmaConfig, RpcClient, RpcServer,
 };
@@ -63,24 +65,24 @@ async fn framed_native_views_retain_storage_and_keep_original_payload_addresses(
         .unwrap();
     let receiver = allocator.object_receiver();
     receiver.enable_owner_handoff();
-    let mut region = poll_fn(|cx| receiver.poll_next_buffer(cx, MAX_FRAME_PAYLOAD_BYTES))
+    let mut region = poll_fn(|cx| receiver.poll_next_buffer(cx, MAX_FRAME_V2_PAYLOAD_BYTES))
         .await
         .unwrap();
     let pointer = region.spare_capacity_mut().as_ptr().cast::<u8>();
-    for byte in &mut region.spare_capacity_mut()[..MAX_FRAME_PAYLOAD_BYTES] {
+    for byte in &mut region.spare_capacity_mut()[..MAX_FRAME_V2_PAYLOAD_BYTES] {
         byte.write(0x5a);
     }
-    region.advance(MAX_FRAME_PAYLOAD_BYTES).unwrap();
+    region.advance(MAX_FRAME_V2_PAYLOAD_BYTES).unwrap();
     let payload = receiver.on_data_ready(region).unwrap();
     let mut owner = receiver.take_ready_owner().unwrap();
-    owner.prepare_frames(FrameMagic::RepoLargeV1, 123).unwrap();
+    owner.prepare_frames(FrameMagic::RepoLargeV2, 123).unwrap();
     let chunk = ChunkId { high: 17, low: 31 };
     let range = owner
-        .finalize_frame(0, FrameMagic::RepoLargeV1, chunk, 123)
+        .finalize_frame(0, FrameMagic::RepoLargeV2, chunk, 123)
         .unwrap();
     let views = owner.views(range).unwrap();
     assert_eq!(views.len(), 1);
-    assert_eq!(views[0].as_ptr().wrapping_add(14), pointer);
+    assert_eq!(views[0].as_ptr().wrapping_add(FRAME_V2_HEADER_BYTES), pointer);
     assert!(parse_frame(&views[0], chunk)
         .unwrap()
         .payload
@@ -93,7 +95,7 @@ async fn framed_native_views_retain_storage_and_keep_original_payload_addresses(
     drop(receiver);
     drop(payload);
     assert!(source.allocate(32).is_none());
-    assert_eq!(mirror.as_ptr().wrapping_add(14), pointer);
+    assert_eq!(mirror.as_ptr().wrapping_add(FRAME_V2_HEADER_BYTES), pointer);
     drop(mirror);
     assert_eq!(allocator.retained_bytes(), 0);
     assert!(source.allocate(32).is_some());
@@ -144,21 +146,21 @@ async fn hardware_http_framed_owner_uses_direct_payload_send() {
     let receiver = allocator.object_receiver();
     receiver.enable_owner_handoff();
     for index in 0..16 {
-        let mut region = poll_fn(|cx| receiver.poll_next_buffer(cx, MAX_FRAME_PAYLOAD_BYTES))
+        let mut region = poll_fn(|cx| receiver.poll_next_buffer(cx, MAX_FRAME_V2_PAYLOAD_BYTES))
             .await
             .unwrap();
-        for byte in &mut region.spare_capacity_mut()[..MAX_FRAME_PAYLOAD_BYTES] {
+        for byte in &mut region.spare_capacity_mut()[..MAX_FRAME_V2_PAYLOAD_BYTES] {
             byte.write(index);
         }
-        region.advance(MAX_FRAME_PAYLOAD_BYTES).unwrap();
+        region.advance(MAX_FRAME_V2_PAYLOAD_BYTES).unwrap();
         drop(receiver.on_data_ready(region).unwrap());
     }
     let mut owner = receiver.take_ready_owner().unwrap();
-    owner.prepare_frames(FrameMagic::RepoLargeV1, 123).unwrap();
+    owner.prepare_frames(FrameMagic::RepoLargeV2, 123).unwrap();
     let chunk = ChunkId { high: 11, low: 19 };
     for index in 0..16 {
         owner
-            .finalize_frame(index, FrameMagic::RepoLargeV1, chunk, 123)
+            .finalize_frame(index, FrameMagic::RepoLargeV2, chunk, 123)
             .unwrap();
     }
     let views = owner.views(0..(1 << 20)).unwrap();

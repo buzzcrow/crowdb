@@ -131,17 +131,20 @@ impl DiskioClient {
                 }
             }
         }
+        Err(self.exhausted_write_error(last_error, only_backpressure))
+    }
+
+    fn exhausted_write_error(&self, last_error: Option<DiskioError>, only_backpressure: bool) -> DiskioError {
         self.counters.ambiguous_writes.fetch_add(1, Ordering::Relaxed);
         if only_backpressure {
-            let Some(error @ DiskioError::Backpressure(_)) = last_error.as_ref() else {
-                return Err(DiskioError::AmbiguousWrite("completion was not observed".into()));
+            return match last_error {
+                Some(error @ DiskioError::Backpressure(_)) => error,
+                _ => DiskioError::AmbiguousWrite("completion was not observed".into()),
             };
-            return Err(error.clone());
         }
-        Err(DiskioError::AmbiguousWrite(last_error.map_or_else(
-            || "completion was not observed".into(),
-            |error| error.to_string(),
-        )))
+        DiskioError::AmbiguousWrite(
+            last_error.map_or_else(|| "completion was not observed".into(), |error| error.to_string()),
+        )
     }
 
     fn submit_payload(

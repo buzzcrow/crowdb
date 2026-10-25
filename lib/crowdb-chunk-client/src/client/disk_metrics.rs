@@ -41,7 +41,6 @@ impl DiskWriter for MetricsDiskWriter {
         result
     }
 
-
     fn shutdown(&self) {
         self.inner.shutdown();
     }

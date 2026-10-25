@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use crowdb_chunk_client::{ChunkAllocator, IoError, Result};
+use crowdb_chunk_client::{ChunkAllocator, Result};
 use crowdb_protocol::chunkdb::rpc::*;
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -107,10 +107,11 @@ impl ChunkAllocator for TestAllocator {
         self.update(|chunks| {
             let chunk = chunks.get_mut(&(id.high, id.low)).unwrap();
             chunk.state = ChunkState::Sealed as i32;
-            chunk.sealed_length = req.seal_length;
+            chunk.acknowledged_cursor = req.seal_bytes;
+            chunk.sealed_length = u32::try_from(req.seal_bytes.div_ceil(1024)).unwrap();
             for strip in &mut chunk.strips {
-                strip.sealed_length = req
-                    .seal_length
+                strip.sealed_length = chunk
+                    .sealed_length
                     .saturating_sub(strip.chunk_offset)
                     .min(strip.capacity);
             }
@@ -137,9 +138,5 @@ impl ChunkAllocator for TestAllocator {
             chunk: self.chunks.load().get(&(id.high, id.low)).cloned(),
             layout_validity_ms: 60_000,
         })
-    }
-
-    async fn update_chunk_strip(&self, _req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        Err(IoError::Unsupported("fixture does not repair placement".into()))
     }
 }

@@ -132,8 +132,8 @@ mod admission;
 mod append;
 #[path = "lock_map.rs"]
 mod lock_map;
-mod recovery;
 mod range_retirement;
+mod recovery;
 mod reservation;
 mod seal;
 

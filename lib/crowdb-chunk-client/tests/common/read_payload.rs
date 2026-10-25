@@ -7,7 +7,7 @@ use crowdb_chunk_client::{ChunkAllocator, DiskWriter, Result};
 use crowdb_protocol::chunkdb::rpc::{
     AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, Chunk,
     DeleteChunkRequest, DeleteChunkResponse, QueryChunkRequest, QueryChunkResponse, SealChunkRequest,
-    SealChunkResponse, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    SealChunkResponse,
 };
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_rpc_ffi::OwnedPayload;
@@ -30,9 +30,6 @@ impl ChunkAllocator for TestPayloadStorage {
     }
     async fn delete_chunk(&self, _: DeleteChunkRequest) -> Result<DeleteChunkResponse> {
         panic!("read deleted storage")
-    }
-    async fn update_chunk_strip(&self, _: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        panic!("read updated storage")
     }
     async fn query_chunk(&self, _: QueryChunkRequest) -> Result<QueryChunkResponse> {
         Ok(QueryChunkResponse {

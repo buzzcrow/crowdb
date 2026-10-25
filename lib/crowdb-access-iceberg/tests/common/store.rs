@@ -118,6 +118,39 @@ impl TestStore {
         }
     }
 
+    async fn pause_reservation(&self, key: &[u8], expected: Option<&[u8]>, value: &[u8]) {
+        if expected.is_none() {
+            if let Ok(crowdb_access_iceberg::record::StorageRecord::TableMapping(mapping)) =
+                crowdb_access_iceberg::key::IcebergKey::decode(key)
+                    .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
+            {
+                if mapping.state == crowdb_access_iceberg::table::TableMappingState::Reserved {
+                    if let Some(barrier) = &self.table_reservation_barrier {
+                        if self.table_reservation_visits.fetch_add(1, Ordering::SeqCst) < 2 {
+                            barrier.wait().await;
+                        }
+                    }
+                }
+            }
+            if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceMapping(mapping)) =
+                crowdb_access_iceberg::key::IcebergKey::decode(key)
+                    .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
+            {
+                if matches!(
+                    mapping.state,
+                    crowdb_access_iceberg::namespace::NamespaceMappingState::Reserved
+                        | crowdb_access_iceberg::namespace::NamespaceMappingState::ReservedResource
+                ) {
+                    if let Some(barrier) = &self.namespace_reservation_barrier {
+                        if self.namespace_reservation_visits.fetch_add(1, Ordering::SeqCst) < 2 {
+                            barrier.wait().await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     async fn pause_namespace_update(&self, key: &[u8], expected: Option<&[u8]>, value: &[u8]) {
         if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceAuthority(authority)) =
             crowdb_access_iceberg::key::IcebergKey::decode(key)
@@ -250,36 +283,7 @@ impl CatalogStore for TestStore {
         }
         self.pause_table_head(key, expected, value, false).await;
         self.pause_file_location(key).await;
-        if expected.is_none() {
-            if let Ok(crowdb_access_iceberg::record::StorageRecord::TableMapping(mapping)) =
-                crowdb_access_iceberg::key::IcebergKey::decode(key)
-                    .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
-            {
-                if mapping.state == crowdb_access_iceberg::table::TableMappingState::Reserved {
-                    if let Some(barrier) = &self.table_reservation_barrier {
-                        if self.table_reservation_visits.fetch_add(1, Ordering::SeqCst) < 2 {
-                            barrier.wait().await;
-                        }
-                    }
-                }
-            }
-            if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceMapping(mapping)) =
-                crowdb_access_iceberg::key::IcebergKey::decode(key)
-                    .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
-            {
-                if matches!(
-                    mapping.state,
-                    crowdb_access_iceberg::namespace::NamespaceMappingState::Reserved
-                        | crowdb_access_iceberg::namespace::NamespaceMappingState::ReservedResource
-                ) {
-                    if let Some(barrier) = &self.namespace_reservation_barrier {
-                        if self.namespace_reservation_visits.fetch_add(1, Ordering::SeqCst) < 2 {
-                            barrier.wait().await;
-                        }
-                    }
-                }
-            }
-        }
+        self.pause_reservation(key, expected, value).await;
         self.pause_namespace_update(key, expected, value).await;
         if let Ok(crowdb_access_iceberg::record::StorageRecord::Active(root)) =
             crowdb_access_iceberg::key::IcebergKey::decode(key)

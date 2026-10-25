@@ -1,20 +1,17 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{
-    ChunkReader, FailedReadRange, LayoutSnapshot, PartialReadResult,
-    ReadRangeData,
-};
+use super::frame_views::{extract_physical_views, slice_views};
+use super::layout::mark_served_segments_corrupt;
+use super::{ChunkReader, FailedReadRange, LayoutSnapshot, PartialReadResult, ReadRangeData};
 use crate::metrics::ReadFlowMetrics;
 use crate::{ReadError, ReadResult};
-use crowdb_rpc_ffi::OwnedPayload;
-use super::layout::mark_served_segments_corrupt;
-use super::frame_views::{extract_physical_views, slice_views};
 use crowdb_protocol::chunkdb::rpc::Location;
 use crowdb_protocol::frame::{
     parse_frame, parse_frame_views, ChunkLocation, FrameLayout, FrameMagic, FRAME_FOOTER_BYTES,
     MAX_FRAME_BYTES,
 };
+use crowdb_rpc_ffi::OwnedPayload;
 use std::ops::Range;
 use std::time::Instant;
 

@@ -29,9 +29,6 @@ impl ChunkAllocator for TestNoPayload {
     async fn delete_chunk(&self, _: DeleteChunkRequest) -> Result<DeleteChunkResponse> {
         panic!("metadata operation deleted data")
     }
-    async fn update_chunk_strip(&self, _: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        panic!("metadata operation updated data")
-    }
     async fn query_chunk(&self, _: QueryChunkRequest) -> Result<QueryChunkResponse> {
         panic!("metadata operation read payload")
     }

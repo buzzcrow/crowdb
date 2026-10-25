@@ -10,6 +10,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <future>
 #include <vector>
 
 namespace
@@ -172,7 +173,7 @@ TEST_F(DioLifetimeTest, DiskOwnsExactPayloadUntilCompletionWithoutReplacementAdm
             buffer->release();
         };
         const auto *payload = data->payload_data();
-        EXPECT_EQ(service->handle_write(write(data), connection.get()), nullptr);
+        EXPECT_EQ(service->handle_write(write(data, index * 16, 16, index * 16), connection.get()), nullptr);
         ASSERT_EQ(engine.pending.size(), index + 1);
         EXPECT_EQ(engine.pending.back().data, payload);
         EXPECT_EQ(data->ownership.load(), BufferOwnership::DiskOwned);
@@ -194,7 +195,7 @@ TEST_F(DioLifetimeTest, DiskOwnsExactPayloadUntilCompletionWithoutReplacementAdm
     EXPECT_EQ(buffers.quarantined_bytes(), 0U);
 }
 
-TEST_F(DioLifetimeTest, WriteCompletionRetainsTransportAndConnectionAfterBothFacadesDie)
+TEST_F(DioLifetimeTest, WriteCompletionRetainsTransportAndConnectionWhileServiceDrains)
 {
     std::weak_ptr<SocketTransport> transport = server->shared_transport();
     std::weak_ptr<Connection>      peer      = connection;
@@ -203,13 +204,17 @@ TEST_F(DioLifetimeTest, WriteCompletionRetainsTransportAndConnectionAfterBothFac
     data->write("delayed I/O data", 16);
     service->handle_write(write(data), connection.get());
     ASSERT_EQ(engine.pending.size(), 1U);
-    service.reset();
-    server.reset();
+    auto shutdown = std::async(std::launch::async, [this] {
+        service.reset();
+        server.reset();
+    });
     connection.reset();
+    EXPECT_EQ(shutdown.wait_for(std::chrono::milliseconds(10)), std::future_status::timeout);
     EXPECT_FALSE(transport.expired());
     EXPECT_FALSE(peer.expired());
     EXPECT_EQ(std::memcmp(engine.pending.front().data, "delayed I/O data", 16), 0);
     engine.complete(16);
+    shutdown.get();
     EXPECT_TRUE(peer.expired());
     EXPECT_TRUE(transport.expired());
 }

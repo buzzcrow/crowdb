@@ -4,11 +4,11 @@
 //! Shared timed echo benchmark for explicit TCP and strict RDMA transports.
 
 mod control;
+mod echo;
 pub(super) mod payload;
 mod report;
 mod runtime;
 mod status;
-mod workload;
 
 use super::args::{BenchMode, RpcArgs};
 
@@ -21,11 +21,10 @@ use crowdb_common::metrics::{MetricsRegistry, MetricsRunner};
 use crowdb_rpc_ffi::{ProducerBufferAllocator, RdmaConfig, RpcServer};
 use serde_json::{json, Value};
 
+use echo::EchoWorkload;
 use std::path::Path;
-use workload::EchoWorkload;
 
-pub async fn run(log_dir: &Path, mut args: RpcArgs) -> ExitCode {
-    let rdma = args.rdma;
+pub async fn run(log_dir: &Path, mut args: RpcArgs, rdma: bool, json_output: bool) -> ExitCode {
     let config = args.resolve(rdma);
     let mut report = report::base(&args, rdma);
     match config {
@@ -46,7 +45,7 @@ pub async fn run(log_dir: &Path, mut args: RpcArgs) -> ExitCode {
             report["report_errors"] = json!(1);
         }
     }
-    if args.json {
+    if json_output {
         println!("{report}");
     } else {
         println!(
