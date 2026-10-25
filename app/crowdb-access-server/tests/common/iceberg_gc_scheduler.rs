@@ -20,6 +20,9 @@ use crowdb_access_server::iceberg::TestGcSweep;
 use std::sync::Arc;
 pub use store::TestStore;
 
+#[path = "iceberg_gc_scheduler/timing.rs"]
+pub mod timing;
+
 pub struct TestBlocks;
 
 #[async_trait]
@@ -80,7 +83,7 @@ pub async fn purge(store: &TestStore, context: CatalogContext, identity: u8) -> 
     let table = TableId::from_bytes(&[identity; 16]).unwrap();
     let metadata_file = FileId::random();
     let marker = TablePurgeTask {
-        activation_epoch: 1,
+        activation_epoch: context.activation_epoch,
         dropped_ms: 1000,
         head: TableHead {
             catalog: context.catalog,

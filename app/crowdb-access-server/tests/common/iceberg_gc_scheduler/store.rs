@@ -29,6 +29,7 @@ pub struct TestStore {
     pub entered: Notify,
     pub resume: Notify,
     pub invalid_page: AtomicBool,
+    pub requests: AtomicUsize,
 }
 
 impl TestStore {
@@ -40,6 +41,7 @@ impl TestStore {
 #[async_trait]
 impl CatalogStore for TestStore {
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
+        self.requests.fetch_add(1, Ordering::SeqCst);
         if self.fault_key.load().as_slice() == key && self.read_failure.swap(0, Ordering::SeqCst) != 0 {
             return Err(StoreError::Response);
         }
@@ -53,6 +55,7 @@ impl CatalogStore for TestStore {
         value: &[u8],
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
+        self.requests.fetch_add(1, Ordering::SeqCst);
         let targeted = self.fault_key.load().as_slice() == key;
         if targeted && self.pause_write.load(Ordering::SeqCst) {
             self.entered.notify_one();
@@ -81,6 +84,7 @@ impl CatalogStore for TestStore {
 #[async_trait]
 impl GcStore for TestStore {
     async fn scan_gc_local(&self, scan: GcLocalScan) -> Result<MultiScanPage, StoreError> {
+        self.requests.fetch_add(1, Ordering::SeqCst);
         let request = scan.request(1)?;
         let start = request.start.as_ref().unwrap();
         if self.pause_scope.load(Ordering::SeqCst) == usize::from(*start.last().unwrap()) {
@@ -133,9 +137,11 @@ impl GcStore for TestStore {
         Ok(page)
     }
     async fn scan_gc(&self, scan: GcScan) -> Result<MultiScanPage, StoreError> {
+        self.requests.fetch_add(1, Ordering::SeqCst);
         self.inner.scan_gc(scan).await
     }
     async fn scan_gc_system(&self, scan: GcSystemScan) -> Result<MultiScanPage, StoreError> {
+        self.requests.fetch_add(1, Ordering::SeqCst);
         self.inner.scan_gc_system(scan).await
     }
     async fn delete_gc_record(
@@ -144,6 +150,7 @@ impl GcStore for TestStore {
         expected: &[u8],
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
+        self.requests.fetch_add(1, Ordering::SeqCst);
         self.inner.delete_gc_record(key, expected, identity).await
     }
 }

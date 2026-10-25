@@ -9,21 +9,16 @@ use crowdb_access_iceberg::{
 };
 use crowdb_chunk_client::ChunkIoClient;
 
+mod schedule;
 mod sweep;
+use schedule::Schedule;
 use sweep::scan_and_advance;
 
 #[cfg(feature = "test-util")]
 mod test_util;
+use sweep::ScanPosition;
 #[cfg(feature = "test-util")]
 pub use test_util::TestGcSweep;
-
-#[derive(Clone, Default)]
-struct ScanPosition {
-    task: Vec<u8>,
-    purge: Vec<u8>,
-    system: Vec<u8>,
-    next_lane: u8,
-}
 
 pub(super) struct GcRuntimeConfig {
     pub limits: GcLimits,
@@ -192,40 +187,36 @@ pub(super) async fn run(
             return;
         }
     };
-    let mut interval = tokio::time::interval(Duration::from_millis(config.interval_ms));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut cursors = Vec::<(CatalogId, ScanPosition)>::new();
-    let mut index = 0_usize;
+    let mut schedule = Schedule::default();
+    let mut status_failures = 0_u32;
     loop {
-        interval.tick().await;
+        tokio::time::sleep_until(schedule.next_due()).await;
         let Ok(Ok((root, _))) = tokio::time::timeout(
             Duration::from_millis(config.interval_ms.min(60_000)),
             catalog.status(),
         )
         .await
         else {
+            status_failures = status_failures.saturating_add(1);
             tracing::warn!("GC catalog status unavailable; retrying later");
+            tokio::time::sleep(Duration::from_millis(
+                config.limits.retry_delay_ms(status_failures),
+            ))
+            .await;
             continue;
         };
+        status_failures = 0;
         if root.state != RootState::Ready {
+            tokio::time::sleep(Duration::from_millis(config.interval_ms)).await;
             continue;
         }
-        let mut catalogs = config.catalogs.clone();
-        if !catalogs.contains(&root.context.catalog) {
-            catalogs.push(root.context.catalog);
-        }
-        if catalogs.is_empty() {
+        schedule.retain_scopes(&config.catalogs, root.context.catalog);
+        let Some(slot) = schedule.ready() else {
             continue;
-        }
-        let selected = catalogs[index % catalogs.len()];
-        index = index.wrapping_add(1);
-        let slot = cursors
-            .iter()
-            .position(|(catalog, _)| *catalog == selected)
-            .unwrap_or_else(|| {
-                cursors.push((selected, ScanPosition::default()));
-                cursors.len() - 1
-            });
+        };
+        let selected = schedule.catalog(slot);
+        let cursor = schedule.position(slot);
+        let before = cursor.progress;
         let result = tokio::time::timeout(
             Duration::from_millis(u64::from(config.limits.step_ms) * 2 + 1000),
             scan_and_advance(
@@ -233,20 +224,21 @@ pub(super) async fn run(
                 &worker,
                 budget.as_ref(),
                 selected,
-                &mut cursors[slot].1,
+                cursor,
                 (selected == root.context.catalog).then_some(root.context),
                 config.limits,
             ),
         )
         .await;
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                tracing::error!(catalog = %selected, %error, "GC scheduler window failed; observed local positions retained");
-            }
-            Err(_) => {
-                tracing::warn!(catalog = %selected, "GC scheduler window exceeded its budget; observed local positions retained");
-            }
-        }
+        let error = if let Ok(error) = result {
+            error
+        } else {
+            tracing::warn!(catalog = %selected, "GC scheduler window exceeded its budget; observed local positions retained");
+            Some("GC scheduler window timed out".into())
+        };
+        let report = schedule.position(slot).report(before, error.is_some());
+        tracing::debug!(catalog = %selected, busy = report.busy, progressed = report.progressed,
+            failed = report.failed, retry_at_ms = report.retry_at_ms, "GC scheduler window completed");
+        schedule.finish(slot, report, config.interval_ms, config.limits);
     }
 }

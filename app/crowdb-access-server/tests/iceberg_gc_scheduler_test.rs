@@ -17,6 +17,9 @@ use std::{
 mod fixture;
 use fixture::{advance, assert_progress, purge, purge_task_key, put, scheduler, setup, TestBlocks};
 
+#[path = "iceberg_gc_scheduler/timing.rs"]
+mod timing;
+
 #[tokio::test]
 async fn corrupt_task_row_cannot_block_a_later_healthy_task_forever() {
     let (store, context, task) = setup().await;

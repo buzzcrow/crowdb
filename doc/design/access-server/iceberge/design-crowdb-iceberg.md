@@ -934,17 +934,29 @@ it uses a separate storage client pool, one-step concurrency admission, bounded
 KV and chunk request/byte budgets, and durable retry state. The enabled
 scheduler admits persisted table purge markers and completed catalog clears;
 management may also start inactive tasks. Operators can disable the scheduler
-or adjust validated resource limits. It scans once at startup, then every
-30 minutes by default. A purge becomes eligible 20 minutes after the drop;
-the next scan may start its work up to one scan interval later.
+or adjust validated resource limits. Discovery starts at startup. Each catalog
+with unfinished discovery or runnable work continues after the retry-base delay
+(one second by default, at least 100 ms and at most the configured scan interval).
+One window still advances at most one worker step under its original I/O and time
+budgets. A completed discovery round returns to the scan interval, 30 minutes by
+default. A purge becomes eligible 20 minutes after the drop; discovery may add up
+to one idle scan interval before its first step. A known task retry deadline can
+wake its catalog sooner, without shortening retention or other resource deadlines.
 
 Scheduler discovery positions are discardable, per-catalog memory. Purge,
 multipart admission, retired-catalog admission and task lanes rotate their first
-turn before awaiting storage. A failed lane reports its original error and leaves
-other lanes eligible. A validated raw row advances its local position before key
+turn before awaiting storage. Due catalogs rotate independently; one catalog's
+failure does not delay another catalog's due work. A failed lane reports its
+original error and leaves other lanes eligible. A validated raw row advances its local position before key
 or value decoding and before any admission or worker action. An error, deadline
-or cancellation therefore retains that observed position; an empty page starts
-the next discovery round. Restart loses these hints and rescans the unchanged
+or cancellation therefore retains that observed position. An empty page closes
+that lane's pass; actual task progress reopens its source lane when more work is
+runnable. Terminal, paused and future-retry tasks do not keep a round busy.
+Failed or cancelled lanes are rescanned with capped exponential backoff until a
+complete error-free pass, so a long-lived corrupt row cannot cause a hot loop.
+Multipart admission runs once per discovery round. Local scheduling retains at
+most the 64 configured catalogs and the current catalog; retired identities remain
+discoverable through durable system markers. Restart loses these hints and rescans the unchanged
 durable markers, ledgers and tasks. These hints grant no deletion authority and
 do not replace task proof, permanent retirement fences or retry state.
 
