@@ -5,9 +5,12 @@ use crowdb_monitor::NodeDispatchForTests;
 use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
 
+#[path = "common/run_root.rs"]
+mod run_root;
+
 #[tokio::test]
 async fn queued_control_and_overdue_health_both_make_progress() {
-    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-dispatch");
+    let root = run_root::TestRunRoot::new("node-dispatch");
     let socket = root.path().join("control.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let mut queued = Vec::new();

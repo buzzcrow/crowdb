@@ -7,6 +7,9 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 use crowdb_monitor::{accept_node_policy, read_node_policy, BootstrapSession, LivenessServer, NodeIdentity};
 use crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides;
 
+#[path = "common/run_root.rs"]
+mod run_root;
+
 #[test]
 fn accepted_policy_survives_restart_without_defaults_or_identity_effects() {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("accepted-node-policy");
@@ -167,7 +170,7 @@ fn concurrent_incompatible_publishers_accept_exactly_one_policy() {
 
 #[tokio::test]
 async fn root_guard_rejects_another_monitor_even_with_a_private_run_directory() {
-    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-policy-owner");
+    let root = run_root::TestRunRoot::new("node-policy-owner");
     let inputs = NodeDeploymentOverrides::default();
     accept_node_policy(root.path(), &inputs, &inputs).unwrap();
     let owner = LivenessServer::start(root.path()).unwrap();

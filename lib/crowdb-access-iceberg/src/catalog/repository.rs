@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use tokio::time::Instant;
 
 use crate::error::ValidationError;
 use crate::key::{CatalogId, CatalogScope, IcebergKey, OperationId, SystemScope};

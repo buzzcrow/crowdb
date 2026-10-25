@@ -8,6 +8,10 @@ use crowdb_test_harness::test_dirs::tempdir_in_test_data;
 #[path = "common/member_trust.rs"]
 mod trust;
 
+#[path = "common/run_root.rs"]
+mod run_root;
+use run_root::TestRunRoot;
+
 #[test]
 fn duplicate_authenticated_incarnations_remove_the_route_in_any_order() {
     use crowdb_protocol::mgmt::node::recovery::MemberEndpoint;
@@ -142,7 +146,7 @@ async fn incomplete_endpoint_proof_does_not_rebind_unchanged_fresh_services() {
 #[tokio::test]
 async fn ssh_identity_command_is_independent_of_the_lifecycle_control_loop() {
     use crowdb_protocol::mgmt::node::recovery::{MemberEndpoint, MemberRecoveryIdentity};
-    let dir = tempdir_in_test_data("member-identity");
+    let dir = TestRunRoot::new("member-identity");
     let root = dir.path();
     let trust = trust::fixture(root);
     accept_member_trust_for_tests(root, &trust).unwrap();
@@ -256,7 +260,7 @@ fn pending_missing_corrupt_and_retired_nonvoter_trust_never_authorize_resume() {
 #[tokio::test]
 async fn confirmed_nonvoter_can_prove_identity_without_live_group_zero_but_pending_cannot() {
     use crowdb_protocol::mgmt::node::recovery::MemberEndpoint;
-    let dir = tempdir_in_test_data("nonvoter-ssh-recovery");
+    let dir = TestRunRoot::new("nonvoter-ssh-recovery");
     let root = dir.path();
     let mut snapshot = admitted::fixture(root);
     trust::write(
