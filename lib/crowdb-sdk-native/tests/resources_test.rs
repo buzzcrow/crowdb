@@ -185,3 +185,39 @@ async fn an_interrupted_mutation_exposes_uncertainty_and_never_replays() {
     );
     assert_eq!(resources.status().requests, 0);
 }
+
+#[tokio::test]
+async fn ready_checks_prioritize_shutdown_then_cancellation_over_an_expired_deadline() {
+    for shutdown in [false, true] {
+        let resources = resources(1, 16);
+        let operation = context(1);
+        let deadline = operation.deadline;
+        let cancellation = operation.cancellation.clone();
+        let request = resources.admit(operation).unwrap();
+        cancellation.cancel();
+        tokio::time::sleep_until(deadline.into()).await;
+        assert!(Instant::now() >= deadline);
+        if shutdown {
+            resources.shutdown();
+        }
+        let mut polled = false;
+        let result = request
+            .run(async {
+                polled = true;
+                Ok(())
+            })
+            .await;
+        assert_eq!(
+            result,
+            Err(if shutdown {
+                Error::Shutdown
+            } else {
+                Error::Cancelled
+            })
+        );
+        assert!(!polled);
+        assert_eq!(resources.status().requests, 1);
+        drop(request);
+        assert_eq!(resources.status().requests, 0);
+    }
+}

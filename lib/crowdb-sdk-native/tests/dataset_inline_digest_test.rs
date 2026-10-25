@@ -155,3 +155,42 @@ async fn expired_inline_pulls_reject_empty_eof_and_preserve_delivered_owners() {
         }
     }
 }
+
+#[tokio::test]
+async fn simultaneous_shutdown_and_cancellation_win_before_first_data_and_eof() {
+    for query in [false, true] {
+        for (length, after_delivery) in [(0, false), (1, false), (1, true)] {
+            let fixture = TestInlineFixture::new(length).await;
+            let request = context(2);
+            let cancellation = request.cancellation.clone();
+            let mut read = fixture.read(query, request).await.unwrap();
+            let held = if after_delivery {
+                Some(read.body.next().await.unwrap().unwrap().buffer)
+            } else {
+                None
+            };
+            let before = fixture.counts();
+            cancellation.cancel();
+            fixture.runtime.shutdown().await.unwrap();
+            assert_eq!(
+                read.body
+                    .next()
+                    .await
+                    .err()
+                    .expect("shutdown must reject the pull"),
+                Error::Shutdown,
+                "query={query} length={length} after_delivery={after_delivery}"
+            );
+            read.body.cancel();
+            assert_eq!(read.body.next().await.err().unwrap(), Error::Shutdown);
+            assert!(!read.body.is_complete());
+            assert_eq!(fixture.counts(), before);
+            assert_eq!(fixture.runtime.resources().status().requests, 0);
+            if let Some(held) = held {
+                assert_eq!(held.as_slice(), fixture.data);
+                drop(held);
+            }
+            assert_eq!(fixture.runtime.resources().status().held_bytes, 0);
+        }
+    }
+}

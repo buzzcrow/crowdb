@@ -131,6 +131,11 @@ impl RequestLease {
         &self.context
     }
 
+    pub(crate) fn check(&self) -> Result<()> {
+        self.resources.check_open()?;
+        self.context.check()
+    }
+
     /// # Errors
     /// Returns shutdown, cancellation, deadline or the underlying operation error.
     pub async fn run<T>(&self, future: impl Future<Output = Result<T>>) -> Result<T> {

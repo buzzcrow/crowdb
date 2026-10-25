@@ -109,7 +109,7 @@ impl BatchBody {
 
     async fn pull(&mut self) -> Result<Option<FieldBuffer>> {
         let request = self.request.as_ref().ok_or(Error::Cancelled)?;
-        request.run(async { Ok(()) }).await?;
+        request.check()?;
         loop {
             if self.field.is_none() {
                 let Some((index, locator)) = self.locators.pop_front() else {
