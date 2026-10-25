@@ -563,6 +563,32 @@ Those partial rates are not accepted comparative performance.
   Iceberg file cases, all five Dataset cases, and the unchanged full TCP/restart
   workload. The earlier v4 results remain evidence for their own source.
 
+## Point, expiry and inline follow-up (2026-10-25)
+
+- Committed changes retain the original point-operation buffers through routed
+  retries (`671c6186`), reuse freshly read multipart authority for expiry abort
+  (`5476926a`), and reuse inline integrity already checked by locator resolution
+  (`5eac9ecc`). Exact conditions, stable logical identities/deadlines, returned
+  observations, public abort reads, Chunk digests and owner lifetimes remain.
+- Pointer regressions demonstrate the removed deep clone of a CAS with two
+  245,784-byte buffers on every dispatch. Expired refresh costs one GET plus one
+  CAS instead of two GETs plus one CAS. Native inline corruption tests still
+  reject payload and metadata mismatches before returning a body. These are
+  boundary-work and logical-operation results, not measured throughput gains.
+- A separate GC case (`6b731ae8`) seeds 128 inline files with a real expired
+  absolute deletion deadline. It requires exact task/candidate completion and
+  absent original file keys while finite SDK and chunk-write traffic succeeds.
+  The original overlap case, twenty-minute grace and production budgets stay.
+  New-case timeout is 3,300 seconds, with a 3,600-second fixture allowance; this
+  bounds observation without changing the original 180-second case. It measures
+  logical inline metadata cleanup, not physical storage capacity recovery.
+- The six affected crate gates pass: 1,109 tests, 13 separately configured cases
+  ignored. Workspace all-target/all-feature clippy, normal lint and formatting
+  pass. The E2E client builds; the new GC case and matching-image S3/Dataset/
+  complete TCP/restart acceptance still need execution on v6. Earlier v5
+  evidence below remains tied to its own source. HCA prerequisites and pending
+  Namespace DROP/MPU concurrency choices remain independently open.
+
 ## Current acceptance (2026-10-25)
 
 - Image `access-cleanup-v5-20261025` from source `ae4e1b8a`, tree
