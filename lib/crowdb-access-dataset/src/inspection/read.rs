@@ -24,14 +24,10 @@ impl DatasetAuthority {
         fields: &[String],
         cancel: &ReadCancellation,
     ) -> Result<Vec<SampleView>, InspectionError> {
-        if ids.is_empty()
-            || ids.len() > crate::MAX_BATCH_SIZE
-            || fields.len() > 256
-            || ids.iter().collect::<BTreeSet<_>>().len() != ids.len()
-            || fields.iter().collect::<BTreeSet<_>>().len() != fields.len()
-        {
+        if ids.is_empty() {
             return Err(AuthorityError::Invalid(DatasetError::InvalidManifest).into());
         }
+        validate_inputs(ids, fields)?;
         let mut work = InspectionWork::new(
             self.store.as_ref(),
             cancel,
@@ -52,7 +48,7 @@ impl DatasetAuthority {
             schema,
             summaries: BTreeMap::from([(snapshot, summary)]),
         }
-        .resolve(ids, fields, &mut work, false)
+        .resolve_validated(ids, fields, &mut work, false)
         .await
     }
 }
@@ -76,13 +72,17 @@ impl PreparedInspectionRead<'_> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        if ids.len() > crate::MAX_BATCH_SIZE
-            || fields.len() > 256
-            || ids.iter().collect::<BTreeSet<_>>().len() != ids.len()
-            || fields.iter().collect::<BTreeSet<_>>().len() != fields.len()
-        {
-            return Err(AuthorityError::Invalid(DatasetError::InvalidManifest).into());
-        }
+        validate_inputs(ids, fields)?;
+        self.resolve_validated(ids, fields, work, known_members).await
+    }
+
+    async fn resolve_validated(
+        &mut self,
+        ids: &[Vec<u8>],
+        fields: &[String],
+        work: &mut InspectionWork<'_>,
+        known_members: bool,
+    ) -> Result<Vec<SampleView>, InspectionError> {
         if fields
             .iter()
             .any(|field| !self.schema.iter().any(|known| known.name == *field))
@@ -150,4 +150,15 @@ impl PreparedInspectionRead<'_> {
         }
         Ok(())
     }
+}
+
+fn validate_inputs(ids: &[Vec<u8>], fields: &[String]) -> Result<(), InspectionError> {
+    if ids.len() > crate::MAX_BATCH_SIZE
+        || fields.len() > 256
+        || ids.iter().collect::<BTreeSet<_>>().len() != ids.len()
+        || fields.iter().collect::<BTreeSet<_>>().len() != fields.len()
+    {
+        return Err(AuthorityError::Invalid(DatasetError::InvalidManifest).into());
+    }
+    Ok(())
 }
