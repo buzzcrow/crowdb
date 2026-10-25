@@ -13,7 +13,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::BucketId;
 
-const SESSION_MAGIC: [u8; 5] = *b"S3MS\x04";
+const SESSION_MAGIC: [u8; 5] = *b"S3MS\x05";
 const PART_MAGIC: [u8; 5] = *b"S3MP\x01";
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
 const MAX_OBJECT_KEY_BYTES: usize = 1024;
@@ -22,6 +22,7 @@ const MAX_CONTENT_TYPE_BYTES: usize = 1024;
 pub use crowdb_access_multipart::MultipartPhase;
 
 mod legacy;
+mod session_format;
 
 /// Creates a random upload identity whose byte order follows initiation time.
 /// Uploads created in the same millisecond have an unspecified relative order.
@@ -51,7 +52,7 @@ pub struct MultipartSessionRecord {
     pub staged_bytes: u64,
     pub pending: Option<PendingPartMutation>,
     pub selection: Option<Vec<SelectedPart>>,
-    /// Original legacy authority for an exact-value CAS, never persisted.
+    /// Original strict-format authority for an exact-value CAS, never persisted.
     #[serde(skip)]
     pub legacy_observation: Option<(u64, Vec<u8>)>,
 }
@@ -122,7 +123,7 @@ impl MultipartSessionRecord {
     /// Rejects incoherent phases, bounds and oversized records.
     pub fn encode(&self) -> Result<Vec<u8>, MultipartRecordError> {
         self.validate()?;
-        encode(SESSION_MAGIC, self)
+        self.encode_session()
     }
 
     /// Decodes and binds one session to the requested bucket, key and upload.
@@ -143,19 +144,18 @@ impl MultipartSessionRecord {
     }
 
     pub(crate) fn decode_unbound(bytes: &[u8]) -> Result<Self, MultipartRecordError> {
-        let record: Self = if bytes.starts_with(b"S3MS\x03") {
-            legacy::decode_session(bytes)?
-        } else {
-            decode(SESSION_MAGIC, bytes)?
-        };
+        let record = session_format::decode_session(bytes)?;
         record.validate()?;
         Ok(record)
     }
 
     pub(crate) fn expected_value(&self) -> Result<Vec<u8>, MultipartRecordError> {
         if let Some((revision, bytes)) = &self.legacy_observation {
-            if *revision == self.revision && legacy::decode_session(bytes)? == *self {
-                return Ok(bytes.clone());
+            if *revision == self.revision {
+                let original = Self::decode_unbound(bytes)?;
+                if original == *self && original.uses_independent_parts() == self.uses_independent_parts() {
+                    return Ok(bytes.clone());
+                }
             }
         }
         self.encode()

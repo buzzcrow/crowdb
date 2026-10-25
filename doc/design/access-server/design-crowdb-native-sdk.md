@@ -35,8 +35,13 @@ system's deployment boundary.
 publication and multipart orchestration. HTTP supplies parsing, authentication
 and HTTP/XML encoding; `S3Client` supplies typed context and results. Both
 preserve S3 generation, checksum, visibility and uncertain-publication rules.
-Copy captures a source generation. Multipart completion binds an exact selected
-part set; a repeated completed request returns its recorded outcome.
+Copy captures a source generation. Multipart completion binds exact immutable
+part generations. An admitted independent-part writer may acknowledge a later
+replacement without changing that selection. Each accepted Complete execution
+publishes the frozen selection through an unconditional object PUT, including
+retries after success; it can overwrite a later ordinary PUT. No completion
+response is recorded. [S3 publication](s3/design-crowdb-access-s3.md#4-publication-and-lifecycle)
+defines the shared multipart resource modes and completion rules.
 
 `DatasetClient` attaches `DatasetAuthority`, `DatasetUploads` and
 `DatasetReads` to these same clients. Complete Snapshot/Split preparation takes

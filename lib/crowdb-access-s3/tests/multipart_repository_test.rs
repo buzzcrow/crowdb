@@ -25,6 +25,8 @@ mod expiry;
 mod expiry_discovery;
 #[path = "common/multipart_expiry_sweep.rs"]
 mod expiry_sweep;
+#[path = "multipart_repository/independent.rs"]
+mod independent;
 #[path = "common/multipart_legacy.rs"]
 mod legacy;
 #[path = "common/multipart_progress.rs"]
@@ -35,7 +37,7 @@ mod retrieval_storage;
 mod unknown;
 
 fn session() -> MultipartSessionRecord {
-    MultipartSessionRecord {
+    let record = MultipartSessionRecord {
         bucket_id: BucketId::new([3; 16]),
         object_key: b"object".to_vec(),
         upload_id: [7; 16],
@@ -60,7 +62,11 @@ fn session() -> MultipartSessionRecord {
         pending: None,
         selection: None,
         legacy_observation: None,
-    }
+    };
+    // These accounting and interrupted-reservation cases exercise historical v4 resources.
+    let mut bytes = record.encode().unwrap();
+    bytes[4] = 4;
+    MultipartSessionRecord::decode(&bytes, record.bucket_id, &record.object_key, &record.upload_id).unwrap()
 }
 
 fn part() -> MultipartPartRecord {

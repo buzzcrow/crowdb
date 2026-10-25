@@ -103,7 +103,7 @@ fn bound_upload_requires_a_nonempty_selection_and_keeps_no_success_phase() {
         revision: 2,
         digest: [4; 32],
     }]);
-    assert!(session.encode().unwrap().starts_with(b"S3MS\x04"));
+    assert!(session.encode().unwrap().starts_with(b"S3MS\x05"));
     session.phase = MultipartPhase::Published;
     assert_eq!(session.encode(), Err(MultipartRecordError::Invalid));
     session.phase = MultipartPhase::Publishing;

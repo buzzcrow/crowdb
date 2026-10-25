@@ -39,8 +39,8 @@ impl MultipartRepository {
         self.publish_frozen(current, None).await
     }
 
-    // The caller just selected this bound authority. Current pointers and
-    // immutable generations remain checked before publication.
+    // The caller just selected this bound authority. Independent uploads use
+    // frozen immutable generations; strict uploads also recheck current pointers.
     pub(crate) async fn publish_frozen(
         &self,
         current: MultipartSessionRecord,
@@ -55,12 +55,13 @@ impl MultipartRepository {
             .ok_or(MultipartRepositoryError::Conflict)?;
         let mut composer = MultipartComposer::new(current.max_object_bytes);
         for (index, selected) in selection.iter().enumerate() {
-            if self
-                .part(&current, selected.number)
-                .await?
-                .as_ref()
-                .map(|part| part.revision)
-                != Some(selected.revision)
+            if !current.uses_independent_parts()
+                && self
+                    .part(&current, selected.number)
+                    .await?
+                    .as_ref()
+                    .map(|part| part.revision)
+                    != Some(selected.revision)
             {
                 return Err(MultipartRepositoryError::InvalidPart);
             }

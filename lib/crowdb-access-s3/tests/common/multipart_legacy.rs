@@ -76,7 +76,7 @@ async fn legacy_open_uses_original_bytes_for_reservation_then_new_bytes_for_clea
     assert!(value.starts_with(b"S3MS\x04"));
     let current = repository.load(&session).await.unwrap().unwrap();
     assert!(current.pending.is_none());
-    assert!(current.legacy_observation.is_none());
+    assert_eq!(current.legacy_observation, Some((current.revision, value)));
     assert_eq!(current.revision, 3);
 }
 

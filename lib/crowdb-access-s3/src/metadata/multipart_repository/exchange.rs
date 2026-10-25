@@ -33,6 +33,7 @@ impl MultipartRepository {
         if previous.bucket_id != next.bucket_id
             || previous.object_key != next.object_key
             || previous.upload_id != next.upload_id
+            || previous.uses_independent_parts() != next.uses_independent_parts()
             || next_revision(previous.revision) != Some(next.revision)
         {
             return Err(MultipartRepositoryError::Conflict);
@@ -48,12 +49,16 @@ impl MultipartRepository {
             (false, observed) => Ok(MultipartExchange::Conflict(
                 observed
                     .map(|observed| {
-                        MultipartSessionRecord::decode(
+                        let current = MultipartSessionRecord::decode(
                             &observed.value,
                             previous.bucket_id,
                             &previous.object_key,
                             &previous.upload_id,
-                        )
+                        )?;
+                        if current.uses_independent_parts() != previous.uses_independent_parts() {
+                            return Err(MultipartRepositoryError::Conflict);
+                        }
+                        Ok(current)
                     })
                     .transpose()?
                     .map(Box::new),

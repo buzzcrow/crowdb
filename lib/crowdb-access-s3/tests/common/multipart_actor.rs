@@ -23,6 +23,10 @@ use tokio::sync::{mpsc, oneshot};
 #[path = "multipart_scan_fault.rs"]
 mod scan_fault;
 use scan_fault::{TestScanAction, TestScans};
+#[path = "multipart_point_control.rs"]
+mod point_control;
+use point_control::TestPoints;
+pub(super) use point_control::{TestPointBarrier, TestPointEntry};
 
 struct TestCatalog(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>);
 
@@ -39,12 +43,13 @@ enum TestActorRequest {
     Inject(TestConflict),
     LoseAfter(usize),
     FailBefore(usize),
+    ClearConflict,
     ScanControl(TestScanAction),
 }
 
 struct TestConflict {
     key: Vec<u8>,
-    value: Vec<u8>,
+    value: Option<Vec<u8>>,
     skip: usize,
 }
 
@@ -55,6 +60,7 @@ pub(super) struct TestProbe {
     sender: mpsc::UnboundedSender<TestActorRequest>,
     scans: Arc<AtomicUsize>,
     largest_scan: Arc<AtomicUsize>,
+    points: Arc<TestPoints>,
 }
 
 impl TestProbe {
@@ -67,8 +73,50 @@ impl TestProbe {
 
     pub(super) fn conflict(&self, key: Vec<u8>, value: Vec<u8>, skip: usize) {
         self.sender
-            .send(TestActorRequest::Inject(TestConflict { key, value, skip }))
+            .send(TestActorRequest::Inject(TestConflict {
+                key,
+                value: Some(value),
+                skip,
+            }))
             .unwrap();
+    }
+
+    pub(super) fn conflict_absent(&self, key: Vec<u8>, skip: usize) {
+        self.sender
+            .send(TestActorRequest::Inject(TestConflict {
+                key,
+                value: None,
+                skip,
+            }))
+            .unwrap();
+    }
+
+    pub(super) fn clear_conflict_check(&self) {
+        self.sender.send(TestActorRequest::ClearConflict).unwrap();
+    }
+
+    pub(super) fn pause_mutation(&self, key: Vec<u8>) -> TestPointBarrier {
+        self.points.pause(key, true, false, 0)
+    }
+
+    pub(super) fn pause_get(&self, key: Vec<u8>, skip: usize) -> TestPointBarrier {
+        self.points.pause(key, false, false, skip)
+    }
+
+    pub(super) fn pause_after_get(&self, key: Vec<u8>, skip: usize) -> TestPointBarrier {
+        self.points.pause(key, false, true, skip)
+    }
+
+    pub(super) fn fail_get(&self, key: Vec<u8>, skip: usize) {
+        self.points.fail_get(key, skip);
+    }
+
+    pub(super) fn get_fault_consumed(&self) -> bool {
+        self.points.get_fault_consumed()
+    }
+
+    pub(super) fn operation_log(&self) -> Vec<TestPointEntry> {
+        self.points.log()
     }
 
     pub(super) fn lose_after(&self, mutations: usize) {
@@ -109,16 +157,22 @@ impl TestProbe {
     }
 }
 
-struct TestActorTransport(mpsc::UnboundedSender<TestActorRequest>);
+struct TestActorTransport {
+    sender: mpsc::UnboundedSender<TestActorRequest>,
+    points: Arc<TestPoints>,
+}
 
 #[async_trait]
 impl ChunkKvTransport for TestActorTransport {
     async fn point(&self, _: &str, request: &PointRequest) -> Result<ChunkKvResponse> {
+        self.points.before(&request.operation).await?;
         let (response, receiver) = oneshot::channel();
-        self.0
+        self.sender
             .send(TestActorRequest::Point(request.operation.clone(), response))
             .expect("actor is running");
-        receiver.await.expect("actor replies")
+        let result = receiver.await.expect("actor replies");
+        self.points.after(&request.operation).await?;
+        result
     }
 
     async fn seek(&self, _: &str, _: &crowdb_protocol::chunk_kv::SeekRequest) -> Result<ChunkKvResponse> {
@@ -127,7 +181,7 @@ impl ChunkKvTransport for TestActorTransport {
 
     async fn scan(&self, _: &str, request: &ScanRequest) -> Result<ChunkKvResponse> {
         let (response, receiver) = oneshot::channel();
-        self.0
+        self.sender
             .send(TestActorRequest::Scan(request.clone(), response))
             .expect("actor is running");
         receiver.await.expect("actor replies")
@@ -289,14 +343,18 @@ fn spawn_actor(
                                 .get(&fault.key)
                                 .map_or(1, |value: &RpcValue| value.revision + 1);
                             forbidden_get = Some(fault.key.clone());
-                            values.insert(
-                                fault.key.clone(),
-                                RpcValue {
-                                    key: fault.key,
-                                    value: fault.value,
-                                    revision,
-                                },
-                            );
+                            if let Some(value) = fault.value {
+                                values.insert(
+                                    fault.key.clone(),
+                                    RpcValue {
+                                        key: fault.key,
+                                        value,
+                                        revision,
+                                    },
+                                );
+                            } else {
+                                values.remove(&fault.key);
+                            }
                         } else {
                             fault.skip -= 1;
                         }
@@ -330,6 +388,10 @@ fn spawn_actor(
                     conflict = Some(fault);
                     forbidden_get = None;
                 }
+                TestActorRequest::ClearConflict => {
+                    conflict = None;
+                    forbidden_get = None;
+                }
                 TestActorRequest::LoseAfter(remaining) => lose_after = Some(remaining),
                 TestActorRequest::FailBefore(remaining) => fail_before = Some(remaining),
                 TestActorRequest::ScanControl(action) => scan_control.configure(action, &values),
@@ -348,6 +410,7 @@ pub(super) async fn repository_with_probe() -> (MultipartRepository, Arc<TestPro
         sender: sender.clone(),
         scans: Arc::new(AtomicUsize::new(0)),
         largest_scan: Arc::new(AtomicUsize::new(0)),
+        points: Arc::new(TestPoints::default()),
     });
     spawn_actor(
         receiver,
@@ -403,7 +466,10 @@ pub(super) async fn repository_with_probe() -> (MultipartRepository, Arc<TestPro
                 ..ClientConfig::default()
             },
             Arc::new(TestCatalog(head, vec![page])),
-            Arc::new(TestActorTransport(sender)),
+            Arc::new(TestActorTransport {
+                sender,
+                points: probe.points.clone(),
+            }),
         )
         .unwrap(),
     );

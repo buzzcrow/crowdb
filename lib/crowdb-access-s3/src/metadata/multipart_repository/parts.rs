@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Durable part-pointer reservations shared with completion's session fence.
+//! Independent part selection and historical pointer reservations.
 
 use crate::metadata::PendingPartMutation;
 use crowdb_access_multipart::{
@@ -14,6 +14,8 @@ use super::{
     MultipartRepositoryError, MultipartSessionRecord, PutIfAbsentOutcome,
 };
 
+mod independent;
+
 pub(super) struct PartProgress {
     pub(super) accepted: Option<MultipartPartRecord>,
     pub(super) current: MultipartSessionRecord,
@@ -23,9 +25,10 @@ impl MultipartRepository {
     /// Publishes a streamed part only while the upload remains open.
     ///
     /// The immutable generation is written first. A session CAS then reserves
-    /// the current-part pointer mutation, so completion cannot freeze a stale
-    /// pointer while an earlier part writer publishes. An abandoned generation
-    /// remains available to R95's chunk-centered reclamation.
+    /// the current-part pointer mutation for historical strict uploads. New
+    /// independent uploads keep a frozen completion's exact generations even
+    /// when a previously admitted part writer publishes later. An abandoned generation
+    /// remains discoverable by chunk-centered reclamation.
     ///
     /// # Errors
     /// Rejects closed, expired or foreign sessions, invalid parts and
@@ -56,6 +59,9 @@ impl MultipartRepository {
             .load(session)
             .await?
             .ok_or(MultipartRepositoryError::Conflict)?;
+        if current.uses_independent_parts() {
+            return self.put_independent_part(&current, part, now_ms).await;
+        }
         loop {
             let helping = current.pending.is_some();
             let progress = if helping {

@@ -161,7 +161,7 @@ fn selection() -> [CompletionPart; 1] {
 }
 
 fn session() -> MultipartSessionRecord {
-    MultipartSessionRecord {
+    let record = MultipartSessionRecord {
         bucket_id: BucketId::new([3; 16]),
         object_key: b"object".to_vec(),
         upload_id: [7; 16],
@@ -183,7 +183,11 @@ fn session() -> MultipartSessionRecord {
         pending: None,
         selection: None,
         legacy_observation: None,
-    }
+    };
+    // Pending recovery and its exact mutation cut points retain the historical v4 resource.
+    let mut bytes = record.encode().unwrap();
+    bytes[4] = 4;
+    MultipartSessionRecord::decode(&bytes, record.bucket_id, &record.object_key, &record.upload_id).unwrap()
 }
 
 fn part() -> MultipartPartRecord {
