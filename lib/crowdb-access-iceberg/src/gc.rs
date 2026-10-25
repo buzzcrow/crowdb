@@ -19,6 +19,7 @@ mod task;
 mod tree;
 mod worker;
 
+pub use admission::PurgeAdmission;
 pub use budget::{BudgetedGcBlocks, BudgetedGcStore, GcIoBudget};
 pub use candidate::{CandidatePhase, GcCandidate};
 pub use limits::GcLimits;

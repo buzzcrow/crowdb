@@ -34,6 +34,10 @@ pub enum StorageRecord {
     Management(Box<ManagementOperation>),
     Retry(Box<RetryRecord>),
     NamespaceAuthority(Box<NamespaceAuthority>),
+    RetiredNamespace {
+        catalog: crate::key::CatalogId,
+        namespace: crate::key::NamespaceId,
+    },
     NamespaceMapping(NamespaceMapping),
     PayloadPage(Box<PayloadPage>),
     RetryResult(Box<RetryResult>),
@@ -84,6 +88,9 @@ impl StorageRecord {
         if let Some(value) = self.encode_table_value(builder)? {
             return Ok(value);
         }
+        if let Some(value) = self.encode_namespace_value(builder)? {
+            return Ok(value);
+        }
         Ok(match self {
             Self::NativeInjection(receipt) => (
                 FBRecordValue::FBNativeInjection,
@@ -100,6 +107,9 @@ impl StorageRecord {
             | Self::TableHead(_)
             | Self::TableMapping(_)
             | Self::RetiredTable(_)
+            | Self::NamespaceAuthority(_)
+            | Self::NamespaceMapping(_)
+            | Self::RetiredNamespace { .. }
             | Self::TablePurgeTask(_) => {
                 return Err(ValidationError::Record);
             }
@@ -151,14 +161,6 @@ impl StorageRecord {
                 FBRecordValue::FBRetryResult,
                 super::payload::encode_result(builder, result)?.as_union_value(),
             ),
-            Self::NamespaceAuthority(authority) => (
-                FBRecordValue::FBNamespaceAuthority,
-                super::namespace::encode_authority(builder, authority)?.as_union_value(),
-            ),
-            Self::NamespaceMapping(mapping) => (
-                FBRecordValue::FBNamespaceMapping,
-                super::namespace::encode_mapping(builder, mapping)?.as_union_value(),
-            ),
             Self::Retry(record) => (
                 FBRecordValue::FBRetryRecord,
                 super::retry::encode(builder, record)?.as_union_value(),
@@ -176,6 +178,28 @@ impl StorageRecord {
                 super::authority::encode(builder, authority)?.as_union_value(),
             ),
         })
+    }
+
+    fn encode_namespace_value(
+        &self,
+        builder: &mut FlatBufferBuilder<'_>,
+    ) -> Result<Option<(FBRecordValue, flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>)>, ValidationError>
+    {
+        Ok(Some(match self {
+            Self::NamespaceAuthority(authority) => (
+                FBRecordValue::FBNamespaceAuthority,
+                super::namespace::encode_authority(builder, authority)?.as_union_value(),
+            ),
+            Self::NamespaceMapping(mapping) => (
+                FBRecordValue::FBNamespaceMapping,
+                super::namespace::encode_mapping(builder, mapping)?.as_union_value(),
+            ),
+            Self::RetiredNamespace { catalog, namespace } => (
+                FBRecordValue::FBRetiredNamespace,
+                super::namespace::encode_retired(builder, *catalog, *namespace)?.as_union_value(),
+            ),
+            _ => return Ok(None),
+        }))
     }
 
     fn encode_table_value(
@@ -286,6 +310,13 @@ impl StorageRecord {
 
     fn decode_value(envelope: FBIcebergRecord<'_>) -> Result<Self, ValidationError> {
         match envelope.value_type() {
+            FBRecordValue::FBRetiredNamespace => {
+                return super::namespace::decode_retired(
+                    envelope
+                        .value_as_fbretired_namespace()
+                        .ok_or(ValidationError::Record)?,
+                );
+            }
             FBRecordValue::FBNativeInjection => {
                 return Ok(Self::NativeInjection(Box::new(super::injection::decode(
                     envelope
@@ -479,6 +510,9 @@ impl StorageRecord {
         if let Some(result) = self.validate_gc_key(key) {
             return result;
         }
+        if let Some(result) = self.validate_namespace_key(key) {
+            return result;
+        }
         match (self, key) {
             (Self::RetiredTable(table), key)
                 if table.storage_namespace.is_none()
@@ -512,16 +546,6 @@ impl StorageRecord {
             (Self::NamespaceOperation(operation), key) if *key == operation.key() => Ok(()),
             (Self::PayloadPage(page), key) if *key == page.reference.page_key(page.index)? => Ok(()),
             (Self::RetryResult(result), key) if *key == result.binding.result_key() => Ok(()),
-            (Self::NamespaceAuthority(authority), key)
-                if *key == authority_key(authority.catalog, authority.namespace) =>
-            {
-                Ok(())
-            }
-            (Self::NamespaceMapping(mapping), key)
-                if *key == name_key(mapping.catalog, mapping.parent, &mapping.name)? =>
-            {
-                Ok(())
-            }
             (
                 Self::Retry(record),
                 IcebergKey::System {
@@ -575,5 +599,21 @@ impl StorageRecord {
             ) if *catalog == authority.catalog && suffix.is_empty() => Ok(()),
             _ => Err(ValidationError::IdentityMismatch),
         }
+    }
+
+    fn validate_namespace_key(&self, key: &IcebergKey) -> Option<Result<(), ValidationError>> {
+        let expected = match self {
+            Self::RetiredNamespace { catalog, namespace } => Ok(authority_key(*catalog, *namespace)),
+            Self::NamespaceAuthority(authority) => Ok(authority_key(authority.catalog, authority.namespace)),
+            Self::NamespaceMapping(mapping) => name_key(mapping.catalog, mapping.parent, &mapping.name),
+            _ => return None,
+        };
+        Some(expected.and_then(|expected| {
+            if *key == expected {
+                Ok(())
+            } else {
+                Err(ValidationError::IdentityMismatch)
+            }
+        }))
     }
 }

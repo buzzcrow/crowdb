@@ -125,6 +125,7 @@ impl TestStore {
         {
             if expected.is_some()
                 && (authority.pending_operation.is_some()
+                    || authority.creating_child.is_some()
                     || authority.rename.is_some()
                     || expected
                         .and_then(|bytes| {
@@ -265,7 +266,11 @@ impl CatalogStore for TestStore {
                 crowdb_access_iceberg::key::IcebergKey::decode(key)
                     .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
             {
-                if mapping.state == crowdb_access_iceberg::namespace::NamespaceMappingState::Reserved {
+                if matches!(
+                    mapping.state,
+                    crowdb_access_iceberg::namespace::NamespaceMappingState::Reserved
+                        | crowdb_access_iceberg::namespace::NamespaceMappingState::ReservedResource
+                ) {
                     if let Some(barrier) = &self.namespace_reservation_barrier {
                         if self.namespace_reservation_visits.fetch_add(1, Ordering::SeqCst) < 2 {
                             barrier.wait().await;

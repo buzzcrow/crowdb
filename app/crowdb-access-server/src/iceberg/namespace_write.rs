@@ -108,8 +108,9 @@ impl NamespaceWrites {
         mutation: NamespaceMutation,
     ) -> Result<(u16, Vec<u8>), IcebergErrorResponse> {
         let outcome = match mutation {
-            NamespaceMutation::Create(identifier, properties) => Some(
-                self.creator
+            NamespaceMutation::Create(identifier, properties) => {
+                let outcome = self
+                    .creator
                     .create(&NamespaceCreateRequest {
                         context: retry.context,
                         identity: retry.identity,
@@ -118,8 +119,9 @@ impl NamespaceWrites {
                         properties,
                     })
                     .await
-                    .map_err(|error| mutation_error(&error))?,
-            ),
+                    .map_err(|error| mutation_error(&error))?;
+                return Ok((outcome.status, outcome.body));
+            }
             NamespaceMutation::Update(identifier, changes) => {
                 return self.update_properties(retry.context, identifier, changes).await;
             }

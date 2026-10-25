@@ -250,15 +250,28 @@ async fn creator_and_empty_drop_share_one_admission_boundary() {
     })
     .await
     .unwrap();
-    assert!(results.0.is_ok() || matches!(results.0, Err(CatalogError::Busy)));
+    assert!(
+        results.0.is_ok() || matches!(results.0, Err(CatalogError::Busy | CatalogError::Invalid(_))),
+        "{results:?}"
+    );
     assert!(results.1.is_ok() || matches!(results.1, Err(CatalogError::Busy)));
-    let created = creator.create(&child).await.unwrap().status;
     let drop_status = dropper.drop_namespace(&request).await.unwrap().unwrap().status;
-    assert!(matches!((created, drop_status), (200, 409) | (400, 204)));
+    let created = match creator.create(&child).await {
+        Ok(outcome) => {
+            assert_eq!(drop_status, 409);
+            assert!(matches!(outcome.status, 200 | 409));
+            true
+        }
+        Err(CatalogError::Invalid(_)) => {
+            assert_eq!(drop_status, 204);
+            false
+        }
+        other => panic!("unexpected create after drop: {other:?}"),
+    };
     let reader = NamespaceRepository::new(fixture.store.clone());
     assert_eq!(
         reader.exists(fixture.context, &child.identifier).await.unwrap(),
-        created == 200
+        created
     );
     assert_eq!(
         reader.exists(fixture.context, &request.identifier).await.unwrap(),

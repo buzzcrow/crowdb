@@ -78,37 +78,42 @@ impl TableWrites {
                 TableLifecycleAction::Drop { purge_requested },
             )
         };
-        let existing = self
-            .lifecycles
-            .load(record.context, record.identity.operation)
+        let parent = self
+            .namespaces
+            .load(record.context, &namespace)
             .await
-            .map_err(|_| service_unavailable())?;
-        let version = if let Some(operation) = existing {
-            operation.before.format_version
-        } else {
-            let parent = self
-                .namespaces
-                .load(record.context, &namespace)
-                .await
-                .map_err(|_| service_unavailable())?
-                .ok_or_else(super::super::table_read::missing_table)?;
-            self.tables
-                .select(record.context, parent.namespace, &name)
-                .await
-                .map_err(|_| service_unavailable())?
-                .ok_or_else(super::super::table_read::missing_table)?
-                .head
-                .format_version
-        };
+            .map_err(|_| service_unavailable())?
+            .ok_or_else(super::super::table_read::missing_table)?;
+        let version = self
+            .tables
+            .select(record.context, parent.namespace, &name)
+            .await
+            .map_err(|_| service_unavailable())?
+            .ok_or_else(super::super::table_read::missing_table)?
+            .head
+            .format_version;
         if !capabilities.supports(version, FormatAction::Write) {
             return Err(super::super::table_read::unsupported());
         }
-        self.lifecycles.execute(&TableLifecycleRequest { context: record.context, identity: record.identity,
-            principal: record.principal.clone(), namespace, name, action }).await.map_err(|error| {
+        self.lifecycles
+            .execute(&TableLifecycleRequest {
+                context: record.context,
+                identity: record.identity,
+                principal: record.principal.clone(),
+                namespace,
+                name,
+                action,
+            })
+            .await
+            .map_err(|error| {
                 if matches!(error, crowdb_access_iceberg::catalog::CatalogError::Conflict) {
-                    IcebergErrorResponse::new(409, "CommitFailedException", "Table lifecycle request conflicts")
+                    IcebergErrorResponse::new(
+                        409,
+                        "CommitFailedException",
+                        "Table lifecycle request conflicts",
+                    )
                 } else {
-                    tracing::error!(%error, "table lifecycle remains recoverable; retry with the same request key");
+                    tracing::error!(%error, "table lifecycle request failed; retry against the current name");
                     service_unavailable()
                 }
             })

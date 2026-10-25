@@ -225,6 +225,9 @@ impl GcWorker {
         if self.record_protected(task, &record, now_ms, grace_ms).await? {
             return Err(CatalogError::Busy.into());
         }
+        if let Some(remove) = self.cleanup_namespace_record(&record, bytes).await? {
+            return Ok(remove);
+        }
         match &record {
             StorageRecord::RetiredTable(_) => Ok(false),
             StorageRecord::TableHead(head) => {
@@ -290,6 +293,49 @@ impl GcWorker {
             }
             _ => Ok(true),
         }
+    }
+
+    async fn cleanup_namespace_record(
+        &self,
+        record: &StorageRecord,
+        bytes: &[u8],
+    ) -> Result<Option<bool>, GcWorkError> {
+        use crate::namespace::{authority_key, retire_namespace_slot, NamespaceAction};
+        let (catalog, namespace, expected, remove) = match record {
+            StorageRecord::RetiredNamespace { .. } => return Ok(Some(false)),
+            StorageRecord::NamespaceAuthority(authority) => (
+                authority.catalog,
+                authority.namespace,
+                Some(crate::catalog::StoredValue {
+                    bytes: bytes.to_vec(),
+                    revision: 0,
+                }),
+                false,
+            ),
+            StorageRecord::NamespaceMapping(mapping) => (
+                mapping.catalog,
+                mapping.namespace,
+                self.repository
+                    .store
+                    .get(&authority_key(mapping.catalog, mapping.namespace).encode()?)
+                    .await
+                    .map_err(CatalogError::from)?,
+                true,
+            ),
+            StorageRecord::NamespaceOperation(operation) if operation.action == NamespaceAction::Create => (
+                operation.context.catalog,
+                operation.namespace,
+                self.repository
+                    .store
+                    .get(&authority_key(operation.context.catalog, operation.namespace).encode()?)
+                    .await
+                    .map_err(CatalogError::from)?,
+                true,
+            ),
+            _ => return Ok(None),
+        };
+        retire_namespace_slot(self.repository.store.as_ref(), catalog, namespace, expected).await?;
+        Ok(Some(remove))
     }
 
     pub(super) async fn delete_exact(&self, key: &[u8], bytes: &[u8]) -> Result<(), GcWorkError> {

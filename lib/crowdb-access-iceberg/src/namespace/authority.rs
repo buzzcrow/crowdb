@@ -22,6 +22,7 @@ pub struct NamespaceAuthority {
     pub mutation_revision: u64,
     pub lifecycle: NamespaceLifecycle,
     pub pending_operation: Option<OperationId>,
+    pub creating_child: Option<NamespaceId>,
     pub rename: Option<Box<super::NamespaceRename>>,
     pub properties: NamespaceProperties,
 }
@@ -37,6 +38,12 @@ impl NamespaceAuthority {
             || self.parent.is_some() != self.identifier.parent().is_some()
             || self.parent == Some(self.namespace)
             || (self.lifecycle != NamespaceLifecycle::Ready && self.pending_operation.is_none())
+            || self.creating_child.is_some_and(|child| {
+                child == self.namespace
+                    || self.lifecycle != NamespaceLifecycle::Ready
+                    || self.pending_operation.is_some()
+                    || self.rename.is_some()
+            })
         {
             return Err(ValidationError::Record);
         }
@@ -58,6 +65,7 @@ impl NamespaceAuthority {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NamespaceMappingState {
     Reserved,
+    ReservedResource,
     Published,
 }
 

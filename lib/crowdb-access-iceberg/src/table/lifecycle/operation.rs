@@ -164,6 +164,19 @@ pub struct TablePurgeTask {
 }
 
 impl TablePurgeTask {
+    pub(crate) fn predecessor(&self) -> Result<TableHead, ValidationError> {
+        self.validate()?;
+        let mut head = self.head.clone();
+        head.lifecycle = TableLifecycle::Ready;
+        head.pending_operation = None;
+        head.operation_fence = head
+            .operation_fence
+            .checked_sub(1)
+            .ok_or(ValidationError::Record)?;
+        head.validate()?;
+        Ok(head)
+    }
+
     #[must_use]
     pub fn key(&self) -> IcebergKey {
         let mut suffix = self.head.table.as_bytes().to_vec();

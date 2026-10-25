@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 mod admission;
 mod completion;
+mod drop;
 mod journal;
 mod operation;
 mod preparation;
@@ -72,28 +73,14 @@ impl TableLifecycles {
         &self,
         request: &TableLifecycleRequest,
     ) -> Result<TableLifecycleOutcome, CatalogError> {
+        preparation::validate(request)?;
         if matches!(request.action, TableLifecycleAction::Rename { .. }) {
-            preparation::validate(request)?;
             let status = super::TableRenames::from_parts(self.store.clone(), self.names.clone())
                 .execute(request)
                 .await?;
             return TableLifecycleOutcome::new(status);
         }
-        let input = preparation::input(request)?;
-        if let Some(operation) = self.load(request.context, request.identity.operation).await? {
-            self.match_request(request, &input, &operation).await?;
-        } else if let Some(outcome) = self.prepare(request, &input).await? {
-            return self.inline(outcome).await;
-        }
-        self.inline(self.resume(request.context, request.identity.operation).await?)
-            .await
-    }
-
-    async fn inline(&self, outcome: TableCommitOutcome) -> Result<TableLifecycleOutcome, CatalogError> {
-        Ok(TableLifecycleOutcome {
-            status: outcome.status,
-            body: self.payloads.get(&outcome.body).await?,
-        })
+        TableLifecycleOutcome::new(self.drop_current(request).await?)
     }
 
     /// # Errors

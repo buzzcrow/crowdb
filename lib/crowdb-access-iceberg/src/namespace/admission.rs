@@ -28,6 +28,17 @@ impl NamespaceCreator {
         };
         let after = match StorageRecord::decode(&key, &value.bytes)? {
             StorageRecord::NamespaceAuthority(mut parent) => {
+                if parent.creating_child.is_some() {
+                    Self::help_creating_child(
+                        self.repository.store.clone(),
+                        self.names.clone(),
+                        operation.context,
+                        *parent,
+                        budget,
+                    )
+                    .await?;
+                    return Ok(());
+                }
                 if parent.rename.is_some() {
                     return Err(CatalogError::Busy);
                 }
@@ -158,6 +169,7 @@ impl NamespaceCreator {
             StorageRecord::NamespaceAuthority(mut parent) => {
                 if parent.lifecycle != NamespaceLifecycle::Ready
                     || parent.pending_operation.is_some()
+                    || parent.creating_child.is_some()
                     || Some(parent.identifier.clone()) != operation.identifier.parent()
                 {
                     return Err(ValidationError::Record.into());

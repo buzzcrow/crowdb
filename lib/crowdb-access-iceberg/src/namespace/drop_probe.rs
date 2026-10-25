@@ -102,6 +102,12 @@ impl NamespaceDropper {
         if mapping.parent != Some(operation.namespace) {
             return Err(ValidationError::IdentityMismatch.into());
         }
+        if mapping.state == NamespaceMappingState::ReservedResource {
+            self.creator
+                .settle_resource_mapping(operation.context, &mapping, budget)
+                .await?;
+            return Ok(true);
+        }
         if mapping.state == NamespaceMappingState::Reserved {
             let owner = NamespaceJournal::new(self.creator.repository.store.clone())
                 .load(operation.context, mapping.operation)
@@ -122,16 +128,26 @@ impl NamespaceDropper {
         }
         let key = authority_key(operation.context.catalog, mapping.namespace);
         if let Some(value) = self.creator.names.get(&key.encode()?).await? {
-            let StorageRecord::NamespaceAuthority(authority) = StorageRecord::decode(&key, &value.bytes)?
-            else {
-                return Err(ValidationError::Record.into());
-            };
-            if mapping.resolves(&authority)
-                && authority.identifier.parent().as_ref() == Some(&operation.identifier)
-            {
-                self.prepare_finish(operation, NamespacePhase::Restoring).await?;
-                return Ok(true);
+            match StorageRecord::decode(&key, &value.bytes)? {
+                StorageRecord::NamespaceAuthority(authority) => {
+                    if mapping.resolves(&authority)
+                        && authority.identifier.parent().as_ref() == Some(&operation.identifier)
+                    {
+                        self.prepare_finish(operation, NamespacePhase::Restoring).await?;
+                        return Ok(true);
+                    }
+                }
+                StorageRecord::RetiredNamespace { .. } => {}
+                _ => return Err(ValidationError::Record.into()),
             }
+        } else if let super::NamespaceSlot::Existing { .. } = super::retire_absent_namespace(
+            self.creator.repository.store.as_ref(),
+            operation.context.catalog,
+            mapping.namespace,
+        )
+        .await?
+        {
+            return Ok(true);
         }
         self.creator
             .names

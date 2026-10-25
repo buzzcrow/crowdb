@@ -225,7 +225,19 @@ every page and the complete digest. Business operation drivers use these
 references for their existing inputs and results. Legacy large HTTP response
 manifests remain readable by cleanup; independent requests do not create them.
 
-Namespace operation journals occupy a separate key scope from HTTP responses.
+New namespace creation writes only its final name reservation and namespace
+authority. Before publishing a nested child, it places that child's ID in the
+parent's `creating_child` occupancy; the child authority is already complete.
+Parent deletion must settle or cancel this occupancy before proving emptiness.
+Publication clears it through an exact parent update, preserving concurrent
+properties. Top-level creation needs no parent occupancy. Helpers resolve an
+interrupted create from these resource facts, without an input or response
+journal. Cancellation and retired-catalog cleanup permanently retire the same
+child authority slot before releasing its exact name reservation, including an
+absent slot. A delayed first authority write therefore cannot resurrect it.
+Occupied parents use a format that older writers reject.
+
+Namespace drop and legacy creation journals occupy a separate key scope from HTTP responses.
 They preserve request identity, principal, stable target and parent IDs, immutable
 mutation snapshots, phase revisions and bounded child-probe cursors. Phase CAS
 arbitrates publication versus abort; publishing cannot transition back to abort.
@@ -865,10 +877,12 @@ reclamation. An old nonterminal phase cannot retain the catalog indefinitely.
 Legacy update and lifecycle recovery retain their own bounded compatibility paths.
 New creators leave only resource facts for reservation cleanup and GC.
 
-Logical drop uses a bounded `TableLifecycleOperation` journal. It fixes the original
-head, exact source mapping, request identity, principal, input and candidate before
-publication. A losing operation keeps its terminal conflict instead of rebasing
-onto a new generation or recreated name.
+Logical drop resolves the currently named table and conditionally tombstones its
+exact head, then conditionally removes that table's name mapping. It writes no
+request, input, phase or response journal. A conflicting in-flight head update
+returns conflict without rebasing. A new DELETE retry resolves the name again
+and may delete a table recreated at that name. Background cleanup of an older
+table remains bound to its captured table ID and cannot remove the replacement.
 
 Same/cross-namespace rename stores no new input, phase, response or lifecycle
 journal. Request admission validates the route and principal without reading an
@@ -903,14 +917,18 @@ A recreated source with an occupied target conflicts. There is no historical
 response replay or implicit rebasing of an in-flight head CAS.
 
 Drop tombstones the selected head without traversing snapshots or deleting files.
-A purge request persists a `TablePurgeTask` containing the tombstoned head,
-activation epoch and durable marker time, indexed by table, generation and metadata file.
-The purge task becomes eligible 20 minutes after that marker time; a delayed
-scheduler scan or restart does not restart the delay. A drop without an explicit
+A purge request persists a `TablePurgeTask` containing the candidate tombstoned
+head and activation epoch before publishing the tombstone, indexed by table,
+generation and metadata file. Its initial marker time is zero. GC admits it only
+after observing the exact tombstone and fixes a twenty-minute delay from that
+observation; an existing admitted task never renews its deadline. Older markers
+keep their stored times. If the deletion did not win, GC first fences the exact
+Ready predecessor before removing the marker, blocking a delayed tombstone CAS.
+Unknown writes stop immediately. Deferred or canceled markers do not keep an
+otherwise idle scanner spinning. A drop without an explicit
 purge request leaves the underlying files in place. Purge reclaims table-scoped
 files after the delay and owner checks, without snapshot reachability scans
-inside the dropped table. Drop success is retained before releasing its markers.
-Drop retries return the retained result without mutating a replacement table. The REST
+inside the dropped table. The REST
 drop/rename routes require independent writer credentials and return empty success
 responses; stale table names fail normal load, exists, commit and credential refresh.
 

@@ -26,6 +26,9 @@ impl TableRenames {
         let identifier = parent.identifier.clone();
         let name_epoch = parent.name_epoch;
         for _ in 0..16 {
+            if parent.creating_child.is_some() {
+                return Err(CatalogError::Busy);
+            }
             if parent.lifecycle != NamespaceLifecycle::Ready
                 || parent.pending_operation.is_some()
                 || parent.identifier != identifier

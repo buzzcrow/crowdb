@@ -3,15 +3,21 @@ use std::sync::Arc;
 
 use crate::catalog::{CatalogContext, CatalogError};
 use crate::error::ValidationError;
-use crate::key::NamespaceId;
 use crate::operation::{PayloadStore, RequestIdentity};
 use crate::record::StorageRecord;
 
 use super::{
-    NamespaceAction, NamespaceAuthority, NamespaceIdentifier, NamespaceJournal, NamespaceLifecycle,
-    NamespaceOperation, NamespaceOutcome, NamespacePhase, NamespaceProperties, NamespaceRepository,
-    NamespaceStore,
+    NamespaceAuthority, NamespaceIdentifier, NamespaceLifecycle, NamespaceOperation, NamespaceProperties,
+    NamespaceRepository, NamespaceStore,
 };
+
+mod resource;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NamespaceCreationOutcome {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
 
 #[derive(Clone, Debug)]
 pub struct NamespaceCreateRequest {
@@ -47,70 +53,12 @@ impl NamespaceCreator {
     }
 
     /// # Errors
-    /// Rejects missing parents, invalid input, changed retries and unavailable storage.
-    pub async fn create(&self, request: &NamespaceCreateRequest) -> Result<NamespaceOutcome, CatalogError> {
-        if request.principal.is_empty() || request.principal.len() > 256 || request.principal.contains('\0') {
-            return Err(ValidationError::Text.into());
-        }
-        let bytes = serde_json::to_vec(request.properties.entries()).map_err(|_| ValidationError::Record)?;
-        let journal = NamespaceJournal::new(self.repository.store.clone());
-        if let Some(existing) = journal.load(request.context, request.identity.operation).await? {
-            if existing.action != NamespaceAction::Create
-                || existing.identity != request.identity
-                || existing.principal != request.principal
-                || existing.identifier != request.identifier
-                || PayloadStore::new(self.repository.store.clone())
-                    .get(&existing.input)
-                    .await?
-                    != bytes
-            {
-                return Err(CatalogError::Conflict);
-            }
-            return self.resume(request.context, request.identity.operation).await;
-        }
-        let parent = match request.identifier.parent() {
-            Some(identifier) => Some(
-                self.repository
-                    .load(request.context, &identifier)
-                    .await?
-                    .ok_or(ValidationError::Text)?
-                    .namespace,
-            ),
-            None => None,
-        };
-        let input = crate::operation::PayloadReference {
-            catalog: request.context.catalog,
-            operation: request.identity.operation,
-            digest: [0; 32],
-            length: bytes.len(),
-        };
-        let mut operation = NamespaceOperation {
-            context: request.context,
-            identity: request.identity,
-            principal: request.principal.clone(),
-            action: NamespaceAction::Create,
-            identifier: request.identifier.clone(),
-            namespace: NamespaceId::random(),
-            parent,
-            phase: NamespacePhase::Prepared,
-            revision: 1,
-            input,
-            mutation: None,
-            scan_after: Vec::new(),
-            scan_generation: 0,
-            outcome: None,
-        };
-        Self::initial_authority(&operation, request.properties.clone()).encode()?;
-        let response = Self::response(&operation, &request.properties)?;
-        let payloads = PayloadStore::new(self.repository.store.clone());
-        operation.input = payloads
-            .put(request.context.catalog, request.identity.operation, &bytes)
-            .await?;
-        payloads
-            .put(request.context.catalog, request.identity.operation, &response)
-            .await?;
-        journal.begin(operation).await?;
-        self.resume(request.context, request.identity.operation).await
+    /// Rejects invalid input, missing parents and unavailable storage. Retries use current resources.
+    pub async fn create(
+        &self,
+        request: &NamespaceCreateRequest,
+    ) -> Result<NamespaceCreationOutcome, CatalogError> {
+        self.create_resource(request).await
     }
 
     pub(super) async fn properties(
@@ -140,6 +88,7 @@ impl NamespaceCreator {
             mutation_revision: 1,
             lifecycle: NamespaceLifecycle::Ready,
             pending_operation: Some(operation.identity.operation),
+            creating_child: None,
             rename: None,
             properties,
         }))

@@ -36,6 +36,7 @@ pub async fn prepare(store: Arc<RoutedCatalogStore>, context: CatalogContext) ->
         mutation_revision: 1,
         lifecycle: NamespaceLifecycle::Ready,
         pending_operation: None,
+        creating_child: None,
         rename: None,
         properties: NamespaceProperties::new(BTreeMap::from([("gone".into(), "old".into())])).unwrap(),
     };

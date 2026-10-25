@@ -98,7 +98,10 @@ impl NamespaceRepository {
         changes: &PropertyChanges,
         identity: RequestIdentity,
     ) -> Result<(Vec<u8>, Vec<u8>), CatalogError> {
-        if authority.lifecycle != NamespaceLifecycle::Ready || authority.pending_operation.is_some() {
+        if authority.lifecycle != NamespaceLifecycle::Ready
+            || authority.pending_operation.is_some()
+            || authority.creating_child.is_some()
+        {
             return Err(CatalogError::Busy);
         }
         authority
@@ -186,7 +189,22 @@ impl NamespaceRepository {
         identifier: &NamespaceIdentifier,
     ) -> Result<Option<NamespaceAuthority>, CatalogError> {
         self.check_context(context).await?;
-        let selected = self.resolve(context, identifier).await?;
+        let mut selected = self.resolve(context, identifier).await?;
+        if selected
+            .as_ref()
+            .is_some_and(|authority| authority.creating_child.is_some())
+        {
+            selected = Some(
+                super::NamespaceCreator::help_creating_child(
+                    self.store.clone(),
+                    self.names.clone(),
+                    context,
+                    selected.ok_or(ValidationError::Record)?,
+                    &mut 16,
+                )
+                .await?,
+            );
+        }
         let Some(pending) = selected
             .as_ref()
             .and_then(|authority| authority.pending_operation)
@@ -208,7 +226,22 @@ impl NamespaceRepository {
         identifier: &NamespaceIdentifier,
         budget: &mut usize,
     ) -> Result<Option<NamespaceAuthority>, CatalogError> {
-        let selected = self.load(context, identifier).await?;
+        let mut selected = self.load(context, identifier).await?;
+        if selected
+            .as_ref()
+            .is_some_and(|authority| authority.creating_child.is_some())
+        {
+            selected = Some(
+                super::NamespaceCreator::help_creating_child(
+                    self.store.clone(),
+                    self.names.clone(),
+                    context,
+                    selected.ok_or(ValidationError::Record)?,
+                    budget,
+                )
+                .await?,
+            );
+        }
         let Some(pending) = selected
             .as_ref()
             .and_then(|authority| authority.pending_operation)

@@ -91,6 +91,7 @@ impl TestNamespace {
             mutation_revision: 1,
             lifecycle: NamespaceLifecycle::Ready,
             pending_operation: None,
+            creating_child: None,
             rename: None,
             properties: NamespaceProperties::default(),
         }

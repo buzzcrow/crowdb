@@ -26,6 +26,17 @@ impl NamespaceDropper {
         if authority.namespace != operation.namespace || authority.parent != operation.parent {
             return self.finish_outcome(operation, 404).await;
         }
+        if authority.creating_child.is_some() {
+            super::NamespaceCreator::help_creating_child(
+                self.creator.repository.store.clone(),
+                self.creator.names.clone(),
+                operation.context,
+                authority,
+                budget,
+            )
+            .await?;
+            return Ok(());
+        }
         if let Some(rename) = &authority.rename {
             crate::table::TableRenames::from_parts(
                 self.creator.repository.store.clone(),
@@ -74,6 +85,7 @@ impl NamespaceDropper {
     pub(super) async fn apply_fence(&self, operation: &NamespaceOperation) -> Result<(), CatalogError> {
         let (before, after, expected) = self.mutation_bytes(operation).await?;
         if expected.lifecycle != NamespaceLifecycle::Ready
+            || expected.creating_child.is_some()
             || expected.pending_operation.is_some()
             || Self::transition(expected.clone(), operation, NamespaceLifecycle::Dropping)?.encode()? != after
         {

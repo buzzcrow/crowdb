@@ -12,8 +12,8 @@ use crowdb_access_iceberg::catalog::{
 };
 use crowdb_access_iceberg::key::{IcebergKey, NamespaceId, OperationId};
 use crowdb_access_iceberg::namespace::{
-    ChildScan, NamespaceCreateRequest, NamespaceCreator, NamespaceIdentifier, NamespaceJournal,
-    NamespaceMappingState, NamespacePhase, NamespaceProperties, NamespaceRepository, NamespaceStore,
+    ChildScan, NamespaceCreateRequest, NamespaceCreator, NamespaceIdentifier, NamespaceMappingState,
+    NamespaceProperties, NamespaceRepository, NamespaceStore,
 };
 use crowdb_access_iceberg::operation::RequestIdentity;
 use crowdb_access_iceberg::record::StorageRecord;
@@ -53,22 +53,22 @@ pub async fn prepare(store: Arc<RoutedCatalogStore>, context: CatalogContext) ->
         armed: AtomicBool::new(true),
     });
     assert!(NamespaceCreator::new(fault).create(&request).await.is_err());
-    let operation = NamespaceJournal::new(store)
-        .load(context, request.identity.operation)
+    let selected = NamespaceRepository::new(store)
+        .load(context, &request.identifier)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(operation.phase, NamespacePhase::Publishing);
+    assert_eq!(selected.properties, request.properties);
     TestCreateRecovery {
         request,
-        namespace: operation.namespace,
+        namespace: selected.namespace,
     }
 }
 
 pub async fn verify(store: Arc<RoutedCatalogStore>, recovery: &TestCreateRecovery) {
     let creator = NamespaceCreator::new(store.clone());
     let outcome = creator.create(&recovery.request).await.unwrap();
-    assert_eq!(outcome.status, 200);
+    assert_eq!(outcome.status, 409);
     assert_eq!(creator.create(&recovery.request).await.unwrap(), outcome);
     let reader = NamespaceRepository::new(store);
     let selected = reader
@@ -78,6 +78,8 @@ pub async fn verify(store: Arc<RoutedCatalogStore>, recovery: &TestCreateRecover
         .unwrap();
     assert_eq!(selected.namespace, recovery.namespace);
     assert_eq!(selected.pending_operation, None);
+    assert_eq!(selected.creating_child, None);
+    assert_eq!(selected.properties, recovery.request.properties);
     let parent = reader
         .load(
             recovery.request.context,
@@ -87,6 +89,7 @@ pub async fn verify(store: Arc<RoutedCatalogStore>, recovery: &TestCreateRecover
         .unwrap()
         .unwrap();
     assert_eq!(parent.pending_operation, None);
+    assert_eq!(parent.creating_child, None);
     assert_eq!(parent.admission_fence, 1);
     assert_eq!(parent.property_revision, 1);
 }

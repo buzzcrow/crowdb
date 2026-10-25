@@ -20,6 +20,7 @@ fn authority() -> NamespaceAuthority {
         mutation_revision: 1,
         lifecycle: NamespaceLifecycle::Ready,
         pending_operation: None,
+        creating_child: None,
         rename: None,
         properties: NamespaceProperties::new(BTreeMap::from([("owner".into(), "数据库".into())])).unwrap(),
     }
@@ -232,4 +233,85 @@ fn child_scans_reject_foreign_or_unbounded_continuations() {
     .is_err());
     scan.continuation.as_mut().unwrap().last_key = vec![0];
     assert!(scan.request().is_err());
+}
+
+#[test]
+fn typed_child_occupancy_uses_a_fail_closed_wire_state_and_excludes_other_mutations() {
+    use crowdb_protocol::iceberg_fb::{root_as_fbiceberg_record, FBNamespaceAuthority};
+    let mut authority = authority();
+    authority.creating_child = Some(NamespaceId::random());
+    let record = StorageRecord::NamespaceAuthority(Box::new(authority.clone()));
+    let bytes = record.encode().unwrap();
+    let envelope = root_as_fbiceberg_record(&bytes).unwrap();
+    let value = envelope.value_as_fbnamespace_authority().unwrap();
+    assert_eq!(value.lifecycle(), 3);
+    assert_eq!(
+        value.creating_child().unwrap().bytes(),
+        authority.creating_child.unwrap().as_bytes()
+    );
+    let table = value._tab;
+    let lifecycle = table.loc() + usize::from(table.vtable().get(FBNamespaceAuthority::VT_LIFECYCLE));
+    let key = authority_key(authority.catalog, authority.namespace);
+    assert_eq!(StorageRecord::decode(&key, &bytes).unwrap(), record);
+    // The old decoder accepts only lifecycle tags zero through two.
+    assert!(!matches!(value.lifecycle(), 0..=2));
+    let mut wrong = bytes;
+    wrong[lifecycle] = 0;
+    assert!(StorageRecord::decode(&key, &wrong).is_err());
+    authority.pending_operation = Some(OperationId::random());
+    assert!(authority.validate().is_err());
+    authority.pending_operation = None;
+    authority.lifecycle = NamespaceLifecycle::Dropping;
+    assert!(authority.validate().is_err());
+    authority.lifecycle = NamespaceLifecycle::Ready;
+    authority.creating_child = Some(authority.namespace);
+    assert!(authority.validate().is_err());
+}
+
+#[test]
+fn resource_reservation_and_retirement_are_distinct_from_legacy_journal_reservations() {
+    use crowdb_protocol::iceberg_fb::root_as_fbiceberg_record;
+    let authority = authority();
+    for (state, tag) in [
+        (NamespaceMappingState::Reserved, 0),
+        (NamespaceMappingState::ReservedResource, 2),
+    ] {
+        let mapping = NamespaceMapping {
+            catalog: authority.catalog,
+            parent: authority.parent,
+            name: authority.identifier.name().into(),
+            namespace: authority.namespace,
+            name_epoch: authority.name_epoch,
+            operation: OperationId::random(),
+            state,
+        };
+        let record = StorageRecord::NamespaceMapping(mapping.clone());
+        let bytes = record.encode().unwrap();
+        assert_eq!(
+            root_as_fbiceberg_record(&bytes)
+                .unwrap()
+                .value_as_fbnamespace_mapping()
+                .unwrap()
+                .state(),
+            tag
+        );
+        assert_eq!(
+            StorageRecord::decode(
+                &name_key(mapping.catalog, mapping.parent, &mapping.name).unwrap(),
+                &bytes
+            )
+            .unwrap(),
+            record
+        );
+    }
+    let retired = StorageRecord::RetiredNamespace {
+        catalog: authority.catalog,
+        namespace: authority.namespace,
+    };
+    let bytes = retired.encode().unwrap();
+    assert_eq!(
+        StorageRecord::decode(&authority_key(authority.catalog, authority.namespace), &bytes).unwrap(),
+        retired
+    );
+    assert!(StorageRecord::decode(&authority_key(authority.catalog, NamespaceId::random()), &bytes).is_err());
 }

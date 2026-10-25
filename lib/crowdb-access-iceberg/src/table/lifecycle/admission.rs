@@ -23,6 +23,17 @@ impl TableLifecycles {
         if parent.rename.is_some() {
             return Err(CatalogError::Busy);
         }
+        if parent.creating_child.is_some() {
+            NamespaceCreator::help_creating_child(
+                self.store.clone(),
+                self.names.clone(),
+                operation.context,
+                *parent,
+                budget,
+            )
+            .await?;
+            return Ok(());
+        }
         if parent.lifecycle != NamespaceLifecycle::Ready
             || Some(&parent.identifier) != operation.destination_namespace.as_ref()
         {
@@ -83,6 +94,7 @@ impl TableLifecycles {
         };
         if parent.lifecycle != NamespaceLifecycle::Ready
             || parent.pending_operation.is_some()
+            || parent.creating_child.is_some()
             || Some(&parent.identifier) != operation.destination_namespace.as_ref()
             || mutation.key != key.encode()?
         {

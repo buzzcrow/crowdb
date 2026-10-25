@@ -326,3 +326,59 @@ async fn several_tasks_share_one_worker_step_and_the_original_io_quota_each_wind
     }
     panic!("task lane was unfair: {per_task:?}");
 }
+
+#[tokio::test]
+async fn cancelled_unpublished_purge_is_not_an_error_or_permanent_busy_lane() {
+    use crowdb_access_iceberg::{
+        catalog::CatalogStore,
+        operation::mutation_identity,
+        record::StorageRecord,
+        table::{storage_head_key, TableLifecycle},
+    };
+    let (store, context, mut multipart) = setup().await;
+    multipart.paused = true;
+    replace_task(&store, &multipart).await;
+    let mut marker = fixture::purge(&store, context, 29).await;
+    let mut ready = marker.head.clone();
+    ready.lifecycle = TableLifecycle::Ready;
+    ready.pending_operation = None;
+    marker.head.operation_fence += 1;
+    marker.dropped_ms = 0;
+    for (key, record) in [
+        (
+            marker.key().encode().unwrap(),
+            StorageRecord::TablePurgeTask(Box::new(marker.clone())),
+        ),
+        (
+            storage_head_key(ready.storage_location()).encode().unwrap(),
+            StorageRecord::TableHead(Box::new(ready)),
+        ),
+    ] {
+        let before = store.get(&key).await.unwrap().unwrap();
+        let bytes = record.encode().unwrap();
+        store
+            .compare_exchange(
+                &key,
+                Some(&before.bytes),
+                &bytes,
+                mutation_identity(&key, Some(&before.bytes), &bytes),
+            )
+            .await
+            .unwrap();
+    }
+    let mut sweep = scheduler(store.clone(), context);
+    for _ in 0..10 {
+        let window = sweep.window_for_tests(IDLE_MS).await;
+        assert!(!window.failed, "{window:?}");
+        if !window.busy {
+            assert_eq!(window.delay_ms, IDLE_MS);
+            assert!(store
+                .get(&marker.key().encode().unwrap())
+                .await
+                .unwrap()
+                .is_none());
+            return;
+        }
+    }
+    panic!("cancelled purge marker kept the lane busy");
+}

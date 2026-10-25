@@ -6,7 +6,7 @@ use crowdb_access_iceberg::{
     catalog::CatalogContext,
     gc::{
         BudgetedGcStore, GcLimits, GcLocalScan, GcPhase, GcRepository, GcScan, GcStore, GcSystemScan,
-        GcTaskKind, GcWorker,
+        GcTaskKind, GcWorker, PurgeAdmission,
     },
     key::{CatalogId, CatalogScope, IcebergKey, SystemScope},
     operation::{ManagementAction, ManagementPhase},
@@ -166,11 +166,13 @@ pub(super) async fn scan_purge(
         return Err("purge scan encountered a non-purge record".into());
     };
     let now_ms = super::super::super::runtime::now_ms()?;
-    let task = GcRepository::new(store)
-        .admit_purge(context, &marker, now_ms, limits)
-        .await?;
-    if cursor.runnable(&task, now_ms) {
-        cursor.queued(3);
+    if let PurgeAdmission::Ready(task) = GcRepository::new(store)
+        .discover_purge(context, &marker, now_ms, limits)
+        .await?
+    {
+        if cursor.runnable(&task, now_ms) {
+            cursor.queued(3);
+        }
     }
     Ok(())
 }

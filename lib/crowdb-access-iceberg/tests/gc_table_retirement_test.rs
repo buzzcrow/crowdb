@@ -153,15 +153,16 @@ async fn unknown_head_or_mapping_retirement_stops_cleanup_and_survives_worker_re
             .step(&task, retirement::NOW)
             .await;
         assert!(result.is_err());
-        // These are the step's task/root/authority guards, plus the mapping's one slot lookup.
+        // CleanupCatalog also checks the parent namespace's final slot before removing its name.
+        // CleanupNative does not scan that name. These reads all precede the lost table-retirement reply.
         assert_eq!(
             store.reads.load(Ordering::SeqCst) - reads,
             if with_mapping {
-                6
+                7
             } else if native {
                 4
             } else {
-                5
+                6
             }
         );
         assert_eq!(

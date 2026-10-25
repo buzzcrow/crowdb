@@ -5,8 +5,13 @@ use crate::{
     key::{CatalogScope, IcebergKey, OperationId, SystemScope},
     operation::{ledger_locate, LedgerLocation, ManagementAction, ManagementOperation, ManagementPhase},
     record::StorageRecord,
-    table::{storage_head_key, TablePurgeTask},
+    table::TablePurgeTask,
 };
+
+mod purge;
+pub use purge::PurgeAdmission;
+
+use crate::operation::mutation_identity;
 
 use super::{CandidatePhase, GcCandidate, GcLimits, GcRepository, GcTask, GcTaskKind, TreeReclaimCursor};
 
@@ -168,9 +173,9 @@ impl GcRepository {
         self.exchange_admission_task(None, &task).await
     }
 
-    /// Installs one replayable purge worker for a durable table purge marker.
+    /// Installs a worker for an already completed table deletion.
     /// # Errors
-    /// Rejects stale catalog epochs, changed markers and conflicting task identities.
+    /// Unpublished or superseded markers do not authorize physical deletion.
     pub async fn admit_purge(
         &self,
         context: CatalogContext,
@@ -178,50 +183,9 @@ impl GcRepository {
         now_ms: u64,
         limits: GcLimits,
     ) -> Result<GcTask, CatalogError> {
-        marker.validate()?;
-        if marker.head.catalog != context.catalog || marker.activation_epoch != context.activation_epoch {
-            return Err(ValidationError::IdentityMismatch.into());
+        match self.discover_purge(context, marker, now_ms, limits).await? {
+            PurgeAdmission::Ready(task) => Ok(*task),
+            PurgeAdmission::Cancelled | PurgeAdmission::Deferred => Err(CatalogError::Conflict),
         }
-        check_context(self.store.as_ref(), context).await?;
-        let key = marker.key();
-        let value = self.store.get(&key.encode()?).await?.ok_or(CatalogError::Busy)?;
-        if StorageRecord::decode(&key, &value.bytes)?
-            != StorageRecord::TablePurgeTask(Box::new(marker.clone()))
-        {
-            return Err(CatalogError::Conflict);
-        }
-        let identity = OperationId::from_bytes(marker.head.table.as_bytes())?;
-        if let Some(existing) = self.task(context.catalog, identity).await? {
-            if existing.context != context
-                || existing.kind != GcTaskKind::PurgeTable
-                || existing.head.as_ref() != Some(&marker.head)
-            {
-                return Err(CatalogError::Conflict);
-            }
-            return Ok(existing);
-        }
-        let head_key = storage_head_key(marker.head.storage_location());
-        let head = self
-            .store
-            .get(&head_key.encode()?)
-            .await?
-            .ok_or(CatalogError::Busy)?;
-        if StorageRecord::decode(&head_key, &head.bytes)?
-            != StorageRecord::TableHead(Box::new(marker.head.clone()))
-        {
-            return Err(CatalogError::Conflict);
-        }
-        let task = GcTask::plan(
-            context,
-            identity,
-            Some(marker.head.clone()),
-            if marker.dropped_ms == 0 {
-                now_ms
-            } else {
-                marker.dropped_ms
-            },
-            limits,
-        )?;
-        self.exchange_admission_task(None, &task).await
     }
 }

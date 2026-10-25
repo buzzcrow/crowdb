@@ -154,8 +154,10 @@ impl NamespaceLister {
         let Some(value) = self.repository.store.get(&key.encode()?).await? else {
             return Ok(None);
         };
-        let StorageRecord::NamespaceAuthority(authority) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
+        let authority = match StorageRecord::decode(&key, &value.bytes)? {
+            StorageRecord::NamespaceAuthority(authority) => authority,
+            StorageRecord::RetiredNamespace { .. } => return Ok(None),
+            _ => return Err(ValidationError::Record.into()),
         };
         Ok(
             (mapping.resolves(&authority) && authority.identifier.parent().as_ref() == parent)

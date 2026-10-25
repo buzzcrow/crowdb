@@ -60,6 +60,10 @@ impl NamespaceCreator {
                         .await?;
                     return Ok(());
                 }
+                if existing.state == NamespaceMappingState::ReservedResource {
+                    Box::pin(self.settle_resource_mapping(operation.context, &existing, budget)).await?;
+                    return Ok(());
+                }
                 let journal = NamespaceJournal::new(self.repository.store.clone());
                 let owner = journal
                     .load(operation.context, existing.operation)
@@ -129,22 +133,29 @@ impl NamespaceCreator {
     ) -> Result<(), CatalogError> {
         let key = super::authority_key(operation.context.catalog, mapping.namespace);
         if let Some(value) = self.names.get(&key.encode()?).await? {
-            let StorageRecord::NamespaceAuthority(authority) = StorageRecord::decode(&key, &value.bytes)?
-            else {
-                return Err(ValidationError::Record.into());
-            };
-            if mapping.resolves(&authority) {
-                return Err(CatalogError::Busy);
+            match StorageRecord::decode(&key, &value.bytes)? {
+                StorageRecord::NamespaceAuthority(authority) => {
+                    if mapping.resolves(&authority) {
+                        return Err(CatalogError::Busy);
+                    }
+                    if authority.lifecycle == super::NamespaceLifecycle::Tombstone {
+                        self.help_marker(
+                            operation.context,
+                            authority.namespace,
+                            authority.pending_operation.ok_or(ValidationError::Record)?,
+                            budget,
+                        )
+                        .await?;
+                    }
+                }
+                StorageRecord::RetiredNamespace { .. } => {}
+                _ => return Err(ValidationError::Record.into()),
             }
-            if authority.lifecycle == super::NamespaceLifecycle::Tombstone {
-                self.help_marker(
-                    operation.context,
-                    authority.namespace,
-                    authority.pending_operation.ok_or(ValidationError::Record)?,
-                    budget,
-                )
-                .await?;
-            }
+        } else if let super::NamespaceSlot::Existing { .. } =
+            super::retire_absent_namespace(self.repository.store.as_ref(), mapping.catalog, mapping.namespace)
+                .await?
+        {
+            return Err(CatalogError::Busy);
         }
         let key = name_key(mapping.catalog, mapping.parent, &mapping.name)?.encode()?;
         self.names
