@@ -18,6 +18,12 @@ use crowdb_access_iceberg::{
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
+pub(super) struct TestGcBacklog {
+    pub files: Vec<FileRecord>,
+    pub logical_bytes: u64,
+    pub dropped_ms: u64,
+}
+
 pub(super) async fn seed_table(
     stack: &TestNativeStorage,
 ) -> (Arc<RoutedCatalogStore>, CatalogContext, TableId) {
@@ -128,6 +134,16 @@ pub(super) async fn seed_files(
     table: TableId,
     count: usize,
 ) {
+    seed_file_records(store, context, table, count).await;
+}
+
+async fn seed_file_records(
+    store: &RoutedCatalogStore,
+    context: CatalogContext,
+    table: TableId,
+    count: usize,
+) -> Vec<FileRecord> {
+    let mut files = Vec::with_capacity(count);
     for index in 0..count {
         let payload_json = format!("{{\"index\":{index}}}");
         let file = FileRecord {
@@ -147,15 +163,45 @@ pub(super) async fn seed_files(
             hint: None,
         };
         let key = canonical_file_key(&file.location).encode().unwrap();
-        let bytes = StorageRecord::File(Box::new(file)).encode().unwrap();
+        let bytes = StorageRecord::File(Box::new(file.clone())).encode().unwrap();
         store
             .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
             .await
             .unwrap();
+        files.push(file);
     }
+    files
 }
 
 pub(super) async fn seed_purge_marker(store: &RoutedCatalogStore, context: CatalogContext, table: TableId) {
+    seed_purge_marker_at(store, context, table, 0).await;
+}
+
+pub(super) async fn seed_expired_backlog(
+    store: &RoutedCatalogStore,
+    context: CatalogContext,
+    table: TableId,
+    count: usize,
+) -> TestGcBacklog {
+    let files = seed_file_records(store, context, table, count).await;
+    let logical_bytes = files.iter().map(|file| file.length).sum();
+    let dropped_ms = now_ms()
+        .checked_sub(crowdb_access_iceberg::gc::GcTask::PURGE_DELAY_MS + 60_000)
+        .unwrap();
+    seed_purge_marker_at(store, context, table, dropped_ms).await;
+    TestGcBacklog {
+        files,
+        logical_bytes,
+        dropped_ms,
+    }
+}
+
+async fn seed_purge_marker_at(
+    store: &RoutedCatalogStore,
+    context: CatalogContext,
+    table: TableId,
+    dropped_ms: u64,
+) {
     tombstone_head(store, context, table).await;
     let key = storage_head_key(TableLocation {
         catalog: context.catalog,
@@ -169,7 +215,7 @@ pub(super) async fn seed_purge_marker(store: &RoutedCatalogStore, context: Catal
     let marker = TablePurgeTask {
         activation_epoch: context.activation_epoch,
         head: *head,
-        dropped_ms: 0,
+        dropped_ms,
     };
     let encoded = marker.key().encode().unwrap();
     let bytes = StorageRecord::TablePurgeTask(Box::new(marker)).encode().unwrap();

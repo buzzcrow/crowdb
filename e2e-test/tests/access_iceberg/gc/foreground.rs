@@ -11,7 +11,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 fn latency(samples: &[u64]) -> serde_json::Value {
     assert!(!samples.is_empty());
@@ -26,6 +26,10 @@ fn latency(samples: &[u64]) -> serde_json::Value {
 }
 
 async fn write_s3_during_gc(seeds: Vec<String>, progress: Arc<AtomicUsize>) {
+    write_s3_with_delay(seeds, progress, Duration::from_millis(50)).await;
+}
+
+pub(super) async fn write_s3_with_delay(seeds: Vec<String>, progress: Arc<AtomicUsize>, delay: Duration) {
     let s3 = S3StorageClients::connect_with_read_policy(
         seeds,
         2,
@@ -48,7 +52,7 @@ async fn write_s3_during_gc(seeds: Vec<String>, progress: Arc<AtomicUsize>) {
         writer.on_finish().await.unwrap();
         samples.push(u64::try_from(started.elapsed().as_nanos()).unwrap());
         progress.fetch_add(1, Ordering::Release);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(delay).await;
     }
     s3.chunks.shutdown_small_writes().await.unwrap();
     println!("gc_foreground_small_write {}", latency(&samples));
@@ -124,7 +128,7 @@ async fn official_sdk_foreground_progresses_under_gc_backlog() {
     );
 }
 
-const SDK_PRESSURE_SCRIPT: &str = r#"import sys, json, time
+pub(super) const SDK_PRESSURE_SCRIPT: &str = r#"import sys, json, time
 from concurrent.futures import ThreadPoolExecutor
 import requests
 from pyiceberg.catalog import load_catalog
@@ -133,15 +137,20 @@ from pyiceberg.types import LongType, NestedField
 
 def run(worker):
     samples = {}
+    windows = {}
     def measure(operation, call):
+        begin = time.time_ns() if len(sys.argv) > 2 else 0
         started = time.perf_counter_ns()
         result = call()
         samples.setdefault(operation, []).append(time.perf_counter_ns() - started)
+        if begin:
+            windows.setdefault(operation, []).append([begin, time.time_ns()])
         return result
     catalog = load_catalog(f"gc-{worker}", type="rest", uri=sys.argv[1], token="w" * 32)
-    namespace = (f"gc-pressure-{worker}",)
+    prefix = sys.argv[4] if len(sys.argv) > 4 else "gc-pressure"
+    namespace = (f"{prefix}-{worker}",)
     measure("create_namespace", lambda: catalog.create_namespace(namespace))
-    for index in range(3):
+    for index in range(int(sys.argv[2]) if len(sys.argv) > 2 else 3):
         identifier = namespace + (f"events-{index}",)
         table = measure("create_table", lambda: catalog.create_table(identifier, Schema(NestedField(field_id=1, name="id", field_type=LongType(), required=True))))
         measure("commit", lambda: table.transaction().set_properties({"gc-probe": str(index)}).commit_transaction())
@@ -159,19 +168,23 @@ def run(worker):
                 return stream.read()
         assert measure("read_metadata", read_metadata).startswith(b"{")
         measure("drop_table", lambda: catalog.drop_table(identifier))
+        if len(sys.argv) > 3:
+            time.sleep(float(sys.argv[3]))
     measure("drop_namespace", lambda: catalog.drop_namespace(namespace))
-    return samples
+    return samples, windows
 
 with ThreadPoolExecutor(max_workers=4) as executor:
     results = list(executor.map(run, range(4)))
 combined = {}
-for result in results:
+combined_windows = {}
+for result, windows in results:
     for operation, samples in result.items():
         combined.setdefault(operation, []).extend(samples)
+        combined_windows.setdefault(operation, []).extend(windows.get(operation, []))
 report = {}
 for operation, samples in combined.items():
     ordered = sorted(samples)
-    report[operation] = {"raw_ns":samples,"count":len(samples),"p50_ns":ordered[(len(ordered)-1)//2],"p99_ns":ordered[(99*len(ordered)+99)//100-1]}
+    report[operation] = {"raw_ns":samples,"count":len(samples),"p50_ns":ordered[(len(ordered)-1)//2],"p99_ns":ordered[(99*len(ordered)+99)//100-1],"windows_unix_ns":combined_windows[operation]}
 print("gc_foreground_official_sdk " + json.dumps(report), flush=True)
 "#;
 
