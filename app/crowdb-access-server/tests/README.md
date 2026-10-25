@@ -200,6 +200,10 @@ in `/tmp/crowdb-access-cleanup-v4-evidence-20261025`.
 
 Throughput is total bytes divided by total elapsed time across three trials.
 Client CPU is the three-trial sum; RSS is the largest observed client value.
+HTTP runs authority and payload processing in Access Server, while native
+runs that work in the client. Client CPU alone does not measure total system
+efficiency. HTTP v1 uses Manifest projection and native uses inspection
+metadata; the product comparison includes this implementation difference.
 
 | Path          | Concurrency | MiB/s  | Client CPU (s) | Peak RSS (MiB) |
 | ------------- | ----------- | ------ | -------------- | -------------- |

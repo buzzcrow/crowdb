@@ -544,6 +544,25 @@ Those partial rates are not accepted comparative performance.
 - Next: rebuild/import the same source and rerun unchanged mixed-size workload,
   then final real-service restart/local-HCA acceptance. R220 stays open.
 
+## Follow-up awaiting matching-image acceptance (2026-10-25)
+
+- Source `d48a77d9` includes three independent changes: Snapshot cleanup
+  retires an identical upload reference once per window, Split query planning
+  verifies a consulted membership page once per bounded candidate window, and
+  Iceberg fallback uploads hand off complete target buffers without merging.
+- Executable cost regressions pass: ten shared references use one upload-record
+  read and one CAS instead of ten reads and one CAS; twenty candidates in one
+  Split page use one bounded metadata read instead of twenty. These are logical
+  store operations, not measured routed frame counts or TPS gains.
+- The receiver retains complete `Bytes` owners; fragmented input and short
+  tails still merge. Original frame grouping, admission, digests, bounds,
+  checkpoint and deletion rules remain. No persistent process state is added.
+- All 645 affected Dataset/Access Server/native tests pass, with 13 separately
+  configured cases ignored. Workspace all-target/all-feature clippy, normal
+  lint and formatting pass. A matching `access-cleanup-v5-20261025` image,
+  actual file/Dataset integration and full TCP/restart acceptance are pending;
+  the earlier v4 results below remain evidence for their own source.
+
 ## Current acceptance (2026-10-25)
 
 - Image `access-cleanup-v4-20261025` from source `15efaaec`, tree
