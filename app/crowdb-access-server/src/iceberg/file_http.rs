@@ -37,6 +37,8 @@ mod metrics;
 mod multipart;
 mod read;
 mod stream;
+#[cfg(feature = "test-util")]
+pub use stream::write_iceberg_fallback_body_for_tests;
 
 use metrics::UploadFlowMetrics;
 pub use metrics::UploadFlowSnapshot;

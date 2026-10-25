@@ -15,7 +15,7 @@ use crowdb_access_s3::native_buffer::NativeBodyReceiver;
 use crowdb_chunk_client::{FramedWriteBuffer, LargeWritePolicy};
 use crowdb_protocol::frame::{FrameMagic, MAX_FRAME_V2_PAYLOAD_BYTES};
 use http_body_util::BodyExt;
-use hyper::body::{Bytes, Incoming};
+use hyper::body::{Body, Bytes, Incoming};
 use tokio::sync::mpsc;
 
 use super::metrics::{UploadFlowMetrics, UploadObservation};
@@ -127,6 +127,10 @@ pub(super) async fn upload(
 
 mod object;
 mod small_receive;
+#[cfg(feature = "test-util")]
+mod test_util;
+#[cfg(feature = "test-util")]
+pub use test_util::write_iceberg_fallback_body_for_tests;
 
 impl WriteObject<'_> {
     async fn run(mut self) -> Result<UploadedObject, FileS3ErrorCode> {
@@ -299,8 +303,8 @@ impl WriteObject<'_> {
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-async fn receive_body(
-    body: &mut UploadBody<Incoming>,
+async fn receive_body<B: Body<Data = Bytes> + Unpin>(
+    body: &mut UploadBody<B>,
     digest: &mut DigestPipe,
     admission: &FileTransferAdmission,
     native_receiver: Option<&NativeBodyReceiver>,
@@ -311,11 +315,7 @@ async fn receive_body(
     observation: &mut UploadObservation,
 ) -> Result<u64, FileS3ErrorCode> {
     let mut length = 0u64;
-    let mut pending = Vec::with_capacity(if native_receiver.is_some() {
-        0
-    } else {
-        target_buffer
-    });
+    let mut pending = Vec::new();
     let mut digest_pending = Vec::with_capacity(16);
     loop {
         let started = Instant::now();
@@ -368,6 +368,22 @@ async fn receive_body(
             }
         } else {
             while !bytes.is_empty() {
+                if pending.is_empty() && bytes.len() >= target_buffer {
+                    let owner = bytes.split_to(target_buffer);
+                    digest_pending.push(owner.clone());
+                    handoff(
+                        digest,
+                        &flow,
+                        UploadBuffer::Data(owner),
+                        std::mem::take(&mut digest_pending),
+                        observation,
+                    )
+                    .await?;
+                    continue;
+                }
+                if pending.capacity() == 0 {
+                    pending.reserve_exact(target_buffer);
+                }
                 let count = (target_buffer - pending.len()).min(bytes.len());
                 let piece = bytes.split_to(count);
                 pending.extend_from_slice(&piece);
@@ -376,10 +392,7 @@ async fn receive_body(
                     handoff(
                         digest,
                         &flow,
-                        UploadBuffer::Data(Bytes::from(std::mem::replace(
-                            &mut pending,
-                            Vec::with_capacity(target_buffer),
-                        ))),
+                        UploadBuffer::Data(Bytes::from(std::mem::take(&mut pending))),
                         std::mem::take(&mut digest_pending),
                         observation,
                     )
