@@ -26,19 +26,27 @@ pub(super) struct FieldReader {
 }
 
 enum FieldDigest {
+    // Dataset locator resolution already verified these immutable inline bytes.
+    ResolvedInline,
     Incremental(Md5),
     SinglePart { verified: bool },
 }
 
 impl FieldReader {
+    #[cfg(feature = "test-util")]
+    pub(super) fn has_incremental_digest_for_tests(&self) -> bool {
+        matches!(self.digest, FieldDigest::Incremental(_))
+    }
+
     pub(super) fn new(index: usize, locator: FieldLocator) -> Result<Self> {
-        let (source, length, expected) = match locator {
+        let (source, length, expected, digest) = match locator {
             FieldLocator::Inline { value, md5 } => {
                 let length = value.len() as u64;
                 (
                     Source::Inline((!value.is_empty()).then(|| OwnedPayload::from(value))),
                     length,
                     md5,
+                    FieldDigest::ResolvedInline,
                 )
             }
             FieldLocator::Chunk {
@@ -54,6 +62,7 @@ impl FieldReader {
                 },
                 length,
                 md5,
+                FieldDigest::Incremental(Md5::new()),
             ),
             FieldLocator::Tombstone => return Err(Error::Integrity),
         };
@@ -63,7 +72,7 @@ impl FieldReader {
             source,
             length,
             expected,
-            digest: FieldDigest::Incremental(Md5::new()),
+            digest,
         })
     }
 
@@ -121,6 +130,7 @@ impl FieldReader {
         };
         if payload.is_none() {
             let verified = match &self.digest {
+                FieldDigest::ResolvedInline => true,
                 FieldDigest::Incremental(digest) => {
                     <[u8; 16]>::from(digest.clone().finalize()) == self.expected
                 }

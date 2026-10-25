@@ -58,6 +58,15 @@ impl BatchBody {
         self.complete
     }
 
+    /// Observes the current field's existing digest strategy without changing it.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn has_incremental_field_digest_for_tests(&self) -> Option<bool> {
+        self.field
+            .as_ref()
+            .map(FieldReader::has_incremental_digest_for_tests)
+    }
+
     /// Successful EOF certifies all field and part digests, never processing ack.
     /// EOF releases local request admission without metadata writes.
     /// # Errors
