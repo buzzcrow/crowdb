@@ -1007,6 +1007,14 @@ instantaneous direct-URL revocation guarantee. Legacy live tasks are retired wit
 further deletion, releasing an owned table fence. Retained and deferred
 candidates remain durable work for later inactive passes.
 
+An ordinary inline file in a table purge has no physical deletion frontier.
+After checking retention, head generation, purge fence and immutable claim, one
+bounded worker step conditionally deletes its exact file authority and persists
+the completed candidate and task count. It does not persist an intermediate
+Deleting checkpoint. Part, assembly and non-inline candidates retain their
+destructive traversal checkpoints. An unknown mutation response stops the step;
+a subsequent worker resumes from the durable file, candidate and task facts.
+
 An already authorized FileIO GET or HEAD can continue within the configured
 retention interval after logical deletion. Native storage arbitrates direct
 read/reclamation races, returning the original bytes or a storage error, never

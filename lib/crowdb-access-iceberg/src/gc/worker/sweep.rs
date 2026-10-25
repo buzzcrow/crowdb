@@ -1,5 +1,8 @@
 use crate::{catalog::CasOutcome, operation::mutation_identity};
-use crate::{file::canonical_file_key, record::StorageRecordKey};
+use crate::{
+    file::{canonical_file_key, FileContent},
+    record::StorageRecordKey,
+};
 use crowdb_protocol::chunkdb::rpc::Location;
 
 use super::{
@@ -187,7 +190,11 @@ impl GcWorker {
             .checked_add(1)
             .ok_or(ValidationError::GenerationExhausted)?;
         next.phase = CandidatePhase::Deleting;
-        if candidate.phase == CandidatePhase::Retained {
+        let inline_purge = task.kind == GcTaskKind::PurgeTable
+            && candidate.part.is_none()
+            && candidate.assembly.is_none()
+            && matches!(candidate.file.content, FileContent::Inline { .. });
+        if candidate.phase == CandidatePhase::Retained && !inline_purge {
             self.repository.candidate(Some(candidate), &next).await?;
             return Ok(DeleteProgress::Advanced);
         }
