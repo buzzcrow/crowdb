@@ -37,7 +37,7 @@ impl NamespaceAuthority {
             || self.mutation_revision == 0
             || self.parent.is_some() != self.identifier.parent().is_some()
             || self.parent == Some(self.namespace)
-            || (self.lifecycle != NamespaceLifecycle::Ready && self.pending_operation.is_none())
+            || (self.lifecycle == NamespaceLifecycle::Tombstone && self.pending_operation.is_none())
             || self.creating_child.is_some_and(|child| {
                 child == self.namespace
                     || self.lifecycle != NamespaceLifecycle::Ready

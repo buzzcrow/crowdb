@@ -118,7 +118,7 @@ fn namespace_authority_bounds_include_flatbuffer_overhead() {
         record
     );
     authority.lifecycle = NamespaceLifecycle::Dropping;
-    assert_eq!(authority.validate(), Err(ValidationError::Record));
+    assert!(authority.validate().is_ok());
     authority.pending_operation = Some(OperationId::random());
     assert!(authority.validate().is_ok());
 }
@@ -314,4 +314,41 @@ fn resource_reservation_and_retirement_are_distinct_from_legacy_journal_reservat
         retired
     );
     assert!(StorageRecord::decode(&authority_key(authority.catalog, NamespaceId::random()), &bytes).is_err());
+}
+
+#[test]
+fn resource_dropping_has_its_own_fail_closed_wire_tag_and_legacy_owners_stay_required() {
+    use crowdb_protocol::iceberg_fb::{root_as_fbiceberg_record, FBNamespaceAuthority};
+    let mut authority = authority();
+    authority.lifecycle = NamespaceLifecycle::Dropping;
+    let key = authority_key(authority.catalog, authority.namespace);
+    let record = StorageRecord::NamespaceAuthority(Box::new(authority.clone()));
+    let bytes = record.encode().unwrap();
+    let envelope = root_as_fbiceberg_record(&bytes).unwrap();
+    let value = envelope.value_as_fbnamespace_authority().unwrap();
+    assert_eq!(value.lifecycle(), 4);
+    assert!(
+        !matches!(value.lifecycle(), 0..=3),
+        "old readers reject the new fence"
+    );
+    let table = value._tab;
+    let offset = table.loc() + usize::from(table.vtable().get(FBNamespaceAuthority::VT_LIFECYCLE));
+    assert_eq!(StorageRecord::decode(&key, &bytes).unwrap(), record);
+    for legacy_tag in [1, 2] {
+        let mut wrong = bytes.clone();
+        wrong[offset] = legacy_tag;
+        assert!(StorageRecord::decode(&key, &wrong).is_err());
+    }
+    authority.pending_operation = Some(OperationId::random());
+    let legacy = StorageRecord::NamespaceAuthority(Box::new(authority))
+        .encode()
+        .unwrap();
+    let envelope = root_as_fbiceberg_record(&legacy).unwrap();
+    let value = envelope.value_as_fbnamespace_authority().unwrap();
+    assert_eq!(value.lifecycle(), 1);
+    let table = value._tab;
+    let offset = table.loc() + usize::from(table.vtable().get(FBNamespaceAuthority::VT_LIFECYCLE));
+    let mut wrong = legacy;
+    wrong[offset] = 4;
+    assert!(StorageRecord::decode(&key, &wrong).is_err());
 }

@@ -9,6 +9,9 @@ mod fixture;
 #[path = "common/namespace_store.rs"]
 mod namespace_store;
 
+#[path = "common/table_create_late_reservation.rs"]
+mod late_reservation;
+
 use std::sync::{atomic::Ordering, Arc};
 
 use creation::TestCreation;
@@ -161,4 +164,96 @@ async fn competing_same_name_creates_have_one_final_winner_without_process_recor
         .unwrap();
     assert_eq!(selected.head.pending_operation, None);
     assert_eq!(selected.head.generation, 1);
+}
+
+#[tokio::test]
+async fn late_reservation_after_parent_retirement_is_fenced_and_removed() {
+    use crowdb_access_iceberg::{
+        catalog::CatalogStore, commit::TableCreator, namespace::authority_key, table::name_key,
+    };
+    for native in [false, true] {
+        let test = TestCreation::new().await;
+        if native {
+            test.fixture
+                .put(
+                    IcebergKey::Catalog {
+                        catalog: test.fixture.context.catalog,
+                        scope: CatalogScope::Authority,
+                        suffix: Vec::new(),
+                    },
+                    StorageRecord::Authority(
+                        CatalogAuthority::new_native(test.fixture.context.catalog, "native".into()).unwrap(),
+                    ),
+                )
+                .await;
+        }
+        let store = Arc::new(late_reservation::TestLateReservationStore::new(
+            test.fixture.store.clone(),
+            test.parent.namespace,
+        ));
+        let creator = TableCreator::new(store.clone(), test.blocks.clone());
+        let request = test.request.clone();
+        let pending = tokio::spawn(async move { creator.create(&request).await });
+        tokio::time::timeout(std::time::Duration::from_secs(3), store.entered.notified())
+            .await
+            .unwrap();
+        assert_eq!(store.hits.load(Ordering::SeqCst), 1);
+        let mapping = store.mapping.load_full().unwrap();
+        assert_eq!(mapping.namespace, test.parent.namespace);
+        assert_eq!(mapping.storage_namespace.is_some(), native);
+        assert_eq!(
+            NamespaceDropper::new(test.fixture.store.clone())
+                .drop_namespace(&test.drop_request())
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            204
+        );
+        let parent_key = authority_key(test.parent.catalog, test.parent.namespace);
+        let retired = test
+            .fixture
+            .store
+            .get(&parent_key.encode().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            StorageRecord::decode(&parent_key, &retired.bytes).unwrap(),
+            StorageRecord::RetiredNamespace {
+                catalog: test.parent.catalog,
+                namespace: test.parent.namespace,
+            }
+        );
+        let replacement = late_reservation::recreate_parent(&test).await;
+        let reader = NamespaceRepository::new(test.fixture.store.clone());
+        assert_ne!(replacement.namespace, test.parent.namespace);
+        store.release.notify_one();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(3), pending)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(outcome, Err(CommitPublicationError::NamespaceMissing)),
+            "native={native}: {outcome:?}"
+        );
+        assert_eq!(store.reservations.load(Ordering::SeqCst), 1);
+        assert_eq!(store.retired_reads.load(Ordering::SeqCst), 2);
+        assert_eq!(store.head_fences.load(Ordering::SeqCst), 1);
+        assert_eq!(store.head_attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(store.exact_removals.load(Ordering::SeqCst), 1);
+        let key = name_key(mapping.catalog, mapping.namespace, &mapping.name)
+            .unwrap()
+            .encode()
+            .unwrap();
+        assert!(test.fixture.store.get(&key).await.unwrap().is_none());
+        store.assert_delayed_head_is_fenced(&mapping).await;
+        assert_eq!(
+            reader
+                .load(test.fixture.context, &test.parent.identifier)
+                .await
+                .unwrap(),
+            Some(replacement)
+        );
+    }
 }

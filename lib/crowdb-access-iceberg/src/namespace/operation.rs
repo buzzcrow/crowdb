@@ -59,7 +59,7 @@ impl NamespacePhase {
             NamespaceAction::Update => matches!(
                 (self, next),
                 (Prepared, Publishing | Aborting | Complete)
-                    | (Publishing, Published | Prepared)
+                    | (Publishing, Published | Prepared | Complete)
                     | (Published, Complete)
                     | (Aborting, Aborted)
             ),

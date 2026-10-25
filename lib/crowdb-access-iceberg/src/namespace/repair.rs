@@ -119,6 +119,23 @@ impl NamespaceRecovery {
                 _ => return Err(ValidationError::Record.into()),
             };
             if let Some(authority) = authority.filter(|authority| mapping.resolves(authority)) {
+                if authority.lifecycle == super::NamespaceLifecycle::Dropping
+                    && authority.pending_operation.is_none()
+                {
+                    return Box::pin(
+                        super::NamespaceDropper {
+                            creator: self.creator.clone(),
+                        }
+                        .resume_resource_drop(
+                            context,
+                            mapping.clone(),
+                            bytes.to_vec(),
+                            *authority,
+                            value.bytes,
+                        ),
+                    )
+                    .await;
+                }
                 if authority.creating_child.is_some() {
                     super::NamespaceCreator::help_creating_child(
                         self.creator.repository.store.clone(),

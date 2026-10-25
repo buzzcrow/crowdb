@@ -3,12 +3,16 @@ use std::sync::Arc;
 use crate::catalog::{CatalogContext, CatalogError};
 use crate::error::ValidationError;
 use crate::key::OperationId;
-use crate::operation::{PayloadStore, RequestIdentity};
+use crate::operation::RequestIdentity;
 
 use super::{
-    NamespaceAction, NamespaceCreator, NamespaceIdentifier, NamespaceJournal, NamespaceOperation,
-    NamespaceOutcome, NamespacePhase, NamespaceStore,
+    NamespaceAction, NamespaceCreator, NamespaceIdentifier, NamespaceJournal, NamespaceOutcome,
+    NamespacePhase, NamespaceStore,
 };
+
+mod resource;
+
+pub use resource::NamespaceDropOutcome;
 
 #[derive(Clone, Debug)]
 pub struct NamespaceDropRequest {
@@ -31,68 +35,12 @@ impl NamespaceDropper {
     }
 
     /// # Errors
-    /// Rejects invalid requests, changed retry identity and unavailable storage.
-    /// Returns no outcome when no namespace exists before operation admission.
+    /// Rejects invalid requests and uncertain storage. Each call selects the current name.
     pub async fn drop_namespace(
         &self,
         request: &NamespaceDropRequest,
-    ) -> Result<Option<NamespaceOutcome>, CatalogError> {
-        if request.principal.is_empty() || request.principal.len() > 256 || request.principal.contains('\0') {
-            return Err(ValidationError::Text.into());
-        }
-        let journal = NamespaceJournal::new(self.creator.repository.store.clone());
-        if let Some(existing) = journal.load(request.context, request.identity.operation).await? {
-            if existing.action != NamespaceAction::Drop
-                || existing.identity != request.identity
-                || existing.principal != request.principal
-                || existing.identifier != request.identifier
-            {
-                return Err(CatalogError::Conflict);
-            }
-            return self
-                .resume(request.context, request.identity.operation)
-                .await
-                .map(Some);
-        }
-        let Some(authority) = self
-            .creator
-            .repository
-            .load(request.context, &request.identifier)
-            .await?
-        else {
-            return Ok(None);
-        };
-        authority
-            .admission_fence
-            .checked_add(2)
-            .ok_or(ValidationError::GenerationExhausted)?;
-        authority
-            .mutation_revision
-            .checked_add(3)
-            .ok_or(ValidationError::GenerationExhausted)?;
-        let input = PayloadStore::new(self.creator.repository.store.clone())
-            .put(request.context.catalog, request.identity.operation, b"{}")
-            .await?;
-        let operation = NamespaceOperation {
-            context: request.context,
-            identity: request.identity,
-            principal: request.principal.clone(),
-            action: NamespaceAction::Drop,
-            identifier: request.identifier.clone(),
-            namespace: authority.namespace,
-            parent: authority.parent,
-            phase: NamespacePhase::Prepared,
-            revision: 1,
-            input,
-            mutation: None,
-            scan_after: Vec::new(),
-            scan_generation: 0,
-            outcome: None,
-        };
-        journal.begin(operation).await?;
-        self.resume(request.context, request.identity.operation)
-            .await
-            .map(Some)
+    ) -> Result<Option<NamespaceDropOutcome>, CatalogError> {
+        self.drop_resource(request).await
     }
 
     /// # Errors

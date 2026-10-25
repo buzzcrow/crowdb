@@ -60,6 +60,7 @@ impl NamespaceCreator {
                 parent.pending_operation = Some(operation.identity.operation);
                 StorageRecord::NamespaceAuthority(parent).encode()?
             }
+            StorageRecord::RetiredNamespace { .. } => return self.abort(operation, 400).await,
             StorageRecord::Active(root)
                 if root.context == operation.context && root.state == RootState::Ready =>
             {
@@ -136,6 +137,7 @@ impl NamespaceCreator {
                     return self.abort(operation, 400).await;
                 }
             }
+            StorageRecord::RetiredNamespace { .. } => return self.abort(operation, 400).await,
             StorageRecord::Active(root)
                 if root.context == operation.context && root.state == RootState::Ready => {}
             StorageRecord::Active(_) => return Err(CatalogError::Conflict),

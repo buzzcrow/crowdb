@@ -138,7 +138,8 @@ impl TestStore {
                         .is_some_and(|record| {
                             matches!(record,
                         crowdb_access_iceberg::record::StorageRecord::NamespaceAuthority(before)
-                            if before.property_revision < authority.property_revision)
+                            if before.property_revision < authority.property_revision
+                                || before.lifecycle != authority.lifecycle)
                         }))
             {
                 if let Some(barrier) = &self.namespace_update_barrier {

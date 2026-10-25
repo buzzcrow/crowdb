@@ -30,14 +30,16 @@ impl TableCreator {
         self.reserve_direct(context, &mapping).await?;
         let key = authority_key(context.catalog, parent.namespace);
         let ready = if let Some(value) = self.store.get(&key.encode()?).await.map_err(CatalogError::from)? {
-            let StorageRecord::NamespaceAuthority(current) = StorageRecord::decode(&key, &value.bytes)?
-            else {
-                return Err(ValidationError::Record.into());
-            };
-            current.lifecycle == NamespaceLifecycle::Ready
-                && current.namespace == parent.namespace
-                && current.identifier == parent.identifier
-                && current.name_epoch == parent.name_epoch
+            match StorageRecord::decode(&key, &value.bytes)? {
+                StorageRecord::NamespaceAuthority(current) => {
+                    current.lifecycle == NamespaceLifecycle::Ready
+                        && current.namespace == parent.namespace
+                        && current.identifier == parent.identifier
+                        && current.name_epoch == parent.name_epoch
+                }
+                StorageRecord::RetiredNamespace { .. } => false,
+                _ => return Err(ValidationError::Record.into()),
+            }
         } else {
             false
         };

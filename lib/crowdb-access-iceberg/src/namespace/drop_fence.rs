@@ -46,6 +46,10 @@ impl NamespaceDropper {
             .await?;
             return Err(CatalogError::Busy);
         }
+        if authority.lifecycle == NamespaceLifecycle::Dropping && authority.pending_operation.is_none() {
+            let _ = Box::pin(self.help_resource_drop(operation.context, authority, budget)).await?;
+            return Ok(());
+        }
         if let Some(pending) = authority.pending_operation {
             let owner = NamespaceJournal::new(self.creator.repository.store.clone())
                 .load(operation.context, pending)
@@ -118,12 +122,13 @@ impl NamespaceDropper {
         let CasOutcome::Conflict(Some(value)) = result else {
             return Err(ValidationError::Record.into());
         };
-        let StorageRecord::NamespaceAuthority(current) = StorageRecord::decode(
+        let current = match StorageRecord::decode(
             &authority_key(operation.context.catalog, operation.namespace),
             &value.bytes,
-        )?
-        else {
-            return Err(ValidationError::Record.into());
+        )? {
+            StorageRecord::NamespaceAuthority(current) => current,
+            StorageRecord::RetiredNamespace { .. } => return self.finish_outcome(operation, 404).await,
+            _ => return Err(ValidationError::Record.into()),
         };
         if current.mutation_revision <= expected.mutation_revision {
             return Err(ValidationError::Record.into());

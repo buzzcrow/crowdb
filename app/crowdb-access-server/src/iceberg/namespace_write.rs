@@ -7,7 +7,7 @@ use crowdb_access_iceberg::namespace::{
     NamespaceCreateRequest, NamespaceCreator, NamespaceDropRequest, NamespaceDropper,
     NamespacePropertyRequest, NamespaceRepository, NamespaceStore,
 };
-use crowdb_access_iceberg::operation::{PayloadStore, RequestIdentity};
+use crowdb_access_iceberg::operation::RequestIdentity;
 use crowdb_access_iceberg::wire::{IcebergErrorResponse, Principal, RequestKey};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -27,7 +27,6 @@ pub(super) struct NamespaceWrites {
     creator: NamespaceCreator,
     dropper: NamespaceDropper,
     repository: NamespaceRepository,
-    payloads: PayloadStore,
 }
 
 impl NamespaceWrites {
@@ -35,8 +34,7 @@ impl NamespaceWrites {
         Self {
             creator: NamespaceCreator::new(store.clone()),
             dropper: NamespaceDropper::new(store.clone()),
-            repository: NamespaceRepository::new(store.clone()),
-            payloads: PayloadStore::new(store),
+            repository: NamespaceRepository::new(store),
         }
     }
 
@@ -139,12 +137,7 @@ impl NamespaceWrites {
         .ok_or_else(|| {
             IcebergErrorResponse::new(404, "NoSuchNamespaceException", "Namespace does not exist")
         })?;
-        let bytes = self
-            .payloads
-            .get(&outcome.body)
-            .await
-            .map_err(|_| service_unavailable())?;
-        Ok((outcome.status, bytes))
+        Ok((outcome.status, outcome.body))
     }
 
     async fn update_properties(

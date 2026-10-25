@@ -63,12 +63,11 @@ impl TableRenames {
             {
                 CasOutcome::Applied(_) => return Ok(()),
                 CasOutcome::Conflict(Some(value)) => {
-                    let StorageRecord::NamespaceAuthority(observed) =
-                        StorageRecord::decode(&key, &value.bytes)?
-                    else {
-                        return Err(ValidationError::Record.into());
+                    parent = match StorageRecord::decode(&key, &value.bytes)? {
+                        StorageRecord::NamespaceAuthority(observed) => *observed,
+                        StorageRecord::RetiredNamespace { .. } => return Err(CatalogError::Conflict),
+                        _ => return Err(ValidationError::Record.into()),
                     };
-                    parent = *observed;
                 }
                 CasOutcome::Conflict(None) => return Err(CatalogError::Conflict),
             }
@@ -87,10 +86,13 @@ impl TableRenames {
                     finished = true;
                     break;
                 };
-                let StorageRecord::NamespaceAuthority(mut authority) =
-                    StorageRecord::decode(&key, &current.bytes)?
-                else {
-                    return Err(ValidationError::Record.into());
+                let mut authority = match StorageRecord::decode(&key, &current.bytes)? {
+                    StorageRecord::NamespaceAuthority(authority) => authority,
+                    StorageRecord::RetiredNamespace { .. } => {
+                        finished = true;
+                        break;
+                    }
+                    _ => return Err(ValidationError::Record.into()),
                 };
                 if authority.rename.as_deref() != Some(rename) {
                     finished = true;

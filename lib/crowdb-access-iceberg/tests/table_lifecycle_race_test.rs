@@ -17,7 +17,6 @@ mod namespace_store;
 mod rename;
 
 use crowdb_access_iceberg::{
-    catalog::CatalogError,
     key::OperationId,
     namespace::{NamespaceDropRequest, NamespaceDropper, NamespaceRepository},
     operation::RequestIdentity,
@@ -50,10 +49,8 @@ async fn canceled_request_retry_uses_a_fresh_reservation_against_delayed_cleanup
         let reserved = store.get(&key).await.unwrap().unwrap().bytes;
         if attempt == 0 {
             let drop = test.drop_request();
-            assert!(matches!(
-                NamespaceDropper::new(store.clone()).drop_namespace(&drop).await,
-                Err(CatalogError::Busy)
-            ));
+            let dropped = NamespaceDropper::new(store.clone()).drop_namespace(&drop).await;
+            assert_eq!(dropped.unwrap().unwrap().status, 409);
             canceled = Some(reserved);
         } else {
             let old = canceled.as_ref().unwrap();
@@ -75,12 +72,18 @@ async fn canceled_request_retry_uses_a_fresh_reservation_against_delayed_cleanup
 
 #[tokio::test]
 async fn drop_fences_delayed_rename_or_preserves_the_committed_destination() {
+    use crowdb_access_iceberg::{catalog::CatalogStore, namespace::authority_key, record::StorageRecord};
     for after in [false, true] {
         let (test, request, before) = rename::setup(true).await;
         let TableLifecycleAction::Rename { namespace, .. } = &request.action else {
             panic!()
         };
         let store = test.fixture.store.clone();
+        let target = NamespaceRepository::new(store.clone())
+            .load(request.context, namespace)
+            .await
+            .unwrap()
+            .unwrap();
         if after {
             store.table_head_pause_after.store(true, Ordering::SeqCst);
         } else {
@@ -101,12 +104,16 @@ async fn drop_fences_delayed_rename_or_preserves_the_committed_destination() {
             identifier: namespace.clone(),
         };
         let dropper = NamespaceDropper::new(store.clone());
-        assert!(matches!(
-            dropper.drop_namespace(&drop).await,
-            Err(CatalogError::Busy)
-        ));
         let outcome = dropper.drop_namespace(&drop).await.unwrap().unwrap();
         assert_eq!(outcome.status, if after { 409 } else { 204 });
+        if !after {
+            let key = authority_key(request.context.catalog, target.namespace);
+            let value = store.get(&key.encode().unwrap()).await.unwrap().unwrap();
+            assert!(matches!(
+                StorageRecord::decode(&key, &value.bytes).unwrap(),
+                StorageRecord::RetiredNamespace { .. }
+            ));
+        }
         assert_eq!(rename::visible(&test, &request).await, (!after, after));
         store.table_head_release.notify_one();
         assert_eq!(

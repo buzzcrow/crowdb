@@ -75,16 +75,18 @@ impl TableRenames {
     ) -> Result<(), CatalogError> {
         let key = crate::namespace::authority_key(context.catalog, mapping.namespace);
         if let Some(parent) = self.store.get(&key.encode()?).await? {
-            let StorageRecord::NamespaceAuthority(parent) = StorageRecord::decode(&key, &parent.bytes)?
-            else {
-                return Err(ValidationError::Record.into());
-            };
-            if let Some(rename) = parent
-                .rename
-                .as_ref()
-                .filter(|rename| rename.destination(TableMappingState::Reserved) == *mapping)
-            {
-                return self.recover(context, rename).await;
+            match StorageRecord::decode(&key, &parent.bytes)? {
+                StorageRecord::NamespaceAuthority(parent) => {
+                    if let Some(rename) = parent
+                        .rename
+                        .as_ref()
+                        .filter(|rename| rename.destination(TableMappingState::Reserved) == *mapping)
+                    {
+                        return self.recover(context, rename).await;
+                    }
+                }
+                StorageRecord::RetiredNamespace { .. } => {}
+                _ => return Err(ValidationError::Record.into()),
             }
         }
         // Occupancy can be cleared only after the old head CAS is fenced or settled.

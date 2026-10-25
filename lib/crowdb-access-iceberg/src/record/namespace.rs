@@ -91,6 +91,7 @@ pub(super) fn encode_authority<'buffer>(
             lifecycle: match authority.lifecycle {
                 NamespaceLifecycle::Ready if authority.creating_child.is_some() => 3,
                 NamespaceLifecycle::Ready => 0,
+                NamespaceLifecycle::Dropping if authority.pending_operation.is_none() => 4,
                 NamespaceLifecycle::Dropping => 1,
                 NamespaceLifecycle::Tombstone => 2,
             },
@@ -106,6 +107,10 @@ pub(super) fn decode_authority(
     value: FBNamespaceAuthority<'_>,
 ) -> Result<NamespaceAuthority, ValidationError> {
     if (value.lifecycle() == 3) != value.creating_child().is_some() {
+        return Err(ValidationError::Record);
+    }
+    let unowned = value.pending_operation().bytes() == [0; 16];
+    if (matches!(value.lifecycle(), 1 | 2) && unowned) || (value.lifecycle() == 4 && !unowned) {
         return Err(ValidationError::Record);
     }
     if value.properties().len() > MAX_PROPERTIES {
@@ -134,7 +139,7 @@ pub(super) fn decode_authority(
         mutation_revision: value.mutation_revision(),
         lifecycle: match value.lifecycle() {
             0 | 3 => NamespaceLifecycle::Ready,
-            1 => NamespaceLifecycle::Dropping,
+            1 | 4 => NamespaceLifecycle::Dropping,
             2 => NamespaceLifecycle::Tombstone,
             _ => return Err(ValidationError::Record),
         },

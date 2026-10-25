@@ -109,8 +109,10 @@ async fn settle_parent(
     let Some(value) = store.get(&admission.key).await? else {
         return Ok(());
     };
-    let StorageRecord::NamespaceAuthority(mut current) = StorageRecord::decode(&key, &value.bytes)? else {
-        return Err(ValidationError::Record.into());
+    let mut current = match StorageRecord::decode(&key, &value.bytes)? {
+        StorageRecord::NamespaceAuthority(current) => current,
+        StorageRecord::RetiredNamespace { .. } => return Ok(()),
+        _ => return Err(ValidationError::Record.into()),
     };
     // An operation ID alone cannot distinguish a later use of the same parent.
     if current.pending_operation != captured.pending_operation

@@ -29,7 +29,7 @@ mod update_recovery;
 
 pub use authority::{NamespaceAuthority, NamespaceLifecycle, NamespaceMapping, NamespaceMappingState};
 pub use create::{NamespaceCreateRequest, NamespaceCreationOutcome, NamespaceCreator};
-pub use drop::{NamespaceDropRequest, NamespaceDropper};
+pub use drop::{NamespaceDropOutcome, NamespaceDropRequest, NamespaceDropper};
 pub use identifier::{NamespaceIdentifier, MAX_IDENTIFIER_BYTES, MAX_NAMESPACE_LEVELS};
 pub use journal::NamespaceJournal;
 pub use key::{authority_key, child_range, name_key};

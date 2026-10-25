@@ -64,7 +64,7 @@ async fn setup(child: bool) -> (TestNamespace, NamespaceAuthority, NamespaceDrop
 }
 
 #[tokio::test]
-async fn empty_drop_tombstones_authority_and_replay_never_deletes_a_recreated_name() {
+async fn empty_drop_keeps_a_permanent_fence_and_fresh_retries_use_the_current_name() {
     let (fixture, authority, request) = setup(false).await;
     let dropper = NamespaceDropper::new(fixture.store.clone());
     let outcome = dropper.drop_namespace(&request).await.unwrap().unwrap();
@@ -76,11 +76,9 @@ async fn empty_drop_tombstones_authority_and_replay_never_deletes_a_recreated_na
         .is_none());
     let key = authority_key(fixture.context.catalog, authority.namespace);
     let value = fixture.store.get(&key.encode().unwrap()).await.unwrap().unwrap();
-    let StorageRecord::NamespaceAuthority(tombstone) = StorageRecord::decode(&key, &value.bytes).unwrap()
-    else {
-        panic!("namespace authority");
-    };
-    assert_eq!(tombstone.lifecycle, NamespaceLifecycle::Tombstone);
+    assert!(matches!(StorageRecord::decode(&key, &value.bytes).unwrap(),
+        StorageRecord::RetiredNamespace { catalog, namespace }
+            if catalog == authority.catalog && namespace == authority.namespace));
     NamespaceCreator::new(fixture.store.clone())
         .create(&create_request(&fixture, &["parent"]))
         .await
@@ -92,11 +90,15 @@ async fn empty_drop_tombstones_authority_and_replay_never_deletes_a_recreated_na
         .unwrap()
         .unwrap();
     assert_ne!(replacement.namespace, authority.namespace);
-    assert_eq!(dropper.drop_namespace(&request).await.unwrap(), Some(outcome));
     assert_eq!(
-        reader.load(fixture.context, &request.identifier).await.unwrap(),
-        Some(replacement)
+        dropper.drop_namespace(&request).await.unwrap().unwrap().status,
+        204
     );
+    assert!(reader
+        .load(fixture.context, &request.identifier)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -136,7 +138,7 @@ async fn every_lost_drop_write_recovers_empty_and_nonempty_outcomes() {
             .await
             .unwrap();
         let writes = baseline.store.writes.load(Ordering::SeqCst) - before;
-        assert!(writes > 8);
+        assert_eq!(writes, if child { 2 } else { 3 });
         for offset in 1..=writes {
             let (fixture, _, request) = setup(child).await;
             fixture.store.fail_after.store(
@@ -151,9 +153,18 @@ async fn every_lost_drop_write_recovers_empty_and_nonempty_outcomes() {
                 "child {child}, offset {offset}"
             );
             let restarted = NamespaceDropper::new(fixture.store.clone());
-            let outcome = restarted.drop_namespace(&request).await.unwrap().unwrap();
-            assert_eq!(outcome.status, if child { 409 } else { 204 });
-            assert_eq!(restarted.drop_namespace(&request).await.unwrap(), Some(outcome));
+            let outcome = restarted.drop_namespace(&request).await.unwrap();
+            if child {
+                assert_eq!(outcome.as_ref().unwrap().status, 409);
+                assert_eq!(restarted.drop_namespace(&request).await.unwrap(), outcome);
+            } else {
+                assert!(outcome.is_none() || outcome.is_some_and(|outcome| outcome.status == 204));
+                assert!(restarted.drop_namespace(&request).await.unwrap().is_none());
+                assert!(!NamespaceRepository::new(fixture.store.clone())
+                    .exists(fixture.context, &request.identifier)
+                    .await
+                    .unwrap());
+            }
         }
     }
 }
@@ -255,7 +266,12 @@ async fn creator_and_empty_drop_share_one_admission_boundary() {
         "{results:?}"
     );
     assert!(results.1.is_ok() || matches!(results.1, Err(CatalogError::Busy)));
-    let drop_status = dropper.drop_namespace(&request).await.unwrap().unwrap().status;
+    let drop_status = if let Some(outcome) = dropper.drop_namespace(&request).await.unwrap() {
+        outcome.status
+    } else {
+        assert!(matches!(results.1, Ok(Some(outcome)) if outcome.status == 204));
+        204
+    };
     let created = match creator.create(&child).await {
         Ok(outcome) => {
             assert_eq!(drop_status, 409);

@@ -361,12 +361,20 @@ async fn verify_drop_replay(
         send(address, "GET", "/v1/namespaces/parent", "r", None, "")
             .await
             .0,
-        200
+        404
     );
-    assert_eq!(namespace_id(store, "parent"), replacement);
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&namespace_response(address, "parent").await.1).unwrap(),
-        serde_json::from_str::<serde_json::Value>(body).unwrap()
+        send(
+            address,
+            "DELETE",
+            "/v1/namespaces/parent",
+            "w",
+            Some(&drop_key),
+            ""
+        )
+        .await
+        .0,
+        404
     );
 }
 

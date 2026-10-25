@@ -237,12 +237,11 @@ child authority slot before releasing its exact name reservation, including an
 absent slot. A delayed first authority write therefore cannot resurrect it.
 Occupied parents use a format that older writers reject.
 
-Namespace drop and legacy creation journals occupy a separate key scope from HTTP responses.
-They preserve request identity, principal, stable target and parent IDs, immutable
-mutation snapshots, phase revisions and bounded child-probe cursors. Phase CAS
-arbitrates publication versus abort; publishing cannot transition back to abort.
-Snapshots cannot change after their write phase starts. Probe cursors advance
-within one parent-scoped child range and reset when switching ranges.
+Legacy namespace creation, property and drop journals occupy a separate key
+scope from HTTP responses. Retained records bind the request and stable target,
+immutable mutation snapshots, phase revisions and bounded child-probe cursors.
+Recovery validates their phase transitions, snapshot identities and cursor ranges.
+Fresh namespace writes do not create these journals or payloads.
 
 Authoritative namespace reads resolve each parent/name mapping against the
 selected stable authority and full canonical identifier. Reservations, stale
@@ -265,16 +264,15 @@ again. Each response describes that request's actual removed and missing keys,
 so a repeated removal can move from removed to missing. Repeating assignments
 can overwrite a concurrent assignment to the same property. Other properties
 are retained. Old property journals remain readable by recovery, including the
-holder-bound marker dispatcher used before new updates. Creation and drop
-currently use their durable drivers, whose simplification is independent of
-the removed outer HTTP response ledger.
+holder-bound marker dispatcher. Namespace creation and drop likewise use
+resource facts without an input or response journal.
 The catalog configuration does not advertise a universal idempotency-key
 lifetime, since independent property updates do not retain operation responses.
 
-Namespace creation installs a recoverable parent/name reservation before a parent
-authority CAS. Nested admission leaves a pending-operation marker and advances only
-the mutation revision; a top-level admission conditionally validates the active
-root without replacing its management operation. Helpers resolve uncertain parent
+Legacy namespace creation recovery installs a parent/name reservation before a
+parent authority CAS. Its nested admission leaves a pending-operation marker
+and advances only the mutation revision; a top-level admission conditionally
+validates the active root without replacing its management operation. Helpers resolve uncertain parent
 writes before allowing subsequent parent mutation. Definitive admission conflicts
 may retry with fresh parent snapshots while retaining the name reservation.
 Publication selects an initial authority and replaces the reservation with its
@@ -284,16 +282,53 @@ Recursive creation helping shares one bounded phase budget. Root-admission
 backend identities include the individual creation operation, so a different
 creator cannot reuse a cached no-op CAS result from before its reservation.
 
-Namespace drop must reject a nonempty namespace. Parent admission and its recovery
-markers remain required for that strict lifecycle contract; deletion does not turn
-into an unconditional cascading retirement.
+Namespace drop must reject a nonempty namespace. Before fencing the selected
+namespace, deletion settles its child-creation occupancy, rename occupancy and
+legacy pending markers. These resource facts protect child publication and name
+moves while the parent is checked for emptiness.
 
-Namespace drop persists a Ready-to-Dropping fence before scanning its two child
-index ranges. Durable cursors advance across bounded pages; reservations are
-helped, stale namespace mappings are conditionally removed, and corruption blocks
-the proof. A live child restores Ready without changing the name epoch or property
-revision. Only completion of both ranges permits the fenced tombstone CAS.
-Terminal replay and conditional cleanup cannot delete a recreated NamespaceId.
+Each drop selects the current namespace binding once. An exact CAS changes a
+Ready authority to ownerless Dropping, advancing the admission fence and
+mutation revision; an existing Dropping authority can be helped without another
+fence. Lifecycle tag 4 identifies this state and requires no pending operation,
+child occupancy or rename; older decoders reject it. Dropping remains readable
+and counts as a live child when an ancestor is being deleted.
+
+Deletion scans both direct-child index ranges through bounded pages, validating
+range, ordering, continuations and child bindings. Reservations are helped and
+stale mappings are conditionally removed; corruption blocks the empty proof. A
+live namespace or table child restores the exact Dropping authority to Ready,
+advancing its admission fence and mutation revision while preserving properties,
+name epoch and property revision, and returns a nonempty error. Only completion
+of both ranges for the same exact Dropping authority permits its CAS to
+permanent RetiredNamespace at the same authority key. The retired slot prevents
+delayed authority creation from resurrecting that namespace identity.
+
+Scan cursors and empty proofs exist only within the current invocation. A CAS
+conflict supplies the next validated authority without a confirmation GET. A
+changed Dropping generation discards both range cursors and the old empty proof
+before rescanning; a Ready authority restored by another helper ends that drop
+attempt. Unknown write results return an error immediately without a follow-up
+read or write. An installed Dropping fence survives cancellation, timeout and
+exhausted work budgets, so a later request or mapping-repair pass can restart a
+complete proof. No input, phase, scan cursor or response record is persisted.
+Active-catalog validation brackets selection, precedes each authority transition
+and checks completion.
+
+Terminal cleanup conditionally deletes only the raw name mapping selected by
+that invocation. It cannot delete a replacement NamespaceId at the same name. A
+fresh client retry selects the current name again and may delete a recreated
+empty namespace; a nonempty replacement still fails. A missing current name
+returns absence rather than a cached terminal response. Legacy owner-bound
+lifecycle states and journals retain their recovery and exact-target cleanup.
+
+Current property and rename-admission CAS conflicts with the same-key retired
+slot report a conflict without another authority read. Retained legacy work
+treats that slot as final parent absence and aborts work not admitted before
+retirement. Cleanup still fences an absent table-head slot before removing its
+exact reservation. Captured authority payloads keep their identity and owner
+validation; a retired current parent does not make an invalid capture acceptable.
+
 Table-child probes resolve published mappings against the selected table head.
 Ordinary table creation leaves only a reserved name and its final head slot.
 Probes retire an absent slot before clearing that exact reservation, or settle
@@ -304,14 +339,14 @@ legacy lifecycle journals remain recoverable through their exact markers.
 Stable namespace identity prevents old state from becoming visible under a
 recreated namespace. Name moves occupy both participating parent
 authorities before reserving the destination; deletion helps settle or fence the
-move and returns retryable busy before taking a fresh emptiness proof. Corrupt
+move before taking a fresh emptiness proof. Corrupt
 table authority blocks the emptiness proof.
-Each listener runs a namespace-journal sweep with bounded pages, per-operation
-phase budgets and a wall-clock deadline. The sweep resumes abandoned operations
-and their conditional mapping cleanup without requiring a client retry. Catalog
-changes invalidate its cursor; cancellation preserves durable recovery evidence.
-Alternating mapping sweeps help durable reservations and conditionally remove
-published bindings disproved by authoritative state. Corruption and unresolved
+Each listener alternates bounded recovery of retained namespace journals with
+mapping repair, using local page cursors, work budgets and a wall-clock deadline.
+Mapping repair helps child-creation reservations and ownerless Dropping resources,
+including a full new child proof after an interrupted deletion, then conditionally
+removes bindings disproved by authoritative state. Catalog changes invalidate
+local cursors; cancellation preserves resource facts. Corruption and unresolved
 reservations never authorize deletion; no sweep physically removes file bytes.
 The listener exposes authenticated namespace listing, load and exists routes.
 

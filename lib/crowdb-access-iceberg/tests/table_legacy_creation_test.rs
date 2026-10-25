@@ -34,6 +34,9 @@ mod snapshot;
 #[allow(dead_code)]
 mod staging;
 
+#[path = "common/legacy_parent_retirement.rs"]
+mod parent_retirement;
+
 use crowdb_access_iceberg::{
     catalog::{CasOutcome, CatalogStore},
     commit::{TableCreatePhase, TableRecoveryKind},
@@ -426,5 +429,101 @@ async fn legacy_cleanup_preserves_an_active_newer_head_and_unrelated_table_slot(
     assert_eq!((report.progressed, report.failures.len()), (1, 0));
     for (key, bytes) in expected {
         assert_eq!(store.get(&key).await.unwrap().unwrap().bytes, bytes);
+    }
+}
+
+#[tokio::test]
+async fn legacy_admission_cleanup_accepts_only_current_parent_retirement() {
+    for native in [false, true] {
+        let (test, _, retired) = parent_retirement::retired_parent(native).await;
+        let store = &test.staged.namespace.store;
+        let key = authority_key(test.operation.context.catalog, test.staged.parent.namespace)
+            .encode()
+            .unwrap();
+        let writes = store.writes.load(Ordering::SeqCst);
+        test.staged
+            .creator()
+            .resume(test.operation.context, test.operation.identity.operation)
+            .await
+            .unwrap();
+        assert_eq!(store.writes.load(Ordering::SeqCst), writes);
+        assert_eq!(store.get(&key).await.unwrap().unwrap().bytes, retired);
+        assert_eq!(test.staged.blocks.writes.load(Ordering::SeqCst), 0);
+        let report = test
+            .recovery()
+            .recover_page(test.operation.context, TableRecoveryKind::Create, None, 2000)
+            .await
+            .unwrap();
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        assert_eq!(report.progressed, 1);
+        assert!(!store
+            .values
+            .load()
+            .contains_key(&test.operation.key().encode().unwrap()));
+        assert_eq!(store.get(&key).await.unwrap().unwrap().bytes, retired);
+        assert!(matches!(test.head(), Some(StorageRecord::RetiredTable(_))));
+    }
+}
+
+#[tokio::test]
+async fn current_parent_retirement_does_not_relax_captured_admission_validation() {
+    use crowdb_access_iceberg::{
+        catalog::CatalogError, commit::CommitPublicationError, error::ValidationError,
+    };
+    for wrong_owner in [false, true] {
+        let (mut test, mut captured, retired) = parent_retirement::retired_parent(false).await;
+        let invalid = if wrong_owner {
+            captured.pending_operation = Some(OperationId::random());
+            StorageRecord::NamespaceAuthority(Box::new(captured))
+                .encode()
+                .unwrap()
+        } else {
+            retired.clone()
+        };
+        test.operation.admission.as_mut().unwrap().after =
+            PayloadStore::new(test.staged.namespace.store.clone())
+                .put(
+                    test.operation.context.catalog,
+                    test.operation.identity.operation,
+                    &invalid,
+                )
+                .await
+                .unwrap();
+        test.persist().await;
+        let result = test
+            .staged
+            .creator()
+            .resume(test.operation.context, test.operation.identity.operation)
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(CommitPublicationError::Catalog(CatalogError::Invalid(
+                    ValidationError::Record
+                )))
+            ),
+            "wrong_owner={wrong_owner}: {result:?}"
+        );
+        let key = authority_key(test.operation.context.catalog, test.staged.parent.namespace)
+            .encode()
+            .unwrap();
+        assert_eq!(
+            test.staged
+                .namespace
+                .store
+                .get(&key)
+                .await
+                .unwrap()
+                .unwrap()
+                .bytes,
+            retired
+        );
+        assert!(test
+            .staged
+            .namespace
+            .store
+            .values
+            .load()
+            .contains_key(&test.operation.key().encode().unwrap()));
     }
 }

@@ -74,10 +74,10 @@ impl NamespaceRepository {
                     return Ok(Some(update));
                 }
                 CasOutcome::Conflict(Some(observed)) => {
-                    let StorageRecord::NamespaceAuthority(observed) =
-                        StorageRecord::decode(&key, &observed.bytes)?
-                    else {
-                        return Err(ValidationError::Record.into());
+                    let observed = match StorageRecord::decode(&key, &observed.bytes)? {
+                        StorageRecord::NamespaceAuthority(observed) => observed,
+                        StorageRecord::RetiredNamespace { .. } => return Err(CatalogError::Conflict),
+                        _ => return Err(ValidationError::Record.into()),
                     };
                     if observed.identifier != authority.identifier
                         || observed.name_epoch != authority.name_epoch
@@ -205,6 +205,21 @@ impl NamespaceRepository {
                 .await?,
             );
         }
+        if selected.as_ref().is_some_and(|authority| {
+            authority.lifecycle == super::NamespaceLifecycle::Dropping
+                && authority.pending_operation.is_none()
+        }) {
+            let creator = super::NamespaceCreator {
+                repository: self.clone(),
+                names: self.names.clone(),
+            };
+            selected = Box::pin(super::NamespaceDropper { creator }.help_resource_drop(
+                context,
+                selected.ok_or(ValidationError::Record)?,
+                &mut 16,
+            ))
+            .await?;
+        }
         let Some(pending) = selected
             .as_ref()
             .and_then(|authority| authority.pending_operation)
@@ -241,6 +256,21 @@ impl NamespaceRepository {
                 )
                 .await?,
             );
+        }
+        if selected.as_ref().is_some_and(|authority| {
+            authority.lifecycle == super::NamespaceLifecycle::Dropping
+                && authority.pending_operation.is_none()
+        }) {
+            let creator = super::NamespaceCreator {
+                repository: self.clone(),
+                names: self.names.clone(),
+            };
+            selected = Box::pin(super::NamespaceDropper { creator }.help_resource_drop(
+                context,
+                selected.ok_or(ValidationError::Record)?,
+                budget,
+            ))
+            .await?;
         }
         let Some(pending) = selected
             .as_ref()
