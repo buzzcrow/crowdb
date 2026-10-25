@@ -12,6 +12,7 @@ import subprocess
 import time
 
 from dataset_observation_resources import local_delta, resource_delta
+from dataset_observation_phases import summarize_phases
 
 ENVIRONMENT = "CROWDB_DATASET_OBSERVATION_RUN_ID"
 PREFIX = b"CROWDB_DATASET_OBSERVATION "
@@ -112,8 +113,8 @@ def run_observed(command, *, environment, output, path, run_id, capture, timeout
     document = {"schema_version": 1, "run_id": run_id, "path": path, "trials": [],
                 "deadline_seconds": timeout,
                 "scope": "client_inner_and_service_enclosing_windows_are_not_additive",
-                "not_measured": ["header_first_verified_eof_phase_times", "transport_receive_frames_bytes",
-                                 "http_wire_frames_bytes", "layout_queries", "total_payload_copy_bytes",
+                "not_measured": ["all_runtime_receive_frames_bytes",
+                                 "http_wire_frames_bytes", "total_payload_copy_bytes",
                                  "background_gc_attribution", "per_trial_memory_peaks", "per_request_server_cpu",
                                  "control_and_chunkdb_transport_sent_counters"]}
     child_environment = dict(environment, **{ENVIRONMENT: run_id})
@@ -179,6 +180,10 @@ def run_observed(command, *, environment, output, path, run_id, capture, timeout
                                 or result.get("errors") != 0):
                             raise ObservationError("measured completion contract changed")
                         pending.update(result=result, after=capture(child.pid))
+                        try:
+                            pending["phase_summary"] = summarize_phases(result, path, trial["concurrency"], SIZES)
+                        except ValueError as error:
+                            raise ObservationError(str(error)) from error
                         pending["enclosing_delta"] = resource_delta(pending["before"], pending["after"])
                         pending["local_delta"] = local_delta(pending["local_before"], pending["local_after"])
                         document["trials"].append(pending)

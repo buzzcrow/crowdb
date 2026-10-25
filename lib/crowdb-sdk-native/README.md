@@ -145,10 +145,14 @@ async fn read_object(seeds: Vec<String>) -> Result<(), Box<dyn std::error::Error
   it. Finishing an RPC or stream does not return caller-held credits. A read
   waiting for held capacity resumes after release or returns its deadline/
   cancellation outcome. Unknown external owners use an accounted bounded copy.
-- `resources().status()` reports live charges, high water and compatibility
-  copy bytes. `topology()` exposes current transport counters and separately
-  versioned catalog/disk observations. `refresh_topology(context)` explicitly
-  refreshes authorities; it does not create a globally atomic snapshot.
+- `resources().status()` reports live charges, lifetime high water and
+  compatibility copy bytes. `read_flow_metrics()` snapshots cumulative layout,
+  stream-credit, storage-wait and frame-decode counters shared by writer-policy
+  groups. It performs no RPC or reset. These are not per-request counters,
+  all-copy totals or per-trial memory peaks.
+- `topology()` exposes current transport counters and separately versioned
+  catalog/disk observations. `refresh_topology(context)` explicitly refreshes
+  authorities; it does not create a globally atomic snapshot.
 - `object_locality` resolves bounded extents, layout revisions and fragment
   locations for a selected object. Observations aid scheduling and prefetch;
   current routing/fencing still decides execution. Old views grant no placement
@@ -198,4 +202,10 @@ separate HTTP/native semantic comparison and OCI consumers with no RDMA device.
 The Dataset workload compares the same immutable Snapshot through HTTP, native
 Rust and installed native Python. Its measurements and scope are retained in
 the [Access acceptance record](../../app/crowdb-access-server/tests/README.md#dataset-httpnative-comparison).
+Observed trials retain cumulative client-visible batch-header, first nonempty
+payload delivery and verified-EOF times alongside the original completion time.
+Empty payloads have no first-delivery time. Instrumentation is opt-in and its
+clock/capture work remains in the measured client window. Transport groups stay
+separate; service windows include background work. All-copy totals, TCP receive
+traffic, exact per-trial memory peaks and GC CPU attribution remain unmeasured.
 Do not overlap these owned fixtures or run builds during measured trials.

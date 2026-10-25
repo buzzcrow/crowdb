@@ -14,27 +14,43 @@ import crowdb_dataset_native as native
 from real_consumer import SIZES
 
 
-def read(client, snapshot, index):
+def read(client, snapshot, index, phases=False):
+    phase = dict(index=index, first_payload_us=None, bytes=0, nonempty_deliveries=0,
+                 explicit_consumer_copy_bytes=0) if phases else None
     start = time.perf_counter_ns()
     batch = client.read_batch(snapshot, [list(f"size-{index}".encode())], ["value"])
+    if phase is not None:
+        phase["header_us"] = (time.perf_counter_ns() - start) // 1000
     header = json.loads(batch.header)
     assert bytes(header["snapshot"]) == snapshot and len(header["fields"]) == 1
     length = 0
     while (lease := batch.next()) is not None:
+        if phase is not None and len(lease) != 0:
+            if phase["first_payload_us"] is None:
+                phase["first_payload_us"] = (time.perf_counter_ns() - start) // 1000
+            phase["nonempty_deliveries"] += 1
         data = lease.to_bytes()
         assert data == bytes([index]) * len(data)
         length += len(data)
+        if phase is not None:
+            phase["explicit_consumer_copy_bytes"] += len(data)
+    if phase is not None:
+        phase["verified_eof_us"] = (time.perf_counter_ns() - start) // 1000
     assert length == SIZES[index]
-    return (time.perf_counter_ns() - start) // 1000
+    complete_us = (time.perf_counter_ns() - start) // 1000
+    if phase is None:
+        return complete_us
+    phase.update(bytes=length, complete_us=complete_us)
+    return complete_us, phase
 
 
-def trial(client, snapshot, concurrency, rounds):
+def trial(client, snapshot, concurrency, rounds, phases=False):
     def lane(number):
         observations = []
         for repeat in range(rounds):
             for order in range(len(SIZES)):
                 index = (order * 5 + number + repeat) % len(SIZES)
-                observations.append((index, read(client, snapshot, index)))
+                observations.append((index, read(client, snapshot, index, phases)))
         return observations
 
     cpu = time.process_time()
@@ -44,17 +60,26 @@ def trial(client, snapshot, concurrency, rounds):
     seconds = time.perf_counter() - start
     cpu = time.process_time() - cpu
     times = [[] for _ in SIZES]
+    observations = []
     for result in results:
-        for index, micros in result:
+        for index, observation in result:
+            if phases:
+                micros, phase = observation
+                observations.append(phase)
+            else:
+                micros = observation
             times[index].append(micros)
     latencies = []
     for size, values in zip(SIZES, times):
         values.sort()
         latencies.append(dict(bytes=size, count=len(values), p50_us=values[(len(values)-1)//2],
                               p99_us=values[(len(values)*99+99)//100-1]))
-    return dict(seconds=seconds, completed_requests=concurrency * rounds * len(SIZES),
-                bytes=concurrency * rounds * sum(SIZES), cpu_ticks=cpu * os.sysconf("SC_CLK_TCK"),
-                rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, latency=latencies, errors=0)
+    result = dict(seconds=seconds, completed_requests=concurrency * rounds * len(SIZES),
+                  bytes=concurrency * rounds * sum(SIZES), cpu_ticks=cpu * os.sysconf("SC_CLK_TCK"),
+                  rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, latency=latencies, errors=0)
+    if phases:
+        result["read_phases"] = dict(schema_version=1, samples=observations)
+    return result
 
 
 
@@ -114,7 +139,7 @@ def main():
             for repeat in range(3):
                 observation = observation_trial(snapshot.hex(), concurrency, repeat)
                 observe(observation, "ready", "go", runtime)
-                result = trial(client, snapshot, concurrency, 16)
+                result = trial(client, snapshot, concurrency, 16, phases=observation is not None)
                 observe(observation, "done", "ack", runtime, result)
                 data = bytes([93]) * 1024 * 1024
                 start = time.perf_counter_ns()

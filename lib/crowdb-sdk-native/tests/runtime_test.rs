@@ -74,3 +74,24 @@ async fn writer_groups_keep_chunk_purposes_separate_and_share_admission() {
         Err(Error::Shutdown)
     ));
 }
+
+#[tokio::test]
+async fn read_flow_snapshot_is_local_and_preserves_resource_charges_and_writer_groups() {
+    let runtime = storage::runtime().await;
+    let dataset = runtime
+        .with_writer_policy(&SmallWritePolicy::new(ChunkType::Dataset))
+        .unwrap();
+    let held = runtime.resources().retain_vec(vec![7; 16], 1, 1, 0, 0).unwrap();
+    let before = runtime.resources().status();
+    let first = runtime.read_flow_metrics();
+    assert_eq!(first, crowdb_chunk_client::ReadFlowMetricsSnapshot::default());
+    assert_eq!(runtime.read_flow_metrics(), first);
+    assert_eq!(dataset.read_flow_metrics(), first);
+    let after = runtime.resources().status();
+    assert_eq!(after.held_bytes, before.held_bytes);
+    assert_eq!(after.held_bytes_high_water, before.held_bytes_high_water);
+    assert_eq!(runtime.writer_group_count(), 2);
+    assert_eq!(held.as_slice(), &[7; 16]);
+    drop(held);
+    runtime.shutdown().await.unwrap();
+}

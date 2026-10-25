@@ -18,7 +18,8 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/sdk"))
 from dataset_observation import ENVIRONMENT, LINE_LIMIT, ORDER, PREFIX, SIZES, ObservationError, _Child, run_observed
-from dataset_observation_resources import OwnedSources, local_delta, resource_delta
+from dataset_observation_resources import OwnedSources, local_delta, resource_delta, READ_FLOW_COUNTERS, RDMA_COUNTERS
+from dataset_observation_phases import summarize_phases
 
 RUN, SNAPSHOT = "1" * 32, "2" * 32
 
@@ -52,13 +53,22 @@ def local(value=1, python=False):
                                compatibility_copy_bytes=value), unavailable={})
 
 
+def measured_result(concurrency, path="native-rust"):
+    samples = [dict(index=index, header_us=1, first_payload_us=2 if size else None,
+                    verified_eof_us=3, complete_us=4, bytes=size, nonempty_deliveries=int(size != 0),
+                    explicit_consumer_copy_bytes=size if path == "native-python" else 0)
+               for _ in range(concurrency * 16) for index, size in enumerate(SIZES)]
+    return dict(completed_requests=len(samples), bytes=concurrency * 16 * sum(SIZES), errors=0,
+                latency=[dict(bytes=size, count=concurrency * 16, p50_us=4, p99_us=4) for size in SIZES],
+                read_phases=dict(schema_version=1, samples=samples))
+
+
 def messages(path="native-rust"):
     for concurrency, repeat in ORDER:
         trial = dict(run_id=RUN, path=path, concurrency=concurrency, repeat=repeat, snapshot=SNAPSHOT)
         yield dict(v=1, event="ready", trial=trial, observation=local())
         yield dict(v=1, event="done", trial=trial, observation=local(2),
-                   result=dict(completed_requests=concurrency * 16 * len(SIZES),
-                               bytes=concurrency * 16 * sum(SIZES), errors=0))
+                   result=measured_result(concurrency, path))
 
 
 def encoded(record):
@@ -383,6 +393,99 @@ class TestRealPythonChildHelpers(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "line limit"):
             namespace["observe"](trial, "ready", "go", runtime)
         self.assertEqual(namespace["sys"].stdout.getvalue(), "")
+
+
+class TestPhases(unittest.TestCase):
+    def test_fixed_matrix_keeps_original_completion_and_no_first_payload_for_empty(self):
+        for path in ("http", "native-rust", "native-python"):
+            for concurrency in (1, 3):
+                result = measured_result(concurrency, path)
+                summary = summarize_phases(result, path, concurrency, SIZES)
+                self.assertEqual(sum(row["count"] for row in summary["sizes"]), concurrency * 128)
+                empty = summary["sizes"][0]["cumulative_from_start"]["first_payload_us"]
+                self.assertEqual(empty, dict(count=0, p50_us=None, p99_us=None))
+                self.assertEqual(summary["explicit_consumer_copy_bytes"], result["bytes"] if path == "native-python" else 0)
+                self.assertIn("not_additive", summary["timing"])
+
+    def test_missing_phase_bad_order_copy_counts_and_boolean_timings_are_rejected(self):
+        changes = [lambda result: result.pop("read_phases"),
+                   lambda result: result["read_phases"].update(schema_version=True),
+                   lambda result: result["read_phases"]["samples"].pop(),
+                   lambda result: result["read_phases"]["samples"][1].update(first_payload_us=None),
+                   lambda result: result["read_phases"]["samples"][0].update(first_payload_us=0),
+                   lambda result: result["read_phases"]["samples"][1].update(verified_eof_us=0),
+                   lambda result: result["read_phases"]["samples"][1].update(complete_us=2),
+                   lambda result: result["read_phases"]["samples"][1].update(explicit_consumer_copy_bytes=128),
+                   lambda result: result["read_phases"]["samples"][1].update(header_us=True),
+                   lambda result: result["latency"][0].update(p50_us=True)]
+        for change in changes:
+            result = measured_result(1)
+            change(result)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                summarize_phases(result, "native-rust", 1, SIZES)
+
+    def test_exact_read_flow_gauges_and_rdma_deltas_do_not_become_all_copy_or_trial_peaks(self):
+        first, last = local(1), local(3)
+        for index, value in enumerate((first, last), 1):
+            value["resources"]["read_flow"] = {key: index for key in READ_FLOW_COUNTERS}
+            value["resources"].update(requests=0, producer_bytes=0, producer_bytes_high_water=4096, held_bytes=0)
+            for group in ("metadata", "aggregate"):
+                value["topology"]["metadata"][group]["transport"]["rdma"] = dict(
+                    ready=True, device="fake-hca", gid="fake-gid", generation=1, protocol_version=1,
+                    wire_layout="control_data", **{key: index * 10 for key in RDMA_COUNTERS})
+        result = local_delta(first, last)
+        self.assertEqual(result["read_flow"]["values"]["layout_queries"], 1)
+        self.assertEqual(result["read_flow"]["values"]["stream_credit_wait_ns"], 1)
+        self.assertEqual(result["groups"]["metadata"]["rdma"]["values"]["rpc_frames_received"], 10)
+        self.assertEqual(result["resource_observations"]["after"]["held_bytes_high_water"], dict(value=4096))
+        self.assertIn("per_trial_held_peak", result["not_measured"])
+        del last["resources"]["read_flow"]["layout_queries"]
+        last["resources"]["read_flow"]["stream_credit_wait_ns"] = 0
+        last["topology"]["metadata"]["metadata"]["transport"]["rdma"]["generation"] = 2
+        result = local_delta(first, last)
+        self.assertIn("layout_queries", result["read_flow"]["unavailable"])
+        self.assertIn("stream_credit_wait_ns", result["read_flow"]["unavailable"])
+        self.assertIn("unavailable", result["groups"]["metadata"]["rdma"])
+        self.assertIn("unavailable", result["groups"]["data"]["rdma"])
+
+    def python_read(self, size_index, *, phases, fail_at_eof=False, corrupt=False):
+        source = ROOT / "lib/crowdb-sdk-native-python/tests/workload.py"
+        node = next(node for node in ast.parse(source.read_text()).body
+                    if isinstance(node, ast.FunctionDef) and node.name == "read")
+        clock = TestClock(1000)
+        snapshot, size = bytes.fromhex(SNAPSHOT), SIZES[size_index]
+        data = bytes([size_index]) * size
+        class Lease:
+            def __init__(self, data): self.data = data
+            def __len__(self): return len(self.data)
+            def to_bytes(self): return b"wrong" if corrupt else self.data
+        class Batch:
+            header = json.dumps(dict(snapshot=list(snapshot), fields=[{}]))
+            def __init__(self): self.values = [Lease(data)] if size else []
+            def next(self):
+                if self.values: return self.values.pop(0)
+                if fail_at_eof: raise RuntimeError("late EOF failure")
+                return None
+        namespace = dict(time=SimpleNamespace(perf_counter_ns=clock), json=json, SIZES=SIZES)
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), namespace)
+        client = SimpleNamespace(read_batch=lambda *args: Batch())
+        return namespace["read"](client, snapshot, size_index, phases), clock.value // 1000
+
+    def test_actual_python_reader_opt_in_clock_points_copy_and_standalone(self):
+        plain, calls = self.python_read(1, phases=False)
+        self.assertIsInstance(plain, int)
+        self.assertEqual(calls, 2)
+        (complete, phase), calls = self.python_read(1, phases=True)
+        self.assertEqual(calls, 5)
+        self.assertEqual((phase["header_us"], phase["first_payload_us"], phase["verified_eof_us"], complete), (1, 2, 3, 4))
+        self.assertEqual(phase["explicit_consumer_copy_bytes"], SIZES[1])
+        (_, empty), calls = self.python_read(0, phases=True)
+        self.assertEqual(calls, 4)
+        self.assertIsNone(empty["first_payload_us"])
+        with self.assertRaisesRegex(RuntimeError, "EOF"):
+            self.python_read(1, phases=True, fail_at_eof=True)
+        with self.assertRaises(AssertionError):
+            self.python_read(1, phases=True, corrupt=True)
 
 
 if __name__ == "__main__":

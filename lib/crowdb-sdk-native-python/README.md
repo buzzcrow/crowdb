@@ -57,9 +57,13 @@ runtime.close()
   leases remain readable after cancellation, facade close and runtime close.
   Closing a facade rejects new calls only on that facade; existing batches and
   other facades retain their independently owned lifetimes.
-- `runtime.status()` reports request and memory admission, high water and
-  compatibility-copy bytes. `runtime.topology(refresh=True)` observes metadata
-  and data transport state; these hints cannot override routing authority.
+- `runtime.status()` reports current request and memory admission, lifetime
+  producer/held high water, compatibility-copy bytes and cumulative `read_flow`
+  layout, stream-credit, storage-wait and frame-decode counters. Writer-policy
+  groups share the read counters. Reading status performs no RPC or reset;
+  these are not per-request counts, all-copy totals or per-trial memory peaks.
+  `runtime.topology(refresh=True)` observes metadata and data transport state;
+  these hints cannot override routing authority.
 - `dataset.call(json, timeout=30)` uses a tagged `op` command and the existing
   Rust Dataset JSON schema. Commands cover create/open/snapshot/head, complete
   Snapshot/Split preparation, explicit head updates, stateless read binding,
@@ -107,11 +111,20 @@ HTTP is an explicitly selected comparison client in this test; the native
 runtime does not use it for fallback.
 
 Each workload trial contains only 16 or 48 latency observations per size.
-Treat p99 as a short workload observation. Client CPU and RSS are reported per
-process; the HTTP phase's service CPU counters also include initial publication.
-Service `memory.peak` is cumulative across the shared fixture, not an independent
-peak for each client path. The pinned same-host comparison does not establish
-isolated production performance.
+Treat p99 as a short workload observation. Observed trials retain cumulative
+client-visible batch-header, first nonempty lease delivery and verified-EOF times
+alongside the original completion time. Empty payloads have no first delivery.
+The timings are not additive or wire first-byte observations; opt-in clocks and
+capture work remain in the client window. Explicit `Lease.to_bytes()` copy bytes
+are counted separately from SDK compatibility-copy bytes and do not cover all
+copies or Python validation allocations.
+
+Client CPU and RSS are reported per process; `rss_kib` and service `memory.peak`
+retain lifetime high-water semantics. Service windows enclose foreground and
+background work, including GC, and cannot be added to the client inner window.
+TCP receive traffic, exact per-trial peaks and GC CPU attribution remain
+unmeasured. The pinned same-host comparison does not establish isolated
+production performance.
 
 Run the explicit local-HCA functional profile with a current service image and
 the host's actual RDMA address and device:

@@ -75,6 +75,13 @@ separate observation ages and are not a globally atomic topology epoch. An
 independent refresh with unknown observation time reports unknown freshness.
 Catalog regression or invalid pages cannot replace a valid cached generation.
 
+`ClientRuntime::read_flow_metrics` snapshots existing cumulative layout, stream
+credit, storage-wait and frame-decode counters on the shared chunk reader. Writer
+policy groups share these counters. Reading them performs no RPC or reset; a
+delta covers the reader's concurrent work, not one request. Resource status
+reports current charges and lifetime high water separately from compatibility
+copy bytes. These observations do not measure all copies or per-trial peaks.
+
 `ResolvedObject` binds one published object record to a tenant and metadata
 authority. `object_locality` returns a bounded page of logical extents with
 layout revisions, fragment roles and rack/node/disk observations. Inspection

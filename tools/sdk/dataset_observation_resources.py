@@ -146,8 +146,8 @@ def resource_delta(before, after):
 
 
 def local_delta(before, after):
-    """Only selected local sent counters, never repeated process RUSAGE sums."""
-    result = {"scope": "selected_local_transport_sent_only", "groups": {}}
+    """Selected transport and shared-reader counters, never process RUSAGE sums."""
+    result = {"scope": "selected_local_transport_and_shared_reader_cumulative", "groups": {}}
     for group in ("metadata", "aggregate", "data"):
         def selected(value):
             topology = value.get("topology") or {}
@@ -170,9 +170,59 @@ def local_delta(before, after):
             continue
         counters = _delta(first, last, ("rpc_frames_sent", "wire_bytes_sent", "writev_calls",
                                        "writev_progress_calls", "send_queue_rejects"))
-        counters["not_measured"] = ["receive_frames", "receive_bytes", "all_native_rpc", "layout_queries"]
+        counters["not_measured"] = ["receive_frames", "receive_bytes", "all_native_rpc"]
+        counters["rdma"] = _rdma_delta(first.get("rdma"), last.get("rdma"))
         result["groups"][group] = counters
     result["resources"] = _delta(before.get("resources") or {}, after.get("resources") or {},
                                   ("compatibility_copy_bytes",))
-    result["not_measured"] = ["all_copy_bytes", "per_trial_held_peak", "held_wait_ns"]
+    resources_before, resources_after = before.get("resources") or {}, after.get("resources") or {}
+    gauges = ("requests", "producer_bytes", "producer_bytes_high_water", "held_bytes", "held_bytes_high_water")
+    result["resource_observations"] = {
+        "scope": "current_gauges_and_lifetime_high_water_not_trial_peak",
+        "before": {key: _gauge(resources_before, key) for key in gauges},
+        "after": {key: _gauge(resources_after, key) for key in gauges},
+    }
+    first, last = resources_before.get("read_flow"), resources_after.get("read_flow")
+    result["read_flow"] = ({"unavailable": "not_exposed_or_capture_failed"}
+                           if not isinstance(first, dict) or not isinstance(last, dict) else
+                           {"scope": "shared_reader_cumulative_not_per_request",
+                            **_delta(first, last, READ_FLOW_COUNTERS)})
+    result["not_measured"] = ["all_copy_bytes", "per_trial_held_peak", "held_wait_ns",
+                              "tcp_receive_frames_bytes", "other_control_transports"]
     return result
+
+
+READ_FLOW_COUNTERS = (
+    "location_normalizations", "locations_examined", "range_locations_examined", "stream_windows",
+    "stream_units_completed", "stream_out_of_order", "stream_credit_stalls", "stream_credit_wait_ns",
+    "stream_bytes_reserved", "stream_bytes_released", "layout_queries", "layout_query_wait_ns",
+    "strip_read_wait_ns", "chunk_read_wait_ns", "frame_decode_wait_ns", "frame_parse_wait_ns",
+)
+RDMA_COUNTERS = (
+    "rpc_frames_sent", "rpc_frames_received", "wire_bytes_sent", "wire_bytes_received", "direct_sends",
+    "direct_payload_bytes", "copied_payload_bytes", "copied_aggregate_payload_bytes",
+    "copied_staging_payload_bytes", "copied_framing_control_bytes", "control_fragments_sent",
+    "control_fragments_received", "copied_control_send_bytes", "copied_control_receive_bytes",
+    "control_send_stalls", "control_receive_stalls",
+)
+
+
+def _gauge(source, key):
+    value = source.get(key)
+    return ({"value": value} if type(value) is int and value >= 0 else
+            {"unavailable": "missing_or_invalid_gauge"})
+
+
+def _rdma_delta(first, last):
+    if not isinstance(first, dict) or not isinstance(last, dict):
+        return {"unavailable": "rdma_not_active_or_not_exposed"}
+    identity = ("device", "gid", "generation", "protocol_version", "wire_layout")
+    if (first.get("ready") is not True or last.get("ready") is not True
+            or any(type(record.get(key)) is not str or not record[key]
+                   for record in (first, last) for key in ("device", "gid", "wire_layout"))
+            or any(type(record.get(key)) is not int or record[key] < 0
+                   for record in (first, last) for key in ("generation", "protocol_version"))
+            or any(key not in first or key not in last or first[key] != last[key] for key in identity)):
+        return {"unavailable": "rdma_not_ready_or_identity_changed"}
+    return {"scope": "selected_rdma_transport_only_not_all_runtime_traffic",
+            **_delta(first, last, RDMA_COUNTERS)}

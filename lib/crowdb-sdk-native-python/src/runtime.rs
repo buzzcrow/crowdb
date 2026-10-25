@@ -142,6 +142,8 @@ impl NativeRuntime {
         let s = self.resources.native().resources().status();
         Ok(
             serde_json::json!({"closed":s.closed,"requests":s.requests,"producer_bytes":s.producer_bytes,
+            "producer_bytes_high_water":s.producer_bytes_high_water,
+            "read_flow":self.resources.native().read_flow_metrics(),
             "held_bytes":s.held_bytes,"held_bytes_high_water":s.held_bytes_high_water,
             "compatibility_copy_bytes":s.compatibility_copy_bytes})
             .to_string(),

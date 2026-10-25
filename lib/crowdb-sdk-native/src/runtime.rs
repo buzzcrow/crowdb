@@ -94,6 +94,13 @@ impl ClientRuntime {
         &self.resources
     }
 
+    /// Snapshots cumulative layout, streaming-credit and decode work on the shared reader.
+    /// Writer-policy groups share these counters; snapshots perform no RPC or reset.
+    #[must_use]
+    pub fn read_flow_metrics(&self) -> crowdb_chunk_client::ReadFlowMetricsSnapshot {
+        self.storage.chunks.read_flow_metrics()
+    }
+
     /// Allocates unique producer storage from this runtime's data transport.
     /// # Errors
     /// Returns unsupported allocation, exhausted actual-capacity budget or shutdown.

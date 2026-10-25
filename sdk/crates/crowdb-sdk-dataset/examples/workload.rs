@@ -45,11 +45,11 @@ async fn main() -> Result<(), Failure> {
         return Ok(());
     }
     for concurrency in [1, 3] {
-        trial(&client, &snapshot, concurrency, 2).await?;
+        trial(&client, &snapshot, concurrency, 2, false).await?;
         for repeat in 0..3 {
             let observation = observation_trial("http", &snapshot, concurrency, repeat)?;
             observe(observation.as_ref(), "ready", "go", None, local_observation)?;
-            let result = trial(&client, &snapshot, concurrency, 16).await?;
+            let result = trial(&client, &snapshot, concurrency, 16, observation.is_some()).await?;
             observe(
                 observation.as_ref(),
                 "done",
@@ -123,7 +123,13 @@ async fn prepare(client: &DatasetClient) -> Result<String, Failure> {
     Ok(published.id)
 }
 
-async fn read(client: &DatasetClient, snapshot: &str, index: usize) -> Result<u64, Failure> {
+async fn read(
+    client: &DatasetClient,
+    snapshot: &str,
+    index: usize,
+    phases: bool,
+) -> Result<ReadObservation, Failure> {
+    let mut phase = phases.then(ReadPhase::new);
     let start = Instant::now();
     let mut body = client
         .stream_batch(&BatchRequest {
@@ -136,11 +142,17 @@ async fn read(client: &DatasetClient, snapshot: &str, index: usize) -> Result<u6
     while let Some(event) = body.next_event().await? {
         match event {
             BatchEvent::Header(header) => {
+                if let Some(phase) = &mut phase {
+                    phase.header_us = u64::try_from(start.elapsed().as_micros())?;
+                }
                 if header.snapshot != snapshot || header.fields.len() != 1 {
                     return Err("unexpected snapshot/projection".into());
                 }
             }
             BatchEvent::Data(data) => {
+                if let Some(phase) = &mut phase {
+                    phase.delivered(start, data.len())?;
+                }
                 if data.iter().any(|byte| usize::from(*byte) != index) {
                     return Err("payload mismatch".into());
                 }
@@ -149,10 +161,17 @@ async fn read(client: &DatasetClient, snapshot: &str, index: usize) -> Result<u6
             _ => {}
         }
     }
+    if let Some(phase) = &mut phase {
+        phase.verified_eof_us = u64::try_from(start.elapsed().as_micros())?;
+    }
     if length != SIZES[index] {
         return Err("payload length mismatch".into());
     }
-    Ok(u64::try_from(start.elapsed().as_micros())?)
+    let complete_us = u64::try_from(start.elapsed().as_micros())?;
+    if let Some(phase) = &mut phase {
+        phase.bytes = length;
+    }
+    Ok(ReadObservation { complete_us, phase })
 }
 
 async fn trial(
@@ -160,6 +179,7 @@ async fn trial(
     snapshot: &str,
     concurrency: usize,
     rounds: usize,
+    phases: bool,
 ) -> Result<serde_json::Value, Failure> {
     let cpu = cpu_ticks()?;
     let start = Instant::now();
@@ -172,16 +192,20 @@ async fn trial(
             for round in 0..rounds {
                 for order in 0..SIZES.len() {
                     let index = (order * 5 + lane + round) % SIZES.len();
-                    observations.push((index, read(&client, &snapshot, index).await?));
+                    observations.push((index, read(&client, &snapshot, index, phases).await?));
                 }
             }
             Ok::<_, Failure>(observations)
         });
     }
     let mut times: [Vec<u64>; 8] = std::array::from_fn(|_| Vec::new());
+    let mut observations = Vec::new();
     while let Some(result) = tasks.join_next().await {
-        for (index, micros) in result?? {
-            times[index].push(micros);
+        for (index, observation) in result?? {
+            times[index].push(observation.complete_us);
+            if let Some(phase) = observation.phase {
+                observations.push((index, observation.complete_us, phase));
+            }
         }
     }
     let seconds = start.elapsed().as_secs_f64();
@@ -194,10 +218,56 @@ async fn trial(
     }
     let requests = concurrency * rounds * SIZES.len();
     let bytes = concurrency * rounds * SIZES.iter().sum::<usize>();
-    Ok(
-        json!({"seconds":seconds, "completed_requests":requests, "bytes":bytes,
-        "cpu_ticks":cpu, "rss_kib":rss_kib()?, "latency":latency, "errors":0}),
-    )
+    let mut result = json!({"seconds":seconds, "completed_requests":requests, "bytes":bytes,
+        "cpu_ticks":cpu, "rss_kib":rss_kib()?, "latency":latency, "errors":0});
+    if phases {
+        let samples: Vec<_> = observations
+            .into_iter()
+            .map(|(index, complete_us, phase)| {
+                json!({
+            "index":index,"header_us":phase.header_us,"first_payload_us":phase.first_payload_us,
+            "verified_eof_us":phase.verified_eof_us,"complete_us":complete_us,"bytes":phase.bytes,
+            "nonempty_deliveries":phase.nonempty_deliveries,"explicit_consumer_copy_bytes":0})
+            })
+            .collect();
+        result["read_phases"] = json!({"schema_version":1,"samples":samples});
+    }
+    Ok(result)
+}
+
+struct ReadObservation {
+    complete_us: u64,
+    phase: Option<ReadPhase>,
+}
+
+struct ReadPhase {
+    header_us: u64,
+    first_payload_us: Option<u64>,
+    verified_eof_us: u64,
+    bytes: usize,
+    nonempty_deliveries: usize,
+}
+
+impl ReadPhase {
+    fn new() -> Self {
+        Self {
+            header_us: 0,
+            first_payload_us: None,
+            verified_eof_us: 0,
+            bytes: 0,
+            nonempty_deliveries: 0,
+        }
+    }
+
+    fn delivered(&mut self, start: Instant, length: usize) -> Result<(), Failure> {
+        if length != 0 {
+            if self.first_payload_us.is_none() {
+                self.first_payload_us = Some(u64::try_from(start.elapsed().as_micros())?);
+            }
+            self.nonempty_deliveries += 1;
+        }
+        Ok(())
+    }
 }
 
 fn cpu_ticks() -> Result<u64, Failure> {
