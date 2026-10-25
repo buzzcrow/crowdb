@@ -45,7 +45,7 @@ async fn every_unknown_stops_without_readback_and_retries_use_current_resources(
             .execute(&test.request)
             .await
             .is_err());
-        assert_eq!(store.reads.load(Ordering::SeqCst) - reads, 11);
+        assert_eq!(store.reads.load(Ordering::SeqCst) - reads, 7);
         assert_eq!(store.writes.load(Ordering::SeqCst) - writes, failed);
         store.fail_after.store(0, Ordering::SeqCst);
         let marker = test.marker();

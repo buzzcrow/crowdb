@@ -3,12 +3,12 @@
 
 use super::{TableLifecycleAction, TableLifecycleRequest, TableLifecycles, TablePurgeTask};
 use crate::{
-    catalog::{check_context, CasOutcome, CatalogError},
+    catalog::{check_context, CasOutcome, CatalogError, StoredValue},
     error::ValidationError,
     key::OperationId,
     operation::mutation_identity,
     record::StorageRecord,
-    table::{name_key, storage_head_key, TableHead, TableLifecycle, TableRepository},
+    table::{name_key, storage_head_key, SelectedTable, TableHead, TableLifecycle, TableRepository},
 };
 
 impl TableLifecycles {
@@ -16,13 +16,9 @@ impl TableLifecycles {
         let TableLifecycleAction::Drop { purge_requested } = request.action else {
             return Err(ValidationError::Record.into());
         };
-        let Some(parent) = self.namespaces.load(request.context, &request.namespace).await? else {
-            return Ok(404);
-        };
-        let Some(selected) = TableRepository::new(self.store.clone())
-            .select(request.context, parent.namespace, &request.name)
-            .await?
-        else {
+        check_context(self.store.as_ref(), request.context).await?;
+        let Some((selected, source)) = self.select_drop_target(request).await? else {
+            check_context(self.store.as_ref(), request.context).await?;
             return Ok(404);
         };
         let head = selected.head;
@@ -30,15 +26,6 @@ impl TableLifecycles {
             return Err(CatalogError::Busy);
         }
         let name = name_key(head.catalog, head.namespace, &head.name)?;
-        let Some(source) = self.names.get(&name.encode()?).await? else {
-            return Err(CatalogError::Conflict);
-        };
-        let StorageRecord::TableMapping(mapping) = StorageRecord::decode(&name, &source.bytes)? else {
-            return Err(ValidationError::Record.into());
-        };
-        if !mapping.resolves(&head) {
-            return Err(CatalogError::Conflict);
-        }
         let mut candidate = head.clone();
         candidate.lifecycle = TableLifecycle::Tombstone;
         candidate.operation_fence = candidate
@@ -77,6 +64,22 @@ impl TableLifecycles {
             .await?;
         check_context(self.store.as_ref(), request.context).await?;
         Ok(204)
+    }
+
+    async fn select_drop_target(
+        &self,
+        request: &TableLifecycleRequest,
+    ) -> Result<Option<(SelectedTable, StoredValue)>, CatalogError> {
+        let Some(parent) = self
+            .namespaces
+            .resolve(request.context, &request.namespace)
+            .await?
+        else {
+            return Ok(None);
+        };
+        TableRepository::new(self.store.clone())
+            .resolve_with_mapping(request.context, parent.namespace, &request.name)
+            .await
     }
 
     async fn prepare_purge(

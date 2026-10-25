@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::{TableHead, TableMappingState};
 use crate::{
-    catalog::{check_context, CatalogContext, CatalogError, CatalogStore},
+    catalog::{check_context, CatalogContext, CatalogError, CatalogStore, StoredValue},
     error::ValidationError,
     file::{ContentFormat, FileKind, FileRecord, FileRepository},
     key::NamespaceId,
@@ -91,11 +91,24 @@ impl TableRepository {
         namespace: NamespaceId,
         name: &str,
     ) -> Result<Option<SelectedTable>, CatalogError> {
+        Ok(self
+            .resolve_with_mapping(context, namespace, name)
+            .await?
+            .map(|(selected, _)| selected))
+    }
+
+    // Composite requests guard their context and retain the observed name bytes for exact mutations.
+    pub(super) async fn resolve_with_mapping(
+        &self,
+        context: CatalogContext,
+        namespace: NamespaceId,
+        name: &str,
+    ) -> Result<Option<(SelectedTable, StoredValue)>, CatalogError> {
         let key = super::name_key(context.catalog, namespace, name)?;
-        let Some(value) = self.store.get(&key.encode()?).await? else {
+        let Some(source) = self.store.get(&key.encode()?).await? else {
             return Ok(None);
         };
-        let StorageRecord::TableMapping(mapping) = StorageRecord::decode(&key, &value.bytes)? else {
+        let StorageRecord::TableMapping(mapping) = StorageRecord::decode(&key, &source.bytes)? else {
             return Err(ValidationError::Record.into());
         };
         if mapping.state != TableMappingState::Published {
@@ -128,9 +141,12 @@ impl TableRepository {
         {
             return Err(ValidationError::IdentityMismatch.into());
         }
-        Ok(Some(SelectedTable {
-            head: *head,
-            metadata,
-        }))
+        Ok(Some((
+            SelectedTable {
+                head: *head,
+                metadata,
+            },
+            source,
+        )))
     }
 }
