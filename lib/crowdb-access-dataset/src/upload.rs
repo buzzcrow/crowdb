@@ -10,7 +10,9 @@ mod ownership;
 mod parts;
 mod read;
 pub use read::UploadReadDescriptor;
+mod record;
 mod retirement;
+use record::{decode_session, encode_session};
 mod stream;
 mod verification;
 pub use stream::VerifiedUploadPart;
@@ -149,7 +151,7 @@ impl DatasetUploads {
         };
         match self
             .store
-            .compare_exchange(location, None, &encode(&record)?)
+            .compare_exchange(location, None, &encode_session(&record)?)
             .await?
         {
             CasOutcome::Applied(_) => Ok(record),
@@ -263,28 +265,6 @@ fn encode<T: Serialize>(record: &T) -> Result<Vec<u8>, UploadError> {
 }
 fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, UploadError> {
     serde_json::from_slice(bytes).map_err(|_| UploadError::Integrity)
-}
-fn decode_session(bytes: &[u8]) -> Result<UploadRecord, UploadError> {
-    let mut record: UploadRecord = decode(bytes)?;
-    if !matches!(record.version, 2..=5)
-        || (record.version == 2 && !record.retired_owners.is_empty())
-        || (record.version == 5 && record.retired_owners.len() != MAX_RETIRED_OWNERS)
-        || record.retired_owners.len() > MAX_RETIRED_OWNERS
-        || record.retired_owners.windows(2).any(|pair| pair[0] >= pair[1])
-        || record
-            .owners
-            .iter()
-            .any(|owner| record.retired_owners.binary_search(owner).is_ok())
-        || record.length == 0
-        || record.part_size == 0
-        || record.part_size as usize > MAX_UPLOAD_PART_BYTES
-        || record.length.div_ceil(u64::from(record.part_size)) > MAX_PARTS
-        || record.owners.len() > MAX_OWNERS
-    {
-        return Err(UploadError::Integrity);
-    }
-    record.version = record.version.max(4);
-    Ok(record)
 }
 fn decode_part(bytes: &[u8]) -> Result<PartEntry, UploadError> {
     let record: PartEntry = decode(bytes)?;

@@ -79,11 +79,11 @@ impl DatasetStore for TestAccessStore {
             .is_ok()
         {
             let old = self.inner.get(key).await?.expect("upload exists");
-            let mut record: serde_json::Value = serde_json::from_slice(&old.bytes).unwrap();
-            record["expires_at"] = (record["expires_at"].as_u64().unwrap() + 1).into();
+            let mut record = UploadRecord::decode_stored_for_tests(&old.bytes).unwrap();
+            record.expires_at += 1;
             assert!(matches!(
                 self.inner
-                    .compare_exchange(key, Some(&old.bytes), &serde_json::to_vec(&record).unwrap())
+                    .compare_exchange(key, Some(&old.bytes), &record.encode_stored_for_tests().unwrap())
                     .await?,
                 CasOutcome::Applied(_)
             ));

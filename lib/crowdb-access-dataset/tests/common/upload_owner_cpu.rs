@@ -23,6 +23,7 @@ use super::upload::{TestPayload, TestStore};
 pub struct TestCpuCase {
     pub key: Vec<u8>,
     pub before: StoredValue,
+    pub json: Vec<u8>,
     pub after: Vec<u8>,
     pub decoded: UploadRecord,
     pub victim: OperationId,
@@ -32,7 +33,7 @@ pub struct TestCpuCase {
 }
 
 impl TestCpuCase {
-    pub async fn new(retired: u32) -> Self {
+    pub async fn new(retired: u32, compact: bool) -> Self {
         let key = DatasetUploads::location(
             &DatasetIdentity::new(NamespacePath::root(), "owner-cpu").unwrap(),
             owner(0xe0, 0),
@@ -53,15 +54,23 @@ impl TestCpuCase {
             "cleanup_complete": false,
         });
         let decoded: UploadRecord = serde_json::from_value(value.clone()).unwrap();
+        let json = serde_json::to_vec(&decoded).unwrap();
         let before = StoredValue {
-            bytes: serde_json::to_vec(&decoded).unwrap(),
+            bytes: if compact {
+                decoded.encode_stored_for_tests().unwrap()
+            } else {
+                json.clone()
+            },
             revision: 1,
         };
         retired_owners.push(victim);
         retired_owners.sort();
         value["owners"] = json!([live]);
         value["retired_owners"] = json!(retired_owners);
-        let after = serde_json::to_vec(&serde_json::from_value::<UploadRecord>(value).unwrap()).unwrap();
+        let after = serde_json::from_value::<UploadRecord>(value)
+            .unwrap()
+            .encode_stored_for_tests()
+            .unwrap();
         let canned = Arc::new(TestCannedStore {
             key: key.clone(),
             before: before.clone(),
@@ -80,6 +89,7 @@ impl TestCpuCase {
         Self {
             key,
             before,
+            json,
             after,
             decoded,
             victim,

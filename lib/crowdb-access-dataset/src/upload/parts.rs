@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    decode_part, decode_session, digest, encode, part_count, part_key, DatasetUploads, PartEntry, PartState,
-    UploadError, UploadPart, UploadRecord, UploadState, WRITE_LEASE_SECONDS,
+    decode_part, decode_session, digest, encode, encode_session, part_count, part_key, DatasetUploads,
+    PartEntry, PartState, UploadError, UploadPart, UploadRecord, UploadState, WRITE_LEASE_SECONDS,
 };
 use crate::{CasOutcome, OperationId};
 use async_trait::async_trait;
@@ -181,7 +181,7 @@ impl DatasetUploads {
         session.state = UploadState::Complete;
         match self
             .store
-            .compare_exchange(location, Some(&stored.bytes), &encode(&session)?)
+            .compare_exchange(location, Some(&stored.bytes), &encode_session(&session)?)
             .await?
         {
             CasOutcome::Applied(_) => {

@@ -56,7 +56,8 @@ impl TestDraftStore {
         if key.starts_with(b"DS\0U\0")
             && matches!(result, CasOutcome::Applied(_))
             && self.lose_claim_reply.load(Ordering::Relaxed)
-            && serde_json::from_slice::<serde_json::Value>(value).is_ok_and(|v| v["state"] == "claimed")
+            && UploadRecord::decode_stored_for_tests(value)
+                .is_ok_and(|record| record.state == UploadState::Claimed)
         {
             self.lose_claim_reply.store(false, Ordering::Relaxed);
             self.reject_after_unknown.store(true, Ordering::Relaxed);

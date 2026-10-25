@@ -70,7 +70,9 @@ async fn legacy_registry_fields_are_unnecessary_for_expiry_after_restart() {
     let location = DatasetUploads::location(&identity, OperationId::random()).unwrap();
     uploads.create(&location, 4, 4, [0; 16], 10).await.unwrap();
     let stored = store.get(&location).await.unwrap().unwrap();
-    let mut old: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
+    // Deliberately persist historical JSON, including the obsolete registry fields.
+    let mut old =
+        serde_json::to_value(UploadRecord::decode_stored_for_tests(&stored.bytes).unwrap()).unwrap();
     old["version"] = 2.into();
     old["registry_page"] = 42.into();
     old["registry_generation"] = serde_json::Value::Null;

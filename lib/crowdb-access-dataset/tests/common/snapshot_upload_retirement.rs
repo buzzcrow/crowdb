@@ -45,12 +45,19 @@ impl TestRetirementStore {
     }
 
     pub async fn value(&self, key: &[u8]) -> Value {
-        serde_json::from_slice(&self.inner.get(key).await.unwrap().unwrap().bytes).unwrap()
+        serde_json::to_value(
+            UploadRecord::decode_stored_for_tests(&self.inner.get(key).await.unwrap().unwrap().bytes)
+                .unwrap(),
+        )
+        .unwrap()
     }
 
     pub async fn install(&self, key: &[u8], value: Value) {
         let current = self.inner.get(key).await.unwrap().unwrap();
-        let bytes = serde_json::to_vec(&serde_json::from_value::<UploadRecord>(value).unwrap()).unwrap();
+        let bytes = serde_json::from_value::<UploadRecord>(value)
+            .unwrap()
+            .encode_stored_for_tests()
+            .unwrap();
         assert!(matches!(
             self.inner
                 .compare_exchange(key, Some(&current.bytes), &bytes)

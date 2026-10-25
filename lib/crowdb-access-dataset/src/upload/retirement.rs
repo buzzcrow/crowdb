@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{decode_session, encode, DatasetUploads, UploadError, UploadState, MAX_RETIRED_OWNERS};
+use super::{decode_session, encode_session, DatasetUploads, UploadError, UploadState, MAX_RETIRED_OWNERS};
 use crate::{CasOutcome, OperationId};
 
 impl DatasetUploads {
@@ -14,9 +14,9 @@ impl DatasetUploads {
         let mut stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
         for _ in 0..16 {
             let mut record = decode_session(&stored.bytes)?;
-            if record.retired_owners.binary_search(&owner).is_ok() {
+            let Err(insertion) = record.retired_owners.binary_search(&owner) else {
                 return Ok(());
-            }
+            };
             if record.retired_owners.len() == MAX_RETIRED_OWNERS {
                 if record.version == 5 && !record.owners.contains(&owner) {
                     return Ok(());
@@ -24,8 +24,7 @@ impl DatasetUploads {
                 // Older writers must reject retirement without an individual negative owner ID.
                 record.version = 5;
             } else {
-                record.retired_owners.push(owner);
-                record.retired_owners.sort();
+                record.retired_owners.insert(insertion, owner);
             }
             record.owners.retain(|current| *current != owner);
             if record.owners.is_empty() && record.state == UploadState::Claimed {
@@ -33,7 +32,7 @@ impl DatasetUploads {
             }
             match self
                 .store
-                .compare_exchange(location, Some(&stored.bytes), &encode(&record)?)
+                .compare_exchange(location, Some(&stored.bytes), &encode_session(&record)?)
                 .await?
             {
                 CasOutcome::Applied(_) => return Ok(()),

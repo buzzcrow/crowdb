@@ -48,3 +48,11 @@ identity!(DatasetId);
 identity!(SnapshotId);
 identity!(OperationId);
 identity!(SplitRevisionId);
+
+// Stored identities preserve the legacy serde representation; public construction
+// continues to reject zero identities.
+impl OperationId {
+    pub(crate) const fn from_stored_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+}

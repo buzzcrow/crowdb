@@ -179,6 +179,10 @@ async fn claim_cas_still_rejects_invalidation_after_resolution() {
     .await;
     assert_eq!(test.store.upload_reads.load(Ordering::Relaxed) - reads, 2);
     assert_eq!(test.store.claim_attempts.load(Ordering::Relaxed), 1);
+    assert!(
+        !test.store.abort_at_claim.load(Ordering::Relaxed),
+        "claim invalidation must actually fire"
+    );
     assert_eq!(test.store.complete_attempts.load(Ordering::Relaxed), 0);
     assert!(test.authority.latest(&test.identity).await.unwrap().is_none());
     assert!(test
@@ -212,6 +216,10 @@ async fn metadata_and_claim_unknown_outcomes_stop_without_confirmation_or_comple
         )
         .await;
         assert!(test.store.unknown.load(Ordering::Relaxed));
+        assert!(
+            !test.store.lose_claim_reply.load(Ordering::Relaxed),
+            "claim fault must actually fire when armed"
+        );
         assert_eq!(test.store.operations_after_unknown.load(Ordering::Relaxed), 0);
         assert_eq!(
             test.store.upload_reads.load(Ordering::Relaxed) - reads,

@@ -205,6 +205,10 @@ async fn unknown_owner_reply_keeps_the_resource_incomplete_until_client_retry() 
         .await
         .is_err());
     assert!(store.reject_after_unknown.load(Ordering::Relaxed));
+    assert!(
+        !store.lose_claim_reply.load(Ordering::Relaxed),
+        "claim fault must actually fire"
+    );
     store.reject_after_unknown.store(false, Ordering::Relaxed);
     assert!(matches!(
         authority.get_snapshot(&identity, snapshot).await,

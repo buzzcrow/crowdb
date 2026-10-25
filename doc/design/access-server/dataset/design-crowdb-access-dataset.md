@@ -217,8 +217,8 @@ to the authority.
 
 ### 10.1 Upload and publication flow
 
-`DatasetUploads` persists bounded upload sessions, immutable numbered parts,
-accepted receipt pages and Dataset-scoped ownership in `DatasetStore`.
+`DatasetUploads` persists bounded upload resources, immutable numbered part
+receipts and Dataset-scoped ownership in `DatasetStore`.
 `ChunkPayloadStorage` writes parts through the shared small-object pipeline with
 Dataset chunk type 7. Each part is at most 4 MiB; 10000 parts bound an upload to
 39.0625 GiB. A write intent records the exact physical location before payload I/O.
@@ -237,6 +237,16 @@ reading or writing that saturated resource. New mutators retain version 5 and
 require its retirement list to remain full.
 Ordinary resources use version 4. The first upgrade costs one GET and one CAS;
 repeating retirement of an absent owner in version 5 needs one GET and no write.
+Upload storage uses an independent binary envelope: a 52-byte fixed header
+followed by sixteen bytes per active or retired owner. Counts and exact encoded
+length are checked before allocating identity vectors; the maximum authority
+contains 4352 identities in 69,684 bytes. Public `UploadRecord` JSON and its
+logical versions remain unchanged. Part receipts retain their JSON encoding.
+Readers accept legacy JSON versions 2 through 5 with the same validation and
+identity representation; writers emit the binary envelope. Conditions compare
+the actual stored bytes, so a paused JSON mutation cannot overwrite a converted
+resource. JSON-only Access servers and direct native clients reject this
+envelope; their storage readers and writers require a coordinated upgrade.
 Completion verifies every part and the whole declared MD5 with bounded buffers.
 For one part whose declared length and MD5 match the whole upload, verification
 hashes the stored bytes once and reuses that exact-range result. Multiple part

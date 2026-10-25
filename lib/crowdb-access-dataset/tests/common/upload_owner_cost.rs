@@ -159,7 +159,7 @@ impl TestOwnerFixture {
         uploads.claim(&key, live, 3).await.unwrap();
         uploads.claim(&key, victim, 3).await.unwrap();
         let stored = inner.get(&key).await.unwrap().unwrap();
-        let mut historical: Value = serde_json::from_slice(&stored.bytes).unwrap();
+        let mut historical = public(&stored.bytes);
         historical["retired_owners"] =
             json!((0..retired).map(|index| owner(0xa0, index)).collect::<Vec<_>>());
         let bytes = canonical(historical);
@@ -209,11 +209,18 @@ pub fn owner(domain: u8, index: u32) -> OperationId {
 }
 
 pub fn canonical(value: Value) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::from_value::<UploadRecord>(value).unwrap()).unwrap()
+    serde_json::from_value::<UploadRecord>(value)
+        .unwrap()
+        .encode_stored_for_tests()
+        .unwrap()
+}
+
+pub fn public(bytes: &[u8]) -> Value {
+    serde_json::to_value(UploadRecord::decode_stored_for_tests(bytes).unwrap()).unwrap()
 }
 
 pub fn add_owner(bytes: &[u8], identity: OperationId) -> Vec<u8> {
-    let mut value: Value = serde_json::from_slice(bytes).unwrap();
+    let mut value = public(bytes);
     let mut owners: Vec<OperationId> = serde_json::from_value(value["owners"].clone()).unwrap();
     owners.push(identity);
     owners.sort();
@@ -223,7 +230,7 @@ pub fn add_owner(bytes: &[u8], identity: OperationId) -> Vec<u8> {
 }
 
 pub fn retire(bytes: &[u8], identity: OperationId) -> Vec<u8> {
-    let mut value: Value = serde_json::from_slice(bytes).unwrap();
+    let mut value = public(bytes);
     let mut owners: Vec<OperationId> = serde_json::from_value(value["owners"].clone()).unwrap();
     let mut retired: Vec<OperationId> =
         serde_json::from_value(value.get("retired_owners").cloned().unwrap_or_else(|| json!([]))).unwrap();

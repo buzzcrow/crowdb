@@ -8,7 +8,8 @@ mod upload_fault;
 
 use bytes::Bytes;
 use crowdb_access_dataset::{
-    DatasetIdentity, DatasetStore, DatasetUploads, NamespacePath, OperationId, UploadError, UploadState,
+    DatasetIdentity, DatasetStore, DatasetUploads, NamespacePath, OperationId, UploadError, UploadRecord,
+    UploadState,
 };
 use md5::{Digest, Md5};
 use serde_json::{json, Value};
@@ -37,12 +38,34 @@ async fn complete_upload(store: Arc<TestStore>, payloads: Arc<TestPayload>, key:
     uploads.complete(key, 2).await.unwrap();
 }
 
+fn upload_value(bytes: &[u8]) -> Value {
+    serde_json::to_value(UploadRecord::decode_stored_for_tests(bytes).unwrap()).unwrap()
+}
+
+fn upload_bytes(value: &Value) -> Vec<u8> {
+    serde_json::from_value::<UploadRecord>(value.clone())
+        .unwrap()
+        .encode_stored_for_tests()
+        .unwrap()
+}
+
 async fn changed_records(store: &TestStore, key: &[u8], field: &str) -> Vec<TestMutation> {
-    let mut value: Value = serde_json::from_slice(&store.get(key).await.unwrap().unwrap().bytes).unwrap();
+    let stored = store.get(key).await.unwrap().unwrap();
+    // expires_at belongs to U; deadline belongs to the unchanged PartEntry JSON.
+    let upload = field == "expires_at";
+    let mut value = if upload {
+        upload_value(&stored.bytes)
+    } else {
+        serde_json::from_slice(&stored.bytes).unwrap()
+    };
     (101..105)
         .map(|number| {
             value[field] = json!(number);
-            TestMutation::Conflict(serde_json::to_vec(&value).unwrap())
+            TestMutation::Conflict(if upload {
+                upload_bytes(&value)
+            } else {
+                serde_json::to_vec(&value).unwrap()
+            })
         })
         .collect()
 }
@@ -176,10 +199,10 @@ async fn abort_reuses_conflicts_and_stops_when_an_owner_wins() {
     let key = location();
     complete_upload(store.clone(), payloads.clone(), &key).await;
     let mut mutations = changed_records(&store, &key, "expires_at").await;
-    let mut claimed: Value = serde_json::from_slice(&store.get(&key).await.unwrap().unwrap().bytes).unwrap();
+    let mut claimed = upload_value(&store.get(&key).await.unwrap().unwrap().bytes);
     claimed["state"] = json!("claimed");
     claimed["owners"] = json!([OperationId::random()]);
-    mutations.push(TestMutation::Conflict(serde_json::to_vec(&claimed).unwrap()));
+    mutations.push(TestMutation::Conflict(upload_bytes(&claimed)));
     let fault = TestUploadFaultStore::new(store, key.clone(), mutations);
     let uploads = DatasetUploads::new(fault.clone(), payloads);
     assert!(matches!(uploads.abort(&key).await, Err(UploadError::Conflict)));
@@ -227,9 +250,9 @@ async fn cleanup_completion_conflicts_do_not_reload_the_upload() {
         let TestMutation::Conflict(bytes) = mutation else {
             unreachable!()
         };
-        let mut value: Value = serde_json::from_slice(&bytes).unwrap();
+        let mut value = upload_value(&bytes);
         value["state"] = json!("aborted");
-        mutations.push(TestMutation::Conflict(serde_json::to_vec(&value).unwrap()));
+        mutations.push(TestMutation::Conflict(upload_bytes(&value)));
     }
     let fault = TestUploadFaultStore::new(store, key.clone(), mutations);
     let uploads = DatasetUploads::new(fault.clone(), payloads);

@@ -87,8 +87,8 @@ impl DatasetStore for TestExpiryStore {
             2 => key.starts_with(b"DS\0L\0"),
             3 => {
                 key.starts_with(b"DS\0U\0")
-                    && serde_json::from_slice::<serde_json::Value>(value)
-                        .is_ok_and(|value| value["state"] == "claimed")
+                    && UploadRecord::decode_stored_for_tests(value)
+                        .is_ok_and(|record| record.state == UploadState::Claimed)
             }
             4 => key.starts_with(b"DS\0I\0"),
             5 => key.starts_with(b"DS\0M\0"),
@@ -123,8 +123,8 @@ impl DatasetStore for TestExpiryStore {
         if key.starts_with(b"DS\0U\0")
             && matches!(result, CasOutcome::Applied(_))
             && self.lose_owner_retirement.load(Ordering::Relaxed)
-            && serde_json::from_slice::<serde_json::Value>(value).is_ok_and(|value| {
-                value["retired_owners"]
+            && UploadRecord::decode_stored_for_tests(value).is_ok_and(|record| {
+                serde_json::to_value(record).unwrap()["retired_owners"]
                     .as_array()
                     .is_some_and(|owners| !owners.is_empty())
             })

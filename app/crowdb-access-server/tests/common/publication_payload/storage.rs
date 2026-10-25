@@ -65,17 +65,22 @@ impl DatasetStore for TestPublicationStore {
     ) -> Result<CasOutcome, StoreError> {
         self.observe();
         let json: Option<serde_json::Value> = serde_json::from_slice(value).ok();
-        let claiming =
-            key.starts_with(b"DS\0U\0") && json.as_ref().is_some_and(|value| value["state"] == "claimed");
+        let claiming = key.starts_with(b"DS\0U\0")
+            && UploadRecord::decode_stored_for_tests(value)
+                .is_ok_and(|record| record.state == UploadState::Claimed);
         if claiming {
             self.claim_attempts.fetch_add(1, Ordering::Relaxed);
             if self.abort_at_claim.swap(false, Ordering::Relaxed) {
                 let stored = self.inner.get(key).await?.unwrap();
-                let mut aborted: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
-                aborted["state"] = "aborted".into();
+                let mut aborted = UploadRecord::decode_stored_for_tests(&stored.bytes).unwrap();
+                aborted.state = UploadState::Aborted;
                 assert!(matches!(
                     self.inner
-                        .compare_exchange(key, Some(&stored.bytes), &serde_json::to_vec(&aborted).unwrap())
+                        .compare_exchange(
+                            key,
+                            Some(&stored.bytes),
+                            &aborted.encode_stored_for_tests().unwrap()
+                        )
                         .await?,
                     CasOutcome::Applied(_)
                 ));

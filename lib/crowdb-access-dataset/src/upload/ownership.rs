@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    decode_part, decode_session, encode, part_key, DatasetUploads, PartState, UploadError, UploadRecord,
-    UploadState, MAX_OWNERS, MAX_RETIRED_OWNERS,
+    decode_part, decode_session, encode, encode_session, part_key, DatasetUploads, PartState, UploadError,
+    UploadRecord, UploadState, MAX_OWNERS, MAX_RETIRED_OWNERS,
 };
 use crate::{CasOutcome, OperationId};
 
@@ -44,7 +44,7 @@ impl DatasetUploads {
             record.owners.sort();
             match self
                 .store
-                .compare_exchange(location, Some(&stored.bytes), &encode(&record)?)
+                .compare_exchange(location, Some(&stored.bytes), &encode_session(&record)?)
                 .await?
             {
                 CasOutcome::Applied(_) => return Ok(record),
@@ -71,7 +71,7 @@ impl DatasetUploads {
             }
             match self
                 .store
-                .compare_exchange(location, Some(&stored.bytes), &encode(&record)?)
+                .compare_exchange(location, Some(&stored.bytes), &encode_session(&record)?)
                 .await?
             {
                 CasOutcome::Applied(_) => return Ok(()),
@@ -102,7 +102,7 @@ impl DatasetUploads {
             }
             if record.state != UploadState::Aborted {
                 record.state = UploadState::Aborted;
-                let bytes = encode(&record)?;
+                let bytes = encode_session(&record)?;
                 match self
                     .store
                     .compare_exchange(location, Some(&stored.bytes), &bytes)
@@ -167,7 +167,7 @@ impl DatasetUploads {
             record.cleanup_complete = true;
             match self
                 .store
-                .compare_exchange(location, Some(&expected), &encode(&record)?)
+                .compare_exchange(location, Some(&expected), &encode_session(&record)?)
                 .await?
             {
                 CasOutcome::Applied(_) => return Ok(record),

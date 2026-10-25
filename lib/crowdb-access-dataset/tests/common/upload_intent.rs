@@ -4,7 +4,7 @@ use super::upload::{TestPayload, TestStore};
 use bytes::Bytes;
 use crowdb_access_dataset::{
     CasOutcome, DatasetIdentity, DatasetStore, DatasetUploads, NamespacePath, OperationId, PayloadDurability,
-    PayloadStorage, StoreError, StoredValue, UploadError,
+    PayloadStorage, StoreError, StoredValue, UploadError, UploadRecord, UploadState,
 };
 use crowdb_chunk_client::SmallWriteIntent;
 use crowdb_protocol::chunkdb::rpc::Location;
@@ -36,11 +36,20 @@ pub struct TestPartStore {
 impl TestPartStore {
     async fn replace(&self, key: &[u8], state: &str) {
         let stored = self.inner.get(key).await.unwrap().unwrap();
-        let mut record: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
-        record["state"] = state.into();
+        let bytes = if key == self.location {
+            assert_eq!(state, "aborted");
+            let mut record = UploadRecord::decode_stored_for_tests(&stored.bytes).unwrap();
+            record.state = UploadState::Aborted;
+            record.encode_stored_for_tests().unwrap()
+        } else {
+            assert_eq!(key, self.part);
+            let mut record: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
+            record["state"] = state.into();
+            serde_json::to_vec(&record).unwrap()
+        };
         assert!(matches!(
             self.inner
-                .compare_exchange(key, Some(&stored.bytes), &serde_json::to_vec(&record).unwrap())
+                .compare_exchange(key, Some(&stored.bytes), &bytes)
                 .await
                 .unwrap(),
             CasOutcome::Applied(_)

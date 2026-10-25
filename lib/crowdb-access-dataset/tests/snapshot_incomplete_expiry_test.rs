@@ -250,6 +250,11 @@ async fn delayed_claim_cannot_acquire_ownership_after_incomplete_expiry_cleanup(
         async move { uploads.claim(&location, operation, 1000).await }
     });
     wait_for_pause(&f).await;
+    assert_eq!(
+        f.store.gate.load(Ordering::Relaxed),
+        0,
+        "claim pause must actually fire"
+    );
     f.clock.store(EXPIRES, Ordering::Relaxed);
     f.expire().await.unwrap();
     f.clock.store(EXPIRES + 1200, Ordering::Relaxed);
@@ -281,6 +286,10 @@ async fn unknown_owner_retirement_does_not_advance_to_index_cleanup() {
         .await
         .is_err());
     assert!(f.store.unknown.load(Ordering::Relaxed));
+    assert!(
+        !f.store.lose_owner_retirement.load(Ordering::Relaxed),
+        "retirement fault must actually fire"
+    );
     assert_eq!(f.store.reads_after_unknown.load(Ordering::Relaxed), 0);
     assert_eq!(f.store.writes_after_unknown.load(Ordering::Relaxed), 0);
     f.store.unknown.store(false, Ordering::Relaxed);

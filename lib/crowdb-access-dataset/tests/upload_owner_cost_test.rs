@@ -6,9 +6,8 @@ mod cost;
 #[path = "common/upload.rs"]
 mod upload;
 
-use cost::{add_owner, canonical, owner, retire, TestOwnerCost, TestOwnerFixture};
+use cost::{add_owner, canonical, owner, public, retire, TestOwnerCost, TestOwnerFixture};
 use crowdb_access_dataset::{UploadError, UploadState};
-use serde_json::Value;
 
 const PROFILES: [u32; 4] = [1, 64, 256, 4096];
 
@@ -40,7 +39,7 @@ async fn retiring_an_owner_counts_the_whole_record_and_preserves_restart_fences_
         sizes.push(expected.len());
         verify_fences(&test, count).await;
     }
-    assert_eq!(sizes, [309, 4016, 15_499, 245_784]);
+    assert_eq!(sizes, [84, 1092, 4164, 65_604]);
 }
 
 #[tokio::test]
@@ -79,7 +78,7 @@ async fn retirement_recomputes_from_four_real_competing_claims_without_gets_or_l
             test.store.cost()
         );
         verify_fences(&test, count).await;
-        let value: Value = serde_json::from_slice(&test.raw().await).unwrap();
+        let value = public(&test.raw().await);
         assert_eq!(value["owners"].as_array().unwrap().len(), 5);
     }
 }
@@ -180,7 +179,7 @@ async fn lost_retirement_reply_stops_without_get_and_restart_uses_the_final_fenc
     assert_eq!(test.raw().await, expected);
     verify_fences(&test, 4096).await;
     let before = test.store.cost();
-    let mut final_record: Value = serde_json::from_slice(&expected).unwrap();
+    let mut final_record = public(&expected);
     final_record["version"] = serde_json::json!(5);
     final_record["owners"] = serde_json::json!([]);
     final_record["state"] = serde_json::json!("complete");
@@ -203,7 +202,7 @@ async fn lost_retirement_reply_stops_without_get_and_restart_uses_the_final_fenc
 async fn verify_fences(test: &TestOwnerFixture, retired: u32) {
     let restarted = test.restart();
     let bytes = test.raw().await;
-    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    let value = public(&bytes);
     assert_eq!(
         value["retired_owners"].as_array().unwrap().len(),
         retired as usize

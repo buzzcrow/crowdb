@@ -158,12 +158,13 @@ async fn unknown_saturated_retirements_restart_and_expire_a_large_record_without
         bytes: 256 * 1024,
         timeout: Duration::from_secs(2),
     };
-    assert!(matches!(
-        test.store
-            .get_bounded(&test.key, small, &ReadCancellation::new())
-            .await,
-        Err(StoreError::Limit)
-    ));
+    assert!(test
+        .store
+        .get_bounded(&test.key, small, &ReadCancellation::new())
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(test.raw().await.len(), 52 + 4096 * 16);
     let mut cursor = UploadExpiryCursor::default();
     let step = test.restart().expire_step(2000, &mut cursor).await.unwrap();
     assert_eq!(step.range_notifications, 1);
@@ -258,7 +259,9 @@ async fn noncanonical_oversized_authorities_return_a_visible_expiry_limit() {
     for identity in [owner(0xb0), owner(0xb1)] {
         test.uploads.retire_owner(&test.key, identity).await.unwrap();
     }
-    let mut bytes = test.raw().await;
+    // Oversized legacy JSON remains a separate compatibility obligation even
+    // after ordinary mutators have converted the resource to compact storage.
+    let mut bytes = canonical(test.value().await);
     bytes.extend(std::iter::repeat_n(b' ', 100_000));
     test.install_bytes(&bytes).await;
     assert!(matches!(

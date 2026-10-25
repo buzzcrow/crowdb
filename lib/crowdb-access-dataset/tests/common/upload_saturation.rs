@@ -85,7 +85,7 @@ impl DatasetStore for TestSaturationStore {
                 "a retry must use the last observed resource"
             );
         } else {
-            let candidate: Value = serde_json::from_slice(value).unwrap();
+            let candidate = public(value);
             assert_eq!(candidate["state"], "open");
             assert_eq!(candidate["version"], 4);
         }
@@ -140,7 +140,7 @@ impl TestSaturation {
             uploads.claim(&key, identity, 3).await.unwrap();
         }
         let current = inner.get(&key).await.unwrap().unwrap();
-        let mut value: Value = serde_json::from_slice(&current.bytes).unwrap();
+        let mut value = public(&current.bytes);
         value["retired_owners"] = json!((0..retired).map(historical).collect::<Vec<_>>());
         assert!(matches!(
             inner
@@ -175,7 +175,7 @@ impl TestSaturation {
     }
 
     pub async fn value(&self) -> Value {
-        serde_json::from_slice(&self.raw().await).unwrap()
+        public(&self.raw().await)
     }
 
     pub async fn install(&self, value: Value) {
@@ -215,4 +215,8 @@ pub fn historical(index: u16) -> OperationId {
 
 pub fn canonical(value: Value) -> Vec<u8> {
     serde_json::to_vec(&serde_json::from_value::<UploadRecord>(value).unwrap()).unwrap()
+}
+
+fn public(bytes: &[u8]) -> Value {
+    serde_json::to_value(UploadRecord::decode_stored_for_tests(bytes).unwrap()).unwrap()
 }
