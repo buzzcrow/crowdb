@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use crowdb_chunk_client::{ChunkIoClient, ReclaimOutcome};
 use crowdb_chunk_kv_client::MultiScanPage;
 use crowdb_protocol::chunk_kv::ClientRequestId;
+use crowdb_protocol::chunkdb::rpc::Location;
 
 pub struct GcIoBudget {
     kv_bytes: AtomicU64,
@@ -217,5 +218,10 @@ impl FileBlockStore for BudgetedGcBlocks {
     async fn reclaim(&self, root: &ChunkRoot) -> Result<ReclaimOutcome, FileIoError> {
         self.budget.reserve_chunk(root.physical_length)?;
         self.inner.reclaim(root).await
+    }
+
+    async fn reclaim_location(&self, location: &Location) -> Result<ReclaimOutcome, FileIoError> {
+        self.budget.reserve_chunk(location.length)?;
+        self.inner.reclaim_location(location).await
     }
 }

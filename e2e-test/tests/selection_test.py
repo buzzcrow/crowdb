@@ -129,10 +129,12 @@ class SelectionTest(unittest.TestCase):
                                  else 5 if case["scope"].startswith("console.web.")
                                  else 1 if case["scope"] in ("console.managed", "console.browser.shell", "console.browser.registry", "console.browser.lifecycle", "console.browser.kv", "console.browser.canvas", "console.browser.inspector", "console.clients") else 3)
         iceberg = json.loads(self.invoke("--list", "--layer", "iceberg"))
-        self.assertEqual(len(iceberg), 33)
+        self.assertEqual(len(iceberg), 34)
         gc = [case for case in iceberg if case["scope"] == "iceberg.gc"]
-        self.assertEqual(len(gc), 5)
+        self.assertEqual(len(gc), 6)
         self.assertIn("access_iceberg::gc::convergence::expired_inline_backlog_completes_with_foreground_progress",
+                      [case["case"] for case in gc])
+        self.assertIn("access_iceberg::gc::notifications::mixed_external_and_tree_notifications_complete_without_reclaiming_live_ranges",
                       [case["case"] for case in gc])
         self.assertTrue(all(case["scope"].startswith("iceberg.") and case["nodes"] == 14
                             for case in iceberg))

@@ -85,6 +85,73 @@ of the removed OCI archive.
 
 ## Current cleanup regression gates
 
+The final six-crate all-target/all-feature gate passes 1,828 tests across 403
+targets, with zero failures and 13 separately configured cases ignored.
+Workspace all-feature clippy, normal lint, both workspace formatting checks,
+the container client build and 179 fixture unit tests pass. The matching local
+image is `crowdb-node:access-cleanup-v9-20261025`, imported Docker ID
+`sha256:67a1ef4f24901cee4be69b6951461b00059fcf58bed9d5d6960c0dcfd94f5de6`.
+Its revision label is `0225659a7d632140e7d24fb86aa7fa989f51ffb8`; captured source
+tree `cc7421928d395ee3a2e6a64f4eb35aca836d6d25` also includes the budgeted
+Locations notification fix. Runtime SHA256 is
+`e994c5dc0d7f89c4ec03519ec69f1ec3ea8046e53a53a6a2cbed497ec6812683`.
+All eleven selected real-service cases pass with the original case deadlines
+and GC budgets:
+
+- External Locations/tree notification convergence:
+  `container-e2e/run-48bc19a9be0a48dbaf013cf41efefe8a`.
+- Catalog recovery through real Chunk-KV restart:
+  `container-e2e/run-c521bc97e14c42059584f25a8d3cf494`.
+- Official namespace CRUD through storage/listener restart:
+  `container-e2e/run-42f6dcb9f2b2472c80bd774e2c8ed7d5`.
+- Official SDK foreground work during GC backlog:
+  `container-e2e/run-8e25a3f3d11c428bb6beef0f15319fb4`.
+- Seven S3 cases cover replacement parts, UploadPartCopy, boto3 checksums,
+  user metadata, lost replies, an open/replaced-part upload through metadata
+  restart, and HTTP/native parity. Their exact case/run mappings, every client
+  exit code and matching image identities are retained in
+  `/tmp/crowdb-access-cleanup-v9-evidence-20261025/acceptance-status.json`.
+
+Depth-one empty namespace deletion uses six GETs, two CAS operations, one exact
+mapping delete and two scans, compared with the measured journal path's 51
+GETs, 13 CAS operations, one delete and two scans. Depth three uses ten GETs.
+The two complete child proofs, generation fences and four catalog checks remain.
+A fresh retry may delete a recreated empty name; one selected invocation cannot
+delete its replacement, and a nonempty namespace still fails. Deterministic
+component races cover late creation, rename, property updates, unknown writes
+and retained legacy recovery against permanent retired identities.
+
+An ordinary independent MPU part's metadata path uses three GETs and two
+conditional writes, compared with two GETs and four conditional writes. Distinct
+parts perform no shared upload CAS. An initially matching pointer retains two
+GETs and no metadata writes. Frozen generation A remains authoritative when an
+already admitted replacement B completes later; the deterministic component
+barrier proves that interleaving. The service cases do not claim to force it.
+Strict older resources and tighter quotas retain their reservation protocol.
+These are logical metadata-action counts, not routed wire totals or isolated
+end-to-end TPS measurements.
+
+The external GC case completes its convergence window in 161,787 ms at task
+revision 56 after one actual Access restart; the full client case takes 162.47 s.
+Both original file keys are absent, their candidates and task are Complete,
+and the fixed task identity/deadline survive restart. Two dead files contain
+33,280 logical payload bytes. Three tree blocks and one external frame produce
+the exact durable retired range union `[0,16964)` and `[17510,34212)`, totaling
+33,666 chunk bytes including frame/directory overhead. The interleaved live
+range `[16964,17510)` remains readable, layout identity is unchanged, and a
+stale marker cannot retire the newer live head. This establishes notification
+acceptance, without a physical free-space or GC latency SLO claim.
+
+The preceding v8 external case failed at its unchanged 480-second bound because
+`BudgetedGcBlocks` inherited the default deferred `reclaim_location` instead of
+dispatching to its configured provider. The wrapper now charges its existing
+request/byte budget and forwards the operation and result unchanged. The failed
+v8 evidence remains preserved independently. Final v9 source/image archives,
+raw logs, range validation and gate outputs are retained outside the repository
+in `/tmp/crowdb-access-cleanup-v9-evidence-20261025`. Dataset read and transport
+paths did not change in this batch; their completed v8 workload/HCA evidence
+below retains its own image and source identity.
+
 Source `b566fdcd` adds compact upload-resource storage, one-step ordinary inline
 purge completion and request-local Dataset delivery reductions. The upload/GC
 batch passes 1,709 tests across five affected crates, with 13 independently

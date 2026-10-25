@@ -3,6 +3,7 @@
 
 mod convergence;
 mod foreground;
+mod notifications;
 mod seed;
 use super::{frontend, native::TestNativeStorage, now_ms};
 use crowdb_access_iceberg::{
