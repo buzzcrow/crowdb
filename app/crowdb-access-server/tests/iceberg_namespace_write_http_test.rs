@@ -1,11 +1,19 @@
 #[path = "common/iceberg_store.rs"]
 mod common;
 
-use crowdb_access_iceberg::catalog::{CatalogRepository, CatalogStore, ClearBounds, ManagementPrivilege};
-use crowdb_access_iceberg::key::{IcebergKey, OperationId, SystemScope};
+use async_trait::async_trait;
+use crowdb_access_iceberg::catalog::{
+    CasOutcome, CatalogRepository, CatalogStore, ClearBounds, ManagementPrivilege, StoreError, StoredValue,
+};
+use crowdb_access_iceberg::key::{IcebergKey, NamespaceId, OperationId, SystemScope};
+use crowdb_access_iceberg::namespace::{ChildScan, NamespaceMappingState, NamespaceStore};
 use crowdb_access_iceberg::operation::{ledger_key, ManagementAction, ManagementRequest, RequestIdentity};
+use crowdb_access_iceberg::record::StorageRecord;
 use crowdb_access_iceberg::wire::BearerAuthenticator;
 use crowdb_access_server::iceberg::{serve, IcebergHttpService};
+use crowdb_chunk_kv_client::MultiScanPage;
+use crowdb_protocol::chunk_kv::ClientRequestId;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -43,7 +51,7 @@ async fn setup() -> (
         BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap();
     let service = Arc::new(
         IcebergHttpService::new(repository, auth, Duration::from_secs(2))
-            .with_namespaces(store.clone())
+            .with_namespaces(Arc::new(TestNamespaceReplyStore { inner: store.clone() }))
             .unwrap(),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -57,6 +65,58 @@ async fn setup() -> (
         .unwrap();
     });
     (store, address, stop, server)
+}
+
+struct TestNamespaceReplyStore {
+    inner: Arc<common::TestStore>,
+}
+
+#[async_trait]
+impl CatalogStore for TestNamespaceReplyStore {
+    async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
+        self.inner.get(key).await
+    }
+
+    async fn compare_exchange(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        value: &[u8],
+        identity: ClientRequestId,
+    ) -> Result<CasOutcome, StoreError> {
+        let result = self
+            .inner
+            .compare_exchange(key, expected, value, identity)
+            .await?;
+        // The shared fixture's third mode targets a historical create receipt.
+        // Lose the acknowledgement of the final name publication instead.
+        if matches!(&result, CasOutcome::Applied(_))
+            && matches!(IcebergKey::decode(key).and_then(|key| StorageRecord::decode(&key, value)), Ok(StorageRecord::NamespaceMapping(mapping)) if mapping.state == NamespaceMappingState::Published)
+            && self
+                .inner
+                .lose_reply_kind
+                .compare_exchange(3, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            return Err(StoreError::Response);
+        }
+        Ok(result)
+    }
+}
+
+#[async_trait]
+impl NamespaceStore for TestNamespaceReplyStore {
+    async fn scan_children(&self, scan: ChildScan) -> Result<MultiScanPage, StoreError> {
+        self.inner.scan_children(scan).await
+    }
+    async fn delete_mapping(
+        &self,
+        key: &[u8],
+        expected: &[u8],
+        identity: ClientRequestId,
+    ) -> Result<CasOutcome, StoreError> {
+        self.inner.delete_mapping(key, expected, identity).await
+    }
 }
 
 async fn fresh_key(store: &common::TestStore) -> String {
@@ -119,7 +179,7 @@ async fn send(
 }
 
 #[tokio::test]
-async fn namespace_writes_use_distinct_credentials_and_replay_success_and_terminal_errors() {
+async fn namespace_writes_use_distinct_credentials_and_current_resources_without_create_receipts() {
     let (store, address, stop, server) = setup().await;
     let body = r#"{"namespace":["parent"],"properties":{"owner":"original"}}"#;
     let before = store.values.load().len();
@@ -136,9 +196,12 @@ async fn namespace_writes_use_distinct_credentials_and_replay_success_and_termin
     let created = send(address, "POST", "/v1/namespaces", "w", Some(&key), body).await;
     assert_eq!(created.0, 200);
     assert_eq!(
-        send(address, "POST", "/v1/namespaces", "w", Some(&key), body).await,
-        created
+        serde_json::from_str::<serde_json::Value>(&created.1).unwrap(),
+        serde_json::from_str::<serde_json::Value>(body).unwrap()
     );
+    let original = namespace_id(&store, "parent");
+    assert_already_exists(&send(address, "POST", "/v1/namespaces", "w", Some(&key), body).await);
+    assert_eq!(namespace_id(&store, "parent"), original);
     assert_eq!(
         send(
             address,
@@ -150,15 +213,50 @@ async fn namespace_writes_use_distinct_credentials_and_replay_success_and_termin
         )
         .await
         .0,
-        409
+        200
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&namespace_response(address, "different").await.1).unwrap(),
+        serde_json::json!({"namespace": ["different"], "properties": {}})
     );
     let duplicate_key = fresh_key(&store).await;
     let duplicate = send(address, "POST", "/v1/namespaces", "w", Some(&duplicate_key), body).await;
-    assert_eq!(duplicate.0, 409);
+    assert_already_exists(&duplicate);
     verify_property_replay(&store, address).await;
-    verify_drop_replay(&store, address, &duplicate_key, &duplicate, body).await;
+    verify_drop_replay(&store, address, &duplicate_key, body).await;
     stop.send(()).unwrap();
     server.await.unwrap();
+}
+
+fn assert_already_exists(response: &(u16, String)) {
+    assert_eq!(response.0, 409);
+    let body: serde_json::Value = serde_json::from_str(&response.1).unwrap();
+    assert_eq!(body["error"]["code"], 409);
+    assert_eq!(body["error"]["type"], "AlreadyExistsException");
+}
+
+fn namespace_id(store: &common::TestStore, name: &str) -> NamespaceId {
+    store
+        .values
+        .load()
+        .iter()
+        .find_map(|(key, value)| {
+            match IcebergKey::decode(key).and_then(|key| StorageRecord::decode(&key, &value.bytes)) {
+                Ok(StorageRecord::NamespaceMapping(mapping))
+                    if mapping.parent.is_none() && mapping.name == name =>
+                {
+                    Some(mapping.namespace)
+                }
+                _ => None,
+            }
+        })
+        .unwrap()
+}
+
+async fn namespace_response(address: std::net::SocketAddr, name: &str) -> (u16, String) {
+    let response = send(address, "GET", &format!("/v1/namespaces/{name}"), "r", None, "").await;
+    assert_eq!(response.0, 200);
+    response
 }
 
 async fn verify_property_replay(store: &common::TestStore, address: std::net::SocketAddr) {
@@ -195,6 +293,10 @@ async fn verify_property_replay(store: &common::TestStore, address: std::net::So
         "property updates must not create journals or response records"
     );
     assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&namespace_response(address, "parent").await.1).unwrap(),
+        serde_json::json!({"namespace": ["parent"], "properties": {"value": "kept"}})
+    );
+    assert_eq!(
         send(
             address,
             "POST",
@@ -213,9 +315,9 @@ async fn verify_drop_replay(
     store: &common::TestStore,
     address: std::net::SocketAddr,
     duplicate_key: &str,
-    duplicate: &(u16, String),
     body: &str,
 ) {
+    let original = namespace_id(store, "parent");
     let drop_key = fresh_key(store).await;
     assert_eq!(
         send(
@@ -230,13 +332,17 @@ async fn verify_drop_replay(
         .0,
         204
     );
+    let recreated = send(address, "POST", "/v1/namespaces", "w", Some(duplicate_key), body).await;
+    assert_eq!(recreated.0, 200);
     assert_eq!(
-        send(address, "POST", "/v1/namespaces", "w", Some(duplicate_key), body).await,
-        *duplicate
+        serde_json::from_str::<serde_json::Value>(&recreated.1).unwrap(),
+        serde_json::from_str::<serde_json::Value>(body).unwrap()
     );
+    let replacement = namespace_id(store, "parent");
+    assert_ne!(replacement, original);
     assert_eq!(
         send(address, "POST", "/v1/namespaces", "w", None, body).await.0,
-        200
+        409
     );
     assert_eq!(
         send(
@@ -256,6 +362,11 @@ async fn verify_drop_replay(
             .await
             .0,
         200
+    );
+    assert_eq!(namespace_id(store, "parent"), replacement);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&namespace_response(address, "parent").await.1).unwrap(),
+        serde_json::from_str::<serde_json::Value>(body).unwrap()
     );
 }
 
@@ -372,29 +483,40 @@ async fn colliding_uuidv7_headers_do_not_create_shared_http_binding_state() {
     .await;
     assert_eq!(first_response.0, 200);
     assert_eq!(second_response.0, 200);
-    assert_eq!(
-        send(
+    let first_id = namespace_id(&store, "first");
+    let second_id = namespace_id(&store, "second");
+    assert_ne!(first_id, second_id);
+    assert_already_exists(
+        &send(
             address,
             "POST",
             "/v1/namespaces",
             "w",
             Some(&first_key),
-            first_body
+            first_body,
         )
         .await,
-        first_response
     );
-    assert_eq!(
-        send(
+    assert_already_exists(
+        &send(
             address,
             "POST",
             "/v1/namespaces",
             "w",
             Some(&second_key),
-            second_body
+            second_body,
         )
         .await,
-        second_response
+    );
+    assert_eq!(namespace_id(&store, "first"), first_id);
+    assert_eq!(namespace_id(&store, "second"), second_id);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&namespace_response(address, "first").await.1).unwrap(),
+        serde_json::from_str::<serde_json::Value>(&first_response.1).unwrap()
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&namespace_response(address, "second").await.1).unwrap(),
+        serde_json::from_str::<serde_json::Value>(&second_response.1).unwrap()
     );
     let overflow = IcebergKey::System {
         scope: SystemScope::RetryOverflow,
@@ -433,25 +555,42 @@ async fn server_errors_leave_recoverable_publication_and_large_final_responses()
                 .0,
             503
         );
-        let resumed = send(address, "POST", "/v1/namespaces", "w", Some(&key), &body).await;
-        assert_eq!(resumed.0, 200);
-        assert!(resumed.1.len() > 16 * 1024);
         assert_eq!(
-            send(address, "POST", "/v1/namespaces", "w", Some(&key), &body).await,
-            resumed
+            store.lose_reply_kind.load(Ordering::SeqCst),
+            0,
+            "mode {mode} must hit its durable write"
         );
+        let candidate = namespace_id(&store, &namespace);
+        let visibility = send(
+            address,
+            "GET",
+            &format!("/v1/namespaces/{namespace}"),
+            "r",
+            None,
+            "",
+        )
+        .await;
+        assert_eq!(visibility.0, if mode == 3 { 200 } else { 404 });
+        let resumed = send(address, "POST", "/v1/namespaces", "w", Some(&key), &body).await;
+        assert_eq!(resumed.0, if mode == 1 { 200 } else { 409 });
+        if mode == 1 {
+            assert!(resumed.1.len() > 16 * 1024);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&resumed.1).unwrap(),
+                serde_json::from_str::<serde_json::Value>(&body).unwrap()
+            );
+        } else {
+            assert_already_exists(&resumed);
+        }
+        let selected = namespace_id(&store, &namespace);
+        assert_eq!(selected == candidate, mode != 1);
+        assert_already_exists(&send(address, "POST", "/v1/namespaces", "w", Some(&key), &body).await);
+        assert_eq!(namespace_id(&store, &namespace), selected);
+        let loaded = namespace_response(address, &namespace).await;
+        assert!(loaded.1.len() > 16 * 1024);
         assert_eq!(
-            send(
-                address,
-                "GET",
-                &format!("/v1/namespaces/{namespace}"),
-                "r",
-                None,
-                ""
-            )
-            .await
-            .0,
-            200
+            serde_json::from_str::<serde_json::Value>(&loaded.1).unwrap(),
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()
         );
     }
     stop.send(()).unwrap();
