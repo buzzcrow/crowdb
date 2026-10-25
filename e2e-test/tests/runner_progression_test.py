@@ -2,6 +2,7 @@
 # Licensed under the Apache License, Version 2.0.
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -45,3 +46,34 @@ class RunnerProgressionTest(unittest.TestCase):
 
     def test_fail_fast_finishes_already_owned_browser_peers(self):
         self.assertCountEqual(self.run_selection(True, stable=True, slots=2), ['first', 'next'])
+
+    def test_runner_uses_each_case_cost_and_keeps_browser_networks_separate(self):
+        peers = threading.Barrier(2, timeout=5)
+        finished = set()
+        with tempfile.TemporaryDirectory() as temporary:
+            cases = [Case('test', name) for name in ('left', 'right')]
+            cases.append(Case('deployment.browser', 'browser'))
+
+            class Fixture:
+                def __init__(self, case):
+                    self.name = case.name
+                    self.artifacts = Path(temporary) / self.name
+                    self.artifacts.mkdir()
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    finished.add(self.name)
+
+                def client(self, *_):
+                    peers.wait()
+
+                def browser(self):
+                    self_owner.assertEqual(finished, {'left', 'right'})
+
+            self_owner = self
+            with patch('scenarios.select_cases', return_value=cases), \
+                 patch('scenarios.allocate_cluster', side_effect=lambda case, *_: Fixture(case)):
+                run_cases('image', temporary, 'bundle', 2, resource_budget=(4, 4096))
+        self.assertEqual(finished, {'left', 'right', 'browser'})

@@ -2,13 +2,14 @@
 # Licensed under the Apache License, Version 2.0.
 """Named flow scopes, fresh server profiles and bounded host-client dispatch."""
 
-import concurrent.futures
 import json
 import threading
+import time
 from dataclasses import dataclass
 from contextlib import nullcontext
 
 from browser_batch import run_browser_batches
+from resource_dispatch import batch_slots, run_with_resources
 
 from fixture import Cluster
 from diskdb_fixture import DiskdbCluster
@@ -751,7 +752,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                    advertise=case.advertise)
 
 
-def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all", node_cpus=1.0, partition=None, fail_fast=False):
+def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all", node_cpus=1.0, partition=None, fail_fast=False, resource_budget=None):
     selected = select_cases(layer, scope, case_name, partition)
     if not selected:
         raise ValueError(f"no migrated cases for scope {scope}")
@@ -764,7 +765,9 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
             cluster.browser_timeout = case.client_timeout
         cluster.node_cpus = node_cpus
         (cluster.artifacts / "case.json").write_text(json.dumps({
-            "scope": case.scope, "case": case.name}, indent=2))
+            "scope": case.scope, "case": case.name,
+            "scheduled_at_unix_ms": time.time_ns() // 1_000_000,
+            "resources": dict(zip(("cpus", "memory_mib"), case_resources(case, node_cpus)))}, indent=2))
         return cluster
 
     stopped = threading.Event()
@@ -826,28 +829,18 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.client(bundle, case.name.rsplit("::", 1)[-1], case.name)
 
     def stable_network(case):
-        return case.cli_replay or case.native_client or case.native_browser or case.shell_browser or case.console_browser
+        return (case.cli_replay or case.native_client or case.native_browser or case.shell_browser
+                or case.console_browser or case.oci_editable_ui or case.scope == "deployment.browser")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=slots) as pool:
-        futures = [pool.submit(run, case) for case in selected if not stable_network(case)]
-        errors = []
-        try:
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    future.result()
-                except Exception as error:
-                    errors.append(error)
-                    if fail_fast:
-                        stopped.set()
-                        break
-        except BaseException:
-            for future in futures:
-                future.cancel()
-            raise
-        if not stopped.is_set():
-            errors.extend(run_browser_batches([case for case in selected if stable_network(case)],
-                                              slots, prepare, run, fail_fast=fail_fast))
-        if errors:
-            for error in errors[1:]:
-                errors[0].add_note(f"another independent fixture failed: {error}")
-            raise errors[0]
+    budget = resource_budget or (float("inf"), float("inf"))
+    resources = lambda case: case_resources(case, node_cpus)
+    errors = run_with_resources([case for case in selected if not stable_network(case)],
+                                slots, run, resources, budget, stopped)
+    if not stopped.is_set():
+        browsers = [case for case in selected if stable_network(case)]
+        browser_slots = batch_slots(browsers, slots, resources, budget) if resource_budget else slots
+        errors.extend(run_browser_batches(browsers, browser_slots, prepare, run, fail_fast=fail_fast))
+    if errors:
+        for error in errors[1:]:
+            errors[0].add_note(f"another independent fixture failed: {error}")
+        raise errors[0]

@@ -9,7 +9,7 @@ use crowdb_kv::cluster::{
 use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, HardwareClient, ReadMode};
 use crowdb_protocol::{
     common::{DiskId, HwStatus, RackValue},
-    diskdb::rpc::DiskValue,
+    diskdb::rpc::{DiskGroupValue, DiskValue},
     key::{DiskKey, RackKey, TextKey},
 };
 
@@ -49,6 +49,51 @@ async fn concurrent_status_changes_reobserve_the_shared_rack_fence() {
             .status,
         HwStatus::Up as i32
     );
+}
+
+#[tokio::test]
+async fn concurrent_disk_group_changes_do_not_exhaust_retries_on_inflight_rack_updates() {
+    let fixture = TestHardware::start().await;
+    let hardware = Arc::new(fixture.hardware.clone());
+    for group in 1..=32 {
+        hardware
+            .add_disk_group(1, 2, group, &DiskGroupValue::default())
+            .await
+            .unwrap();
+    }
+    for status in [
+        HwStatus::Maintenance,
+        HwStatus::Suspect,
+        HwStatus::Missing,
+        HwStatus::Bad,
+    ] {
+        let ready = Arc::new(tokio::sync::Barrier::new(32));
+        let mut tasks = tokio::task::JoinSet::new();
+        for group in 1..=32 {
+            let hardware = hardware.clone();
+            let ready = ready.clone();
+            tasks.spawn(async move {
+                ready.wait().await;
+                (group, hardware.set_disk_group_status(1, 2, group, status).await)
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            let (group, outcome) = result.unwrap();
+            outcome.unwrap_or_else(|error| panic!("group {group} status {status:?}: {error}"));
+        }
+        for group in 1..=32 {
+            assert_eq!(
+                hardware
+                    .get_disk_group(1, 2, group)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .value
+                    .status,
+                status as i32
+            );
+        }
+    }
 }
 
 #[tokio::test]

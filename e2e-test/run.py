@@ -169,7 +169,7 @@ def main():
     available_memory = min(args.memory_mib, info["MemTotal"] // 1048576)
     if available_cpu < needed_cpu or available_memory < needed_memory:
         parser.error(f"selected cases require at least {needed_cpu:g} CPU / {needed_memory} MiB")
-    case_slots = min(args.concurrency, int(available_cpu // needed_cpu), available_memory // needed_memory)
+    case_slots = args.concurrency
     if (args.require_isolation or args.scope == "kv.isolation") and slots < 2:
         parser.error("concurrent isolation acceptance needs two fixture slots")
     identity = json.loads(docker("image", "inspect", args.image))[0]
@@ -190,9 +190,12 @@ def main():
         "slots": slots, "case_slots": case_slots,
         "largest_case_nodes": largest, "case_cpu_reservation": needed_cpu,
         "case_memory_reservation_mib": needed_memory, "selected_cases": [case.name for case in selected],
+        "resource_budget": {"cpus": available_cpu, "memory_mib": available_memory},
+        "dispatch_policy": "per-case-ordered",
         "node_cpus": args.node_cpus, "cpu_policy": "shares", "tokio_worker_threads": 1, "node_cpu_shares": round(args.node_cpus * 1024),
         "source_identity": source_identity}, indent=2))
-    print(f"KV isolation slots: {slots}; case slots: {case_slots}; exact image {identity['Id']}; artifacts {run_root}", flush=True)
+    print(f"KV isolation slots: {slots}; case slots: {case_slots}; per-case budget: "
+          f"{available_cpu:g} CPU / {available_memory} MiB; exact image {identity['Id']}; artifacts {run_root}", flush=True)
     started = time.monotonic()
     bundle = bundle_client(run_root / "client")
     timings = {"client_build": time.monotonic() - started}
@@ -246,7 +249,8 @@ def main():
             if slots >= 2:
                 run_mixed(identity["Id"], run_root, bundle, args.data_root, args.node_cpus)
         if selected:
-            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope, args.case, args.layer, args.node_cpus, args.partition, fail_fast=args.fail_fast)
+            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope, args.case, args.layer, args.node_cpus, args.partition, fail_fast=args.fail_fast,
+                      resource_budget=(available_cpu, available_memory))
         if args.layer in ("kv", "deployment", "all") and args.scope == "all" and not args.case:
             check_startup(identity["Id"], run_root)
         timings["status"] = "pass"

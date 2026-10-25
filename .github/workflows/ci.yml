@@ -681,15 +681,17 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 4
       matrix:
         include:
         - group: disk
           domains: diskdb diskio
         - group: chunk
           domains: chunkdb chunk-kv chunk-stream chunk-client
-        - group: platform
-          domains: dataset deployment
+        - group: dataset
+          domains: dataset
+        - group: deployment
+          domains: deployment
     permissions:
       contents: read
     steps:
@@ -710,6 +712,16 @@ jobs:
         pixi run sudo apt-get install -y protobuf-compiler
     - name: Import shared release image
       run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: container-storage-${{ matrix.group }}-${{ hashFiles('pixi.lock') }}
+        cache-targets: false
+        cache-directories: |
+          target/debug
+          sdk/target
+        cmd-format: "pixi run {0}"
+        cache-workspace-crates: true
+        cache-on-failure: true
     - name: Verify container domain
       env:
         E2E_DOMAINS: ${{ matrix.domains }}

@@ -57,6 +57,9 @@ def main():
             shutil.copytree(ROOT / "sdk/tests", tests)
             shutil.copy2(ROOT / "sdk/test_iterable.py", tests)
             run([str(python), "-m", "unittest", "discover", "-s", str(tests), "-v"], cwd=directory)
+            run(["cargo", "test", "-p", "crowdb-access-server", "--test", "dataset_sdk_python_split_test",
+                 "--", "--include-ignored", "--nocapture"],
+                cwd=ROOT, env=dict(os.environ, CROWDB_DATASET_PYTHON=str(python)))
 
 
 if __name__ == "__main__":
