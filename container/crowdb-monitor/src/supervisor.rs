@@ -187,6 +187,7 @@ impl Supervisor {
         self.status.services.insert(
             id.to_owned(),
             ServiceStatus {
+                operation_id: None,
                 pid: Some(pid),
                 generation: 1,
                 healthy: true,

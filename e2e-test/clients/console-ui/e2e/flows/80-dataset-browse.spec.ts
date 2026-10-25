@@ -51,7 +51,12 @@ test('Dataset native: capabilities', async ({ page, request, baseURL }) => {
   await page.getByRole('button', { name: 'Release Snapshot' }).click();
   await expect.poll(async () => (await call(request, `${datasetPath(name)}/snapshots/${snapshot}/reclaim`)).retained, { intervals: [100], timeout: 3000 }).toBe(false);
   const proxy = await consoleProxy(baseURL!); const seen: string[] = [];
-  page.on('request', value => { if (value.url().includes('/dataset/')) seen.push(value.url()); });
+  let observedModules = 'activity';
+  page.on('request', value => {
+    const document = new URL(page.url());
+    if (document.origin === new URL(proxy.url).origin && document.searchParams.get('disableModules') === observedModules
+      && value.url().includes('/dataset/')) seen.push(value.url());
+  });
   try {
     await page.goto(`${proxy.url}/?domain=Dataset&readonly=1&disableModules=activity&apiPrefix=/proxy/api`);
     await page.getByRole('navigation', { name: 'Dataset tree' }).getByRole('button', { name, exact: true }).click();
@@ -61,7 +66,7 @@ test('Dataset native: capabilities', async ({ page, request, baseURL }) => {
     await expect(page.getByRole('button', { name: 'Create child Snapshot' })).toHaveCount(0);
     await expect(page.getByText('Session activity', { exact: true })).toHaveCount(0);
     expect(seen.length).toBeGreaterThan(0); expect(seen.every(url => new URL(url).pathname.startsWith('/proxy/api/'))).toBe(true);
-    seen.length = 0;
+    seen.length = 0; observedModules = 'dataset';
     await page.goto(`${proxy.url}/?domain=Dataset&disableModules=dataset&apiPrefix=/proxy/api`);
     await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
     await expect(page.getByTestId('domain-dataset')).toHaveCount(0); expect(seen).toEqual([]);

@@ -76,6 +76,7 @@ pub(super) async fn prepare(
     server
         .persist_client(&ClientCredentials {
             s3_endpoint,
+            dataset_endpoint: spec.env.get("CROWDB_DATASET_PUBLIC_URI").cloned(),
             iceberg_endpoint,
             region: "us-east-1".into(),
             access_key_id: get("AWS_ACCESS_KEY_ID=")?,

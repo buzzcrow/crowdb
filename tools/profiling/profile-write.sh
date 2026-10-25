@@ -2,7 +2,7 @@
 # --- CrowDB write profiling with flamechart output ---
 #
 # Builds crowdb-cli + crowdb-kv-server with debug symbols and frame
-# pointers (Rust + C++ via cc crate), then runs a write benchmark
+# pointers (Rust + C++ via cc crate), then profiles the attached write client
 # under perf record (primary, generates flamegraph SVG) or
 # samply (alternative, Firefox Profiler UI).
 #
@@ -24,6 +24,7 @@
 #   - perf:   linux-tools for running kernel
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+unset CROWDB_ASAN
 
 if [ "$(uname -s)" = "Darwin" ]; then
     DEFAULT_SAMPLER="samply"
@@ -54,7 +55,7 @@ export RUSTFLAGS="-Cforce-frame-pointers=yes"
 export CXXFLAGS="-g -fno-omit-frame-pointer"
 export CFLAGS="-g -fno-omit-frame-pointer"
 
-pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server 2>&1 | tail -3
+pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server
 echo "    Done."
 echo ""
 
@@ -65,15 +66,18 @@ if ! readelf -S target/release/crowdb-kv-server 2>/dev/null | grep -q debug; the
 fi
 
 # ── Step 2: Profile ──
-# Bypass pixi for the actual run — set LD_LIBRARY_PATH so the
-# binaries find libspdlog/libfmt/libz from the pixi env. This keeps
-# the process tree clean (samply -> crowdb-cli -> crowdb-kv-server)
-# instead of samply -> pixi -> cargo -> crowdb-cli -> crowdb-kv-server.
-PIXI_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.."/.pixi/envs/default/lib && pwd)"
-export LD_LIBRARY_PATH="${PIXI_LIB}:${LD_LIBRARY_PATH:-}"
-export CROWDB_KV_SERVER_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/target/release/crowdb-kv-server"
-CLI_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/target/release/crowdb-cli"
-
+# Measurement services have an explicit owner independent of the product CLI.
+REGRESSION_LOG_ROOT="${RESULTS_DIR}/profile-write-${TIMESTAMP}-fixture-$$"
+source tools/benchmark/bench-regression-common.sh
+regression_init
+trap regression_destroy EXIT
+regression_fixture setup -- --kind kv --nodes 3 --kv-backend mem-block --wal-backend mem-block \
+    --max-inflight "$MAX_INFLIGHT" --metrics-interval 1
+regression_cli kv group add -s 0 -g 1 -n 1,2,3
+TARGET=$(pixi run python tools/benchmark/fixture.py --state "$REGRESSION_CONFIG" target)
+CLI_BIN="$(pwd)/target/release/crowdb-cli"
+export CROWDB_RUNTIME_ROOT="$REGRESSION_LOG_ROOT/client-runtime"
+unset CROWDB_CLUSTER
 mkdir -p "$RESULTS_DIR"
 
 if [ "$SAMPLER" = "samply" ]; then
@@ -88,14 +92,12 @@ if [ "$SAMPLER" = "samply" ]; then
     echo "    A browser tab should open automatically when done."
     echo ""
 
-    samply record --save-only -o "$OUTPUT" -- \
-        "$CLI_BIN" bench kv \
-        --mode mem --workload write --duration-secs "$DURATION" \
+    pixi run samply record --save-only -o "$OUTPUT" -- \
+        "$CLI_BIN" --management-endpoint "$TARGET" bench kv write --store 0 --group 1 --duration-secs "$DURATION" \
         --loader-num "$THREADS" --connections "$CONNECTIONS" \
-        --max-inflight "$MAX_INFLIGHT" --inflight-queues 1 \
         --metrics-interval 1 \
         --key-space "$KEYSPACE" --value-size "$VALUE_SIZE" \
-        --verify-bytes 0 --json 2>&1
+        --verify-bytes 0 2>&1
 
     echo ""
     echo ">>> Profile saved: ${OUTPUT}"
@@ -127,28 +129,26 @@ elif [ "$SAMPLER" = "perf" ]; then
     # -Cforce-frame-pointers=yes and -fno-omit-frame-pointer).
     # If you see truncated stacks through pre-built libs, switch to:
     #   --call-graph dwarf
-    perf record -F 999 -g --call-graph fp -o "$PERFDIR/perf.data" -- \
-        "$CLI_BIN" bench kv \
-        --mode mem --workload write --duration-secs "$DURATION" \
+    pixi run perf record -F 999 -g --call-graph fp -o "$PERFDIR/perf.data" -- \
+        "$CLI_BIN" --management-endpoint "$TARGET" bench kv write --store 0 --group 1 --duration-secs "$DURATION" \
         --loader-num "$THREADS" --connections "$CONNECTIONS" \
-        --max-inflight "$MAX_INFLIGHT" --inflight-queues 1 \
         --metrics-interval 1 \
         --key-space "$KEYSPACE" --value-size "$VALUE_SIZE" \
-        --verify-bytes 0 --json 2>&1
+        --verify-bytes 0 2>&1
 
     echo ""
     echo ">>> Processing perf data..."
 
     # Generate perf script for flamegraph conversion
-    perf script -i "$PERFDIR/perf.data" > "$PERFDIR/perf-script.txt" 2>/dev/null
+    pixi run perf script -i "$PERFDIR/perf.data" > "$PERFDIR/perf-script.txt"
 
     # Generate flamegraph SVG via inferno (Rust port of FlameGraph).
     # Installed through `pixi run install-deps` (cargo install inferno).
     if command -v inferno-collapse-perf &>/dev/null && command -v inferno-flamegraph &>/dev/null; then
         echo "    Generating flamegraph SVG..."
-        perf script -i "$PERFDIR/perf.data" 2>/dev/null | \
-            inferno-collapse-perf --all | \
-            inferno-flamegraph --title "CrowDB write ${THREADS}T:${CONNECTIONS}C MI=${MAX_INFLIGHT}" \
+        pixi run perf script -i "$PERFDIR/perf.data" | \
+            pixi run inferno-collapse-perf --all | \
+            pixi run inferno-flamegraph --title "CrowDB write ${THREADS}T:${CONNECTIONS}C MI=${MAX_INFLIGHT}" \
             > "$PERFDIR/flamegraph.svg"
         echo "    Flamegraph SVG: ${PERFDIR}/flamegraph.svg"
     else

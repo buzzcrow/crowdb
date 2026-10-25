@@ -108,8 +108,9 @@ mod s3_dispatcher {
         let address = listener.local_addr().unwrap();
         let (health_address, health_server) = start_health_server(&dispatcher).await;
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let data_dispatcher = Arc::clone(&dispatcher);
         let server = tokio::spawn(async move {
-            serve(listener, dispatcher, async move {
+            serve(listener, data_dispatcher, async move {
                 let _ = shutdown_rx.await;
             })
             .await
@@ -186,7 +187,7 @@ mod s3_dispatcher {
         assert_eq!(body_allocator.retained_bytes(), 0);
         assert_terminal_outcomes(address, &operations, &metrics).await;
 
-        assert_health_isolation(address, health_address, &metrics).await;
+        assert_health_isolation(address, health_address, &metrics, &dispatcher).await;
         health_server.abort();
         let _ = shutdown_tx.send(());
         server.await.unwrap();
@@ -200,7 +201,12 @@ mod s3_dispatcher {
         let health_handler = Arc::new(crowdb_access_server::s3::AccessHealthHandler(Arc::clone(
             dispatcher,
         )));
-        let health_server = tokio::spawn(serve(health_listener, health_handler, std::future::pending()));
+        let observer = dispatcher.start_health_observer().unwrap();
+        wait_health_sample(dispatcher, 0).await;
+        let health_server = tokio::spawn(async move {
+            let _observer = observer;
+            serve(health_listener, health_handler, std::future::pending()).await
+        });
         (health_address, health_server)
     }
 
@@ -208,16 +214,33 @@ mod s3_dispatcher {
         address: std::net::SocketAddr,
         health_address: std::net::SocketAddr,
         metrics: &S3Metrics,
+        dispatcher: &Arc<S3Dispatcher>,
     ) {
+        let generation = dispatcher.health_generation_for_tests();
         metrics.enqueue_cleanup(2);
+        wait_health_sample(dispatcher, generation).await;
         let not_ready = request(health_address, "GET /_crowdb/health/ready HTTP/1.1").await;
         assert!(not_ready.starts_with("HTTP/1.1 503"));
         assert!(not_ready.contains(r#""cleanup":"unavailable""#));
+        let body: serde_json::Value =
+            serde_json::from_str(not_ready.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["ready"], false);
+        assert_eq!(body["cleanup"], "unavailable");
 
         let data_on_health = request(health_address, "GET /bucket/key HTTP/1.1").await;
         assert!(data_on_health.starts_with("HTTP/1.1 404"));
         let health_on_data = request(address, "GET /_crowdb/health/ready HTTP/1.1").await;
         assert!(!health_on_data.contains(r#""ready":true"#));
+    }
+
+    async fn wait_health_sample(dispatcher: &S3Dispatcher, generation: u64) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while dispatcher.health_generation_for_tests() <= generation {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("backend health sample did not advance");
     }
 
     async fn assert_operational_endpoints(
@@ -231,6 +254,9 @@ mod s3_dispatcher {
         let ready = request(health_address, "GET /_crowdb/health/ready HTTP/1.1").await;
         assert!(ready.starts_with("HTTP/1.1 200"));
         assert!(ready.contains(r#""ready":true"#));
+        let body: serde_json::Value = serde_json::from_str(ready.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["ready"], true);
+        assert_eq!(body["authentication"], "ready");
         let exported = request(address, "GET /_crowdb/metrics HTTP/1.1").await;
         assert!(exported.starts_with("HTTP/1.1 200"));
         assert!(exported.contains(r#"crowdb_s3_requests_total{operation="put_object",outcome="success"} 0"#));

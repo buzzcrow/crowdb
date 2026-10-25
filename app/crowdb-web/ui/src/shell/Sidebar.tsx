@@ -11,7 +11,7 @@ import { crowdbKvServerByNodeId } from '../data/crowdbKvServers';
 import { DEFAULT_DC_ID, DEFAULT_DC_NAME } from '../data/defaultDatacenter';
 import { groupLabel, localReplicaLabel, nodeLabel, rackLabel, storeLabel, toUiHealth, toUiReplicaRole, toUiRole } from '../utils/entityDisplay';
 import type { NodeDiskGroups } from '../data/useCapacityTree';
-import type { ServerSummary } from '../api';
+import type { NodeDeploymentStatus, ServerSummary } from '../api';
 import { isAuxiliaryKind, serviceInstanceLabel } from '../services/client';
 import { serviceOrder, type NodeServicePlan, type ServiceKind } from '../services/useNodeServicePlans';
 import { domainTabs } from './domainTabs';
@@ -36,6 +36,7 @@ interface SidebarProps {
   candidateSummaries?: Record<number, CandidateSummary>;
   onCandidatesChanged?: () => void;
   nodeManagement?: boolean;
+  nodeAuthority?: NodeDeploymentStatus;
   allServers?: ServerSummary[];
   racks?: Rack[];
   servers?: CrowdbKVServerView[];
@@ -69,6 +70,7 @@ export function Sidebar({
   candidateSummaries = {},
   onCandidatesChanged,
   nodeManagement = false,
+  nodeAuthority,
   allServers = [],
   racks = [],
   servers = [],
@@ -310,7 +312,7 @@ export function Sidebar({
                 )}
         </div>
       )}</div>
-      {nodeManagement && domain === Domain.Cluster && <CandidateNodes addNodeRequest={addNodeRequest} racks={racks} readonly={candidateReadonly} onChange={onCandidatesChanged} />}
+      {nodeManagement && domain === Domain.Cluster && <CandidateNodes deployment={nodeAuthority} addNodeRequest={addNodeRequest} racks={racks} readonly={candidateReadonly} onChange={onCandidatesChanged} />}
     </aside>
   );
 }

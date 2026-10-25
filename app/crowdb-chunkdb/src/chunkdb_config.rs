@@ -24,7 +24,7 @@ pub enum PlacementMode {
 pub enum DeploymentMode {
     #[default]
     Production,
-    TestSingleNode,
+    Local,
     /// Legacy colocated EC fixtures; rejected by release builds.
     TestUnsafePlacement,
 }
@@ -133,15 +133,15 @@ impl BaseConfig for ChunkdbConfig {
                     return Err("production deployment requires protected placement".into());
                 }
             }
-            DeploymentMode::TestSingleNode => {
+            DeploymentMode::Local => {
                 if self.deployment.max_node_failures != 0 {
-                    return Err("test_single_node requires max_node_failures = 0".into());
+                    return Err("local requires max_node_failures = 0".into());
                 }
                 if self.placement.mode != PlacementMode::UnsafeColocated {
-                    return Err("test_single_node requires explicit unsafe_colocated placement".into());
+                    return Err("local requires explicit unsafe_colocated placement".into());
                 }
                 if self.conversion.enabled {
-                    return Err("test_single_node must disable mirror-to-EC conversion".into());
+                    return Err("local must disable mirror-to-EC conversion".into());
                 }
             }
             DeploymentMode::TestUnsafePlacement => {
@@ -341,6 +341,7 @@ impl RepairConfig {
 
 /// Background mirror-to-EC conversion policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ConversionConfig {
     /// Run automatic conversion scans. Manual triggers remain available.
     pub enabled: bool,
@@ -407,8 +408,7 @@ pub struct ServerConfig {
     #[serde(default = "default_rpc_workers")]
     pub rpc_workers: u32,
     pub http_listen_addr: String,
-    /// crowdb-rpc listen address (R116 migration — runs alongside the
-    /// HTTP listener).
+    /// crowdb-rpc listen address, separate from the HTTP listener.
     #[serde(default = "default_rpc_listen_addr")]
     pub rpc_listen_addr: String,
     pub instance_id: Option<String>,

@@ -23,6 +23,10 @@ pub enum NodeManagementError {
     Io(#[from] std::io::Error),
     #[error("physical host identity must be explicitly configured")]
     PhysicalHost,
+    #[error(
+        "discovery seeds require at most 64 HTTP origins without credentials, paths, queries or fragments"
+    )]
+    DiscoverySeeds,
 }
 
 #[derive(Clone)]
@@ -45,6 +49,8 @@ pub async fn serve_node_management(
     if physical_host_id.is_empty() || physical_host_id.len() > 256 {
         return Err(NodeManagementError::PhysicalHost);
     }
+    DiscoveryConfig::validate_seed_origins(&config.seeds)?;
+    let formation = super::read_node_policy(root)?.map(|policy| policy.formation());
     let identity = NodeIdentity::load_or_create(root)?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
     if listener.local_addr()?.port() != config.monitor_port {
@@ -54,8 +60,10 @@ pub async fn serve_node_management(
         )
         .into());
     }
-    validate_seeds(&config.seeds)?;
     let mut discovery = NodeDiscovery::start(identity, config)?;
+    if let Some(formation) = formation {
+        discovery.set_formation(formation)?;
+    }
     let seed_client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -136,24 +144,30 @@ pub async fn serve_node_management(
     Ok(())
 }
 
-fn validate_seeds(seeds: &[String]) -> Result<(), NodeManagementError> {
-    if seeds.len() > 64 {
-        return Err(NodeManagementError::PhysicalHost);
-    }
-    for seed in seeds {
-        let url = reqwest::Url::parse(seed).map_err(|_| NodeManagementError::PhysicalHost)?;
-        if url.scheme() != "http"
-            || url.host_str().is_none()
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.path() != "/"
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            return Err(NodeManagementError::PhysicalHost);
+impl DiscoveryConfig {
+    /// Validate startup origins before accepting policy or creating node resources.
+    ///
+    /// # Errors
+    /// Rejects invalid/credential-bearing origins without exposing their values.
+    pub fn validate_seed_origins(seeds: &[String]) -> Result<(), NodeManagementError> {
+        if seeds.len() > 64 {
+            return Err(NodeManagementError::DiscoverySeeds);
         }
+        for seed in seeds {
+            let url = reqwest::Url::parse(seed).map_err(|_| NodeManagementError::DiscoverySeeds)?;
+            if url.scheme() != "http"
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.path() != "/"
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
+                return Err(NodeManagementError::DiscoverySeeds);
+            }
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn local_handshake(root: &Path, discovery: &NodeDiscovery, physical_host_id: String) -> NodeHandshake {

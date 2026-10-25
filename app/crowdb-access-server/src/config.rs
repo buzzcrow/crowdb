@@ -33,7 +33,7 @@ pub struct HealthConfig {
 pub enum DeploymentMode {
     #[default]
     Production,
-    TestSingleNode,
+    Local,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -266,6 +266,17 @@ impl Default for DatasetConfig {
 
 impl AccessConfig {
     #[must_use]
+    pub fn dataset_small_write(&self) -> SmallWritePolicy {
+        let accepted = self.small_write.policy();
+        let mut policy = SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::Dataset);
+        policy.mirror_copies = accepted.mirror_copies;
+        policy.conversion_enabled = accepted.conversion_enabled;
+        policy.conversion_data_num = accepted.conversion_data_num;
+        policy.conversion_code_num = accepted.conversion_code_num;
+        policy
+    }
+
+    #[must_use]
     pub fn s3_small_write(&self) -> &SmallWriteConfig {
         self.s3.small_write.as_ref().unwrap_or(&self.small_write)
     }
@@ -361,20 +372,24 @@ impl BaseConfig for AccessConfig {
                     return Err("production access writes require protected strips".into());
                 }
             }
-            DeploymentMode::TestSingleNode => {
+            DeploymentMode::Local => {
                 if self.deployment.max_node_failures != 0 {
-                    return Err("test_single_node requires max_node_failures = 0".into());
+                    return Err("local requires max_node_failures = 0".into());
                 }
                 for config in [self.s3_small_write(), self.iceberg_small_write()] {
                     if config.conversion_enabled
-                        || config.policy().mirror_copies != 1
+                        || !matches!(config.policy().mirror_copies, 1 | 2)
                         || config.disk_block_bytes != 1024 * 1024
                     {
-                        return Err("test_single_node requires one-copy 1 MiB mirror writes".into());
+                        return Err(
+                            "local requires one or two-copy 1 MiB mirror writes without conversion".into(),
+                        );
                     }
                 }
-                if self.s3.large_mirror_copies != Some(1) || self.iceberg.large_mirror_copies != Some(1) {
-                    return Err("test_single_node requires one-copy large mirror strips".into());
+                if !matches!(self.s3.large_mirror_copies, Some(1 | 2))
+                    || !matches!(self.iceberg.large_mirror_copies, Some(1 | 2))
+                {
+                    return Err("local requires one or two-copy large mirror strips".into());
                 }
             }
         }

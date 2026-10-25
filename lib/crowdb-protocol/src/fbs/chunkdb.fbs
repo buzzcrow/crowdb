@@ -3,9 +3,7 @@ include "diskdb.fbs";
 
 namespace crowdb.chunkdb.proto;
 
-// chunkdb service flatbuffer control messages (R116: legacy → crowdb-rpc
-// migration). Mirrors chunkdb_service.proto + chunkdb_op.proto +
-// chunkdb_type.proto.
+// Current ChunkDB service control messages.
 //
 // Conventions (design-crowdb-rpc.md §6, todo_fb.md "Rules to Follow"):
 // - Every request/response table carries `id` (request_id, matched by
@@ -392,7 +390,6 @@ table FBSealChunkRequest {
     id:uint64;
     rpc_create_nano:uint64;
     chunk_id:crowdb.rpc.proto.FBInt128;
-    seal_length:uint32;
     seal_bytes:uint64;
 }
 
@@ -441,26 +438,6 @@ table FBDeleteChunkRangeResponse {
     error_msg:string;
     range_start:uint32;
     range_end:uint32;
-}
-
-// ── UpdateChunkStrip ─────────────────────────────────────────────
-
-table FBUpdateChunkStripRequest {
-    id:uint64;
-    rpc_create_nano:uint64;
-    chunk_id:crowdb.rpc.proto.FBInt128;
-    strip_index:uint32;
-    strip:FBChunkStrip;
-}
-
-table FBUpdateChunkStripResponse {
-    id:uint64;
-    rpc_create_nano:uint64;
-    ret_code:FBChunkdbRetCode;
-    error_msg:string;
-    range_start:uint32;
-    range_end:uint32;
-    chunk:FBChunk;
 }
 
 // ── Replacement Allocation + Fenced Range Swap ─────────────────

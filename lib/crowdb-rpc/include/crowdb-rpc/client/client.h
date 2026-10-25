@@ -146,15 +146,11 @@ class RpcClient
     // is a C callback (same type as server-side handlers) that receives
     // the request fields + conn_handle and submits the response later
     // via crowdb_rpc_server_submit_response.
-    void register_handler(uint16_t msg_type, crowdb_rpc_handler_fn callback, void *user_data);
+    void register_handler(uint16_t msg_type, crowdb_rpc_handler_fn callback, std::shared_ptr<void> context);
 
     // Clear all registered request handlers. Called during shutdown
     // to break reference cycles (Rust handler closures capture Arcs).
-    void clear_handlers()
-    {
-        std::scoped_lock lock(handler_mu_);
-        request_handlers_.clear();
-    }
+    void clear_handlers();
 
     // Set the transport for submitting UnknownMessage responses when
     // no handler matches an incoming request msg_type. If not set,
@@ -202,8 +198,8 @@ class RpcClient
     // Handler registry for incoming requests (server→client direction).
     // Maps msg_type → (C callback, user_data). Same trampoline pattern
     // as the server-side handler dispatch.
-    std::mutex                                                             handler_mu_;
-    std::unordered_map<uint16_t, std::pair<crowdb_rpc_handler_fn, void *>> request_handlers_;
+    std::mutex                                                                            handler_mu_;
+    std::unordered_map<uint16_t, std::pair<crowdb_rpc_handler_fn, std::shared_ptr<void>>> request_handlers_;
 
     // Transport for submitting UnknownMessage responses when no handler
     // matches an incoming request msg_type. Set via set_transport.

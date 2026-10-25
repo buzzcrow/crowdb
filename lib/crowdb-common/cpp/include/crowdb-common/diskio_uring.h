@@ -188,6 +188,9 @@ class DiskIOUring
         std::function<void(int)> cb;
         int                      fd{-1};             // for in_flight decrement on dispatch
         CallbackEntry           *next_free{nullptr}; // poll-thread-only: deferred-delete list
+        uint64_t                 queued_nanos{0};
+        uint64_t                 published_nanos{0};
+        uint8_t                  opcode{0};
     };
 
     // fd_table entry: pipeline index + in-flight counter.

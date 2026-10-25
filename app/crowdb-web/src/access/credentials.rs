@@ -40,12 +40,7 @@ pub(super) fn dataset(state: &AppState) -> Result<String, String> {
         .map_err(|_| "Dataset credential is not configured on the Console server".into())
 }
 
-pub(super) struct S3Credentials {
-    pub access: String,
-    pub secret: String,
-    pub region: String,
-    pub session: Option<String>,
-}
+pub(super) use crowdb_console_shared::ops::s3::S3Credentials;
 
 pub(super) fn s3(state: &AppState, target: &str) -> Result<S3Credentials, String> {
     if let (Ok(access), Ok(secret)) = (
@@ -67,12 +62,23 @@ pub(super) fn s3(state: &AppState, target: &str) -> Result<S3Credentials, String
     {
         return Err("Cluster S3 credential endpoint does not match the configured service".into());
     }
+    from_client_env(&body)
+}
+
+fn from_client_env(body: &str) -> Result<S3Credentials, String> {
+    let get = |name| value(body, name).ok_or_else(|| "Cluster S3 credentials are incomplete".to_owned());
     Ok(S3Credentials {
         access: get("AWS_ACCESS_KEY_ID")?,
         secret: get("AWS_SECRET_ACCESS_KEY")?,
         region: get("AWS_DEFAULT_REGION")?,
         session: None,
     })
+}
+
+pub(super) fn local_s3(state: &AppState) -> Result<S3Credentials, String> {
+    let body = crowdb_monitor::show_client_credentials(&root(state))
+        .map_err(|_| "Retained local S3 credentials are unavailable")?;
+    from_client_env(&body)
 }
 
 pub(super) fn manager(state: &AppState) -> Result<String, String> {

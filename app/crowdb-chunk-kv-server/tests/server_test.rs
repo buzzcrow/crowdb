@@ -1,19 +1,22 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/process.rs"]
+mod test_process;
+
 use std::sync::Arc;
 
 use crowdb_chunk_kv::memory::MemoryPartitionTree;
 use crowdb_chunk_kv::{
     Checkpoint, Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionLifecycle,
-    PartitionRange, PartitionTree, PreparedSplitWriterArtifact, SplitArtifact, SplitChild, SplitPlan,
+    PartitionRange, PreparedSplitWriterArtifact, SplitArtifact, SplitChild, SplitPlan,
     StreamPartitionJournal, TransitionId,
 };
 use crowdb_chunk_kv_server::{ChunkKvService, ServerLifecycle, TransferStateMachine};
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamMetadataStore,
-    StreamName, StreamRegistry,
+    ChunkStream, StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName, StreamRecord,
+    StreamRecordState, StreamRegistry,
 };
 use crowdb_protocol::chunk_kv::{
     AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
@@ -120,7 +123,7 @@ fn prepared_writer_artifact(writer: &Partition) -> PreparedSplitWriterArtifact {
         parent_id: PartitionId { high: 1, low: 2 },
         parent_epoch: EPOCH,
         parent_stream_name: StreamName { high: 30, low: 31 },
-        parent_stream_manifest_generation: 1,
+        parent_stream_generation: 1,
         parent_replay_offset: 0,
         parent_cutover_offset: 0,
         applied_seq: 0,
@@ -155,13 +158,15 @@ async fn prepared_partition_range(
 ) -> Partition {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         owner_epoch,
         StreamConfig::default(),
@@ -181,7 +186,7 @@ async fn prepared_partition_range(
             root_manifest_generation: 1,
             applied_seq: 0,
             stream_name,
-            stream_manifest_generation: 1,
+            stream_generation: 1,
             replay_offset: 0,
         },
         PartitionConfig::default(),
@@ -199,13 +204,15 @@ async fn pending_transfer_fixture() -> (Partition, PreparedSplitWriterArtifact, 
     let open_journal = |stream: ChunkStream, name| -> Arc<dyn PartitionJournal> {
         Arc::new(StreamPartitionJournal::new(stream, name).unwrap())
     };
-    let binding = |stream_name| StreamBinding {
+    let binding = |stream_name| StreamRecord {
         purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
         stream_name,
         metadata_group_id: 7,
-        binding_generation: 1,
-        state: StreamBindingState::Active,
-        owner_kind: Some("chunk-kv-partition".into()),
+        record_version: 1,
+        state: StreamRecordState::Active,
+        consumer_kind: Some("chunk-kv-partition".into()),
+        consumer_id: None,
+        created_at_ms: StreamRecord::creation_time_ms(),
     };
     let source = ChunkStream::create(
         binding(source_name),
@@ -242,7 +249,7 @@ async fn pending_transfer_fixture() -> (Partition, PreparedSplitWriterArtifact, 
         parent_id: PartitionId { high: 9, low: 9 },
         parent_epoch: EPOCH,
         parent_stream_name: source_name,
-        parent_stream_manifest_generation: 1,
+        parent_stream_generation: 1,
         parent_replay_offset: 0,
         parent_cutover_offset: 0,
         applied_seq: 0,
@@ -257,7 +264,7 @@ async fn pending_transfer_fixture() -> (Partition, PreparedSplitWriterArtifact, 
             root_manifest_generation: 1,
             applied_seq: 0,
             stream_name: target_name,
-            stream_manifest_generation: 1,
+            stream_generation: 1,
             replay_offset: 0,
         },
         PartitionConfig::default(),
@@ -290,7 +297,7 @@ fn committed_transfer(artifact: &PreparedSplitWriterArtifact) -> TransferTransit
             },
             source_epoch: artifact.parent_epoch,
             source_stream_name: artifact.parent_stream_name,
-            source_stream_manifest_generation: artifact.parent_stream_manifest_generation,
+            source_stream_generation: artifact.parent_stream_generation,
             replay_offset: artifact.parent_replay_offset,
             cutover_offset: artifact.parent_cutover_offset,
             base_root_manifest_generation: artifact.root_manifest_generation,
@@ -431,6 +438,7 @@ fn install_local_split_catalog(
         .unwrap();
     let mut grant = ServingGrant {
         instance_id: INSTANCE_ID,
+        process_epoch: 1,
         lease_sequence: 2,
         catalog_generation: 2,
         issued_at_ms: 1_100,
@@ -577,6 +585,7 @@ async fn assert_old_parent_scan_continuation(service: &ChunkKvService) {
 async fn assert_retained_seek_needs_no_child_grant(service: &ChunkKvService) {
     let mut grant = ServingGrant {
         instance_id: INSTANCE_ID,
+        process_epoch: 1,
         lease_sequence: 3,
         catalog_generation: 2,
         issued_at_ms: 1_200,
@@ -651,55 +660,28 @@ fn assert_hosts_exact_child_assignment(service: &ChunkKvService, child: &Partiti
 }
 
 async fn fixture() -> (ChunkKvService, Partition) {
-    let stream_name = StreamName { high: 30, low: 31 };
-    let store = Arc::new(MemoryStreamStore::new(4_096));
-    let stream = ChunkStream::create(
-        StreamBinding {
-            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
-            stream_name,
-            metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
-        },
-        EPOCH,
-        StreamConfig::default(),
-        store.clone() as Arc<dyn StreamRegistry>,
-        store.clone() as Arc<dyn StreamMetadataStore>,
-        store as Arc<dyn StreamChunkStore>,
-    )
-    .await
-    .unwrap();
-    let tree: Arc<dyn PartitionTree> = Arc::new(MemoryPartitionTree::default());
-    let journal: Arc<dyn PartitionJournal> =
-        Arc::new(StreamPartitionJournal::new(stream, stream_name).unwrap());
-    let partition = Partition::open(
-        PartitionId { high: 1, low: 2 },
-        PartitionRange {
-            start: Some(Vec::new()),
-            end: None,
-        },
-        EPOCH,
-        PartitionConfig::default(),
-        tree,
-        journal,
-    )
-    .unwrap();
+    let fixture = serving_fixture::TestServingLease::start().await;
+    (fixture.service, fixture.partition)
+}
 
-    let (head, page) = catalog(Id128 { high: 1, low: 2 }, stream_name, EPOCH, 1, None);
-
-    let service = ChunkKvService::new(INSTANCE_ID, 8).unwrap();
+#[tokio::test]
+async fn matching_grant_activation_promotes_a_replayed_partition() {
+    let stream_name = StreamName { high: 30, low: 32 };
+    let partition = prepared_partition(PartitionId { high: 1, low: 3 }, stream_name, EPOCH).await;
+    let service = ChunkKvService::new(test_process::TestProcess::authority(INSTANCE_ID), 4).unwrap();
+    let (head, page) = catalog(Id128 { high: 1, low: 3 }, stream_name, EPOCH, 1, None);
     service
         .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
         .unwrap();
     let mut grant = ServingGrant {
         instance_id: INSTANCE_ID,
+        process_epoch: 1,
         lease_sequence: 1,
         catalog_generation: 1,
         issued_at_ms: 1_000,
         expires_at_ms: 13_000,
         assignments: vec![ServingAssignment {
-            partition_id: Id128 { high: 1, low: 2 },
+            partition_id: Id128 { high: 1, low: 3 },
             owner_epoch: EPOCH,
         }],
         assignment_digest: [0; 32],
@@ -709,18 +691,14 @@ async fn fixture() -> (ChunkKvService, Partition) {
         .authority()
         .install(grant, &policy(), 1_000, 50_000)
         .unwrap();
-    (service, partition)
-}
-
-#[tokio::test]
-async fn matching_grant_activation_promotes_a_replayed_partition() {
-    let stream_name = StreamName { high: 30, low: 32 };
-    let partition = prepared_partition(PartitionId { high: 1, low: 3 }, stream_name, EPOCH).await;
-    let service = ChunkKvService::new(INSTANCE_ID, 4).unwrap();
-    let (head, page) = catalog(Id128 { high: 1, low: 3 }, stream_name, EPOCH, 1, None);
-    service
-        .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
-        .unwrap();
+    assert_eq!(service.health(50_100).lifecycle, ServerLifecycle::Serving);
+    assert!(service.health(50_100).range_readiness[0]
+        .detail
+        .contains("Prepared"));
+    assert!(
+        !service.health(50_100).ready,
+        "a live grant cannot make an inactive writer ready"
+    );
     assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::Prepared);
     assert!(!service.registry_observation(1_024, 0).hosted[0].recovering);
     assert!(matches!(
@@ -734,6 +712,34 @@ async fn matching_grant_activation_promotes_a_replayed_partition() {
         .unwrap();
 
     assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::Serving);
+    assert!(service.health(50_100).ready);
+    assert!(service.health(50_100).range_readiness[0]
+        .detail
+        .contains("current authority"));
+    assert!(
+        !service.health(65_000).ready,
+        "expired authority cannot report ready"
+    );
+}
+
+#[test]
+fn an_idle_stateless_instance_needs_no_owned_range_or_serving_grant() {
+    let service = ChunkKvService::new(test_process::TestProcess::authority(INSTANCE_ID + 1), 4).unwrap();
+    assert!(!service.health(50_100).ready, "A catalog must first be loaded");
+    let (head, page) = catalog(
+        Id128 { high: 1, low: 3 },
+        StreamName { high: 30, low: 32 },
+        EPOCH,
+        1,
+        None,
+    );
+    service
+        .install_catalog_and_reconcile(&head, &[page], &[])
+        .unwrap();
+    let health = service.health(50_100);
+    assert!(health.ready);
+    assert!(health.range_readiness.is_empty());
+    assert!(health.detail.contains("no tree-range ownership assigned"));
 }
 
 #[tokio::test]
@@ -746,7 +752,10 @@ async fn committed_transfer_activates_a_recovered_overlay() {
         entries: vec![ChunkKvRangeCatalogEntry {
             partition_id: transition.partition_id,
             range: transition.range.clone(),
-            owner: transition.target.clone(),
+            owner: crowdb_protocol::chunk_kv::OwnerDescriptor {
+                rpc_endpoint: "192.0.2.12:7401".into(),
+                ..transition.target.clone()
+            },
             owner_epoch: transition.target_epoch,
             state: ChunkKvRangeCatalogPartitionState::Serving,
             artifact: transition.target_artifact.clone(),
@@ -767,7 +776,7 @@ async fn committed_transfer_activates_a_recovered_overlay() {
         checksum: [0; 32],
     };
     head.seal().unwrap();
-    let service = ChunkKvService::new(INSTANCE_ID, 4).unwrap();
+    let service = ChunkKvService::new(test_process::TestProcess::authority(INSTANCE_ID), 4).unwrap();
     service
         .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
         .unwrap();
@@ -817,6 +826,10 @@ async fn matching_grant_refresh_keeps_a_preparing_parent_active() {
         .unwrap();
 
     assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::SplitPreparing);
+    assert!(
+        service.health(50_100).ready,
+        "an active split dispatcher still serves its published range"
+    );
     assert!(
         !service.registry_observation(1_024, 0).hosted[0].recovering,
         "a preparing parent must remain eligible for serving-grant renewal"
@@ -900,6 +913,7 @@ async fn prepared_split_lineage_suppresses_catalog_recovery() {
     assert_all_partition_loads_recoverable(&service, true).await;
     assert_old_parent_ordered_reads(&service).await;
     assert_old_parent_scan_continuation(&service).await;
+    split_scan::assert_old_parent_right_interval(&service).await;
     assert_retained_seek_needs_no_child_grant(&service).await;
 
     service.remove_partition(Id128 { high: 1, low: 2 });
@@ -957,7 +971,7 @@ async fn catching_up_target_appends_unconditional_write_before_initialization() 
         },
         source_epoch: final_artifact.parent_epoch,
         source_stream_name: final_artifact.parent_stream_name,
-        source_stream_manifest_generation: final_artifact.parent_stream_manifest_generation,
+        source_stream_generation: final_artifact.parent_stream_generation,
         replay_offset: final_artifact.parent_replay_offset,
         cutover_offset: final_artifact.parent_cutover_offset,
         base_root_manifest_generation: final_artifact.root_manifest_generation,
@@ -1035,7 +1049,9 @@ async fn catching_up_target_appends_unconditional_write_before_initialization() 
 #[tokio::test]
 async fn catching_up_read_waits_are_time_and_count_bounded() {
     let target = pending_transfer_partition().await;
-    let service = Arc::new(ChunkKvService::new_with_limits(7, 4, 1_024, 1, 20).unwrap());
+    let service = Arc::new(
+        ChunkKvService::new_with_limits(test_process::TestProcess::authority(7), 4, 1_024, 1, 20).unwrap(),
+    );
     let (head, mut page) = catalog(
         Id128 { high: 1, low: 2 },
         target.snapshot().stream_name,
@@ -1334,3 +1350,11 @@ async fn ordered_seek_and_scan_preserve_inclusive_range_start() {
 
 #[path = "server_test/bounded_scan.rs"]
 mod bounded_scan;
+
+#[path = "server_test/lease.rs"]
+mod lease;
+#[path = "common/serving_lease.rs"]
+mod serving_fixture;
+
+#[path = "server_test/split_scan.rs"]
+mod split_scan;

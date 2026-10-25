@@ -29,6 +29,7 @@ pub struct SplitChildAssignment {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SplitReadinessProof {
     pub cutover_seq: u64,
     pub parent_next_epoch: u64,
@@ -40,13 +41,11 @@ pub struct SplitReadinessProof {
     pub child_applied_seq: u64,
     pub child_tree_manifest: u64,
     pub child_root_manifest_generation: u64,
-    /// Historical dependency for legacy replacement-parent records only.
-    #[serde(default)]
-    pub retained_parent_tail_overlay: Option<TailOverlayArtifact>,
     pub child_tail_overlay: TailOverlayArtifact,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SplitTransition {
     pub transition_id: Id128,
     pub parent_id: Id128,
@@ -59,11 +58,9 @@ pub struct SplitTransition {
     pub parent_next_epoch: u64,
     pub split_key: Vec<u8>,
     pub child: SplitChildAssignment,
-    #[serde(default)]
     pub planned_at_ms: u64,
     pub phase: SplitPhase,
     /// Durable local handoff evidence, independent of final readiness.
-    #[serde(default)]
     pub handoff_proof: Option<TailOverlayArtifact>,
     pub readiness_proof: Option<SplitReadinessProof>,
     pub failure: Option<String>,
@@ -112,6 +109,9 @@ impl SplitTransition {
             && self.parent_next_epoch > self.parent_epoch
             && valid_artifact(&self.parent_artifact)
             && valid_artifact(&self.retained_parent_artifact)
+            && self.retained_parent_artifact.tree_id == self.parent_artifact.tree_id
+            && self.retained_parent_artifact.stream_name == self.parent_artifact.stream_name
+            && self.retained_parent_artifact.tail_overlay.is_none()
             && valid_split_child(&self.child);
         let exact_ranges = self.split_key > self.parent_range.start
             && self
@@ -155,8 +155,6 @@ impl SplitTransition {
                 Some("zero child tree manifest")
             } else if proof.child_root_manifest_generation == 0 {
                 Some("zero child root manifest generation")
-            } else if !self.valid_retained_parent(proof) {
-                Some("retained-parent recovery artifact")
             } else if !self.valid_split_overlay(&proof.child_tail_overlay, &self.child, proof.cutover_seq) {
                 Some("child tail overlay")
             } else {
@@ -181,26 +179,6 @@ impl SplitTransition {
             ));
         }
         Ok(())
-    }
-
-    fn valid_retained_parent(&self, proof: &SplitReadinessProof) -> bool {
-        if self.retained_parent_artifact.tree_id == self.parent_artifact.tree_id
-            && self.retained_parent_artifact.stream_name == self.parent_artifact.stream_name
-        {
-            return self.retained_parent_artifact.tail_overlay.is_none()
-                && proof.retained_parent_tail_overlay.is_none();
-        }
-        proof
-            .retained_parent_tail_overlay
-            .as_ref()
-            .is_some_and(|overlay| {
-                valid_tail_overlay(overlay)
-                    && self.retained_parent_artifact.tail_overlay.as_ref() == Some(overlay)
-                    && overlay.source_partition_id == self.parent_id
-                    && overlay.source_epoch == self.parent_epoch
-                    && overlay.source_stream_name == self.parent_artifact.stream_name
-                    && overlay.cutover_seq == proof.cutover_seq
-            })
     }
 
     fn validate_handoff(&self) -> Result<(), ChunkKvProtocolError> {
@@ -235,7 +213,7 @@ fn preserves_handoff_base(handoff: &TailOverlayArtifact, ready: &TailOverlayArti
     handoff.source_partition_id == ready.source_partition_id
         && handoff.source_epoch == ready.source_epoch
         && handoff.source_stream_name == ready.source_stream_name
-        && handoff.source_stream_manifest_generation == ready.source_stream_manifest_generation
+        && handoff.source_stream_generation == ready.source_stream_generation
         && handoff.replay_offset == ready.replay_offset
         && handoff.base_root_manifest_generation == ready.base_root_manifest_generation
         && handoff.base_tree_manifest == ready.base_tree_manifest

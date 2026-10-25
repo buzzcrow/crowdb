@@ -10,15 +10,12 @@
     clippy::too_many_lines
 )]
 
-//! Hand-written Rust types replacing the prost-generated `crow.common`
-//! types. API-compatible with the former proto-generated structs — same
-//! field names, types, and derives. No `prost::Message` trait (removed
-//! with the protobuf cutover).
+//! Shared service-registry, hardware and RPC value types.
 
 use serde::{Deserialize, Serialize};
 
 /// Implement `From<Enum> for i32` and `TryFrom<i32> for Enum` for a
-/// `#[repr(i32)]` enum, matching prost's generated conversions.
+/// `#[repr(i32)]` enum.
 macro_rules! impl_enum_conversions {
     ($enum:ident, $($variant:ident = $value:expr),+ $(,)?) => {
         impl From<$enum> for i32 {
@@ -265,6 +262,7 @@ pub struct ServiceExtra {
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct ChunkKvExtra {
+    pub process_epoch: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -273,7 +271,6 @@ pub struct ChunkKvExtra {
     pub durable_bytes: u64,
     pub request_rate: u64,
     pub hosted: Vec<crate::chunk_kv::HostedPartition>,
-    #[serde(default)]
     pub partition_loads: Vec<ChunkKvPartitionLoad>,
 }
 
@@ -281,12 +278,9 @@ pub struct ChunkKvExtra {
 pub struct ChunkKvPartitionLoad {
     pub partition_id: crate::chunk_kv::Id128,
     pub durable_bytes: u64,
-    #[serde(default)]
     pub logical_bytes: u64,
-    #[serde(default)]
     pub logical_metrics_exact: bool,
     pub live_byte_samples: Vec<(Vec<u8>, u64)>,
-    #[serde(default)]
     pub independently_recoverable: bool,
 }
 

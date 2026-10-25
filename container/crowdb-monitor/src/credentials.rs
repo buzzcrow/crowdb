@@ -1,3 +1,6 @@
+mod client;
+pub use client::{show_client_credentials, ClientCredentials};
+
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -133,12 +136,17 @@ impl ServerCredentials {
         &self.iceberg_manage_token
     }
 
+    #[must_use]
+    pub fn iceberg_read_token(&self) -> &str {
+        &self.iceberg_read_token
+    }
+
     /// # Errors
     /// Requires an existing client file to match the authoritative user and endpoints.
     pub fn verify_client(&self, client: &ClientCredentials) -> Result<(), CredentialError> {
         client.validate()?;
         let existing = read_private(&self.directory.join(CLIENT_FILE))?;
-        if existing != client.env(&self.iceberg_write_token) {
+        if existing != client.env(&self.iceberg_write_token, &self.dataset_token()) {
             return Err(CredentialError::Invalid("existing client credentials conflict"));
         }
         Ok(())
@@ -151,12 +159,17 @@ impl ServerCredentials {
         let path = self.directory.join(CLIENT_FILE);
         if fs::symlink_metadata(&path).is_ok() {
             let existing = read_private(&path)?;
-            if existing == client.env(&self.iceberg_write_token) {
+            if existing == client.env(&self.iceberg_write_token, &self.dataset_token()) {
                 return Ok(());
             }
             return Err(CredentialError::Invalid("existing client credentials conflict"));
         }
-        atomic_private_write(&path, client.env(&self.iceberg_write_token).as_bytes())
+        atomic_private_write(
+            &path,
+            client
+                .env(&self.iceberg_write_token, &self.dataset_token())
+                .as_bytes(),
+        )
     }
 
     fn parse(directory: PathBuf, body: &str) -> Result<Self, CredentialError> {
@@ -193,106 +206,6 @@ impl ServerCredentials {
             iceberg_clear_token,
         })
     }
-}
-
-pub struct ClientCredentials {
-    pub s3_endpoint: String,
-    pub iceberg_endpoint: String,
-    pub region: String,
-    pub access_key_id: String,
-    pub secret_access_key: String,
-}
-
-impl ClientCredentials {
-    fn validate(&self) -> Result<(), CredentialError> {
-        if !has_http_authority(&self.s3_endpoint)
-            || !has_http_authority(&self.iceberg_endpoint)
-            || ![
-                &self.s3_endpoint,
-                &self.iceberg_endpoint,
-                &self.region,
-                &self.access_key_id,
-                &self.secret_access_key,
-            ]
-            .iter()
-            .all(|value| {
-                !value.is_empty()
-                    && value
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || b"-._~:/".contains(&byte))
-            })
-        {
-            return Err(CredentialError::Invalid("client credential value is invalid"));
-        }
-        Ok(())
-    }
-
-    fn env(&self, writer_token: &str) -> String {
-        format!(
-            "AWS_ENDPOINT_URL={}\nAWS_DEFAULT_REGION={}\nAWS_ACCESS_KEY_ID={}\nAWS_SECRET_ACCESS_KEY={}\nICEBERG_URI={}\nICEBERG_TOKEN={}\n",
-            self.s3_endpoint,
-            self.region,
-            self.access_key_id,
-            self.secret_access_key,
-            self.iceberg_endpoint,
-            writer_token,
-        )
-    }
-}
-
-fn has_http_authority(value: &str) -> bool {
-    value
-        .strip_prefix("http://")
-        .or_else(|| value.strip_prefix("https://"))
-        .is_some_and(|authority| !authority.is_empty() && !authority.starts_with('/'))
-}
-
-/// # Errors
-/// Rejects missing, symlinked, malformed, or publicly readable client files.
-pub fn show_client_credentials(data_root: &Path) -> Result<String, CredentialError> {
-    let directory = data_root.join("secrets");
-    let metadata = fs::symlink_metadata(&directory)?;
-    if !metadata.file_type().is_dir() || metadata.permissions().mode() & 0o777 != 0o700 {
-        return Err(CredentialError::Invalid("secrets directory must have mode 0700"));
-    }
-    let body = read_private(&directory.join(CLIENT_FILE))?;
-    validate_client_env(&body)?;
-    Ok(body)
-}
-
-fn validate_client_env(body: &str) -> Result<(), CredentialError> {
-    let mut values = body.lines();
-    let endpoint = take_value(&mut values, "AWS_ENDPOINT_URL")?;
-    let region = take_value(&mut values, "AWS_DEFAULT_REGION")?;
-    let access_key = take_value(&mut values, "AWS_ACCESS_KEY_ID")?;
-    let secret_key = take_value(&mut values, "AWS_SECRET_ACCESS_KEY")?;
-    let iceberg_uri = take_value(&mut values, "ICEBERG_URI")?;
-    let writer_token = take_value(&mut values, "ICEBERG_TOKEN")?;
-    if values.next().is_some() {
-        return Err(CredentialError::Invalid(
-            "client credentials contain extra values",
-        ));
-    }
-    ClientCredentials {
-        s3_endpoint: endpoint.into(),
-        iceberg_endpoint: iceberg_uri.into(),
-        region: region.into(),
-        access_key_id: access_key.into(),
-        secret_access_key: secret_key.into(),
-    }
-    .validate()?;
-    if writer_token.len() != 64 || !writer_token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(CredentialError::Invalid("Iceberg writer token is invalid"));
-    }
-    Ok(())
-}
-
-fn take_value<'a>(lines: &mut impl Iterator<Item = &'a str>, key: &str) -> Result<&'a str, CredentialError> {
-    lines
-        .next()
-        .and_then(|line| line.strip_prefix(key))
-        .and_then(|line| line.strip_prefix('='))
-        .ok_or(CredentialError::Invalid("credential file is incomplete"))
 }
 
 fn take_hex<'a>(lines: &mut impl Iterator<Item = &'a str>, key: &str) -> Result<String, CredentialError> {

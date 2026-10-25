@@ -14,6 +14,7 @@ use crowdb_protocol::fb::{
 };
 use flatbuffers::FlatBufferBuilder;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -23,6 +24,14 @@ type Blocks = Arc<Mutex<HashMap<([u8; 16], u32, u64), Vec<u8>>>>;
 
 pub struct TestDiskio {
     worker: JoinHandle<()>,
+    pub control: Arc<TestDiskioControl>,
+}
+
+#[derive(Default)]
+pub struct TestDiskioControl {
+    pub reject_drains: AtomicBool,
+    pub drain_calls: AtomicUsize,
+    pub read_calls: AtomicUsize,
 }
 
 impl TestDiskio {
@@ -36,13 +45,15 @@ impl TestDiskio {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let blocks = Blocks::default();
+        let control = Arc::new(TestDiskioControl::default());
+        let serving_control = Arc::clone(&control);
         let worker = tokio::spawn(async move {
             let mut connections = JoinSet::new();
             loop {
                 tokio::select! {
                     accepted = listener.accept() => {
                         let (stream, _) = accepted.unwrap();
-                        connections.spawn(serve(stream, Arc::clone(&blocks)));
+                        connections.spawn(serve(stream, Arc::clone(&blocks), Arc::clone(&serving_control)));
                     }
                     finished = connections.join_next(), if !connections.is_empty() => {
                         finished.unwrap().unwrap();
@@ -54,7 +65,7 @@ impl TestDiskio {
             .heartbeat_diskio_at(instance, &address.to_string(), rack, node, &[group], &[])
             .await
             .unwrap();
-        Self { worker }
+        Self { worker, control }
     }
 }
 
@@ -64,7 +75,7 @@ impl Drop for TestDiskio {
     }
 }
 
-async fn serve(mut stream: TcpStream, blocks: Blocks) {
+async fn serve(mut stream: TcpStream, blocks: Blocks, control: Arc<TestDiskioControl>) {
     loop {
         let mut header = [0; 14];
         if stream.read_exact(&mut header).await.is_err() {
@@ -81,7 +92,7 @@ async fn serve(mut stream: TcpStream, blocks: Blocks) {
         if stream.read_exact(&mut ctrl).await.is_err() || stream.read_exact(&mut data).await.is_err() {
             return;
         }
-        let (reply, payload) = response(kind, &ctrl, data, &blocks);
+        let (reply, payload) = response(kind, &ctrl, data, &blocks, &control);
         let mut outgoing = vec![];
         outgoing.extend_from_slice(&0xca70_u16.to_le_bytes());
         outgoing.extend_from_slice(&(kind + 1).to_le_bytes());
@@ -96,41 +107,45 @@ async fn serve(mut stream: TcpStream, blocks: Blocks) {
     }
 }
 
-fn response(kind: u16, ctrl: &[u8], data: Vec<u8>, blocks: &Blocks) -> (Vec<u8>, Vec<u8>) {
+fn response(
+    kind: u16,
+    ctrl: &[u8],
+    data: Vec<u8>,
+    blocks: &Blocks,
+    control: &TestDiskioControl,
+) -> (Vec<u8>, Vec<u8>) {
     let mut builder = FlatBufferBuilder::new();
     let mut payload = vec![];
     if kind == FBMsgType::EDiskWriteRequest.0 as u16 {
         let request = flatbuffers::root::<FBDiskWriteRequest>(ctrl).unwrap();
         assert_eq!(data.len(), request.size() as usize);
-        blocks.lock().unwrap().insert(
-            (
-                request.disk_id().unwrap().0,
-                request.zone_index(),
-                request.zone_offset(),
-            ),
-            data,
-        );
+        let mut sync_completed = request.sync();
+        if data.is_empty() && request.sync() {
+            control.drain_calls.fetch_add(1, Ordering::Relaxed);
+            sync_completed = !control.reject_drains.load(Ordering::Relaxed);
+        } else {
+            blocks.lock().unwrap().insert(
+                (
+                    request.disk_id().unwrap().0,
+                    request.zone_index(),
+                    request.zone_offset(),
+                ),
+                data,
+            );
+        }
         let reply = FBDiskWriteResponse::create(
             &mut builder,
             &FBDiskWriteResponseArgs {
                 id: request.id(),
+                sync_completed,
                 ..Default::default()
             },
         );
         builder.finish(reply, None);
     } else if kind == FBMsgType::EDiskReadRequest.0 as u16 {
+        control.read_calls.fetch_add(1, Ordering::Relaxed);
         let request = flatbuffers::root::<FBDiskReadRequest>(ctrl).unwrap();
-        payload = blocks
-            .lock()
-            .unwrap()
-            .get(&(
-                request.disk_id().unwrap().0,
-                request.zone_index(),
-                request.zone_offset(),
-            ))
-            .cloned()
-            .unwrap_or_else(|| vec![0; request.size() as usize]);
-        assert_eq!(payload.len(), request.size() as usize);
+        payload = read_blocks(blocks, &request);
         let reply = FBDiskReadResponse::create(
             &mut builder,
             &FBDiskReadResponseArgs {
@@ -162,4 +177,24 @@ fn response(kind: u16, ctrl: &[u8], data: Vec<u8>, blocks: &Blocks) -> (Vec<u8>,
         builder.finish(reply, None);
     }
     (builder.finished_data().to_vec(), payload)
+}
+
+fn read_blocks(blocks: &Blocks, request: &FBDiskReadRequest<'_>) -> Vec<u8> {
+    let mut bytes = vec![0; request.size() as usize];
+    let start = request.zone_offset();
+    let end = start + u64::from(request.size());
+    for ((disk, zone, offset), data) in blocks.lock().unwrap().iter() {
+        if *disk != request.disk_id().unwrap().0 || *zone != request.zone_index() {
+            continue;
+        }
+        let begin = start.max(*offset);
+        let finish = end.min(*offset + u64::try_from(data.len()).unwrap());
+        if begin < finish {
+            let target = usize::try_from(begin - start).unwrap();
+            let source = usize::try_from(begin - offset).unwrap();
+            let length = usize::try_from(finish - begin).unwrap();
+            bytes[target..target + length].copy_from_slice(&data[source..source + length]);
+        }
+    }
+    bytes
 }

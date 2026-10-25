@@ -170,7 +170,7 @@ fn transfer() -> TransferTransition {
             source_partition_id: Id128 { high: 1, low: 2 },
             source_epoch: 3,
             source_stream_name: source_artifact.stream_name,
-            source_stream_manifest_generation: 1,
+            source_stream_generation: 1,
             replay_offset: 0,
             cutover_offset: 0,
             base_root_manifest_generation: 1,
@@ -235,8 +235,8 @@ fn split() -> SplitTransition {
             tail_overlay: None,
         },
         retained_parent_artifact: PartitionArtifact {
-            tree_id: 8,
-            stream_name: StreamName { high: 6, low: 8 },
+            tree_id: 5,
+            stream_name: StreamName { high: 6, low: 7 },
             tail_overlay: None,
         },
         parent_next_epoch: 4,
@@ -271,7 +271,7 @@ fn split_overlay(cutover_seq: u64) -> TailOverlayArtifact {
         source_partition_id: Id128 { high: 1, low: 2 },
         source_epoch: 3,
         source_stream_name: StreamName { high: 6, low: 7 },
-        source_stream_manifest_generation: 1,
+        source_stream_generation: 1,
         replay_offset: 0,
         cutover_offset: cutover_seq,
         base_root_manifest_generation: 1,
@@ -400,8 +400,7 @@ fn split_readiness_extends_handoff_tail_without_replacing_base() {
     overlay.cutover_seq = 43;
     overlay.cutover_offset = 43;
     overlay.target_stream_start_seq = 44;
-    let mut retained = committed.retained_parent_artifact.clone();
-    retained.tail_overlay = Some(overlay.clone());
+    let retained = committed.retained_parent_artifact.clone();
     let proof = SplitReadinessProof {
         cutover_seq: 43,
         parent_next_epoch: committed.parent_next_epoch,
@@ -412,7 +411,6 @@ fn split_readiness_extends_handoff_tail_without_replacing_base() {
         child_applied_seq: 43,
         child_tree_manifest: 1,
         child_root_manifest_generation: 1,
-        retained_parent_tail_overlay: Some(overlay.clone()),
         child_tail_overlay: overlay,
     };
     let mut wrong = proof.clone();
@@ -486,6 +484,7 @@ async fn group0_serving_grant_load_rejects_invalid_authority() {
     let store = Group0ControlStore::new(kv.clone());
     let mut grant = ServingGrant {
         instance_id: 7,
+        process_epoch: 1,
         lease_sequence: 2,
         catalog_generation: 3,
         issued_at_ms: 1_000,
@@ -600,9 +599,7 @@ async fn group0_split_store_resumes_prepared_child_before_catalog_cutover() {
     let revision = store.persist_split_transition(&planned, 0).await.unwrap();
     let mut machine = SplitStateMachine::restore(planned).unwrap();
     machine.begin_parent_prepare().unwrap();
-    let retained_parent_tail_overlay = split_overlay(41);
-    let mut retained_parent_artifact = split().retained_parent_artifact;
-    retained_parent_artifact.tail_overlay = Some(retained_parent_tail_overlay.clone());
+    let retained_parent_artifact = split().retained_parent_artifact;
     machine
         .record_child_ready(SplitReadinessProof {
             cutover_seq: 41,
@@ -614,7 +611,6 @@ async fn group0_split_store_resumes_prepared_child_before_catalog_cutover() {
             child_applied_seq: 41,
             child_tree_manifest: 1,
             child_root_manifest_generation: 1,
-            retained_parent_tail_overlay: Some(retained_parent_tail_overlay),
             child_tail_overlay: split_overlay(41),
         })
         .unwrap();

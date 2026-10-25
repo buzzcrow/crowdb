@@ -71,7 +71,7 @@ pub async fn restart_local_service(server_id: &str, pid: u32, spec: &LocalLaunch
             });
         }
     }
-    std::mem::forget(child);
+    tokio::spawn(super::reap_child(child, new_pid, "managed auxiliary service"));
     Ok(new_pid)
 }
 

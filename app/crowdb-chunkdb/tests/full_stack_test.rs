@@ -776,13 +776,15 @@ fn task_value() -> ChunkTaskValue {
     }
 }
 
+#[path = "full_stack/local_layout.rs"]
+mod local_layout;
 #[path = "common/reservation_prefetch.rs"]
 mod reservation_prefetch;
 
 struct CompleteTaskHandler;
 
 #[tokio::test]
-async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
+async fn local_mode_rejects_ec_and_unsupported_mirror_geometry() {
     let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -792,7 +794,7 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
         Arc::clone(&harness.allocator),
         harness.topology.clone(),
     )
-    .with_deployment_mode(DeploymentMode::TestSingleNode)
+    .with_deployment_mode(DeploymentMode::Local)
     .with_locks(Arc::new(ChunkLockMap::new(
         10_000,
         Arc::new(LifecycleMetrics::new()),
@@ -800,7 +802,7 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
     )));
     for (strip_type, copies, size_kb) in [
         (StripType::Ec, 0, 1024),
-        (StripType::Mirror, 2, 1024),
+        (StripType::Mirror, 3, 1024),
         (StripType::Mirror, 1, 512),
     ] {
         assert!(matches!(
@@ -834,7 +836,7 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
         lease_generation: 1,
         lease_ms: 30_000,
     };
-    for copies in [0, 2] {
+    for copies in [0, 3] {
         let group = crowdb_protocol::generate_chunk_id(ChunkType::S3 as u8).to_proto();
         assert!(matches!(
             handler
@@ -865,19 +867,20 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
     };
     mirror.segments.push(mirror.segments[0]);
     let operation = crowdb_protocol::generate_chunk_id(ChunkType::S3 as u8).to_proto();
-    assert!(matches!(
-        handler
-            .replace_chunk_strip_range(
-                &id,
-                chunk.modify_ts,
-                0,
-                &chunk.strips,
-                &[invalid_replacement],
-                operation,
-            )
-            .await,
-        Err(LifecycleError::InvalidRequest(_))
-    ));
+    let replacement = handler
+        .replace_chunk_strip_range(
+            &id,
+            chunk.modify_ts,
+            0,
+            &chunk.strips,
+            &[invalid_replacement],
+            operation,
+        )
+        .await;
+    assert!(
+        matches!(&replacement, Err(LifecycleError::InvalidRequest(_))),
+        "{replacement:?}"
+    );
     assert_single_node_reservation(&handler, &id, fence).await;
 }
 
@@ -1199,36 +1202,10 @@ async fn active_chunk_creates_one_deadline_indexed_finalizer() {
 
 #[tokio::test]
 async fn finalizer_reclaims_an_empty_active_chunk() {
-    let cluster = KvCluster::start_pinned().await;
-    seed_hardware(&cluster.make_hardware_client()).await;
-    let _diskdb = DiskdbServer::start(&cluster).await;
-    let harness = ChunkdbHarness::start(&cluster).await;
-    let chunk = harness
-        .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 19, 60_000)
-        .await
-        .unwrap();
-    let chunk_id = chunk.id.unwrap();
-    let bindings = BindingCache::new();
-    bindings
-        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
-        .unwrap();
-    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
-    let mut task = tasks
-        .get(&chunk_id, TASK_KIND_FINALIZE_CHUNK, &chunk_id)
-        .await
-        .unwrap()
-        .unwrap();
-    task.eligible_at_ms = 0;
-    let finalizer = FinalizeChunkTaskHandler::new(
-        Arc::clone(&harness.handler),
-        Arc::new(ConversionDiskIo::empty_for_tests()),
-    );
-    assert!(matches!(finalizer.execute(&task).await, TaskOutcome::Complete));
-    assert_eq!(
-        harness.handler.query_chunk(&chunk_id).await.unwrap().state,
-        ChunkState::Deleted as i32
-    );
+    let test = common::finalization::TestFinalization::start(ChunkType::S3).await;
+    let outcome = test.run().await;
+    assert!(matches!(outcome, TaskOutcome::Complete), "{outcome:?}");
+    assert_eq!(test.current().await.state, ChunkState::Deleted as i32);
 }
 
 #[tokio::test]
@@ -1624,7 +1601,7 @@ async fn mirror_range_is_atomically_replaced_by_tentative_ec_strip() {
     let chunk_id = chunk.id.expect("chunk id");
     let chunk = harness
         .handler
-        .seal_chunk(&chunk_id, chunk.capacity)
+        .seal_chunk_bytes(&chunk_id, u64::from(chunk.capacity) * 1024)
         .await
         .expect("seal mirror range");
 
@@ -1697,7 +1674,7 @@ async fn deletion_during_conversion_clears_task_ownership_before_tentative_clean
     let chunk_id = chunk.id.expect("chunk id");
     let chunk = harness
         .handler
-        .seal_chunk(&chunk_id, chunk.capacity)
+        .seal_chunk_bytes(&chunk_id, u64::from(chunk.capacity) * 1024)
         .await
         .expect("seal mirror range");
 
@@ -2505,7 +2482,7 @@ async fn chunkdb_cache_hit_on_second_query() {
     // Seal (should also be a cache hit after append refreshed the cache).
     let sealed = harness
         .handler
-        .seal_chunk(&chunk_id, 100)
+        .seal_chunk_bytes(&chunk_id, 100 * 1024)
         .await
         .expect("seal_chunk");
     assert_eq!(sealed.state, ChunkState::Sealed as i32);
@@ -2653,31 +2630,34 @@ async fn reserved_strips_stay_hidden_until_idempotent_confirmation() {
         .expect("repeat cancellation");
     harness
         .handler
-        .seal_chunk(&chunk_id, confirmed.chunk.capacity)
+        .seal_chunk_bytes(&chunk_id, u64::from(confirmed.chunk.capacity) * 1024)
         .await
         .expect("seal and remove terminal reservations");
 }
 
-async fn assert_legacy_consumed_reservation_is_retained(
+async fn assert_consumed_reservation_requires_a_planned_cursor(
     harness: &ChunkdbHarness,
     chunk_id: &ChunkId,
     group_id: &ChunkId,
     planned_cursor: u64,
 ) {
-    let mut legacy = harness
+    let mut malformed = harness
         .store
         .get_reservation_group(chunk_id, group_id)
         .await
         .unwrap()
         .unwrap();
-    legacy.planned_cursors[0] = 0;
-    harness.store.put_reservation_group(&legacy).await.unwrap();
+    malformed.planned_cursors[0] = 0;
+    harness.store.put_reservation_group(&malformed).await.unwrap();
     let outcome = harness
         .handler
         .recover_expired_reservation_group(chunk_id, group_id, u64::MAX)
         .await
-        .unwrap();
-    assert_eq!(outcome, ReservationRecovery::Reconciled);
+        .unwrap_err();
+    assert!(
+        matches!(outcome, LifecycleError::InvalidRequest(ref error) if error.contains("planned cursor")),
+        "{outcome:?}"
+    );
     let mut retained = harness
         .store
         .get_reservation_group(chunk_id, group_id)
@@ -2685,6 +2665,7 @@ async fn assert_legacy_consumed_reservation_is_retained(
         .unwrap()
         .unwrap();
     assert_eq!(retained.states[0], StripReservationState::Consumed as i32);
+    assert_eq!(retained, malformed);
     retained.planned_cursors[0] = planned_cursor;
     harness.store.put_reservation_group(&retained).await.unwrap();
 }
@@ -2792,7 +2773,8 @@ async fn expired_consumed_reservation_waits_for_reuse_grace() {
         .await
         .unwrap();
 
-    assert_legacy_consumed_reservation_is_retained(&harness, &chunk_id, &group_id, planned_cursor).await;
+    assert_consumed_reservation_requires_a_planned_cursor(&harness, &chunk_id, &group_id, planned_cursor)
+        .await;
 
     assert_consumed_reservation_waits_for_reuse_grace(&harness, &chunk_id, &group_id).await;
 
@@ -3129,7 +3111,7 @@ async fn conversion_reservation_allocates_joint_plan_and_cleans_every_early_tail
         }
         let sealed = harness
             .handler
-            .seal_chunk(&chunk_id, u32::try_from(cursor / 1024).unwrap())
+            .seal_chunk_bytes(&chunk_id, cursor)
             .await
             .expect("seal early conversion tail");
         assert_eq!(sealed.strips.len(), tail as usize);
@@ -3163,8 +3145,8 @@ async fn chunkdb_lock_serializes_concurrent_seal() {
     let h2 = Arc::clone(&harness.handler);
     let id1 = chunk_id;
     let id2 = chunk_id;
-    let t1 = tokio::spawn(async move { h1.seal_chunk(&id1, 100).await });
-    let t2 = tokio::spawn(async move { h2.seal_chunk(&id2, 200).await });
+    let t1 = tokio::spawn(async move { h1.seal_chunk_bytes(&id1, 100 * 1024).await });
+    let t2 = tokio::spawn(async move { h2.seal_chunk_bytes(&id2, 200 * 1024).await });
     let (r1, r2) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         (t1.await.expect("task 1"), t2.await.expect("task 2"))
     })
@@ -3268,7 +3250,7 @@ async fn chunkdb_lock_serializes_concurrent_append_delete() {
 }
 
 #[tokio::test]
-async fn chunkdb_shared_writer_cursor_is_fenced_and_orphan_is_sealed() {
+async fn chunkdb_shared_writer_cursor_is_fenced_and_renewable() {
     let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
@@ -3316,11 +3298,4 @@ async fn chunkdb_shared_writer_cursor_is_fenced_and_orphan_is_sealed() {
             .await,
         Err(LifecycleError::StateConflict)
     ));
-    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    assert_eq!(harness.handler.seal_expired_writer_chunks().await.unwrap(), 1);
-    let sealed = harness.handler.query_chunk(&chunk_id).await.unwrap();
-    assert_eq!(sealed.state, ChunkState::Sealed as i32);
-    assert_eq!(sealed.sealed_length, 1024);
-    assert_eq!(sealed.acknowledged_cursor, 1024 * 1024);
-    assert_eq!(sealed.closed_strip_sequence, Some(0));
 }

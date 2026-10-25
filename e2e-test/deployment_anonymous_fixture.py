@@ -5,7 +5,7 @@
 import json
 import time
 from allocation import create_network, start_node
-from fixture import LABEL, HTTP
+from fixture import LABEL, HTTP, request
 from managed_fixture import ManagedCluster
 
 
@@ -14,7 +14,8 @@ class AnonymousReleaseCluster(ManagedCluster):
         subnet = create_network(self)
         address = str(subnet.network_address + 2)
         self.addresses.append(start_node(self, 0, None, (), address=address,
-            memory="2048m", environment=("CROWDB_STARTUP_MODE=single",)))
+            memory="2048m", environment=("CROWDB_DEPLOYMENT_MODE=local", "CROWDB_INITIAL_VOTERS=1",
+                                         f"CROWDB_CLUSTER={self.run_id}")))
         deadline = time.monotonic() + 240
         while time.monotonic() < deadline:
             state = json.loads(self.command("inspect", self.servers[0]))[0]["State"]
@@ -24,16 +25,19 @@ class AnonymousReleaseCluster(ManagedCluster):
                 self.command("exec", self.servers[0], "/opt/crowdb/bin/crowdb-monitor", "readiness")
                 if HTTP.open(f"http://{address}:9090/healthz", timeout=5).read() != b"ok":
                     raise RuntimeError("default release Web health response is invalid")
+                if request(f"http://{address}:9090", "/api/cluster/status")["phase"] != "ready":
+                    raise RuntimeError("default node application is not ready")
                 break
             except (RuntimeError, OSError):
                 time.sleep(0.1)
         else:
             raise AssertionError("default anonymous-volume startup never became ready")
         info = json.loads(self.command("inspect", self.servers[0]))[0]
-        manifest = json.loads(self.command("exec", self.servers[0], "cat",
-                                          "/opt/crowdb/data/bootstrap/manifest.json"))
+        accepted = json.loads(self.command("exec", self.servers[0], "cat",
+                                          "/opt/crowdb/data/accepted-node.json"))
+        status = request(f"http://{address}:9090", "/api/cluster/status")
         (self.artifacts / "anonymous-runtime.json").write_text(json.dumps({
-            "mounts": info["Mounts"], "manifest": manifest,
+            "mounts": info["Mounts"], "accepted": accepted, "status": status,
             "log": self.command("logs", self.servers[0])}, indent=2))
         return self
 

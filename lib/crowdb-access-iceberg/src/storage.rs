@@ -16,7 +16,7 @@ use crowdb_chunk_kv_client::{
 use crowdb_common::ec::EcScheme;
 use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
 use crowdb_protocol::chunkdb::rpc::{ChunkType, Location};
-use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
+use crowdb_protocol::frame::MAX_FRAME_V2_PAYLOAD_BYTES;
 
 use crate::catalog::{CatalogRepository, ClearBounds, RoutedCatalogStore};
 use crate::file::{FileBlockStore, NativeFileBlocks};
@@ -143,7 +143,7 @@ pub async fn prepare_file_writer(
     large_write: &LargeWritePolicy,
 ) -> Result<IcebergFileWriter, IoError> {
     if let Some(length) = small_length {
-        if length <= MAX_FRAME_PAYLOAD_BYTES {
+        if length <= MAX_FRAME_V2_PAYLOAD_BYTES {
             let mut writer = chunks
                 .prepare_small_write_for_key(length, location_key.as_bytes())
                 .await?;

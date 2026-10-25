@@ -10,7 +10,7 @@ use std::process::Command;
 use common::direct::crowdb_cli_bin;
 
 #[test]
-fn allocate_and_mix_commands_expose_supported_modes() {
+fn allocate_and_mix_commands_expose_workload_controls_without_deployment_modes() {
     for workload in ["allocate", "mix"] {
         let output = Command::new(crowdb_cli_bin())
             .args(["bench", "diskdb", workload, "--help"])
@@ -18,8 +18,7 @@ fn allocate_and_mix_commands_expose_supported_modes() {
             .expect("run crowdb-cli benchmark help");
         assert!(output.status.success(), "{workload} help must succeed");
         let stdout = String::from_utf8(output.stdout).expect("help is UTF-8");
-        assert!(stdout.contains("--mode <MODE>"));
-        assert!(stdout.contains("possible values: mem, block"));
+        assert!(!stdout.contains("--mode"));
         assert!(stdout.contains("--duration-secs"));
         assert!(stdout.contains("--concurrency"));
         assert!(stdout.contains("--diskdb-connections"));

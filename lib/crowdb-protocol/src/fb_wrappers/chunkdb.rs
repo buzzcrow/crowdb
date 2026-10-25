@@ -3,7 +3,7 @@
 #![allow(clippy::must_use_candidate)]
 
 //! Zero-copy `FB<Type>Ref` wrappers for chunkdb response types
-//! (design-crowdb-rpc.md §6, R116).
+//! for the current `ChunkDB` service contract.
 //!
 //! Each wrapper holds a `&[u8]` reference to the control buffer,
 //! parses the root on construction, and exposes typed accessor methods
@@ -13,7 +13,7 @@
 use crate::chunkdb_fb::{
     FBAdvanceChunkWriteResponse, FBAllocateChunkResponse, FBAppendChunkResponse, FBChunk, FBChunkdbRetCode,
     FBDeleteChunkRangeResponse, FBDeleteChunkResponse, FBListChunksResponse, FBQueryChunkResponse,
-    FBSealChunkResponse, FBUpdateChunkStripResponse,
+    FBSealChunkResponse,
 };
 use flatbuffers::Vector;
 
@@ -305,45 +305,6 @@ impl<'a> FBDeleteChunkRangeResponseRef<'a> {
     }
     pub fn range_end(&self) -> u32 {
         self.root.map_or(0, |r| r.range_end())
-    }
-}
-
-// ── FBUpdateChunkStripResponseRef ────────────────────────────────
-
-/// Zero-copy view over an `FBUpdateChunkStripResponse` control buffer.
-pub struct FBUpdateChunkStripResponseRef<'a> {
-    root: Option<FBUpdateChunkStripResponse<'a>>,
-}
-
-impl<'a> FBUpdateChunkStripResponseRef<'a> {
-    pub fn new(buf: &'a [u8]) -> Self {
-        Self {
-            root: parse_root::<FBUpdateChunkStripResponse>(buf),
-        }
-    }
-    pub fn valid(&self) -> bool {
-        self.root.is_some()
-    }
-    pub fn ret_code(&self) -> FBChunkdbRetCode {
-        self.root.map_or(FBChunkdbRetCode::Internal, |r| r.ret_code())
-    }
-    pub fn error_msg(&self) -> Option<&'a str> {
-        self.root.and_then(|r| r.error_msg())
-    }
-    pub fn request_id(&self) -> Option<u64> {
-        self.root.map(|r| r.id())
-    }
-    pub fn ok(&self) -> bool {
-        self.root.is_some_and(|r| is_ok(r.ret_code()))
-    }
-    pub fn range_start(&self) -> u32 {
-        self.root.map_or(0, |r| r.range_start())
-    }
-    pub fn range_end(&self) -> u32 {
-        self.root.map_or(0, |r| r.range_end())
-    }
-    pub fn chunk(&self) -> Option<FBChunk<'a>> {
-        self.root.and_then(|r| r.chunk())
     }
 }
 

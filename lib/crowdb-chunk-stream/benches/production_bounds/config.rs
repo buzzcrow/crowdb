@@ -53,7 +53,7 @@ impl Default for BenchConfig {
     fn default() -> Self {
         Self {
             workload: Workload::Append,
-            management_seed: "http://127.0.0.1:10000".into(),
+            management_seed: String::new(),
             duration_secs: 10,
             operations: u64::MAX,
             object_size: 4 * 1024,
@@ -88,6 +88,9 @@ impl BenchConfig {
                 "--diskio-rpc-workers" => config.diskio_rpc_workers = parse(&flag, &value)?,
                 _ => return Err(format!("unknown flag {flag}")),
             }
+        }
+        if config.management_seed.is_empty() {
+            return Err("--management-seed is required for an existing target".into());
         }
         if config.duration_secs == 0
             || config.operations == 0

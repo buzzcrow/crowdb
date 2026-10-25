@@ -21,7 +21,7 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::frame::{parse_frame, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{parse_frame, MAX_FRAME_V2_PAYLOAD_BYTES};
 
 use super::stack::TestStack as E2eStack;
 

@@ -29,7 +29,7 @@ use crowdb_protocol::chunkdb::rpc::{
     RelocateSegmentHandoffResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
     ReserveStripGroupRequest, ReserveStripGroupResponse, SealChunkRequest, SealChunkResponse,
     TriggerConversionBatchRequest, TriggerConversionBatchResponse, TriggerConversionRequest,
-    TriggerConversionResponse, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    TriggerConversionResponse,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::InstanceId;
@@ -171,11 +171,22 @@ impl ChunkdbClient {
 
     /// Refresh `ChunkDB` service endpoints and range ownership bindings.
     pub async fn refresh_routes(&self) -> Result<()> {
-        self.refresh_endpoints().await?;
         self.range_binding
             .refresh()
             .await
             .map_err(|error| ChunkdbClientError::Unreachable(format!("slot refresh failed: {error}")))?;
+        // The validated binding snapshot already contains the current registry
+        // endpoints. Do not read that same registry a second time per refresh.
+        let endpoints = self
+            .range_binding
+            .snapshot()
+            .into_iter()
+            .filter(|binding| !binding.rpc_endpoint.is_empty())
+            .map(|binding| (binding.instance_id, binding.rpc_endpoint))
+            .collect();
+        self.endpoint_cache.store(Arc::new(endpoints));
+        self.last_registry_refresh_ms
+            .store(unix_time_ms(), Ordering::Release);
         Ok(())
     }
 
@@ -334,16 +345,6 @@ impl ChunkdbClient {
         self.with_rpc_retry(chunk_id.as_ref(), |t, ep| {
             let req = req.clone();
             async move { t.send_delete_chunk_range(&ep, &req).await }
-        })
-        .await
-    }
-
-    /// Update a single strip within a chunk.
-    pub async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        let chunk_id = req.chunk_id;
-        self.with_rpc_retry(chunk_id.as_ref(), |t, ep| {
-            let req = req.clone();
-            async move { t.send_update_chunk_strip(&ep, &req).await }
         })
         .await
     }

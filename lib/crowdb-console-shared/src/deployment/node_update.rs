@@ -41,6 +41,7 @@ pub async fn apply(ctx: &OpContext, cluster: &str, target: NodeRecord) -> Result
         || source.node_id != target.node_id
         || source.physical_host_id != target.physical_host_id
         || source.operation_id != target.operation_id
+        || source.host_key != target.host_key
     {
         return Err(Error::Config(
             "node update changes its authority or identity".into(),

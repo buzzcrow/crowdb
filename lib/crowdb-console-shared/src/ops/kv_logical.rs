@@ -21,7 +21,9 @@ use crate::clients::http::ServerClient;
 use crate::error::{Error, Result};
 use crate::ops::OpContext;
 
+mod default_group;
 mod group_wiring;
+pub use default_group::ensure as ensure_default_group;
 mod publication;
 mod replica_join;
 mod replica_rollback;
@@ -283,6 +285,9 @@ pub async fn add_group(
             message: "nodes list must not be empty".into(),
         });
     }
+    if !ctx.is_test_scenario() {
+        crate::deployment::preparation::check_group_creation(ctx, store_id, group_id).await?;
+    }
     if !ctx.is_test_scenario()
         && (ctx.sysmd().get_group(store_id, group_id).await?.is_some()
             || !ctx
@@ -314,6 +319,7 @@ pub async fn add_group(
                         AddGroupInitialRole::Follower
                     }),
                     start_election: Some(single),
+                    deployment: None,
                 };
                 group_wiring::create_local(&client, store_id, &req)
                     .await
@@ -356,6 +362,9 @@ pub async fn add_group(
     // Record in group-0 sysdata. The sysdata write must
     // succeed — add_replica reads sysdata to find existing replicas, and
     // a missing group record causes a spurious 404.
+    if !ctx.is_test_scenario() {
+        crate::deployment::preparation::check_group_creation(ctx, store_id, group_id).await?;
+    }
     publication::group(ctx, store_id, group_id, &succeeded).await?;
     Ok(())
 }
@@ -379,6 +388,7 @@ pub async fn remove_group(ctx: &OpContext, store_id: u64, group_id: u64) -> Resu
         });
     }
     let replicas = ctx.sysmd().list_replicas_in_group(store_id, group_id).await?;
+    crate::deployment::preparation::retire_group(ctx, store_id, group_id).await?;
     let node_ids: Vec<u64> = replicas.iter().map(|r| r.node_id).collect();
     for nid in &node_ids {
         let client = server_client(ctx, *nid).await?;

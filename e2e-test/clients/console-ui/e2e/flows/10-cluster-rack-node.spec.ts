@@ -29,6 +29,7 @@ test.describe('cluster · registry browser', () => {
     expect(jsErrors, jsErrors.join('\n')).toEqual([]);
   });
 
+  // Baseline: reference three-node OCI 7.2s (2026-10-22).
   test('datacenter root wraps racks; Add Rack from datacenter context menu', async ({ page, baseURL }) => {
     await step('dc-root: createRack 60', () => createRack(baseURL!, { id: 60, name: 'Rack Sixty' }));
 
@@ -45,21 +46,31 @@ test.describe('cluster · registry browser', () => {
       // The rack appears as the datacenter's child.
       await expect(aside.getByText('R-60 (Rack Sixty)')).toBeVisible({ timeout: 3_000 });
 
-      await page.getByRole('button', { name: 'Show diagram', exact: true }).click();
-      // The topology canvas also renders the datacenter node at layer 0.
-      await expect(page.locator('.react-flow__node').filter({ hasText: 'datacenter' })).toBeVisible({ timeout: 5_000 });
+      await step('dc-root: diagram refresh', async () => {
+        await page.getByRole('button', { name: 'Show diagram', exact: true }).click();
+        // The topology canvas also renders the datacenter node at layer 0.
+        await expect(page.locator('.react-flow__node').filter({ hasText: 'datacenter' })).toBeVisible({ timeout: 3_000 });
+      });
 
       // Right-click the datacenter → Add Rack (the only menu item).
-      await aside.getByText('datacenter', { exact: true }).click({ button: 'right' });
-      await page.getByRole('menuitem', { name: /add rack/i }).click();
+      await step('dc-root: open rack editor', async () => {
+        await aside.getByText('datacenter', { exact: true }).click({ button: 'right' });
+        await page.getByRole('menuitem', { name: /add rack/i }).click();
+      });
 
       await expect(page.getByRole('dialog', { name: 'Add Rack' })).toBeVisible();
       await page.getByLabel('Rack ID').fill('61');
       await page.getByLabel('Name (optional)').fill('Rack Sixty-One');
-      await page.getByRole('button', { name: /create rack/i }).click();
-
-      // The new rack appears as another child of the datacenter.
-      await expect(aside.getByText('R-61 (Rack Sixty-One)')).toBeVisible({ timeout: 3_000 });
+      await step('dc-root: mutation response', async () => {
+        const created = page.waitForResponse(response => response.request().method() === 'POST'
+          && new URL(response.url()).pathname === '/api/racks', { timeout: 3000 });
+        await page.getByRole('button', { name: /create rack/i }).click();
+        expect((await created).status()).toBe(201);
+      });
+      await step('dc-root: DOM refresh', async () => {
+        // The new rack appears as another child of the datacenter.
+        await expect(aside.getByText('R-61 (Rack Sixty-One)')).toBeVisible({ timeout: 3_000 });
+      });
     });
 
     const api = await apiContext(baseURL!);

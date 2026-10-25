@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
-use crowdb_protocol::frame::{encode_frame, FrameMagic, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{encode_frame, FrameMagic, MAX_FRAME_V2_PAYLOAD_BYTES};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -234,8 +234,8 @@ impl ChunkIoWriter for LargeObjectWriter {
             self.start_pipeline(None);
         }
         self.frame_tail.extend_from_slice(&buffer);
-        while self.frame_tail.len() >= MAX_FRAME_PAYLOAD_BYTES {
-            let payload = self.frame_tail.split_to(MAX_FRAME_PAYLOAD_BYTES).freeze();
+        while self.frame_tail.len() >= MAX_FRAME_V2_PAYLOAD_BYTES {
+            let payload = self.frame_tail.split_to(MAX_FRAME_V2_PAYLOAD_BYTES).freeze();
             self.push_payload_frame(payload).await?;
         }
         Ok(FeedStatus::Continue)
@@ -278,7 +278,7 @@ impl LargeObjectWriter {
                 .map_or(0, |duration| {
                     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
                 });
-            let frame = encode_frame(FrameMagic::RepoLargeV1, chunk_id, &payload, write_time_ms)
+            let frame = encode_frame(FrameMagic::RepoLargeV2, chunk_id, &payload, write_time_ms)
                 .map_err(|error| IoError::WriteFailed(error.to_string()))?;
             let remaining = self
                 .chunk_writer

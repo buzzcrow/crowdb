@@ -3,6 +3,7 @@
 
 //! Workspace policy schedules admissions; accepted bootstrap belongs to monitors.
 
+mod formation;
 mod runner;
 
 use std::fs;
@@ -44,7 +45,13 @@ fn read(state: &AppState) -> Result<Policy, Failure> {
     let path = state.runtime_root.join("auto-join.json");
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Policy::default()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Policy {
+                enabled: deployment(state)?.mode
+                    == crowdb_protocol::mgmt::node::deployment::DeploymentMode::Local,
+                ..Policy::default()
+            })
+        }
         Err(error) => return Err(err_502(error.to_string())),
     };
     if !metadata.is_file() || metadata.len() > 4096 {
@@ -58,6 +65,18 @@ fn read(state: &AppState) -> Result<Policy, Failure> {
     Ok(policy)
 }
 
+fn deployment(
+    state: &AppState,
+) -> Result<crowdb_protocol::mgmt::node::deployment::NodeDeploymentPolicy, Failure> {
+    let root = state
+        .runtime_root
+        .parent()
+        .ok_or_else(|| err_409("Node policy root is absent"))?;
+    crowdb_monitor::read_node_policy(root)
+        .map_err(|error| err_502(error.to_string()))?
+        .ok_or_else(|| err_409("Accepted node deployment policy is absent"))
+}
+
 fn supported(state: &AppState) -> Result<(), Failure> {
     if state.node_monitor_url.is_none() || state.managed_mode {
         return Err(err_409("Auto join requires a standard node workspace"));
@@ -68,6 +87,7 @@ fn supported(state: &AppState) -> Result<(), Failure> {
 pub(crate) async fn status(State(state): State<AppState>) -> Result<Json<Value>, Failure> {
     supported(&state)?;
     let policy = read(&state)?;
+    let deployment = deployment(&state)?;
     let path = state.runtime_root.join("auto-join-status.json");
     match fs::symlink_metadata(&path) {
         Ok(metadata) if !metadata.is_file() || metadata.len() > 65536 => {
@@ -86,7 +106,7 @@ pub(crate) async fn status(State(state): State<AppState>) -> Result<Json<Value>,
     };
     Ok(Json(
         json!({"enabled": policy.enabled, "target_cluster_id": policy.target_cluster_id,
-        "mode": "standard", "required_voters": 3, "observation": observation}),
+        "mode": "standard", "deployment_mode": deployment.mode, "cluster": deployment.cluster, "required_voters": deployment.initial_voters, "observation": observation}),
     ))
 }
 

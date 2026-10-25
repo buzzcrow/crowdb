@@ -30,6 +30,14 @@ impl NodeIdentity {
         self.0
     }
 
+    /// Read the existing identity without creating state or accepting a new node.
+    ///
+    /// # Errors
+    /// Rejects absent, corrupt, exposed or symlinked identity records.
+    pub fn load_existing(root: &Path) -> Result<Self, NodeIdentityError> {
+        Self::load(&root.join(IDENTITY_FILE))
+    }
+
     /// # Errors
     /// Rejects non-directory roots and corrupt or symlinked identity files.
     /// Concurrent initialization publishes one complete, durable identity.

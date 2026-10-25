@@ -4,11 +4,12 @@
 //! KV persistence layer for chunk metadata.
 //!
 //! `ChunkStore` reads/writes `Chunk` proto records to CROWDB KV via the
-//! routed KV group. Serialization uses prost (no Rust type duplication,
-//! design §3.8). The chunk ID (24 bytes) is the KV key.
+//! routed KV group. Chunk records have one explicit, strictly decoded envelope.
 
+mod chunk_codec;
 pub mod reservation;
 mod scope;
+use chunk_codec::{decode_chunk, encode_chunk};
 
 use std::sync::Arc;
 
@@ -17,11 +18,9 @@ use tracing::warn;
 use bytes::Bytes;
 use crowdb_kv_client::{BatchOp, CrowdbKvClient, GetOutcome, ReadMode};
 use crowdb_protocol::chunk_task::ChunkTaskValue;
-use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkStrip, Strip, StripCleanupIntent};
+use crowdb_protocol::chunkdb::rpc::Chunk;
 use crowdb_protocol::common::ChunkId;
-use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_protocol::{encode_chunk_task_value, BinaryKey, ChunkTaskKey, FinalizeChunkTaskKey};
-use serde::Deserialize;
 
 use crate::range_guard::RangeGuard;
 use crate::routing::{BindingCache, Route};
@@ -56,131 +55,6 @@ pub struct ChunkStore {
     pub(super) kv: Arc<CrowdbKvClient>,
     pub(super) bindings: BindingCache,
     scope: Option<(Arc<RangeGuard>, ChunkDomain)>,
-}
-
-#[derive(Deserialize)]
-struct LegacyChunk {
-    id: Option<ChunkId>,
-    modify_ts: u64,
-    state: i32,
-    create_ts_ms: u64,
-    sealed_ts_ms: u64,
-    capacity: u32,
-    sealed_length: u32,
-    strips: Vec<LegacyChunkStrip>,
-    chunk_type: i32,
-    writer_epoch: u64,
-    acknowledged_cursor: u64,
-    closed_strip_sequence: Option<u32>,
-    writer_lease_deadline_ms: u64,
-    next_strip_sequence: u32,
-    cleanup_intents: Vec<StripCleanupIntent>,
-    last_strip_replacement: Option<ChunkId>,
-}
-
-#[derive(Deserialize)]
-struct PreviousChunk {
-    id: Option<ChunkId>,
-    modify_ts: u64,
-    state: i32,
-    create_ts_ms: u64,
-    sealed_ts_ms: u64,
-    capacity: u32,
-    sealed_length: u32,
-    strips: Vec<LegacyChunkStrip>,
-    chunk_type: i32,
-    writer_epoch: u64,
-    acknowledged_cursor: u64,
-    closed_strip_sequence: Option<u32>,
-    writer_lease_deadline_ms: u64,
-    next_strip_sequence: u32,
-    cleanup_intents: Vec<StripCleanupIntent>,
-    last_strip_replacement: Option<ChunkId>,
-    owner_key: Vec<u8>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct LegacyChunkStrip {
-    chunk_offset: u32,
-    strip_sequence: u32,
-    unit_kb: u32,
-    capacity: u32,
-    create_ts_ms: u64,
-    sealed_ts_ms: u64,
-    sealed_length: u32,
-    strip_type: i32,
-    strip: Option<Strip>,
-    usage_bitmap: Vec<u8>,
-    unavailable_segments: Vec<Segment>,
-}
-
-impl From<LegacyChunkStrip> for ChunkStrip {
-    fn from(strip: LegacyChunkStrip) -> Self {
-        Self {
-            chunk_offset: strip.chunk_offset,
-            strip_sequence: strip.strip_sequence,
-            unit_kb: strip.unit_kb,
-            capacity: strip.capacity,
-            create_ts_ms: strip.create_ts_ms,
-            sealed_ts_ms: strip.sealed_ts_ms,
-            sealed_length: strip.sealed_length,
-            strip_type: strip.strip_type,
-            strip: strip.strip,
-            usage_bitmap: strip.usage_bitmap,
-            unavailable_segments: strip.unavailable_segments,
-            placement_priority: 0,
-            placement_assessment: None,
-            placement_repair_required: false,
-        }
-    }
-}
-
-impl From<LegacyChunk> for Chunk {
-    fn from(chunk: LegacyChunk) -> Self {
-        Self {
-            id: chunk.id,
-            modify_ts: chunk.modify_ts,
-            state: chunk.state,
-            create_ts_ms: chunk.create_ts_ms,
-            sealed_ts_ms: chunk.sealed_ts_ms,
-            capacity: chunk.capacity,
-            sealed_length: chunk.sealed_length,
-            strips: chunk.strips.into_iter().map(ChunkStrip::from).collect(),
-            chunk_type: chunk.chunk_type,
-            writer_epoch: chunk.writer_epoch,
-            acknowledged_cursor: chunk.acknowledged_cursor,
-            closed_strip_sequence: chunk.closed_strip_sequence,
-            writer_lease_deadline_ms: chunk.writer_lease_deadline_ms,
-            next_strip_sequence: chunk.next_strip_sequence,
-            cleanup_intents: chunk.cleanup_intents,
-            last_strip_replacement: chunk.last_strip_replacement,
-            owner_key: Vec::new(),
-        }
-    }
-}
-
-impl From<PreviousChunk> for Chunk {
-    fn from(chunk: PreviousChunk) -> Self {
-        Self {
-            id: chunk.id,
-            modify_ts: chunk.modify_ts,
-            state: chunk.state,
-            create_ts_ms: chunk.create_ts_ms,
-            sealed_ts_ms: chunk.sealed_ts_ms,
-            capacity: chunk.capacity,
-            sealed_length: chunk.sealed_length,
-            strips: chunk.strips.into_iter().map(ChunkStrip::from).collect(),
-            chunk_type: chunk.chunk_type,
-            writer_epoch: chunk.writer_epoch,
-            acknowledged_cursor: chunk.acknowledged_cursor,
-            closed_strip_sequence: chunk.closed_strip_sequence,
-            writer_lease_deadline_ms: chunk.writer_lease_deadline_ms,
-            next_strip_sequence: chunk.next_strip_sequence,
-            cleanup_intents: chunk.cleanup_intents,
-            last_strip_replacement: chunk.last_strip_replacement,
-            owner_key: chunk.owner_key,
-        }
-    }
 }
 
 impl ChunkStore {
@@ -219,7 +93,7 @@ impl ChunkStore {
         let ops = [
             BatchOp::Put {
                 key: Bytes::from(chunk_key.clone()),
-                value: Bytes::from(encode_chunk(chunk)),
+                value: Bytes::from(encode_chunk(chunk)?),
             },
             BatchOp::Put {
                 key: Bytes::from(task_key),
@@ -256,7 +130,7 @@ impl ChunkStore {
         let id = chunk.id.as_ref().expect("chunk has id");
         let r = self.route(id)?;
         let key = chunk_key(id);
-        let value = encode_chunk(chunk);
+        let value = encode_chunk(chunk)?;
 
         self.put_chunk_at(r.kv_store_id, r.kv_group_id, &key, &value, chunk)
             .await?;
@@ -384,20 +258,14 @@ pub(super) fn chunk_key(id: &ChunkId) -> Vec<u8> {
     key
 }
 
-/// Encode a `Chunk` to bytes (bincode).
-pub(super) fn encode_chunk(chunk: &Chunk) -> Vec<u8> {
-    bincode::serialize(chunk).expect("Chunk serialization")
-}
-
-/// Decode a `Chunk` from bytes (bincode).
-fn decode_chunk(data: &[u8]) -> Result<Chunk> {
-    bincode::deserialize(data)
-        .or_else(|_| bincode::deserialize::<PreviousChunk>(data).map(Chunk::from))
-        .or_else(|_| bincode::deserialize::<LegacyChunk>(data).map(Chunk::from))
-        .map_err(|e| StoreError::Serde(e.to_string()))
-}
-
 #[cfg(feature = "test-util")]
 pub fn decode_chunk_for_tests(data: &[u8]) -> Result<Chunk> {
     decode_chunk(data)
+}
+
+/// # Errors
+/// Rejects unsupported physical format revisions or serialization failures.
+#[cfg(feature = "test-util")]
+pub fn encode_chunk_for_tests(chunk: &Chunk) -> Result<Vec<u8>> {
+    encode_chunk(chunk)
 }

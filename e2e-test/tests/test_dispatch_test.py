@@ -51,6 +51,15 @@ class TestDispatchTest(unittest.TestCase):
             self.assertIn('cache-directories: target/debug', block)
             self.assertIn("shared-key: container-e2e-client-v2-${{ hashFiles('pixi.lock') }}", block)
 
+    def test_platform_domains_have_separate_runners_and_compilation_only_cache(self):
+        block = self.workflow.split('  ContainerStorage:', 1)[1]
+        self.assertIn('max-parallel: 4', block)
+        self.assertIn('- group: dataset\n          domains: dataset\n', block)
+        self.assertIn('- group: deployment\n          domains: deployment\n', block)
+        self.assertNotIn('domains: dataset deployment', block)
+        self.assertIn('cache-targets: false', block)
+        self.assertIn('cache-directories: |\n          target/debug\n          sdk/target\n', block)
+
     def test_missing_and_duplicate_domains_are_rejected(self):
         for workflow in (
                 self.workflow.replace("pixi run test-e2e-s3", "echo removed"),

@@ -3,6 +3,7 @@
 """Verify fixed Access listeners recover through the monitor retry plan."""
 
 import json
+import tomllib
 from managed_fixture import ManagedCluster
 
 
@@ -13,11 +14,12 @@ class FixedListenerAccessCluster(ManagedCluster):
 
     def start(self):
         super().start()
-        config = self.command("exec", self.servers[0], "cat", "/opt/crowdb/run/config/access.toml")
-        expected = {"s3": "0.0.0.0:9091", "iceberg": "0.0.0.0:9092"}[self.protocol]
-        if expected not in config:
+        config = self.command("exec", self.servers[0], "cat", "/opt/crowdb/data/services/access-1/service.toml")
+        port = {"s3": 9091, "iceberg": 9092}[self.protocol]
+        expected = f"{self.addresses[0]}:{port}"
+        if tomllib.loads(config)[self.protocol]["listen"] != expected:
             raise AssertionError(f"{self.protocol} listener was not kept on its fixed port {expected}")
-        before = self.monitor_status()["services"]["access"]
+        before = self.service_status("access")
         result = self.control({"action": "recover-service", "node": 0,
                                "service": "access", "signal": "KILL"})
         after = result["after"]
@@ -25,10 +27,10 @@ class FixedListenerAccessCluster(ManagedCluster):
             raise AssertionError("monitor did not schedule a new Access process")
         if json.loads(self.command("inspect", self.servers[0]))[0]["NetworkSettings"]["Networks"][self.run_id]["IPAddress"] != self.addresses[0]:
             raise AssertionError("Access recovery changed the owned node identity")
-        recovered_config = self.command("exec", self.servers[0], "cat", "/opt/crowdb/run/config/access.toml")
-        if expected not in recovered_config:
+        recovered_config = self.command("exec", self.servers[0], "cat", "/opt/crowdb/data/services/access-1/service.toml")
+        if tomllib.loads(recovered_config) != tomllib.loads(config):
             raise AssertionError(f"{self.protocol} listener changed after retry")
         (self.artifacts / "listener-recovery.json").write_text(json.dumps({
             "protocol": self.protocol, "before": before, "after": after,
-            "fixed_listener": expected, "event": result["event"]}, indent=2))
+            "fixed_listener": expected, "signal": result["signal"]}, indent=2))
         return self

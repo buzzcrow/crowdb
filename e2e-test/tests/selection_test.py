@@ -50,7 +50,7 @@ class SelectionTest(unittest.TestCase):
 
     def test_console_operations_combines_host_client_scopes(self):
         cases = json.loads(self.invoke("--list", "--scope", "console.operations"))
-        self.assertEqual(len(cases), 159)
+        self.assertEqual(len(cases), 153)
         self.assertEqual(sum(case["scope"] == "console.managed" for case in cases), 2)
         exact = json.loads(self.invoke("--list", "--scope", "console.operations", "--case", cases[0]["case"]))
         self.assertEqual(exact, [cases[0]])
@@ -76,7 +76,7 @@ class SelectionTest(unittest.TestCase):
     def test_cli_container_replay_reserves_three_complete_nodes(self):
         from scenarios import CONSOLE_OPERATION_CASES, case_nodes, case_resources
         cases = [case for case in CONSOLE_OPERATION_CASES if case.cli_replay]
-        self.assertEqual({case.cli_replay for case in cases}, {"bound", "storage"})
+        self.assertEqual({case.cli_replay for case in cases}, {"bound", "storage", "terminal-writer", "attachment", "observation", "hardware", "logical", "data"})
         for case in cases:
             self.assertEqual(case_nodes(case), 3)
             self.assertEqual(case_resources(case, 0.25), (1.5, 6656))
@@ -108,12 +108,14 @@ class SelectionTest(unittest.TestCase):
                           ["dataset.http", "dataset.http", "dataset.http", "dataset.sdk", "dataset.sdk"])
         self.assertTrue(all(case["nodes"] == 13 for case in dataset))
         console = json.loads(self.invoke("--list", "--layer", "console"))
-        self.assertEqual(len(console), 159)
+        self.assertEqual(len(console), 153)
         wal_nodes = {"remove_leader_from_five_node_group_elects_new_leader": 6,
                      "remove_unreachable_leader_retains_group0_membership": 6, "replica_add_remove_wires_peers_bidirectionally": 3, "restart_3node_1group": 4, "restart_5node_1group": 6,
                      "restart_5node_2group": 6, "restart_6node_2group_overlap": 7}
         for case in console:
-            if case["scope"] == "console.native.browser.six-node":
+            if case["case"] == "console::cli_container::pending_free_accounting":
+                self.assertEqual(case["nodes"], 1)
+            elif case["scope"] == "console.native.browser.six-node":
                 self.assertEqual(case["nodes"], 6)
             elif case["case"].endswith("independent_subsets"):
                 self.assertEqual(case["nodes"], 5)

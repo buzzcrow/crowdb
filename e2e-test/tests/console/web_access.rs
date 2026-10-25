@@ -63,7 +63,7 @@ async fn native_access_deployment_provisions_private_credentials_and_reuses_them
             Method::POST,
             "/api/nodes/1/services/deploy",
             json!({"kind":"access-server", "instance_id":"902",
-        "http_port":7502, "s3_port":7500, "health_port":7501, "test_single_node":true}),
+        "http_port":7502, "s3_port":7500, "health_port":7501, "local_deployment":true}),
             201,
         )
         .await,

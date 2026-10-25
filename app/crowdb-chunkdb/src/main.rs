@@ -451,7 +451,7 @@ async fn main() {
     rpc_service.register_handlers(&rpc_server);
     rpc_server.start();
     prepared.store(true, std::sync::atomic::Ordering::Release);
-    info!(%rpc_listen_addr, "crowdb-rpc server listening (R116 migration)");
+    info!(%rpc_listen_addr, "crowdb-rpc server listening");
 
     // Start HTTP health + metrics + cache invalidation server.
     let readiness = HttpReadiness {
@@ -797,7 +797,7 @@ async fn validate_voting_topology(kv: &Arc<CrowdbKvClient>, mode: DeploymentMode
         let nodes = voters.remove(&(store_id, group_id)).unwrap_or_default();
         let valid = match mode {
             DeploymentMode::Production => nodes.len() >= 3,
-            DeploymentMode::TestSingleNode => nodes.len() == 1,
+            DeploymentMode::Local => matches!(nodes.len(), 1 | 3),
             DeploymentMode::TestUnsafePlacement => {
                 unreachable!("test fixtures bypass voting topology validation")
             }

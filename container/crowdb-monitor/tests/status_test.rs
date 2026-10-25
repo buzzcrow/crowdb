@@ -53,6 +53,7 @@ fn readiness_requires_fresh_ready_snapshot() {
     status.services.insert(
         "kv".into(),
         ServiceStatus {
+            operation_id: None,
             pid: Some(123),
             generation: 1,
             healthy: true,

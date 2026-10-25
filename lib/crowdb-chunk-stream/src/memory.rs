@@ -3,20 +3,25 @@
 
 //! In-memory storage and deterministic fault controls for stream tests.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_protocol::chunk_stream::{
-    ActiveChunkDescriptor, StreamBinding, StreamExtentPage, StreamManifest, StreamName,
-};
+use crowdb_protocol::chunk_stream::{ActiveChunkDescriptor, StreamName, StreamRecord};
 use crowdb_protocol::common::ChunkId;
-use crowdb_protocol::frame::{FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES};
+use crowdb_protocol::frame::FrameLayout;
 use tokio::sync::{Mutex, Notify};
 
+mod allocation;
+mod authority;
+mod metadata;
+mod record_backend;
+mod recovery;
+
 use crate::{
-    CursorAdvance, DurableCursor, Result, StreamChunkStore, StreamError, StreamMetadataStore, StreamRegistry,
+    CursorAdvance, DurableCursor, Result, StreamChunkStore, StreamError, StreamMirrorWrite, StreamRegistry,
     TrimmedChunk,
 };
 
@@ -38,6 +43,7 @@ impl Drop for ActiveRead<'_> {
 struct Chunk {
     bytes: Vec<u8>,
     cursor: u64,
+    synchronized_cursor: u64,
     capacity: u64,
     sealed: bool,
     released: bool,
@@ -47,21 +53,26 @@ struct Chunk {
 
 #[derive(Debug, Default)]
 struct MemoryState {
-    bindings: HashMap<StreamName, StreamBinding>,
-    manifests: HashMap<StreamName, StreamManifest>,
-    pages: HashMap<(StreamName, u64, u64, u64), StreamExtentPage>,
+    stream_records: HashMap<StreamName, StreamRecord>,
+    owners: HashMap<StreamName, (u64, Arc<crate::StreamWriterSession>)>,
     chunks: HashMap<ChunkId, Chunk>,
     cursor_faults: VecDeque<CursorFault>,
+    metadata_records: BTreeMap<(u64, Vec<u8>), record_backend::MemoryRecord>,
+    metadata_revision: u64,
+    metadata_groups: HashMap<StreamName, u64>,
 }
 
 /// Test-only implementation of all three injected storage contracts.
 #[derive(Debug)]
 pub struct MemoryStreamStore {
-    state: Mutex<MemoryState>,
+    state: Arc<Mutex<MemoryState>>,
     chunk_capacity: u64,
     next_chunk: AtomicU64,
-    metadata_publishes: AtomicU64,
-    extent_page_loads: AtomicU64,
+    pause_allocation_number: AtomicU64,
+    fail_allocation_number: AtomicU64,
+    allocation_started: Notify,
+    allocation_resume: Notify,
+    record_faults: Arc<record_backend::RecordFaults>,
     chunk_writes: AtomicU64,
     cursor_advances: AtomicU64,
     liveness_renews: AtomicU64,
@@ -70,9 +81,11 @@ pub struct MemoryStreamStore {
     pause_reads: AtomicBool,
     active_reads: AtomicUsize,
     max_active_reads: AtomicUsize,
-    fail_next_publish: AtomicBool,
     fail_next_writes: AtomicUsize,
+    fail_next_release: AtomicBool,
+    fail_empty_release: AtomicBool,
     fail_next_renewals: AtomicUsize,
+    fail_chunk_renewal: AtomicU64,
     write_started: Notify,
     resume_write: Notify,
     read_started: Notify,
@@ -81,23 +94,31 @@ pub struct MemoryStreamStore {
 
 impl MemoryStreamStore {
     /// Creates a test store with fixed logical-payload capacity chunks. The
-    /// backing capacity includes one public frame header and footer, so tiny
+    /// backing capacity includes canonical group framing, so tiny
     /// rollover tests retain their payload-oriented meaning.
     ///
     /// # Panics
     ///
-    /// Panics if `chunk_capacity` is zero.
+    /// Panics if `chunk_capacity` is zero or its physical geometry overflows.
     #[must_use]
     pub fn new(chunk_capacity: u64) -> Self {
         assert!(chunk_capacity > 0);
         Self {
-            state: Mutex::new(MemoryState::default()),
-            chunk_capacity: chunk_capacity.saturating_add(
-                u64::try_from(FRAME_HEADER_PREFIX_BYTES + FRAME_FOOTER_BYTES).unwrap_or(u64::MAX),
-            ),
+            state: Arc::new(Mutex::new(MemoryState::default())),
+            chunk_capacity: FrameLayout::StreamGroupV2
+                .physical_length(chunk_capacity)
+                .and_then(|length| {
+                    length
+                        .checked_add(crowdb_protocol::frame::FRAME_HEADER_PREFIX_BYTES as u64)
+                        .ok_or(crowdb_protocol::frame::FrameError::LengthOverflow)
+                })
+                .expect("valid test chunk geometry"),
             next_chunk: AtomicU64::new(1),
-            metadata_publishes: AtomicU64::new(0),
-            extent_page_loads: AtomicU64::new(0),
+            pause_allocation_number: AtomicU64::new(0),
+            fail_allocation_number: AtomicU64::new(0),
+            allocation_started: Notify::new(),
+            allocation_resume: Notify::new(),
+            record_faults: Arc::new(record_backend::RecordFaults::default()),
             chunk_writes: AtomicU64::new(0),
             cursor_advances: AtomicU64::new(0),
             liveness_renews: AtomicU64::new(0),
@@ -106,9 +127,11 @@ impl MemoryStreamStore {
             pause_reads: AtomicBool::new(false),
             active_reads: AtomicUsize::new(0),
             max_active_reads: AtomicUsize::new(0),
-            fail_next_publish: AtomicBool::new(false),
             fail_next_writes: AtomicUsize::new(0),
+            fail_next_release: AtomicBool::new(false),
+            fail_empty_release: AtomicBool::new(false),
             fail_next_renewals: AtomicUsize::new(0),
+            fail_chunk_renewal: AtomicU64::new(0),
             write_started: Notify::new(),
             resume_write: Notify::new(),
             read_started: Notify::new(),
@@ -128,8 +151,66 @@ impl MemoryStreamStore {
         self.pause_writes.store(true, Ordering::Release);
     }
 
+    pub fn pause_allocation_for_tests(&self, number: u64) {
+        self.pause_allocation_number.store(number, Ordering::Release);
+    }
+
+    pub fn fail_allocation_for_tests(&self, number: u64) {
+        self.fail_allocation_number.store(number, Ordering::Release);
+    }
+
+    pub async fn wait_for_allocation_for_tests(&self) {
+        self.allocation_started.notified().await;
+    }
+
+    pub fn resume_allocation_for_tests(&self) {
+        self.allocation_resume.notify_one();
+    }
+
+    pub async fn chunks_for_tests(&self) -> Vec<(ChunkId, u64, bool, bool)> {
+        let state = self.state.lock().await;
+        let mut chunks = state
+            .chunks
+            .iter()
+            .map(|(id, chunk)| (*id, chunk.synchronized_cursor, chunk.sealed, chunk.released))
+            .collect::<Vec<_>>();
+        chunks.sort_by_key(|(id, ..)| id.low);
+        chunks
+    }
+
+    pub fn pause_publication_for_tests(&self) {
+        self.record_faults.pause.store(true, Ordering::Release);
+    }
+    pub async fn wait_for_publication_for_tests(&self) {
+        self.record_faults.entered.notified().await;
+    }
+    pub fn resume_publication_for_tests(&self) {
+        self.record_faults.resume.notify_one();
+    }
+    pub fn lose_publication_response_for_tests(&self) {
+        self.record_faults.lose_response.store(true, Ordering::Release);
+    }
+    pub fn fail_pin_renewals_for_tests(&self, count: u64) {
+        self.record_faults
+            .renewals_to_fail
+            .store(count, Ordering::Release);
+    }
+    pub fn pin_renewal_count_for_tests(&self) -> u64 {
+        self.record_faults.renewals.load(Ordering::Acquire)
+    }
+
     pub fn fail_next_publish(&self) {
-        self.fail_next_publish.store(true, Ordering::Release);
+        self.record_faults.fail.store(true, Ordering::Release);
+    }
+    pub fn fail_record_delete_for_tests(&self) {
+        self.record_faults.fail_delete.store(true, Ordering::Release);
+    }
+    pub fn fail_release_for_tests(&self) {
+        self.fail_next_release.store(true, Ordering::Release);
+    }
+
+    pub fn fail_empty_release_for_tests(&self) {
+        self.fail_empty_release.store(true, Ordering::Release);
     }
 
     pub fn fail_next_write(&self) {
@@ -142,6 +223,10 @@ impl MemoryStreamStore {
 
     pub fn fail_next_renewals(&self, count: usize) {
         self.fail_next_renewals.store(count, Ordering::Release);
+    }
+
+    pub fn fail_chunk_renewal_for_tests(&self, chunk: ChunkId) {
+        self.fail_chunk_renewal.store(chunk.low, Ordering::Release);
     }
 
     pub async fn wait_for_write(&self) {
@@ -179,16 +264,72 @@ impl MemoryStreamStore {
 
     #[must_use]
     pub fn metadata_publish_count(&self) -> u64 {
-        self.metadata_publishes.load(Ordering::Acquire)
+        self.record_faults.publications.load(Ordering::Acquire)
     }
 
     #[must_use]
-    pub fn extent_page_load_count(&self) -> u64 {
-        self.extent_page_loads.load(Ordering::Acquire)
+    pub fn record_load_count(&self) -> u64 {
+        self.record_faults.loads.load(Ordering::Acquire)
     }
 
-    pub async fn extent_page_count(&self) -> usize {
-        self.state.lock().await.pages.len()
+    /// Returns retained physical bytes independently of the metadata checkpoint.
+    /// # Panics
+    /// Panics if the test chunk is absent or its cursor exceeds addressable memory.
+    pub async fn synchronized_bytes_for_tests(&self, chunk_id: ChunkId) -> Bytes {
+        let state = self.state.lock().await;
+        let chunk = state.chunks.get(&chunk_id).expect("allocated test chunk");
+        Bytes::copy_from_slice(&chunk.bytes[..usize::try_from(chunk.synchronized_cursor).unwrap()])
+    }
+
+    /// Writes actual encoded groups through the same image contract as production.
+    /// # Errors
+    /// Returns invalid bounds, owner or write failures.
+    /// # Panics
+    /// Panics if the test chunk is absent or its cursor exceeds addressable memory.
+    pub async fn write_groups_for_tests(
+        &self,
+        name: StreamName,
+        epoch: u64,
+        chunk_id: ChunkId,
+        offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        let start = usize::try_from(offset)
+            .map_err(|_| StreamError::InvalidRequest("test offset overflows".into()))?;
+        let mut prefix = self.synchronized_bytes_for_tests(chunk_id).await.to_vec();
+        if prefix.len() != start {
+            return Err(StreamError::InvalidRequest("test write is not contiguous".into()));
+        }
+        prefix.extend_from_slice(&data);
+        let complete_end = u64::try_from(prefix.len())
+            .map_err(|_| StreamError::InvalidRequest("test write overflows".into()))?;
+        let strip_bytes = usize::try_from(crowdb_chunk_client::STREAM_STRIP_BYTES).expect("bounded strip");
+        let first = start / strip_bytes * strip_bytes;
+        let images: Vec<_> = (first..prefix.len())
+            .step_by(strip_bytes)
+            .map(|strip| {
+                let end = (strip + strip_bytes).min(prefix.len());
+                let offset = start.saturating_sub(strip);
+                let full_image = Bytes::copy_from_slice(&prefix[strip..end]);
+                crate::MirrorStripImage {
+                    block_offset: offset as u64,
+                    data: full_image.slice(offset..),
+                    full_image,
+                }
+            })
+            .collect();
+        self.write_mirrors(
+            name,
+            epoch,
+            chunk_id,
+            StreamMirrorWrite {
+                authority: None,
+                physical_offset: offset,
+                complete_end,
+                images: &images,
+            },
+        )
+        .await
     }
 
     #[must_use]
@@ -228,161 +369,60 @@ impl MemoryStreamStore {
     pub async fn flip_durable_byte(&self, chunk_id: ChunkId, offset: usize) {
         let mut state = self.state.lock().await;
         let chunk = state.chunks.get_mut(&chunk_id).expect("test chunk must exist");
-        assert!(offset < usize::try_from(chunk.cursor).expect("test cursor must fit usize"));
+        assert!(offset < usize::try_from(chunk.synchronized_cursor).expect("test cursor must fit usize"));
         chunk.bytes[offset] ^= 1;
     }
 }
 
 #[async_trait]
 impl StreamRegistry for MemoryStreamStore {
-    async fn load(&self, stream_name: StreamName) -> Result<Option<StreamBinding>> {
-        Ok(self.state.lock().await.bindings.get(&stream_name).cloned())
+    async fn claim_writer(&self, name: StreamName, epoch: u64) -> Result<Arc<crate::StreamWriterSession>> {
+        self.claim_memory_writer(name, epoch).await
+    }
+    async fn load(&self, stream_name: StreamName) -> Result<Option<StreamRecord>> {
+        Ok(self.state.lock().await.stream_records.get(&stream_name).cloned())
     }
 
-    async fn create(&self, binding: StreamBinding) -> Result<()> {
+    async fn create(&self, record: StreamRecord) -> Result<()> {
         let mut state = self.state.lock().await;
-        if state.bindings.insert(binding.stream_name, binding).is_some() {
-            return Err(StreamError::InvalidRequest(
-                "stream binding already exists".into(),
-            ));
+        if state.stream_records.contains_key(&record.stream_name) {
+            return Err(StreamError::InvalidRequest("stream record already exists".into()));
         }
+        state.stream_records.insert(record.stream_name, record);
         Ok(())
-    }
-}
-
-#[async_trait]
-impl StreamMetadataStore for MemoryStreamStore {
-    async fn load_current(&self, stream_name: StreamName) -> Result<Option<StreamManifest>> {
-        Ok(self.state.lock().await.manifests.get(&stream_name).cloned())
-    }
-
-    async fn load_extent_page(
-        &self,
-        stream_name: StreamName,
-        writer_epoch: u64,
-        generation: u64,
-        page_index: u64,
-    ) -> Result<Option<StreamExtentPage>> {
-        self.extent_page_loads.fetch_add(1, Ordering::AcqRel);
-        Ok(self
-            .state
-            .lock()
-            .await
-            .pages
-            .get(&(stream_name, writer_epoch, generation, page_index))
-            .cloned())
-    }
-
-    async fn publish(
-        &self,
-        expected: Option<(u64, u64)>,
-        manifest: StreamManifest,
-        extent_pages: Vec<StreamExtentPage>,
-    ) -> Result<()> {
-        if self.fail_next_publish.swap(false, Ordering::AcqRel) {
-            return Err(StreamError::Internal(
-                "injected metadata publication failure".into(),
-            ));
-        }
-        let mut state = self.state.lock().await;
-        if state
-            .manifests
-            .get(&manifest.stream_name)
-            .is_some_and(|current| current.purpose != manifest.purpose)
-        {
-            return Err(StreamError::Corruption("stream purpose is immutable".into()));
-        }
-        let observed = state
-            .manifests
-            .get(&manifest.stream_name)
-            .map(|current| (current.writer_epoch, current.generation));
-        if observed != expected {
-            return Err(StreamError::StaleWriter);
-        }
-        for page in extent_pages {
-            state.pages.insert(
-                (
-                    page.stream_name,
-                    page.writer_epoch,
-                    page.generation,
-                    page.page_index,
-                ),
-                page,
-            );
-        }
-        state.manifests.insert(manifest.stream_name, manifest);
-        self.metadata_publishes.fetch_add(1, Ordering::AcqRel);
-        Ok(())
-    }
-
-    async fn reclaim_extent_pages_before(
-        &self,
-        stream_name: StreamName,
-        retained_generation: u64,
-        max_pages: usize,
-    ) -> Result<u64> {
-        if retained_generation == 0 || max_pages == 0 {
-            return Err(StreamError::InvalidRequest(
-                "metadata reclaim watermark and page bound must be nonzero".into(),
-            ));
-        }
-        let mut state = self.state.lock().await;
-        let keys: Vec<_> = state
-            .pages
-            .keys()
-            .filter(|(name, _, generation, _)| *name == stream_name && *generation < retained_generation)
-            .take(max_pages)
-            .copied()
-            .collect();
-        for key in &keys {
-            state.pages.remove(key);
-        }
-        Ok(keys.len() as u64)
     }
 }
 
 #[async_trait]
 impl StreamChunkStore for MemoryStreamStore {
+    fn bind_writer(&self, _name: StreamName, _epoch: u64, _session: Arc<crate::StreamWriterSession>) {}
+    fn mirror_copies(&self) -> u32 {
+        1
+    }
+    async fn current_capacity(&self, chunk_id: ChunkId) -> Result<u64> {
+        self.state
+            .lock()
+            .await
+            .chunks
+            .get(&chunk_id)
+            .map(|chunk| chunk.capacity)
+            .ok_or_else(|| StreamError::ReadUnavailable("chunk is missing".into()))
+    }
     async fn allocate_mirrored(
         &self,
         _stream_name: StreamName,
         writer_epoch: u64,
         purpose: crowdb_protocol::chunk_stream::StreamPurpose,
     ) -> Result<ActiveChunkDescriptor> {
-        let low = self.next_chunk.fetch_add(1, Ordering::AcqRel);
-        let chunk_id = ChunkId {
-            high: (purpose.chunk_type() as u64) << 56,
-            low,
-        };
-        self.state.lock().await.chunks.insert(
-            chunk_id,
-            Chunk {
-                bytes: Vec::new(),
-                cursor: 0,
-                capacity: self.chunk_capacity,
-                sealed: false,
-                released: false,
-                writer_epoch,
-                last_advance_checksum: None,
-            },
-        );
-        Ok(ActiveChunkDescriptor {
-            chunk_id,
-            physical_start: 0,
-            logical_start: 0,
-            acknowledged_cursor: 0,
-            capacity: self.chunk_capacity,
-        })
+        self.allocate_active_chunk(writer_epoch, purpose).await
     }
 
-    async fn write_mirrors_with_images(
+    async fn write_mirrors(
         &self,
         _stream_name: StreamName,
         writer_epoch: u64,
         chunk_id: ChunkId,
-        physical_offset: u64,
-        data: Bytes,
-        _images: &[crate::MirrorStripImage],
+        write: StreamMirrorWrite<'_>,
     ) -> Result<()> {
         self.chunk_writes.fetch_add(1, Ordering::AcqRel);
         if self
@@ -398,10 +438,16 @@ impl StreamChunkStore for MemoryStreamStore {
                 self.resume_write.notified().await;
             }
         }
+        let physical_offset = write.physical_offset;
         let start = usize::try_from(physical_offset)
             .map_err(|_| StreamError::InvalidRequest("physical offset exceeds addressable range".into()))?;
+        let length = write
+            .images
+            .iter()
+            .try_fold(0_usize, |sum, image| sum.checked_add(image.data.len()))
+            .ok_or_else(|| StreamError::InvalidRequest("stream image length overflows".into()))?;
         let end = start
-            .checked_add(data.len())
+            .checked_add(length)
             .ok_or_else(|| StreamError::InvalidRequest("physical write range overflows".into()))?;
         let mut state = self.state.lock().await;
         let chunk = state
@@ -414,8 +460,33 @@ impl StreamChunkStore for MemoryStreamStore {
         if chunk.sealed || u64::try_from(end).unwrap_or(u64::MAX) > chunk.capacity {
             return Err(StreamError::InvalidRequest("write exceeds writable chunk".into()));
         }
+        let prefix: Vec<_> = write
+            .images
+            .iter()
+            .flat_map(|image| image.data.iter().copied())
+            .take(15)
+            .collect();
+        let grouped = crowdb_protocol::frame::parse_header(&prefix)
+            .is_ok_and(|header| header.magic == crowdb_protocol::frame::FrameMagic::StreamV2)
+            && prefix.get(14) == Some(&1);
+        if crate::storage::validate_write_bounds(write, chunk.capacity)? != end as u64 {
+            return Err(StreamError::InvalidRequest(
+                "image bytes differ from complete append end".into(),
+            ));
+        }
+        if !grouped || physical_offset != chunk.synchronized_cursor {
+            return Err(StreamError::InvalidRequest(
+                "stream writes require contiguous complete append groups".into(),
+            ));
+        }
         chunk.bytes.resize(chunk.bytes.len().max(end), 0);
-        chunk.bytes[start..end].copy_from_slice(&data);
+        let mut cursor = start;
+        for image in write.images {
+            let next = cursor + image.data.len();
+            chunk.bytes[cursor..next].copy_from_slice(&image.data);
+            cursor = next;
+        }
+        chunk.synchronized_cursor = chunk.synchronized_cursor.max(write.complete_end);
         Ok(())
     }
 
@@ -455,6 +526,7 @@ impl StreamChunkStore for MemoryStreamStore {
         }
         if fault.commit {
             chunk.cursor = new_cursor;
+            chunk.synchronized_cursor = chunk.synchronized_cursor.max(new_cursor);
             chunk.last_advance_checksum = Some(checksum);
         }
         Ok(fault.outcome)
@@ -477,8 +549,26 @@ impl StreamChunkStore for MemoryStreamStore {
         })
     }
 
+    async fn recover_tail(
+        &self,
+        _name: StreamName,
+        epoch: u64,
+        active: &ActiveChunkDescriptor,
+    ) -> Result<crate::RecoveredStreamTail> {
+        self.recover_chunk_tail(epoch, active).await
+    }
+
     async fn renew_liveness(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<()> {
         self.liveness_attempts.fetch_add(1, Ordering::AcqRel);
+        if self
+            .fail_chunk_renewal
+            .compare_exchange(chunk_id.low, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return Err(StreamError::ReadUnavailable(
+                "injected candidate renewal failure".into(),
+            ));
+        }
         if self
             .fail_next_renewals
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| count.checked_sub(1))
@@ -507,11 +597,12 @@ impl StreamChunkStore for MemoryStreamStore {
         if writer_epoch != chunk.writer_epoch {
             return Err(StreamError::StaleWriter);
         }
-        if chunk.cursor != cursor {
+        if chunk.synchronized_cursor != cursor {
             return Err(StreamError::Corruption(
                 "seal cursor differs from durable cursor".into(),
             ));
         }
+        chunk.cursor = cursor;
         chunk.sealed = true;
         Ok(())
     }
@@ -535,7 +626,7 @@ impl StreamChunkStore for MemoryStreamStore {
                 .chunks
                 .get(&chunk_id)
                 .ok_or_else(|| StreamError::ReadUnavailable("chunk is missing".into()))?;
-            if chunk.released || u64::try_from(end).unwrap_or(u64::MAX) > chunk.cursor {
+            if chunk.released || u64::try_from(end).unwrap_or(u64::MAX) > chunk.synchronized_cursor {
                 return Err(StreamError::ReadUnavailable("chunk range is not durable".into()));
             }
             Ok(Bytes::copy_from_slice(&chunk.bytes[start..end]))
@@ -543,12 +634,32 @@ impl StreamChunkStore for MemoryStreamStore {
         .await
     }
 
-    async fn release_trimmed(&self, chunk_id: ChunkId, _logical_end: u64) -> Result<TrimmedChunk> {
+    async fn release_trimmed(
+        &self,
+        chunk_id: ChunkId,
+        _logical_end: u64,
+        physical_end: u64,
+    ) -> Result<TrimmedChunk> {
+        if physical_end == 0 && self.fail_empty_release.swap(false, Ordering::AcqRel) {
+            return Err(StreamError::ReadUnavailable(
+                "injected empty chunk release failure".into(),
+            ));
+        }
+        if physical_end > 0 && self.fail_next_release.swap(false, Ordering::AcqRel) {
+            return Err(StreamError::ReadUnavailable(
+                "injected chunk release failure".into(),
+            ));
+        }
         let mut state = self.state.lock().await;
         let chunk = state
             .chunks
             .get_mut(&chunk_id)
             .ok_or_else(|| StreamError::ReadUnavailable("chunk is missing".into()))?;
+        if !chunk.released && (!chunk.sealed || chunk.cursor != physical_end) {
+            return Err(StreamError::Corruption(
+                "chunk release requires its exact sealed boundary".into(),
+            ));
+        }
         let reclaimed_bytes = if chunk.released { 0 } else { chunk.cursor };
         chunk.released = true;
         Ok(TrimmedChunk {

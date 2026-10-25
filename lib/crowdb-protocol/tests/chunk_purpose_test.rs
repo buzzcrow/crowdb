@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_protocol::chunk_stream::{StreamBinding, StreamName, StreamPurpose};
+use crowdb_protocol::chunk_stream::{StreamName, StreamPurpose, StreamRecord};
 use crowdb_protocol::chunkdb::rpc::ChunkType;
 
 #[test]
@@ -15,13 +15,13 @@ fn retired_and_unknown_chunk_types_are_not_supported() {
 }
 
 #[test]
-fn stream_binding_requires_a_durable_purpose() {
-    let binding = StreamBinding::creating(StreamName::generate(), None, StreamPurpose::Wal);
+fn stream_record_requires_a_durable_purpose() {
+    let binding = StreamRecord::creating(StreamName::generate(), None, StreamPurpose::Wal);
     let mut json = serde_json::to_value(&binding).unwrap();
     assert_eq!(
-        serde_json::from_value::<StreamBinding>(json.clone()).unwrap(),
+        serde_json::from_value::<StreamRecord>(json.clone()).unwrap(),
         binding
     );
     json.as_object_mut().unwrap().remove("purpose");
-    assert!(serde_json::from_value::<StreamBinding>(json).is_err());
+    assert!(serde_json::from_value::<StreamRecord>(json).is_err());
 }

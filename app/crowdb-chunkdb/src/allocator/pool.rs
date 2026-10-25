@@ -18,9 +18,12 @@ use crowdb_diskdb_client::{DiskdbClientError, DiskdbRpcTransport};
 use crowdb_kv_client::ServiceRegistryClient;
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::{
-    AllocateBlocksRequest, AllocateResponse, CommitBlocksRequest, ExecuteRelocationRequest,
-    ExecuteRelocationResponse, FreeBlocksRequest, MarkBlocksCorruptRequest, Segment,
+    AllocateBlocksRequest, AllocateResponse, ExecuteRelocationRequest, ExecuteRelocationResponse,
+    MarkBlocksCorruptRequest, Segment,
 };
+
+mod recovery;
+pub(crate) use recovery::BlockMutationError;
 
 const REGISTRY_REFRESH_INTERVAL_MS: u64 = 5_000;
 
@@ -270,31 +273,9 @@ impl DiskdbClientPool {
     /// # Errors
     /// Returns a String error if routing is incomplete or any commit fails.
     pub async fn commit_blocks(&self, segments: Vec<Segment>) -> Result<(), String> {
-        if segments.is_empty() {
-            return Ok(());
-        }
-
-        let grouped = self.group_segments(segments, "commit_blocks")?;
-        let mut futures = Vec::with_capacity(grouped.len());
-        for (dg_id, segs) in grouped {
-            let endpoint = self.endpoint_for_dg(dg_id).await?;
-            let transport = Arc::clone(&self.transport);
-            futures.push(async move {
-                let req = CommitBlocksRequest { segments: segs };
-                transport
-                    .commit_blocks(&endpoint, &req)
-                    .await
-                    .map_err(|e| format!("commit_blocks RPC: {e}"))
-            });
-        }
-
-        let results = futures::future::join_all(futures).await;
-        let errors: Vec<_> = results.into_iter().filter_map(Result::err).collect();
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("; "))
-        }
+        self.commit_blocks_for_recovery(segments)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     /// Free blocks via the diskdb instances that own them.
@@ -304,31 +285,9 @@ impl DiskdbClientPool {
     /// # Errors
     /// Returns a String error if routing is incomplete or any free RPC fails.
     pub async fn free_blocks(&self, segments: Vec<Segment>) -> Result<(), String> {
-        if segments.is_empty() {
-            return Ok(());
-        }
-
-        let grouped = self.group_segments(segments, "free_blocks")?;
-        let mut futures = Vec::with_capacity(grouped.len());
-        for (dg_id, segs) in grouped {
-            let endpoint = self.endpoint_for_dg(dg_id).await?;
-            let transport = Arc::clone(&self.transport);
-            futures.push(async move {
-                let req = FreeBlocksRequest { segments: segs };
-                transport
-                    .free_blocks(&endpoint, &req)
-                    .await
-                    .map_err(|e| format!("free_blocks RPC: {e}"))
-            });
-        }
-
-        let results = futures::future::join_all(futures).await;
-        let errors: Vec<_> = results.into_iter().filter_map(Result::err).collect();
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("; "))
-        }
+        self.free_blocks_for_recovery(segments)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     /// Mark proven-corrupt exact block incarnations on their DiskDB owners.

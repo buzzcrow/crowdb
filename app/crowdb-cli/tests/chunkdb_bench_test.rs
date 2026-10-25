@@ -28,19 +28,6 @@ fn allocate_and_mix_expose_placement_and_concurrency_controls() {
 }
 
 #[test]
-fn combined_deploy_exposes_chunkdb_controls() {
-    let output = Command::new(crowdb_cli_bin())
-        .args(["cluster", "local-deploy", "--help"])
-        .output()
-        .expect("run combined deploy help");
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).expect("help is UTF-8");
-    assert!(stdout.contains("combined"));
-    assert!(stdout.contains("--chunkdb-instances"));
-    assert!(stdout.contains("--allow-unsafe-ec"));
-}
-
-#[test]
 fn chunkio_write_exposes_large_write_controls() {
     let output = Command::new(crowdb_cli_bin())
         .args(["bench", "chunkio", "write", "--help"])

@@ -97,9 +97,9 @@ select_inject_container() {
             echo 'Candidates (ID  NAME  IMAGE  IP):' >&2
             printf '%s\n' "${candidates[@]}" >&2
         else
-            echo "No running CROWDB containers found; use 'pixi run start-container'." >&2
+            echo "No running CROWDB containers found; use 'pixi run oci-run-1c'." >&2
         fi
-        echo 'Usage: pixi run inject-container <container IP|ID|name>' >&2
+        echo 'Usage: pixi run bash container/single-node-container/dev-container.sh inject <container IP|ID|name>' >&2
         return 1
     fi
     name=${matches[0]}

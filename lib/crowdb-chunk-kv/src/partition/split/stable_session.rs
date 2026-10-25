@@ -48,7 +48,7 @@ impl Partition {
             root_manifest_generation: self.tree.root_manifest_generation()?,
             applied_seq: base_seq,
             stream_name: self.journal.stream_name(),
-            stream_manifest_generation: self.journal.manifest_generation(),
+            stream_generation: self.journal.record_generation(),
             replay_offset: proof.parent_replay_offset,
         };
         let frontier = SplitSourceFrontier {
@@ -87,7 +87,7 @@ impl Partition {
                 root_manifest_generation: proof.root_manifest_generation,
                 applied_seq: proof.base_applied_seq,
                 stream_name: proof.stream_name,
-                stream_manifest_generation: child.journal.manifest_generation(),
+                stream_generation: child.journal.record_generation(),
                 replay_offset: 0,
             },
             tree: child.tree.clone(),
@@ -170,11 +170,12 @@ async fn install_child_cutover_inner(
     request: &ChildSplitCutoverRequest,
 ) -> Result<(SplitArtifact, PreparedSplitWriter)> {
     let cutover_seq = state.applied_seq.load(Ordering::Acquire);
+    let cutover_offset = state.journal.checkpoint().await?;
     let source = SplitSourceFrontier {
         parent_id: request.plan.parent_id,
         parent_epoch: request.plan.parent_epoch,
         checkpoint: request.base_checkpoint.clone(),
-        cutover_offset: state.journal.tail(),
+        cutover_offset,
         cutover_seq,
         journal: Arc::clone(&request.parent.journal),
     };

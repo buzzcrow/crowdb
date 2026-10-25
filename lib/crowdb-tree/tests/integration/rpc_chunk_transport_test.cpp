@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#include "backend/chunk/rpc_chunk_allocation.h"
 #include "backend/chunk/rpc_chunk_transport.h"
 #include "chunkdb_generated.h"
 #include "common/test_chunk_route_service.h"
@@ -49,6 +50,19 @@ struct AllocateHandlerState
     std::atomic<bool>   request_valid{false};
     std::atomic<bool>   read_error{false};
 };
+
+TEST(RpcChunkTransport, ExplicitStripCapacityIsIndependentOfMirrorCopies)
+{
+    constexpr uint32_t kMiB = 1024U * 1024U;
+    for (uint32_t copies : {1U, 2U, 3U}) {
+        const auto geometry = rpc_chunk_allocation((256U * kMiB) - 4096, kMiB, copies);
+        EXPECT_EQ(geometry.granularity_kb, 1024U);
+        EXPECT_EQ(geometry.strip_count, 256U);
+    }
+    const auto automatic = rpc_chunk_allocation(256U * kMiB, 0, 2);
+    EXPECT_EQ(automatic.granularity_kb, 256U * 1024U);
+    EXPECT_EQ(automatic.strip_count, 1U);
+}
 
 extern "C" void handle_allocate(uint64_t request_id, uint64_t /*unused*/, uint16_t /*unused*/, const uint8_t *control,
                                 uint32_t control_len, const uint8_t * /*unused*/, uint32_t /*unused*/, void *connection,
@@ -173,9 +187,9 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
     ASSERT_NE(server, nullptr);
     ASSERT_EQ(crowdb_rpc_server_listen(server, "127.0.0.1", 0), CROWDB_RPC_OK);
     AllocateHandlerState handler{.server = server};
-    crowdb_rpc_server_register_handler(server, FBMsgType_EAllocateChunkRequest, handle_allocate, &handler);
-    crowdb_rpc_server_register_handler(server, FBMsgType_EDiskReadRequest, handle_disk_read, &handler);
-    crowdb_rpc_server_register_handler(server, FBMsgType_EDiskWriteRequest, handle_disk_write, &handler);
+    crowdb_rpc_server_register_handler(server, FBMsgType_EAllocateChunkRequest, handle_allocate, &handler, nullptr);
+    crowdb_rpc_server_register_handler(server, FBMsgType_EDiskReadRequest, handle_disk_read, &handler, nullptr);
+    crowdb_rpc_server_register_handler(server, FBMsgType_EDiskWriteRequest, handle_disk_write, &handler, nullptr);
     crowdb_rpc_server_start(server);
 
     crowdb_rpc_client_t client = crowdb_rpc_client_create();
@@ -191,15 +205,16 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
         .route        = {.client = client, .server = server, .connection = connection},
     };
     ct_chunk_rpc_transport_options options{
-        .chunkdb             = {.client = client, .server = server, .connection = connection},
-        .disk_routes         = &disk_route,
-        .disk_route_count    = 1,
-        .writer_lease_ms     = 5000,
-        .rpc_timeout_ms      = 1000,
-        .completion_capacity = 16,
-        .mirror_copies       = 3,
-        .chunkdb_resolver    = {},
-        .disk_resolver       = {},
+        .chunkdb              = {.client = client, .server = server, .connection = connection},
+        .disk_routes          = &disk_route,
+        .disk_route_count     = 1,
+        .writer_lease_ms      = 5000,
+        .rpc_timeout_ms       = 1000,
+        .completion_capacity  = 16,
+        .mirror_copies        = 3,
+        .strip_capacity_bytes = 0,
+        .chunkdb_resolver     = {},
+        .disk_resolver        = {},
     };
     RpcChunkTransport transport(options);
     ChunkId           allocated;
@@ -258,6 +273,7 @@ TEST(RpcChunkTransport, ResolvesEachChunkOwnerAndReleasesRouteLeases)
         EXPECT_EQ(fixture.services[0].allocations.load(), 1U);
         EXPECT_EQ(fixture.services[0].advances.load(), 1U);
         EXPECT_EQ(fixture.services[0].seals.load(), 1U);
+        EXPECT_EQ(fixture.services[0].sealed_bytes.load(), 4U);
         EXPECT_EQ(fixture.services[1].queries.load(), 1U);
         EXPECT_EQ(fixture.retains.load(), 1U);
         EXPECT_EQ(fixture.leases.load(), 0U);

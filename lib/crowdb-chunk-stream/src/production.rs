@@ -5,9 +5,10 @@
 
 use std::sync::Arc;
 
+use crossbeam_skiplist::SkipMap;
 use crowdb_chunk_client::{ChunkIoClient, ChunkReadPolicy};
 use crowdb_kv_client::CrowdbKvClient;
-use crowdb_protocol::chunk_stream::{StreamBinding, StreamName};
+use crowdb_protocol::chunk_stream::{StreamName, StreamRecord};
 
 use crate::{
     ChunkStream, KvStreamMetadataStore, KvStreamRegistry, ProductionStreamChunkStore, Result,
@@ -20,6 +21,7 @@ pub struct ProductionStreamRuntime {
     registry: Arc<KvStreamRegistry>,
     chunks: Arc<ProductionStreamChunkStore>,
     config: StreamConfig,
+    owners: SkipMap<(u64, StreamName), ChunkStream>,
 }
 
 impl ProductionStreamRuntime {
@@ -70,6 +72,7 @@ impl ProductionStreamRuntime {
             kv,
             chunks,
             config,
+            owners: SkipMap::new(),
         })
     }
 
@@ -79,7 +82,7 @@ impl ProductionStreamRuntime {
         Arc::clone(&self.registry)
     }
 
-    /// Initializes metadata for a binding already activated by the control
+    /// Initializes metadata for a record already activated by the control
     /// plane.
     ///
     /// # Errors
@@ -91,9 +94,9 @@ impl ProductionStreamRuntime {
         metadata_store_id: u64,
         writer_epoch: u64,
     ) -> Result<ChunkStream> {
-        let binding = self.active_binding(stream_name).await?;
-        let metadata = self.metadata(metadata_store_id, binding.metadata_group_id)?;
-        ChunkStream::create_registered(
+        let record = self.active_record(stream_name).await?;
+        let metadata = self.metadata(metadata_store_id, record.metadata_group_id)?;
+        let stream = ChunkStream::create_registered(
             stream_name,
             writer_epoch,
             self.config.clone(),
@@ -101,10 +104,13 @@ impl ProductionStreamRuntime {
             metadata,
             self.chunks.clone(),
         )
-        .await
+        .await?;
+        self.owners
+            .insert((metadata_store_id, stream_name), stream.clone());
+        Ok(stream)
     }
 
-    /// Reopens the authoritative stream binding under a current writer epoch.
+    /// Reopens the authoritative stream record under a current writer epoch.
     ///
     /// # Errors
     ///
@@ -115,9 +121,14 @@ impl ProductionStreamRuntime {
         metadata_store_id: u64,
         writer_epoch: u64,
     ) -> Result<ChunkStream> {
-        let binding = self.active_binding(stream_name).await?;
-        let metadata = self.metadata(metadata_store_id, binding.metadata_group_id)?;
-        ChunkStream::open(
+        if let Some(owner) = self.owners.get(&(metadata_store_id, stream_name)) {
+            if owner.value().writer_epoch() == writer_epoch && owner.value().writer_context().is_ok() {
+                return Ok(owner.value().clone());
+            }
+        }
+        let record = self.active_record(stream_name).await?;
+        let metadata = self.metadata(metadata_store_id, record.metadata_group_id)?;
+        let stream = ChunkStream::open(
             stream_name,
             writer_epoch,
             self.config.clone(),
@@ -125,7 +136,10 @@ impl ProductionStreamRuntime {
             metadata,
             self.chunks.clone(),
         )
-        .await
+        .await?;
+        self.owners
+            .insert((metadata_store_id, stream_name), stream.clone());
+        Ok(stream)
     }
 
     /// Opens an exact-epoch read-only stream view without changing writer
@@ -140,8 +154,13 @@ impl ProductionStreamRuntime {
         metadata_store_id: u64,
         writer_epoch: u64,
     ) -> Result<ChunkStream> {
-        let binding = self.active_binding(stream_name).await?;
-        let metadata = self.metadata(metadata_store_id, binding.metadata_group_id)?;
+        let record = self.active_record(stream_name).await?;
+        if let Some(owner) = self.owners.get(&(metadata_store_id, stream_name)) {
+            if owner.value().writer_epoch() == writer_epoch && owner.value().writer_context().is_ok() {
+                return owner.value().capture_read_only().await;
+            }
+        }
+        let metadata = self.metadata(metadata_store_id, record.metadata_group_id)?;
         ChunkStream::open_read_only(
             stream_name,
             writer_epoch,
@@ -157,39 +176,33 @@ impl ProductionStreamRuntime {
     /// Historical record authority remains the replay caller's responsibility.
     ///
     /// # Errors
-    /// Returns a binding, manifest, durable cursor or concurrent epoch error.
+    /// Returns a record, state, durable cursor or concurrent epoch error.
     pub async fn open_read_only_current(
         &self,
         stream_name: StreamName,
         metadata_store_id: u64,
     ) -> Result<ChunkStream> {
-        let binding = self.active_binding(stream_name).await?;
-        let metadata = self.metadata(metadata_store_id, binding.metadata_group_id)?;
-        let manifest = metadata
-            .load_current(stream_name)
+        let record = self.active_record(stream_name).await?;
+        let metadata = self.metadata(metadata_store_id, record.metadata_group_id)?;
+        let state = metadata
+            .record_store(record.metadata_group_id)?
+            .load_tail(stream_name)
             .await?
-            .ok_or_else(|| StreamError::InvalidRequest("read-only stream manifest does not exist".into()))?;
-        ChunkStream::open_read_only(
-            stream_name,
-            manifest.writer_epoch,
-            self.config.clone(),
-            self.registry.clone(),
-            metadata,
-            self.chunks.clone(),
-        )
-        .await
+            .ok_or_else(|| StreamError::InvalidRequest("read-only stream state does not exist".into()))?;
+        self.open_read_only(stream_name, metadata_store_id, state.record().writer_epoch)
+            .await
     }
 
-    async fn active_binding(&self, stream_name: StreamName) -> Result<StreamBinding> {
+    async fn active_record(&self, stream_name: StreamName) -> Result<StreamRecord> {
         let registry: &dyn StreamRegistry = self.registry.as_ref();
-        let binding = registry
+        let record = registry
             .load(stream_name)
             .await?
-            .ok_or_else(|| StreamError::InvalidRequest("stream binding does not exist".into()))?;
-        if binding.state != crowdb_protocol::chunk_stream::StreamBindingState::Active {
-            return Err(StreamError::InvalidRequest("stream binding is not active".into()));
+            .ok_or_else(|| StreamError::InvalidRequest("stream record does not exist".into()))?;
+        if record.state != crowdb_protocol::chunk_stream::StreamRecordState::Active {
+            return Err(StreamError::InvalidRequest("stream record is not active".into()));
         }
-        Ok(binding)
+        Ok(record)
     }
 
     fn metadata(

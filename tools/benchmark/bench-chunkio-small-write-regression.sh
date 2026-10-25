@@ -115,14 +115,13 @@ run_case() {
         destroy_cluster
     fi
     CURRENT_CONFIG="$REGRESSION_CONFIG"
-    regression_cli "${deploy_args[@]}"
+    regression_fixture setup -- "${deploy_args[@]}"
     CASE_NUMBER=$((CASE_NUMBER + 1))
     echo ">>> $label (size=$size concurrency=$concurrency)"
     local output status line requested completed errors incomplete stop scale_out parity_bytes first_reservation_us
     set +e
     output=$(timeout --signal=INT --kill-after=10 "$TIMEOUT_SECS" \
-        pixi run -- ./target/release/crowdb-cli --log-root "$LOG_ROOT" \
-        --config "$CURRENT_CONFIG" bench chunkio write-small \
+        pixi run python tools/benchmark/fixture.py --state "$CURRENT_CONFIG" client -- bench chunkio write-small \
         --objects 18446744073709551615 --duration-secs "$DURATION" \
         --object-size "$size" --concurrency "$concurrency" \
         --diskio-connections "$DISKIO_CONNECTIONS" --diskio-rpc-workers "$DISKIO_RPC_WORKERS" \
@@ -184,7 +183,7 @@ mkdir -p "$LOG_ROOT"
 regression_init
 printf 'case\tsize_bytes\tconcurrency\trequested\tcompleted\terrors\tincomplete\tstop\tobjects_s\tlogical_mib_s\tavg_us\tp50_us\tp90_us\tp95_us\tp99_us\tmax_us\tbatches\tbatch_watchdog_expirations\tmax_batch_objects\taggregate_write_requests\taggregate_write_objects\taggregate_write_buffers\taggregate_write_payload_bytes\tmax_objects_per_write_request\tmax_buffers_per_write_request\tmax_active_pipelines\tscale_out\tscale_in\tforeground_parity_bytes\treservation_wait_us\tfirst_reservation_us\n' >"$RESULTS_FILE"
 
-deploy_args=(cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec \
+deploy_args=( --kind combined --metrics-interval 1 \
     --kv-backend mem-block --wal-backend mem-block --no-fsync)
 if [ -n "$SERVER_RPC_WORKERS" ]; then
     deploy_args+=(--diskio-rpc-workers "$SERVER_RPC_WORKERS")

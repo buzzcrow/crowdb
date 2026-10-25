@@ -12,6 +12,7 @@ use crowdb_protocol::chunk_kv::ClientRequestId;
 
 #[derive(Default)]
 pub struct TestStore {
+    pub yield_operations: bool,
     pub values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
     pub fail_after: AtomicUsize,
     pub file_record_reply_loss: AtomicBool,
@@ -109,6 +110,21 @@ impl TestStore {
         }
     }
 
+    async fn pause_namespace_authority(&self, key: &[u8], expected: Option<&[u8]>, value: &[u8]) {
+        if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceAuthority(authority)) =
+            crowdb_access_iceberg::key::IcebergKey::decode(key)
+                .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
+        {
+            if authority.pending_operation.is_some() && expected.is_some() {
+                if let Some(barrier) = &self.namespace_update_barrier {
+                    if self.namespace_update_visits.fetch_add(1, Ordering::SeqCst) < 2 {
+                        barrier.wait().await;
+                    }
+                }
+            }
+        }
+    }
+
     async fn pause_stage_transition(&self, key: &[u8], expected: Option<&[u8]>) {
         if let (Some(barrier), Some(expected)) = (&self.stage_transition_barrier, expected) {
             if let Ok(crowdb_access_iceberg::record::StorageRecord::TableCreateOperation(operation)) =
@@ -169,6 +185,9 @@ impl CatalogStore for TestStore {
         })
     }
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
+        if self.yield_operations {
+            tokio::task::yield_now().await;
+        }
         self.reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.values.load().get(key).cloned())
     }
@@ -181,6 +200,9 @@ impl CatalogStore for TestStore {
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
         identity.validate().unwrap();
+        if self.yield_operations {
+            tokio::task::yield_now().await;
+        }
         if self.deny_gc_workspace(key) {
             return Err(StoreError::Budget);
         }
@@ -226,18 +248,7 @@ impl CatalogStore for TestStore {
                 }
             }
         }
-        if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceAuthority(authority)) =
-            crowdb_access_iceberg::key::IcebergKey::decode(key)
-                .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
-        {
-            if authority.pending_operation.is_some() && expected.is_some() {
-                if let Some(barrier) = &self.namespace_update_barrier {
-                    if self.namespace_update_visits.fetch_add(1, Ordering::SeqCst) < 2 {
-                        barrier.wait().await;
-                    }
-                }
-            }
-        }
+        self.pause_namespace_authority(key, expected, value).await;
         if let Ok(crowdb_access_iceberg::record::StorageRecord::Active(root)) =
             crowdb_access_iceberg::key::IcebergKey::decode(key)
                 .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
@@ -277,6 +288,9 @@ impl CatalogStore for TestStore {
                     return Err(StoreError::Response);
                 }
                 self.pause_table_head(key, expected, value, true).await;
+                if self.yield_operations {
+                    tokio::task::yield_now().await;
+                }
                 return Ok(CasOutcome::Applied(revision));
             }
         }

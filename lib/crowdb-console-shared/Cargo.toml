@@ -21,6 +21,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 form_urlencoded = "1"
 hex = "0.4"
 sha2 = "0.10"
+hmac = "0.12"
+percent-encoding = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { workspace = true, features = ["rt", "macros", "time", "process", "io-util", "net"] }
 futures = "0.3"
@@ -32,9 +35,12 @@ crowdb-protocol = { path = "../crowdb-protocol" }
 crowdb-kv-client = { path = "../crowdb-kv-client" }
 
 [dev-dependencies]
+bincode = "1"
+clap = { version = "4", features = ["derive"] }
+crowdb-kv-server = { path = "../../app/crowdb-kv-server" }
 crowdb-kv = { path = "../crowdb-kv" }
 crowdb-console-shared = { path = ".", features = ["test-util"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "signal"] }
 axum = "0.7"
 # KV data-plane crowdb-rpc client for `tests/kv_e2e_test.rs` (C6's own crowdb-rpc
 # `KvClient` wrapper is gone; that test now exercises the real
@@ -43,3 +49,8 @@ crowdb-kv-client = { path = "../crowdb-kv-client" }
 crowdb-chunkdb-client = { path = "../crowdb-chunkdb-client" }
 crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi", features = ["test-util"] }
 crowdb-test-harness = { path = "../crowdb-test-harness" }
+
+[[example]]
+name = "regression-fixture"
+path = "tests/common/regression_fixture.rs"
+required-features = ["test-util"]

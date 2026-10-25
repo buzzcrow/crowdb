@@ -15,7 +15,20 @@ use tower::ServiceExt;
 struct TestWorkspace(std::path::PathBuf);
 impl TestWorkspace {
     fn new() -> Self {
+        Self::with_voters(1)
+    }
+    fn with_voters(voters: u8) -> Self {
         let root = std::env::temp_dir().join(format!("crowdb-auto-join-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        crowdb_monitor::accept_node_policy(
+            &root,
+            &crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides::default(),
+            &crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides {
+                initial_voters: Some(voters),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         std::fs::create_dir_all(root.join("console")).unwrap();
         Self(root)
     }
@@ -23,6 +36,12 @@ impl TestWorkspace {
         AppState::with_runtime_root(ConsoleConfig::default(), self.0.join("console"))
             .with_node_monitor("http://127.0.0.1:1")
             .unwrap()
+    }
+    fn formation(&self) -> crowdb_protocol::mgmt::node::deployment::FormationPolicy {
+        crowdb_monitor::read_node_policy(&self.0)
+            .unwrap()
+            .unwrap()
+            .formation()
     }
 }
 impl Drop for TestWorkspace {
@@ -52,7 +71,7 @@ async fn default_enabled_policy_survives_disable_and_restart_without_touching_ac
     let (status, policy) = request(router(workspace.state()), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(policy["enabled"], true);
-    assert_eq!(policy["required_voters"], 3);
+    assert_eq!(policy["required_voters"], 1);
     let (status, _) = request(router(workspace.state()), Some(json!({"enabled": false}))).await;
     assert_eq!(status, StatusCode::OK);
     let state = workspace.state();
@@ -145,7 +164,8 @@ async fn two_authenticated_nodes_wait_in_uuid_order_without_initializing() {
         CandidateNode, CandidateSnapshot, CandidateState, NodeAdvertisement, NodeHandshake, NodeHardware,
         NODE_PROTOCOL_VERSION,
     };
-    let workspace = TestWorkspace::new();
+    let workspace = TestWorkspace::with_voters(3);
+    let formation = workspace.formation();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let mut config = ConsoleConfig::default();
@@ -178,6 +198,7 @@ async fn two_authenticated_nodes_wait_in_uuid_order_without_initializing() {
             ssh_user: "crowdb".into(),
             operation_id: uuid::Uuid::new_v4().to_string(),
             confirmed: false,
+            host_key: None,
             cancelled: false,
         };
         std::fs::write(
@@ -191,6 +212,7 @@ async fn two_authenticated_nodes_wait_in_uuid_order_without_initializing() {
                 protocol_version: NODE_PROTOCOL_VERSION,
                 monitor_endpoints: vec![endpoint.clone()],
                 cluster_id: None,
+                formation: Some(formation.clone()),
             },
             state: CandidateState::Unbound,
         });
@@ -269,4 +291,43 @@ async fn choosing_a_new_draft_requires_matching_completed_cleanup_for_a_pinned_t
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["target_cluster_id"].is_null());
     assert_eq!(body["enabled"], true);
+}
+
+#[tokio::test]
+async fn completed_cleanup_retires_console_credentials_before_another_cluster_is_imported() {
+    let workspace = TestWorkspace::new();
+    let console = workspace.0.join("console");
+    let old = crowdb_monitor::ServerCredentials::load_or_create(&console).unwrap();
+    let old_body = std::fs::read(console.join("secrets/server.env")).unwrap();
+    let operation = uuid::Uuid::new_v4().to_string();
+    let cleaned = workspace.0.join("node-cleaned.json");
+    std::fs::write(
+        &cleaned,
+        json!({
+            "cluster_id":uuid::Uuid::new_v4().to_string(),"operation_id":operation,
+            "configuration_digest":"a".repeat(64)
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::set_permissions(&cleaned, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let (status, body) = request(router(workspace.state()), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        !console.join("secrets").exists(),
+        "completed cleanup retained the previous cluster's Console credentials"
+    );
+    let archived = console.join(format!("retired-secrets-{operation}/server.env"));
+    assert!(std::fs::read(archived).unwrap().eq(&old_body));
+    let current = crowdb_monitor::ServerCredentials::load_or_create(&workspace.0).unwrap();
+    assert!(!current.s3_master_key().eq(old.s3_master_key()));
+    crowdb_monitor::ServerCredentials::import(&console, &current.server_env()).unwrap();
+    assert_eq!(request(router(workspace.state()), None).await.0, StatusCode::OK);
+    assert!(
+        crowdb_monitor::ServerCredentials::load_existing(&console)
+            .unwrap()
+            .server_env()
+            == current.server_env(),
+        "observing an acknowledged cleanup must preserve the new cluster's credentials"
+    );
 }

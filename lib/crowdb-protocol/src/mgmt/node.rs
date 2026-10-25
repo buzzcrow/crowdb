@@ -5,6 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod deployment;
+pub mod observation;
+pub mod recovery;
 pub mod setup;
 pub mod storage;
 
@@ -17,6 +20,8 @@ pub struct NodeAdvertisement {
     pub protocol_version: u32,
     pub monitor_endpoints: Vec<String>,
     pub cluster_id: Option<String>,
+    #[serde(default)]
+    pub formation: Option<deployment::FormationPolicy>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -64,12 +69,27 @@ pub struct CandidateSnapshot {
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControl {
     Identity,
+    DeploymentPolicy,
     DiskInventory,
     AcceptNodeSetup {
         request: setup::NodeSetupRequest,
     },
     NodeSetup,
     NodeSetupIntent,
+    RuntimeObservation,
+    RecoveryIdentity,
+    PrepareBootstrap {
+        node_id: u64,
+        bootstrap: super::SystemBootstrapIdentity,
+        manifest: serde_json::Value,
+        credentials: NodeServiceCredentials,
+    },
+    AcceptMemberTrust {
+        trust: serde_json::Value,
+    },
+    AcceptConfirmedMemberTrust {
+        trust: serde_json::Value,
+    },
     CheckRetainedDisk {
         request: storage::CheckRetainedDisk,
     },

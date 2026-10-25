@@ -97,6 +97,7 @@ async fn assert_missing_creation_time(
             disk_id: Some(&disk),
             size: 4,
             write_create_time_ms: 0,
+            sync: false,
             ..FBDiskWriteRequestArgs::default()
         },
     );

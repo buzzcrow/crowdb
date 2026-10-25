@@ -10,7 +10,7 @@ use crowdb_access_iceberg::catalog::{
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn maintenance_observation_includes_time_spent_awaiting_fence_cas() {
     let store = Arc::new(common::TestStore::default());
     let repository = CatalogRepository::new(store.clone(), ClearBounds::default()).unwrap();

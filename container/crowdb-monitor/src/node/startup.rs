@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use super::durable;
 
+mod policy;
+pub use policy::{accept_node_policy, read_node_policy};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Mode {
@@ -26,6 +29,11 @@ struct Startup {
 pub(crate) fn validate(root: &Path, mode: Mode) -> io::Result<()> {
     if !crate::layout::is_clean_absolute(root) || !std::fs::symlink_metadata(root)?.file_type().is_dir() {
         return Err(io::Error::other("startup root must be an absolute directory"));
+    }
+    if root.join("node-policy.json").try_exists()? {
+        return Err(io::Error::other(
+            "accepted node policy cannot use the obsolete startup mode",
+        ));
     }
     if let Some(current) = durable::read::<Startup>(&root.join("startup-mode.json"))? {
         if current.version != 1 || current.mode != mode {
@@ -63,6 +71,7 @@ pub(crate) fn validate(root: &Path, mode: Mode) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "test-util")]
 pub(crate) fn accept(root: &Path, mode: Mode) -> io::Result<()> {
     validate(root, mode)?;
     let path = root.join("startup-mode.json");

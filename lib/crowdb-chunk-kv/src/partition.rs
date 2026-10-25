@@ -5,7 +5,9 @@
 //! Sub-modules: [`frame`] (wire codec), [`journal`] (durability),
 //! [`tree`] (ordered storage).
 
+mod drain;
 mod frame;
+mod frontier;
 mod ingress;
 mod journal;
 mod observation;
@@ -16,6 +18,7 @@ mod tree;
 mod worker_sender;
 
 pub use frame::{decode_frame, encode_frame, DecodedFrame, FrameDecode, MAX_FRAME_BYTES};
+pub use frontier::JournalFrontier;
 pub use ingress::SplitIngress;
 pub use journal::{PartitionJournal, StreamPartitionJournal};
 pub use observation::TreeObservation;
@@ -51,7 +54,7 @@ pub struct PartitionConfig {
     pub max_key_bytes: usize,
     pub max_value_bytes: usize,
     pub retained_results: usize,
-    pub metadata_reclaim_pages_per_pass: usize,
+    pub metadata_reclaim_records_per_pass: usize,
 }
 
 impl Default for PartitionConfig {
@@ -64,7 +67,7 @@ impl Default for PartitionConfig {
             max_key_bytes: 64 * 1024,
             max_value_bytes: 16 * 1024 * 1024,
             retained_results: 65_536,
-            metadata_reclaim_pages_per_pass: 128,
+            metadata_reclaim_records_per_pass: 128,
         }
     }
 }
@@ -78,7 +81,7 @@ impl PartitionConfig {
             || self.max_key_bytes == 0
             || self.max_value_bytes == 0
             || self.retained_results == 0
-            || self.metadata_reclaim_pages_per_pass == 0
+            || self.metadata_reclaim_records_per_pass == 0
         {
             return Err(ChunkKvError::InvalidRequest(
                 "partition bounds must be nonzero".into(),
@@ -122,7 +125,7 @@ pub struct PartitionSnapshot {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CheckpointReclaim {
     pub journal_bytes: u64,
-    pub metadata_pages: u64,
+    pub metadata_records: u64,
     pub tree_bytes: u64,
     pub orphan_bytes: u64,
 }
@@ -143,6 +146,7 @@ struct MutationRequest {
 
 enum WorkerRequest {
     Mutation(MutationRequest),
+    CaptureJournalFrontier(frontier::CaptureRequest),
     ChildSplitCutover(Box<split::stable_session::ChildSplitCutoverRequest>),
     TransferCatchUp(Box<transfer::TransferCatchUpRequest>),
     TransferAppend(Box<transfer::TransferAppendRequest>),
@@ -384,8 +388,8 @@ impl Partition {
         config.validate()?;
         if ownership_epoch == 0
             || checkpoint.tree_id == 0
-            || checkpoint.stream_manifest_generation == 0
-            || checkpoint.stream_manifest_generation > journal.manifest_generation()
+            || checkpoint.stream_generation == 0
+            || checkpoint.stream_generation > journal.record_generation()
             || checkpoint.stream_name != journal.stream_name()
             || checkpoint.tree_id != tree.tree_id()
         {
@@ -483,7 +487,7 @@ impl Partition {
         .await
     }
 
-    /// Reopens the latest authoritative native tree root and stream manifest,
+    /// Reopens the latest authoritative native tree root and Stream chunk record,
     /// then replays WAL while remaining `Prepared`.
     ///
     /// The tree root supplies its own applied frontier and WAL replay offset;
@@ -520,7 +524,7 @@ impl Partition {
             })?
         };
         let stream_name = stream.stream_name();
-        let stream_manifest_generation = stream.manifest_generation();
+        let stream_generation = stream.record_generation();
         let (tree, journal) = native_storage_parts(tree_id, &range, tree_config, page_store, stream)?;
         let (tree_manifest, applied_seq) = tree.checkpoint_state()?;
         let root_manifest_generation = tree.root_manifest_generation()?;
@@ -534,7 +538,7 @@ impl Partition {
                 root_manifest_generation,
                 applied_seq,
                 stream_name,
-                stream_manifest_generation,
+                stream_generation,
                 replay_offset,
             },
             config,
@@ -595,8 +599,8 @@ impl Partition {
         if artifact.ownership_epoch == 0
             || artifact.tree_id == 0
             || artifact.root_manifest_generation == 0
-            || checkpoint.stream_manifest_generation == 0
-            || checkpoint.stream_manifest_generation > journal.manifest_generation()
+            || checkpoint.stream_generation == 0
+            || checkpoint.stream_generation > journal.record_generation()
             || artifact.stream_name != checkpoint.stream_name
             || artifact.stream_name != journal.stream_name()
             || artifact.tree_id != checkpoint.tree_id
@@ -739,7 +743,7 @@ impl Partition {
             root_manifest_generation: artifact.root_manifest_generation,
             applied_seq: artifact.base_applied_seq,
             stream_name: artifact.stream_name,
-            stream_manifest_generation: stream.manifest_generation(),
+            stream_generation: stream.record_generation(),
             replay_offset: 0,
         };
         let range = artifact.range.clone();
@@ -1209,38 +1213,6 @@ impl Partition {
     #[must_use]
     pub fn metrics(&self) -> &PartitionMetrics {
         &self.metrics
-    }
-
-    /// Stops a transfer source after all previously admitted work completes.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stale-epoch or incompatible-lifecycle error.
-    pub async fn suspend_for_transfer(&self, ownership_epoch: u64) -> Result<()> {
-        self.validate_epoch(ownership_epoch)?;
-        match self.lifecycle.compare_exchange(
-            lifecycle_code(PartitionLifecycle::Serving),
-            lifecycle_code(PartitionLifecycle::TransferFencing),
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => {}
-            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferFencing => {}
-            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferQuiesced => {}
-            Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
-        }
-        self.wait_for_admitted_mutations().await;
-        match self.lifecycle.compare_exchange(
-            lifecycle_code(PartitionLifecycle::TransferFencing),
-            lifecycle_code(PartitionLifecycle::TransferQuiesced),
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => {}
-            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferQuiesced => {}
-            Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
-        }
-        Ok(())
     }
 
     /// Starts or idempotently resumes one exact split plan while writes continue.
@@ -1713,7 +1685,8 @@ impl Partition {
 
     async fn create_checkpoint(&self) -> Result<Checkpoint> {
         let replay_offset = self.retry_replay_offset.load(Ordering::Acquire);
-        let stream_manifest_generation = self.journal.manifest_generation();
+        self.journal.checkpoint().await?;
+        let stream_generation = self.journal.record_generation();
         let (tree_manifest, applied_seq) = self.tree.checkpoint(replay_offset).await?;
         let root_manifest_generation = self.tree.root_manifest_generation()?;
         if applied_seq > self.journal_durable_seq.load(Ordering::Acquire)
@@ -1728,7 +1701,7 @@ impl Partition {
             root_manifest_generation,
             applied_seq,
             stream_name: self.journal.stream_name(),
-            stream_manifest_generation,
+            stream_generation,
             replay_offset,
         })
     }
@@ -1745,8 +1718,8 @@ impl Partition {
     ) -> Result<u64> {
         self.validate_epoch(ownership_epoch)?;
         if checkpoint.stream_name != self.journal.stream_name()
-            || checkpoint.stream_manifest_generation == 0
-            || checkpoint.stream_manifest_generation > self.journal.manifest_generation()
+            || checkpoint.stream_generation == 0
+            || checkpoint.stream_generation > self.journal.record_generation()
             || checkpoint.applied_seq > self.applied_seq.load(Ordering::Acquire)
             || checkpoint.replay_offset > self.journal.tail()
             || checkpoint.replay_offset > self.retry_replay_offset.load(Ordering::Acquire)
@@ -1774,20 +1747,20 @@ impl Partition {
         let journal_bytes = self
             .trim_published_checkpoint(ownership_epoch, checkpoint)
             .await?;
-        let metadata_pages = self
+        let metadata_records = self
             .journal
             .reclaim_metadata_before(
-                checkpoint.stream_manifest_generation,
-                self.config.metadata_reclaim_pages_per_pass,
+                checkpoint.stream_generation,
+                self.config.metadata_reclaim_records_per_pass,
             )
             .await?;
         let tree_bytes = self.tree.reclaim_before(checkpoint.root_manifest_generation)?;
         let orphan_bytes = self.tree.reclaim_orphans()?;
         self.metrics
-            .reclaim(journal_bytes, metadata_pages, tree_bytes, orphan_bytes);
+            .reclaim(journal_bytes, metadata_records, tree_bytes, orphan_bytes);
         Ok(CheckpointReclaim {
             journal_bytes,
-            metadata_pages,
+            metadata_records,
             tree_bytes,
             orphan_bytes,
         })
@@ -1994,12 +1967,12 @@ fn validate_prepared_overlay(
         && artifact.parent_epoch != 0
         && artifact.stream_name == checkpoint.stream_name
         && artifact.stream_name == journal.stream_name()
-        && checkpoint.stream_manifest_generation != 0
-        && checkpoint.stream_manifest_generation <= journal.manifest_generation()
+        && checkpoint.stream_generation != 0
+        && checkpoint.stream_generation <= journal.record_generation()
         && artifact.parent_stream_name == parent_journal.stream_name()
         && artifact.parent_stream_name != artifact.stream_name
-        && artifact.parent_stream_manifest_generation != 0
-        && artifact.parent_stream_manifest_generation <= parent_journal.manifest_generation()
+        && artifact.parent_stream_generation != 0
+        && artifact.parent_stream_generation <= parent_journal.record_generation()
         && artifact.parent_replay_offset <= artifact.parent_cutover_offset
         && artifact.parent_cutover_offset <= parent_journal.tail();
     if !valid {
@@ -2034,7 +2007,7 @@ async fn replay_parent_overlay(
             artifact.base_applied_seq
         },
         stream_name: artifact.parent_stream_name,
-        stream_manifest_generation: artifact.parent_stream_manifest_generation,
+        stream_generation: artifact.parent_stream_generation,
         replay_offset: artifact.parent_replay_offset,
     };
     let mut replay = ReplayState::new(&replay_checkpoint, retained_results);
@@ -2363,6 +2336,10 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<WorkerR
             },
         };
         let first = match next {
+            WorkerRequest::CaptureJournalFrontier(request) => {
+                frontier::capture(&state, request).await;
+                continue;
+            }
             WorkerRequest::ChildSplitCutover(request) => {
                 split::stable_session::install_child_cutover(&mut state, *request).await;
                 continue;
@@ -2397,7 +2374,8 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<WorkerR
             };
             let request = match next {
                 WorkerRequest::Mutation(request) => request,
-                control @ (WorkerRequest::ChildSplitCutover(_)
+                control @ (WorkerRequest::CaptureJournalFrontier(_)
+                | WorkerRequest::ChildSplitCutover(_)
                 | WorkerRequest::TransferCatchUp(_)
                 | WorkerRequest::TransferAppend(_)) => {
                     pending = Some(control);

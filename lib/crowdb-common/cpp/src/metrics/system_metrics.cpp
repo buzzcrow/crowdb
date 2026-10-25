@@ -2,6 +2,8 @@
 
 #include "crowdb-common/metrics/system_metrics.h"
 
+#include "cstate_metrics.h"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -124,48 +126,11 @@ static std::pair<uint64_t, uint64_t> read_tcp_stats()
 
 // ── DRAM bandwidth via perf_event_open ──────────────────────────
 
-struct perf_event_attr_min
-{
-    uint32_t type;
-    uint32_t size;
-    uint64_t config;
-    uint64_t sample_period_or_freq;
-    uint64_t sample_type;
-    uint64_t read_format;
-    uint64_t flags;
-    uint32_t wakeup_events_or_watermark;
-    uint32_t bp_type;
-    uint64_t bp_addr_or_config1;
-    uint64_t bp_len_or_config2;
-    uint64_t branch_sample_type;
-    uint64_t sample_regs_user;
-    uint32_t sample_stack_user;
-    int32_t  clockid;
-    uint64_t sample_regs_intr;
-    uint32_t aux_watermark;
-    uint16_t sample_max_stack;
-    uint16_t reserved2;
-    uint32_t aux_sample_size;
-    uint32_t reserved3;
-    uint64_t sig_data;
-};
-
-static constexpr uint64_t PERF_FLAG_DISABLED             = 1ULL;
-static constexpr uint64_t PERF_IOC_ENABLE                = 0x2400ULL;
-static constexpr uint64_t PERF_FLAG_FD_CLOEXEC           = 8ULL;
-static constexpr uint64_t PERF_FORMAT_TOTAL_TIME_ENABLED = 1ULL;
-static constexpr uint64_t PERF_FORMAT_TOTAL_TIME_RUNNING = 2ULL;
-
 struct SystemCollector::DramBwImpl
 {
     struct Fd
     {
-        struct Sample
-        {
-            uint64_t value        = 0;
-            uint64_t time_enabled = 0;
-            uint64_t time_running = 0;
-        };
+        using Sample = detail::PerfSample;
 
         int    fd = -1;
         Sample prev;
@@ -206,27 +171,12 @@ struct SystemCollector::DramBwImpl
 
     static int perf_open(uint32_t pmu_type, uint64_t config, int cpu)
     {
-        perf_event_attr_min attr{};
-        attr.type        = pmu_type;
-        attr.size        = sizeof(attr);
-        attr.config      = config;
-        attr.flags       = PERF_FLAG_DISABLED;
-        attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
-        return static_cast<int>(syscall(SYS_perf_event_open, &attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC));
-    }
-
-    static void perf_enable(int fd)
-    {
-        ioctl(fd, PERF_IOC_ENABLE, 0);
+        return detail::PerfCounter::open_fd(pmu_type, config, cpu);
     }
 
     static std::optional<Fd::Sample> read_fd(int fd)
     {
-        Fd::Sample sample;
-        if (read(fd, &sample, sizeof(sample)) != sizeof(sample)) {
-            return std::nullopt;
-        }
-        return sample;
+        return detail::PerfCounter::read_fd(fd);
     }
 
     static std::optional<uint32_t> read_pmu_type(const std::string &name)
@@ -327,7 +277,6 @@ struct SystemCollector::DramBwImpl
                 close_fds(totals);
                 return false;
             }
-            perf_enable(fd);
             totals.push_back({.fd = fd, .prev = {}});
         }
         total_fds = std::move(totals);
@@ -369,8 +318,6 @@ struct SystemCollector::DramBwImpl
                 close_fds(writes);
                 return false;
             }
-            perf_enable(rfd);
-            perf_enable(wfd);
             reads.push_back({.fd = rfd, .prev = {}});
             writes.push_back({.fd = wfd, .prev = {}});
         }
@@ -502,7 +449,7 @@ static std::pair<uint64_t, uint64_t> read_tcp_stats()
 
 // ── SystemCollector ─────────────────────────────────────────────
 
-SystemCollector::SystemCollector()
+SystemCollector::SystemCollector() : c6_(std::make_unique<detail::C6Counters>())
 {
 #ifdef __linux__
     auto [user_us, sys_us]   = read_cpu_times();
@@ -533,7 +480,8 @@ SystemCollector::SystemCollector(SystemCollector &&other) noexcept
       prev_tcp_retransmits_(other.prev_tcp_retransmits_),
       prev_tcp_lost_(other.prev_tcp_lost_),
       prev_time_us_(other.prev_time_us_),
-      dram_bw_(std::exchange(other.dram_bw_, nullptr))
+      dram_bw_(std::exchange(other.dram_bw_, nullptr)),
+      c6_(std::move(other.c6_))
 {
 }
 
@@ -547,6 +495,7 @@ SystemCollector &SystemCollector::operator=(SystemCollector &&other) noexcept
         prev_tcp_lost_        = other.prev_tcp_lost_;
         prev_time_us_         = other.prev_time_us_;
         dram_bw_              = std::exchange(other.dram_bw_, nullptr);
+        c6_                   = std::move(other.c6_);
     }
     return *this;
 }
@@ -598,7 +547,28 @@ SystemMetricsSnapshot SystemCollector::collect()
     }
 #endif
 
+    if (c6_) {
+        auto [cores, packages] = c6_->collect();
+        snap.cpu_core_c6       = std::move(cores);
+        snap.cpu_package_c6    = std::move(packages);
+    }
     return snap;
+}
+
+static void flush_c6(FILE *fp, const char *scope, const std::vector<C6Residency> &values)
+{
+    if (values.empty()) {
+        std::fprintf(fp, " cpu.c6.%s=unsupported", scope);
+    }
+    for (const auto &value : values) {
+        std::fprintf(fp, " cpu.c6.%s@%d=", scope, value.cpu);
+        if (value.pct) {
+            std::fprintf(fp, "%.1f%%", *value.pct);
+        }
+        else {
+            std::fprintf(fp, "unsupported");
+        }
+    }
 }
 
 void flush_system(FILE *fp, const SystemMetricsSnapshot &snap)
@@ -616,6 +586,8 @@ void flush_system(FILE *fp, const SystemMetricsSnapshot &snap)
     print_bw(snap.dram_write_mib);
     std::fprintf(fp, " bw_total_mib=");
     print_bw(snap.dram_total_mib);
+    flush_c6(fp, "core", snap.cpu_core_c6);
+    flush_c6(fp, "package", snap.cpu_package_c6);
     std::fprintf(fp, "\n");
 }
 

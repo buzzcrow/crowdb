@@ -46,7 +46,7 @@ impl Partition {
                 root_manifest_generation: self.tree.root_manifest_generation()?,
                 applied_seq: applied,
                 stream_name: self.journal.stream_name(),
-                stream_manifest_generation: self.journal.manifest_generation(),
+                stream_generation: self.journal.record_generation(),
                 replay_offset: child_artifact.parent_replay_offset,
             },
             cutover_offset: child_artifact.parent_cutover_offset,
@@ -107,7 +107,7 @@ impl Partition {
             root_manifest_generation: child_artifact.root_manifest_generation,
             applied_seq: child_artifact.base_applied_seq,
             stream_name: child_artifact.stream_name,
-            stream_manifest_generation: child.journal.manifest_generation(),
+            stream_generation: child.journal.record_generation(),
             replay_offset: 0,
         };
         Ok(super::PreparedSplit {
@@ -144,7 +144,7 @@ impl Partition {
             root_manifest_generation: self.tree.root_manifest_generation()?,
             applied_seq,
             stream_name: self.journal.stream_name(),
-            stream_manifest_generation: self.journal.manifest_generation(),
+            stream_generation: self.journal.record_generation(),
             replay_offset: proof.parent_replay_offset,
         };
         let target = super::SplitWriterTarget {
@@ -236,7 +236,7 @@ impl Partition {
             root_manifest_generation: artifact.root_manifest_generation,
             applied_seq: artifact.base_applied_seq,
             stream_name: artifact.stream_name,
-            stream_manifest_generation: journal.manifest_generation(),
+            stream_generation: journal.record_generation(),
             replay_offset: 0,
         };
         let partition = Self::recover_prepared_overlay(

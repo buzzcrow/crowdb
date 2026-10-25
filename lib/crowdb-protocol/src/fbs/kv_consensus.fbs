@@ -49,12 +49,14 @@ table FBAcceptedValue {
 table FBPrepareRequest {
     id:uint64;
     rpc_create_nano:uint64;
+    group_id:uint64;
+    target_replica_id:uint64;
+    target_cluster_id:string;
     version:uint32;
     slot:uint64;
     round:uint64;
     leader_id:uint64;
     term:uint64;
-    group_id:uint64;
     membership_epoch:uint64;
 }
 
@@ -82,13 +84,15 @@ table FBPromiseResponse {
 table FBAcceptRequest {
     id:uint64;
     rpc_create_nano:uint64;
+    group_id:uint64;
+    target_replica_id:uint64;
+    target_cluster_id:string;
     version:uint32;
     slot:uint64;
     round:uint64;
     leader_id:uint64;
     term:uint64;
     value:FBAcceptedValue;
-    group_id:uint64;
     membership_epoch:uint64;
 }
 
@@ -115,8 +119,10 @@ table FBAcceptedResponse {
 table FBPreVoteRequest {
     id:uint64;
     rpc_create_nano:uint64;
-    version:uint32;
     group_id:uint64;
+    target_replica_id:uint64;
+    target_cluster_id:string;
+    version:uint32;
     term:uint64;
     candidate_id:uint64;
     accepted_log_tip_slot:uint64;
@@ -140,8 +146,10 @@ table FBPreVoteResponse {
 table FBRequestVoteRequest {
     id:uint64;
     rpc_create_nano:uint64;
-    version:uint32;
     group_id:uint64;
+    target_replica_id:uint64;
+    target_cluster_id:string;
+    version:uint32;
     term:uint64;
     candidate_id:uint64;
     accepted_log_tip_slot:uint64;
@@ -167,8 +175,10 @@ table FBRequestVoteResponse {
 table FBHeartbeatRequest {
     id:uint64;
     rpc_create_nano:uint64;
-    version:uint32;
     group_id:uint64;
+    target_replica_id:uint64;
+    target_cluster_id:string;
+    version:uint32;
     term:uint64;
     leader_id:uint64;
     prev_log_slot:uint64;
@@ -199,8 +209,10 @@ table FBHeartbeatResponse {
 table FBStepDownRequest {
     id:uint64;
     rpc_create_nano:uint64;
-    version:uint32;
     group_id:uint64;
+    target_replica_id:uint64;
+    target_cluster_id:string;
+    version:uint32;
     term:uint64;
     target_leader_id:uint64;
     reason:string;
@@ -223,8 +235,10 @@ table FBStepDownResponse {
 table FBChosenNotification {
     id:uint64;
     rpc_create_nano:uint64;
-    version:uint32;
     group_id:uint64;
+    target_replica_id:uint64;
+    target_cluster_id:string;
+    version:uint32;
     slot:uint64;
     term:uint64;
     leader_id:uint64;
@@ -234,8 +248,10 @@ table FBChosenNotification {
 table FBBatchChosenNotification {
     id:uint64;
     rpc_create_nano:uint64;
-    version:uint32;
     group_id:uint64;
+    target_replica_id:uint64;
+    target_cluster_id:string;
+    version:uint32;
     start_slot:uint64;
     end_slot:uint64;
     term:uint64;
@@ -248,8 +264,10 @@ table FBBatchChosenNotification {
 table FBFetchGapRequest {
     id:uint64;
     rpc_create_nano:uint64;
-    version:uint32;
     group_id:uint64;
+    target_replica_id:uint64;
+    target_cluster_id:string;
+    version:uint32;
     slot:uint64;
     term:uint64;
     leader_id:uint64;
@@ -346,4 +364,13 @@ table FBSnapshotAbortResponse {
     error_msg:string;
     boot_nonce:uint64;
     session_number:uint64;
+}
+
+// Common prefix used to reject consensus requests routed to another replica.
+table FBConsensusTarget {
+    id:uint64;
+    rpc_create_nano:uint64;
+    group_id:uint64;
+    target_replica_id:uint64;
+    target_cluster_id:string;
 }

@@ -1,6 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/process.rs"]
+mod test_process;
+
 use std::sync::Arc;
 
 use axum::{
@@ -13,7 +16,7 @@ use crowdb_chunk_kv::{
 };
 use crowdb_chunk_kv_server::{management_router, ChunkKvService, ManagementState};
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, StreamBinding, StreamBindingState, StreamConfig,
+    memory::MemoryStreamStore, ChunkStream, StreamConfig, StreamRecord, StreamRecordState,
 };
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
@@ -32,13 +35,15 @@ async fn journal() -> StreamPartitionJournal {
     let store = Arc::new(MemoryStreamStore::new(4096));
     let stream_name = StreamName { high: 2, low: 3 };
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
+            record_version: 1,
+            state: StreamRecordState::Active,
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
-            owner_kind: Some("chunk-kv-partition".into()),
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         u64::MAX,
         StreamConfig::default(),
@@ -110,7 +115,7 @@ async fn get(app: axum::Router, id: &str, generation: u64, epoch: u64) -> (Statu
 
 #[tokio::test]
 async fn observation_keeps_exact_fences_and_does_not_confuse_serving_with_live_authority() {
-    let service = Arc::new(ChunkKvService::new(7, 8).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(7), 8).unwrap());
     let (head, page) = catalog();
     service.install_catalog(&head, &[page]).unwrap();
     let id = format!("{:016x}{:016x}", ID.high, ID.low);
@@ -170,8 +175,13 @@ async fn observation_keeps_exact_fences_and_does_not_confuse_serving_with_live_a
     assert_eq!(advanced["journal_durable_seq"], "1");
     assert_eq!(advanced["applied_seq"], "1");
     assert_eq!(advanced["tree"]["checkpoint_applied_seq"], "1");
-    assert_eq!(advanced["journal"]["extent_pages"].as_array().unwrap().len(), 1);
-    assert!(advanced["journal"]["active"]["chunk_id"].is_string());
+    assert_eq!(advanced["journal"]["chunk_record"]["state"], "Active");
+    assert_eq!(advanced["journal"]["published_tail"], "0");
+    assert_eq!(
+        advanced["journal"]["generation"], body["journal"]["generation"],
+        "append keeps the persisted chunk record unchanged"
+    );
+    assert!(advanced["journal"]["chunk_record"]["chunk_id"].is_string());
     assert_eq!(advanced["data_pages_read"], 0);
     let stale = app
         .clone()
@@ -179,7 +189,12 @@ async fn observation_keeps_exact_fences_and_does_not_confuse_serving_with_live_a
             Request::get(format!(
                 "/partitions/{id}/observation?generation=9&epoch={}&stream_generation={}",
                 u64::MAX,
-                body["journal"]["generation"].as_str().unwrap()
+                body["journal"]["generation"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap()
+                    + 1
             ))
             .body(Body::empty())
             .unwrap(),
@@ -264,7 +279,7 @@ async fn native_page_windows_preserve_bytes_and_reject_changed_cursors() {
             .unwrap();
     }
     tree.checkpoint(0).await.unwrap();
-    let service = Arc::new(ChunkKvService::new(7, 8).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(7), 8).unwrap());
     let (head, catalog) = catalog();
     service.install_catalog(&head, &[catalog]).unwrap();
     service.install_partition(&partition).unwrap();
@@ -357,4 +372,66 @@ async fn native_page_partition() -> (Arc<crowdb_chunk_kv::CrowdbPartitionTree>, 
     )
     .unwrap();
     (tree, partition)
+}
+
+#[tokio::test]
+async fn terminal_apply_uncertainty_requests_restart_without_reactivating_writer() {
+    use crowdb_chunk_kv::{ChunkKvError, MutationOperation, PartitionLifecycle, RequestId};
+    let service = ChunkKvService::new(test_process::TestProcess::authority(7), 8).unwrap();
+    let (head, page) = catalog();
+    service.install_catalog(&head, &[page]).unwrap();
+    assert!(
+        service.recovery_required().is_empty(),
+        "idle instance needs no restart"
+    );
+    let tree = Arc::new(MemoryPartitionTree::with_tree_id(1));
+    let partition = Partition::open(
+        PartitionId {
+            high: ID.high,
+            low: ID.low,
+        },
+        PartitionRange::default(),
+        u64::MAX,
+        PartitionConfig::default(),
+        tree.clone(),
+        Arc::new(journal().await),
+    )
+    .unwrap();
+    service.install_partition(&partition).unwrap();
+    assert!(service.recovery_required().is_empty());
+    tree.fail_next_apply();
+    assert_eq!(
+        partition
+            .mutate(
+                u64::MAX,
+                RequestId {
+                    client_high: 7,
+                    client_low: 8,
+                    client_sequence: 1
+                },
+                MutationOperation::Put {
+                    key: b"key".to_vec(),
+                    value: b"value".to_vec()
+                }
+            )
+            .await,
+        Err(ChunkKvError::ApplyStateUnknown)
+    );
+    let failed = tokio::time::timeout(std::time::Duration::from_secs(2), service.wait_for_recovery())
+        .await
+        .unwrap();
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].partition_id, ID);
+    assert_eq!(failed[0].owner_epoch, u64::MAX);
+    assert_eq!(failed[0].lifecycle, PartitionLifecycle::Recovering);
+    assert_eq!((failed[0].durable_seq, failed[0].applied_seq), (1, 0));
+    assert!(service.health(0).range_readiness[0].detail.contains("Recovering"));
+    assert!(service.activate_recovered_partition(ID, u64::MAX).is_err());
+    assert_eq!(partition.lifecycle(), PartitionLifecycle::Recovering);
+    service.begin_drain();
+    assert_eq!(
+        service.recovery_required(),
+        failed,
+        "drain cannot erase replay evidence"
+    );
 }

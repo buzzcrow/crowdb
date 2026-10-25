@@ -20,8 +20,8 @@ use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegi
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, Location, Strip};
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_protocol::frame::{
-    encode_frame_regions, FrameError, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES,
-    MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+    encode_frame_regions, FrameError, FrameMagic, FRAME_FOOTER_BYTES, FRAME_V2_HEADER_BYTES, MAX_FRAME_BYTES,
+    MAX_FRAME_V2_PAYLOAD_BYTES,
 };
 
 use super::stack::TestStack as E2eStack;
@@ -37,8 +37,8 @@ impl FullFramedOwner {
     fn new(frames: usize) -> Self {
         let mut bytes = vec![0; frames * MAX_FRAME_BYTES];
         for index in 0..frames {
-            let start = index * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES;
-            bytes[start..start + MAX_FRAME_PAYLOAD_BYTES].fill(0x5a);
+            let start = index * MAX_FRAME_BYTES + FRAME_V2_HEADER_BYTES;
+            bytes[start..start + MAX_FRAME_V2_PAYLOAD_BYTES].fill(0x5a);
         }
         Self { bytes, frames }
     }
@@ -46,7 +46,7 @@ impl FullFramedOwner {
 
 impl FramedWriteBuffer for FullFramedOwner {
     fn logical_len(&self) -> u64 {
-        (self.frames * MAX_FRAME_PAYLOAD_BYTES) as u64
+        (self.frames * MAX_FRAME_V2_PAYLOAD_BYTES) as u64
     }
 
     fn frame_count(&self) -> usize {
@@ -54,7 +54,7 @@ impl FramedWriteBuffer for FullFramedOwner {
     }
 
     fn frame_payload_len(&self, index: usize) -> Option<usize> {
-        (index < self.frames).then_some(MAX_FRAME_PAYLOAD_BYTES)
+        (index < self.frames).then_some(MAX_FRAME_V2_PAYLOAD_BYTES)
     }
 
     fn finalize_frame(
@@ -67,8 +67,8 @@ impl FramedWriteBuffer for FullFramedOwner {
         let start = index * MAX_FRAME_BYTES;
         let end = start + MAX_FRAME_BYTES;
         let frame = &mut self.bytes[start..end];
-        let (header, remainder) = frame.split_at_mut(FRAME_HEADER_PREFIX_BYTES);
-        let (payload, footer) = remainder.split_at_mut(MAX_FRAME_PAYLOAD_BYTES);
+        let (header, remainder) = frame.split_at_mut(FRAME_V2_HEADER_BYTES);
+        let (payload, footer) = remainder.split_at_mut(MAX_FRAME_V2_PAYLOAD_BYTES);
         debug_assert_eq!(footer.len(), FRAME_FOOTER_BYTES);
         encode_frame_regions(magic, chunk_id, payload, write_time_ms, header, footer)?;
         Ok(start..end)

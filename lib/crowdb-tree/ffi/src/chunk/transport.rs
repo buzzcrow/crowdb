@@ -33,6 +33,7 @@ pub struct ChunkRpcTransportOptions<'a> {
     pub rpc_timeout_ms: u64,
     pub completion_capacity: u32,
     pub mirror_copies: u32,
+    pub strip_capacity_bytes: u32,
 }
 
 #[cfg(feature = "chunk-rpc")]
@@ -52,6 +53,7 @@ pub struct OwnedChunkRpcTransportOptions {
     pub rpc_timeout_ms: u64,
     pub completion_capacity: u32,
     pub mirror_copies: u32,
+    pub strip_capacity_bytes: u32,
 }
 
 #[cfg(feature = "chunk-rpc")]
@@ -94,6 +96,7 @@ impl ChunkTransport {
             rpc_timeout_ms: options.rpc_timeout_ms,
             completion_capacity: options.completion_capacity,
             mirror_copies: options.mirror_copies,
+            strip_capacity_bytes: options.strip_capacity_bytes,
             chunkdb_resolver: sys::ct_chunk_rpc_resolver::default(),
             disk_resolver: sys::ct_chunk_rpc_resolver::default(),
         };
@@ -133,6 +136,7 @@ impl ChunkTransport {
             rpc_timeout_ms: options.rpc_timeout_ms,
             completion_capacity: options.completion_capacity,
             mirror_copies: options.mirror_copies,
+            strip_capacity_bytes: options.strip_capacity_bytes,
             chunkdb_resolver: sys::ct_chunk_rpc_resolver {
                 context: Arc::as_ptr(&owners).cast_mut().cast(),
                 resolve: Some(resolve_route),

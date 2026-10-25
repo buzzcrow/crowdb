@@ -2,12 +2,14 @@
 # Licensed under the Apache License, Version 2.0.
 """Named flow scopes, fresh server profiles and bounded host-client dispatch."""
 
-import concurrent.futures
 import json
+import threading
+import time
 from dataclasses import dataclass
 from contextlib import nullcontext
 
 from browser_batch import run_browser_batches
+from resource_dispatch import batch_slots, run_with_resources
 
 from fixture import Cluster
 from diskdb_fixture import DiskdbCluster
@@ -36,6 +38,8 @@ from console_bootstrap_fixture import BootstrapWebCluster
 from console_shell_fixture import ShellBrowserCluster
 from console_discovery_browser_fixture import DiscoveryBrowserCluster
 from console_cli_fixture import CliContainerCluster
+from console_cli_target import CliAttachedCluster
+from oci_reference_fixture import OciReferenceCluster
 from console_native_fixture import NativeConsoleCluster
 from console_standalone_fixture import StandaloneWebCluster
 from console_registry_fixture import RegistryWebCluster
@@ -99,6 +103,11 @@ class Case:
     shell_observations: bool = False
     console_browser: str | None = None
     cli_replay: str | None = None
+    oci_reference: str | None = None
+    oci_editable_ui: bool = False
+    oci_address_recovery: bool = False
+    oci_shortcuts: bool = False
+    cli_workload: bool = False
     client_timeout: int = 120
 
 
@@ -170,7 +179,13 @@ DISKDB_CASES = (
 )
 
 DEPLOYMENT_CASES = (
-    Case("deployment.balance", "deployment::balance::single_node_disables_local_chunk_kv_split_planning", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.reference", "deployment::reference::direct_docker_one_node", oci_reference="docker-one", oci_shortcuts=True),
+    Case("deployment.reference", "deployment::reference::editable_ui_one_node", oci_reference="docker-one", oci_editable_ui=True),
+    Case("deployment.reference", "deployment::reference::editable_ui_three_nodes", oci_reference="docker-three", oci_editable_ui=True),
+    Case("deployment.reference", "deployment::reference::direct_docker_three_nodes", oci_reference="docker-three", oci_address_recovery=True),
+    Case("deployment.reference", "deployment::reference::compose_one_node", oci_reference="compose-one"),
+    Case("deployment.reference", "deployment::reference::compose_three_nodes", oci_reference="compose-three"),
+    Case("deployment.balance", "deployment::balance::single_node_preserves_default_chunk_kv_balance_policy", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.listeners", "deployment::listeners::fixed_s3_listener_recovers_after_explicit_termination", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.listeners", "deployment::listeners::fixed_iceberg_listener_recovers_after_explicit_termination", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.browser", "deployment::browser::readonly_release_ui_preserves_domains_and_live_authority", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
@@ -180,10 +195,10 @@ DEPLOYMENT_CASES = (
     Case("deployment.clients", "deployment::clients::official_clients_and_protocol_layout_survive_restart", restart=True, service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=420),
     Case("deployment.kv", "deployment::kv_bootstrap::monitor_creates_real_kv_groups_then_validates_after_restart", restart=True, service_selection=("kv",)),
     Case("deployment.validation", "deployment::validation::invalid_profile_is_rejected", service_selection=("kv",)),
-    Case("deployment.validation", "deployment::validation::invalid_manifest_is_rejected", service_selection=("kv",)),
+    Case("deployment.validation", "deployment::validation::invalid_node_policy_is_rejected", service_selection=("kv",)),
     Case("deployment.storage", "deployment::storage::chunk_services_validate_live_registration_and_logical_topology", restart=True, service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.storage", "deployment::storage::real_iceberg_catalog_and_listener_survive_restart", restart=True, service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
-    Case("deployment.bootstrap", "deployment::bootstrap::interrupted_bootstrap_preserves_completed_steps", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.bootstrap", "deployment::bootstrap::interrupted_setup_preserves_completed_steps", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.hardware", "deployment::hardware_bootstrap::writes_and_validates_hardware_with_real_group_zero", (0, 0, 0), True, groups=(0,)),
     Case("deployment.hardware", "deployment::hardware_bootstrap::conflicting_group_zero_record_rejects_without_creating_hardware", (0, 0, 0), True, groups=(0,)),
     Case("deployment.selection", "deployment::selected_kv_services_recover_acknowledged_data", restart=True),
@@ -231,10 +246,10 @@ CHUNKDB_CASES = (
     Case("chunkdb.allocation", "chunkdb::allocation::allocation_connect_failure_reroutes_but_lost_reply_does_not"),
 )
 CHUNK_STREAM_CASES = (
-    Case("chunk-stream.objects", "chunk_stream::production_idle_writer_stops_after_ownership_takeover", chunkdb_storage=True),
+    Case("chunk-stream.objects", "chunk_stream::production_released_idle_writer_stops_after_owner_transfer", chunkdb_storage=True),
     Case("chunk-stream.recovery", "chunk_stream::production_stream_recovers_exact_bytes_after_service_restarts", chunkdb_storage=True, storage_backend="file", restart=True),
     Case("chunk-stream.errors", "chunk_stream::production_stream_write_returns_after_diskio_failure", chunkdb_storage=True, diskio_process_exit=True),
-    Case("chunk-stream.errors", "chunk_stream::production_stream_write_returns_after_live_diskio_errors", chunkdb_storage=True, diskio_fault_rate=1.0),
+    Case("chunk-stream.errors", "chunk_stream::production_stream_initialization_returns_after_live_diskio_errors", chunkdb_storage=True, diskio_fault_rate=1.0),
 )
 CHUNK_CLIENT_CASES = (
     Case("chunk-client.reader", "chunk_client::reader::data::ec_range_read_recovers_only_the_requested_bytes", chunkdb_storage=True, storage_backend="mem"),
@@ -392,7 +407,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.native.browser.prerequisites", "console::native_browser::waiting_plan_prerequisites", native_client=True, client_timeout=360),
     Case("console.native.browser.storage-windows", "console::native_browser::storage_windows_and_access_recovery", native_client=True, native_disk_gib=(80, 256, 256), client_timeout=360),
     Case("console.native.browser.scanner", "console::native_browser::scanner_and_scoped_recalc", native_client=True, client_timeout=360),
-    Case("console.native.browser.journal-windows", "console::native_browser::large_journal_pagination_and_restart", native_client=True, client_timeout=480),
+    Case("console.native.browser.journal-windows", "console::native_browser::large_journal_records_and_restart", native_client=True, client_timeout=480),
     Case("console.native.recovery", "console::native_recovery::all_typed_restarts_preserve_objects_and_keep_one_live_process", native_client=True),
     Case("console.native.load", "console::native_load::production_load_keeps_heartbeats_and_durable_bytes_across_owner_restart", native_client=True),
     Case("console.native.inspection", "console::native_browser::page_layout_and_iceberg_inspection", native_client=True, native_disk_gib=(80, 256, 256), client_timeout=3840),
@@ -408,9 +423,16 @@ CONSOLE_OPERATION_CASES = (
     Case("console.browser.logical", "console::browser_logical::delete", native_browser="deletes a replica and a group through the UI and verifies the real backend"),
     Case("console.browser.inspector", "console::browser_inspector::activity", shell_browser="records mutations and async operations, and clear empties the log"),
     Case("console.browser.inspector", "console::browser_inspector::selection", shell_browser="clears stale properties when the domain changes or the cluster resets"),
+    Case("console.cli.container", "console::cli_container::pending_free_accounting", oci_reference="docker-one", cli_workload=True),
     Case("console.cli.container", "console::cli_container::confirmed_group_zero_replay", cli_replay="bound"),
     Case("console.cli.container", "console::cli_container::confirmed_storage_replay", cli_replay="storage"),
-    Case("console.managed", "console::managed::authority_outage", console_browser="Managed native authority outage hides stale topology and retains monitor observation"),
+    Case("console.cli.container", "console::cli_container::terminal_chunk_writer_recovery", cli_replay="terminal-writer"),
+    Case("console.cli.container", "console::cli_container::plain_docker_target_attachment", cli_replay="attachment"),
+    Case("console.cli.container", "console::cli_container::observation_round_trip", cli_replay="observation"),
+    Case("console.cli.container", "console::cli_container::hardware_round_trip", cli_replay="hardware"),
+    Case("console.cli.container", "console::cli_container::logical_round_trip", cli_replay="logical"),
+    Case("console.cli.container", "console::cli_container::data_round_trip", cli_replay="data"),
+    Case("console.managed", "console::managed::authority_outage", console_browser="Node authority outage rejects mutations and marks retained observations stale"),
     Case("console.managed", "console::managed::hardware_and_user_flows", console_browser="Managed native KV, Iceberg, S3 and Chunk operations retain hardware boundaries"),
     Case("console.browser.kv", "console::browser_kv::pagination", shell_browser="Group selection opens data directly; pages replace rows and expose complete values"),
     Case("console.browser.kv", "console::browser_kv::binary_bytes", shell_browser="binary byte runs retain printable fields and use distinct uppercase hex without a prefix"),
@@ -506,24 +528,11 @@ CONSOLE_OPERATION_CASES = (
     Case("console.deployment", "console::deployment::authenticated_node_update_preserves_ids_and_converges_from_another_console", (0, 0, 0), True, groups=(0,)),
     Case("console.bootstrap", "console::cluster::clean_requires_confirmed_group_replicas", (0, 0, 0), True, groups=(0,)),
 
-    Case("console.cli", "console::cli_direct::cluster_status_via_direct_group0", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_direct::cluster_rack_list_ignores_legacy_local_state", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_direct::cluster_node_list_ignores_legacy_local_state", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_direct::kv_server_controls_require_launch_registry", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_direct::incremental_local_deploy_reads_group_zero_instead_of_legacy_file", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_direct::destroy_reads_group_zero_and_requires_launch_registry", (0, 0, 0), True, groups=(0,)),
 
-    Case("console.cli", "console::cli_observation::cluster_status_topology_via_direct_group0", (0, 0, 0), True, groups=(0,)),
 
     Case("console.clients", "console::server_management::full_store_group_remote_cycle", stores_per_node=((),), groups=()),
     Case("console.clients", "console::server_data::put_get_delete_cycle", stores_per_node=((),), groups=()),
-    Case("console.cli", "console::cli_management::store_group_replica_round_trip", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_hardware::rack_node_lifecycle", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_data::kv_put_get_delete_round_trip", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_registry::registry_hardware_uses_group_zero_across_cli_invocations", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_registry::registry_bootstrap_uses_sealed_intent_without_legacy_topology_file", (0, 0, 0), True, groups=(0,)),
 
-    Case("console.cli", "console::cli_registry::cli_uses_launch_registry_and_runtime_identity_without_legacy_state", (0, 0, 0), True, groups=(0,)),
     Case("console.web.authority", "console::web_authority::bare_metal_hardware_routes_share_confirmed_group_zero_state", console_web=True),
     Case("console.web.authority", "console::web_authority::bare_metal_snapshot_requires_live_authority_without_a_docker_monitor", console_web=True),
     Case("console.web.authority", "console::web_authority::snapshot_validates_later_replica_hosts_as_well_as_original_store_hosts", console_web=True),
@@ -555,6 +564,8 @@ def select_cases(layer="all", scope="all", case_name=None, partition=None):
 
 
 def case_nodes(case):
+    if case.oci_reference:
+        return 3 if case.oci_shortcuts else 4 if case.oci_address_recovery else 1 if case.oci_reference.endswith("-one") else 3
     if case.scope == "console.browser.discovery":
         return 2
     if case.native_browser or case.native_client:
@@ -606,6 +617,9 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def case_resources(case, node_cpus):
+    if case.oci_reference:
+        count = 3 if case.oci_shortcuts else 1 if case.oci_reference.endswith("-one") else 3
+        return count + 0.5 + (0.25 if case.oci_address_recovery else 0), count * 1536 + 512 + (768 if case.oci_address_recovery else 0)
     # CPU shares allow nodes to borrow idle capacity; memory remains a hard bound.
     if case.scope == "console.browser.discovery":
         return 1.5, 3072
@@ -629,6 +643,10 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.oci_reference:
+        return OciReferenceCluster(image, artifacts, bundle, reference=case.oci_reference,
+                                   editable_ui=case.oci_editable_ui, cli_workload=case.cli_workload,
+                                   address_recovery=case.oci_address_recovery, shortcuts=case.oci_shortcuts, data_root=data_root)
     if case.scope == "console.browser.discovery":
         return DiscoveryBrowserCluster(image, artifacts, bundle, data_root=data_root)
     if case.native_browser or case.native_client:
@@ -643,6 +661,8 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                                     diskless_nodes=case.native_diskless_nodes,
                                     data_root=data_root)
     if case.cli_replay:
+        if case.cli_replay in ("attachment", "observation", "hardware", "logical", "data"):
+            return CliAttachedCluster(image, artifacts, bundle, data_root=data_root)
         return CliContainerCluster(image, artifacts, bundle, checkpoint=case.cli_replay, data_root=data_root)
     if case.shell_browser:
         return ShellBrowserCluster(image, artifacts, bundle, data_root=data_root)
@@ -675,7 +695,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
     if case.scope == "deployment.clients":
         return DeploymentClientsCluster(image, artifacts, services=case.service_selection, data_root=data_root)
     if case.scope == "deployment.validation":
-        kind = "profile" if "invalid_profile" in case.name else "manifest"
+        kind = "profile" if "invalid_profile" in case.name else "policy"
         return RejectedBootstrapCluster(image, artifacts, kind, data_root=data_root)
     if case.scope == "deployment.bootstrap":
         return InterruptedBootstrapCluster(image, artifacts, services=case.service_selection, data_root=data_root)
@@ -732,7 +752,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                    advertise=case.advertise)
 
 
-def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all", node_cpus=1.0, partition=None):
+def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all", node_cpus=1.0, partition=None, fail_fast=False, resource_budget=None):
     selected = select_cases(layer, scope, case_name, partition)
     if not selected:
         raise ValueError(f"no migrated cases for scope {scope}")
@@ -745,13 +765,29 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
             cluster.browser_timeout = case.client_timeout
         cluster.node_cpus = node_cpus
         (cluster.artifacts / "case.json").write_text(json.dumps({
-            "scope": case.scope, "case": case.name}, indent=2))
+            "scope": case.scope, "case": case.name,
+            "scheduled_at_unix_ms": time.time_ns() // 1_000_000,
+            "resources": dict(zip(("cpus", "memory_mib"), case_resources(case, node_cpus)))}, indent=2))
         return cluster
 
+    stopped = threading.Event()
+
     def run(case, owned=None):
+        if owned is None and stopped.is_set():
+            return
+        try:
+            execute(case, owned)
+        except Exception:
+            if fail_fast:
+                stopped.set()
+            raise
+
+    def execute(case, owned=None):
         cluster = owned if owned is not None else prepare(case)
         with nullcontext(cluster) if owned is not None else cluster:
-            if case.cli_replay:
+            if case.oci_reference:
+                cluster.verify_reference()
+            elif case.cli_replay:
                 cluster.replay(case.cli_replay)
             elif case.native_browser:
                 config = "native.config.ts" if case.scope.startswith("console.native.") else "shell.config.ts"
@@ -793,24 +829,18 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.client(bundle, case.name.rsplit("::", 1)[-1], case.name)
 
     def stable_network(case):
-        return case.cli_replay or case.native_client or case.native_browser or case.shell_browser or case.console_browser
+        return (case.cli_replay or case.native_client or case.native_browser or case.shell_browser
+                or case.console_browser or case.oci_editable_ui or case.scope == "deployment.browser")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=slots) as pool:
-        futures = [pool.submit(run, case) for case in selected if not stable_network(case)]
-        errors = []
-        try:
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    future.result()
-                except Exception as error:
-                    errors.append(error)
-        except BaseException:
-            for future in futures:
-                future.cancel()
-            raise
-        errors.extend(run_browser_batches([case for case in selected if stable_network(case)],
-                                          slots, prepare, run))
-        if errors:
-            for error in errors[1:]:
-                errors[0].add_note(f"another independent fixture failed: {error}")
-            raise errors[0]
+    budget = resource_budget or (float("inf"), float("inf"))
+    resources = lambda case: case_resources(case, node_cpus)
+    errors = run_with_resources([case for case in selected if not stable_network(case)],
+                                slots, run, resources, budget, stopped)
+    if not stopped.is_set():
+        browsers = [case for case in selected if stable_network(case)]
+        browser_slots = batch_slots(browsers, slots, resources, budget) if resource_budget else slots
+        errors.extend(run_browser_batches(browsers, browser_slots, prepare, run, fail_fast=fail_fast))
+    if errors:
+        for error in errors[1:]:
+            errors[0].add_note(f"another independent fixture failed: {error}")
+        raise errors[0]

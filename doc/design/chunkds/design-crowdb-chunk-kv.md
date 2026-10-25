@@ -242,7 +242,7 @@ second destination tree/WAL for the parent.
 
 Balancing one independently recoverable child reuses the same base-plus-tail
 representation. A live source checkpoint supplies the pinned base manifest,
-base sequence, stream manifest generation, and replay offset. The target owns
+base sequence, Stream chunk record generation, and replay offset. The target owns
 a distinct WAL and opens the shared tree root as `Prepared`. One shared async
 initialization coroutine replays the source stream while the source continues
 serving. It first reaches a persisted preparation cursor `P`, then follows the

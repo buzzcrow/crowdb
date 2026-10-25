@@ -101,8 +101,7 @@ pub async fn run(cli: &Cli, args: ReadArgs) -> ExitCode {
     };
     let json = serde_json::to_value(&result).unwrap_or_default();
     tracing::info!(report = %json, "bench_report");
-    println!("{result}");
-    ExitCode::SUCCESS
+    result.finish(&cli.log_dir)
 }
 
 #[allow(clippy::too_many_arguments)]

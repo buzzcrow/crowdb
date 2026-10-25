@@ -22,7 +22,7 @@ use crate::common::report::OperationReport;
 use crate::metrics::{Counter, LatencySummary, MetricPoint, MetricsRegistry};
 use crate::paxos::roles::{PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
 use crate::paxos::PxNodeId;
-use crate::rpc::PxRpcTransport;
+use crate::rpc::{PxRpcTransport, ReplicaDestination};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -32,6 +32,7 @@ use tracing::{debug, info};
 pub struct PxRemoteReplica {
     pub(crate) node_id: PxNodeId,
     pub(crate) endpoint: String,
+    rpc_endpoint: arc_swap::ArcSwap<String>,
     /// Per-RPC deadline for the crowdb-rpc unary calls (`Prepare`, `Accept`,
     /// `PreVote`, `RequestVote`, `Heartbeat`, `StepDown`, `FetchGap`). Snapshot of
     /// `PxElectionConfig::peer_rpc_timeout_ms`.
@@ -81,10 +82,21 @@ impl ReplicaClient for PxRemoteReplica {
         membership_epoch: u64,
     ) -> Result<PxPrepareReply, PxReplicaError> {
         let transport = self.transport_or_err()?;
+        let endpoint = self.rpc_endpoint.load();
         let started = Instant::now();
         let result = tokio::time::timeout(
             self.rpc_timeout,
-            transport.send_prepare(&self.endpoint, slot, ballot, term, group_id, membership_epoch),
+            transport.send_prepare(
+                ReplicaDestination {
+                    endpoint: &endpoint,
+                    replica_id: self.node_id,
+                },
+                slot,
+                ballot,
+                term,
+                group_id,
+                membership_epoch,
+            ),
         )
         .await;
         self.finish_rpc(started, "prepare", result)
@@ -97,10 +109,19 @@ impl ReplicaClient for PxRemoteReplica {
         membership_epoch: u64,
     ) -> Result<PxAcceptReply, PxReplicaError> {
         let transport = self.transport_or_err()?;
+        let endpoint = self.rpc_endpoint.load();
         let started = Instant::now();
         let result = tokio::time::timeout(
             self.rpc_timeout,
-            transport.send_accept(&self.endpoint, entry, group_id, membership_epoch),
+            transport.send_accept(
+                ReplicaDestination {
+                    endpoint: &endpoint,
+                    replica_id: self.node_id,
+                },
+                entry,
+                group_id,
+                membership_epoch,
+            ),
         )
         .await;
         self.finish_rpc(started, "accept", result)
@@ -112,10 +133,18 @@ impl ReplicaClient for PxRemoteReplica {
         group_id: u64,
     ) -> Result<VoteReply, PxReplicaError> {
         let transport = self.transport_or_err()?;
+        let endpoint = self.rpc_endpoint.load();
         let started = Instant::now();
         let result = tokio::time::timeout(
             self.rpc_timeout,
-            transport.send_pre_vote(&self.endpoint, req, group_id),
+            transport.send_pre_vote(
+                ReplicaDestination {
+                    endpoint: &endpoint,
+                    replica_id: self.node_id,
+                },
+                req,
+                group_id,
+            ),
         )
         .await;
         self.finish_rpc(started, "pre_vote", result)
@@ -127,10 +156,18 @@ impl ReplicaClient for PxRemoteReplica {
         group_id: u64,
     ) -> Result<VoteReply, PxReplicaError> {
         let transport = self.transport_or_err()?;
+        let endpoint = self.rpc_endpoint.load();
         let started = Instant::now();
         let result = tokio::time::timeout(
             self.rpc_timeout,
-            transport.send_request_vote(&self.endpoint, req, group_id),
+            transport.send_request_vote(
+                ReplicaDestination {
+                    endpoint: &endpoint,
+                    replica_id: self.node_id,
+                },
+                req,
+                group_id,
+            ),
         )
         .await;
         self.finish_rpc(started, "request_vote", result)
@@ -142,10 +179,18 @@ impl ReplicaClient for PxRemoteReplica {
         group_id: u64,
     ) -> Result<HeartbeatReply, PxReplicaError> {
         let transport = self.transport_or_err()?;
+        let endpoint = self.rpc_endpoint.load();
         let started = Instant::now();
         let result = tokio::time::timeout(
             self.rpc_timeout,
-            transport.send_heartbeat(&self.endpoint, req, group_id),
+            transport.send_heartbeat(
+                ReplicaDestination {
+                    endpoint: &endpoint,
+                    replica_id: self.node_id,
+                },
+                req,
+                group_id,
+            ),
         )
         .await;
         self.finish_rpc(started, "heartbeat", result)
@@ -157,10 +202,18 @@ impl ReplicaClient for PxRemoteReplica {
         group_id: u64,
     ) -> Result<StepDownReply, PxReplicaError> {
         let transport = self.transport_or_err()?;
+        let endpoint = self.rpc_endpoint.load();
         let started = Instant::now();
         let result = tokio::time::timeout(
             self.rpc_timeout,
-            transport.send_step_down(&self.endpoint, req, group_id),
+            transport.send_step_down(
+                ReplicaDestination {
+                    endpoint: &endpoint,
+                    replica_id: self.node_id,
+                },
+                req,
+                group_id,
+            ),
         )
         .await;
         self.finish_rpc(started, "step_down", result)
@@ -172,6 +225,7 @@ impl PxRemoteReplica {
     pub fn new(node_id: PxNodeId, endpoint: String) -> Self {
         Self {
             node_id,
+            rpc_endpoint: arc_swap::ArcSwap::from_pointee(endpoint.clone()),
             endpoint,
             rpc_timeout: Duration::from_millis(PxElectionConfig::DEFAULT.peer_rpc_timeout_ms),
             voting: true,
@@ -226,7 +280,18 @@ impl PxRemoteReplica {
         ballot_round: u64,
     ) -> Result<(), PxReplicaError> {
         let transport = self.transport_or_err_sync()?;
-        transport.send_chosen(&self.endpoint, group_id, slot, term, leader_id, ballot_round)
+        let endpoint = self.rpc_endpoint.load();
+        transport.send_chosen(
+            ReplicaDestination {
+                endpoint: &endpoint,
+                replica_id: self.node_id,
+            },
+            group_id,
+            slot,
+            term,
+            leader_id,
+            ballot_round,
+        )
     }
 
     /// R63: fire-and-forget batch chosen notice covering `[start_slot,
@@ -248,8 +313,12 @@ impl PxRemoteReplica {
         ballot_round: u64,
     ) -> Result<(), PxReplicaError> {
         let transport = self.transport_or_err_sync()?;
+        let endpoint = self.rpc_endpoint.load();
         transport.send_batch_chosen(
-            &self.endpoint,
+            ReplicaDestination {
+                endpoint: &endpoint,
+                replica_id: self.node_id,
+            },
             group_id,
             start_slot,
             end_slot,
@@ -277,10 +346,20 @@ impl PxRemoteReplica {
         group_id: u64,
     ) -> Result<FetchGapReply, PxReplicaError> {
         let transport = self.transport_or_err()?;
+        let endpoint = self.rpc_endpoint.load();
         let started = Instant::now();
         let result = tokio::time::timeout(
             self.rpc_timeout,
-            transport.send_fetch_gap(&self.endpoint, group_id, slot, term, leader_id),
+            transport.send_fetch_gap(
+                ReplicaDestination {
+                    endpoint: &endpoint,
+                    replica_id: self.node_id,
+                },
+                group_id,
+                slot,
+                term,
+                leader_id,
+            ),
         )
         .await;
         self.finish_rpc(started, "fetch_gap", result)
@@ -372,8 +451,23 @@ impl PxRemoteReplica {
 
     /// Get the endpoint string (for spawned tasks that need to call
     /// the transport directly).
-    pub(crate) fn endpoint_str(&self) -> &str {
-        &self.endpoint
+    pub(crate) fn endpoint_str(&self) -> arc_swap::Guard<Arc<String>> {
+        self.rpc_endpoint.load()
+    }
+
+    pub(crate) fn set_recovery_endpoint(&self, endpoint: Option<std::net::SocketAddr>) {
+        let endpoint = endpoint.map_or_else(String::new, |address| address.to_string());
+        if self.rpc_endpoint.load().as_str() != endpoint {
+            self.rpc_endpoint.store(Arc::new(endpoint));
+            if let Some(transport) = self.rpc_transport.get() {
+                transport.clear_connections();
+            }
+        }
+    }
+
+    pub(crate) fn set_configured_endpoint(&mut self, endpoint: String) {
+        self.rpc_endpoint.store(Arc::new(endpoint.clone()));
+        self.endpoint = endpoint;
     }
 
     /// Register per-peer RPC latency summary and error counter with the
@@ -433,7 +527,7 @@ impl PxRemoteReplica {
             .then_some(crowdb_protocol::mgmt::MetricsSnapshot { rpc_count, err_count });
         RemoteStatus {
             id: self.node_id,
-            endpoint: self.endpoint.clone(),
+            endpoint: self.rpc_endpoint.load().to_string(),
             voting: self.voting,
             status,
             messages,

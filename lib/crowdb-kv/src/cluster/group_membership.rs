@@ -211,12 +211,21 @@ impl PxGroup {
     }
 
     pub fn inherit_local_state_from(&mut self, prior: &Self) {
+        let elect_bootstrap = prior.quorum() == 1
+            && self.quorum() > 1
+            && self.local_replica.role() == crate::cluster::local_replica::PxLocalReplicaRole::Follower
+            && self.local_replica.current_term_snapshot() == 0;
         // Inherited learners must also share admission state with requests
         // still finishing against the prior topology snapshot.
         self.owner_admission = Arc::clone(&prior.owner_admission);
         self.cas_transient_map = Arc::clone(&prior.cas_transient_map);
         self.cas_request_nonce = Arc::clone(&prior.cas_request_nonce);
         self.local_replica = PxLocalReplica::new_inheriting_election_state(prior.local_replica());
+        // Preserve the caller's bootstrap demotion after the last state handoff.
+        // An elected tenure acquired meanwhile must always be inherited.
+        if elect_bootstrap && self.local_replica.current_term_snapshot() == 0 {
+            self.local_replica.become_follower(0);
+        }
         self.next_slot.store(
             self.next_slot
                 .load(Ordering::Acquire)
@@ -277,7 +286,7 @@ impl PxGroup {
         // Existing Real entry: update in place.
         if let Some(RemoteReplicaKind::Real(remote)) = self.remote_replicas.get_mut(idx) {
             let old_endpoint = remote.endpoint.clone();
-            endpoint.clone_into(&mut remote.endpoint);
+            remote.set_configured_endpoint(endpoint);
             return Some(old_endpoint);
         }
 

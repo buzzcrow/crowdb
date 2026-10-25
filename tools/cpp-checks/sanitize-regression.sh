@@ -57,13 +57,10 @@
 #   - Client bench process: MUST exit 0 (no leaks). The client is a
 #     short-lived process that connects, runs the workload, and exits
 #     cleanly.
-#   - Server processes: killed via SIGTERM during `cluster destroy`.
+#   - Server processes: killed via SIGTERM during owned fixture shutdown.
 #     Graceful shutdown runs (SIGTERM handler → PxKvStore::shutdown →
 #     stop_rpc_server → RpcServer::stop → clear_handlers). If the
 #     server exits cleanly (no ASan log), all leaks are fixed.
-#   - The local-deploy CLI process may show ~97KB tokio runtime noise
-#     (113 allocations) — this is a known tokio cleanup issue, not
-#     our code. We filter it out in the leak check.
 #
 # Prerequisites:
 #   - pixi installed, project dependencies resolved
@@ -73,10 +70,10 @@
 #     restore the default debug binary.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+unset CROWDB_ASAN
 
 RUNTIME_ROOT="${CROWDB_RUNTIME_ROOT:-${PIXI_PROJECT_ROOT:-$(pwd)}/.crowdb-runtime}"
-RUNTIME_DIR="$RUNTIME_ROOT/artifacts/sanitize-regression"
-rm -rf "$RUNTIME_DIR"
+RUNTIME_DIR="$RUNTIME_ROOT/artifacts/sanitize-regression-$(date +%Y%m%d-%H%M%S)-$$"
 mkdir -p "$RUNTIME_DIR"
 RESULTS_FILE="$RUNTIME_DIR/sanitize-regression.tsv"
 DURATION=5
@@ -94,14 +91,33 @@ CROWDB_CLI="$(cd "$(dirname "$0")/../.." && pwd)/target/debug/crowdb-cli"
 # internals.
 LIBASAN="$(cd "$(dirname "$0")/../.." && pixi run -- pwd)/.pixi/envs/default/lib/libasan.so"
 
-# Clean up stale ASan logs from previous runs.
-rm -f ${RUNTIME_DIR}/asan-sanitize-*.* 2>/dev/null || true
-rm -f ${RUNTIME_DIR}/sanitize-unexpected-asan-sanitize-* 2>/dev/null || true
+restore_binaries() {
+    pixi run cargo build -p crowdb-cli -p crowdb-rpc-test -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+    pixi run cargo build -p crowdb-console-shared --example regression-fixture --features test-util
+}
+
+cleanup_sanitize() {
+    local status=$? state descriptor
+    trap - EXIT
+    for descriptor in "$RUNTIME_DIR"/*.fixture.json; do
+        [ -f "$descriptor" ] || continue
+        state="${descriptor%.fixture.json}.toml"
+        pixi run python tools/benchmark/fixture.py --state "$state" stop || status=1
+    done
+    restore_binaries || status=1
+    exit "$status"
+}
+trap cleanup_sanitize EXIT
+
 
 # --- Phase 1: Build with ASan + LSan enabled ---
 echo "=== building with CROWDB_ASAN=1 (debug) ==="
-CROWDB_ASAN=1 pixi run -- cargo build -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+CROWDB_ASAN=1 pixi run -- cargo build -p crowdb-cli -p crowdb-rpc-test -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+CROWDB_ASAN=1 pixi run cargo build -p crowdb-console-shared --example regression-fixture --features test-util
 pixi run -- cmake --build app/crowdb-diskio/build -j
+RPC_ASAN_BUILD="$RUNTIME_DIR/rpc-server-build"
+pixi run cmake -S lib/crowdb-rpc -B "$RPC_ASAN_BUILD" -DCMAKE_BUILD_TYPE=Debug -DCROWDB_RPC_SANITIZER=address
+pixi run cmake --build "$RPC_ASAN_BUILD" -j 4 --target crowdb-rpc-fb-server
 
 # Verify the binary exists.
 if [ ! -x "$CROWDB_CLI" ]; then
@@ -116,28 +132,33 @@ if [ ! -f "$LIBASAN" ]; then
     exit 1
 fi
 
-# asan_cli <log_prefix> <args...>
-# Runs crowdb-cli directly (not via cargo run) under ASan with the
-# given log_path prefix. Using the binary directly avoids ASan
-# instrumenting cargo/pixi themselves (which produces false leaks).
-asan_cli() {
-    local log_prefix="$1"; shift
-    env ASAN_OPTIONS="detect_leaks=1:abort_on_error=0:log_path=${log_prefix}" \
-        LD_PRELOAD="$LIBASAN" \
-        "$CROWDB_CLI" "$@"
+# ASan is applied to the measured native processes, never to Python or Pixi.
+asan_client() {
+    local log_prefix="$1" state="$2"; shift 2
+    local endpoint
+    endpoint=$(pixi run python tools/benchmark/fixture.py --state "$state" target)
+    rm -f "$(dirname "$state")/client-runtime/artifacts/cli/bench-kv/report.json"
+    CROWDB_RUNTIME_ROOT="$(dirname "$state")/client-runtime" pixi run env -u CROWDB_CLUSTER ASAN_OPTIONS="detect_leaks=1:abort_on_error=0:log_path=${log_prefix}" \
+        LD_PRELOAD="$LIBASAN" "$CROWDB_CLI" --management-endpoint "$endpoint" "$@"
+}
+
+asan_fixture() {
+    local log_prefix="$1" state="$2"; shift 2
+    CROWDB_REGRESSION_FIXTURE_BIN="$(pwd)/target/debug/examples/regression-fixture" \
+    CROWDB_FIXTURE_LD_PRELOAD="$LIBASAN" \
+    CROWDB_FIXTURE_ASAN_OPTIONS="detect_leaks=1:abort_on_error=0:log_path=${log_prefix}" \
+        pixi run python tools/benchmark/fixture.py --state "$state" --owner-pid "$$" setup -- "$@"
 }
 
 # check_asan_logs <log_prefix> <label>
 # Checks for ASan log files matching the prefix. Prints a summary.
 # Returns 0 if no logs (clean), 1 if logs found (leaks/errors).
-# Cleans up logs after reading.
 check_asan_logs() {
     local prefix="$1" label="$2"
     local logs
     logs=$(ls "${prefix}."* 2>/dev/null || true)
     if [ -z "$logs" ]; then
         echo "    [$label] no ASan logs — clean"
-        rm -f "${prefix}."* 2>/dev/null || true
         return 0
     fi
     echo "    [$label] ASAN LOGS FOUND:"
@@ -145,18 +166,9 @@ check_asan_logs() {
         local summary
         summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
         echo "      $log: $summary"
+        cat "$log"
     done
-    rm -f "${prefix}."* 2>/dev/null || true
     return 1
-}
-
-# The short-lived deploy CLI leaves Tokio's child-process pidfd registration
-# set allocated during runtime teardown. Accept that external-runtime signature
-# only when the report contains no CrowDB C++ or repository-source frame.
-is_known_tokio_deploy_noise() {
-    local log="$1"
-    grep -q 'tokio7runtime2io16registration_set' "$log" \
-        && ! grep -Eq 'crowdb::|/nv/cpp/crowdb/(app|lib)/[^ ]+\.(rs|cpp|h):[0-9]+' "$log"
 }
 
 # bench_status <current_status> <exit_code> <errors> <ops_per_second>
@@ -196,22 +208,21 @@ run_bench() {
         return
     fi
     local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
-    rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
-    if output=$(asan_cli "$log_prefix" --config "$config_file" \
+    if output=$(asan_client "$log_prefix" "$config_file" \
         bench kv "$subcmd" --duration-secs "$DURATION" \
         --loader-num "$threads" --connections "$conn" \
         --key-space "$KEYSPACE" --value-size "$VALUE_SIZE" \
-        --json "${extra_args[@]}" 2>&1); then
+        "${extra_args[@]}" 2>&1); then
         rc=0
     else
         rc=$?
+        echo "$output" >&2
     fi
-    local json; json=$(echo "$output" | sed -n '/^{/,/^}/p')
+    local json; json=$(pixi run python tools/benchmark/fixture.py --state "$config_file" report) || json=""
     if [ -z "$json" ]; then
-        echo "    ERROR: no JSON output"; echo "$output" | tail -5
+        echo "    ERROR: no JSON output"; echo "$output"
         echo -e "$label\t0\t0\tFAIL(output)" >> "$RESULTS_FILE"
-        rm -f "${log_prefix}."* 2>/dev/null || true
         return
     fi
     local total_ops ops_s errors
@@ -228,10 +239,10 @@ run_bench() {
             local summary
             summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
             echo "    LEAK: $summary"
+            cat "$log"
         done
     fi
     leak_status=$(bench_status "$leak_status" "$rc" "$errors" "$ops_s")
-    rm -f "${log_prefix}."* 2>/dev/null || true
     echo "    ops/s=$ops_s err=$errors leak_check=$leak_status"
     echo -e "$label\t$ops_s\t$errors\t$leak_status" >> "$RESULTS_FILE"
 }
@@ -249,15 +260,15 @@ run_prepare() {
         return
     fi
     local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
-    rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
-    if output=$(asan_cli "$log_prefix" --config "$config_file" \
+    if output=$(asan_client "$log_prefix" "$config_file" \
         bench kv prepare --keys "$PREPARE_KEYS" \
         --value-size "$VALUE_SIZE" --concurrency 4 \
-        --json 2>&1); then
+        2>&1); then
         rc=0
     else
         rc=$?
+        echo "$output" >&2
     fi
     echo "    exit=$rc"
     if [ "$rc" -ne 0 ]; then
@@ -285,30 +296,10 @@ deploy_cluster() {
     echo "=== deploying cluster '$name' ==="
     rm -f "$config_file"
     local log_prefix="${RUNTIME_DIR}/asan-sanitize-deploy-${name}"
-    rm -f "${log_prefix}."* 2>/dev/null || true
-    asan_cli "$log_prefix" --config "$config_file" \
-        cluster local-deploy -n 3 -t kv \
-        --kv-backend mem-block --wal-backend mem-block 2>&1 | tail -3 || true
+    asan_fixture "$log_prefix" "$config_file" --nodes 3 --kind kv \
+        --kv-backend mem-block --wal-backend mem-block 2>&1
     echo "$config_file" > "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath"
-    # The deploy process exits with 1 due to tokio runtime leak noise.
-    # Accept only the exact known tokio leak signature.
-    local logs
-    logs=$(ls "${log_prefix}."* 2>/dev/null || true)
-    if [ -n "$logs" ]; then
-        for log in $logs; do
-            local summary bytes
-            summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
-            bytes=$(echo "$summary" | grep -oP '\d+(?= byte)' | head -1 || echo "?")
-            if is_known_tokio_deploy_noise "$log"; then
-                echo "    deploy process: known tokio child-process noise ($bytes bytes) — OK"
-                rm -f "$log"
-            else
-                echo "    deploy process: UNEXPECTED leak — $summary"
-                mv "$log" "${RUNTIME_DIR}/sanitize-unexpected-$(basename "$log")"
-                GATE_FAILED=1
-            fi
-        done
-    fi
+
 }
 
 # teardown_cluster <name>
@@ -320,14 +311,14 @@ teardown_cluster() {
     config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath" 2>/dev/null || echo "")
     if [ -n "$config_file" ] && [ -f "$config_file" ]; then
         local log_prefix="${RUNTIME_DIR}/asan-sanitize-destroy-${name}"
-        rm -f "${log_prefix}."* 2>/dev/null || true
-        asan_cli "$log_prefix" --config "$config_file" \
-            cluster destroy 2>&1 | tail -2 || true
+        if ! pixi run python tools/benchmark/fixture.py --state "$config_file" stop; then
+            GATE_FAILED=1
+        fi
         if ! check_asan_logs "$log_prefix" "destroy-process"; then
             GATE_FAILED=1
         fi
         # Services inherit the deployment ASan log prefix. Their reports are
-        # emitted only when cluster destroy terminates them.
+        # emitted only when fixture shutdown terminates them.
         local service_log_prefix="${RUNTIME_DIR}/asan-sanitize-deploy-${name}"
         if ! check_asan_logs "$service_log_prefix" "service-shutdown"; then
             GATE_FAILED=1
@@ -346,34 +337,15 @@ deploy_combined_cluster() {
     echo "=== deploying combined cluster '$name' ==="
     rm -f "$config_file"
     local log_prefix="${RUNTIME_DIR}/asan-sanitize-deploy-${name}"
-    rm -f "${log_prefix}."* 2>/dev/null || true
-    asan_cli "$log_prefix" --config "$config_file" \
-        cluster local-deploy -t combined \
+    asan_fixture "$log_prefix" "$config_file" --kind combined \
         --kv-backend mem-block --wal-backend mem-block \
         --metrics-interval 1 --event-write \
         --data-groups 1,2,3 --disk-groups-per-node 1 --disks-per-group 4 \
         --disk-capacity-bytes 4294967296 --disk-zone-size-bytes 1073741824 \
         --disk-unit-size-bytes 1048576 --chunkdb-instances 3 \
-        --allow-unsafe-ec 2>&1 | tail -3 || true
+        --diskio-dummy-disk-type "${2:-null}" 2>&1
     echo "$config_file" > "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath"
-    # The deploy process exits with 1 due to tokio runtime leak noise.
-    local logs
-    logs=$(ls "${log_prefix}."* 2>/dev/null || true)
-    if [ -n "$logs" ]; then
-        for log in $logs; do
-            local summary bytes
-            summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
-            bytes=$(echo "$summary" | grep -oP '\d+(?= byte)' | head -1 || echo "?")
-            if is_known_tokio_deploy_noise "$log"; then
-                echo "    deploy process: known tokio child-process noise ($bytes bytes) — OK"
-                rm -f "$log"
-            else
-                echo "    deploy process: UNEXPECTED leak — $summary"
-                mv "$log" "${RUNTIME_DIR}/sanitize-unexpected-$(basename "$log")"
-                GATE_FAILED=1
-            fi
-        done
-    fi
+
 }
 
 # run_diskdb_bench <deploy_name> <workload> <concurrency> <label>
@@ -389,15 +361,15 @@ run_diskdb_bench() {
         return
     fi
     local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
-    rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
-    if output=$(asan_cli "$log_prefix" --config "$config_file" \
+    if output=$(asan_client "$log_prefix" "$config_file" \
         bench diskdb "$workload" --duration-secs "$DURATION" \
         --concurrency "$concurrency" --unit-count 1 --blocks-per-request 1 \
-        --mode mem --seed 1 --metrics-interval 1 2>&1); then
+        --seed 1 --metrics-interval 1 2>&1); then
         rc=0
     else
         rc=$?
+        echo "$output" >&2
     fi
     local line
     line=$(echo "$output" | sed -n '/^diskdb bench /p' | tail -n 1)
@@ -415,10 +387,10 @@ run_diskdb_bench() {
             local summary
             summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
             echo "    LEAK: $summary"
+            cat "$log"
         done
     fi
     leak_status=$(bench_status "$leak_status" "$rc" "$errors" "$ops_s")
-    rm -f "${log_prefix}."* 2>/dev/null || true
     echo "    ops/s=$ops_s err=$errors leak_check=$leak_status"
     echo -e "$label\t$ops_s\t$errors\t$leak_status" >> "$RESULTS_FILE"
 }
@@ -436,9 +408,8 @@ run_chunkdb_bench() {
         return
     fi
     local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
-    rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
-    if output=$(asan_cli "$log_prefix" --config "$config_file" \
+    if output=$(asan_client "$log_prefix" "$config_file" \
         bench chunkdb "$workload" --duration-secs "$DURATION" \
         --concurrency "$concurrency" --strip-count 1 --strip-type ec \
         --data-num 8 --code-num 4 --write-granularity-kb 1024 \
@@ -446,6 +417,7 @@ run_chunkdb_bench() {
         rc=0
     else
         rc=$?
+        echo "$output" >&2
     fi
     local line
     line=$(echo "$output" | sed -n '/^chunkdb bench /p' | tail -n 1)
@@ -463,10 +435,10 @@ run_chunkdb_bench() {
             local summary
             summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
             echo "    LEAK: $summary"
+            cat "$log"
         done
     fi
     leak_status=$(bench_status "$leak_status" "$rc" "$errors" "$ops_s")
-    rm -f "${log_prefix}."* 2>/dev/null || true
     echo "    ops/s=$ops_s err=$errors leak_check=$leak_status"
     echo -e "$label\t$ops_s\t$errors\t$leak_status" >> "$RESULTS_FILE"
 }
@@ -486,9 +458,8 @@ run_chunkio_bench() {
         return
     fi
     local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
-    rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
-    if output=$(asan_cli "$log_prefix" --config "$config_file" \
+    if output=$(asan_client "$log_prefix" "$config_file" \
         bench chunkio write --duration-secs "$DURATION" \
         --object-size 1048576 --concurrency "$concurrency" \
         --data-num 8 --code-num 4 --block-size 1048576 \
@@ -498,6 +469,7 @@ run_chunkio_bench() {
         rc=0
     else
         rc=$?
+        echo "$output" >&2
     fi
     local line
     line=$(echo "$output" | sed -n '/^chunkio write:/p' | tail -n 1)
@@ -515,77 +487,12 @@ run_chunkio_bench() {
             local summary
             summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
             echo "    LEAK: $summary"
+            cat "$log"
         done
     fi
     leak_status=$(bench_status "$leak_status" "$rc" "$errors" "$ops_s")
-    rm -f "${log_prefix}."* 2>/dev/null || true
     echo "    ops/s=$ops_s err=$errors leak_check=$leak_status"
     echo -e "$label\t$ops_s\t$errors\t$leak_status" >> "$RESULTS_FILE"
-}
-
-# deploy_rpc_server <name> <io_workers>
-# Deploy a standalone RPC echo server under ASan.
-deploy_rpc_server() {
-    local name="$1" workers="${2:-1}"
-    local config_file="${RUNTIME_DIR}/sanitize-reg-${name}.toml"
-    echo "=== deploying RPC server '$name' ==="
-    rm -f "$config_file"
-    local log_prefix="${RUNTIME_DIR}/asan-sanitize-deploy-${name}"
-    rm -f "${log_prefix}."* 2>/dev/null || true
-    local output
-    output=$(asan_cli "$log_prefix" --config "$config_file" \
-        cluster local-deploy -t rpc \
-        --io-engines 1 --io-workers "$workers" 2>&1) || true
-    echo "$config_file" > "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath"
-    local port
-    port=$(echo "$output" | grep -oP 'port=\K[0-9]+' | head -1)
-    if [ -z "$port" ]; then
-        echo "    ERROR: could not parse port from deploy output"
-        echo "$output" | tail -5
-        return 1
-    fi
-    echo "$port" > "${RUNTIME_DIR}/sanitize-reg-${name}.port"
-    echo "    RPC server on port=$port"
-    local logs
-    logs=$(ls "${log_prefix}."* 2>/dev/null || true)
-    if [ -n "$logs" ]; then
-        for log in $logs; do
-            local summary bytes
-            summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
-            bytes=$(echo "$summary" | grep -oP '\d+(?= byte)' | head -1 || echo "?")
-            if is_known_tokio_deploy_noise "$log"; then
-                echo "    deploy process: known tokio child-process noise ($bytes bytes) — OK"
-                rm -f "$log"
-            else
-                echo "    deploy process: UNEXPECTED leak — $summary"
-                mv "$log" "${RUNTIME_DIR}/sanitize-unexpected-$(basename "$log")"
-                GATE_FAILED=1
-            fi
-        done
-    fi
-}
-
-# teardown_rpc_server <name>
-# Destroy the standalone RPC server, check for leaks.
-teardown_rpc_server() {
-    local name="$1"
-    local config_file
-    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath" 2>/dev/null || echo "")
-    if [ -n "$config_file" ] && [ -f "$config_file" ]; then
-        local log_prefix="${RUNTIME_DIR}/asan-sanitize-destroy-${name}"
-        rm -f "${log_prefix}."* 2>/dev/null || true
-        asan_cli "$log_prefix" --config "$config_file" \
-            cluster destroy 2>&1 | tail -2 || true
-        if ! check_asan_logs "$log_prefix" "destroy-process"; then
-            GATE_FAILED=1
-        fi
-        local service_log_prefix="${RUNTIME_DIR}/asan-sanitize-deploy-${name}"
-        if ! check_asan_logs "$service_log_prefix" "rpc-server-shutdown"; then
-            GATE_FAILED=1
-        fi
-        rm -f "$config_file" "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath" \
-              "${RUNTIME_DIR}/sanitize-reg-${name}.port"
-    fi
 }
 
 # run_rpc_bench <deploy_name> <threads> <conn> <label>
@@ -593,26 +500,17 @@ teardown_rpc_server() {
 run_rpc_bench() {
     local deploy="$1" threads="$2" conn="$3" label="$4"
     echo ">>> $label ..."
-    local config_file
-    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
-    local port
-    port=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.port" 2>/dev/null || echo "")
-    if [ -z "$config_file" ] || [ ! -f "$config_file" ] || [ -z "$port" ]; then
-        echo "    ERROR: no config/port for deploy '$deploy'"
-        echo -e "$label\t0\t0\tFAIL" >> "$RESULTS_FILE"
-        return
-    fi
     local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
-    rm -f "${log_prefix}."* 2>/dev/null || true
-    local output rc
-    if output=$(asan_cli "$log_prefix" --config "$config_file" \
-        bench rpc --duration-secs "$DURATION" \
-        --loader-num "$threads" --connections "$conn" \
-        --value-size 128 --io-engines 1 --io-workers 1 \
-        --mode coroutine --server-port "$port" --json 2>&1); then
+    local output rc=0
+    if output=$(pixi run python tools/rpc-test/run.py \
+        --client target/debug/crowdb-rpc-test --server "$RPC_ASAN_BUILD/crowdb-rpc-fb-server" --log-dir "$RUNTIME_DIR/rpc-$label" \
+        --asan-runtime "$LIBASAN" --asan-log-prefix "$log_prefix" \
+        --duration-secs "$DURATION" --loader-num "$threads" --connections "$conn" \
+        --value-size 128 --io-engines 1 --io-workers 1 --mode coroutine --metrics-interval 1); then
         rc=0
     else
         rc=$?
+        echo "$output" >&2
     fi
     local json; json=$(echo "$output" | sed -n '/^{/,/^}/p')
     local ops_s=0 errors=0
@@ -621,18 +519,15 @@ run_rpc_bench() {
         errors=$(echo "$json" | jq -r '.total_errors')
     fi
     local leak_status="PASS"
-    local logs
-    logs=$(ls "${log_prefix}."* 2>/dev/null || true)
-    if [ -n "$logs" ]; then
-        leak_status="FAIL(leaks)"
-        for log in $logs; do
-            local summary
-            summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
-            echo "    LEAK: $summary"
-        done
-    fi
+    local log
+    for log in "${log_prefix}-client."* "${log_prefix}-server."*; do
+        if [ -f "$log" ]; then
+            leak_status="FAIL(leaks)"
+            echo "    sanitizer report: $log" >&2
+            cat "$log" >&2
+        fi
+    done
     leak_status=$(bench_status "$leak_status" "$rc" "$errors" "$ops_s")
-    rm -f "${log_prefix}."* 2>/dev/null || true
     echo "    ops/s=$ops_s err=$errors leak_check=$leak_status"
     echo -e "$label\t$ops_s\t$errors\t$leak_status" >> "$RESULTS_FILE"
 }
@@ -651,18 +546,19 @@ run_chunkio_read_bench() {
         return
     fi
     local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
-    rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
-    if output=$(asan_cli "$log_prefix" --config "$config_file" \
+    if output=$(asan_client "$log_prefix" "$config_file" \
         bench chunkio "$verb" --duration-secs "$DURATION" \
         --concurrency "$concurrency" --dataset-objects 4 \
+        --data-num 8 --code-num 4 \
         --metrics-interval 1 2>&1); then
         rc=0
     else
         rc=$?
+        echo "$output" >&2
     fi
     local line
-    line=$(echo "$output" | sed -n '/^chunkio read/p' | tail -n 1)
+    line=$(echo "$output" | sed -n "/^chunkio ${verb}:/p" | tail -n 1)
     local ops_s=0 errors=0
     if [ -n "$line" ]; then
         ops_s=$(echo "$line" | grep -oP 'reads_s=\K[0-9.]+' || echo 0)
@@ -677,10 +573,10 @@ run_chunkio_read_bench() {
             local summary
             summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
             echo "    LEAK: $summary"
+            cat "$log"
         done
     fi
     leak_status=$(bench_status "$leak_status" "$rc" "$errors" "$ops_s")
-    rm -f "${log_prefix}."* 2>/dev/null || true
     echo "    ops/s=$ops_s err=$errors leak_check=$leak_status"
     echo -e "$label\t$ops_s\t$errors\t$leak_status" >> "$RESULTS_FILE"
 }
@@ -698,15 +594,15 @@ run_chunkio_small_write_bench() {
         return
     fi
     local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
-    rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
-    if output=$(asan_cli "$log_prefix" --config "$config_file" \
+    if output=$(asan_client "$log_prefix" "$config_file" \
         bench chunkio write-small --duration-secs "$DURATION" \
         --object-size 1024 --concurrency "$concurrency" \
         --seed 1 --metrics-interval 1 2>&1); then
         rc=0
     else
         rc=$?
+        echo "$output" >&2
     fi
     local line
     line=$(echo "$output" | sed -n '/^chunkio write-small:/p' | tail -n 1)
@@ -724,10 +620,10 @@ run_chunkio_small_write_bench() {
             local summary
             summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
             echo "    LEAK: $summary"
+            cat "$log"
         done
     fi
     leak_status=$(bench_status "$leak_status" "$rc" "$errors" "$ops_s")
-    rm -f "${log_prefix}."* 2>/dev/null || true
     echo "    ops/s=$ops_s err=$errors leak_check=$leak_status"
     echo -e "$label\t$ops_s\t$errors\t$leak_status" >> "$RESULTS_FILE"
 }
@@ -767,8 +663,7 @@ run_chunkio_small_write_bench() {
 #   rpc_64t_4c         ~400,000 0    none
 #
 # Leak status: all processes (client, server, destroy) report zero leaks
-# except the known tokio runtime noise in the local-deploy CLI process
-# (~97KB, 113 allocations — not our code).
+# (historical baseline; rerun after changing fixture ownership).
 #
 # What changed to get here (2026-09-02):
 #   - MetricsRegistry: heap-allocated + std::atexit for clean thread
@@ -837,6 +732,11 @@ run_chunkio_bench "$COMBINED_DEPLOY" 4 "chunkio_4t"
 # ChunkIO read: read-small and read-large through ChunkDB + DiskIO.
 # The read bench has a built-in prepare phase (writes dataset objects
 # before timing), so no separate prepare is needed.
+# Read verification requires retained bytes. Keep its memory-backed disks
+# separate from the large NullDisk write measurements.
+teardown_cluster "$COMBINED_DEPLOY"
+COMBINED_DEPLOY="sanitize-reg-read-$$-$(date +%s)"
+deploy_combined_cluster "$COMBINED_DEPLOY" mem
 echo "=== chunkio read ==="
 run_chunkio_read_bench "$COMBINED_DEPLOY" 1 "chunkio_read_small_1t" read-small
 run_chunkio_read_bench "$COMBINED_DEPLOY" 4 "chunkio_read_small_4t" read-small
@@ -853,7 +753,6 @@ teardown_cluster "$COMBINED_DEPLOY"
 # --- Phase 2c: RPC echo (standalone server) ---
 
 RPC_DEPLOY="sanitize-reg-rpc-$$-$(date +%s)"
-deploy_rpc_server "$RPC_DEPLOY" 1
 
 # RPC echo: raw crowdb-rpc echo throughput under ASan.
 echo "=== rpc ==="
@@ -861,7 +760,6 @@ run_rpc_bench "$RPC_DEPLOY" 1 1 "rpc_1t_1c"
 run_rpc_bench "$RPC_DEPLOY" 64 4 "rpc_64t_4c"
 
 # Teardown: destroy RPC server, check shutdown leaks.
-teardown_rpc_server "$RPC_DEPLOY"
 
 echo "=== DONE ==="
 echo "Results in $RESULTS_FILE"
@@ -869,7 +767,8 @@ column -t -s$'\t' "$RESULTS_FILE"
 
 # --- Phase 3: Rebuild WITHOUT ASan to restore the default debug binary ---
 echo "=== rebuilding without CROWDB_ASAN (restore default debug binary) ==="
-pixi run -- cargo build -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+restore_binaries
+trap - EXIT
 
 # Final summary: check for any FAIL in the results.
 if [ "$GATE_FAILED" -ne 0 ] || grep -q "FAIL" "$RESULTS_FILE"; then

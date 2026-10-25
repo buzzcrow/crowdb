@@ -164,8 +164,7 @@ pub async fn run(cli: &Cli, args: WriteArgs) -> ExitCode {
         server_metrics,
     };
     metrics.write_report(&result);
-    println!("{result}");
-    ExitCode::SUCCESS
+    result.finish(&cli.log_dir)
 }
 
 /// Build a deterministic value for key `id`: byte `i` = `(id + i) % 256`.

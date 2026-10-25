@@ -1,0 +1,58 @@
+# Copyright 2026-present Gian <crow.db@outlook.com>
+# Licensed under the Apache License, Version 2.0.
+name: crowdb-${CROWDB_CLUSTER:-local-three}
+x-node: &node
+  image: ${CROWDB_IMAGE:-crowdb-node:dev}
+  pull_policy: never
+  cpus: 1
+  mem_limit: 1536m
+services:
+  node1:
+    <<: *node
+    environment:
+      CROWDB_CLUSTER: ${CROWDB_CLUSTER:-local-three}
+      CROWDB_INITIAL_VOTERS: "3"
+      CROWDB_S3_PUBLIC_URI: http://127.0.0.1:${CROWDB_NODE1_S3_PORT:-9091}
+      CROWDB_ICEBERG_PUBLIC_URI: http://127.0.0.1:${CROWDB_NODE1_ICEBERG_PORT:-9092}
+      CROWDB_DATASET_PUBLIC_URI: http://127.0.0.1:${CROWDB_NODE1_DATASET_PORT:-9093}
+    ports:
+      - "127.0.0.1:${CROWDB_NODE1_UI_PORT:-9090}:9090"
+      - "127.0.0.1:${CROWDB_NODE1_S3_PORT:-9091}:9091"
+      - "127.0.0.1:${CROWDB_NODE1_ICEBERG_PORT:-9092}:9092"
+      - "127.0.0.1:${CROWDB_NODE1_DATASET_PORT:-9093}:9093"
+    volumes:
+      - node1-data:/opt/crowdb/data
+  node2:
+    <<: *node
+    environment:
+      CROWDB_CLUSTER: ${CROWDB_CLUSTER:-local-three}
+      CROWDB_INITIAL_VOTERS: "3"
+      CROWDB_S3_PUBLIC_URI: http://127.0.0.1:${CROWDB_NODE2_S3_PORT:-9101}
+      CROWDB_ICEBERG_PUBLIC_URI: http://127.0.0.1:${CROWDB_NODE2_ICEBERG_PORT:-9102}
+      CROWDB_DATASET_PUBLIC_URI: http://127.0.0.1:${CROWDB_NODE2_DATASET_PORT:-9103}
+    ports:
+      - "127.0.0.1:${CROWDB_NODE2_UI_PORT:-9100}:9090"
+      - "127.0.0.1:${CROWDB_NODE2_S3_PORT:-9101}:9091"
+      - "127.0.0.1:${CROWDB_NODE2_ICEBERG_PORT:-9102}:9092"
+      - "127.0.0.1:${CROWDB_NODE2_DATASET_PORT:-9103}:9093"
+    volumes:
+      - node2-data:/opt/crowdb/data
+  node3:
+    <<: *node
+    environment:
+      CROWDB_CLUSTER: ${CROWDB_CLUSTER:-local-three}
+      CROWDB_INITIAL_VOTERS: "3"
+      CROWDB_S3_PUBLIC_URI: http://127.0.0.1:${CROWDB_NODE3_S3_PORT:-9111}
+      CROWDB_ICEBERG_PUBLIC_URI: http://127.0.0.1:${CROWDB_NODE3_ICEBERG_PORT:-9112}
+      CROWDB_DATASET_PUBLIC_URI: http://127.0.0.1:${CROWDB_NODE3_DATASET_PORT:-9113}
+    ports:
+      - "127.0.0.1:${CROWDB_NODE3_UI_PORT:-9110}:9090"
+      - "127.0.0.1:${CROWDB_NODE3_S3_PORT:-9111}:9091"
+      - "127.0.0.1:${CROWDB_NODE3_ICEBERG_PORT:-9112}:9092"
+      - "127.0.0.1:${CROWDB_NODE3_DATASET_PORT:-9113}:9093"
+    volumes:
+      - node3-data:/opt/crowdb/data
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:

@@ -202,7 +202,13 @@ test('native diagnostics: unavailable catalog retries the actual Access services
       expect(response.ok(), await response.text()).toBe(true);
     });
   }
+  const retried = Promise.all([
+    page.waitForResponse(response => new URL(response.url()).pathname === '/api/access/iceberg/v1/config' && response.request().method() === 'GET'),
+    page.waitForResponse(response => new URL(response.url()).pathname === '/api/access/iceberg/v1/namespaces' && response.request().method() === 'GET'),
+  ]);
   await page.getByRole('button', { name: 'Retry catalog', exact: true }).click();
+  for (const response of await retried) expect(response.ok(), await response.text()).toBe(true);
+  await expect(page.getByRole('navigation', { name: 'Iceberg tree', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Retry catalog', exact: true })).toHaveCount(0);
   await page.getByText('Catalog actions', { exact: true }).click();
   await expect(page.getByRole('button', { name: 'Create metadata demo', exact: true })).toBeEnabled();

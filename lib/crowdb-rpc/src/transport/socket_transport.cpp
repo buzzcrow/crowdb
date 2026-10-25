@@ -75,13 +75,63 @@ Worker::~Worker()
 
 void Worker::close_connections()
 {
-    std::scoped_lock lock(conns_mu_);
-    for (auto &[fd, conn] : connections_) {
-        (void)fd;
-        conn->close();
-        close_connection_fds(engine_, conn.get(), transport_);
+    {
+        std::scoped_lock lock(conns_mu_);
+        for (auto &[fd, conn] : connections_) {
+            (void)fd;
+            conn->close();
+            while (!conn->socket_cleanup_ready()) {
+                std::this_thread::yield();
+            }
+            close_connection_fds(engine_, conn.get(), transport_);
+        }
+        connections_.clear();
     }
-    connections_.clear();
+    discard_closes();
+}
+
+void Worker::request_close(std::shared_ptr<Connection> conn)
+{
+    enqueue_close(new CloseRequest{.connection = std::move(conn), .next = nullptr});
+    engine_->notify_worker();
+}
+
+void Worker::enqueue_close(CloseRequest *request)
+{
+    auto *head = pending_closes_.load(std::memory_order_relaxed);
+    do {
+        request->next = head;
+    } while (
+        !pending_closes_.compare_exchange_weak(head, request, std::memory_order_release, std::memory_order_relaxed));
+}
+
+void Worker::drain_closes(ClosedConnections &closed_fds)
+{
+    auto *request = pending_closes_.exchange(nullptr, std::memory_order_acquire);
+    while (request != nullptr) {
+        auto     *next = request->next;
+        auto     *conn = request->connection.get();
+        const int fd   = static_cast<int>(conn->transport_handle);
+        if (!conn->socket_cleanup_ready()) {
+            enqueue_close(request);
+            request = next;
+            continue;
+        }
+        close_connection_fds(engine_, conn, transport_);
+        closed_fds.emplace_back(fd, conn->id());
+        delete request;
+        request = next;
+    }
+}
+
+void Worker::discard_closes()
+{
+    auto *request = pending_closes_.exchange(nullptr, std::memory_order_acquire);
+    while (request != nullptr) {
+        auto *next = request->next;
+        delete request;
+        request = next;
+    }
 }
 
 void Worker::start()
@@ -203,6 +253,7 @@ void Worker::run_loop()
                 }
             }
 
+            drain_closes(closed_fds);
             flush_responses(closed_fds);
             retire_closed(closed_fds);
         }
@@ -297,6 +348,10 @@ void Worker::process_writable(const EngineEvent &ev, ClosedConnections &closed_f
 void Worker::process_error(const EngineEvent &ev, ClosedConnections &closed_fds)
 {
     if (ev.conn != nullptr && ev.conn->is_open()) {
+        const auto socket_use = ev.conn->use_socket();
+        if (!socket_use) {
+            return;
+        }
         CRB_LOG_WARN("worker: socket error event fd={} conn_id={} name={}", ev.fd,
                      static_cast<long long>(ev.conn->id()), ev.conn->name());
         int       rfd          = static_cast<int>(ev.conn->transport_handle);
@@ -360,6 +415,11 @@ void Worker::retire_closed(const ClosedConnections &closed_fds)
 static void on_readable_impl(Connection *conn, int fd, uint8_t *recv_buf, size_t recv_buf_size,
                              std::vector<Connection *> &pending_writes)
 {
+    const auto socket_use = conn->use_socket();
+    if (!socket_use) {
+        return;
+    }
+
     auto &parser      = conn->parser();
     auto  on_frame_cb = [conn](Frame *frame) { conn->on_frame(frame); };
 
@@ -710,6 +770,9 @@ std::shared_ptr<Connection> SocketTransport::create_connection(int fd, const std
     // safely resolve an event even after an explicit caller-side close.
     conn->set_on_frame(std::move(on_frame));
     conn->set_on_close([this, on_close = std::move(on_close)](Connection *c) {
+        if (auto *worker = static_cast<Worker *>(c->io_worker); worker != nullptr) {
+            worker->request_close(c->shared_from_this());
+        }
         if (on_close) {
             on_close(c);
         }

@@ -24,7 +24,7 @@ async fn large_mirror_retains_later_framed_buffers_until_failed_first_strip_is_r
     let mut configured = policy(16 * MIB as u64);
     Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(2);
     let frames = 65;
-    let expected = vec![0x5a; frames * MAX_FRAME_PAYLOAD_BYTES];
+    let expected = vec![0x5a; frames * MAX_FRAME_V2_PAYLOAD_BYTES];
     let mut writer = client.prepare_large_write(Some(expected.len() as u64), configured);
     writer
         .on_framed_data(Box::new(FullFramedOwner::new(frames)))
@@ -52,7 +52,7 @@ async fn large_mirror_rotates_after_repair_exhaustion_and_replays_ordered_data()
     let mut configured = policy(16 * MIB as u64);
     Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(2);
     let frames = 225;
-    let expected = vec![0x5a; frames * MAX_FRAME_PAYLOAD_BYTES];
+    let expected = vec![0x5a; frames * MAX_FRAME_V2_PAYLOAD_BYTES];
     let mut writer = client.prepare_large_write(Some(expected.len() as u64), configured);
     writer
         .on_framed_data(Box::new(FullFramedOwner::new(frames)))

@@ -17,7 +17,7 @@ impl CatalogRepository {
         operation: ManagementOperation,
         now_ms: u64,
     ) -> Result<Option<CatalogAuthority>, CatalogError> {
-        let started = std::time::Instant::now();
+        let started = tokio::time::Instant::now();
         if operation.terminal() {
             self.audit(&operation, now_ms).await?;
             if operation.phase == ManagementPhase::Conflict {

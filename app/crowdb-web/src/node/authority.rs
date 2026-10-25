@@ -87,6 +87,9 @@ async fn bootstrap_status(operation: &PreparedBootstrap) -> Value {
 }
 
 pub(crate) async fn guard(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if observation_request(&request) {
+        return next.run(request).await;
+    }
     if state.node_monitor_url.is_none() {
         return next.run(request).await;
     }
@@ -184,6 +187,14 @@ pub(crate) async fn guard(State(state): State<AppState>, request: Request, next:
     next.run(request).await
 }
 
+fn observation_request(request: &Request) -> bool {
+    *request.method() == Method::GET
+        && matches!(
+            request.uri().path(),
+            "/api/cluster/target" | "/api/cluster/node-observation" | "/api/cluster/status"
+        )
+}
+
 fn reconcile_cleanup(state: &AppState) -> Result<(), Failure> {
     if super::admission::binding(state)?.is_some()
         || state.runtime_root.join("cleanup-progress.json").exists()
@@ -204,6 +215,7 @@ fn reconcile_cleanup(state: &AppState) -> Result<(), Failure> {
     if acknowledged.exists() {
         return Ok(());
     }
+    super::cleanup::retire_credentials(state, &bootstrap)?;
     for name in [
         "prepared-bootstrap.json",
         "confirmed-cluster.json",

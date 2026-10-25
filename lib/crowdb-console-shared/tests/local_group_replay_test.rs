@@ -54,6 +54,7 @@ async fn replay(replica: u64, race: bool) -> (crowdb_console_shared::error::Resu
         replica_id: 10,
         initial_role: None,
         start_election: Some(false),
+        deployment: None,
     };
     let result = create_local_group_for_tests(&endpoint, 0, &request).await;
     let posts = state.posts.load(Ordering::Relaxed);

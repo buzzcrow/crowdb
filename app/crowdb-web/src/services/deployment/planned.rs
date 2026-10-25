@@ -24,6 +24,8 @@ use crowdb_protocol::mgmt::node::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+mod catalog;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Prepare {
@@ -169,10 +171,11 @@ async fn build(
                 .remove("dynamic_ownership");
         }
         if selected.kind == SetupServiceKind::ChunkKv {
-            metadata(state, &mut choices).await?;
+            metadata(state, binding, &mut choices).await?;
         }
-        let body: super::Deploy =
+        let mut body: super::Deploy =
             serde_json::from_value(choices).map_err(|error| err_400(error.to_string()))?;
+        super::policy::apply(state, &mut body)?;
         super::validate(&body)?;
         if matches!(
             selected.kind,
@@ -191,9 +194,16 @@ async fn build(
         if selected.kind == SetupServiceKind::AccessServer {
             super::remote::prepare_credentials(state, binding, &node, &body).await?;
         }
+        let configuration =
+            super::remote::configuration(state, &node, &id, &binding.management_seeds, &body).await?;
+        let configuration = if selected.kind == SetupServiceKind::ChunkKv {
+            catalog::configure(state, binding, configuration).await?
+        } else {
+            configuration
+        };
         (
-            super::remote::configuration(state, &node, &id, &binding.management_seeds, &body).await?,
-            super::remote::environment(&body, &node),
+            configuration,
+            super::remote::owned_environment(state, &body, &node)?,
         )
     };
     Ok(NodeServiceIntent {
@@ -219,20 +229,11 @@ fn service_name(kind: SetupServiceKind) -> &'static str {
     }
 }
 
-async fn metadata(state: &AppState, choices: &mut Value) -> Result<(), Failure> {
-    let group = state
-        .op_context()
+async fn metadata(state: &AppState, binding: &NodeBinding, choices: &mut Value) -> Result<(), Failure> {
+    let ctx = state.op_context().await.map_err(map_config_err)?;
+    let group = crowdb_console_shared::deployment::preparation::metadata_binding(&ctx, &binding.bootstrap)
         .await
-        .map_err(map_config_err)?
-        .sysmd()
-        .list_all_groups()
-        .await
-        .map_err(|error| map_config_err(error.into()))?
-        .into_iter()
-        .filter(|group| group.group_id != 0)
-        .min_by_key(|group| (group.store_id, group.group_id))
-        .ok_or_else(|| err_409("Select an existing ordinary metadata group before starting Chunk-KV"))?;
+        .map_err(map_config_err)?;
     choices["metadata_store_id"] = json!(group.store_id);
-    choices["bootstrap_group_id"] = json!(group.group_id);
     Ok(())
 }

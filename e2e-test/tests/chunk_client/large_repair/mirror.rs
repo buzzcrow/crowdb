@@ -62,7 +62,7 @@ async fn large_mirror_rotates_failed_partial_final_strip() {
         ChunkIoClient::from_parts_with_small_policy(allocator, fault.clone(), small_policy()).unwrap();
     let mut configured = policy(16 * MIB as u64);
     Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(2);
-    let expected = vec![0x5a; MAX_FRAME_PAYLOAD_BYTES];
+    let expected = vec![0x5a; MAX_FRAME_V2_PAYLOAD_BYTES];
     let mut writer = client.prepare_large_write(Some(expected.len() as u64), configured);
     writer
         .on_framed_data(Box::new(FullFramedOwner::new(1)))
@@ -94,7 +94,7 @@ async fn large_mirror_abort_drains_delayed_submitted_write_before_delete() {
         ChunkIoClient::from_parts_with_small_policy(allocator, fault.clone(), small_policy()).unwrap();
     let mut configured = policy(16 * MIB as u64);
     Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(2);
-    let mut writer = client.prepare_large_write(Some((16 * MAX_FRAME_PAYLOAD_BYTES) as u64), configured);
+    let mut writer = client.prepare_large_write(Some((16 * MAX_FRAME_V2_PAYLOAD_BYTES) as u64), configured);
     writer
         .on_framed_data(Box::new(FullFramedOwner::new(16)))
         .await

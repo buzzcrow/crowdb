@@ -24,6 +24,7 @@ pub(crate) struct PreparedAccess {
     operation_id: String,
     inventory: DiskInventory,
     accepted_choices: Option<crowdb_protocol::mgmt::node::setup::NodeSetupChoices>,
+    policy_choices: Option<crowdb_protocol::mgmt::node::setup::NodeSetupChoices>,
 }
 
 #[derive(Debug, Serialize)]
@@ -120,6 +121,7 @@ pub(crate) async fn prepare(
             ssh_user: body.ssh_user.clone(),
             ssh_port: body.ssh_port,
             operation_id: uuid::Uuid::new_v4().to_string(),
+            host_key: None,
             confirmed: false,
             cancelled: false,
         }
@@ -138,6 +140,7 @@ pub(crate) async fn prepare(
         &[
             NodeControl::Identity,
             NodeControl::DiskInventory,
+            NodeControl::DeploymentPolicy,
             NodeControl::NodeSetupIntent,
         ],
     )
@@ -159,6 +162,16 @@ pub(crate) async fn prepare(
             "Candidate has another accepted setup; resume its original admission",
         ));
     }
+    let policy: Option<crowdb_protocol::mgmt::node::deployment::NodeDeploymentPolicy> =
+        serde_json::from_value(
+            observed
+                .pop()
+                .ok_or_else(|| err_502("Missing target startup policy"))?,
+        )
+        .map_err(|error| err_502(error.to_string()))?;
+    if let Some(policy) = &policy {
+        policy.validate().map_err(err_400)?;
+    }
     let inventory = serde_json::from_value(
         observed
             .pop()
@@ -169,6 +182,7 @@ pub(crate) async fn prepare(
         operation_id: record.operation_id,
         inventory,
         accepted_choices: accepted.map(|request| request.choices),
+        policy_choices: policy.map(|policy| policy.setup),
     }))
 }
 

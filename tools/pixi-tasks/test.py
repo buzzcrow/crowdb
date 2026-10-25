@@ -1,6 +1,6 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
-"""Host test orchestration; server lifecycle belongs to e2e-test/run.py."""
+"""Host components and native measurements; product lifecycle belongs to E2E."""
 
 import argparse
 import json
@@ -21,7 +21,7 @@ RUST_GROUPS = {
     "access": ("access-multipart", "access-s3", "access-iceberg", "access-server",
                "access-dataset", "monitor"),
     "console": ("console-shared", "cli", "web"),
-    "cpp": ("tree-ffi", "rpc-ffi"),
+    "cpp": ("tree-ffi", "rpc-ffi", "rpc-test"),
 }
 DOMAINS = ("kv", "diskdb", "diskio", "chunkdb", "chunk-stream", "chunk-client",
            "chunk-kv", "s3", "iceberg", "dataset", "console", "deployment")
@@ -109,6 +109,13 @@ def unit(group):
     if group in RUST_GROUPS:
         for package in RUST_GROUPS[group]:
             measurement.run(package_domain(package), ["cargo", "test", "-p", f"crowdb-{package}", "--tests"])
+    if group == "console":
+        # Test-only native measurement ownership is separate from product OCI acceptance.
+        measurement.run("console", ["cargo", "build", "-p", "crowdb-cli", "-p", "crowdb-kv-server"])
+        measurement.run("console", ["cargo", "build", "-p", "crowdb-console-shared", "--features", "test-util",
+                                    "--example", "regression-fixture"])
+        measurement.run("console", ["python", "tools/benchmark/fixture-smoke.py", "--worker",
+                                    "target/debug/examples/regression-fixture", "--client", "target/debug/crowdb-cli"])
     if group == "access":
         # Explicitly run the otherwise ignored SDK case with pinned dependencies.
         measurement.run("access", ["pixi", "run", "-e", "s3-e2e", "test-boto3-copy-error"])

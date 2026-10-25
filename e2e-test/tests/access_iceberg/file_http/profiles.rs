@@ -7,6 +7,7 @@ use crowdb_access_iceberg::{
     catalog::{CatalogRepository, ClearBounds},
     file::{FileRepository, TableLocation},
 };
+use crowdb_protocol::frame::MAX_FRAME_V2_PAYLOAD_BYTES;
 use futures::StreamExt;
 use reqwest::Method;
 use std::time::Instant;
@@ -14,7 +15,12 @@ use std::time::Instant;
 #[ignore = "requires the owned release storage fixture"]
 async fn small_file_profiles() {
     let (_stack, _process, client, table) = setup().await;
-    for (label, size) in [("1KiB", 1024), ("512KiB", 512 * 1024), ("aligned64KiB", 65502)] {
+    for (label, size) in [
+        ("1KiB", 1024),
+        ("512KiB", 512 * 1024),
+        ("aligned64KiB", MAX_FRAME_V2_PAYLOAD_BYTES),
+        ("over64KiB", MAX_FRAME_V2_PAYLOAD_BYTES + 1),
+    ] {
         assert!(size < fixture_config().iceberg_small_write().threshold_exclusive());
         let bytes = vec![0x5a; size];
         let warmup = path(table, &format!("data/small-{label}-warmup.bin"));
@@ -65,7 +71,10 @@ async fn small_file_profiles() {
             );
             let receive_after = receive_counts(&client).await;
             let frames = receive_after.0 - receive_before.0;
-            assert_eq!(frames, (requests * size.div_ceil(65502)) as u64);
+            assert_eq!(
+                frames,
+                (requests * size.div_ceil(MAX_FRAME_V2_PAYLOAD_BYTES)) as u64
+            );
             assert_eq!(receive_after.1 - receive_before.1, requests as u64);
             println!("iceberg small native {label} concurrency={concurrency} prepared_frames={frames} receive_allocations={} direct_bytes={} prefix_copy_bytes={}",
                 receive_after.1 - receive_before.1, receive_after.2 - receive_before.2,
@@ -73,7 +82,7 @@ async fn small_file_profiles() {
             results.sort_by_key(|(_, latency)| *latency);
             println!("iceberg small {label} concurrency={concurrency} requests={requests} small_completions={} large_strips={} writer_feeds={} frames={} elapsed_us={} p50_us={} p95_us={} p99_us={} {}",
                 route_after.0 - route_before.0, route_after.1 - route_before.1, route_after.2 - route_before.2,
-                size.div_ceil(65502), elapsed.as_micros(), results[(requests - 1) / 2].1,
+                size.div_ceil(MAX_FRAME_V2_PAYLOAD_BYTES), elapsed.as_micros(), results[(requests - 1) / 2].1,
                 results[(requests * 95).div_ceil(100) - 1].1,
                 results[(requests * 99).div_ceil(100) - 1].1,
                 catalog_delta(before, catalog_counts(&client).await));

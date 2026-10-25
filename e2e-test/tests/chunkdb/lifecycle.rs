@@ -31,7 +31,6 @@ async fn allocate_seal_delete_preserves_physical_placement_and_free_facts() {
         .seal_chunk(SealChunkRequest {
             chunk_id: Some(id),
             seal_bytes: 100 * 1024 - 17,
-            ..Default::default()
         })
         .await
         .unwrap()

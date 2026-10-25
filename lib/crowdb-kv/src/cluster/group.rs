@@ -280,6 +280,8 @@ pub struct PxGroup {
     pub(crate) coalesce_round_gate: parking_lot::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     #[cfg(feature = "test-util")]
     pub(crate) coalesce_empty_drain_gate: std::sync::atomic::AtomicU8,
+    #[cfg(feature = "test-util")]
+    pub(crate) repair_gate: std::sync::atomic::AtomicU8,
     /// R36 self-weak back-reference, set once the group is wrapped in an
     /// [`Arc`] via [`Self::set_self_weak`]. The coalescer's per-batch timer
     /// task upgrades this to spawn a flush without the group holding a
@@ -439,6 +441,8 @@ impl PxGroup {
             coalesce_round_gate: parking_lot::Mutex::new(None),
             #[cfg(feature = "test-util")]
             coalesce_empty_drain_gate: std::sync::atomic::AtomicU8::new(0),
+            #[cfg(feature = "test-util")]
+            repair_gate: std::sync::atomic::AtomicU8::new(0),
             self_weak: OnceLock::new(),
             coalescer: parking_lot::Mutex::new(None),
             coalesced_rounds_inflight: std::sync::atomic::AtomicU64::new(0),
@@ -831,6 +835,17 @@ impl PxGroup {
         // The first slot above the contiguous frontier is, by definition, not
         // yet chosen locally — the lowest hole to fill.
         let gap_slot = contiguous + 1;
+        #[cfg(feature = "test-util")]
+        if self
+            .repair_gate
+            .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            while self.repair_gate.load(Ordering::Acquire) == 2 {
+                tokio::task::yield_now().await;
+            }
+            self.repair_gate.store(0, Ordering::Release);
+        }
         let quorum = self.quorum();
         let group_id = self.group_id;
         debug!(

@@ -29,8 +29,7 @@ use crowdb_protocol::chunkdb::rpc::Strip as StripOneof;
 use crowdb_protocol::chunkdb::rpc::{
     AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, Chunk, ChunkState,
     ChunkStrip, ChunkType, DeleteChunkRequest, DeleteChunkResponse, EcStrip, MirrorStrip, QueryChunkRequest,
-    QueryChunkResponse, SealChunkRequest, SealChunkResponse, StripType, UpdateChunkStripRequest,
-    UpdateChunkStripResponse,
+    QueryChunkResponse, SealChunkRequest, SealChunkResponse, StripType,
 };
 use crowdb_protocol::common::{ChunkId, DiskId as ProtoDiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -207,7 +206,7 @@ struct MockChunkAllocator {
 
 #[derive(Debug, Default)]
 struct MockChunkState {
-    chunks: HashMap<(u64, u64), (Vec<ChunkStrip>, u32, bool)>,
+    chunks: HashMap<(u64, u64), (Vec<ChunkStrip>, u64, bool)>,
     next_segment_offset: u64,
     allocate_calls: usize,
     append_calls: usize,
@@ -353,7 +352,7 @@ impl ChunkAllocator for MockChunkAllocator {
             .chunks
             .get_mut(&(chunk_id.high, chunk_id.low))
             .expect("seal unknown chunk");
-        entry.1 = req.seal_length;
+        entry.1 = req.seal_bytes;
         Ok(SealChunkResponse { chunk: None })
     }
 
@@ -367,10 +366,6 @@ impl ChunkAllocator for MockChunkAllocator {
             .expect("delete unknown chunk");
         entry.2 = true;
         Ok(DeleteChunkResponse { chunk: None })
-    }
-
-    async fn update_chunk_strip(&self, _req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        Ok(UpdateChunkStripResponse { chunk: None })
     }
 
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
@@ -389,8 +384,8 @@ impl ChunkAllocator for MockChunkAllocator {
             } else {
                 ChunkState::Sealed as i32
             },
-            sealed_length: *length,
-            acknowledged_cursor: u64::from(*length) * 1024,
+            sealed_length: u32::try_from(length.div_ceil(1024)).unwrap(),
+            acknowledged_cursor: *length,
             ..Chunk::default()
         };
         Ok(QueryChunkResponse {

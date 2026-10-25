@@ -414,3 +414,76 @@ fn xorshift_random_between_ms_stays_in_range() {
         assert!((30..=60).contains(&v), "v={v} out of [30, 60]");
     }
 }
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn stalled_gap_repair_cannot_stop_the_leader_heartbeat_ticker() {
+    use crowdb_kv::paxos::roles::{Learner, PxBallot, PxLogEntry};
+    let cfg = PxElectionConfig::for_tests();
+    let group = Arc::new(PxGroup::new(
+        99,
+        PxLocalReplica::new(31, PxLocalReplicaRole::Follower),
+    ));
+    let cancel = group.tenure_cancel();
+    let handle = spawn(Arc::downgrade(&group), cfg, cancel.clone());
+    advance_until_role(&group, &cfg, PxLocalReplicaRole::Leader).await;
+    for _ in 0..100 {
+        if group.leader_read_ready() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(group.leader_read_ready());
+    group.pause_repair_for_tests();
+    group
+        .local_replica()
+        .learner
+        .learn(
+            PxLogEntry {
+                slot: 2,
+                ballot: PxBallot::new(1, 31),
+                term: group.local_replica().current_term_snapshot(),
+                payload: bytes::Bytes::new(),
+            },
+            &[],
+        )
+        .await;
+    for _ in 0..100 {
+        tokio::time::advance(Duration::from_millis(cfg.heartbeat_interval_ms + 1)).await;
+        tokio::task::yield_now().await;
+        if group.repair_is_paused_for_tests() {
+            break;
+        }
+    }
+    assert!(
+        group.repair_is_paused_for_tests(),
+        "repair must be in flight before measuring heartbeats"
+    );
+    let before = group.local_replica().lease_state_snapshot().lease_read_until;
+    for _ in 0..10 {
+        tokio::time::advance(Duration::from_millis(cfg.heartbeat_interval_ms + 1)).await;
+        tokio::task::yield_now().await;
+    }
+    let after = group.local_replica().lease_state_snapshot().lease_read_until;
+    assert!(
+        after > before,
+        "gap repair held heartbeats: before={before:?}, after={after:?}"
+    );
+    assert_eq!(group.local_replica().contiguous_chosen(), 0);
+    group.resume_repair_for_tests();
+    for _ in 0..100 {
+        if group.local_replica().contiguous_chosen() == 2 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        group.local_replica().contiguous_chosen(),
+        2,
+        "the same repair must finish after IO resumes"
+    );
+    cancel.cancel();
+    tokio::time::timeout(Duration::from_secs(1), handle)
+        .await
+        .unwrap()
+        .unwrap();
+}

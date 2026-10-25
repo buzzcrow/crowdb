@@ -31,8 +31,8 @@ macOS implementation and Kubernetes deployment automation are deferred.
   prerequisites can compile, stage, construct and validate an OCI image without
   Docker CLI, Docker daemon, Docker socket or containerd daemon.
 - **I2 — One image**: for a given architecture and release, Docker and containerd
-  consume the same published image digest. Single-node initialization and manual
-  multi-node admission are startup policies, not separate image builds.
+  consume the same published image digest. Local and Production formation use
+  accepted startup policies rather than separate image builds.
 - **I3 — External state**: UUIDs, SSH keys, cluster bindings, server data and logs
   remain outside image layers. Replacing a runtime retains persistent state.
 - **I4 — Enforced resources**: production startup fails if requested CPU
@@ -62,21 +62,21 @@ Tokio child status. This uses Tini's standard reaping/signal behavior as documen
 in its [upstream implementation](https://github.com/krallin/tini).
 
 The image contains the same monitor, UI, Rust/C++ servers, shared libraries,
-templates and entrypoint used by both deployment modes. The common
-image defaults to `CROWDB_STARTUP_MODE=manual`: discovery, SSH and UI start, then
-the node waits for preparation and Group-0 bootstrap. Manual mode supports one
-or multiple nodes. An operator can select the local candidate, admit it into the
-prepared cluster and initialize a one-member Group 0; this is an ordinary
-editable cluster and can later admit more nodes. It still requires configured
-storage and passes the same preparation/bootstrap validation.
+templates and entrypoint for Local and Production deployment. Fresh Local startup
+defaults to one initial voter, automatic file-backed test storage and all three
+access protocols. Three-container Local startup explicitly selects three voters
+on one dedicated discovery scope; missing peers remain waiting. Local supplies
+clearly scoped test admission credentials and reports zero physical host failure
+tolerance. Production requires configured credentials, explicit resources and
+valid protected placement. It never falls back to Local credentials or geometry.
 
-Explicit `CROWDB_STARTUP_MODE=single` selects the existing convenience policy:
-automatic virtual-disk creation and cluster initialization, followed by disabled
-UI editing and backend mutation rejection. Node count alone never activates this
-policy. Initialization always happens at startup or through management actions,
-never during image construction. No additional single-node image is needed for
-manual one-node bootstrap. The production policy remains
-`CROWDB_DEPLOYMENT_MODE=production` with explicit credentials and resources.
+The monitor seals the versioned deployment policy before identity, admission or
+storage effects. Retained accepted values supply omitted inputs on restart;
+conflicting overrides or populated obsolete roots fail without conversion or
+reset. Both policies expose the same editable UI and authorized management
+operations. Initialization occurs through the shared durable node lifecycle,
+independently of host helpers or browser connections. Image construction creates
+no node identity or initialized storage.
 
 BuildKit's Dockerfile frontend remains usable, including existing bind mounts in
 `RUN` instructions. The recipe name does not imply a Docker daemon dependency.
@@ -88,6 +88,17 @@ Docker-specific `HEALTHCHECK` is not a portable OCI configuration field. Runtime
 health checks invoke `crowdb-monitor liveness` and `crowdb-monitor readiness`
 explicitly. Container restart policy and application readiness are distinct:
 unready Group 0 must not trigger destructive reinitialization or restart loops.
+On retained startup, the monitor validates sealed member trust and starts the
+owned KV process without waiting for quorum health. Management discovery and
+authenticated member identity remain available while the replica recovers its
+peers' current addresses. Independent HTTP health observations determine KV
+readiness; a live unready process does not consume another restart attempt.
+Explicit admission/start actions retain their bounded readiness wait.
+Background protocol observations obtain the local node's current address and
+service intents from Group 0 within one shared authority deadline. Cluster,
+node and discovery identities must match a confirmed, non-cancelled record.
+The retained UI topology is not the address authority for these local probes;
+status readers only consume the resulting observations.
 
 ## 3. Pixi-managed construction
 
@@ -153,16 +164,11 @@ separate construct, runtime verification and publish jobs:
   graph using digest-preserving transfer; failure to preserve it is an error.
   Verify the registry digest before signing or updating moving tags.
 
-The canonical Docker Hub repository is `crowdb/crowdb-node`. The Iceberg, S3 and Dataset
-repositories provide single-node usage names for the same image digest. Their
-startup instructions explicitly select `CROWDB_STARTUP_MODE=single`; repository
-names do not alter the default manual mode. The Dataset name reserves its usage
-entry point while Dataset access remains unavailable. Each
-repository receives version and `latest` tags; there is no runtime-specific or
-service-specific image build.
-Changing the published default from automatic single to manual is a usage
-change: existing automatic examples/helpers must explicitly select `single`.
-Do not silently change the startup policy of an existing populated data root.
+The canonical Docker Hub repository is `crowdb/crowdb-node`. The Iceberg, S3 and
+Dataset repositories are usage names for the same image digest and version tags.
+Repository names change neither the accepted deployment policy nor UI permissions.
+All three access protocols use the ordinary node lifecycle. Existing populated
+state retains its accepted policy through image replacement.
 
 Keep signing, SBOM and provenance. Generate provenance from the source/tool/base
 receipt and attach attestations to the verified digest without rebuilding the
@@ -177,10 +183,10 @@ digest, then start it with the existing entrypoint/environment/mount contract.
 Production uses `--network host`, explicit CPU policy and `--memory`, a persistent
 data directory, physical host identity, management interface and credential
 mounts. Bridge-mode single-host simulation remains available for tests.
-Ordinary one-node usage needs only the usual ports/persistent data mount and UI
-bootstrap. Automatic development usage adds `-e CROWDB_STARTUP_MODE=single`;
-production resource/device arguments are not prerequisites for the simple
-development example. Both use the same image.
+Fresh Local one-node usage needs only the published client/UI ports and persistent
+data mount. Three-node Local usage selects three voters without peer addresses or
+fixed IPs. Both use automatic authenticated preparation and remain editable.
+Production resource/device arguments are separate explicit host inputs.
 
 The standard monitor accepts private `PrepareDiskFile` requests only for its
 confirmed node/cluster binding with available Group-0 authority. It records the
@@ -209,9 +215,9 @@ The persistent data mount contains node identity, bootstrap/service journals and
 managed disk files. Supplied files and whole block devices use the same container
 disks directory in Docker and containerd, with launcher-verified exact mappings.
 Replacement retains the original sources and identities; invalid inputs never
-trigger managed-file fallback. Standard setup defaults to one 16-GiB preallocated
-file and a 1-GiB host reserve; explicit single mode retains four sparse development
-files. File preallocation failure is not permission for sparse fallback.
+trigger managed-file fallback. Local defaults to one 16-GiB sparse managed file
+and a 1-GiB host reserve. Production automatic storage uses preallocation and
+rejects sparse files. File preallocation failure never authorizes sparse fallback.
 
 Supplied provisioning seals the canonical physical host/resource and physical
 capacity separately from whole-zone usable geometry. A full-file loop device
@@ -266,6 +272,17 @@ It records runtime/container identity
 for explicit stop, restart and cleanup. Host limits are upper bounds, not
 guaranteed CPU reservations. Block-device access stays explicit; no blanket
 privileged container is needed.
+
+The common cluster CLI supports Docker and containerd host lifecycle through
+these shared validators. A private receipt is sealed before runtime effects;
+it records the stable daemon identity, Unix endpoint, context or namespace,
+snapshotter, owner token, immutable image, resources, media lineage and input
+file hashes. Resume accepts the same inputs and exact owned container, or
+recreates that container against the retained data. A foreign same-name object,
+changed daemon or changed configuration fails before start/stop effects.
+Application UUID binding is separate and can be sealed only after observing
+that cluster. Independent host cleanup verifies the same ownership and removes
+only the container, preserving media, data and receipts.
 
 Explicit monitor liveness/readiness probes report node health. A dedicated
 systemd unit restarts the containerd daemon, and its restart plugin applies the

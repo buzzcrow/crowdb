@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { listNodeCandidates, nodeDeploymentStatus, nodeAdmissions, cancelNodeAdmission, discardCandidateReview, type NodeAdmission, type NodeCandidates, type NodeDeploymentStatus } from '../api';
+import { listNodeCandidates, nodeAdmissions, cancelNodeAdmission, discardCandidateReview, type NodeAdmission, type NodeCandidates, type NodeDeploymentStatus } from '../api';
 import { AdmitCandidateDialog } from './AdmitCandidateDialog';
 import { Button } from '../components/ui/Button';
 import { NodeRecoveryDialog } from './NodeRecoveryDialog';
@@ -15,13 +15,12 @@ const labels = {
 };
 
 /** Discovery observations remain separate from the confirmed hardware tree. */
-export function CandidateNodes({ racks, readonly, onChange, addNodeRequest }: { addNodeRequest?: { rackId: number; nonce: number }; racks: Rack[]; readonly?: boolean; onChange?: () => void }) {
+export function CandidateNodes({ racks, readonly, onChange, addNodeRequest, deployment }: { deployment?: NodeDeploymentStatus; addNodeRequest?: { rackId: number; nonce: number }; racks: Rack[]; readonly?: boolean; onChange?: () => void }) {
   const section = useRef<HTMLElement>(null);
   const dialogRoot = section.current?.closest('.crowdb-console');
   const [snapshot, setSnapshot] = useState<NodeCandidates>();
   const [actionError, setActionError] = useState('');
   const [unavailable, setUnavailable] = useState(false);
-  const [deployment, setDeployment] = useState<NodeDeploymentStatus>();
   const [admissions, setAdmissions] = useState<NodeAdmission[]>([]);
   const [recovery, setRecovery] = useState<'resume' | 'cleanup'>();
   const [selected, setSelected] = useState<string>();
@@ -35,19 +34,30 @@ export function CandidateNodes({ racks, readonly, onChange, addNodeRequest }: { 
   }, [addNodeRequest]);
   useEffect(() => {
     const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    const refresh = async () => {
-      try {
-        const [result, deployment, admissions] = await Promise.all([listNodeCandidates({ signal: controller.signal }), nodeDeploymentStatus({ signal: controller.signal }), nodeAdmissions({ signal: controller.signal })]);
-        if (!controller.signal.aborted) { setSnapshot(result); setDeployment(deployment); setAdmissions(admissions); setUnavailable(false); }
-      } catch {
-        if (!controller.signal.aborted) setUnavailable(true);
-      } finally {
-        if (!controller.signal.aborted) timer = setTimeout(refresh, 2000);
-      }
+    const failed = [false, false];
+    const poll = <T,>(index: number, request: () => Promise<T>, update: (value: T) => void) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const refresh = async () => {
+        try {
+          const value = await request();
+          if (!controller.signal.aborted) { update(value); failed[index] = false; }
+        } catch {
+          if (!controller.signal.aborted) failed[index] = true;
+        } finally {
+          if (!controller.signal.aborted) {
+            setUnavailable(failed.some(Boolean));
+            timer = setTimeout(refresh, 2000);
+          }
+        }
+      };
+      void refresh();
+      return () => clearTimeout(timer);
     };
-    void refresh();
-    return () => { controller.abort(); clearTimeout(timer); };
+    const stop = [
+      poll(0, () => listNodeCandidates({ signal: controller.signal }), setSnapshot),
+      poll(1, () => nodeAdmissions({ signal: controller.signal }), setAdmissions),
+    ];
+    return () => { controller.abort(); stop.forEach(cancel => cancel()); };
   }, []);
 
   return <section ref={section} tabIndex={-1} aria-label="Candidate nodes" className="tw-border-t tw-border-border tw-p-3 tw-overflow-y-auto tw-max-h-[40vh] tw-shrink-0">

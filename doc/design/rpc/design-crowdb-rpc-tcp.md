@@ -36,8 +36,8 @@ Per worker thread:
   loop:
     events = engine.wait(timeout)
     for event in events:
-      if event.fd == notify_fd:           // shutdown wake only
-        no-op (no cross-thread submit queue)
+      if event.fd == notify_fd:
+        drain notified cross-thread sends
       elif event.fd == timer_fd:
         run due scheduled tasks → reset timer to next deadline
       elif event is READABLE:
@@ -50,11 +50,23 @@ Per worker thread:
       elif event is ERROR/HUP:
         conn->close() → remove_connection(fd) → trigger reconnect
 
+    drain owning worker's explicit-close queue → remove descriptors
     // send aggregation: batch writev pending responses
     for conn in pending_write_conns:
       on_writable(conn)
       if partial/EAGAIN: engine.arm_write(fd)
 ```
+
+Explicit close first fences admission and completes pending RPC failures. It
+also publishes an identity-retaining close request to the owning worker through
+an atomic queue and wakes that worker's engine. The worker removes both read
+and duplicate write descriptors even when the peer is idle and produces no
+further I/O. A single atomic state fences new socket-use grants at close and
+counts in-flight reads, writes and event re-arms. Descriptor cleanup waits until
+those uses retire, so an old syscall cannot touch a newly reused descriptor.
+Queued close requests survive this deferral. The worker releases its
+connection-map entry only after flushing pending responses. Descriptor cleanup remains single-owner; stale kernel events resolve
+through non-reused connection IDs. Shutdown drains retained close requests.
 
 The transport creates N independent engines (`io_engines`), with
 `io_workers` total workers (per-engine M = `io_workers / io_engines`).

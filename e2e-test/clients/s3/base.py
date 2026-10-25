@@ -24,6 +24,8 @@ from botocore.config import Config
 from botocore.credentials import Credentials
 from botocore.exceptions import ClientError
 
+from http_exchange import request_response
+
 
 class FragmentedBody(BytesIO):
     def __init__(self, payload, seed):
@@ -110,9 +112,10 @@ class S3ClientTestCase(unittest.TestCase):
                 for offset in range(0, len(body), slow_chunk_size):
                     connection.send(body[offset : offset + slow_chunk_size])
                     time.sleep(0.002)
+                response = connection.getresponse()
             else:
-                connection.request(method, path, body=body, headers=dict(request.headers.items()))
-            response = connection.getresponse()
+                response = request_response(connection, method, path, body,
+                                            dict(request.headers.items()))
             return response.status, dict(response.getheaders()), response.read()
         finally:
             connection.close()

@@ -15,8 +15,8 @@ async fn small_write_repair_preserves_acknowledged_prefix_in_open_block() {
         failed_disk: Mutex::new(None),
     });
     let client = ChunkIoClient::from_parts_with_small_policy(allocator, fault, policy()).unwrap();
-    let prefix_data = Bytes::from(vec![0x31; MAX_FRAME_PAYLOAD_BYTES - KIB]);
-    let patch_data = Bytes::from(vec![0x72; MAX_FRAME_PAYLOAD_BYTES]);
+    let prefix_data = Bytes::from(vec![0x31; MAX_FRAME_V2_PAYLOAD_BYTES - KIB]);
+    let patch_data = Bytes::from(vec![0x72; MAX_FRAME_V2_PAYLOAD_BYTES]);
     let prefix = write_object(&client, prefix_data.clone()).await;
     let patch = write_object(&client, patch_data.clone()).await;
     assert_eq!(prefix.chunk_id, patch.chunk_id);
@@ -43,9 +43,12 @@ async fn small_write_new_chunk_repair_exhaustion_preserves_sealed_predecessor() 
     let client = ChunkIoClient::from_parts_with_small_policy(allocator, fault, configured).unwrap();
     let predecessor_group = write_full_small_strip(&client, 0x29).await;
     let predecessor = predecessor_group[0].1.clone();
-    let mut failed = client.prepare_small_write(MAX_FRAME_PAYLOAD_BYTES).await.unwrap();
+    let mut failed = client
+        .prepare_small_write(MAX_FRAME_V2_PAYLOAD_BYTES)
+        .await
+        .unwrap();
     failed
-        .on_data(Bytes::from(vec![0x81; MAX_FRAME_PAYLOAD_BYTES]))
+        .on_data(Bytes::from(vec![0x81; MAX_FRAME_V2_PAYLOAD_BYTES]))
         .await
         .unwrap();
     assert!(matches!(failed.on_finish().await, Err(IoError::WriteFailed(_))));

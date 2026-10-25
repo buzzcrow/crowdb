@@ -2,10 +2,10 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateReplacementSegmentRequest, Chunk, DiscardReplacementSegmentRequest, QueryChunkRequest,
-    ReplaceChunkStripRangeRequest, Strip,
+    AllocateReplacementSegmentRequest, Chunk, ChunkState, ChunkType, DiscardReplacementSegmentRequest,
+    QueryChunkRequest, ReplaceChunkStripRangeRequest, Strip,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -18,7 +18,6 @@ impl MirrorStripFlow {
     pub(super) async fn repair(
         &self,
         chunk: &mut Chunk,
-        committed_cursor: u64,
         strip_sequence: u32,
         failed: Segment,
         image: Bytes,
@@ -29,7 +28,7 @@ impl MirrorStripFlow {
             metrics.active_repairs.fetch_add(1, Ordering::Relaxed);
         }
         let result = self
-            .try_repair(chunk, committed_cursor, strip_sequence, failed, image, unit_bytes)
+            .try_repair(chunk, strip_sequence, failed, image, unit_bytes)
             .await;
         if let Some(metrics) = &self.metrics {
             let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -46,7 +45,6 @@ impl MirrorStripFlow {
     async fn try_repair(
         &self,
         chunk: &mut Chunk,
-        committed_cursor: u64,
         strip_sequence: u32,
         failed: Segment,
         image: Bytes,
@@ -110,21 +108,40 @@ impl MirrorStripFlow {
                 last_error = "replacement allocation returned no segment".into();
                 continue;
             };
-            let write = self
-                .disk_writer
-                .write_at_byte_offset(&replacement, unit_bytes, 0, image.clone())
-                .await;
-            let sync = if write.is_ok() && self.sync {
-                self.disk_writer.fsync(&replacement).await
+            let stream_initialization = matches!(
+                ChunkType::try_from(chunk.chunk_type),
+                Ok(ChunkType::Stream | ChunkType::Wal)
+            );
+            let write = if stream_initialization {
+                let capacity = usize::try_from(u64::from(old_strip.capacity) * 1024)
+                    .map_err(|_| IoError::WriteFailed("replacement capacity overflows".into()))?;
+                if image.len() > capacity
+                    || capacity > usize::try_from(crate::STREAM_STRIP_BYTES).expect("bounded stream strip")
+                {
+                    return Err(IoError::WriteFailed("invalid stream replacement image".into()));
+                }
+                let mut initialized = BytesMut::zeroed(capacity);
+                initialized[..image.len()].copy_from_slice(&image);
+                self.disk_writer
+                    .initialize_synchronized_at_byte_offset(&replacement, unit_bytes, 0, initialized.freeze())
+                    .await
+            } else if self.sync {
+                self.disk_writer
+                    .write_synchronized_at_byte_offset(&replacement, unit_bytes, 0, image.clone())
+                    .await
             } else {
-                Ok(())
+                self.disk_writer
+                    .write_at_byte_offset(&replacement, unit_bytes, 0, image.clone())
+                    .await
             };
-            if let Err(error) = write.and(sync) {
+            if let Err(error) = write {
                 last_error = error.to_string();
                 if let Some(disk) = replacement.disk_id {
                     self.failed_disks.insert(disk);
                 }
-                self.discard(chunk.id, replacement).await;
+                if !stream_initialization {
+                    self.discard(chunk.id, replacement).await;
+                }
                 continue;
             }
             let Some(slot) = mirror.segments.iter_mut().find(|segment| **segment == failed) else {
@@ -182,12 +199,17 @@ impl MirrorStripFlow {
         if let Some(metrics) = &self.metrics {
             metrics.exhausted_repairs.fetch_add(1, Ordering::Relaxed);
         }
-        self.mark_unavailable(chunk, committed_cursor, strip_sequence, failed)
-            .await?;
+        // Transport/write uncertainty does not prove corruption of the already
+        // acknowledged prefix. Keep its locations readable; complete frame
+        // verification is the authority for durable corruption markers.
         Err(IoError::ReplicaRepairExhausted(last_error))
     }
 
-    async fn publish(&self, request: ReplaceChunkStripRangeRequest, replacement: Segment) -> Result<Chunk> {
+    async fn publish(
+        &self,
+        mut request: ReplaceChunkStripRangeRequest,
+        replacement: Segment,
+    ) -> Result<Chunk> {
         let mut attempt = 0_usize;
         loop {
             if attempt > 0 {
@@ -204,8 +226,9 @@ impl MirrorStripFlow {
                 }
                 Err(error @ IoError::MetadataConflict(_)) => {
                     if self.resolve_ambiguity {
-                        match self.resolve_replacement(&request).await {
+                        match self.resolve_replacement(&mut request).await {
                             Ok(Some(chunk)) => return Ok(chunk),
+                            Ok(None) if attempt < self.attempts => continue,
                             Ok(None) => {}
                             Err(error) => return Err(error),
                         }
@@ -213,7 +236,7 @@ impl MirrorStripFlow {
                     self.discard(request.chunk_id, replacement).await;
                     return Err(error);
                 }
-                Err(_) if self.resolve_ambiguity => match self.resolve_replacement(&request).await {
+                Err(_) if self.resolve_ambiguity => match self.resolve_replacement(&mut request).await {
                     Ok(Some(chunk)) => return Ok(chunk),
                     Ok(None) if attempt < self.attempts => {}
                     Ok(None) => {
@@ -234,7 +257,10 @@ impl MirrorStripFlow {
         }
     }
 
-    async fn resolve_replacement(&self, request: &ReplaceChunkStripRangeRequest) -> Result<Option<Chunk>> {
+    async fn resolve_replacement(
+        &self,
+        request: &mut ReplaceChunkStripRangeRequest,
+    ) -> Result<Option<Chunk>> {
         loop {
             match self.inspect_replacement(request).await {
                 Ok(state) => return Ok(state),
@@ -247,7 +273,10 @@ impl MirrorStripFlow {
         }
     }
 
-    async fn inspect_replacement(&self, request: &ReplaceChunkStripRangeRequest) -> Result<Option<Chunk>> {
+    async fn inspect_replacement(
+        &self,
+        request: &mut ReplaceChunkStripRangeRequest,
+    ) -> Result<Option<Chunk>> {
         let chunk = self
             .allocator
             .query_chunk(QueryChunkRequest {
@@ -256,7 +285,7 @@ impl MirrorStripFlow {
             .await?
             .chunk
             .ok_or_else(|| IoError::MetadataConflict("replacement chunk disappeared".into()))?;
-        if chunk.writer_epoch != self.writer_epoch {
+        if chunk.id != request.chunk_id || chunk.writer_epoch != self.writer_epoch {
             return Err(IoError::MetadataConflict("mirror writer epoch changed".into()));
         }
         let start = usize::try_from(request.start_index)
@@ -266,9 +295,14 @@ impl MirrorStripFlow {
             return Ok(Some(chunk));
         }
         let old_end = start.saturating_add(request.old_strips.len());
-        if chunk.modify_ts == request.expected_modify_ts
+        if chunk.state == ChunkState::Active as i32
+            && chunk.modify_ts >= request.expected_modify_ts
             && chunk.strips.get(start..old_end) == Some(request.old_strips.as_slice())
         {
+            // Independent strip preparation can advance the chunk revision.
+            // Reuse the already initialized replacement and stable operation ID
+            // only while this owner and the exact replaced range still match.
+            request.expected_modify_ts = chunk.modify_ts;
             return Ok(None);
         }
         Err(IoError::MetadataConflict(
@@ -284,47 +318,5 @@ impl MirrorStripFlow {
                 segment: Some(replacement),
             })
             .await;
-    }
-
-    async fn mark_unavailable(
-        &self,
-        chunk: &mut Chunk,
-        committed_cursor: u64,
-        strip_sequence: u32,
-        failed: Segment,
-    ) -> Result<()> {
-        let strip_index = chunk
-            .strips
-            .iter()
-            .position(|strip| strip.strip_sequence == strip_sequence)
-            .ok_or_else(|| IoError::MetadataConflict("failed strip disappeared".into()))?;
-        let old = chunk.strips[strip_index].clone();
-        let strip_start = u64::from(old.chunk_offset) * 1024;
-        if committed_cursor <= strip_start {
-            return Ok(());
-        }
-        let mut degraded = old.clone();
-        if !degraded.unavailable_segments.contains(&failed) {
-            degraded.unavailable_segments.push(failed);
-        }
-        let operation_id = ChunkId {
-            high: self.writer_epoch ^ chunk.modify_ts ^ u64::MAX,
-            low: u64::from(strip_sequence) ^ failed.unit_offset,
-        };
-        let response = self
-            .allocator
-            .replace_chunk_strip_range(ReplaceChunkStripRangeRequest {
-                chunk_id: chunk.id,
-                expected_modify_ts: chunk.modify_ts,
-                start_index: u32::try_from(strip_index).unwrap_or(u32::MAX),
-                old_strips: vec![old],
-                replacement_strips: vec![degraded],
-                operation_id: Some(operation_id),
-            })
-            .await?;
-        *chunk = response
-            .chunk
-            .ok_or_else(|| IoError::MetadataConflict("degraded marker returned no chunk".into()))?;
-        Ok(())
     }
 }

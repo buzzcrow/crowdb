@@ -3,7 +3,6 @@
 
 #include "engine/aligned_writer.h"
 
-#include "crowdb-common/log.h"
 #include "disk/disk.h"
 
 #include <algorithm>
@@ -12,14 +11,13 @@
 #include <cstring>
 #include <limits>
 #include <thread>
+#include <utility>
 
 namespace crowdb::diskio
 {
 
 namespace
 {
-alignas(4096) const std::array<uint8_t, AlignedWriter::MAX_ZERO_BYTES> ZERO_BYTES{};
-
 bool is_power_of_two(size_t value)
 {
     return value != 0 && (value & (value - 1)) == 0;
@@ -31,7 +29,7 @@ std::shared_ptr<uint8_t> allocate_aligned(size_t alignment, size_t size)
     if (::posix_memalign(&memory, alignment, size) != 0) {
         return {};
     }
-    return std::shared_ptr<uint8_t>(static_cast<uint8_t *>(memory), [](uint8_t *ptr) { ::free(ptr); });
+    return {static_cast<uint8_t *>(memory), [](uint8_t *ptr) { ::free(ptr); }};
 }
 } // namespace
 
@@ -73,7 +71,8 @@ size_t AlignedWriter::CacheKeyHash::operator()(const CacheKey &key) const
 
 size_t AlignedWriter::shard_index(const Request &request) const
 {
-    return CacheKeyHash{}(CacheKey{request.disk->id(), request.ordering_phys_offset}) % SHARD_COUNT;
+    return CacheKeyHash{}(CacheKey{.disk_id = request.disk->id(), .block_offset = request.ordering_phys_offset}) %
+           SHARD_COUNT;
 }
 
 void AlignedWriter::submit(std::shared_ptr<Disk> disk, off_t phys_offset, const uint8_t *data, size_t size,
@@ -84,7 +83,8 @@ void AlignedWriter::submit(std::shared_ptr<Disk> disk, off_t phys_offset, const 
 }
 
 void AlignedWriter::submit_ordered(std::shared_ptr<Disk> disk, off_t phys_offset, const uint8_t *data, size_t size,
-                                   uint64_t ordering_phys_offset, std::function<void(int)> on_complete)
+                                   uint64_t ordering_phys_offset, std::function<void(int)> on_complete,
+                                   std::chrono::steady_clock::time_point deadline)
 {
     if (stopping_.load(std::memory_order_acquire)) {
         if (on_complete) {
@@ -98,19 +98,14 @@ void AlignedWriter::submit_ordered(std::shared_ptr<Disk> disk, off_t phys_offset
         }
         return;
     }
-    if (disk->block_size() == 1 || size == 0) {
-        Disk     *disk_ptr = disk.get();
-        IoEngine *engine   = disk_ptr->engine();
-        engine->submit_write(disk_ptr, phys_offset, data, size,
-                             [disk = std::move(disk), callback = std::move(on_complete)](int result) mutable {
-                                 if (callback) {
-                                     callback(result);
-                                 }
-                             });
-        return;
-    }
-    auto *request = new Request{std::move(disk), phys_offset, data, size, ordering_phys_offset, std::move(on_complete)};
-    size_t index  = shard_index(*request);
+    auto  *request = new Request{.disk                 = std::move(disk),
+                                 .phys_offset          = phys_offset,
+                                 .data                 = data,
+                                 .size                 = size,
+                                 .ordering_phys_offset = ordering_phys_offset,
+                                 .deadline             = deadline,
+                                 .on_complete          = std::move(on_complete)};
+    size_t index   = shard_index(*request);
     if (!shards_[index]->pending.try_push(request)) {
         if (request->on_complete) {
             request->on_complete(-EAGAIN);
@@ -154,17 +149,25 @@ void AlignedWriter::process_next(size_t index)
 
 void AlignedWriter::process(size_t index, Request *request)
 {
+    if (std::chrono::steady_clock::now() >= request->deadline) {
+        finish(index, request, -ETIMEDOUT);
+        return;
+    }
     size_t block_size = request->disk->block_size();
     if (block_size == 0) {
         finish(index, request, -EINVAL);
         return;
     }
-    if (block_size == 1 || request->size == 0) {
+    if (request->size == 0) {
+        finish(index, request, 0);
+        return;
+    }
+    if (block_size == 1) {
         request->disk->engine()->submit_write(request->disk.get(), request->phys_offset, request->data, request->size,
                                               [this, index, request](int result) { finish(index, request, result); });
         return;
     }
-    if (!is_power_of_two(block_size) || block_size < sizeof(void *) || block_size > MAX_ZERO_BYTES) {
+    if (!is_power_of_two(block_size) || block_size < sizeof(void *) || block_size > MAX_BLOCK_BYTES) {
         finish(index, request, -EINVAL);
         return;
     }
@@ -184,7 +187,7 @@ void AlignedWriter::process(size_t index, Request *request)
     if (offset_in_block == 0 && request->size % block_size == 0 && pointer_aligned) {
         request->disk->engine()->submit_write(request->disk.get(), request->phys_offset, request->data, request->size,
                                               [this, index, request, block_size](int result) {
-                                                  if (result == static_cast<int>(request->size)) {
+                                                  if (std::cmp_equal(result, request->size)) {
                                                       invalidate_cache(*shards_[index], *request, request->phys_offset,
                                                                        request->size, block_size);
                                                   }
@@ -198,69 +201,11 @@ void AlignedWriter::process(size_t index, Request *request)
         finish(index, request, -ENOMEM);
         return;
     }
-    uint8_t *bytes = buffer.get();
-    for (size_t offset = 0; offset < aligned_size; offset += block_size) {
-        std::memcpy(bytes + offset, ZERO_BYTES.data(), block_size);
-    }
-
-    auto    &cache = shards_[index]->partial_blocks;
-    CacheKey head_key{request->disk->id(), static_cast<uint64_t>(aligned_offset)};
-    auto     head = cache.find(head_key);
-    if (head != cache.end() && head->second.disk.lock().get() != request->disk.get()) {
-        cache.erase(head);
-        head = cache.end();
-    }
-    if (head != cache.end()) {
-        std::memcpy(bytes, head->second.bytes.data(), block_size);
-    }
-    if (aligned_size > block_size) {
-        CacheKey tail_key{request->disk->id(), static_cast<uint64_t>(aligned_offset) + aligned_size - block_size};
-        auto     tail = cache.find(tail_key);
-        if (tail != cache.end()) {
-            if (tail != cache.end() && tail->second.disk.lock().get() != request->disk.get()) {
-                cache.erase(tail);
-                tail = cache.end();
-            }
-            std::memcpy(bytes + aligned_size - block_size, tail->second.bytes.data(), block_size);
-        }
-    }
-    std::memcpy(bytes + offset_in_block, request->data, request->size);
-
-    if (offset_in_block == 0 || head != cache.end()) {
-        submit_buffer(index, request, std::move(buffer), aligned_offset, aligned_size, block_size);
-        return;
-    }
-
-    CRB_LOG_WARN("unaligned disk write cache miss; recovering block: disk_high={} disk_low={} offset={} block_size={}",
-                 request->disk->id().high, request->disk->id().low, request->phys_offset, block_size);
-    request->disk->engine()->submit_read(
-        request->disk.get(), aligned_offset, bytes, block_size, static_cast<uint64_t>(aligned_offset),
-        [this, index, request, buffer = std::move(buffer), aligned_offset, aligned_size, block_size](int result) {
-            if (result != static_cast<int>(block_size)) {
-                finish(index, request, result < 0 ? result : -EIO);
-                return;
-            }
-            std::memcpy(buffer.get() + (request->phys_offset - aligned_offset), request->data, request->size);
-            submit_buffer(index, request, buffer, aligned_offset, aligned_size, block_size);
-        });
-}
-
-void AlignedWriter::submit_buffer(size_t index, Request *request, std::shared_ptr<uint8_t> buffer, off_t aligned_offset,
-                                  size_t aligned_size, size_t block_size)
-{
-    uint8_t *bytes = buffer.get();
-    request->disk->engine()->submit_write(
-        request->disk.get(), aligned_offset, bytes, aligned_size,
-        [this, index, request, buffer = std::move(buffer), aligned_offset, aligned_size, block_size](int result) {
-            auto &shard = *shards_[index];
-            if (result == static_cast<int>(aligned_size)) {
-                update_cache(shard, *request, buffer.get(), aligned_offset, aligned_size, block_size);
-                finish(index, request, static_cast<int>(request->size));
-                return;
-            }
-            invalidate_cache(shard, *request, aligned_offset, aligned_size, block_size);
-            finish(index, request, result < 0 ? result : -EIO);
-        });
+    merge_boundaries(
+        index, request,
+        MergeBuffer{
+            .bytes = std::move(buffer), .offset = aligned_offset, .size = aligned_size, .block_size = block_size},
+        0);
 }
 
 void AlignedWriter::update_cache(Shard &shard, const Request &request, const uint8_t *buffer, off_t aligned_offset,
@@ -275,17 +220,17 @@ void AlignedWriter::update_cache(Shard &shard, const Request &request, const uin
         shard.partial_blocks.erase(shard.partial_blocks.begin());
     }
     uint64_t tail_offset = static_cast<uint64_t>(aligned_offset) + aligned_size - block_size;
-    shard.partial_blocks[CacheKey{request.disk->id(), tail_offset}] =
-        CachedBlock{request.disk, std::vector<uint8_t>(buffer + aligned_size - block_size, buffer + aligned_size)};
+    shard.partial_blocks[CacheKey{.disk_id = request.disk->id(), .block_offset = tail_offset}] = CachedBlock{
+        .disk = request.disk, .bytes = std::vector<uint8_t>(buffer + aligned_size - block_size, buffer + aligned_size)};
 }
 
 void AlignedWriter::invalidate_cache(Shard &shard, const Request &request, off_t aligned_offset, size_t aligned_size,
                                      size_t block_size)
 {
-    uint64_t block_offset = static_cast<uint64_t>(aligned_offset);
+    auto     block_offset = static_cast<uint64_t>(aligned_offset);
     uint64_t end          = block_offset + aligned_size;
     while (block_offset < end) {
-        shard.partial_blocks.erase(CacheKey{request.disk->id(), block_offset});
+        shard.partial_blocks.erase(CacheKey{.disk_id = request.disk->id(), .block_offset = block_offset});
         block_offset += block_size;
     }
 }

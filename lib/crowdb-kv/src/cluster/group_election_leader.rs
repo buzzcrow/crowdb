@@ -35,7 +35,7 @@ fn spawn_cancel_bridge(parent: CancellationToken, child: CancellationToken) {
     );
 }
 
-use crate::cluster::group::{PendingReadBarrier, PxGroup, RemoteReplicaKind};
+use crate::cluster::group::{PendingReadBarrier, PxGroup, RemoteReplicaKind, RepairOutcome};
 use crate::cluster::group_election::{
     HeartbeatOutcome, LeaderElection, PendingLeaderHandoff, ReadBarrierOutcome, StepDownReason,
 };
@@ -341,6 +341,61 @@ impl PxGroup {
         outcome
     }
 
+    fn start_leader_recovery(
+        self: &Arc<Self>,
+        cfg: &PxElectionConfig,
+        tenure_cancel: &CancellationToken,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        if let Some(handoff) = self.pending_leader_handoff.lock().take() {
+            let group_for_task = self.clone();
+            let cfg_for_task = *cfg;
+            let cancel_for_task = tenure_cancel.clone();
+            Some(tokio::spawn(
+                async move {
+                    group_for_task
+                        .run_bulk_phase1(
+                            handoff.term,
+                            handoff.peer_floor,
+                            handoff.peer_ceiling,
+                            cfg_for_task,
+                            cancel_for_task,
+                        )
+                        .await;
+                }
+                .instrument(tracing::Span::current()),
+            ))
+        } else {
+            self.leader_read_ready.store(true, Ordering::Release);
+            None
+        }
+    }
+
+    fn start_gap_repair(self: &Arc<Self>, cancel: &CancellationToken) -> Option<tokio::task::JoinHandle<()>> {
+        if self.local_replica().contiguous_chosen() >= self.local_replica().last_chosen_slot() {
+            return None;
+        }
+        let group = Arc::clone(self);
+        let cancel = cancel.clone();
+        let ceiling = self.local_replica().last_chosen_slot();
+        Some(tokio::spawn(async move {
+            // Drain the observed backlog in one independent pass. Tying each
+            // hole to a heartbeat tick makes a brief outage stall apply fences
+            // for heartbeat_interval * abandoned_slots after quorum returns.
+            while group.local_replica().contiguous_chosen() < ceiling {
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => return,
+                    outcome = group.repair_once() => {
+                        if !matches!(outcome, RepairOutcome::Filled { .. }) {
+                            return;
+                        }
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        }))
+    }
+
     /// Leader-state inner loop: tick heartbeats + lease bookkeeping
     /// until step-down (higher term, lease unrenewable, admin) or
     /// driver cancel.
@@ -398,27 +453,7 @@ impl PxGroup {
 
         // Consume the handoff stashed by finalize_leader and spawn bulk
         // Phase 1 on the per-tenure cancel token.
-        if let Some(handoff) = self.pending_leader_handoff.lock().take() {
-            let group_for_task = self.clone();
-            let cfg_for_task = *cfg;
-            let cancel_for_task = tenure_cancel.clone();
-            tokio::spawn(
-                async move {
-                    group_for_task
-                        .run_bulk_phase1(
-                            handoff.term,
-                            handoff.peer_floor,
-                            handoff.peer_ceiling,
-                            cfg_for_task,
-                            cancel_for_task,
-                        )
-                        .await;
-                }
-                .instrument(tracing::Span::current()),
-            );
-        } else {
-            self.leader_read_ready.store(true, Ordering::Release);
-        }
+        let recovery_task = self.start_leader_recovery(cfg, &tenure_cancel);
 
         // Establish the first quorum heartbeat before waiting on the ticker.
         // This makes lease readiness deterministic when the election driver
@@ -433,6 +468,7 @@ impl PxGroup {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // First tick fires immediately; consume it so the loop starts clean.
         ticker.tick().await;
+        let mut gap_repair: Option<tokio::task::JoinHandle<()>> = None;
 
         info!(
             group_id,
@@ -455,6 +491,17 @@ impl PxGroup {
             }
             if cancel.is_cancelled() {
                 tenure_cancel.cancel();
+                return;
+            }
+            // A failed recovery or an uncertain conditional proposal closes
+            // reads for the entire tenure. Heartbeats alone cannot resolve
+            // that uncertainty; a new election must recover the accepted log.
+            if recovery_task
+                .as_ref()
+                .map_or(true, tokio::task::JoinHandle::is_finished)
+                && !self.leader_read_ready()
+            {
+                self.step_down(&tenure_cancel, leader_term, StepDownReason::RecoveryIncomplete);
                 return;
             }
             tokio::select! {
@@ -482,12 +529,11 @@ impl PxGroup {
                                 self.step_down(&tenure_cancel, leader_term, StepDownReason::LeaseUnrenewable);
                                 return;
                             }
-                            // Opportunistic background repair: close the lowest
-                            // gap in the open prefix so the contiguous frontier
-                            // (and group safe-slot) can advance past abandoned
-                            // slots. A no-gap leader returns immediately without
-                            // any RPCs, so steady state pays nothing.
-                            let _ = self.repair_once().await;
+                            // Keep at most one repair in flight. Prepare or
+                            // persistence IO must not occupy the heartbeat loop.
+                            if gap_repair.as_ref().map_or(true, tokio::task::JoinHandle::is_finished) {
+                                gap_repair = self.start_gap_repair(&tenure_cancel);
+                            }
                         }
                         HeartbeatOutcome::SteppedDown { peer_term } => {
                             self.step_down(&tenure_cancel, leader_term, StepDownReason::HigherTerm(peer_term));

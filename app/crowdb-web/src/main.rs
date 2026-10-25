@@ -159,6 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let _node_observer = crowdb_web::start_node_observer(&state)?;
     let auto_join = crowdb_web::start_node_auto_join(state.clone());
     if args.test_mode {
         let cleanup_state = state.clone();

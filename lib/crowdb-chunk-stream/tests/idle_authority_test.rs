@@ -4,8 +4,8 @@
 use bytes::Bytes;
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamError,
-    StreamMetadataStore, StreamName, StreamPurpose,
+    ChunkStream, StreamChunkStore, StreamConfig, StreamError, StreamName, StreamPurpose, StreamRecord,
+    StreamRecordState,
 };
 use std::{sync::Arc, time::Duration};
 
@@ -27,13 +27,15 @@ async fn assert_retired_idle_writer(new_epoch: u64) {
         ..StreamConfig::default()
     };
     let old = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: StreamPurpose::Stream,
             stream_name: name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("idle-authority".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("idle-authority".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
         config.clone(),
@@ -58,7 +60,11 @@ async fn assert_retired_idle_writer(new_epoch: u64) {
     )
     .await
     .unwrap();
-    let head = store.load_current(name).await.unwrap();
+    let head = store
+        .load_tail_for_tests(name)
+        .await
+        .unwrap()
+        .map(|snapshot| snapshot.record().clone());
     let publications = store.metadata_publish_count();
     for _ in 0..3 {
         tokio::time::advance(Duration::from_secs(10)).await;
@@ -70,10 +76,17 @@ async fn assert_retired_idle_writer(new_epoch: u64) {
         "old writer must stop before renewing its chunk"
     );
     assert_eq!(store.metadata_publish_count(), publications);
-    assert_eq!(store.load_current(name).await.unwrap(), head);
+    assert_eq!(
+        store
+            .load_tail_for_tests(name)
+            .await
+            .unwrap()
+            .map(|snapshot| snapshot.record().clone()),
+        head
+    );
     assert_eq!(
         old.append(&[Bytes::from_static(b"stale")]).await,
-        Err(StreamError::WriteStalled)
+        Err(StreamError::StaleWriter)
     );
     new.append(&[Bytes::from_static(b"new")]).await.unwrap();
     assert_eq!(new.read_at(0, 6).await.unwrap(), Bytes::from_static(b"oldnew"));
@@ -88,13 +101,15 @@ async fn current_idle_writer_can_rotate_its_own_sealed_chunk() {
         ..StreamConfig::default()
     };
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: StreamPurpose::Stream,
             stream_name: name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: None,
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: None,
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
         config,
@@ -105,8 +120,8 @@ async fn current_idle_writer_can_rotate_its_own_sealed_chunk() {
     .await
     .unwrap();
     stream.append(&[Bytes::from_static(b"old")]).await.unwrap();
-    let head = store.load_current(name).await.unwrap().unwrap();
-    let active = head.active.unwrap();
+    stream.checkpoint().await.unwrap();
+    let active = store.active_checkpoint_for_tests(name).await.unwrap();
     store
         .seal(active.chunk_id, 9, active.acknowledged_cursor)
         .await

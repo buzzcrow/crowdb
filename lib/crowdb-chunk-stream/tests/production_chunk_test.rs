@@ -10,8 +10,8 @@ use bytes::Bytes;
 use crowdb_chunk_client::{ChunkAllocator, ChunkIoClient, ChunkReadPolicy, DiskWriter, IoError};
 use crowdb_chunk_stream::{
     memory::MemoryStreamStore, ChunkStream, CursorAdvance, MirrorStripImage, ProductionStreamChunkStore,
-    ProductionStreamRuntime, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig,
-    StreamMetadataStore, StreamName, StreamRegistry,
+    ProductionStreamRuntime, StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName, StreamRecord,
+    StreamRecordState, StreamRegistry,
 };
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
 use crowdb_protocol::chunkdb::rpc::{
@@ -20,29 +20,92 @@ use crowdb_protocol::chunkdb::rpc::{
     AppendChunkResponse, Chunk, ChunkState, ChunkStrip, DeleteChunkRequest, DeleteChunkResponse,
     DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse, MirrorStrip, QueryChunkRequest,
     QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, SealChunkRequest,
-    SealChunkResponse, Strip, StripType, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    SealChunkResponse, Strip, StripType,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
 
+#[path = "production_chunk_test/recovery.rs"]
+mod recovery;
+
+#[path = "production_chunk_test/local_progress.rs"]
+mod local_progress;
+
+#[path = "production_chunk_test/growth.rs"]
+mod growth;
+
+#[path = "production_chunk_test/preparation.rs"]
+mod preparation;
+
+#[path = "production_chunk_test/scope.rs"]
+mod scope;
+
+#[path = "production_chunk_test/unwritten.rs"]
+mod unwritten;
+
+#[path = "production_chunk_test/duplicate.rs"]
+mod duplicate;
+
+#[path = "production_chunk_test/owner_capture.rs"]
+mod owner_capture;
+
+#[path = "common/grouped_write.rs"]
+mod grouped_write;
+use grouped_write::TestGroupedStrip;
+
+#[path = "production_chunk_test/allocated.rs"]
+mod allocated;
+
+#[path = "production_chunk_test/sealing.rs"]
+mod sealing;
+
+#[path = "production_chunk_test/colocated.rs"]
+mod colocated;
+
 struct Allocator {
     chunk: Mutex<Option<Chunk>>,
+    successors: Mutex<HashMap<ChunkId, Chunk>>,
+    next_chunk: AtomicU64,
+    stale_query_once: Mutex<Option<Chunk>>,
     fail_advance_after_commit: AtomicBool,
     fail_replacement_response_once: AtomicBool,
     fail_query_once: AtomicBool,
     replacement_calls: AtomicUsize,
     replacements: AtomicUsize,
+    allocation_copy_limit: AtomicUsize,
+    colocated_offset: AtomicU64,
+    pause_growth: AtomicBool,
+    growth_started: tokio::sync::Notify,
+    growth_resume: tokio::sync::Notify,
+    conflict_advance_once: AtomicBool,
+    advance_calls: AtomicUsize,
+    fail_growth_once: AtomicBool,
+    advance_during_growth: AtomicU64,
+    conflict_replacement_once: AtomicBool,
 }
 
 impl Allocator {
     fn new() -> Self {
         Self {
             chunk: Mutex::new(None),
+            successors: Mutex::new(HashMap::new()),
+            next_chunk: AtomicU64::new(8),
+            stale_query_once: Mutex::new(None),
             fail_advance_after_commit: AtomicBool::new(false),
             fail_replacement_response_once: AtomicBool::new(false),
             fail_query_once: AtomicBool::new(false),
             replacement_calls: AtomicUsize::new(0),
             replacements: AtomicUsize::new(0),
+            allocation_copy_limit: AtomicUsize::new(0),
+            colocated_offset: AtomicU64::new(u64::MAX),
+            pause_growth: AtomicBool::new(false),
+            growth_started: tokio::sync::Notify::new(),
+            growth_resume: tokio::sync::Notify::new(),
+            conflict_advance_once: AtomicBool::new(false),
+            advance_calls: AtomicUsize::new(0),
+            fail_growth_once: AtomicBool::new(false),
+            advance_during_growth: AtomicU64::new(0),
+            conflict_replacement_once: AtomicBool::new(false),
         }
     }
 }
@@ -90,16 +153,32 @@ impl ChunkAllocator for Allocator {
     ) -> crowdb_chunk_client::Result<AllocateChunkResponse> {
         let chunk_id = ChunkId {
             high: u64::try_from(request.chunk_type).unwrap() << 56,
-            low: 8,
+            low: self.next_chunk.fetch_add(1, Ordering::AcqRel),
         };
-        let segments = (1..=request.copy_count)
+        let limit = self.allocation_copy_limit.load(Ordering::Acquire);
+        let copies = if limit == 0 {
+            request.copy_count
+        } else {
+            request.copy_count.min(u32::try_from(limit).unwrap())
+        };
+        let colocated_offset = self.colocated_offset.load(Ordering::Acquire);
+        let segments = (1..=copies)
             .map(|disk| Segment {
                 disk_id: Some(DiskId {
-                    high: u64::from(disk),
+                    high: (chunk_id.low - 8) * 1000
+                        + if colocated_offset == u64::MAX {
+                            u64::from(disk)
+                        } else {
+                            1
+                        },
                     low: 0,
                 }),
                 owner_chunk: Some(chunk_id),
-                unit_offset: 0,
+                unit_offset: if colocated_offset == u64::MAX {
+                    0
+                } else {
+                    u64::from(disk - 1) * colocated_offset
+                },
                 zone_index: 0,
                 unit_count: request.write_granularity / 4,
                 allocation_ts: 1,
@@ -126,7 +205,12 @@ impl ChunkAllocator for Allocator {
             owner_key: request.owner_key,
             ..Chunk::default()
         };
-        *self.chunk.lock().unwrap() = Some(chunk.clone());
+        let mut primary = self.chunk.lock().unwrap();
+        if primary.is_none() {
+            *primary = Some(chunk.clone());
+        } else {
+            self.successors.lock().unwrap().insert(chunk_id, chunk.clone());
+        }
         Ok(AllocateChunkResponse { chunk: Some(chunk) })
     }
 
@@ -134,8 +218,19 @@ impl ChunkAllocator for Allocator {
         &self,
         request: AppendChunkRequest,
     ) -> crowdb_chunk_client::Result<AppendChunkResponse> {
-        let mut guard = self.chunk.lock().unwrap();
-        let chunk = guard.as_mut().unwrap();
+        if request.chunk_id.is_some_and(|id| id.low == 8) && self.pause_growth.swap(false, Ordering::AcqRel) {
+            self.growth_started.notify_one();
+            self.growth_resume.notified().await;
+        }
+        if request.chunk_id.is_some_and(|id| id.low == 8)
+            && self.fail_growth_once.swap(false, Ordering::AcqRel)
+        {
+            return Err(IoError::AllocationFailed(
+                "injected allocation unavailability".into(),
+            ));
+        }
+        let mut guard = self.chunk_for(request.chunk_id);
+        let chunk = &mut *guard;
         if chunk.id != request.chunk_id || chunk.modify_ts != request.modify_ts {
             return Ok(AppendChunkResponse {
                 modify_ts: chunk.modify_ts,
@@ -143,40 +238,53 @@ impl ChunkAllocator for Allocator {
                 chunk: Some(chunk.clone()),
             });
         }
-        let first = chunk.strips.first().unwrap();
-        let capacity = request.strip_size * first.unit_kb;
-        let offset = chunk.capacity;
-        let sequence = chunk.next_strip_sequence;
-        let chunk_id = chunk.id.unwrap();
-        let segments = (1..=request.copy_count)
-            .map(|disk| Segment {
-                disk_id: Some(DiskId {
-                    high: u64::from(sequence) * 10 + u64::from(disk),
-                    low: 0,
-                }),
-                owner_chunk: Some(chunk_id),
-                unit_offset: 0,
-                zone_index: 0,
-                unit_count: request.strip_size,
-                allocation_ts: 1,
-            })
-            .collect();
-        let strip = ChunkStrip {
-            chunk_offset: offset,
-            strip_sequence: sequence,
-            unit_kb: first.unit_kb,
-            capacity,
-            strip_type: StripType::Mirror as i32,
-            strip: Some(Strip::MirrorStrip(MirrorStrip { segments })),
-            ..ChunkStrip::default()
+        let unit_kb = chunk.strips.first().unwrap().unit_kb;
+        let concurrent_cursor = if chunk.id.is_some_and(|id| id.low == 8) {
+            self.advance_during_growth.swap(0, Ordering::AcqRel)
+        } else {
+            0
         };
-        chunk.strips.push(strip.clone());
-        chunk.capacity += capacity;
-        chunk.next_strip_sequence += 1;
+        if concurrent_cursor != 0 {
+            chunk.acknowledged_cursor = concurrent_cursor;
+            chunk.modify_ts += 1;
+        }
+        let capacity = request.strip_size * unit_kb;
+        let chunk_id = chunk.id.unwrap();
+        let mut added = Vec::new();
+        for _ in 0..request.strip_count {
+            let offset = chunk.capacity;
+            let sequence = chunk.next_strip_sequence;
+            let segments = (1..=request.copy_count)
+                .map(|disk| Segment {
+                    disk_id: Some(DiskId {
+                        high: (chunk_id.low - 8) * 1000 + u64::from(sequence) * 10 + u64::from(disk),
+                        low: 0,
+                    }),
+                    owner_chunk: Some(chunk_id),
+                    unit_offset: 0,
+                    zone_index: 0,
+                    unit_count: request.strip_size,
+                    allocation_ts: 1,
+                })
+                .collect();
+            let strip = ChunkStrip {
+                chunk_offset: offset,
+                strip_sequence: sequence,
+                unit_kb,
+                capacity,
+                strip_type: StripType::Mirror as i32,
+                strip: Some(Strip::MirrorStrip(MirrorStrip { segments })),
+                ..ChunkStrip::default()
+            };
+            chunk.strips.push(strip.clone());
+            added.push(strip);
+            chunk.capacity += capacity;
+            chunk.next_strip_sequence += 1;
+        }
         chunk.modify_ts += 1;
         Ok(AppendChunkResponse {
             modify_ts: chunk.modify_ts,
-            strips: vec![strip],
+            strips: added,
             chunk: None,
         })
     }
@@ -185,8 +293,12 @@ impl ChunkAllocator for Allocator {
         &self,
         request: AdvanceChunkWriteRequest,
     ) -> crowdb_chunk_client::Result<AdvanceChunkWriteResponse> {
-        let mut guard = self.chunk.lock().unwrap();
-        let chunk = guard.as_mut().unwrap();
+        self.advance_calls.fetch_add(1, Ordering::AcqRel);
+        let mut guard = self.chunk_for(request.chunk_id);
+        let chunk = &mut *guard;
+        if self.conflict_advance_once.swap(false, Ordering::AcqRel) {
+            chunk.modify_ts += 1;
+        }
         if chunk.id != request.chunk_id
             || chunk.writer_epoch != request.writer_epoch
             || chunk.modify_ts != request.expected_modify_ts
@@ -204,11 +316,13 @@ impl ChunkAllocator for Allocator {
     }
 
     async fn seal_chunk(&self, request: SealChunkRequest) -> crowdb_chunk_client::Result<SealChunkResponse> {
-        let mut guard = self.chunk.lock().unwrap();
-        let chunk = guard.as_mut().unwrap();
+        let mut guard = self.chunk_for(request.chunk_id);
+        let chunk = &mut *guard;
         assert_eq!(chunk.id, request.chunk_id);
         chunk.state = ChunkState::Sealed as i32;
-        chunk.sealed_length = request.seal_length;
+        chunk.sealed_length = u32::try_from(request.seal_bytes.div_ceil(1024)).unwrap();
+        chunk.acknowledged_cursor = request.seal_bytes;
+        chunk.modify_ts += 1;
         Ok(SealChunkResponse {
             chunk: Some(chunk.clone()),
         })
@@ -218,20 +332,13 @@ impl ChunkAllocator for Allocator {
         &self,
         request: DeleteChunkRequest,
     ) -> crowdb_chunk_client::Result<DeleteChunkResponse> {
-        let mut guard = self.chunk.lock().unwrap();
-        let chunk = guard.as_mut().unwrap();
+        let mut guard = self.chunk_for(request.chunk_id);
+        let chunk = &mut *guard;
         assert_eq!(chunk.id, request.chunk_id);
         chunk.state = ChunkState::Deleted as i32;
         Ok(DeleteChunkResponse {
             chunk: Some(chunk.clone()),
         })
-    }
-
-    async fn update_chunk_strip(
-        &self,
-        _request: UpdateChunkStripRequest,
-    ) -> crowdb_chunk_client::Result<UpdateChunkStripResponse> {
-        unreachable!()
     }
 
     async fn query_chunk(
@@ -241,7 +348,18 @@ impl ChunkAllocator for Allocator {
         if self.fail_query_once.swap(false, Ordering::AcqRel) {
             return Err(IoError::AllocationFailed("injected query outage".into()));
         }
-        let chunk = self.chunk.lock().unwrap().clone();
+        let chunk = self.stale_query_once.lock().unwrap().take().or_else(|| {
+            let primary = self.chunk.lock().unwrap();
+            if primary.as_ref().and_then(|chunk| chunk.id) == request.chunk_id {
+                primary.clone()
+            } else {
+                self.successors
+                    .lock()
+                    .unwrap()
+                    .get(&request.chunk_id.unwrap())
+                    .cloned()
+            }
+        });
         if chunk.as_ref().and_then(|chunk| chunk.id) != request.chunk_id {
             return Err(IoError::ChunkNotFound("missing test chunk".into()));
         }
@@ -274,9 +392,12 @@ impl ChunkAllocator for Allocator {
         request: ReplaceChunkStripRangeRequest,
     ) -> crowdb_chunk_client::Result<ReplaceChunkStripRangeResponse> {
         self.replacement_calls.fetch_add(1, Ordering::AcqRel);
-        let mut guard = self.chunk.lock().unwrap();
-        let chunk = guard.as_mut().unwrap();
+        let mut guard = self.chunk_for(request.chunk_id);
+        let chunk = &mut *guard;
         let index = request.start_index as usize;
+        if self.conflict_replacement_once.swap(false, Ordering::AcqRel) {
+            chunk.modify_ts += 1;
+        }
         if chunk.modify_ts != request.expected_modify_ts
             || chunk.strips.get(index) != request.old_strips.first()
         {
@@ -306,9 +427,17 @@ impl ChunkAllocator for Allocator {
 #[derive(Default)]
 struct Disks {
     bytes: Mutex<HashMap<u64, Vec<u8>>>,
+    writes: Mutex<Vec<(Segment, u64, u64, Bytes)>>,
     fsyncs: AtomicUsize,
     fail_disk_once: AtomicU64,
     fail_fsync_once: AtomicU64,
+    pause_initialization: AtomicBool,
+    initialization_started: tokio::sync::Notify,
+    initialization_resume: tokio::sync::Notify,
+    drain_delay_ms: AtomicU64,
+    active_drains: AtomicUsize,
+    max_active_drains: AtomicUsize,
+    completed_drains: AtomicUsize,
 }
 
 #[test]
@@ -335,6 +464,43 @@ fn production_runtime_shares_connected_chunk_io_parts() {
 
 #[async_trait]
 impl DiskWriter for Disks {
+    async fn drain_segment(
+        &self,
+        segment: &Segment,
+        _unit_bytes: u64,
+        _deadline: std::time::Instant,
+    ) -> crowdb_chunk_client::Result<()> {
+        let active = self.active_drains.fetch_add(1, Ordering::AcqRel) + 1;
+        self.max_active_drains.fetch_max(active, Ordering::AcqRel);
+        let delay = self.drain_delay_ms.load(Ordering::Acquire);
+        if delay != 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
+        let result = self.fsync(segment).await;
+        self.active_drains.fetch_sub(1, Ordering::AcqRel);
+        self.completed_drains.fetch_add(1, Ordering::AcqRel);
+        result
+    }
+    async fn initialize_synchronized_at_byte_offset(
+        &self,
+        segment: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        data: Bytes,
+    ) -> crowdb_chunk_client::Result<()> {
+        if segment
+            .disk_id
+            .is_some_and(|disk| disk.high > 2 && disk.high < 1000)
+            && self.pause_initialization.swap(false, Ordering::AcqRel)
+        {
+            self.initialization_started.notify_one();
+            self.initialization_resume.notified().await;
+        }
+        self.write_at_byte_offset(segment, unit_bytes, offset, data)
+            .await?;
+        self.fsync(segment).await
+    }
+
     async fn write(
         &self,
         _segment: &Segment,
@@ -347,7 +513,7 @@ impl DiskWriter for Disks {
     async fn write_at_byte_offset(
         &self,
         segment: &Segment,
-        _unit_bytes: u64,
+        unit_bytes: u64,
         offset: u64,
         data: Bytes,
     ) -> crowdb_chunk_client::Result<()> {
@@ -359,6 +525,10 @@ impl DiskWriter for Disks {
         {
             return Err(IoError::WriteFailed("injected mirror write failure".into()));
         }
+        self.writes
+            .lock()
+            .unwrap()
+            .push((*segment, unit_bytes, offset, data.clone()));
         let mut disks = self.bytes.lock().unwrap();
         let bytes = disks.entry(disk).or_default();
         let start = usize::try_from(offset).unwrap();
@@ -412,42 +582,45 @@ async fn production_store_writes_reads_advances_and_releases_one_mirror_chunk() 
         .allocate_mirrored(name, 9, crowdb_protocol::chunk_stream::StreamPurpose::Stream)
         .await
         .unwrap();
-    let data = Bytes::from_static(b"stream");
-    store
-        .write_mirrors_with_images(
-            name,
-            9,
-            active.chunk_id,
-            0,
-            data.clone(),
-            &[MirrorStripImage {
-                block_offset: 0,
-                data: data.clone(),
-                full_image: data,
-            }],
-        )
-        .await
-        .unwrap();
-    assert_eq!(disks.fsyncs.load(Ordering::Relaxed), 2);
+    let mut strip = TestGroupedStrip::default();
+    let end = strip.append(&store, name, 9, active.chunk_id, b"stream").await;
+    assert_eq!(disks.fsyncs.load(Ordering::Relaxed), 4);
     assert_eq!(
         store
-            .advance_cursor(name, 9, active.chunk_id, 0, 6, 17)
+            .advance_cursor(name, 9, active.chunk_id, 0, end, 17)
             .await
             .unwrap(),
         CursorAdvance::Committed
     );
     assert_eq!(
-        store.read(active.chunk_id, 0, 6).await.unwrap(),
+        store
+            .read(
+                active.chunk_id,
+                crowdb_protocol::frame::FRAME_GROUP_HEADER_BYTES as u64,
+                6
+            )
+            .await
+            .unwrap(),
         Bytes::from_static(b"stream")
     );
-    store.seal(active.chunk_id, 9, 6).await.unwrap();
+    assert!(store.release_trimmed(active.chunk_id, 6, end).await.is_err());
+    store.seal(active.chunk_id, 9, end).await.unwrap();
+    assert!(store.release_trimmed(active.chunk_id, 6, end - 1).await.is_err());
     assert_eq!(
         store
-            .release_trimmed(active.chunk_id, 6)
+            .release_trimmed(active.chunk_id, 6, end)
             .await
             .unwrap()
             .reclaimed_bytes,
-        6
+        end
+    );
+    assert_eq!(
+        store
+            .release_trimmed(active.chunk_id, 6, end)
+            .await
+            .unwrap()
+            .reclaimed_bytes,
+        0
     );
 }
 
@@ -468,52 +641,51 @@ async fn production_store_grows_and_writes_across_mirror_strips() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(grown.capacity, 2 * 1024 * 1024);
-    let offset = active.capacity - 2;
-    assert_eq!(
-        store
-            .advance_cursor(name, 9, active.chunk_id, 0, offset, 0)
-            .await
-            .unwrap(),
-        CursorAdvance::Committed
+    assert_eq!(grown.capacity, 8 * 1024 * 1024);
+    let payload = Bytes::from(vec![0x5a; 1024 * 1024 + 5]);
+    let data = Bytes::from(
+        crowdb_protocol::frame::encode_append_group_views(active.chunk_id, 0, &payload, 1)
+            .unwrap()
+            .concat(),
     );
-    let data = Bytes::from_static(b"split");
-    let first = data.slice(..2);
-    let second = data.slice(2..);
-    let mut prefix = vec![0; usize::try_from(offset).unwrap()];
-    prefix.extend_from_slice(&first);
+    let complete_end = data.len() as u64;
+    let boundary = usize::try_from(active.capacity).unwrap();
+    let images: Vec<_> = (0..data.len())
+        .step_by(boundary)
+        .map(|start| {
+            let part = data.slice(start..(start + boundary).min(data.len()));
+            MirrorStripImage {
+                block_offset: 0,
+                data: part.clone(),
+                full_image: part,
+            }
+        })
+        .collect();
     store
-        .write_mirrors_with_images(
+        .write_mirrors(
             name,
             9,
             active.chunk_id,
-            offset,
-            data,
-            &[
-                MirrorStripImage {
-                    block_offset: offset,
-                    data: first,
-                    full_image: Bytes::from(prefix),
-                },
-                MirrorStripImage {
-                    block_offset: 0,
-                    data: second.clone(),
-                    full_image: second,
-                },
-            ],
+            crowdb_chunk_stream::StreamMirrorWrite {
+                authority: None,
+                physical_offset: 0,
+                complete_end,
+                images: &images,
+            },
         )
         .await
         .unwrap();
+    let end = complete_end;
     assert_eq!(
         store
-            .advance_cursor(name, 9, active.chunk_id, offset, offset + 5, 0)
+            .advance_cursor(name, 9, active.chunk_id, 0, end, 0)
             .await
             .unwrap(),
         CursorAdvance::Committed
     );
     assert_eq!(
-        store.read(active.chunk_id, offset, 5).await.unwrap(),
-        Bytes::from_static(b"split")
+        store.read(active.chunk_id, active.capacity - 2, 5).await.unwrap(),
+        data.slice(boundary - 2..boundary + 3)
     );
 }
 
@@ -555,22 +727,25 @@ async fn configured_stream_chunk_capacity_limits_growth_without_changing_strip_s
 #[tokio::test]
 async fn chunk_stream_runs_end_to_end_over_the_production_chunk_adapter() {
     let allocator: Arc<dyn ChunkAllocator> = Arc::new(Allocator::new());
-    let disks: Arc<dyn DiskWriter> = Arc::new(Disks::default());
+    let disks = Arc::new(Disks::default());
     let chunks: Arc<dyn StreamChunkStore> = Arc::new(
-        ProductionStreamChunkStore::new(allocator, disks, 30_000, ChunkReadPolicy::default()).unwrap(),
+        ProductionStreamChunkStore::new(allocator, disks.clone(), 30_000, ChunkReadPolicy::default())
+            .unwrap(),
     );
     let metadata = Arc::new(MemoryStreamStore::new(1));
     let registry: Arc<dyn StreamRegistry> = metadata.clone();
     let metadata_store: Arc<dyn StreamMetadataStore> = metadata;
     let stream_name = StreamName { high: 40, low: 41 };
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("test".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("test".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
         StreamConfig::default(),
@@ -587,6 +762,12 @@ async fn chunk_stream_runs_end_to_end_over_the_production_chunk_adapter() {
     assert_eq!((range.begin, range.end), (0, 5));
     assert_eq!(stream.read_at(0, 5).await.unwrap(), Bytes::from_static(b"frame"));
     assert_eq!(range.chunk_id.unwrap().low, 8);
+    assert_eq!(
+        stream.metrics().physical_append_bytes,
+        2 * (5
+            + (crowdb_protocol::frame::FRAME_GROUP_HEADER_BYTES + crowdb_protocol::frame::FRAME_FOOTER_BYTES)
+                as u64)
+    );
 }
 
 #[tokio::test]
@@ -604,13 +785,15 @@ async fn stream_replaces_failed_mirrors_from_retained_strip_image() {
     );
     let metadata = Arc::new(MemoryStreamStore::new(1));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name: StreamName { high: 50, low: 51 },
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("test".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("test".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
         StreamConfig::default(),
@@ -667,13 +850,15 @@ async fn stream_repair_preserves_a_batch_crossing_mirror_strips() {
     );
     let metadata = Arc::new(MemoryStreamStore::new(1));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name: StreamName { high: 52, low: 53 },
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("test".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("test".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
         StreamConfig::default(),
@@ -683,7 +868,10 @@ async fn stream_repair_preserves_a_batch_crossing_mirror_strips() {
     )
     .await
     .unwrap();
-    let prefix = Bytes::from(vec![b'a'; 1024 * 1024 - 60]);
+    let prefix = Bytes::from(vec![
+        b'a';
+        16 * crowdb_protocol::frame::MAX_FRAME_GROUP_PAYLOAD_BYTES - 7
+    ]);
     stream.append(std::slice::from_ref(&prefix)).await.unwrap();
     disks.fail_disk_once.store(11, Ordering::Release);
     let suffix = Bytes::from_static(b"crossing-the-boundary");
@@ -694,7 +882,7 @@ async fn stream_repair_preserves_a_batch_crossing_mirror_strips() {
     assert_eq!(&read[prefix.len()..], suffix.as_ref());
     assert_eq!(stream.metrics().rollovers, 0);
     let chunk = allocator.chunk.lock().unwrap().clone().unwrap();
-    assert_eq!(chunk.strips.len(), 2);
+    assert_eq!(chunk.strips.len(), 8);
     let Some(Strip::MirrorStrip(mirror)) = &chunk.strips[1].strip else {
         panic!("expected mirror strip");
     };
@@ -718,29 +906,18 @@ async fn production_store_reconciles_a_post_commit_cursor_timeout() {
         .allocate_mirrored(name, 9, crowdb_protocol::chunk_stream::StreamPurpose::Stream)
         .await
         .unwrap();
-    let data = Bytes::from_static(b"once");
-    store
-        .write_mirrors_with_images(
-            name,
-            9,
-            active.chunk_id,
-            0,
-            data.clone(),
-            &[MirrorStripImage {
-                block_offset: 0,
-                data: data.clone(),
-                full_image: data,
-            }],
-        )
-        .await
-        .unwrap();
+    let mut strip = TestGroupedStrip::default();
+    let end = strip.append(&store, name, 9, active.chunk_id, b"once").await;
     allocator.fail_advance_after_commit.store(true, Ordering::Release);
     assert_eq!(
         store
-            .advance_cursor(name, 9, active.chunk_id, 0, 4, 19)
+            .advance_cursor(name, 9, active.chunk_id, 0, end, 19)
             .await
             .unwrap(),
         CursorAdvance::Committed
     );
-    assert_eq!(store.durable_cursor(active.chunk_id, 9).await.unwrap().offset, 4);
+    assert_eq!(
+        store.durable_cursor(active.chunk_id, 9).await.unwrap().offset,
+        end
+    );
 }

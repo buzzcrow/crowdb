@@ -24,7 +24,7 @@ pub enum RequestKind {
     SealChunk,
     DeleteChunk,
     DeleteChunkRange,
-    UpdateChunkStrip,
+    LayoutMutation,
     ListChunks,
     AdHocEcRecovery,
 }
@@ -40,7 +40,7 @@ impl RequestKind {
         Self::SealChunk,
         Self::DeleteChunk,
         Self::DeleteChunkRange,
-        Self::UpdateChunkStrip,
+        Self::LayoutMutation,
         Self::ListChunks,
         Self::AdHocEcRecovery,
     ];
@@ -56,7 +56,7 @@ impl RequestKind {
             Self::SealChunk => "seal_chunk",
             Self::DeleteChunk => "delete_chunk",
             Self::DeleteChunkRange => "delete_chunk_range",
-            Self::UpdateChunkStrip => "update_chunk_strip",
+            Self::LayoutMutation => "layout_mutation",
             Self::ListChunks => "list_chunks",
             Self::AdHocEcRecovery => "ad_hoc_ec_recovery",
         }

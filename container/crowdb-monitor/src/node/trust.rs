@@ -63,6 +63,26 @@ fn read_keys(path: &Path) -> std::io::Result<String> {
     }
 }
 
+pub(super) fn pinned_host(root: &Path, host: &str, port: u16) -> std::io::Result<String> {
+    let token = if port == 22 {
+        host.to_owned()
+    } else {
+        format!("[{host}]:{port}")
+    };
+    let text = read_keys(&root.join("ssh/known_hosts"))?;
+    let mut pins = text.lines().filter_map(|line| {
+        let (name, key) = line.split_once(' ')?;
+        (name == token).then_some(key)
+    });
+    let key = pins
+        .next()
+        .ok_or_else(|| std::io::Error::other("missing authenticated peer host key"))?;
+    if pins.next().is_some() {
+        return Err(std::io::Error::other("ambiguous authenticated peer host key"));
+    }
+    Ok(key.to_owned())
+}
+
 pub(super) fn authorized_operation(root: &Path, operation: &str) -> std::io::Result<bool> {
     let operation = uuid::Uuid::parse_str(operation).map_err(std::io::Error::other)?;
     if root.join(format!("ssh/cancelled-{operation}.json")).exists() {

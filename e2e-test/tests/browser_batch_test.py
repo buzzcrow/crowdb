@@ -62,3 +62,13 @@ class BrowserBatchTest(unittest.TestCase):
         self.assertEqual([str(error) for error in errors], ['startup rejected'])
         self.assertEqual(self.events, [('start', 0), ('start', 1), ('close', 0)])
         self.assertEqual(self.active, set())
+
+    def test_fail_fast_closes_current_batch_before_skipping_later_fixtures(self):
+        def execute(case, fixture):
+            if case == 0:
+                raise ValueError('browser failed')
+
+        errors = run_browser_batches([0, 1], 1, self.fixture, execute, fail_fast=True)
+        self.assertEqual([str(error) for error in errors], ['browser failed'])
+        self.assertEqual(self.events, [('start', 0), ('close', 0)])
+        self.assertEqual(self.active, set())

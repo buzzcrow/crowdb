@@ -236,9 +236,21 @@ async fn append(
             strip_size: 1,
             strip_count: 1,
             strip_type: strip_type as i32,
-            data_num: args.data_num,
-            code_num: args.code_num,
-            copy_count: args.copy_count,
+            data_num: if matches!(args.strip_type, ChunkdbStripMode::Ec) {
+                args.data_num
+            } else {
+                0
+            },
+            code_num: if matches!(args.strip_type, ChunkdbStripMode::Ec) {
+                args.code_num
+            } else {
+                0
+            },
+            copy_count: if matches!(args.strip_type, ChunkdbStripMode::Mirror) {
+                args.copy_count
+            } else {
+                0
+            },
         })
         .await
         .map(|_| ())
@@ -256,9 +268,21 @@ async fn allocate(client: &ChunkdbClient, args: &ChunkdbArgs) -> crowdb_chunkdb_
             write_granularity: args.write_granularity_kb,
             strip_count: args.strip_count,
             strip_type: strip_type as i32,
-            data_num: args.data_num,
-            code_num: args.code_num,
-            copy_count: args.copy_count,
+            data_num: if matches!(args.strip_type, ChunkdbStripMode::Ec) {
+                args.data_num
+            } else {
+                0
+            },
+            code_num: if matches!(args.strip_type, ChunkdbStripMode::Ec) {
+                args.code_num
+            } else {
+                0
+            },
+            copy_count: if matches!(args.strip_type, ChunkdbStripMode::Mirror) {
+                args.copy_count
+            } else {
+                0
+            },
             chunk_type: ChunkType::S3 as i32,
             writer_epoch: 0,
             writer_lease_ms: 0,
@@ -307,7 +331,6 @@ async fn seal(client: &ChunkdbClient, id: ChunkId) -> crowdb_chunkdb_client::Res
     client
         .seal_chunk(SealChunkRequest {
             chunk_id: Some(id),
-            seal_length: 0,
             seal_bytes: 0,
         })
         .await

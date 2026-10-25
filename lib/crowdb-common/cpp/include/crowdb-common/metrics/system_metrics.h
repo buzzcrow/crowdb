@@ -13,10 +13,25 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <optional>
+#include <vector>
 
 namespace crowdb::common::metrics
 {
+
+namespace detail
+{
+class C6Counters;
+}
+
+// A host hardware domain, identified by its PMU's representative logical CPU.
+// Missing pct means the interval could not be read; zero means measured zero.
+struct C6Residency
+{
+    int                   cpu = 0;
+    std::optional<double> pct;
+};
 
 // Snapshot of system-level metrics at a single point in time.
 struct SystemMetricsSnapshot
@@ -40,6 +55,10 @@ struct SystemMetricsSnapshot
     // Aggregate DRAM bandwidth. Available when an AMD PMU cannot split
     // reads and writes.
     std::optional<double> dram_total_mib;
+    // Hardware C6 percentages per physical core/package. Empty if unsupported
+    // or access is denied. Host-wide, independent of this process's CPU%.
+    std::vector<C6Residency> cpu_core_c6;
+    std::vector<C6Residency> cpu_package_c6;
 };
 
 // Collects OS-level metrics by reading /proc (Linux) or using ps (macOS).
@@ -70,7 +89,8 @@ class SystemCollector
 
     // Opaque DRAM bandwidth counter (Linux perf_event_open fds).
     struct DramBwImpl;
-    DramBwImpl *dram_bw_ = nullptr;
+    DramBwImpl                         *dram_bw_ = nullptr;
+    std::unique_ptr<detail::C6Counters> c6_;
 };
 
 // Write a system snapshot to the writer in the "misc" section format,

@@ -156,7 +156,7 @@ impl KvRootCatalogStore {
         let assigned = pages.iter().flat_map(|page| &page.entries).any(|entry| {
             entry.partition_id == prepared.partition_id
                 && entry.range == prepared.range
-                && entry.owner == prepared.owner
+                && entry.owner.instance_id == prepared.owner.instance_id
                 && entry.owner_epoch == prepared.owner_epoch
                 && entry.artifact.tree_id == prepared.artifact.tree_id
                 && entry.artifact.stream_name == prepared.artifact.stream_name
@@ -530,7 +530,7 @@ fn same_recovery_base(entry: &ChunkKvRangeCatalogEntry, prepared: &ChunkKvRangeC
             current.source_partition_id == base.source_partition_id
                 && current.source_epoch == base.source_epoch
                 && current.source_stream_name == base.source_stream_name
-                && current.source_stream_manifest_generation == base.source_stream_manifest_generation
+                && current.source_stream_generation == base.source_stream_generation
                 && current.replay_offset == base.replay_offset
                 && current.base_root_manifest_generation == base.base_root_manifest_generation
                 && current.base_tree_manifest == base.base_tree_manifest

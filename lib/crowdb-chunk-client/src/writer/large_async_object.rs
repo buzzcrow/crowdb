@@ -17,7 +17,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
 use crowdb_protocol::frame::{
-    encode_frame, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+    encode_frame, FrameMagic, FRAME_FOOTER_BYTES, FRAME_V2_HEADER_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -317,9 +317,9 @@ impl LargeAsyncObjectWriter {
 
     fn strip_prefetch_plan(&self, chunk: &Chunk) -> Option<StripPrefetchPlan> {
         let remaining_bytes = self.object_size?.saturating_sub(self.logical_offset);
-        let frames = remaining_bytes.div_ceil(MAX_FRAME_PAYLOAD_BYTES as u64);
+        let frames = remaining_bytes.div_ceil(MAX_FRAME_V2_PAYLOAD_BYTES as u64);
         let physical_bytes = remaining_bytes
-            .saturating_add(frames.saturating_mul((FRAME_HEADER_PREFIX_BYTES + FRAME_FOOTER_BYTES) as u64));
+            .saturating_add(frames.saturating_mul((FRAME_V2_HEADER_BYTES + FRAME_FOOTER_BYTES) as u64));
         let strip_bytes = u64::from(chunk.strips.first()?.capacity)
             .checked_mul(1024)?
             .max(1);
@@ -581,7 +581,7 @@ impl LargeAsyncObjectWriter {
                 let payload_len = buffer
                     .frame_payload_len(frame_index)
                     .ok_or_else(|| IoError::WriteFailed("framed owner slot is missing".into()))?;
-                let frame_len = FRAME_HEADER_PREFIX_BYTES
+                let frame_len = FRAME_V2_HEADER_BYTES
                     .checked_add(payload_len)
                     .and_then(|length| length.checked_add(FRAME_FOOTER_BYTES))
                     .ok_or_else(|| IoError::WriteFailed("framed owner length overflows".into()))?;
@@ -590,7 +590,7 @@ impl LargeAsyncObjectWriter {
                     break;
                 }
                 let range = buffer
-                    .finalize_frame(frame_index, FrameMagic::RepoLargeV1, chunk_id, write_time_ms)
+                    .finalize_frame(frame_index, FrameMagic::RepoLargeV2, chunk_id, write_time_ms)
                     .map_err(|error| IoError::WriteFailed(error.to_string()))?;
                 if let Some(group) = &mut group_range {
                     if group.end != range.start {
@@ -646,7 +646,7 @@ impl LargeAsyncObjectWriter {
         self.buffer_metrics.payload_copy_operations.inc();
         self.buffer_metrics.payload_copy_bytes.inc_by(buffer.len() as u64);
         self.frame_tail.extend_from_slice(&buffer);
-        while self.frame_tail.len() >= MAX_FRAME_PAYLOAD_BYTES {
+        while self.frame_tail.len() >= MAX_FRAME_V2_PAYLOAD_BYTES {
             self.push_full_payload_frames().await?;
         }
         Ok(())
@@ -654,7 +654,7 @@ impl LargeAsyncObjectWriter {
 
     async fn push_full_payload_frames(&mut self) -> Result<()> {
         const FRAMES_PER_BATCH: usize = 16;
-        const FRAME_BYTES: usize = FRAME_HEADER_PREFIX_BYTES + MAX_FRAME_PAYLOAD_BYTES + FRAME_FOOTER_BYTES;
+        const FRAME_BYTES: usize = FRAME_V2_HEADER_BYTES + MAX_FRAME_V2_PAYLOAD_BYTES + FRAME_FOOTER_BYTES;
 
         loop {
             self.ensure_open().await?;
@@ -671,7 +671,7 @@ impl LargeAsyncObjectWriter {
                 self.rotate_chunk().await?;
                 continue;
             }
-            let frame_count = (self.frame_tail.len() / MAX_FRAME_PAYLOAD_BYTES)
+            let frame_count = (self.frame_tail.len() / MAX_FRAME_V2_PAYLOAD_BYTES)
                 .min(FRAMES_PER_BATCH)
                 .min(available_frames);
             let chunk_id = writer
@@ -683,11 +683,11 @@ impl LargeAsyncObjectWriter {
                     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
                 });
             let mut framed = Vec::with_capacity(frame_count * FRAME_BYTES);
-            for payload in
-                self.frame_tail[..frame_count * MAX_FRAME_PAYLOAD_BYTES].chunks_exact(MAX_FRAME_PAYLOAD_BYTES)
+            for payload in self.frame_tail[..frame_count * MAX_FRAME_V2_PAYLOAD_BYTES]
+                .chunks_exact(MAX_FRAME_V2_PAYLOAD_BYTES)
             {
                 framed.extend_from_slice(
-                    &encode_frame(FrameMagic::RepoLargeV1, chunk_id, payload, write_time_ms)
+                    &encode_frame(FrameMagic::RepoLargeV2, chunk_id, payload, write_time_ms)
                         .map_err(|error| IoError::WriteFailed(error.to_string()))?,
                 );
             }
@@ -696,7 +696,7 @@ impl LargeAsyncObjectWriter {
                 .inc_by(u64::try_from(frame_count).unwrap_or(u64::MAX));
             self.buffer_metrics
                 .payload_copy_bytes
-                .inc_by(u64::try_from(frame_count * MAX_FRAME_PAYLOAD_BYTES).unwrap_or(u64::MAX));
+                .inc_by(u64::try_from(frame_count * MAX_FRAME_V2_PAYLOAD_BYTES).unwrap_or(u64::MAX));
             let status = self
                 .chunk_writer
                 .as_mut()
@@ -707,10 +707,10 @@ impl LargeAsyncObjectWriter {
                 self.rotate_chunk().await?;
                 continue;
             }
-            let _ = self.frame_tail.split_to(frame_count * MAX_FRAME_PAYLOAD_BYTES);
+            let _ = self.frame_tail.split_to(frame_count * MAX_FRAME_V2_PAYLOAD_BYTES);
             self.logical_bytes_in_chunk = self
                 .logical_bytes_in_chunk
-                .saturating_add((frame_count * MAX_FRAME_PAYLOAD_BYTES) as u64);
+                .saturating_add((frame_count * MAX_FRAME_V2_PAYLOAD_BYTES) as u64);
             return Ok(());
         }
     }
@@ -728,7 +728,7 @@ impl LargeAsyncObjectWriter {
                 .map_or(0, |duration| {
                     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
                 });
-            let frame = encode_frame(FrameMagic::RepoLargeV1, chunk_id, &payload, write_time_ms)
+            let frame = encode_frame(FrameMagic::RepoLargeV2, chunk_id, &payload, write_time_ms)
                 .map_err(|error| IoError::WriteFailed(error.to_string()))?;
             self.buffer_metrics.payload_copy_operations.inc();
             self.buffer_metrics

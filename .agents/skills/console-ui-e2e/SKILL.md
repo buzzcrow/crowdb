@@ -54,6 +54,10 @@ does not need that reference.
 
 ## Run
 
+Follow [test and CI progression](../debug-test/SKILL.md#test-and-ci-progression)
+when sequencing suites or CI jobs. Fix a failure with its affected spec/group,
+then resume the remaining selection; use this skill for browser diagnosis.
+
 ```sh
 pixi run clean-env
 pixi run test-container-e2e --scope console.operations --case <registered-owner> --concurrency 1 --node-cpus 0.25 --cpus 8 --memory-mib 16384

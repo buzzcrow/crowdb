@@ -1,75 +1,100 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{rollover, ChunkId, Duration, StreamError, WorkerState};
+use super::{rollover, Duration, WorkerState};
 
-pub(super) async fn maintain(state: &mut WorkerState, chunk_id: ChunkId) {
-    if state.stalled || state.manifest.closed {
-        return;
+pub(super) struct Renewal(tokio::task::JoinHandle<()>);
+impl Drop for Renewal {
+    fn drop(&mut self) {
+        self.0.abort();
     }
-    for attempts in 1..=3 {
-        if !owns_head(state, chunk_id).await {
-            return;
-        }
-        match state.chunks.renew_liveness(chunk_id, state.writer_epoch).await {
-            Ok(()) => return,
-            Err(error) => {
-                tracing::warn!(stream_high = state.stream_name.high,
-                    stream_low = state.stream_name.low, writer_epoch = state.writer_epoch,
-                    attempts, %error, "chunk-stream idle liveness renewal failed");
-                if matches!(error, StreamError::StaleWriter) || attempts == 3 {
-                    if owns_head(state, chunk_id).await {
-                        rotate(state).await;
-                    }
+}
+
+pub(super) fn start(state: &WorkerState) -> Renewal {
+    let chunks = state.chunks.clone();
+    let view = state.published_view.clone();
+    let authority = state.authority.clone().expect("writer worker has authority");
+    let failed = state.liveness_failed.clone();
+    let changed = state.liveness_changed.clone();
+    let closed = state.closed_view.clone();
+    let interval = state.config.liveness_interval;
+    let epoch = state.writer_epoch;
+    Renewal(tokio::spawn(async move {
+        let mut ticks = tokio::time::interval(interval);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        ticks.tick().await;
+        loop {
+            ticks.tick().await;
+            if closed.load(std::sync::atomic::Ordering::Acquire) || authority.check().is_err() {
+                break;
+            }
+            let state = view.load_full();
+            let active = state.snapshot.record();
+            if active.state != crowdb_protocol::chunk_stream::StreamChunkState::Active {
+                continue;
+            }
+            for attempt in 0..3 {
+                if authority.check().is_err() {
                     return;
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                match chunks.renew_liveness(active.chunk_id, epoch).await {
+                    Ok(()) => break,
+                    Err(error) => {
+                        tracing::warn!(%error, attempt, "stream chunk liveness renewal failed");
+                        if attempt == 2 || matches!(error, crate::StreamError::StaleWriter) {
+                            failed.store(true, std::sync::atomic::Ordering::Release);
+                            changed.notify_one();
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
             }
         }
-    }
+    }))
 }
 
-async fn owns_head(state: &mut WorkerState, chunk_id: ChunkId) -> bool {
-    match state.metadata.load_current(state.stream_name).await {
-        Ok(Some(current))
-            if current.writer_epoch == state.writer_epoch
-                && current.generation == state.manifest.generation
-                && !current.closed
-                && current
-                    .active
-                    .as_ref()
-                    .is_some_and(|active| active.chunk_id == chunk_id) =>
+pub(super) async fn maintain(state: &mut WorkerState) {
+    if !state
+        .liveness_failed
+        .swap(false, std::sync::atomic::Ordering::AcqRel)
+    {
+        return;
+    }
+    loop {
+        if state
+            .authority
+            .as_ref()
+            .map_or(true, |authority| authority.check().is_err())
         {
-            true
-        }
-        Ok(_) => {
             state.stalled = true;
-            tracing::info!(
-                stream_high = state.stream_name.high,
-                stream_low = state.stream_name.low,
-                writer_epoch = state.writer_epoch,
-                "chunk-stream idle writer no longer owns manifest head"
-            );
-            false
+            return;
         }
-        Err(error) => {
-            tracing::warn!(%error, "chunk-stream idle authority observation unavailable");
-            false
+        let Some(active) = state.progress.active.as_ref() else {
+            return;
+        };
+        match state
+            .chunks
+            .renew_liveness(active.chunk_id, state.writer_epoch)
+            .await
+        {
+            Ok(()) => return,
+            Err(crate::StreamError::StaleWriter) => {
+                if let Err(error) = rollover(state).await {
+                    state.stalled = true;
+                    tracing::warn!(%error, "stream cannot rotate its retired active chunk");
+                }
+                return;
+            }
+            Err(error @ (crate::StreamError::Corruption(_) | crate::StreamError::InvalidRequest(_))) => {
+                state.stalled = true;
+                tracing::warn!(%error, "stream liveness validation failed");
+                return;
+            }
+            Err(error) => state.log_unavailable("renew_liveness", &error),
         }
-    }
-}
-
-async fn rotate(state: &mut WorkerState) {
-    match rollover(state).await {
-        Ok(()) => {}
-        Err(
-            error @ (StreamError::StaleWriter | StreamError::Corruption(_) | StreamError::InvalidRequest(_)),
-        ) => {
-            state.stalled = true;
-            tracing::warn!(%error, "chunk-stream idle rollover cannot continue safely");
-        }
-        Err(error) => {
-            tracing::warn!(%error, "chunk-stream idle rollover remains unavailable");
-        }
+        // No payload has been submitted. Backpressure until the metadata owner
+        // can confirm this tail, within the unchanged local owner deadline.
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

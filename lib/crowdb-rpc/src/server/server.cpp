@@ -281,7 +281,7 @@ void RpcServer::dispatch(Frame *frame, Connection *conn)
     // this msg_type, dispatch as a request. This ensures request
     // frames are not intercepted by on_response (which matches by
     // request_id and can't distinguish a request from its ack).
-    HandlerFn handler = handlers_.get_handler(msg_type);
+    auto handler = handlers_.get_handler(msg_type);
     if (handler) {
         if (msg_type == static_cast<uint16_t>(proto::FBMsgType_EConnectionPingRequest)) {
             cnt_response_ping().inc();
@@ -309,8 +309,7 @@ void RpcServer::dispatch(Frame *frame, Connection *conn)
     // Unknown msg_type and not an ack — send UnknownMessage (if not
     // one-way) or drop.
     if (!is_one_way) {
-        handler            = handle_unknown;
-        OutFrame *response = handler(frame, conn);
+        OutFrame *response = handle_unknown(frame, conn);
         if (response != nullptr) {
             transport_->submit_inline(conn, response);
         }

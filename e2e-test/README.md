@@ -45,10 +45,10 @@ pixi run test unit core
 pixi run test e2e s3 --case s3.sdk::java
 pixi run test profile containerd-cluster
 # Explicit Linux host-network admission/recovery; run on an exclusive host:
-pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
-# Explicit native containerd in isolated privileged Linux hosts:
-pixi run test-container-e2e --profile containerd-host --concurrency 1 --cpus 3 --memory-mib 2048
-pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 6144
+pixi run sudo "$(command -v pixi)" run --as-is test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
+# Native containerd on an exclusive Docker-free Linux host:
+pixi run sudo "$(command -v pixi)" run --as-is test-container-e2e --profile containerd-host --concurrency 1 --cpus 3 --memory-mib 3072
+pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 8192
 # Manual discovery/SSH/bootstrap and four host browser acceptance flows:
 pixi run bash -c 'cd e2e-test/clients/console-ui && npm ci --ignore-scripts'
 pixi run test-container-e2e --profile bridge-admission --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 6144
@@ -67,14 +67,31 @@ chunk-stream, Chunk-KV, S3, Iceberg, Dataset, Console and deployment cases.
 The host profile retains its owned bind-mounted data/log/crash root and an exact
 image/source record; fixed ports require an exclusive Linux host. It is an
 explicit deployment acceptance and is excluded from ordinary bridge domains.
+The Docker host and native containerd host profiles qualify two explicit policies.
+A one-voter production diskless node exercises the common CLI's accepted inputs,
+authenticated admission, current metadata authority and retained recreation. This
+metadata-only configuration does not claim whole-cluster storage readiness.
+A Local one-voter node exercises all three access protocols and retained data,
+identity and credentials through ordinary container recreation, with zero node
+failure tolerance. Each node has a 1-CPU quota and 2048 MiB memory limit.
+Protected production storage requires independent voters; the separate three-host
+acceptance verifies that contract. The Docker host profile also retains file/raw
+fsync, Offline, Remove/Rejoin, exclusive-descriptor and physical-tail assertions.
+These profiles require an explicitly privileged disposable Linux host for owned
+fixture setup; the node container receives no blanket privilege.
+
 Containerd profiles require the installed `container/oci-image` runtime Pixi
-environment and a verified OCI archive/receipt. They create one or three
-privileged Linux host containers, with no Docker socket inside them. Each host
-runs native containerd and a formal node; clients execute outside the formal
-node image. Private data/log/crash mounts survive teardown. The host profile
-uses 1024 CPU shares per host/node container and retains its 1024 MiB node
-memory limit. Cluster admission uses a shared CPU allowance and sums hard
-memory limits, including its host containers and client. Artifact and image identities are verified before startup.
+environment and a verified OCI archive/receipt. `containerd-host` starts its own
+rootful native-snapshotter daemon and rejects a Docker client, socket, daemon or
+container-provisioned host. `containerd-cluster` separately labels its three
+Docker-provisioned privileged Linux hosts; it proves adapter/discovery/quorum
+behavior and does not substitute for the native-host gate. Both retain private
+data and complete logs. Clients execute outside the formal node image.
+The Local host fixture selects an 8-GiB sparse managed file with a 1-GiB
+host reserve. Sparse files are confined to the explicit Local policy. `CROWDB_E2E_CLI_BUNDLE` supplies a prebuilt host CLI and
+`lib/` directory when the host cannot build clients; Docker media probes can
+likewise use `CROWDB_E2E_DOMAIN_BUNDLE` with `domain-test` and `lib/`.
+
 DiskIO process-exit faults retain their network
 namespace, so the original 15-second stream/reader/repair bounds still apply.
 

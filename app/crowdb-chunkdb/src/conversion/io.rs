@@ -106,13 +106,6 @@ impl ConversionDiskIo {
         offset: u64,
         length: u32,
     ) -> Result<Bytes, ConversionIoError> {
-        #[cfg(feature = "test-util")]
-        if self.client.load().is_none() {
-            return Ok(Bytes::from(vec![
-                0;
-                usize::try_from(length).expect("u32 fits usize")
-            ]));
-        }
         let target = target(segment, unit_bytes)?;
         let client = self.client()?;
         client
@@ -137,6 +130,24 @@ impl ConversionDiskIo {
                 Durability::Buffered,
                 client.normal_options().priority(),
             )
+            .await
+            .map_err(|error| ConversionIoError::Io(error.to_string()))
+    }
+
+    /// Prove completion and synchronization of earlier writes in this segment.
+    /// Owner exclusion and late-request age must be established by the caller.
+    pub async fn drain_segment(
+        &self,
+        segment: &Segment,
+        unit_bytes: u64,
+        deadline: std::time::Instant,
+    ) -> Result<(), ConversionIoError> {
+        let target = target(segment, unit_bytes)?;
+        let client = self.client()?;
+        let mut options = client.normal_options().priority();
+        options.deadline = deadline;
+        client
+            .drain_segment(target, options)
             .await
             .map_err(|error| ConversionIoError::Io(error.to_string()))
     }

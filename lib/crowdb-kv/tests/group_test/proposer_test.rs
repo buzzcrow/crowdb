@@ -127,3 +127,47 @@ async fn propose_queues_when_policy_is_queue() {
         other => panic!("expected Chosen after queue drain, got {other:?}"),
     }
 }
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn gap_backlog_drains_without_waiting_one_heartbeat_per_slot() {
+    use crowdb_kv::cluster::group_election::{spawn, LeaderElection};
+    use crowdb_kv::common::config::PxElectionConfig;
+    use std::{sync::Arc, time::Duration};
+
+    let cfg = PxElectionConfig::for_tests();
+    let group = Arc::new(single_leader_group());
+    let cancel = group.tenure_cancel();
+    let handle = spawn(Arc::downgrade(&group), cfg, cancel.clone());
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    assert!(group.leader_read_ready());
+    group
+        .local_replica()
+        .learner
+        .learn(
+            PxLogEntry {
+                slot: 65,
+                ballot: PxBallot::new(0, 1),
+                term: group.local_replica().current_term_snapshot(),
+                payload: bytes::Bytes::new(),
+            },
+            &[],
+        )
+        .await;
+    assert_eq!(group.local_replica().contiguous_chosen(), 0);
+
+    // Dispatch one repair pass, then keep the clock fixed. Recovery work
+    // must drain the existing backlog independently of heartbeat cadence.
+    tokio::time::advance(Duration::from_millis(cfg.heartbeat_interval_ms + 1)).await;
+    for _ in 0..10_000 {
+        if group.local_replica().contiguous_applied() == 65 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let frontier = group.local_replica().contiguous_applied();
+    cancel.cancel();
+    handle.await.unwrap();
+    assert_eq!(frontier, 65, "repair left a backlog waiting for heartbeat ticks");
+}

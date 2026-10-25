@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { deployServer, deployDiskdb, listServers } from '../api';
+import { deployServer, deployDiskdb, listServers, restartServer, restartDiskdb } from '../api';
 import type { EnrichedStoreView } from '../types';
 import type { NodeDiskGroups } from '../data/useClusterTree';
 import { serviceRequest } from './client';
@@ -10,6 +10,7 @@ import type { DeploymentDefaults } from './useDeploymentDefaults';
 export const serviceOrder = ['access-server', 'chunk-kv', 'chunkdb', 'diskdb', 'diskio', 'paxos-kv'] as const;
 export type ServiceKind = typeof serviceOrder[number];
 const deploymentOrder: ServiceKind[] = ['paxos-kv', 'diskdb', 'diskio', 'chunkdb', 'chunk-kv', 'access-server'];
+const startingService = 'Waiting: target monitor is starting the registered service';
 export const serviceLabels = {
   'access-server': 'crowdb-access-server',
   'chunk-kv': 'crowdb-chunk-kv',
@@ -43,6 +44,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
   const running = useRef<Promise<void>>(Promise.resolve());
   const registrations = useRef<Promise<void>>(Promise.resolve());
   const overrides = useRef<Record<number, ServiceOverrides>>({});
+  const retryRegistered = useRef(new Set<string>());
   const update = useCallback((id: number, plan: NodeServicePlan) => {
     plansRef.current = { ...plansRef.current, [id]: plan };
     setPlans(plansRef.current);
@@ -98,6 +100,9 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
         const enabled = new Set(selected ?? serviceOrder.filter(kind => previous[kind].state !== 'disabled'));
         intended = Object.fromEntries(serviceOrder.map(kind => [kind, !enabled.has(kind) ? { state: 'disabled' } : ['failed', 'warning', 'disabled'].includes(previous[kind].state) ? { state: 'pending' } : previous[kind]])) as NodeServicePlan;
         await persist(id, intended);
+        for (const kind of enabled) {
+          if (['failed', 'warning'].includes(previous[kind].state)) retryRegistered.current.add(`${id}/${kind}`);
+        }
       } catch (error) { failProgress(id, String(error), intended); throw error; }
       finally { busy.current = false; wake.current(); }
     });
@@ -110,6 +115,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
     stopped.current = true;
     await registrations.current;
     await running.current;
+    retryRegistered.current.clear();
     plansRef.current = {};
     setPlans({});
   }, []);
@@ -148,10 +154,30 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
               if (plan[kind].state === 'failed' || plan[kind].state === 'warning') continue;
               const registered = existing.find(server => server.node_id === id && server.service_type === kind);
               if (registered) {
-                const step: ServiceStep = registered.pid ? { state: 'deployed' } : { state: 'failed', detail: 'Registered service is stopped; restart it from the Node menu before resuming.' };
+                const retryKey = `${id}/${kind}`;
+                if (!registered.pid && retryRegistered.current.has(retryKey)) {
+                  if (deploymentStarted) continue;
+                  retryRegistered.current.delete(retryKey);
+                  await write(kind, { state: 'deploying' });
+                  try {
+                    if (kind === 'paxos-kv') await restartServer(id);
+                    else if (kind === 'diskdb') await restartDiskdb(id);
+                    else if (registered.id) await serviceRequest(`/services/${encodeURIComponent(registered.id)}/restart`, 'POST');
+                    else throw new Error('Registered service has no lifecycle identity');
+                    await write(kind, { state: 'deployed' });
+                    wakePending.current = true;
+                  } catch (error) { await write(kind, { state: 'failed', detail: String(error) }); }
+                  deploymentStarted = true;
+                  continue;
+                }
+                retryRegistered.current.delete(retryKey);
+                const step: ServiceStep = registered.pid ? { state: 'deployed' } : registered.start_pending
+                  ? { state: 'waiting', detail: startingService }
+                  : { state: 'failed', detail: 'Registered service is stopped; restart it from the Node menu before resuming.' };
                 if (plan[kind].state !== step.state) await write(kind, step);
                 continue;
               }
+              retryRegistered.current.delete(`${id}/${kind}`);
               if (plan[kind].state === 'deployed') { await write(kind, { state: 'failed', detail: 'Previously deployed service is missing; Retry after checking its lifecycle.' }); continue; }
               const { stores: currentStores, groups: currentGroups } = input.current;
               const metadata = currentStores.flatMap(store => store.groups.filter(group => String(group.group_id) !== '0').map(group => ({ store: store.store_id, group: group.group_id })))[0];
@@ -188,7 +214,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
                 if (kind === 'paxos-kv') await deployServer(id, { rest_port: value.http_port!, rpc_port: value.rpc_port! });
                 else if (kind === 'diskdb') await deployDiskdb(id, { rpc_port: value.rpc_port!, ...(value.keepalive_interval_secs === undefined ? {} : { keepalive_interval_secs: value.keepalive_interval_secs }) });
                 else await serviceRequest(`/nodes/${id}/services/deploy`, 'POST', {
-                  kind, ...value, test_single_node: false,
+                  kind, ...value,
                   ...(kind === 'diskio' ? { disk_group_id: diskGroup?.id ?? 0 } : {}),
                   ...(kind === 'chunk-kv' ? { metadata_store_id: Number(metadata!.store), bootstrap_group_id: Number(metadata!.group) } : {}),
                 });
@@ -225,8 +251,9 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
         const hasQueuedWork = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].state === 'waiting'));
         const waitingForAuthority = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].detail === 'Waiting: initialize Group 0 in Paxos KV'));
         const waitingForRestart = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].detail?.startsWith('Waiting: restart registered DiskIO services')));
+        const waitingForStart = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].detail === startingService));
         const hasDisks = Object.values(input.current.groups).some(node => Object.values(node.disksByDg).some(disks => disks.length > 0));
-        const delay = wakePending.current ? 0 : hasQueuedWork && !hasDisks && !waitingForAuthority && !waitingForRestart ? 10000 : 2000;
+        const delay = wakePending.current ? 0 : hasQueuedWork && !hasDisks && !waitingForAuthority && !waitingForRestart && !waitingForStart ? 10000 : 2000;
         wakePending.current = false;
         timer = setTimeout(() => { running.current = tick(); }, delay);
       }

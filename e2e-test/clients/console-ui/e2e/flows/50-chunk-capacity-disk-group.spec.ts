@@ -33,6 +33,7 @@ test('native capacity: disk-group CRUD and explicit owner binding use mounted st
   await page.goto('/?domain=Capacity');
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   const node = sidebar.getByTestId('tree-node-N-1').locator(':scope > [role="treeitem"]');
+  await expect(sidebar.getByRole('button', { name: 'Add Rack', exact: true })).toBeEnabled();
   await diskMenu(page, node, 'Add Disk Group');
   const create = page.getByRole('dialog', { name: 'Add Disk Group', exact: true });
   const id = create.getByLabel('Disk Group ID (auto-assigned)');
@@ -80,7 +81,7 @@ test('native capacity: disk-group CRUD and explicit owner binding use mounted st
     const defaults = (await json(request, '/api/deployment-defaults?node_id=1')).diskio;
     const response = await request.post('/api/nodes/1/services/deploy', { data: {
       ...defaults, kind: 'diskio', instance_id: '1', disk_group_id: 520,
-      rpc_port: 7200, test_single_node: false,
+      rpc_port: 7200,
     } });
     expect(response.status(), await response.text()).toBe(201);
   });
@@ -156,6 +157,7 @@ test('KV binding recommends the least loaded group and initialization creates Gr
   await page.getByTestId('domain-capacity').click();
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   const node = sidebar.getByTestId('tree-node-N-1').locator(':scope > [role="treeitem"]');
+  await expect(sidebar.getByRole('button', { name: 'Add Rack', exact: true })).toBeEnabled();
   await diskMenu(page, node, 'Add Disk Group');
   const dialog = page.getByRole('dialog', { name: 'Add Disk Group', exact: true });
   const binding = dialog.getByRole('combobox', { name: 'KV group', exact: true });

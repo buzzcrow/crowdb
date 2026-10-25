@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#include "chunk_frame.h"
 #include "chunk_page_store.h"
 #include "crowdb-protocol/frame.h"
 
@@ -92,7 +93,7 @@ bool ChunkPageStore::range_has_pack(const ChunkManifest &base, uint64_t offset, 
 uint64_t ChunkPageStore::chunk_allocation_bytes() const
 {
     const auto packs = (config_.max_chunk_bytes + config_.pack_bytes - 1) / config_.pack_bytes;
-    return packs * crowdb::protocol::framed_physical_length(config_.pack_bytes);
+    return packs * chunk_framed_length(config_.pack_bytes);
 }
 
 } // namespace crowdb::tree::detail

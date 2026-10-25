@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! `bench kv prepare` — pre-populate `--keys` keys into store 0 / group 0.
+//! `bench kv prepare` writes only the requested dataset into the selected group.
 //!
 //! Concurrent bulk-put loop with `--concurrency` tasks. No latency
 //! histogram — this is a setup step, not a measurement. Reports total
@@ -31,24 +31,6 @@ pub async fn run(cli: &Cli, args: PrepareArgs) -> ExitCode {
     };
 
     let value_size = args.value_size.max(1);
-
-    // Warm up: wait for the leader to be ready before bulk-putting.
-    // local-deploy may return before the leader is fully stable.
-    let warm_key = b"k__warmup__";
-    let warm_val = vec![0u8; value_size];
-    for _ in 0..50 {
-        if client
-            .put(store_id, group_id, warm_key, &warm_val, None)
-            .await
-            .is_ok()
-        {
-            // Extra settle time: the leader may be elected but not yet
-            // processing writes at full capacity.
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
 
     let next_id = Arc::new(AtomicU64::new(0));
     let ok_count = Arc::new(AtomicU64::new(0));

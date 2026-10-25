@@ -37,14 +37,6 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
   - [6.4 Resolution rules](#64-resolution-rules)
   - [6.5 Frontend contract](#65-frontend-contract)
 - [7. CLI Design](#7-cli-design)
-  - [7.1 Four-Domain Hierarchy](#71-four-domain-hierarchy)
-  - [7.2 Command Hierarchy](#72-command-hierarchy)
-  - [7.3 `cluster init` — bootstrap special case](#73-cluster-init--bootstrap-special-case)
-  - [7.4 `cluster clean` — data wipe boundary](#74-cluster-clean--data-wipe-boundary)
-  - [7.5 `kv server delete` — graceful + require-empty](#75-kv-server-delete--graceful--require-empty)
-  - [7.6 Bench subcommand](#76-bench-subcommand)
-  - [7.7 Bench lifecycle verbs (deploy / prepare / run / teardown)](#77-bench-lifecycle-verbs-deploy--prepare--run--teardown)
-  - [7.8 S3 mini-clusters and benchmarks](#78-s3-mini-clusters-and-benchmarks)
 - [8. Error Model and Operation Logging](#8-error-model-and-operation-logging)
 - [9. Observability](#9-observability)
 - [10. Hardware mutations](#10-hardware-mutations)
@@ -62,15 +54,13 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
 - Multi-tenancy and a general audit-log service.
 - Making a console-local file authoritative for cluster topology.
 
-Local deployments use one stable directory per logical server below their
-runtime namespace. Each server owns its `data/`, `config/`, `log/`, and
-`artifacts/` directories. Process IDs are recorded as live-process ownership,
-not used as logical directory identities, so restart continues to use the same
-server directory and port assignments.
-
-The default simulated topology is one rack containing all requested nodes.
-Benchmarks that need distinct failure domains create additional racks
-explicitly; full-stack deployment does not silently move nodes between racks.
+Ordinary deployment runs the shared OCI node image. The host lifecycle owns
+containers, applied resources and private ownership receipts; each node monitor
+owns its service processes and retained data. Local evaluation may place several
+logical nodes on one host, with zero physical host failure tolerance. Production
+placement uses the confirmed physical failure domains. Test-only measurement
+fixtures may own native processes but do not define a second public deployment
+lifecycle.
 
 ## 2. High-Level Architecture
 
@@ -101,12 +91,15 @@ path through the shared `ops` module:
 - **Web**: `user → crowdb-web (Axum) → shared (ops module) → group-0 sysdata + crowdb-kv-server`
 - **CLI**: `user → crowdb-cli → shared (ops module) → group-0 sysdata + crowdb-kv-server mgmt`
 
-Both frontends build an `OpContext` with Group 0 discovery seeds. The CLI
-uses `--system-ip` and `--system-port`; production Web uses a versioned process
-configuration. Both read confirmed hardware and logical records through Group 0
-and resolve node management endpoints from live registration. The process
-launch registry is local to each bare-metal console. Docker process state is
-owned by `crowdb-monitor`.
+Both frontends build an `OpContext` with Group 0 discovery seeds. Attached CLI
+commands select `--cluster` or `--management-endpoint`, verify the confirmed
+cluster UUID through the management origin, then verify the same UUID through
+native Group 0 before hardware/KV operations and native workloads. Production
+Web uses a versioned process configuration. Both read confirmed hardware and logical records through Group 0
+and resolve node management endpoints from live registration. Ordinary OCI nodes
+use `crowdb-monitor` for process ownership on both Docker and containerd. A
+configured auxiliary Web process may retain a local launch registry; it is not
+required for node formation or endpoint-only attachment.
 
 The CLI talks directly to group-0 system metadata via
 `CrowdbSysmdClient` and to individual `crowdb-kv-server` management
@@ -145,12 +138,12 @@ call.
 - The web SPA **does not** reimplement business logic; it calls
   `shared` via the Axum backend, never `crowdb-kv-server` directly.
 - Both frontends build an `OpContext` and call `shared`'s `ops`
-  module directly — the CLI from `--system-ip` / `--system-port` global
-  flags, the web backend via `AppState::op_context()` (sharing the
+  module directly — the CLI from its verified application target,
+  the web backend via `AppState::op_context()` (sharing the
   cached `CrowdbKvClient` and Group 0 management seeds).
 - Shared hardware and logical operations provide the same authority and
-  conditional publication rules to both frontends. Deployment-mode policy
-  controls which process and hardware mutations Web exposes.
+  conditional publication rules to both frontends. Node count and runtime do not
+  select UI permissions; required authority and resource ownership still apply.
 
 ## 3. Data Model
 
@@ -356,29 +349,21 @@ child recovery and status to `crowdb-monitor`.
 
 ### 6.1 Design Rules
 
-Configured managed Web uses the managed router and a versioned process configuration.
-`/api/preview` combines confirmed Group 0 records, live registration, and the
-mode-specific process view. `/api/stores/...` provides authenticated logical
-mutations through shared operations in both modes. Bare-metal Web additionally
-exposes rack, node, disk-group and disk reads and authenticated mutations, plus
-registry-backed launch controls and bootstrap. Automatic single-node Docker Web does not expose
-hardware or process mutation routes. Manual node Web exposes candidate/rack
-preparation before bootstrap and routes subsequent shared management through
-Group 0 and authenticated monitor execution. Unknown managed API routes report
-unavailable rather than entering an in-memory topology path.
+The ordinary OCI entrypoint starts a node Web with an editable UI in both
+one-member and three-member clusters. Automatic preparation and runtime choice
+do not restrict management writes. Before bootstrap, candidate/rack preparation
+uses retained local admission state; afterward, hardware and logical mutations
+use confirmed Group 0 authority and authenticated monitor execution. Configured
+managed Web retains its versioned process configuration and requires confirmed
+records; unknown managed routes never enter an in-memory topology fallback.
 
-A mutation is accepted only after the required node-side steps and Group 0
-publication are confirmed. The Console assumes a root operator until UI login is introduced. Automatic single-node container
-mode rejects topology, deployment, and disk-management writes at the
-backend; logical and Access operations use server-held protocol credentials.
-Docker Web is writable by default. The process configuration explicitly sets
-`readonly = true` to reject every non-read request with 403; `/api/mode` exposes
-this flag and the SPA disables write controls accordingly. The public
-single-container profile enables readonly, while internal writable profiles
-select the same release image with readonly disabled. Docker physical-management
-restrictions apply independently of readonly.
-The SPA calls the Axum backend; it does not talk directly to KV management
-endpoints.
+A mutation returns success only after the required node-side steps and Group 0
+publication are confirmed. The Console assumes a root operator until UI login
+is introduced. Explicit `readonly = true` rejects non-read requests with 403;
+`/api/mode` exposes that setting and the SPA disables writes accordingly. The
+ordinary node default is writable. Credentials remain in the established private
+store, and invalid authority, ownership or placement rejects the operation for
+that cause. The SPA calls the Axum backend rather than KV management endpoints.
 
 ### 6.2 In-process test API
 
@@ -437,221 +422,39 @@ backend-facing contract here:
 
 ## 7. CLI Design
 
-- Binary: `crowdb-cli` (four-domain structure: `crowdb-cli <domain> <verb>`).
-- Parser: `clap` derive; one module per domain under `commands/`.
-- **Direct-to-system-group call path.** Every verb builds an `OpContext`
-  seeded with `--system-ip` / `--system-port` (any system-group management
-  endpoint) and talks directly to system metadata via `CrowdbSysmdClient` and to
-  individual `crowdb-kv-server` mgmt APIs via `ServerClient`. There is
-  no `crowdb-web` intermediary. Leader discovery is automatic. The global
-  connection flags are `--system-ip` (default `127.0.0.1`, env
-  `CROWDB_SYSTEM_IP`) and `--system-port` (default system-group management
-  port, env `CROWDB_SYSTEM_PORT`).
-- Output is console-first and human-readable. Every invocation identifies the
-  copyable command and final result. HTTP operations show request/response
-  headers and body disposition; JSON and XML response bodies are pretty
-  printed, while binary bodies are represented by type and byte count. ANSI
-  colors distinguish commands, HTTP sections, body metadata, warnings, errors,
-  and final success/failure.
-- Every non-benchmark command logs only to the console. Each benchmark writes
-  the same tracing events to the console and to
-  `<cwd>/cli-log/bench-<family>/`; a new run replaces that family's previous
-  directory so benchmark logs do not accumulate.
-
-The full command hierarchy is defined in the `clap` derive structs;
-this section covers design rules only.
-
-### 7.1 Four-Domain Hierarchy
-
-`cluster` owns hardware metadata and bootstrap, clean, destroy and status.
-`kv` owns KV server launch controls, logical store/group/replica operations
-and KV data commands. `chunk` owns storage-service launch controls and
-maintenance. `bench` owns workload runners. The CLI connects to Group 0
-directly and shares the authority operations with production Web.
-
-### 7.2 Command Hierarchy
-
-The `clap` command enums define the exact verbs and flags. Hardware and
-logical commands use Group 0 for identity and membership. Process controls
-require `--registry`; `cluster init` additionally requires sealed bootstrap
-input for first creation. Development `local-deploy` runs a one-shot loopback
-cluster and prints the Group 0 management seed for later CLI invocations.
-
-### 7.3 `cluster init` — bootstrap special case
-
-`cluster init` requires `--registry` and a versioned `--bootstrap-file`
-for first creation, or a sealed retry intent beside the registry. It takes
-`--nodes <n1,n2,n3>` and bootstraps group-0/store-0 on those nodes via
-direct node REST calls (the `POST /system/init` mechanism, §4.3),
-wires remotes, and writes the hardware + KV-cluster topology into
-group-0 sysdata. After `cluster init` completes, subsequent commands
-use `--system-ip` / `--system-port` to connect to any node in the newly
-created system group.
-
-Initialization also sends Group 0 management seeds to deployed KV processes
-outside the selected member set and waits for exactly one live registration
-per node. Those processes retain connection hints locally across restart;
-they do not become Group 0 members. Logical operations use the confirmed live
-registrations rather than treating launch configuration as a live endpoint.
-
-### 7.4 `cluster clean` — data wipe boundary
-
-`cluster clean --store <id> --group <id>` derives the target replica nodes
-from confirmed Group 0 membership and resolves every live KV management
-registration. It asks each target to wipe user data, then waits for a new
-leader. Group 0 hardware, logical records, and process launch policy remain
-intact. A missing group, registration, or acknowledgement fails the operation;
-a local launch record cannot justify a wipe.
-
-`--restart-services` additionally restarts locally configured DiskIO, DiskDB
-and ChunkDB processes in dependency order through `LaunchRuntime`. It requires
-a validated launch registry before the wipe begins. KV processes stay running
-so Group 0 remains available.
-
-### 7.5 `kv server delete` — graceful + require-empty
-
-All operations use graceful Paxos reconfiguration — no force-kill
-path. `delete` requires the server to be **empty**: no replicas, no
-groups, no stores hosted. The operator must delete in bottom-up order
-— replicas → groups → stores → server → node — before the server or
-node can be removed. The CLI refuses `kv server delete` if the server
-still hosts replicas, with an error listing the replicas/groups/stores
-that must be removed first. Same policy applies to `cluster node
-remove` — the node must have no running servers/services before
-removal.
-
-Verb distinction:
-- `kv server stop` — graceful process stop (keeps server entry, can
-  restart later). No reconfiguration; replicas remain registered on
-  peers.
-- `kv server delete` — graceful removal (requires empty server).
-  Removes the server entry after confirming emptiness. No cascading
-  delete — the operator does the cascade manually in bottom-up order.
-
-### 7.6 Bench subcommand
-
-- `bench kv <read|write|scan|mix>` runs KV workloads against a target
-  store/group. `bench rpc` measures raw RPC transport throughput.
-- Bench discovery starts from the explicit Group 0 management seed and
-  resolves metrics hosts from confirmed replica membership and live
-  registrations. It does not load a console topology file.
-
-### 7.7 Bench lifecycle verbs (deploy / prepare / run / teardown)
-
-The all-in-one `bench kv` verb deploys a 3-node cluster, pre-populates
-keys, runs the workload, and tears down — all in one process. For
-regression suites that run many sub-tests against the same cluster
-configuration, this pays deploy + pre-pop overhead per sub-test. The
-lifecycle verbs split this monolith into discrete steps with persistent
-deploy metadata:
-
-- **`bench deploy --name <n> --kind kv --mode mem`** — provisions a
-  3-node cluster via `BenchFixture` (embedded console-web), then
-  detaches the fixture so the `crowdb-kv-server` processes survive CLI
-  exit. The deploy metadata (node pids, endpoints, tunables) is
-  serialized below `.crowdb-runtime/persistent/bench/<name>/handle.json`
-  (`ClusterHandle`). The
-  `--kind` flag dispatches to kv (default), rpc (spawns
-  `crowdb-rpc-fb-server`), or chunk/storage (not yet implemented).
-- **`bench prepare --target <n> --keys N`** — loads handle, builds a
-  `CrowdbClient` from the recorded leader endpoint, and writes N keys
-  via sequential `put`. Reuses the same `format_key` / `value_for`
-  logic as `bench kv`'s pre-populate path.
-- **`bench run --target <n> --workload read ...`** — loads handle,
-  builds an `AttachedKvTarget` (implements `BenchTarget` with no-op
-  provision/cleanup), and calls the shared `run_bench` runner. Reports
-  go to that namespace's `artifacts/runs/<timestamp>/`. The cluster stays running
-  after the run — multiple `bench run` invocations can attach to the
-  same deploy.
-- **`bench teardown --target <n>`** — loads handle, SIGTERMs the node
-  pids via `stop_pid_with_timeout`, removes `handle.json`. Idempotent:
-  a second teardown on the same name exits 0 with "already torn down".
-
-The all-in-one `bench kv` verb is preserved as the quick one-shot path.
-Regression scripts use the lifecycle flow: deploy once, prepare when needed,
-run compatible sub-tests with reset boundaries, then teardown once. Each
-sentinel accepts environment overrides for case selection and duration; KV
-read, write, and scan also accept a reduced keyspace. These controls provide a
-short structural smoke without changing the default regression matrix.
-
-`ClusterHandle` is persistent namespace metadata, not a config extension. The
-single `.crowdb-runtime/` root is gitignored. The
-`crowdb-kv-server` child processes survive CLI exit because
-`lifecycle::deploy_local` spawns them with `kill_on_drop(false)`.
-
-### 7.8 S3 mini-clusters and benchmarks
-
-`crowdb-cli s3 cluster start --root <path> --container <name>` creates or
-resumes three formal release containers. The named first container and its
-`-node2` / `-node3` members share a cluster-owned Docker bridge and fixed service
-ports. Docker must already be available. The CLI uses normal node admission,
-Group-0 bootstrap and service deployment; clients run outside the containers.
-`--image`, `--node-cpus` and `--memory-mib` select the initial image and per-node
-limits. Existing clusters keep their recorded immutable image and limits.
-`--diskdb-heartbeat-interval-secs` selects the ordinary DiskDB cadence at
-creation (default 10 seconds). The owner record retains it across resume and
-restart; an existing cluster rejects a different requested value.
-
-A root path selects the persistent data directory. `--container` (alias
-`--name`) can select any recorded member and resolves its owning cluster for
-lifecycle, bucket and object commands. Conflicting root/name selections or
-foreign container, image, network or mount ownership fail before mutation.
-Each node mounts its own data, logs and crash directory below the cluster root.
-
-The dependency order is KV, DiskDB, DiskIO, ChunkDB, Chunk-KV, then Access.
-Readiness waits for usable dependencies before starting their consumers.
-`start` resumes confirmed Group-0 and service state after a client interruption;
-completed services keep their identities and no local topology is reconstructed.
-The initializing marker disappears after successful provisioning.
-
-`status` reports running containers and endpoints. `stop` stops all members and
-preserves containers, network and data. `restart` starts those same containers
-with fixed addresses and retained data. `delete` validates ownership, stops and
-removes members and their network, then removes the owned data root. Unknown
-files and resources are preserved. Host data clients use the persisted Web S3
-proxy endpoint, whose server-held credentials authenticate requests to Access.
-S3 errors are preserved without falling back to another mutation.
-
-The versioned owner record contains cluster/container identity, image, network,
-resource limits, DiskDB heartbeat cadence, fixed addresses and provisioning phase. Client records contain
-endpoints and Group-0 seeds, without rack, node or logical topology. Cluster
-credentials remain in the normal private node credential directories.
-
-`crowdb-cli bench s3` owns a separate, invocation-scoped memory profile. KV and
-WAL blocks use memory backing, DiskIO uses memory disks, and chunk-KV keeps its
-readable tree and value path in memory. The memory disks retain a large logical
-address space while allocating resident pages on demand; logical capacity is
-therefore independent of the benchmark's resident-memory budget. The benchmark
-always stops its cluster, while leaving the stopped work directory and logs as
-diagnostic artifacts.
-
-The benchmark has write, read, range-read, list, and deterministic weighted
-mix workloads. It prepares a fixed dataset, runs warm-up outside measurement,
-then admits requests until either the operation limit or duration limit is
-reached. Workers keep local latency and failure accumulators and use only an
-atomic admission counter on the request path. Cleanup deletes only prepared or
-actually written benchmark objects, with bounded asynchronous concurrency.
-
-Results report backing choices, measured duration, attempts, successes,
-failures, throughput, average latency, p50, p99, prepared bytes, and process
-peak resident bytes. Read validates the full response length, range-read
-validates the selected interval length, and list validates ordering and
-continuation progress. Failures are separated into metadata, protocol,
-transport, and resource categories. RSS is sampled asynchronously; exceeding
-the configured budget makes the run fail instead of publishing valid
-throughput.
-
-The following invariants apply:
-
-- **S3-C1 — Recovery boundary:** a validated owner record identifies a resumable
-  container cluster; the ready phase marks completed provisioning. Stop never
-  removes its stored data.
-- **S3-C2 — Real request path:** every benchmark operation traverses the normal
-  S3 endpoint and validates the response property relevant to its workload.
-- **S3-C3 — Bounded execution:** duration, operation count, concurrency, and
-  resident memory are explicit limits; exhausting memory is an error.
-- **S3-C4 — Simple ownership:** persistent operator data and ephemeral
-  benchmark data use separate storage profiles and lifecycle ownership.
+- `cluster start/stop` own OCI runtime lifecycle through a named local ownership
+  receipt. `start` accepts one or three nodes and delegates preparation to the
+  normal node monitor. Runtime inspection, logs and image operations use the
+  runtime's tools; cleanup belongs to the independent host/Pixi helpers.
+- `cluster status/check` observe confirmed application readiness over management
+  endpoints, without a runtime socket. A finite check returns nonzero when any
+  required dependency is unmet. Runtime facts unavailable remotely remain unknown.
+- Hardware, logical KV, S3 and benchmark commands require `--cluster` or
+  `--management-endpoint`. Every selected origin must report the same confirmed
+  UUID; saved bindings pin that UUID. Native consumers additionally verify
+  transport reachability and the committed Group-0 UUID before data access.
+  There is no system-address, localhost or launch-registry fallback.
+- Hardware and logical KV operations call Group 0 and node management APIs
+  directly after target verification. Signed S3 clients obtain access credentials
+  and the advertised public URI from the selected management origin.
+- Endpoint-only attachment grants no runtime ownership. It cannot start or stop
+  containers, create a runtime receipt, change the image or prepare infrastructure.
+- The retained workload families are KV, DiskDB, ChunkDB, ChunkIO and S3.
+  `bench kv prepare` writes its declared dataset into an existing group.
+  Workloads never initialize groups, deploy services, reset cluster topology or
+  stop a cluster. Workload-owned data cleanup and ordinary client transport
+  workers remain allowed. Standalone RPC tests own their server/client lifetime.
+- `kv store/group/replica/data` retain normal topology and data operations.
+  Process deployment and reset commands are absent from the command tree.
+- Output identifies the copyable command and final result. HTTP exchanges show
+  response metadata and format structured bodies; binary bodies are identified
+  by type and byte count. Status/check support structured JSON output.
+- Ordinary commands log only to the console. A benchmark writes the latest run
+  under the runtime root's `artifacts/cli/bench-<family>` directory; the next run
+  replaces only that family's previous benchmark log. KV workloads also retain
+  a structured `report.json` with operation counts, errors and measured latency
+  alongside the human-readable console report. Measurement tools preserve each
+  completed invocation before another run replaces the latest directory.
 
 ## 8. Error Model and Operation Logging
 
@@ -663,7 +466,8 @@ The following invariants apply:
   body marker. Text is visible, XML/JSON is formatted, and binary content is
   summarized by byte count without duplicating it in the trace.
 - **Retained diagnostics** — only benchmark commands write files. The latest
-  run for each benchmark family lives beneath `<cwd>/cli-log/bench-<family>/`
+  run for each benchmark family lives beneath the runtime root's
+  `artifacts/cli/bench-<family>/`
   and replaces the previous run. Benchmark tracing is also mirrored to the
   console. Routine outbound HTTP calls are debug-level so default output keeps
   lifecycle events, warnings, and errors without per-request noise.
@@ -685,12 +489,12 @@ The following invariants apply:
 
 ## 10. Hardware mutations
 
-CLI and bare-metal Web use the shared Group 0 hardware operations. Rack,
+CLI and node Web use the shared Group 0 hardware operations. Rack,
 node, disk-group and disk changes update parent and child records in one
 conditional batch where membership changes. Matching retries are confirmed;
-conflicting concurrent writes preserve the existing record. Automatic single-node Docker Web does
-not expose hardware or process mutations. Manual Docker nodes use the same
-shared hardware operations after confirmed Group 0 publication.
+conflicting concurrent writes preserve the existing record. One-member and
+three-member OCI nodes expose the same shared management surface after
+confirmed Group 0 publication.
 
 The physical Cluster workspace shares one tree and selection across Topology and
 Capacity. Cluster/Rack node cards and capacity tables reuse bounded observations;
@@ -712,16 +516,20 @@ from incomplete state. Secrets remain in the established private credential path
 
 ## 11. Cluster teardown and verification
 
-`cluster destroy` requires the local launch registry. It reads confirmed Group
-0 membership, removes user stores and groups through shared logical operations,
-then removes the system group last. Only after metadata teardown succeeds does
-it stop processes named by that console's launch registry. A failed or
-unconfirmed step returns an error instead of deleting presumed local topology.
+`cluster start`, `cluster stop`, `cluster status` and `cluster check` form the
+common CLI lifecycle. Start and stop require matching private runtime ownership;
+stop retains accepted inputs and data. Endpoint-only attachment supports current
+observation and workloads without granting runtime stop or cleanup authority.
+Independent OCI cleanup validates the recorded daemon, exact container and
+resource identities before removing owned runtime resources. It preserves data
+by default; explicit owned-data deletion is separate from stopping services.
 
-There is no orphan-guessing reset command. A stopped or unreachable node does
-not imply its membership should be deleted. `cluster clean` derives its
-replica targets from Group 0, wipes each live target, and waits for a new
-leader while preserving topology.
+Application cleanup is a distinct authenticated operation. It validates the
+retained bootstrap, retires further setup/recovery, drains owned services and
+removes the matching system store through its local deletion endpoint. Failed
+members remain pending for explicit retry; an unavailable node is never proof
+that its membership or data should be deleted. No cleanup guesses orphan
+ownership or reconstructs topology from host-local process records.
 
 Manual node discovery and bootstrap follow the
 [deployment architecture](../deploy/design-crowdb-deploy.md). The Cluster sidebar

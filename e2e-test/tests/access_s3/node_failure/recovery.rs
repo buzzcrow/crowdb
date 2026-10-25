@@ -5,7 +5,7 @@ use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_kv_client::{HardwareClient, RangeBindingClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{ChunkType, ListChunksRequest, QueryChunkRequest, Strip, StripType};
 use crowdb_protocol::common::{ChunkId, HwStatus};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -144,19 +144,32 @@ async fn diskdb_missing(
         .list_disk_groups()
         .await
         .map_err(|error| format!("hardware: {error}"))?;
-    let mut owned = HashSet::new();
-    for (_, instance) in instances {
+    let owners = hardware
+        .list_owners()
+        .await
+        .map_err(|error| format!("ownership: {error}"))?;
+    let mut advertised = HashMap::<u64, HashSet<u64>>::new();
+    for (id, instance) in instances {
         if instance.rpc_endpoint.is_empty() {
             continue;
         }
         if let Some(diskdb) = instance.extra.and_then(|extra| extra.diskdb) {
-            owned.extend(diskdb.owned_dg_ids);
+            for group in diskdb.owned_dg_ids {
+                advertised.entry(group).or_default().insert(id);
+            }
         }
     }
     Ok(groups
         .iter()
+        .filter(|group| {
+            !owners.iter().any(|owner| {
+                owner.dg_id == group.dg_id
+                    && advertised.get(&group.dg_id).is_some_and(|instances| {
+                        instances.len() == 1 && instances.contains(&owner.instance_id)
+                    })
+            })
+        })
         .map(|group| group.dg_id)
-        .filter(|group| !owned.contains(group))
         .collect())
 }
 

@@ -224,7 +224,10 @@ impl TestPxClient {
         let reply = self
             .transport
             .send_prepare(
-                &self.endpoint,
+                crowdb_kv::rpc::ReplicaDestination {
+                    endpoint: &self.endpoint,
+                    replica_id: 0,
+                },
                 req.slot,
                 PxBallot::new(req.round, req.leader_id),
                 req.term,

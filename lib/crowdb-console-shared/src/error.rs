@@ -29,6 +29,9 @@ pub enum Error {
     #[error("{kind} {id} already exists")]
     Conflict { kind: String, id: String },
 
+    #[error("Waiting: {0}")]
+    DependenciesNotReady(String),
+
     #[error("config error: {0}")]
     Config(String),
 

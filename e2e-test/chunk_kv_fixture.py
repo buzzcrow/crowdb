@@ -66,7 +66,7 @@ metadata_group_id = 1
             "ip": address, "rpc_port": 7402, "http_port": 7401, "node": index}, indent=2))
         return self
 
-    def ready_chunk_kv(self, index=None):
+    def ready_chunk_kv(self, index=None, *, recovering=False):
         index = self.chunk_kv_index if index is None else index
         address = self.addresses[index]
         def probe():
@@ -80,12 +80,17 @@ metadata_group_id = 1
                     if health["ready"] or health["hosted_partitions"] != 0 or health["catalog_generation"] != 0:
                         raise AssertionError(f"unpublished Chunk-KV catalog unexpectedly serves data: {health}")
                 return response.status == 200
-        wait(probe, bool, "production Chunk-KV catalog and partition readiness")
+        # Catalog recovery has a 60-second service deadline. An ungraceful
+        # owner replacement must exclude its lease and late IO before binding
+        # the serving endpoint; the ordinary 30-second startup probe cannot
+        # cover that required safety boundary.
+        wait(probe, bool, "production Chunk-KV catalog and partition readiness",
+             seconds=60 if recovering else 30)
 
     def crash_restart(self):
         started = time.monotonic()
         self.command("kill", "--signal", "KILL", self.servers[self.chunk_kv_index])
         super().crash_restart()
         self.command("start", self.servers[self.chunk_kv_index])
-        self.ready_chunk_kv()
+        self.ready_chunk_kv(recovering=True)
         self.timings["restart"] = time.monotonic() - started

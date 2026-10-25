@@ -85,6 +85,7 @@ impl KeepAlive {
         let kv = Arc::new(kv.for_group(&dg));
         let cas_retry_metric = self.cas_retry_metric.clone();
         let disk_value_owned = disk_value.clone();
+        let completion = self.sync_trigger.clone();
         tokio::spawn(async move {
             Self::background_zone_load(
                 bind,
@@ -96,6 +97,7 @@ impl KeepAlive {
                 status_machine,
                 dg,
                 disk,
+                completion,
             )
             .await;
         });
@@ -117,6 +119,7 @@ impl KeepAlive {
         status_machine: HwStateMachine,
         dg: Arc<DdbDiskGroup>,
         disk: Arc<DdbDisk>,
+        completion: Option<Arc<tokio::sync::Notify>>,
     ) {
         let zone_count = disk_value.zone_count;
         let zone_size_units = disk_value.zone_size_units;
@@ -305,5 +308,10 @@ impl KeepAlive {
         disk.rebuild_active_zones(zone_rotate_count);
         dg.rebuild_allocating_disks();
         info!(disk = ?disk_id, status = ?final_status, "init-state zone load complete");
+        if let Some(completion) = completion {
+            // Publish the completed state immediately; the preceding sync may
+            // have advertised this disk while its zones were still loading.
+            completion.notify_one();
+        }
     }
 }

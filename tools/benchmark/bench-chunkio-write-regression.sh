@@ -6,6 +6,7 @@
 #   CHUNKIO_BENCH_LOG_ROOT    retained run root
 #   CHUNKIO_BENCH_RESULTS     result TSV path
 #   CHUNKIO_BENCH_TIMEOUT     seconds allowed per case (default: 120)
+#   CHUNKIO_BENCH_SKIP_BUILD  set to 1 to reuse release artifacts
 #   CHUNKIO_PREFETCH_CHUNKS   chunks warmed before timed load (default: 10)
 #
 # Reference run (2026-09-10): Intel Core i9-7960X, 4 memory channels,
@@ -30,6 +31,7 @@ unset CROWDB_ASAN
 CASES="${CHUNKIO_BENCH_CASES:-}"
 TIMEOUT_SECS="${CHUNKIO_BENCH_TIMEOUT:-120}"
 PREFETCH_CHUNKS="${CHUNKIO_PREFETCH_CHUNKS:-10}"
+SKIP_BUILD="${CHUNKIO_BENCH_SKIP_BUILD:-0}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
 LOG_ROOT="${CHUNKIO_BENCH_LOG_ROOT:-${CROWDB_RUNTIME_ROOT:-$(pwd)/.crowdb-runtime}/artifacts/bench/chunkio-write-regression-$RUN_STAMP}"
 RESULTS_FILE="${CHUNKIO_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
@@ -80,7 +82,7 @@ verify_logs() {
     diskdb=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-diskdb-metrics-*.log' | wc -l)
     chunkdb=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-chunkdb-metrics-*.log' | wc -l)
     diskio=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-diskio-metrics-*.log' | wc -l)
-    cli_metrics=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-cli-metrics-*.log' | wc -l)
+    cli_metrics=$(find "$CURRENT_LOG_ROOT/measurements" -type f -name 'crowdb-cli-metrics-*.log' | wc -l)
     cli_metrics_file=$(find "$BENCH_LOG_DIR" -type f -name 'crowdb-cli-metrics-*.log' | head -n 1)
     [ "$kv" -eq 3 ] && [ "$diskdb" -ge $((CASE_NUMBER * 3)) ] \
         && [ "$chunkdb" -ge $((CASE_NUMBER * 3)) ] \
@@ -92,7 +94,7 @@ verify_logs() {
         && regression_require_metric_files 'crowdb-diskdb-metrics-*.log' rust cpp-rpc \
         && regression_require_metric_files 'crowdb-chunkdb-metrics-*.log' rust cpp-rpc \
         && regression_require_metric_files 'crowdb-diskio-metrics-*.log' cpp-rpc \
-        && ! grep -ERq -- 'fd .*not registered|DiskNotExist' "$CURRENT_LOG_ROOT"/cli-cluster-local-deploy-*/deploy/*/*/*/log
+        && regression_require_no_service_errors
 }
 
 run_case() {
@@ -115,7 +117,7 @@ run_case() {
     fi
     set +e
     output=$(timeout --signal=INT --kill-after=10 "$TIMEOUT_SECS" \
-        pixi run -- ./target/release/crowdb-cli --log-root "$CURRENT_LOG_ROOT" --config "$CURRENT_CONFIG" \
+        pixi run python tools/benchmark/fixture.py --state "$CURRENT_CONFIG" client -- \
         bench chunkio write --objects "$objects" --duration-secs "$duration_secs" \
         --object-size "$object_size" \
         --concurrency "$concurrency" --diskio-connections 8 --data-num 8 --code-num 4 \
@@ -182,14 +184,16 @@ run_case() {
     fi
 }
 
-echo "=== building release binaries ==="
-pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
-pixi run build-cpp
+if [ "$SKIP_BUILD" != 1 ]; then
+    echo "=== building release binaries ==="
+    pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+    pixi run build-cpp
+fi
 mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
 regression_init
 printf 'case\trequested\tsize_bytes\tsize_mib\tconcurrency\tcompleted\terrors\tincomplete\tstop\tobjects_s\tlogical_mib_s\tphysical_mib_s\tavg_us\tp50_us\tp99_us\tmem_read_avg_mib\tmem_read_max_mib\tmem_write_avg_mib\tmem_write_max_mib\tmem_total_avg_mib\tmem_total_max_mib\n' >"$RESULTS_FILE"
 
-cli cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec \
+regression_fixture setup -- --kind combined --metrics-interval 1 \
     --kv-backend mem-block --wal-backend mem-block --no-fsync
 
 run_case stream_1t 16777216 1 stream

@@ -55,7 +55,7 @@ pub(super) async fn advance(
         {
             return Err("supplied preparation differs from sealed node setup".into());
         }
-        let retry = state.retry_supplied.remove(&record.operation_id);
+        let retry = state.retry_disks.remove(&record.operation_id);
         let mut phase = match current.as_ref().map(|current| current.phase) {
             Some(SuppliedPreparationPhase::Registered) => SetupStepPhase::Ready,
             Some(SuppliedPreparationPhase::Failed) if !retry => SetupStepPhase::Failed,
@@ -141,9 +141,10 @@ async fn prepare(
                 &hardware,
                 kv,
                 node.rack_id,
-                binding.node_id,
+                binding,
                 medium.media_type,
                 &excluded,
+                false,
             )
             .await?;
             excluded.insert(group.0);

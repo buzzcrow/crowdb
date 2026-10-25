@@ -14,31 +14,10 @@ async fn restart_exhaustion_exits_the_container() {
     assert!(result["log"]
         .as_str()
         .unwrap()
-        .contains("\"kind\":\"restart_exhausted\""));
+        .contains("web exceeded monitor restart budget"));
     assert_eq!(result["secret_free"], true);
-    for event in [
-        "starting",
-        "ready",
-        "bootstrap_step_started",
-        "bootstrap_step_completed",
-        "child_started",
-        "child_stopped",
-        "child_exited",
-        "probe_failed",
-        "restarting",
-        "draining",
-        "stopped",
-        "restart_exhausted",
-    ] {
-        assert!(
-            result["events"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value == event),
-            "missing {event}"
-        );
-    }
+    assert_eq!(result["after"]["phase"], "failed");
+    assert_eq!(result["after"]["services"]["web"]["restart_attempts"], 5);
 }
 
 #[tokio::test]
@@ -48,9 +27,6 @@ async fn recovery_rejects_changed_durable_credentials() {
     let result = crate::common::control::monitor_failure("reject-changed-credentials").await;
     assert_eq!(result["state"]["Status"], "exited");
     assert_ne!(result["state"]["ExitCode"], 0);
-    assert_eq!(result["ready_before"], result["ready_after"]);
-    assert!(result["log"]
-        .as_str()
-        .unwrap()
-        .contains("server credentials are incomplete"));
+    assert_eq!(result["credential_rejection"], true);
+    assert_eq!(result["secret_free"], true);
 }

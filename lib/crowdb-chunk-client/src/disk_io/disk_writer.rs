@@ -54,6 +54,79 @@ pub trait DiskWriter: Send + Sync {
         ))
     }
 
+    /// Complete an offset write only after its disk synchronization.
+    /// Production adapters combine write and flush in one supported wire request.
+    async fn write_synchronized_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        self.write_at_byte_offset(seg, unit_bytes, byte_offset, data)
+            .await?;
+        self.fsync(seg).await
+    }
+
+    /// Initialize fresh storage with one synchronized submission and no retries.
+    /// An ambiguous result must never authorize subsequent writes or reuse.
+    async fn initialize_synchronized_at_byte_offset(
+        &self,
+        _seg: &Segment,
+        _unit_bytes: u64,
+        _byte_offset: u64,
+        _data: Bytes,
+    ) -> Result<()> {
+        Err(IoError::WriteFailed(
+            "disk writer does not support single-attempt initialization".into(),
+        ))
+    }
+
+    /// Synchronize ordered immutable views while retaining their owners.
+    async fn write_synchronized_views_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Vec<Bytes>,
+    ) -> Result<()> {
+        self.write_views_at_byte_offset(seg, unit_bytes, byte_offset, data)
+            .await?;
+        self.fsync(seg).await
+    }
+
+    /// Submit synchronized views under the caller's original owner deadline.
+    async fn write_synchronized_views_until(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        data: Vec<Bytes>,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        if std::time::Instant::now() >= deadline {
+            return Err(IoError::WriteFailed("owner IO deadline expired".into()));
+        }
+        self.write_synchronized_views_at_byte_offset(seg, unit_bytes, offset, data)
+            .await
+    }
+
+    /// Initialize once under the original owner deadline; never retry zeroing.
+    async fn initialize_synchronized_until(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        data: Bytes,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        if std::time::Instant::now() >= deadline {
+            return Err(IoError::WriteFailed("owner IO deadline expired".into()));
+        }
+        self.initialize_synchronized_at_byte_offset(seg, unit_bytes, offset, data)
+            .await
+    }
+
     /// Write a conversion-data range without queueing behind ordinary writes.
     async fn write_priority_at_byte_offset(
         &self,
@@ -69,6 +142,19 @@ pub trait DiskWriter: Send + Sync {
     /// Flush the disk containing `seg`.
     async fn fsync(&self, _seg: &Segment) -> Result<()> {
         Ok(())
+    }
+
+    /// Drain the segment's ordered writes and synchronize before this deadline.
+    /// The caller must exclude future producers before observing or reusing it.
+    async fn drain_segment(
+        &self,
+        _seg: &Segment,
+        _unit_bytes: u64,
+        _deadline: std::time::Instant,
+    ) -> Result<()> {
+        Err(IoError::WriteFailed(
+            "disk writer does not support ordered segment drains".into(),
+        ))
     }
 
     /// Flush conversion data through the priority lane when available.

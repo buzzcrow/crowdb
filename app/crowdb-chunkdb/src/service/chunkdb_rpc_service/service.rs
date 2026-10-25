@@ -7,13 +7,10 @@
 // by the C++ transport). Confined to `submit_response` calls.
 #![allow(unsafe_code)]
 
-//! crowdb-rpc handler set for `ChunkdbService` (R116 migration).
+//! crowdb-rpc handler set for the current `ChunkDB` service.
 //!
-//! Each handler dispatches by `msg_type` to the existing lifecycle
-//! logic — the same bodies as the tonic `ChunkdbService` in
-//! `chunkdb_service.rs`. The response is a flatbuffer frame built per
-//! `design-crowdb-rpc.md` §6 (build → finish → attach) and submitted via
-//! `RpcServer::submit_response`.
+//! Each handler dispatches by `msg_type` to lifecycle logic. Responses are
+//! `FlatBuffer` frames submitted through `RpcServer::submit_response`.
 //!
 //! Handlers run on the C++ I/O worker thread. All chunkdb lifecycle
 //! methods are async (KV persist, diskdb allocation), so each handler
@@ -54,7 +51,7 @@ use crowdb_protocol::chunkdb_fb::{
     FBStripReservationAction, FBStripReservationGroup, FBStripReservationGroupArgs, FBStripReservationState,
     FBStripType, FBTriggerConversionBatchRequest, FBTriggerConversionBatchResponse,
     FBTriggerConversionBatchResponseArgs, FBTriggerConversionRequest, FBTriggerConversionResponse,
-    FBTriggerConversionResponseArgs, FBUpdateChunkStripRequest,
+    FBTriggerConversionResponseArgs,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
@@ -69,9 +66,8 @@ use crate::metrics::{ChunkdbMetrics, RequestGuard, RequestKind};
 use crate::relocation::RelocationCoordinator;
 use crate::task::{SegmentOwnerResolver, TaskStore};
 
-/// crowdb-rpc handler set for `ChunkdbService`. Holds the same
-/// `LifecycleHandler` as the tonic `ChunkdbService`; `register_handlers`
-/// wires one handler per request `msg_type` into a `RpcServer`.
+/// `ChunkDB` lifecycle RPC handlers. `register_handlers` wires one handler
+/// per request `msg_type` into a `RpcServer`.
 pub struct ChunkdbRpcService {
     handler: Arc<LifecycleHandler>,
     metrics: Arc<ChunkdbMetrics>,
@@ -214,7 +210,7 @@ impl ChunkdbRpcService {
             Self::make_handler(
                 Arc::clone(self),
                 Arc::clone(server),
-                RequestKind::UpdateChunkStrip,
+                RequestKind::LayoutMutation,
                 Self::handle_relocate_segment_handoff,
             ),
         );
@@ -246,15 +242,6 @@ impl ChunkdbRpcService {
             ),
         );
         server.register_handler(
-            FBMsgType::EUpdateChunkStripRequest.0 as u16,
-            Self::make_handler(
-                Arc::clone(self),
-                Arc::clone(server),
-                RequestKind::UpdateChunkStrip,
-                Self::handle_update_strip,
-            ),
-        );
-        server.register_handler(
             FBMsgType::EListChunksRequest.0 as u16,
             Self::make_handler(
                 Arc::clone(self),
@@ -282,7 +269,7 @@ impl ChunkdbRpcService {
             Self::make_handler(
                 Arc::clone(self),
                 Arc::clone(server),
-                RequestKind::UpdateChunkStrip,
+                RequestKind::LayoutMutation,
                 Self::handle_prepare_conversion,
             ),
         );
@@ -291,7 +278,7 @@ impl ChunkdbRpcService {
             Self::make_handler(
                 Arc::clone(self),
                 Arc::clone(server),
-                RequestKind::UpdateChunkStrip,
+                RequestKind::LayoutMutation,
                 Self::handle_complete_conversion,
             ),
         );
@@ -300,7 +287,7 @@ impl ChunkdbRpcService {
             Self::make_handler(
                 Arc::clone(self),
                 Arc::clone(server),
-                RequestKind::UpdateChunkStrip,
+                RequestKind::LayoutMutation,
                 Self::handle_trigger_conversion,
             ),
         );
@@ -309,7 +296,7 @@ impl ChunkdbRpcService {
             Self::make_handler(
                 Arc::clone(self),
                 Arc::clone(server),
-                RequestKind::UpdateChunkStrip,
+                RequestKind::LayoutMutation,
                 Self::handle_trigger_conversion_batch,
             ),
         );
@@ -321,7 +308,7 @@ impl ChunkdbRpcService {
             Self::make_handler(
                 Arc::clone(self),
                 Arc::clone(server),
-                RequestKind::UpdateChunkStrip,
+                RequestKind::LayoutMutation,
                 Self::handle_allocate_replacement,
             ),
         );
@@ -330,7 +317,7 @@ impl ChunkdbRpcService {
             Self::make_handler(
                 Arc::clone(self),
                 Arc::clone(server),
-                RequestKind::UpdateChunkStrip,
+                RequestKind::LayoutMutation,
                 Self::handle_replace_range,
             ),
         );
@@ -339,7 +326,7 @@ impl ChunkdbRpcService {
             Self::make_handler(
                 Arc::clone(self),
                 Arc::clone(server),
-                RequestKind::UpdateChunkStrip,
+                RequestKind::LayoutMutation,
                 Self::handle_discard_replacement,
             ),
         );

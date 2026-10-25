@@ -42,11 +42,15 @@ impl PartitionJournal for FailedJournal {
         Ok(())
     }
 
+    async fn checkpoint(&self) -> crowdb_chunk_kv::Result<u64> {
+        Err(ChunkKvError::WriteStalled)
+    }
+
     fn stream_name(&self) -> StreamName {
         StreamName { high: 1, low: 1 }
     }
 
-    fn manifest_generation(&self) -> u64 {
+    fn record_generation(&self) -> u64 {
         1
     }
 
@@ -120,6 +124,10 @@ async fn assert_failed_journal_recovers(wrong_position_count: bool) {
     assert_eq!(journal.appends.load(Ordering::Relaxed), 1);
     assert_eq!(
         partition.suspend_for_transfer(1).await,
+        Err(ChunkKvError::Recovering)
+    );
+    assert_eq!(
+        partition.suspend_for_shutdown(1).await,
         Err(ChunkKvError::Recovering)
     );
     assert!(matches!(

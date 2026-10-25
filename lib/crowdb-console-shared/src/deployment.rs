@@ -6,7 +6,10 @@
 pub mod admission;
 mod bootstrap;
 pub mod node_update;
+pub mod preparation;
+pub mod recovery;
 pub mod registry;
 pub mod services;
+pub mod target;
 
 pub use bootstrap::{PreparedBootstrap, CLUSTER_KEY};

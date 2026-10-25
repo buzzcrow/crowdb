@@ -314,6 +314,7 @@ impl Partition {
         child_state
             .child_tree
             .pin_generation(plan.transition_id, child_state.child_base.1)?;
+        self.journal.checkpoint().await?;
         let source = SplitSourceFrontier {
             parent_id: plan.parent_id,
             parent_epoch: plan.parent_epoch,
@@ -371,7 +372,8 @@ impl Partition {
             ));
         }
         let replay_offset = self.retry_replay_offset.load(Ordering::Acquire);
-        let stream_manifest_generation = self.journal.manifest_generation();
+        self.journal.checkpoint().await?;
+        let stream_generation = self.journal.record_generation();
         let (tree_manifest, applied_seq, source) = self.tree.checkpoint_snapshot(replay_offset).await?;
         let root_manifest_generation = self.tree.root_manifest_generation()?;
         if applied_seq > self.journal_durable_seq.load(Ordering::Acquire) {
@@ -384,7 +386,7 @@ impl Partition {
                 root_manifest_generation,
                 applied_seq,
                 stream_name: self.journal.stream_name(),
-                stream_manifest_generation,
+                stream_generation,
                 replay_offset,
             },
             source,
@@ -427,7 +429,7 @@ fn prepare_retained_parent(
         parent_id: source.parent_id,
         parent_epoch: source.parent_epoch,
         parent_stream_name: source.checkpoint.stream_name,
-        parent_stream_manifest_generation: source.checkpoint.stream_manifest_generation,
+        parent_stream_generation: source.checkpoint.stream_generation,
         parent_replay_offset: source.checkpoint.replay_offset,
         parent_cutover_offset: source.cutover_offset,
         applied_seq,
@@ -441,7 +443,7 @@ fn validate_target(parent: &Partition, plan: &SplitPlan, target: &SplitWriterTar
     if target.tree_id == 0
         || target.tree_id == parent.tree.tree_id()
         || target.journal.stream_name() == parent.journal.stream_name()
-        || target.journal.manifest_generation() == 0
+        || target.journal.record_generation() == 0
     {
         return Err(ChunkKvError::InvalidRequest(
             "split writer storage identities must be distinct".into(),
@@ -607,7 +609,7 @@ fn prepare_writer(
         parent_id: source.parent_id,
         parent_epoch: source.parent_epoch,
         parent_stream_name: source.checkpoint.stream_name,
-        parent_stream_manifest_generation: source.checkpoint.stream_manifest_generation,
+        parent_stream_generation: source.checkpoint.stream_generation,
         parent_replay_offset: source.checkpoint.replay_offset,
         parent_cutover_offset: source.cutover_offset,
         applied_seq: source.cutover_seq,
@@ -622,7 +624,7 @@ fn prepare_writer(
         root_manifest_generation,
         applied_seq: base_applied_seq,
         stream_name: target.journal.stream_name(),
-        stream_manifest_generation: target.journal.manifest_generation(),
+        stream_generation: target.journal.record_generation(),
         replay_offset: 0,
     };
     Ok(PreparedSplitWriter {

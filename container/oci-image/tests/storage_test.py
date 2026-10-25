@@ -18,34 +18,34 @@ from storage import inputs, record_inputs, runtime_arguments, validate_retained_
 
 
 class StorageTest(unittest.TestCase):
-    def test_single_startup_keeps_the_initial_root_clean_and_rejects_external_media(self):
-        for supplied in (False, True):
-            with self.subTest(supplied=supplied), tempfile.TemporaryDirectory() as directory:
+    def test_one_and_three_voters_use_normal_policy_and_preserve_supplied_media(self):
+        for voters in (1, 3):
+            with self.subTest(voters=voters), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory) / "node"
                 root.mkdir()
                 source = Path(directory) / "external.img"
                 source.write_bytes(b"retained")
-                args = SimpleNamespace(data_root=root, disk_file=[source] if supplied else [], device=[],
+                args = SimpleNamespace(data_root=root, disk_file=[source], device=[],
                                        name="node", cpus=1, memory_mib=512, network="host",
-                                       startup_mode="single", physical_host_id="host", interface="eth0",
+                                       cluster="test-cluster", initial_voters=voters,
+                                       physical_host_id="host", interface="eth0",
                                        password_file=None, seed=[], ui_port=None, image="image")
                 runtime = Runtime("docker")
                 with patch.object(runtime, "invoke", return_value="container") as invoke, patch.object(runtime, "verify"):
-                    if supplied:
-                        with self.assertRaisesRegex(ValueError, "single.*supplied"):
-                            runtime.create(args)
-                        invoke.assert_not_called()
-                    else:
-                        self.assertEqual(runtime.create(args), "container")
-                    self.assertEqual(list(root.iterdir()), [], "single bootstrap owns its initial data directory")
+                    self.assertEqual(runtime.create(args), "container")
+                launch = invoke.call_args_list[0].args
+                self.assertIn("CROWDB_CLUSTER=test-cluster", launch)
+                self.assertIn(f"CROWDB_INITIAL_VOTERS={voters}", launch)
+                self.assertFalse(any("STARTUP_MODE" in arg for arg in launch))
+                self.assertTrue((root / "container-storage.json").is_file())
                 self.assertEqual(source.read_bytes(), b"retained")
 
-    def test_failed_start_preserves_logs_before_owned_cleanup(self):
+    def test_failed_start_preserves_logs_and_runtime_until_explicit_cleanup(self):
         for owned in (True, False):
             with self.subTest(owned=owned), tempfile.TemporaryDirectory() as directory:
                 args = SimpleNamespace(data_root=Path(directory), disk_file=[], device=[],
                                        name="node", cpus=1, memory_mib=512, network="host",
-                                       startup_mode="single", physical_host_id="host", interface="eth0",
+                                       cluster="test-cluster", initial_voters=1, physical_host_id="host", interface="eth0",
                                        password_file=None, seed=[], ui_port=None, image="image")
                 calls = []
                 token = None
@@ -65,8 +65,8 @@ class StorageTest(unittest.TestCase):
                         patch("builtins.print") as output:
                     with self.assertRaisesRegex(RuntimeError, "stopped"):
                         runtime.create(args)
-                self.assertEqual(calls[1:], [("logs", "node"), ("rm", "-f", "node")] if owned else [])
-                self.assertEqual(output.call_count, 2 * int(owned))
+                self.assertEqual(calls[1:], [("logs", "node")] if owned else [])
+                self.assertEqual(output.call_count, 3 * int(owned))
 
     def test_replacement_preserves_original_mappings_before_runtime_launch(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -140,7 +140,7 @@ class StorageTest(unittest.TestCase):
                 source.write_bytes(b"preserved")
                 args = SimpleNamespace(disk_file=[source], device=[], data_root=root,
                                        name="node", cpus=1, memory_mib=512,
-                                       network="host", startup_mode="manual",
+                                       network="host", cluster="test-cluster", initial_voters=3,
                                        physical_host_id="host", interface="eth0",
                                        password_file=None, seed=[], ui_port=None,
                                        image="image@sha256:test")

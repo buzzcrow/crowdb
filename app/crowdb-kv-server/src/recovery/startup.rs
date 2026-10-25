@@ -178,6 +178,7 @@ pub async fn create_group_with_wal(
     wal_backend: Arc<IoBackend>,
     crowtree_backend: CrowdbTreeBackend,
 ) -> io::Result<PxGroup> {
+    crate::mgmt::group_creation::check_restore(&config.config_root, store_id, group_id, replica_id)?;
     persist_creation_identity(&config.config_root, store_id, group_id, replica_id).await?;
     let mut wal_config = WalConfig::with_root(store_wal_root(&config.wal_root, store_id));
     if std::env::var("CROWDB_KV_WAL_TEXT").as_deref() == Ok("1") {
@@ -231,5 +232,8 @@ pub async fn create_group_with_wal(
         .saturating_add(1)
         .max(1);
     group.set_next_slot(next_slot);
+    if let Err(error) = super::member_routes::apply(&group, &config.config_root, store_id) {
+        tracing::debug!(store_id, group_id, %error, "restored member routes are blocked pending verification");
+    }
     Ok(group)
 }

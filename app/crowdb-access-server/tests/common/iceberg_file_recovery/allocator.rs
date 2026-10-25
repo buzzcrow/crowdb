@@ -229,7 +229,8 @@ impl ChunkAllocator for TestAllocator {
         self.update(|state| {
             let chunk = state.chunks.get_mut(&(id.high, id.low)).unwrap();
             chunk.state = ChunkState::Sealed as i32;
-            chunk.sealed_length = req.seal_length;
+            chunk.sealed_length = u32::try_from(req.seal_bytes.div_ceil(1024)).unwrap();
+            chunk.acknowledged_cursor = req.seal_bytes;
             Ok(SealChunkResponse {
                 chunk: Some(chunk.clone()),
             })
@@ -245,10 +246,6 @@ impl ChunkAllocator for TestAllocator {
                 chunk: Some(chunk.clone()),
             })
         })
-    }
-
-    async fn update_chunk_strip(&self, _req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        unreachable!()
     }
 
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {

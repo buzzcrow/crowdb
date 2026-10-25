@@ -53,7 +53,8 @@ def verify(docker, request, wait, image, network, names, origins, cluster):
         node["advertisement"]["discovery_id"] == identity and node["state"] == "same_cluster" and changed in str(node["advertisement"]["monitor_endpoints"])
         for node in result["candidates"]), "persistent node new endpoint")
     assert docker("exec", name, "cat", "/opt/crowdb/data/ssh/id_ed25519.pub") == key
-    browser(origins[0], "node update", "update", CROWDB_NODE_UI_UPDATE_UUID=identity)
+    browser(origins[0], "node update", "update", CROWDB_NODE_UI_UPDATE_UUID=identity,
+            CROWDB_NODE_UI_OLD_HOST=old, CROWDB_NODE_UI_NEW_HOST=changed)
     for peer in origins:
         updated = next(node for node in request(peer, "/api/node/admissions") if node["discovery_id"] == identity)
         assert updated["node_id"] == joined["node_id"] and updated["rack_id"] == 2 and updated["host"] == changed, updated

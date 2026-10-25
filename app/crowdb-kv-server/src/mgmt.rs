@@ -11,6 +11,7 @@
 //! - [`topology`] — topology export + metrics endpoints
 
 mod discovery;
+pub(crate) mod group_creation;
 mod group_ops;
 pub mod operation_registry;
 mod replica_ops;
@@ -177,6 +178,7 @@ pub fn router(state: RegistryArc) -> Router {
             post(group_ops::wipe_user_data),
         )
         .route("/stores/:sid/groups/:gid/ready", get(group_ops::group_readiness))
+        .route("/stores/:sid/groups/:gid/creation", get(group_creation::status))
         .route("/operations/:id", get(group_ops::get_operation))
         .route("/topology", get(topology::export_topology))
         .route("/top", get(topology::export_topology))

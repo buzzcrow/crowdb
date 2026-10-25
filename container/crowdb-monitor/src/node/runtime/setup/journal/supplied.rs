@@ -7,8 +7,7 @@ use super::{AcceptedSetup, Result, SetupStorage};
 use std::collections::BTreeSet;
 
 pub(super) fn validate(state: &AcceptedSetup) -> Result<()> {
-    if state.supplied.len() > 64 || state.supplied_observations.len() > 64 || state.retry_supplied.len() > 64
-    {
+    if state.supplied.len() > 64 || state.supplied_observations.len() > 64 {
         return Err("sealed supplied plan exceeds bound".into());
     }
     if state.supplied.is_empty() {
@@ -66,9 +65,6 @@ pub(super) fn validate(state: &AcceptedSetup) -> Result<()> {
         {
             return Err("sealed medium identity, placement or authorization changed".into());
         }
-    }
-    if state.retry_supplied.iter().any(|id| !operations.contains(id)) {
-        return Err("retry references an unselected supplied operation".into());
     }
     Ok(())
 }

@@ -8,7 +8,7 @@ use crowdb_chunk_client::{
 };
 use crowdb_common::ec::{encode_parity_from_shards, EcScheme};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, EcState, Location, Strip};
-use crowdb_protocol::frame::{ChunkLocation, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{ChunkLocation, MAX_FRAME_V2_PAYLOAD_BYTES};
 use std::sync::Arc;
 const MIB: usize = 1024 * 1024;
 fn ec_4_1() -> EcScheme {
@@ -187,7 +187,7 @@ async fn large_raw_buffers_submit_complete_mirror_strips_concurrently() {
     let mut configured = policy(16 * MIB as u64);
     Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(2);
     let mut writer = stack.client.prepare_large_write(None, configured);
-    let block = Bytes::from(vec![0x5a; 16 * MAX_FRAME_PAYLOAD_BYTES]);
+    let block = Bytes::from(vec![0x5a; 16 * MAX_FRAME_V2_PAYLOAD_BYTES]);
     for _ in 0..8 {
         assert_eq!(
             writer.on_data(block.clone()).await.unwrap(),
@@ -296,7 +296,7 @@ async fn large_write_rotates_chunks_without_losing_data() {
     let mut streamed = Vec::new();
     while let Some(part) = stream.next_chunk().await {
         let part = part.unwrap();
-        assert!(part.len() <= MAX_FRAME_PAYLOAD_BYTES);
+        assert!(part.len() <= MAX_FRAME_V2_PAYLOAD_BYTES);
         streamed.extend_from_slice(&part);
     }
     assert_eq!(streamed, data);

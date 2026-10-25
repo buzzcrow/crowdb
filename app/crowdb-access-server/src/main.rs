@@ -208,11 +208,8 @@ async fn run_s3(
         )?
         .unwrap_or(10_000);
         let health = Arc::new(S3Health::starting(cleanup_backlog_limit));
-        health.set_metadata(DependencyHealth::Ready);
-        health.set_chunks(DependencyHealth::Ready);
-        health.set_authentication(DependencyHealth::Ready);
         let (operations, object_inspector) =
-            configured_s3_operations(storage, service_config, Arc::clone(&metrics), Arc::clone(&health))?;
+            configured_s3_operations(storage, service_config, Arc::clone(&metrics))?;
         let expiry_task = start_multipart_expiry(Arc::clone(&operations));
         let native_budget = configured_usize(
             access_config.s3.native_budget_bytes,
@@ -237,6 +234,7 @@ async fn run_s3(
         let health_listener = bind_health_listener(access_config).await?;
         let health_handler = Arc::new(AccessHealthHandler(Arc::clone(&handler)));
         health.set_listener(DependencyHealth::Ready);
+        let health_observer = handler.start_health_observer()?;
         let serve_result = crowdb_access_server::listeners::serve_s3(
             serve(listener, handler, wait_for_shutdown(shutdown.clone())),
             serve(health_listener, health_handler, wait_for_shutdown(shutdown)),
@@ -244,6 +242,7 @@ async fn run_s3(
         )
         .await;
         health.stop();
+        drop(health_observer);
         expiry_task.abort();
         let shutdown_result = chunks.shutdown_small_writes().await;
         if let Some(task) = credential_refresh {
@@ -501,7 +500,6 @@ fn configured_s3_operations(
     storage: S3StorageClients,
     config: S3ServiceConfig,
     metrics: Arc<S3Metrics>,
-    health: Arc<S3Health>,
 ) -> Result<
     (
         Arc<ProductionS3Operations>,
@@ -517,7 +515,6 @@ fn configured_s3_operations(
     .map_err(|error| format!("S3 object inspection configuration failed: {error}"))?;
     let operations = ProductionS3Operations::new(storage, config)
         .map_err(|_| "invalid S3 service configuration")?
-        .with_metrics(metrics)
-        .with_health(health);
+        .with_metrics(metrics);
     Ok((Arc::new(operations), inspector))
 }

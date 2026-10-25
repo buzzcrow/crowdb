@@ -3,10 +3,10 @@
 
 use bytes::Bytes;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
-use crowdb_chunk_stream::StreamRegistry;
 use crowdb_chunk_stream::{
-    ProductionStreamRuntime, StreamBinding, StreamBindingState, StreamConfig, StreamError, StreamName,
+    ProductionStreamRuntime, StreamConfig, StreamError, StreamName, StreamRecord, StreamRecordState,
 };
+use crowdb_chunk_stream::{StreamMetadataStore, StreamRegistry};
 use std::time::{Duration, Instant};
 
 fn witness() -> std::path::PathBuf {
@@ -39,7 +39,7 @@ async fn connect_chunk_io() -> ChunkIoClient {
 
 #[tokio::test]
 #[ignore = "requires the owned release container fixture"]
-async fn production_idle_writer_stops_after_ownership_takeover() {
+async fn production_released_idle_writer_stops_after_owner_transfer() {
     let io = connect_chunk_io().await;
     let config = StreamConfig {
         liveness_interval: Duration::from_millis(50),
@@ -56,13 +56,15 @@ async fn production_idle_writer_stops_after_ownership_takeover() {
     let name = StreamName { high: 42, low: 142 };
     old_runtime
         .registry()
-        .create(StreamBinding {
+        .create(StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name: name,
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("idle-authority-e2e".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("idle-authority-e2e".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         })
         .await
         .unwrap();
@@ -76,8 +78,12 @@ async fn production_idle_writer_stops_after_ownership_takeover() {
         StreamConfig::default(),
     )
     .unwrap();
-    let new = new_runtime.open(name, 0, 2).await.unwrap();
-    let head = new.observe_metadata(None, 0).unwrap();
+    old.release_writer().await.unwrap();
+    let new = tokio::time::timeout(Duration::from_secs(10), new_runtime.open(name, 0, 2))
+        .await
+        .expect("drained release must not wait for the live predecessor process to expire")
+        .unwrap();
+    let published = new.observe_metadata(None, 0).unwrap();
     // Observe three real idle periods without invoking an old-writer mutation.
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert_eq!(old.metrics().rollovers, 0);
@@ -87,8 +93,8 @@ async fn production_idle_writer_stops_after_ownership_takeover() {
     );
     let reader = new_runtime.open_read_only(name, 0, 2).await.unwrap();
     let observed = reader.observe_metadata(None, 0).unwrap();
-    assert_eq!(observed.generation, head.generation);
-    assert_eq!(observed.active, head.active);
+    assert_eq!(observed.generation, published.generation);
+    assert_eq!(observed.chunk, published.chunk);
     let after = new.append(&[Bytes::from_static(b"new")]).await.unwrap();
     assert_ne!(before.chunk_id, after.chunk_id);
     assert_eq!(new.read_at(0, 6).await.unwrap(), Bytes::from_static(b"oldnew"));
@@ -110,16 +116,18 @@ async fn production_stream_recovers_exact_bytes_after_service_restarts() {
     if std::env::var("CROWDB_E2E_PHASE").as_deref() == Ok("write") {
         first_runtime
             .registry()
-            .create(StreamBinding {
+            .create(StreamRecord {
                 purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
                 stream_name,
                 metadata_group_id: 1,
-                binding_generation: 1,
-                state: StreamBindingState::Active,
-                owner_kind: Some("restart-e2e".into()),
+                record_version: 1,
+                state: StreamRecordState::Active,
+                consumer_kind: Some("restart-e2e".into()),
+                consumer_id: None,
+                created_at_ms: StreamRecord::creation_time_ms(),
             })
             .await
-            .expect("publish stream binding");
+            .expect("publish Stream record");
 
         let first_stream = first_runtime
             .create_registered(stream_name, 0, 1)
@@ -154,7 +162,7 @@ async fn production_stream_recovers_exact_bytes_after_service_restarts() {
     let second_stream = second_runtime
         .open(stream_name, 0, 2)
         .await
-        .expect("recover authoritative stream head");
+        .expect("recover authoritative Stream tail");
     let second = second_stream
         .append(&[Bytes::from_static(b"after-restart")])
         .await
@@ -186,16 +194,18 @@ async fn production_stream_write_returns_after_diskio_failure() {
     let stream_name = StreamName { high: 42, low: 142 };
     runtime
         .registry()
-        .create(StreamBinding {
+        .create(StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name,
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("diskio-failure-e2e".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("diskio-failure-e2e".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         })
         .await
-        .expect("publish stream binding");
+        .expect("publish Stream record");
     let stream = runtime
         .create_registered(stream_name, 0, 1)
         .await
@@ -204,6 +214,7 @@ async fn production_stream_write_returns_after_diskio_failure() {
         .append(&[Bytes::from_static(b"durable|")])
         .await
         .expect("append before DiskIO failure");
+    let published = stream.observe_metadata(None, 0).unwrap();
     for index in 5..11 {
         crate::common::control::node("kill", index).await;
     }
@@ -216,16 +227,28 @@ async fn production_stream_write_returns_after_diskio_failure() {
     .expect("journal append exceeded the 15-second fault budget");
     assert!(result.is_err(), "journal append succeeded without DiskIO");
     assert_eq!(stream.tail(), 8, "failed append advanced the journal tail");
+    // All segments are offline, so the old chunk cannot drain and seal. A
+    // successor must not become authoritative before that boundary completes.
     assert_eq!(
         stream.metrics().rollovers,
-        1,
-        "failed mirror write did not rotate once"
+        0,
+        "offline segments allowed an unsealed chunk handoff"
     );
+    let observed = stream.observe_metadata(None, 0).unwrap();
+    assert_eq!(observed.generation, published.generation);
+    assert_eq!(observed.chunk, published.chunk);
+    assert_eq!(stream.metrics().completed, 1);
+    assert_eq!(stream.metrics().failed, 1);
+    assert_eq!(
+        stream.append(&[Bytes::from_static(b"still-unavailable")]).await,
+        Err(StreamError::WriteStalled)
+    );
+    assert_eq!(stream.tail(), 8);
 }
 
 #[tokio::test]
 #[ignore = "requires the owned release container fixture"]
-async fn production_stream_write_returns_after_live_diskio_errors() {
+async fn production_stream_initialization_returns_after_live_diskio_errors() {
     let chunk_io = connect_chunk_io().await;
     let runtime = ProductionStreamRuntime::new(
         crate::common::hardware::kv_client().into(),
@@ -238,32 +261,38 @@ async fn production_stream_write_returns_after_live_diskio_errors() {
     let stream_name = StreamName { high: 42, low: 143 };
     runtime
         .registry()
-        .create(StreamBinding {
+        .create(StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name,
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("live-diskio-error-e2e".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("live-diskio-error-e2e".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         })
         .await
-        .expect("publish stream binding");
-    let stream = runtime
-        .create_registered(stream_name, 0, 1)
-        .await
-        .expect("create stream");
+        .expect("publish Stream record");
     let result = tokio::time::timeout(
         Duration::from_secs(15),
-        stream.append(&[Bytes::from_static(b"record")]),
+        runtime.create_registered(stream_name, 0, 1),
     )
     .await
-    .expect("journal append exceeded the 15-second fault budget");
+    .expect("strip initialization exceeded the 15-second fault budget");
     assert!(
         result.is_err(),
-        "journal append succeeded with all DiskIO writes failing"
+        "uninitialized strips became writable with all DiskIO writes failing"
     );
-    assert_eq!(stream.tail(), 0);
-    assert_eq!(stream.metrics().rollovers, 1);
+    let metadata =
+        crowdb_chunk_stream::KvStreamMetadataStore::new(crate::common::hardware::kv_client().into(), 0, 1)
+            .unwrap();
+    assert!(metadata
+        .record_store(1)
+        .unwrap()
+        .load_tail(stream_name)
+        .await
+        .unwrap()
+        .is_none());
     for index in 5..11 {
         let state = crate::common::control::node("status", index).await;
         assert_eq!(state["Running"], true, "faulted Diskio exited");

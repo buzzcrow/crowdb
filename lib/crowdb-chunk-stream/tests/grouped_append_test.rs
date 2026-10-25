@@ -1,0 +1,84 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+use std::sync::Arc;
+
+use bytes::Bytes;
+use crowdb_chunk_stream::{
+    memory::MemoryStreamStore, ChunkStream, StreamConfig, StreamName, StreamPurpose, StreamRecord,
+    StreamRecordState,
+};
+use crowdb_protocol::frame::{FrameLayout, MAX_FRAME_GROUP_PAYLOAD_BYTES};
+
+#[tokio::test]
+async fn every_append_has_one_location_and_subranges_read_only_intersecting_frames() {
+    let store = Arc::new(MemoryStreamStore::new(8 * 1024 * 1024));
+    let name = StreamName::generate();
+    let stream = ChunkStream::create(
+        StreamRecord {
+            purpose: StreamPurpose::Stream,
+            stream_name: name,
+            metadata_group_id: 1,
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("test".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
+        },
+        1,
+        StreamConfig::default(),
+        store.clone(),
+        store.clone(),
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    let sizes = [
+        1,
+        MAX_FRAME_GROUP_PAYLOAD_BYTES,
+        MAX_FRAME_GROUP_PAYLOAD_BYTES + 1,
+        1024 * 1024,
+        4 * 1024 * 1024,
+    ];
+    let mut physical = 0_u64;
+    for size in sizes {
+        let payload = Bytes::from(
+            (0..size)
+                .map(|index| u8::try_from(index % 251).unwrap())
+                .collect::<Vec<_>>(),
+        );
+        let range = stream.append(std::slice::from_ref(&payload)).await.unwrap();
+        stream.checkpoint().await.unwrap();
+        let snapshot = store.load_tail_for_tests(name).await.unwrap().unwrap();
+        physical += FrameLayout::StreamGroupV2.physical_length(size as u64).unwrap();
+        assert_eq!(snapshot.index().physical_end(), physical);
+        assert_eq!(stream.metrics().physical_append_bytes, physical);
+        for offset in [0, size / 2, size - 1] {
+            let count = (size - offset).min(101);
+            let before = stream.metrics().physical_read_requests;
+            assert_eq!(
+                stream.read_at(range.begin + offset as u64, count).await.unwrap(),
+                payload.slice(offset..offset + count)
+            );
+            let frames = (offset + count - 1) / MAX_FRAME_GROUP_PAYLOAD_BYTES
+                - offset / MAX_FRAME_GROUP_PAYLOAD_BYTES
+                + 1;
+            assert_eq!(stream.metrics().physical_read_requests - before, frames as u64);
+        }
+        if size > MAX_FRAME_GROUP_PAYLOAD_BYTES {
+            let offset = MAX_FRAME_GROUP_PAYLOAD_BYTES - 3;
+            let count = (size - offset).min(13);
+            assert_eq!(
+                stream.read_at(range.begin + offset as u64, count).await.unwrap(),
+                payload.slice(offset..offset + count)
+            );
+        }
+    }
+    let snapshot = store.load_tail_for_tests(name).await.unwrap().unwrap();
+    let locations = snapshot.record().mappings.count() as usize;
+    assert_eq!(
+        locations,
+        sizes.len(),
+        "frame count cannot multiply append locations"
+    );
+}

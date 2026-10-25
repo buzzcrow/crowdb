@@ -65,3 +65,30 @@ class AdmissionProfileTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,"foreign labeled"):
                 cleanup("owned")
             self.assertEqual(docker.call_count,2)
+
+    def test_each_start_owns_a_policy_file_that_other_nodes_cannot_rewrite(self):
+        path = Path(__file__).resolve().parents[1] / "profiles/bridge_node.py"
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                "CROWDB_CONTAINER_IMAGE": "exact", "CROWDB_E2E_PROFILE_NAME": "owned",
+                "CROWDB_E2E_PROFILE_DATA": directory}):
+            spec = importlib.util.spec_from_file_location("test_bridge_policy", path)
+            bridge = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(bridge)
+            def reply(*arguments):
+                if arguments[0] == "inspect":
+                    return json.dumps([{"NetworkSettings": {"Networks": {"owned": {"IPAddress": "172.30.0.2"}}}}])
+                return ""
+            with patch.object(bridge, "docker", side_effect=reply) as docker:
+                bridge.start_node("owned-0")
+                bridge.start_node("owned-1")
+            policies = []
+            for call in docker.call_args_list:
+                for argument in call.args:
+                    if isinstance(argument, str) and "target=/run/bridge-policy.toml" in argument:
+                        source = next(field.removeprefix("source=") for field in argument.split(",")
+                                      if field.startswith("source="))
+                        policies.append(Path(source))
+            self.assertEqual(len(policies), 2)
+            self.assertNotEqual(policies[0], policies[1])
+            self.assertTrue(all(policy.parent == Path(directory) for policy in policies))
+            self.assertEqual(policies[0].read_text(), policies[1].read_text())

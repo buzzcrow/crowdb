@@ -8,10 +8,10 @@
 namespace crowdb::protocol
 {
 
-// System-wide stale-write and owner self-fence policy. Deployments tune these
-// values as one policy shared by DiskIO and ChunkDB.
-inline constexpr uint64_t kDefaultMaxWriteRequestAgeMs = 30'000;
-inline constexpr uint64_t kDefaultMaxClockSkewMs       = 1'000;
-inline constexpr uint64_t kDefaultSelfFenceMarginMs    = 1'000;
+// Shared write-admission ceilings used by DiskIO and tail recovery.
+// A server may enforce shorter windows but cannot extend these bounds.
+inline constexpr uint64_t kMaxWriteRequestAgeMs     = 30'000;
+inline constexpr uint64_t kMaxWriteClockSkewMs      = 1'000;
+inline constexpr uint64_t kDefaultSelfFenceMarginMs = 1'000;
 
 } // namespace crowdb::protocol

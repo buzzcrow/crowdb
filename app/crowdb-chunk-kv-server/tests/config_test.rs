@@ -25,8 +25,8 @@ fn defaults_close_the_documented_timing_contract() {
     assert_eq!(config.storage.metadata_store_id, 1);
     assert_eq!(config.storage.stream_writer_lease_ms, 30_000);
     assert_eq!(config.storage.tree_chunk_capacity_bytes, 256 * 1024 * 1024);
+    assert_eq!(config.storage.tree_strip_capacity_bytes, 0);
     assert_eq!(config.storage.stream_chunk_capacity_bytes, 256 * 1024 * 1024);
-    assert_eq!(config.storage.stream_extent_page_entries, 1_024);
     assert_eq!(config.storage.diskio_connections_per_endpoint, 1);
     assert_eq!(config.storage.diskio_rpc_workers, 2);
     assert_eq!(config.rpc_workers, 2);
@@ -107,18 +107,35 @@ fn management_discovery_requires_explicit_routable_identity() {
 }
 
 #[test]
-fn stream_directory_geometry_survives_config_round_trip() {
+fn stream_chunk_geometry_survives_config_round_trip() {
     let mut config = ChunkKvServerConfig {
         instance_id: 1,
         ..ChunkKvServerConfig::default()
     };
     config.storage.stream_chunk_capacity_bytes = 1024 * 1024;
-    config.storage.stream_extent_page_entries = 1;
+    config.storage.tree_strip_capacity_bytes = 1024 * 1024;
     config.validate().unwrap();
     let restored: ChunkKvServerConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
     assert_eq!(restored.storage, config.storage);
-    config.storage.stream_extent_page_entries = 0;
-    assert!(config.validate().is_err());
+}
+
+#[test]
+fn explicit_tree_strips_require_supported_allocation_units() {
+    let mut config = ChunkKvServerConfig {
+        instance_id: 1,
+        ..ChunkKvServerConfig::default()
+    };
+    for bytes in [1, 1024, 1024 * 1024 + 1, 257 * 1024 * 1024] {
+        config.storage.tree_strip_capacity_bytes = bytes;
+        assert!(
+            config.validate().is_err(),
+            "accepted invalid strip capacity {bytes}"
+        );
+    }
+    for bytes in [0, 1024 * 1024, 256 * 1024 * 1024] {
+        config.storage.tree_strip_capacity_bytes = bytes;
+        config.validate().unwrap();
+    }
 }
 
 #[test]

@@ -22,7 +22,7 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::frame::{parse_frame, FrameMagic, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{parse_frame, FrameMagic, MAX_FRAME_V2_PAYLOAD_BYTES};
 
 use super::stack::TestStack as E2eStack;
 
@@ -138,7 +138,7 @@ fn policy() -> SmallWritePolicy {
         control_interval: Duration::from_millis(1),
         cooldown: Duration::from_millis(1),
         chunk_capacity: 2 * MIB as u64,
-        object_limit: MAX_FRAME_PAYLOAD_BYTES,
+        object_limit: MAX_FRAME_V2_PAYLOAD_BYTES,
         mirror_copies: 2,
         ..SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
     }
@@ -153,7 +153,7 @@ async fn write_object(client: &ChunkIoClient, data: Bytes) -> Location {
 async fn write_full_small_strip(client: &ChunkIoClient, value: u8) -> Vec<(Bytes, Location)> {
     let mut frames = Vec::with_capacity(FRAMES_PER_MIB_STRIP);
     for _ in 0..FRAMES_PER_MIB_STRIP {
-        let payload = Bytes::from(vec![value; MAX_FRAME_PAYLOAD_BYTES]);
+        let payload = Bytes::from(vec![value; MAX_FRAME_V2_PAYLOAD_BYTES]);
         let location = write_object(client, payload.clone()).await;
         frames.push((payload, location));
     }
@@ -237,7 +237,7 @@ async fn assert_mirror_data(stack: &E2eStack, chunk: &Chunk, location: &Location
             .await;
         let frame = parse_frame(&actual, location.chunk_id.expect("location chunk"))
             .expect("durable RepoSmall frame");
-        assert_eq!(frame.header.magic, FrameMagic::RepoSmallV1);
+        assert_eq!(frame.header.magic, FrameMagic::RepoSmallV2);
         assert_eq!(frame.payload, expected);
     }
 }

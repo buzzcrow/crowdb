@@ -27,7 +27,8 @@ pub(super) async fn assert_large_view_range(client: &DiskioClient, target: Segme
         .await
         .expect("multiple bounded view frames");
     assert_eq!(client.status().write_operations - writes_before, 3);
-    assert_eq!(client.status().fsync_operations - syncs_before, 1);
+    // Synchronized frames return durable completion without an extra fsync RPC.
+    assert_eq!(client.status().fsync_operations - syncs_before, 0);
     let read = client
         .read(
             target,
@@ -100,7 +101,7 @@ pub(super) async fn assert_independent_strip_writes_overlap() {
     .unwrap();
     pending.await.unwrap();
     assert_eq!(client.status().write_operations, 4);
-    assert_eq!(client.status().fsync_operations, 2);
+    assert_eq!(client.status().fsync_operations, 0);
     for target in targets {
         let read = client
             .read(
@@ -166,7 +167,7 @@ pub(super) async fn assert_view_frames_are_ordered(target: SegmentTarget, aligne
     .unwrap();
     pending.await.unwrap().unwrap();
     assert_eq!(client.status().write_operations, 2);
-    assert_eq!(client.status().fsync_operations, 1);
+    assert_eq!(client.status().fsync_operations, 0);
     let read = client
         .read(
             target,

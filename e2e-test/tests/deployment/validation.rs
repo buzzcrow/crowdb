@@ -21,7 +21,7 @@ fn invalid_profile_is_rejected() {
 }
 
 #[test]
-#[ignore = "requires the owned invalid-manifest release container"]
-fn invalid_manifest_is_rejected() {
-    rejected("bootstrap manifest cannot be decoded");
+#[ignore = "requires the owned invalid-policy release container"]
+fn invalid_node_policy_is_rejected() {
+    rejected("expected value at line 1 column 1");
 }

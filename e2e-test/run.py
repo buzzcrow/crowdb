@@ -15,7 +15,7 @@ import time
 import uuid
 from pathlib import Path
 
-from client import bundle_dataset_sdk, bundle_cli, bundle_client, bundle_iceberg_rust, bundle_iceberg_java, bundle_iceberg_rck, client_sources
+from client import bundle_dataset_sdk, bundle_cli, bundle_cli_workload, bundle_client, bundle_iceberg_rust, bundle_iceberg_java, bundle_iceberg_rck, client_sources
 from fixture import Cluster, docker
 from release import check_startup
 from scenarios import case_nodes, case_resources, run_cases, select_cases
@@ -88,7 +88,7 @@ def run_pair(image, artifacts, bundle, count, data_root=None, node_cpus=1.0):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--layer", choices=("kv", "diskdb", "diskio", "chunkdb", "chunk-stream", "chunk-client", "chunk-kv", "s3", "iceberg", "dataset", "console", "deployment", "all"), default="all")
-    parser.add_argument("--scope", choices=("all", "dataset.http", "dataset.sdk", "console.managed", "console.native", "console.native.binding", "console.native.s3", "console.native.recovery", "console.native.load", "console.native.inspection", "console.native.browser.s3", "console.native.browser.ownership", "console.native.browser.journal", "console.native.browser.journal-windows", "console.native.browser.scanner", "console.native.browser.storage-windows", "console.native.browser.lifecycle", "console.native.browser.defaults", "console.native.browser.plan", "console.native.browser.prerequisites", "console.native.browser.transition", "console.native.geometry", "console.native.browser.hardware", "console.native.browser.maintenance", "console.native.browser.disk", "console.native.browser.binding", "console.native.browser.diskdb", "console.native.browser.crud", "console.native.browser.shell", "console.native.browser.retry", "console.native.browser.topology", "console.native.browser.six-node", "console.native.browser.dataset", "console.browser", "console.browser.lifecycle", "console.browser.discovery", "console.browser.shell", "console.browser.registry", "console.browser.kv", "console.browser.canvas", "console.browser.inspector", "console.browser.logical", "console.browser.node", "console.discovery", "console.hardware", "console.logical", "console.bootstrap", "console.cleanup", "console.deployment", "console.cli", "console.cli.container", "console.operations", "console.web", "console.web.disposable", "console.web.recovery", "console.web.access", "console.web.authority", "console.web.slots", "console.web.catalog", "console.web.bootstrap", "console.web.standalone", "console.web.registry", "console.web.lifecycle", "console.web.wal", "console.clients", "iceberg.manual.tpc", "iceberg.benchmark", "iceberg.metadata", "iceberg.namespace", "iceberg.files", "iceberg.files.listing", "iceberg.catalog", "iceberg.gc", "iceberg.sdk", "iceberg.sdk.java", "iceberg.sdk.rust", "iceberg.sdk.rck", "s3.protocol", "s3.recovery", "s3.responses", "s3.benchmark", "s3.sdk", "s3.credentials", "s3.policy", "s3.nodes", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "diskdb.recovery", "chunkdb.allocation", "chunkdb.lifecycle", "chunkdb.recovery", "chunkdb.placement", "chunkdb.io", "chunkdb.conversion", "chunkdb.repair", "chunkdb.slots", "chunkdb.handoff", "chunk-kv.protocol", "chunk-kv.recovery", "chunk-client.reader", "chunk-client.large_repair", "chunk-client.small_flow", "chunk-client.benchmark", "chunk-client.large", "chunk-client.small", "chunk-stream.objects", "chunk-stream.recovery", "chunk-stream.errors", "deployment.selection", "deployment.supervision", "deployment.hardware", "deployment.bootstrap", "deployment.balance", "deployment.listeners", "deployment.browser", "deployment.anonymous", "deployment.failures", "deployment.clients", "deployment.storage", "deployment.validation", "deployment.kv", "diskio.durability", "diskio.direct", "diskio.io.mem", "diskio.io.null", "diskio.discovery", "diskio.errors", "diskio.faults", "diskio.semantic"),
+    parser.add_argument("--scope", choices=("all", "dataset.http", "dataset.sdk", "console.managed", "console.native", "console.native.binding", "console.native.s3", "console.native.recovery", "console.native.load", "console.native.inspection", "console.native.browser.s3", "console.native.browser.ownership", "console.native.browser.journal", "console.native.browser.journal-windows", "console.native.browser.scanner", "console.native.browser.storage-windows", "console.native.browser.lifecycle", "console.native.browser.defaults", "console.native.browser.plan", "console.native.browser.prerequisites", "console.native.browser.transition", "console.native.geometry", "console.native.browser.hardware", "console.native.browser.maintenance", "console.native.browser.disk", "console.native.browser.binding", "console.native.browser.diskdb", "console.native.browser.crud", "console.native.browser.shell", "console.native.browser.retry", "console.native.browser.topology", "console.native.browser.six-node", "console.native.browser.dataset", "console.browser", "console.browser.lifecycle", "console.browser.discovery", "console.browser.shell", "console.browser.registry", "console.browser.kv", "console.browser.canvas", "console.browser.inspector", "console.browser.logical", "console.browser.node", "console.discovery", "console.hardware", "console.logical", "console.bootstrap", "console.cleanup", "console.deployment", "console.cli", "console.cli.container", "console.operations", "console.web", "console.web.disposable", "console.web.recovery", "console.web.access", "console.web.authority", "console.web.slots", "console.web.catalog", "console.web.bootstrap", "console.web.standalone", "console.web.registry", "console.web.lifecycle", "console.web.wal", "console.clients", "iceberg.manual.tpc", "iceberg.benchmark", "iceberg.metadata", "iceberg.namespace", "iceberg.files", "iceberg.files.listing", "iceberg.catalog", "iceberg.gc", "iceberg.sdk", "iceberg.sdk.java", "iceberg.sdk.rust", "iceberg.sdk.rck", "s3.protocol", "s3.recovery", "s3.responses", "s3.benchmark", "s3.sdk", "s3.credentials", "s3.policy", "s3.nodes", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "diskdb.recovery", "chunkdb.allocation", "chunkdb.lifecycle", "chunkdb.recovery", "chunkdb.placement", "chunkdb.io", "chunkdb.conversion", "chunkdb.repair", "chunkdb.slots", "chunkdb.handoff", "chunk-kv.protocol", "chunk-kv.recovery", "chunk-client.reader", "chunk-client.large_repair", "chunk-client.small_flow", "chunk-client.benchmark", "chunk-client.large", "chunk-client.small", "chunk-stream.objects", "chunk-stream.recovery", "chunk-stream.errors", "deployment.reference", "deployment.selection", "deployment.supervision", "deployment.hardware", "deployment.bootstrap", "deployment.balance", "deployment.listeners", "deployment.browser", "deployment.anonymous", "deployment.failures", "deployment.clients", "deployment.storage", "deployment.validation", "deployment.kv", "diskio.durability", "diskio.direct", "diskio.io.mem", "diskio.io.null", "diskio.discovery", "diskio.errors", "diskio.faults", "diskio.semantic"),
                         default="all")
     parser.add_argument("--profile", choices=("bridge", "bridge-admission", "host", "containerd-host", "containerd-cluster", "ecosystem", "ecosystem-python"), default="bridge")
     parser.add_argument("--concurrency", type=int, default=2)
@@ -97,6 +97,8 @@ def main():
                         help="complete CI partition within Console or Iceberg")
     parser.add_argument("--list", action="store_true", help="list implemented named flows without starting servers")
     parser.add_argument("--require-isolation", action="store_true")
+    parser.add_argument("--fail-fast", action="store_true",
+                        help="stop dispatching cases after the first failure; retain completed artifacts")
     parser.add_argument("--cpus", type=float, default=4)
     parser.add_argument("--node-cpus", type=float, default=os.environ.get("CROWDB_E2E_NODE_CPUS", "1"), help="Relative CPU weight per server (1 CPU = 1024 shares); no hard quota")
     parser.add_argument("--memory-mib", type=int, default=4096)
@@ -127,7 +129,12 @@ def main():
         from special_profiles import run_host
         run_host(args, parser)
         return
-    if args.profile in ("containerd-host", "containerd-cluster"):
+    if args.profile == "containerd-host":
+        signal.signal(signal.SIGTERM, interrupt)
+        from native_containerd_profile import run_profile
+        run_profile(args, parser)
+        return
+    if args.profile == "containerd-cluster":
         signal.signal(signal.SIGTERM, interrupt)
         from containerd_profile import run_profile
         run_profile(args, parser)
@@ -162,7 +169,7 @@ def main():
     available_memory = min(args.memory_mib, info["MemTotal"] // 1048576)
     if available_cpu < needed_cpu or available_memory < needed_memory:
         parser.error(f"selected cases require at least {needed_cpu:g} CPU / {needed_memory} MiB")
-    case_slots = min(args.concurrency, int(available_cpu // needed_cpu), available_memory // needed_memory)
+    case_slots = args.concurrency
     if (args.require_isolation or args.scope == "kv.isolation") and slots < 2:
         parser.error("concurrent isolation acceptance needs two fixture slots")
     identity = json.loads(docker("image", "inspect", args.image))[0]
@@ -179,12 +186,16 @@ def main():
     run_root.mkdir()
     (run_root / "identity.json").write_text(json.dumps({"image": args.image, "id": identity["Id"],
         "repo_digests": identity.get("RepoDigests", []), "labels": labels, "client_revision": revision,
-        "layer": args.layer, "scope": args.scope, "partition": args.partition, "slots": slots, "case_slots": case_slots,
+        "layer": args.layer, "scope": args.scope, "partition": args.partition, "fail_fast": args.fail_fast,
+        "slots": slots, "case_slots": case_slots,
         "largest_case_nodes": largest, "case_cpu_reservation": needed_cpu,
         "case_memory_reservation_mib": needed_memory, "selected_cases": [case.name for case in selected],
+        "resource_budget": {"cpus": available_cpu, "memory_mib": available_memory},
+        "dispatch_policy": "per-case-ordered",
         "node_cpus": args.node_cpus, "cpu_policy": "shares", "tokio_worker_threads": 1, "node_cpu_shares": round(args.node_cpus * 1024),
         "source_identity": source_identity}, indent=2))
-    print(f"KV isolation slots: {slots}; case slots: {case_slots}; exact image {identity['Id']}; artifacts {run_root}", flush=True)
+    print(f"KV isolation slots: {slots}; case slots: {case_slots}; per-case budget: "
+          f"{available_cpu:g} CPU / {available_memory} MiB; exact image {identity['Id']}; artifacts {run_root}", flush=True)
     started = time.monotonic()
     bundle = bundle_client(run_root / "client")
     timings = {"client_build": time.monotonic() - started}
@@ -204,10 +215,14 @@ def main():
         started = time.monotonic()
         bundle_iceberg_rck(bundle)
         timings["iceberg_rck_source"] = time.monotonic() - started
-    if any(case.scope.startswith("console.cli") for case in selected):
+    if any(case.scope.startswith("console.cli") or case.oci_reference for case in selected):
         started = time.monotonic()
         bundle_cli(bundle)
         timings["cli_build"] = time.monotonic() - started
+    if any(case.cli_workload for case in selected):
+        started = time.monotonic()
+        bundle_cli_workload(bundle)
+        timings["cli_workload_build"] = time.monotonic() - started
     with (bundle / "domain-test").open("rb") as executable:
         client_digest = hashlib.file_digest(executable, "sha256").hexdigest()
     client_source = hashlib.sha256()
@@ -219,7 +234,7 @@ def main():
         client_source.update(str(path.relative_to(bundle)).encode())
         client_source.update(path.read_bytes())
     executable_digests = {}
-    for name in ("domain-test", "crowdb-cli", "iceberg-rust-client"):
+    for name in ("domain-test", "crowdb-cli", "cli-workload-test", "iceberg-rust-client"):
         path = bundle / name
         if path.is_file():
             with path.open("rb") as executable:
@@ -234,7 +249,8 @@ def main():
             if slots >= 2:
                 run_mixed(identity["Id"], run_root, bundle, args.data_root, args.node_cpus)
         if selected:
-            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope, args.case, args.layer, args.node_cpus, args.partition)
+            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope, args.case, args.layer, args.node_cpus, args.partition, fail_fast=args.fail_fast,
+                      resource_budget=(available_cpu, available_memory))
         if args.layer in ("kv", "deployment", "all") and args.scope == "all" and not args.case:
             check_startup(identity["Id"], run_root)
         timings["status"] = "pass"

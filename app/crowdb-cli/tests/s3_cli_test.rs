@@ -3,12 +3,20 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc;
 
+#[path = "common/cluster_target.rs"]
+mod common;
+
 fn cli() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_crowdb-cli"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_crowdb-cli"));
+    command
+        .env_remove("CROWDB_CLUSTER")
+        .env_remove("CROWDB_SYSTEM_IP")
+        .env_remove("CROWDB_SYSTEM_PORT");
+    command
 }
 
 fn tempdir(tag: &str) -> PathBuf {
@@ -21,33 +29,40 @@ fn tempdir(tag: &str) -> PathBuf {
     path
 }
 
-fn write_cluster_record(root: &Path, endpoint: &str) {
-    std::fs::create_dir_all(root).expect("create cluster root");
-    let record = serde_json::json!({
-        "version": 1,
-        "endpoint": endpoint,
-        "tenant": "local",
-        "storage_profile": "persistent"
-    });
-    std::fs::write(
-        root.join("s3-mini-cluster.json"),
-        serde_json::to_vec_pretty(&record).expect("record json"),
-    )
-    .expect("write record");
-    std::fs::write(
-        root.join("s3-local-state.toml"),
-        "version = 1\ngroup0_seeds = ['http://127.0.0.1:10000']\n[[service]]\nid = 'kv-1'\nurl = 'http://127.0.0.1:10000'\nnode_id = 1\n",
-    )
-    .expect("write launch-only state");
-}
-
 fn mock_http_once(response_content_type: &str, response_body: &[u8]) -> (String, mpsc::Receiver<Vec<u8>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock HTTP server");
     let endpoint = format!("http://{}", listener.local_addr().expect("mock address"));
     let body = response_body.to_vec();
     let content_type = response_content_type.to_string();
     let (sender, receiver) = mpsc::channel();
+    let s3_endpoint = endpoint.clone();
     std::thread::spawn(move || {
+        let (mut identity_stream, _) = listener.accept().expect("accept target observation");
+        let mut request = Vec::new();
+        let mut buffer = [0; 4096];
+        while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+            let size = identity_stream.read(&mut buffer).unwrap();
+            assert_ne!(size, 0);
+            request.extend_from_slice(&buffer[..size]);
+        }
+        assert!(request.starts_with(b"GET /api/cluster/target HTTP/1.1"));
+        let identity = serde_json::json!({"version":1, "cluster_id":uuid::Uuid::from_u128(1).to_string(),
+            "group0_management_endpoints":["http://127.0.0.1:10000"], "group0_rpc_endpoints":["127.0.0.1:10100"]}).to_string();
+        write!(identity_stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}", identity.len(), identity).unwrap();
+        drop(identity_stream);
+        let (mut credential_stream, _) = listener.accept().expect("accept credential observation");
+        let mut request = Vec::new();
+        while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+            let size = credential_stream.read(&mut buffer).unwrap();
+            assert_ne!(size, 0);
+            request.extend_from_slice(&buffer[..size]);
+        }
+        assert!(request.starts_with(b"GET /api/access/credentials HTTP/1.1"));
+        let credentials = serde_json::json!({"s3":{"endpoint":s3_endpoint, "region":"us-east-1",
+            "access_key_id":"test-access", "secret_access_key":"test-secret-never-print"}})
+        .to_string();
+        write!(credential_stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}", credentials.len(), credentials).unwrap();
+        drop(credential_stream);
         let (mut stream, _) = listener.accept().expect("accept request");
         let mut request = Vec::new();
         let mut buffer = [0; 4096];
@@ -88,7 +103,7 @@ fn mock_http_once(response_content_type: &str, response_body: &[u8]) -> (String,
 }
 
 #[test]
-fn s3_benchmark_exposes_all_memory_workloads() {
+fn s3_benchmark_exposes_attached_workloads_without_deployment_flags() {
     for workload in ["write", "read", "range-read", "list", "mix"] {
         let output = cli()
             .args(["bench", "s3", workload, "--help"])
@@ -100,25 +115,16 @@ fn s3_benchmark_exposes_all_memory_workloads() {
             String::from_utf8_lossy(&output.stderr)
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("--memory-budget-bytes"));
+        assert!(stdout.contains("--max-dataset-bytes"));
         assert!(stdout.contains("--operations"));
+        assert!(!stdout.contains("--work-dir"));
     }
 }
 
 #[test]
 fn object_range_rejects_regression_before_cluster_access() {
     let output = cli()
-        .args([
-            "s3",
-            "object",
-            "get",
-            "--data-dir",
-            "/path/that/is/not/opened",
-            "bucket",
-            "key",
-            "--range",
-            "9-3",
-        ])
+        .args(["s3", "object", "get", "bucket", "key", "--range", "9-3"])
         .output()
         .expect("run invalid range");
     assert!(!output.status.success());
@@ -130,9 +136,17 @@ fn help_is_console_first_and_uses_http_operation_names() {
     let output = cli().arg("--help").output().expect("run CLI help");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("--system-ip"));
-    assert!(stdout.contains("--system-port"));
-    for removed in ["--config", "--json", "--log-root", "Group-0 leader"] {
+    assert!(stdout.contains("--cluster"));
+    assert!(stdout.contains("--management-endpoint"));
+    for removed in [
+        "--config",
+        "--json",
+        "--log-root",
+        "--registry",
+        "--system-ip",
+        "--system-port",
+        "Group-0 leader",
+    ] {
         assert!(
             !stdout.contains(removed),
             "unexpected {removed} in help: {stdout}"
@@ -172,7 +186,13 @@ fn help_is_console_first_and_uses_http_operation_names() {
         .output()
         .expect("run put help");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    for option in ["--root", "--file", "--text", "--random-size"] {
+    for option in [
+        "--cluster",
+        "--management-endpoint",
+        "--file",
+        "--text",
+        "--random-size",
+    ] {
         assert!(stdout.contains(option), "missing {option}: {stdout}");
     }
     assert!(!stdout.contains("--data-dir"), "legacy option exposed: {stdout}");
@@ -183,7 +203,7 @@ fn simple_s3_command_uses_console_without_file_log() {
     let root = tempdir("no-file-log");
     let output = cli()
         .current_dir(&root)
-        .args(["s3", "bucket", "list", "--root", "missing"])
+        .args(["s3", "bucket", "list"])
         .output()
         .expect("run list against missing cluster");
     assert!(!output.status.success());
@@ -199,13 +219,10 @@ fn bucket_get_prints_headers_and_formats_xml() {
     let xml = br#"<?xml version="1.0"?><ListBucketResult><Name>test</Name></ListBucketResult>"#;
     let (endpoint, captured) = mock_http_once("application/xml", xml);
     let root = tempdir("bucket-get");
-    let cluster_root = root.join("data");
-    write_cluster_record(&cluster_root, &endpoint);
 
     let output = cli()
         .current_dir(&root)
-        .args(["s3", "bucket", "get", "test", "--root"])
-        .arg(&cluster_root)
+        .args(["--management-endpoint", &endpoint, "s3", "bucket", "get", "test"])
         .output()
         .expect("run bucket get");
     assert!(
@@ -220,6 +237,11 @@ fn bucket_get_prints_headers_and_formats_xml() {
     assert!(stdout.contains("\n  <Name>test</Name>\n"), "stdout={stdout}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("HTTP REQUEST"));
+    assert!(request
+        .to_ascii_lowercase()
+        .contains("authorization: aws4-hmac-sha256"));
+    assert!(stderr.contains("authorization: <redacted>"));
+    assert!(!stderr.contains("test-secret-never-print"));
     assert!(stderr.contains("HTTP RESPONSE"));
     assert!(stderr.contains("x-test-header: visible"));
     assert!(stderr.contains("body: XML"));
@@ -231,13 +253,18 @@ fn bucket_get_prints_headers_and_formats_xml() {
 fn object_put_text_sets_content_type_and_shows_text_body() {
     let (endpoint, captured) = mock_http_once("application/xml", b"");
     let root = tempdir("put-text");
-    let cluster_root = root.join("data");
-    write_cluster_record(&cluster_root, &endpoint);
 
     let output = cli()
         .current_dir(&root)
-        .args(["s3", "object", "put", "bucket", "key", "--root"])
-        .arg(&cluster_root)
+        .args([
+            "--management-endpoint",
+            &endpoint,
+            "s3",
+            "object",
+            "put",
+            "bucket",
+            "key",
+        ])
         .args(["--text", "object content"])
         .output()
         .expect("run object put --text");
@@ -265,13 +292,18 @@ fn object_put_text_sets_content_type_and_shows_text_body() {
 fn object_put_random_size_sends_exact_binary_length() {
     let (endpoint, captured) = mock_http_once("application/xml", b"");
     let root = tempdir("put-random");
-    let cluster_root = root.join("data");
-    write_cluster_record(&cluster_root, &endpoint);
 
     let output = cli()
         .current_dir(&root)
-        .args(["s3", "object", "put", "bucket", "random.bin", "--root"])
-        .arg(&cluster_root)
+        .args([
+            "--management-endpoint",
+            &endpoint,
+            "s3",
+            "object",
+            "put",
+            "bucket",
+            "random.bin",
+        ])
         .args(["--random-size", "257"])
         .output()
         .expect("run object put --random-size");
@@ -290,4 +322,73 @@ fn object_put_random_size_sends_exact_binary_length() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("body: binary (257 bytes, not shown)"));
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn s3_lifecycle_and_private_root_selectors_are_removed() {
+    for (args, expected) in [
+        (
+            vec!["s3", "cluster", "start"],
+            "unrecognized subcommand 'cluster'",
+        ),
+        (
+            vec!["s3", "bucket", "list", "--root", "unused"],
+            "unexpected argument '--root'",
+        ),
+    ] {
+        let output = cli().args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn s3_mutation_rejects_mixed_cluster_identities_before_sending_data() {
+    let left = common::TestTargetServer::start(&uuid::Uuid::new_v4().to_string()).await;
+    let right = common::TestTargetServer::start(&uuid::Uuid::new_v4().to_string()).await;
+    let output = cli()
+        .args([
+            "--management-endpoint",
+            &left.origin,
+            "--management-endpoint",
+            &right.origin,
+            "s3",
+            "object",
+            "put",
+            "bucket",
+            "key",
+            "--text",
+            "untouched",
+        ])
+        .env("DOCKER_HOST", "unix:///unavailable-test-runtime")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("disagree on cluster identity"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn s3_credentials_must_resolve_before_reading_an_upload_or_writing_data() {
+    let selected = common::TestTargetServer::start(&uuid::Uuid::new_v4().to_string()).await;
+    let output = cli()
+        .args([
+            "--management-endpoint",
+            &selected.origin,
+            "s3",
+            "object",
+            "put",
+            "bucket",
+            "key",
+            "--file",
+            "/path/that/must/not/be/read",
+        ])
+        .env("DOCKER_HOST", "unix:///unavailable-test-runtime")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("selected cluster rejected credential access"));
 }

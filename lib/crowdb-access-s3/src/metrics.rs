@@ -283,8 +283,47 @@ impl S3Metrics {
             append_chunk_metrics(&mut output, chunks.large_write_buffer_metrics());
             append_small_write_metrics(&mut output, &chunks.small_write_metrics());
             append_read_flow_metrics(&mut output, chunks.read_flow_metrics());
+            append_readiness_metrics(&mut output, chunks.readiness_metrics());
         }
         output
+    }
+}
+
+fn append_readiness_metrics(
+    output: &mut String,
+    metrics: crowdb_chunk_client::metrics::ReadinessMetricsSnapshot,
+) {
+    for (phase, snapshot) in [
+        ("total", metrics.total),
+        ("hardware", metrics.hardware),
+        ("chunkdb", metrics.chunkdb),
+        ("diskio", metrics.diskio),
+    ] {
+        let labels = format!("phase=\"{phase}\"");
+        append_metric(
+            output,
+            "crowdb_s3_chunk_readiness_observations_total",
+            &labels,
+            snapshot.observations,
+        );
+        append_metric(
+            output,
+            "crowdb_s3_chunk_readiness_errors_total",
+            &labels,
+            snapshot.errors,
+        );
+        for (statistic, value) in [
+            ("p50", snapshot.p50_ns),
+            ("p99", snapshot.p99_ns),
+            ("max", snapshot.max_ns),
+        ] {
+            append_metric(
+                output,
+                "crowdb_s3_chunk_readiness_latency_ns",
+                &format!("{labels},statistic=\"{statistic}\""),
+                value,
+            );
+        }
     }
 }
 
@@ -570,6 +609,11 @@ impl S3Health {
     }
 
     #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.live.load(Ordering::Acquire)
+    }
+
+    #[must_use]
     pub fn snapshot(&self, metrics: &S3Metrics, native: Option<&NativeBodyAllocator>) -> S3HealthSnapshot {
         let native_metrics = native.map(NativeBodyAllocator::metrics_snapshot);
         let native_pool = native_metrics.map_or(DependencyHealth::Ready, |snapshot| {
@@ -626,6 +670,18 @@ pub struct S3Readiness {
 
 impl S3Readiness {
     #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            listener: DependencyHealth::Unknown,
+            metadata: DependencyHealth::Unknown,
+            chunks: DependencyHealth::Unknown,
+            native_pool: DependencyHealth::Unknown,
+            cleanup: DependencyHealth::Unknown,
+            authentication: DependencyHealth::Unknown,
+        }
+    }
+
+    #[must_use]
     pub const fn is_ready(self) -> bool {
         self.listener.can_admit()
             && self.metadata.can_admit()
@@ -642,12 +698,13 @@ pub enum DependencyHealth {
     Ready,
     Busy,
     Unavailable,
+    Unknown,
 }
 
 impl DependencyHealth {
     #[must_use]
     pub const fn can_admit(self) -> bool {
-        !matches!(self, Self::Unavailable)
+        matches!(self, Self::Ready | Self::Busy)
     }
 
     #[must_use]
@@ -656,6 +713,7 @@ impl DependencyHealth {
             Self::Ready => "ready",
             Self::Busy => "busy",
             Self::Unavailable => "unavailable",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -664,6 +722,7 @@ fn load_health(value: &AtomicU8) -> DependencyHealth {
     match value.load(Ordering::Acquire) {
         value if value == DependencyHealth::Ready as u8 => DependencyHealth::Ready,
         value if value == DependencyHealth::Busy as u8 => DependencyHealth::Busy,
+        value if value == DependencyHealth::Unknown as u8 => DependencyHealth::Unknown,
         _ => DependencyHealth::Unavailable,
     }
 }

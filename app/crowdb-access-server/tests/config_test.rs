@@ -162,3 +162,35 @@ fn independent_health_listener_rejects_data_listener_ports() {
         assert!(config.validate().is_err(), "{value}");
     }
 }
+
+#[test]
+fn local_one_and_three_node_mirrors_are_explicit_and_never_relax_production() {
+    use crowdb_access_server::config::DeploymentMode;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../container/single-node-container/templates/access.toml");
+    for copies in [1, 2] {
+        let mut config: AccessConfig = load_from_file(&path).unwrap();
+        config.small_write.mirror_copies = Some(copies);
+        config.s3.small_write = None;
+        config.iceberg.small_write = None;
+        config.s3.large_mirror_copies = Some(copies);
+        config.iceberg.large_mirror_copies = Some(copies);
+        config.validate().unwrap();
+        assert_eq!(config.deployment.mode, DeploymentMode::Local);
+        let dataset = config.dataset_small_write();
+        assert_eq!(dataset.mirror_copies, copies);
+        assert_eq!(
+            dataset.chunk_type,
+            crowdb_protocol::chunkdb::rpc::ChunkType::Dataset
+        );
+        assert!(!dataset.conversion_enabled);
+        config.small_write.conversion_enabled = true;
+        assert!(config.validate().is_err());
+        config.small_write.conversion_enabled = false;
+        config.deployment.mode = DeploymentMode::Production;
+        assert!(
+            config.validate().is_err(),
+            "local loss budget must never become production protection"
+        );
+    }
+}

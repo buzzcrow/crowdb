@@ -9,6 +9,19 @@ use serde_json::{json, Value};
 use super::{durable, Result};
 use crate::ProcessManager;
 
+mod readiness;
+pub(super) use readiness::observe as runtime;
+
+/// # Errors
+/// Uses the production read-only projection without starting monitor workers.
+#[cfg(feature = "test-util")]
+pub fn runtime_observation_for_tests(
+    profile: &crate::DeploymentProfile,
+    manager: &mut ProcessManager,
+) -> Result<crowdb_protocol::mgmt::node::observation::NodeRuntimeObservation> {
+    runtime(profile, manager)
+}
+
 pub(super) fn processes(
     root: &Path,
     manager: &mut ProcessManager,
@@ -21,7 +34,7 @@ pub(super) fn processes(
     }
     // This authenticated read observes only local children. It needs no live
     // Group-0 grant and remains available while that authority is unavailable.
-    Ok(
-        json!({"cluster_id":cluster,"node_id":node,"processes":manager.live_pids()?,"service_failures":super::services::failures(root)?}),
-    )
+    let live = manager.live_pids()?;
+    let failures = super::services::failures(root, &live)?;
+    Ok(json!({"cluster_id":cluster,"node_id":node,"processes":live,"service_failures":failures}))
 }

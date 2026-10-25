@@ -35,7 +35,10 @@ pub use chunk_kv::{
     ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, ChunkKvSplitKey, ChunkKvTransferKey,
     DomainMonitorKey, ServingGrantKey,
 };
-pub use chunk_stream::{StreamBindingKey, StreamExtentPageKey, StreamManifestHeadKey, StreamManifestKey};
+pub use chunk_stream::{
+    StreamChunkRecordKey, StreamChunkRecordOrder, StreamProcessLeaseKey, StreamRecordKey,
+    StreamWriterOwnerKey,
+};
 pub use chunk_task::{ChunkTaskKey, FinalizeChunkTaskKey, LeasedChunkTaskKey, ReadyChunkTaskKey};
 pub use chunkdb::{ChunkdbRangeBindingKey, ChunkdbRangeMigrationKey};
 mod chunk_slot;

@@ -3,6 +3,13 @@
 
 //! Application-facing chunk IO client and prepared large writes.
 
+mod disk_metrics;
+use disk_metrics::MetricsDiskWriter;
+
+mod readiness;
+#[cfg(feature = "test-util")]
+pub use readiness::observe_readiness_phase_for_tests;
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,10 +27,9 @@ use crowdb_protocol::chunkdb::rpc::{
     AppendChunkResponse, DeleteChunkRequest, DeleteChunkResponse, DiscardReplacementSegmentRequest,
     DiscardReplacementSegmentResponse, Location, QueryChunkRequest, QueryChunkResponse,
     ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, SealChunkRequest, SealChunkResponse,
-    UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
+use crowdb_protocol::frame::MAX_FRAME_V2_PAYLOAD_BYTES;
 
 use crate::metrics::SmallWriteMetrics;
 use crate::negative_list::FailedDiskList;
@@ -81,6 +87,7 @@ pub struct ChunkIoClient {
     disk_writer: Arc<dyn DiskWriter>,
     topology: Option<Arc<ClientTopology>>,
     metrics: Option<Arc<ChunkClientMetrics>>,
+    readiness: Arc<crate::metrics::ReadinessMetrics>,
     small_pool: Arc<SmallWritePool>,
     reader: ChunkReader,
     failed_disks: Arc<FailedDiskList>,
@@ -156,6 +163,7 @@ impl ChunkIoClient {
                 disk_writer,
             })),
             metrics: None,
+            readiness: Arc::default(),
             small_pool,
             reader,
             failed_disks,
@@ -229,6 +237,7 @@ impl ChunkIoClient {
             disk_writer,
             topology: None,
             metrics: None,
+            readiness: Arc::default(),
             small_pool,
             reader,
             failed_disks,
@@ -240,6 +249,7 @@ impl ChunkIoClient {
     /// Attach aggregate write-path metrics registered by the embedding process.
     #[must_use]
     pub fn with_metrics(mut self, metrics: &Arc<ChunkClientMetrics>) -> Self {
+        self.readiness = Arc::clone(&metrics.readiness);
         self.allocator = Arc::new(MetricsChunkAllocator {
             inner: self.allocator,
             metrics: Arc::clone(metrics),
@@ -326,10 +336,10 @@ impl ChunkIoClient {
         if object_size == 0 {
             return Ok(SharedObjectWriter::empty());
         }
-        if object_size > MAX_FRAME_PAYLOAD_BYTES {
+        if object_size > MAX_FRAME_V2_PAYLOAD_BYTES {
             return Err(IoError::ObjectTooLarge {
                 size: object_size,
-                limit: MAX_FRAME_PAYLOAD_BYTES,
+                limit: MAX_FRAME_V2_PAYLOAD_BYTES,
             });
         }
         let runtime = self.small_pool.prepare(object_size).await?;
@@ -351,10 +361,10 @@ impl ChunkIoClient {
         if object_size == 0 {
             return Ok(SharedObjectWriter::empty());
         }
-        if object_size > MAX_FRAME_PAYLOAD_BYTES {
+        if object_size > MAX_FRAME_V2_PAYLOAD_BYTES {
             return Err(IoError::ObjectTooLarge {
                 size: object_size,
-                limit: MAX_FRAME_PAYLOAD_BYTES,
+                limit: MAX_FRAME_V2_PAYLOAD_BYTES,
             });
         }
         let runtime = self.small_pool.prepare(object_size).await?;
@@ -597,10 +607,6 @@ impl ChunkAllocator for MetricsChunkAllocator {
         result
     }
 
-    async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        self.inner.update_chunk_strip(req).await
-    }
-
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
         let mut operation = self.metrics.chunk_query.start();
         let result = self.inner.query_chunk(req).await;
@@ -636,118 +642,6 @@ impl ChunkAllocator for MetricsChunkAllocator {
         req: DiscardReplacementSegmentRequest,
     ) -> Result<DiscardReplacementSegmentResponse> {
         self.inner.discard_replacement_segment(req).await
-    }
-}
-
-struct MetricsDiskWriter {
-    inner: Arc<dyn DiskWriter>,
-    metrics: Arc<ChunkClientMetrics>,
-}
-
-#[async_trait]
-impl DiskWriter for MetricsDiskWriter {
-    async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()> {
-        let bytes = u64::try_from(data.len()).unwrap_or(u64::MAX);
-        let mut operation = self.metrics.diskio_write.start();
-        let result = self.inner.write(seg, unit_bytes, data).await;
-        if result.is_ok() {
-            self.metrics.diskio_write_bytes.observe(bytes);
-            operation.mark_success();
-        }
-        result
-    }
-
-    async fn write_views(&self, seg: &Segment, unit_bytes: u64, data: Vec<Bytes>) -> Result<()> {
-        let bytes = data.iter().fold(0_u64, |total, view| {
-            total.saturating_add(u64::try_from(view.len()).unwrap_or(u64::MAX))
-        });
-        let mut operation = self.metrics.diskio_write.start();
-        let result = self.inner.write_views(seg, unit_bytes, data).await;
-        if result.is_ok() {
-            self.metrics.diskio_write_bytes.observe(bytes);
-            operation.mark_success();
-        }
-        result
-    }
-
-    async fn fsync(&self, seg: &Segment) -> Result<()> {
-        self.inner.fsync(seg).await
-    }
-
-    async fn write_views_at_byte_offset(
-        &self,
-        seg: &Segment,
-        unit_bytes: u64,
-        byte_offset: u64,
-        data: Vec<Bytes>,
-    ) -> Result<()> {
-        let bytes = data.iter().map(|view| view.len() as u64).sum();
-        let mut operation = self.metrics.diskio_write.start();
-        let result = self
-            .inner
-            .write_views_at_byte_offset(seg, unit_bytes, byte_offset, data)
-            .await;
-        if result.is_ok() {
-            self.metrics.diskio_write_bytes.observe(bytes);
-            operation.mark_success();
-        }
-        result
-    }
-
-    async fn write_priority_at_byte_offset(
-        &self,
-        seg: &Segment,
-        unit_bytes: u64,
-        byte_offset: u64,
-        data: Bytes,
-    ) -> Result<()> {
-        let bytes = u64::try_from(data.len()).unwrap_or(u64::MAX);
-        let mut operation = self.metrics.diskio_write.start();
-        let result = self
-            .inner
-            .write_priority_at_byte_offset(seg, unit_bytes, byte_offset, data)
-            .await;
-        if result.is_ok() {
-            self.metrics.diskio_write_bytes.observe(bytes);
-            operation.mark_success();
-        }
-        result
-    }
-
-    async fn fsync_priority(&self, seg: &Segment) -> Result<()> {
-        self.inner.fsync_priority(seg).await
-    }
-
-    async fn read(&self, seg: &Segment, unit_bytes: u64, segment_offset: u64, length: u32) -> Result<Bytes> {
-        let mut operation = self.metrics.diskio_read.start();
-        let result = self.inner.read(seg, unit_bytes, segment_offset, length).await;
-        if let Ok(data) = &result {
-            self.metrics
-                .diskio_read_bytes
-                .observe(u64::try_from(data.len()).unwrap_or(u64::MAX));
-            operation.mark_success();
-        }
-        result
-    }
-
-    async fn write_at_byte_offset(
-        &self,
-        seg: &Segment,
-        unit_bytes: u64,
-        byte_offset: u64,
-        data: Bytes,
-    ) -> Result<()> {
-        let bytes = u64::try_from(data.len()).unwrap_or(u64::MAX);
-        let mut operation = self.metrics.diskio_write.start();
-        let result = self
-            .inner
-            .write_at_byte_offset(seg, unit_bytes, byte_offset, data)
-            .await;
-        if result.is_ok() {
-            self.metrics.diskio_write_bytes.observe(bytes);
-            operation.mark_success();
-        }
-        result
     }
 }
 

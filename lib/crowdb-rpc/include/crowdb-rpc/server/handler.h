@@ -42,6 +42,32 @@ class HandlerRegistry
   public:
     using HandlerTable = std::unordered_map<uint16_t, HandlerFn>;
 
+    class HandlerLease
+    {
+      public:
+        explicit operator bool() const
+        {
+            return table_ && handler_ != nullptr;
+        }
+
+        OutFrame *operator()(Frame *request, Connection *connection) const
+        {
+            return (*handler_)(request, connection);
+        }
+
+      private:
+        friend class HandlerRegistry;
+
+        HandlerLease(std::shared_ptr<const HandlerTable> table, const HandlerFn *handler)
+            : table_(std::move(table)),
+              handler_(handler)
+        {
+        }
+
+        std::shared_ptr<const HandlerTable> table_;
+        const HandlerFn                    *handler_;
+    };
+
     HandlerRegistry() : handlers_(std::make_shared<const HandlerTable>())
     {
     }
@@ -60,14 +86,12 @@ class HandlerRegistry
         }
     }
 
-    HandlerFn get_handler(uint16_t msg_type) const
+    HandlerLease get_handler(uint16_t msg_type) const
     {
-        auto table = handlers_.load(std::memory_order_acquire);
-        auto it    = table->find(msg_type);
-        if (it != table->end()) {
-            return it->second;
-        }
-        return nullptr;
+        auto             table   = handlers_.load(std::memory_order_acquire);
+        auto             it      = table->find(msg_type);
+        const HandlerFn *handler = it != table->end() ? &it->second : nullptr;
+        return {std::move(table), handler};
     }
 
     void clear()

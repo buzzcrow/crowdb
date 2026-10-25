@@ -708,9 +708,9 @@ Init ──> Active ──> Sealed ──> Deleted
 
 **State transitions**:
 - `Active → Sealed`: Via `SealChunk` RPC. Validates state and records the exact
-  `seal_bytes` boundary in `acknowledged_cursor`. KiB `sealed_length` fields are
-  compatibility summaries; they do not enlarge the valid byte range. Legacy
-  KiB-only requests retain their original contract. Finalization preserves the
+  `seal_bytes` boundary in `acknowledged_cursor`, including zero for an empty
+  chunk. The RPC has one exact-byte form. KiB `sealed_length` fields summarize
+  geometry and do not enlarge the valid byte range. Finalization preserves the
   exact acknowledged cursor. Data alignment and physical block allocation never
   add logical bytes to the seal boundary.
 - `Active → Deleted`: Persist cleanup intent, free segments, persist tombstone.
@@ -739,9 +739,31 @@ entry and task record in one task-partition transaction; no second expiry is
 stored in chunk metadata. The owner self-fences before that authority can
 expire. The task scanner reads due task-index entries only, never scans the
 chunk table. After claim and the shared request-age/skew safety window, it
-parses frames from offset zero and seals at the last complete verified frame,
-or deletes an empty chunk. A restarted owner always allocates a new Active
-chunk.
+requires ordered synchronization proof from every segment in the captured
+layout, including ordinary empty chunks and unavailable mirror identities.
+Failure retains the layout and retries without scanning or freeing blocks.
+It then observes content using at-most-1-MiB windows and the shared bounded frame
+parser. Stream/Wal scans include allocated capacity beyond the persisted
+checkpoint and commit only complete append groups. Ordinary object publication
+already persists its physical cursor; its finalization validates that prefix.
+An exact-capacity end needs no extra header request. Drain and scan share one
+30-second IO budget; drain has at most its first half. Observation and comparison
+reserve time within the remainder rather than restarting a timeout per copy.
+
+Available mirror candidates run concurrently within one IO deadline. Select
+the shortest healthy complete prefix and verify agreement on overlapping
+contents. Failed, partial or corrupt observations do not become shorter
+candidates; valid conflicting contents fail explicitly. No readable candidate
+means retry while retaining the Active layout, including a Stream/Wal with a
+zero checkpoint. A scan must cover the persisted `acknowledged_cursor` before
+sealing or deleting. The task writer generation must match the chunk epoch.
+Sealing compares the exact captured chunk metadata while holding its lifecycle
+guard; a concurrent revision/layout change forces another observation. Empty
+chunks first seal through that same fence, then resume tombstone publication
+after restart without accessing physical segments that were already retired.
+Finalization uses this durable task path exclusively; an expired metadata
+checkpoint cannot independently authorize sealing. A restarted owner always
+allocates a new Active chunk.
 
 ## 10. Per-Chunk-ID Lifecycle Lock + Chunk Cache
 
@@ -930,8 +952,6 @@ mutating RPC acquires the per-chunk lock before its RMW cycle:
   returns `Unimplemented` without changing storage until shared-object range
   reclamation is supported. An intersecting strip is not permission to free
   its blocks while neighbouring objects remain live.
-- `update_chunk_strip`: compatibility wrapper over the one-strip form of
-  `replace_chunk_strip_range`.
 - `replace_chunk_strip_range`: `check_range` → `acquire` → validate Active or
   Sealed state, expected revision, exact old range, contiguous capacity,
   monotonic sequences, segment ownership, and mirror/EC geometry → commit only
@@ -972,10 +992,14 @@ pages, so an old prefix cannot starve later records. It deterministically
 admits a completed special group to the normal conversion task path. An
 expired incomplete group is cancelled and reclaimed when its consumed strips
 carry persisted planned cursors and the writer lease deadline plus
-`lifecycle.layout_validity_ms` has elapsed. This reuse grace exceeds the data
-RPC retry window, so a delayed write finishes or times out before DiskDB can
-reallocate the extent. Consumed records without planned cursors remain allocated
-fail-safe. DiskIO does not validate allocation ownership. Terminal reservation
+`lifecycle.layout_validity_ms` has elapsed. This grace bounds late request
+admission; ordered completion proof and producer exclusion are also required
+before physical reuse because an expired RPC can still have backend IO in flight.
+Current reservation records require explicit planned
+cursor/sequence vectors; a consumed strip with a zero planned cursor is malformed
+and fails before reconciliation changes storage. Placement records require
+explicit policy and repair-state fields. DiskIO does not validate allocation
+ownership. Terminal reservation
 records release their quota only after the durable record has been removed;
 ambiguous persistence retains the permit unless a linearizable read proves that
 no record exists.
@@ -1102,7 +1126,6 @@ app/crowdb-chunkdb/              # chunkdb server binary
 │   │   └── state.rs          # lifecycle state transitions
 │   ├── service.rs            # pure service index
 │   ├── service/
-│   │   ├── chunkdb_service.rs
 │   │   ├── chunkdb_rpc_service.rs
 │   │   └── chunkdb_rpc_service/
 │   │       ├── service.rs    # state and handler registration
@@ -1190,11 +1213,13 @@ the shared [`service configuration design`](../config/design-crowdb-config.md).
 
 ## 15. Full-Stack Deployment and Benchmark
 
-`crowdb-cli cluster local-deploy -t combined` creates the canonical local
-ChunkDB profile: six KV/storage nodes split evenly across three racks, one
-four-disk group and one DiskDB instance per node, one three-replica data
-group, three ChunkDB instances, and complete bucket ownership. Services share
-one configured log root and are registered before readiness is reported.
+The shared OCI node lifecycle prepares Group 0, the ordinary metadata group,
+DiskDB, DiskIO and ChunkDB through accepted node policy and committed service
+intent. The common cluster lifecycle creates runtime resources and observes
+readiness; benchmarks attach to the selected cluster without creating groups,
+resetting topology or starting and stopping servers. Production placement uses
+actual failure domains; a Local cluster on one physical host has zero physical
+host failure tolerance. See the [deployment design](../deploy/design-crowdb-deploy.md).
 
 `crowdb-cli bench chunkdb allocate` measures mirror or EC allocation with
 configurable shape, duration, seed, and concurrency. `bench chunkdb mix` uses
@@ -1205,11 +1230,14 @@ total to equal the DiskDB busy-space delta after compaction. Capacity
 exhaustion is a successful stop reason; any correctness error invalidates the
 sample.
 
-`tools/benchmark/bench-chunkdb-regression.sh` builds all four release binaries and uses
-a fresh timestamped combined cluster for mirror, EC 4+2, EC 8+4, lifecycle
-mix, concurrency, and capacity-exhaustion cases. It retains each case's logs,
-destroys each cluster, runs all later cases after a failure, and returns a
-nonzero aggregate status.
+The allocation regression uses an explicit test-only measurement fixture with
+three co-located logical nodes, one rack, three data groups and four logical
+4-TiB disks per DiskDB. It measures one EC 8+4 strip per allocation with varied
+concurrency and retains exact space-accounting checks. The fixture owns every
+server by PID and process-start identity, records accepted bootstrap inputs and
+provides normal clients with explicit targets. Each invocation retains metrics,
+logs and a checked shutdown receipt. This fixture does not qualify physical host
+redundancy or replace real-storage OCI acceptance.
 
 ## 16. Implementation Scope
 

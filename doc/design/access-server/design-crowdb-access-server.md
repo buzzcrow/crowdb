@@ -207,6 +207,31 @@ path. Readiness observes the same storage dependencies and cleanup backlog
 as the data dispatcher. Retained launch records identify the dedicated health
 address; a missing address requires deployment reconciliation before restart.
 
+One Access background sampler runs every second and publishes an immutable
+health snapshot through ArcSwap. It independently checks the routed Chunk-KV
+bucket namespace, ChunkDB and online disks through the process's storage clients.
+Metadata and chunk checks have separate deadlines inside an 800 ms total bound;
+only one sampling round can run at a time. Physical checks read existing disk
+bytes without creating objects, allocating chunks or repairing storage.
+Credential-cache freshness, listener state, native-pool pressure and cleanup
+backlog are included in the same snapshot. Application requests only record
+their own errors and metrics; their outcomes cannot overwrite health evidence.
+
+Health requests read the snapshot without dependency I/O or a new sampling task.
+Responses retain the check timestamp, generation, age, exact flags and diagnostic.
+New observations replace old failures or successes. Evidence older than three
+seconds, or an absent first sample, reports Unknown and HTTP 503; readers never
+extend its validity or clear it to Ready. Process stop is an immediate lifecycle
+fence even when the cached sample was healthy. The sampler is cancelled with the
+listener. Recovery needs neither application traffic nor an Access restart.
+
+Web independently samples local monitor evidence, signed protocol reads and
+service diagnostics in its backend. Its node-observation endpoint only returns
+that bounded-age snapshot, including original operation identities and producer
+timestamps. Status readers aggregate cached member evidence with current
+committed intent, so stop/delete and ownership fences override older samples.
+Frontend query failures do not mutate these backend health observations.
+
 ## 8. Correctness invariants
 
 - **AS-I1 — First-class models:** S3, Iceberg, and Dataset each own their

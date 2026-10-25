@@ -5,7 +5,7 @@ use crowdb_chunk_client::{
     SmallWriteMetricsSnapshot,
 };
 use crowdb_protocol::chunkdb::rpc::Location;
-use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
+use crowdb_protocol::frame::MAX_FRAME_V2_PAYLOAD_BYTES;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ use super::{ChunkRoot, FileIdentity};
 mod intent;
 
 pub const MAX_FILE_BLOCK_BYTES: usize = 256 * 1024;
-pub const NATIVE_FILE_BLOCK_BYTES: usize = MAX_FRAME_PAYLOAD_BYTES;
+pub const NATIVE_FILE_BLOCK_BYTES: usize = MAX_FRAME_V2_PAYLOAD_BYTES;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FileIoError {

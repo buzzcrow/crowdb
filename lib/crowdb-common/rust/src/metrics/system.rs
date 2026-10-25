@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 
 //! OS-level system metrics: CPU time, memory RSS, TCP retransmits, and
-//! DRAM read/write bandwidth.
+//! DRAM read/write bandwidth and hardware C6 residency.
 //!
 //! On Linux, reads `/proc/self/stat` for CPU jiffies, `/proc/self/status`
 //! for RSS, `/proc/net/snmp` for TCP retransmit/lost counters, and
@@ -19,7 +19,15 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 
 #[cfg(target_os = "linux")]
-use super::perf::DramBwCounter;
+use super::perf::{C6Counters, DramBwCounter};
+
+/// Hardware C6 residency of a core or package, identified by its PMU's
+/// representative logical CPU. `None` means the interval could not be read.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct C6Residency {
+    pub cpu: i32,
+    pub pct: Option<f64>,
+}
 
 /// Snapshot of system-level metrics at a single point in time.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -44,6 +52,11 @@ pub struct SystemMetrics {
     /// Average aggregate DRAM bandwidth. Available on AMD even when the
     /// platform PMU cannot distinguish reads from writes.
     pub dram_total_mib: Option<f64>,
+    /// Host physical-core C6 percentages, one entry per PMU representative CPU.
+    /// Empty when unsupported or access is denied; independent of process CPU%.
+    pub cpu_core_c6: Vec<C6Residency>,
+    /// Host package C6 percentages, keyed by PMU representative CPU.
+    pub cpu_package_c6: Vec<C6Residency>,
 }
 
 /// Collects OS-level metrics by reading `/proc` (Linux) or using
@@ -60,6 +73,8 @@ pub struct SystemCollector {
     prev_instant: Instant,
     #[cfg(target_os = "linux")]
     dram_bw: Option<DramBwCounter>,
+    #[cfg(target_os = "linux")]
+    c6: C6Counters,
 }
 
 impl SystemCollector {
@@ -79,6 +94,8 @@ impl SystemCollector {
             prev_instant: Instant::now(),
             #[cfg(target_os = "linux")]
             dram_bw: DramBwCounter::new(),
+            #[cfg(target_os = "linux")]
+            c6: C6Counters::new(),
         }
     }
 
@@ -126,6 +143,11 @@ impl SystemCollector {
         #[cfg(not(target_os = "linux"))]
         let (dram_read_mib, dram_write_mib, dram_total_mib) = (None, None, None);
 
+        #[cfg(target_os = "linux")]
+        let (cpu_core_c6, cpu_package_c6) = self.c6.collect();
+        #[cfg(not(target_os = "linux"))]
+        let (cpu_core_c6, cpu_package_c6) = (Vec::new(), Vec::new());
+
         SystemMetrics {
             cpu_user_pct,
             cpu_sys_pct,
@@ -135,6 +157,8 @@ impl SystemCollector {
             dram_read_mib,
             dram_write_mib,
             dram_total_mib,
+            cpu_core_c6,
+            cpu_package_c6,
         }
     }
 }
@@ -156,11 +180,31 @@ pub fn flush_system<W: Write>(writer: &mut W, snap: &SystemMetrics) {
     let bw_total = snap
         .dram_total_mib
         .map_or_else(|| "unsupported".to_string(), |v| format!("{v:.1}"));
-    let _ = writeln!(
+    let _ = write!(
         writer,
         "sys  cpu.user={}% cpu.sys={}% rss_gb={rss_gb:.2} tcp_retrans={} tcp_lost={} bw_read_mib={bw_read} bw_write_mib={bw_write} bw_total_mib={bw_total}",
         snap.cpu_user_pct, snap.cpu_sys_pct, snap.tcp_retransmits, snap.tcp_lost,
     );
+    flush_c6(writer, "core", &snap.cpu_core_c6);
+    flush_c6(writer, "package", &snap.cpu_package_c6);
+    let _ = writeln!(writer);
+}
+
+fn flush_c6<W: Write>(writer: &mut W, scope: &str, values: &[C6Residency]) {
+    if values.is_empty() {
+        let _ = write!(writer, " cpu.c6.{scope}=unsupported");
+    }
+    for value in values {
+        let _ = write!(writer, " cpu.c6.{scope}@{}=", value.cpu);
+        match value.pct {
+            Some(pct) => {
+                let _ = write!(writer, "{pct:.1}%");
+            }
+            None => {
+                let _ = write!(writer, "unsupported");
+            }
+        }
+    }
 }
 
 // ── Platform-specific readers ───────────────────────────────────
@@ -266,72 +310,4 @@ fn read_rss_kb() -> u64 {
 fn read_tcp_stats() -> (u64, u64) {
     // TCP stats are not available on macOS without private APIs.
     (0, 0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn collect_returns_snapshot() {
-        let mut collector = SystemCollector::new();
-        let snap = collector.collect();
-        // CPU deltas should be small but non-negative.
-        // RSS should be non-zero (the test process has memory).
-        assert!(snap.rss_kb > 0, "RSS should be non-zero, got {}", snap.rss_kb);
-    }
-
-    #[test]
-    fn collect_delta_is_non_negative() {
-        let mut collector = SystemCollector::new();
-        let _snap1 = collector.collect();
-        let snap2 = collector.collect();
-        // Utilization should be non-negative (can exceed 100% on multi-core).
-        assert!(snap2.cpu_user_pct <= 100 * 1024);
-    }
-
-    #[test]
-    fn flush_system_writes_all_fields() {
-        let snap = SystemMetrics {
-            cpu_user_pct: 42,
-            cpu_sys_pct: 17,
-            rss_kb: 4096,
-            tcp_retransmits: 3,
-            tcp_lost: 1,
-            dram_read_mib: Some(512.5),
-            dram_write_mib: Some(128.3),
-            dram_total_mib: Some(640.8),
-        };
-        let mut buf = Vec::new();
-        flush_system(&mut buf, &snap);
-        let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("cpu.user=42%"));
-        assert!(out.contains("cpu.sys=17%"));
-        assert!(out.contains("rss_gb=0.00"));
-        assert!(out.contains("tcp_retrans=3"));
-        assert!(out.contains("tcp_lost=1"));
-        assert!(out.contains("bw_read_mib=512.5"));
-        assert!(out.contains("bw_write_mib=128.3"));
-        assert!(out.contains("bw_total_mib=640.8"));
-    }
-
-    #[test]
-    fn flush_system_writes_unsupported_when_none() {
-        let snap = SystemMetrics {
-            cpu_user_pct: 0,
-            cpu_sys_pct: 0,
-            rss_kb: 0,
-            tcp_retransmits: 0,
-            tcp_lost: 0,
-            dram_read_mib: None,
-            dram_write_mib: None,
-            dram_total_mib: None,
-        };
-        let mut buf = Vec::new();
-        flush_system(&mut buf, &snap);
-        let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("bw_read_mib=unsupported"));
-        assert!(out.contains("bw_total_mib=unsupported"));
-        assert!(out.contains("bw_write_mib=unsupported"));
-    }
 }

@@ -13,7 +13,7 @@ from containerd_profile import cleanup
 
 class ContainerdProfileTest(unittest.TestCase):
     def test_profile_budget_and_selection_fail_before_runtime_access(self):
-        for args in (("--concurrency","2"),("--concurrency","1","--node-cpus",".75","--cpus","1.49"),
+        for args in (("--concurrency","1","--node-cpus","2","--cpus","4","--memory-mib","8192"),("--concurrency","2"),("--concurrency","1","--node-cpus",".75","--cpus","1.49"),
                      ("--concurrency","1","--memory-mib","4096"),("--concurrency","1","--layer","kv")):
             with patch.object(sys,"argv",["run.py","--profile","containerd-cluster",*args]), \
                     patch("containerd_profile.docker") as docker, contextlib.redirect_stderr(io.StringIO()):
@@ -22,7 +22,7 @@ class ContainerdProfileTest(unittest.TestCase):
         for profile, nodes in (("containerd-cluster",3),("containerd-host",1)):
             output=io.StringIO()
             with patch.object(sys,"argv",["run.py","--profile",profile,"--concurrency","1",
-                    "--node-cpus",".75","--cpus","4","--memory-mib","6144","--list"]), \
+                    "--node-cpus","1","--cpus","4","--memory-mib","8192","--list"]), \
                     patch("containerd_profile.docker") as docker, contextlib.redirect_stdout(output):
                 run.main()
                 docker.assert_not_called()

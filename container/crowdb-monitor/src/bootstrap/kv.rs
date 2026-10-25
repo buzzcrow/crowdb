@@ -188,6 +188,7 @@ impl KvBootstrap {
                     replica_id: group.replica_id,
                     initial_role: None,
                     start_election: Some(true),
+                    deployment: None,
                 })
                 .send()
                 .await

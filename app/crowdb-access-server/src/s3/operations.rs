@@ -12,7 +12,6 @@ use crowdb_access_s3::condition::ObjectConditions;
 use crowdb_access_s3::continuation::ContinuationTokenSigner;
 use crowdb_access_s3::error::{S3Error, S3ErrorCode};
 use crowdb_access_s3::metadata::{ObjectRecord, TenantId};
-use crowdb_access_s3::metrics::{DependencyHealth, S3Health};
 use crowdb_access_s3::object::{self, ListObjectsV2Request, ObjectMetadataError};
 use crowdb_access_s3::publication::PublicationRequest;
 use crowdb_access_s3::retrieval::{self, ObjectHeaders, RetrievalError};
@@ -52,6 +51,10 @@ const DEFAULT_LIST_SCAN_BYTES: usize = 4 * 1024 * 1024;
 pub type S3OperationsFuture = Pin<Box<dyn Future<Output = Response<ResponseBody>> + Send + 'static>>;
 
 pub trait S3Operations: Send + Sync + 'static {
+    fn observe_dependencies(self: Arc<Self>) -> super::DependencyProbeFuture {
+        Box::pin(async { None })
+    }
+
     fn execute(
         self: Arc<Self>,
         route: S3Route,
@@ -93,12 +96,11 @@ impl S3ServiceConfig {
 }
 
 pub struct ProductionS3Operations {
-    storage: S3StorageClients,
-    config: S3ServiceConfig,
+    pub(super) storage: S3StorageClients,
+    pub(super) config: S3ServiceConfig,
     signer: ContinuationTokenSigner,
     bucket_ids: RandomBucketIdGenerator,
     metrics: Option<Arc<crowdb_access_s3::metrics::S3Metrics>>,
-    health: Option<Arc<S3Health>>,
 }
 
 impl ProductionS3Operations {
@@ -116,19 +118,12 @@ impl ProductionS3Operations {
             signer,
             bucket_ids: RandomBucketIdGenerator,
             metrics: None,
-            health: None,
         })
     }
 
     #[must_use]
     pub fn with_metrics(mut self, metrics: Arc<crowdb_access_s3::metrics::S3Metrics>) -> Self {
         self.metrics = Some(metrics);
-        self
-    }
-
-    #[must_use]
-    pub fn with_health(mut self, health: Arc<S3Health>) -> Self {
-        self.health = Some(health);
         self
     }
 
@@ -162,44 +157,10 @@ impl ProductionS3Operations {
             S3Operation::AbortMultipartUpload => self.abort_multipart_upload(route).await,
             S3Operation::ListMultipartUploads => self.list_multipart_uploads(route, &request).await,
         };
-        self.record_dependency_outcome(operation, &result);
         result.unwrap_or_else(|code| {
             tracing::debug!(%request_id, ?code, "S3 request failed");
             error_response(&S3Error::new(code, resource, request_id, host_id), head_only)
         })
-    }
-
-    fn record_dependency_outcome(
-        &self,
-        operation: S3Operation,
-        result: &Result<Response<ResponseBody>, S3ErrorCode>,
-    ) {
-        let Some(health) = &self.health else {
-            return;
-        };
-        let uses_chunks = matches!(
-            operation,
-            S3Operation::PutObject
-                | S3Operation::GetObject
-                | S3Operation::UploadPart
-                | S3Operation::CopyObject
-                | S3Operation::UploadPartCopy
-        );
-        match result {
-            Ok(_) => {
-                health.set_metadata(DependencyHealth::Ready);
-                if uses_chunks {
-                    health.set_chunks(DependencyHealth::Ready);
-                }
-            }
-            Err(S3ErrorCode::ServiceUnavailable) => {
-                health.set_metadata(DependencyHealth::Unavailable);
-                if uses_chunks {
-                    health.set_chunks(DependencyHealth::Unavailable);
-                }
-            }
-            Err(_) => {}
-        }
     }
 
     async fn create_bucket(&self, route: S3Route) -> Result<Response<ResponseBody>, S3ErrorCode> {
@@ -491,7 +452,7 @@ impl ProductionS3Operations {
             .and_then(|length| usize::try_from(length).ok())
             .filter(|length| *length <= self.config.small_object_limit)
         {
-            if length > crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES {
+            if length > crowdb_protocol::frame::MAX_FRAME_V2_PAYLOAD_BYTES {
                 return self
                     .storage
                     .chunks
@@ -520,6 +481,10 @@ impl ProductionS3Operations {
 }
 
 impl S3Operations for ProductionS3Operations {
+    fn observe_dependencies(self: Arc<Self>) -> super::DependencyProbeFuture {
+        Box::pin(async move { Some(Box::pin(self.observe_storage()).await) })
+    }
+
     fn execute(
         self: Arc<Self>,
         route: S3Route,

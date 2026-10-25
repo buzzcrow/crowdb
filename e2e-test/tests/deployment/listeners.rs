@@ -7,7 +7,7 @@ fn verify(protocol: &str, port: &str) {
         serde_json::from_slice(&std::fs::read(root.join("listener-recovery.json")).unwrap()).unwrap();
     assert_eq!(result["protocol"], protocol);
     assert_eq!(result["fixed_listener"], port);
-    assert_eq!(result["event"], "child_exited");
+    assert_eq!(result["signal"], "KILL");
     let before_generation = result["before"]["generation"].as_u64().unwrap();
     let after_generation = result["after"]["generation"].as_u64().unwrap();
     assert!(after_generation > before_generation);
@@ -17,11 +17,17 @@ fn verify(protocol: &str, port: &str) {
 #[test]
 #[ignore = "requires an owned fixed-listener release profile"]
 fn fixed_s3_listener_recovers_after_explicit_termination() {
-    verify("s3", "0.0.0.0:9091");
+    verify(
+        "s3",
+        &format!("{}:9091", crate::common::management::addresses(1)[0]),
+    );
 }
 
 #[test]
 #[ignore = "requires an owned fixed-listener release profile"]
 fn fixed_iceberg_listener_recovers_after_explicit_termination() {
-    verify("iceberg", "0.0.0.0:9092");
+    verify(
+        "iceberg",
+        &format!("{}:9092", crate::common::management::addresses(1)[0]),
+    );
 }

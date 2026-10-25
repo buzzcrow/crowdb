@@ -1,13 +1,16 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/process.rs"]
+mod test_process;
+
 use crowdb_chunk_kv::{
     memory::MemoryPartitionTree, Checkpoint, MutationOperation, Partition, PartitionConfig, PartitionId,
     PartitionLifecycle, PartitionRange, PartitionTree, PreparedSplitWriterArtifact, StreamPartitionJournal,
 };
 use crowdb_chunk_kv_server::ChunkKvService;
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, StreamBinding, StreamBindingState, StreamConfig, StreamName,
+    memory::MemoryStreamStore, ChunkStream, StreamConfig, StreamName, StreamRecord, StreamRecordState,
 };
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
@@ -23,11 +26,13 @@ async fn committed_split_proves_both_recovered_writers_and_rejects_mismatches() 
     for retained in [true, false] {
         let entry = entry(&transition, retained);
         let partition = recovered(&entry).await;
-        let service = ChunkKvService::new(1, 4).unwrap();
+        let service = ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap();
         install(&service, &entry, &partition);
-        assert!(service
-            .activate_recovered_partition(entry.partition_id, 2)
-            .is_err());
+        if !retained {
+            assert!(service
+                .activate_recovered_partition(entry.partition_id, 2)
+                .is_err());
+        }
         let mut uncommitted = transition.clone();
         uncommitted.phase = SplitPhase::ChildPrepared;
         assert!(service
@@ -59,7 +64,11 @@ async fn committed_split_proves_both_recovered_writers_and_rejects_mismatches() 
         } else {
             wrong_artifact.child.artifact.tree_id += 1;
         }
-        wrong_artifact.validate().unwrap();
+        if retained {
+            assert!(wrong_artifact.validate().is_err());
+        } else {
+            wrong_artifact.validate().unwrap();
+        }
         assert!(service
             .activate_recovered_split_partition(entry.partition_id, 2, &wrong_artifact)
             .is_err());
@@ -78,19 +87,35 @@ async fn committed_split_proves_both_recovered_writers_and_rejects_mismatches() 
 }
 
 #[tokio::test]
+async fn committed_split_recovers_both_writers_after_the_same_owner_changes_address() {
+    let transition = transition();
+    for retained in [true, false] {
+        let mut entry = entry(&transition, retained);
+        entry.owner.rpc_endpoint = "192.0.2.12:7401".into();
+        let partition = recovered(&entry).await;
+        let service = ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap();
+        install(&service, &entry, &partition);
+        service
+            .activate_recovered_split_partition(entry.partition_id, entry.owner_epoch, &transition)
+            .unwrap();
+        assert_eq!(partition.lifecycle(), PartitionLifecycle::Serving);
+    }
+}
+
+#[tokio::test]
 async fn materialized_split_half_recovers_while_sibling_keeps_the_transition_marker() {
     let transition = transition();
     for retained in [true, false] {
         let mut clean = entry(&transition, retained);
         clean.artifact.tail_overlay = None;
         let partition = recovered(&clean).await;
-        let service = ChunkKvService::new(1, 4).unwrap();
+        let service = ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap();
         install(&service, &clean, &partition);
         assert_eq!(service.catalog_overlay_transition_id(clean.partition_id), None);
         let sibling = entry(&transition, !retained);
         assert_eq!(
             service.catalog_overlay_transition_id(sibling.partition_id),
-            Some(transition.transition_id),
+            retained.then_some(transition.transition_id),
         );
         service
             .activate_recovered_partition(clean.partition_id, clean.owner_epoch)
@@ -105,9 +130,9 @@ async fn materialized_split_half_recovers_while_sibling_keeps_the_transition_mar
 #[tokio::test]
 async fn materialized_catalog_replaces_unactivated_overlay_with_independent_recovery() {
     let transition = transition();
-    let original = entry(&transition, true);
+    let original = entry(&transition, false);
     let overlay = recovered(&original).await;
-    let service = ChunkKvService::new(1, 4).unwrap();
+    let service = ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap();
     install(&service, &original, &overlay);
     let mut clean = original;
     clean.artifact.tail_overlay = None;
@@ -126,10 +151,12 @@ async fn materialized_catalog_replaces_unactivated_overlay_with_independent_reco
     service
         .reconcile_partitions(std::slice::from_ref(&page), std::slice::from_ref(&plain))
         .unwrap();
-    let mut sibling = entry(&transition, false);
+    let mut sibling = entry(&transition, true);
     sibling.artifact.tail_overlay = None;
     sibling.transition_id = None;
     page.entries.push(sibling);
+    page.entries
+        .sort_by(|left, right| left.range.start.cmp(&right.range.start));
     page.seal().unwrap();
     let mut head = ChunkKvRangeCatalogHead {
         generation: 2,
@@ -157,7 +184,7 @@ fn transition() -> SplitTransition {
         source_partition_id: parent_id,
         source_epoch: 1,
         source_stream_name: StreamName { high: 1, low: 1 },
-        source_stream_manifest_generation: 1,
+        source_stream_generation: 1,
         replay_offset: 0,
         cutover_offset: 0,
         base_root_manifest_generation: 1,
@@ -167,9 +194,9 @@ fn transition() -> SplitTransition {
         target_stream_start_seq: 2,
     };
     let retained = PartitionArtifact {
-        tree_id: 2,
-        stream_name: StreamName { high: 1, low: 2 },
-        tail_overlay: Some(overlay.clone()),
+        tree_id: 1,
+        stream_name: StreamName { high: 1, low: 1 },
+        tail_overlay: None,
     };
     let child = PartitionArtifact {
         tree_id: 3,
@@ -220,7 +247,6 @@ fn transition() -> SplitTransition {
             child_applied_seq: 1,
             child_tree_manifest: 1,
             child_root_manifest_generation: 1,
-            retained_parent_tail_overlay: Some(overlay.clone()),
             child_tail_overlay: overlay,
         }),
         failure: None,
@@ -258,13 +284,15 @@ async fn recovered(entry: &ChunkKvRangeCatalogEntry) -> Partition {
     let store = Arc::new(MemoryStreamStore::new(4096));
     let name = entry.artifact.stream_name;
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name: name,
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         2,
         StreamConfig::default(),
@@ -314,7 +342,7 @@ async fn recovered(entry: &ChunkKvRangeCatalogEntry) -> Partition {
             },
             parent_epoch: 1,
             parent_stream_name: overlay.source_stream_name,
-            parent_stream_manifest_generation: 1,
+            parent_stream_generation: 1,
             parent_replay_offset: 0,
             parent_cutover_offset: 0,
             applied_seq: 1,
@@ -326,7 +354,7 @@ async fn recovered(entry: &ChunkKvRangeCatalogEntry) -> Partition {
             root_manifest_generation: 1,
             applied_seq: 1,
             stream_name: name,
-            stream_manifest_generation: 1,
+            stream_generation: 1,
             replay_offset: 0,
         },
         PartitionConfig::default(),
@@ -358,7 +386,7 @@ async fn recover_plain(
             root_manifest_generation: 1,
             applied_seq: 1,
             stream_name: entry.artifact.stream_name,
-            stream_manifest_generation: 1,
+            stream_generation: 1,
             replay_offset: 0,
         },
         PartitionConfig::default(),

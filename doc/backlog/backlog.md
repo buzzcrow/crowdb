@@ -9,7 +9,7 @@ requirements and their temporary execution plans are removed during the final
 live in the linked document; implementation follows
 [`implement-requirement`](../../.agents/skills/implement-requirement/SKILL.md).
 
-**Next R number: R238** — R221 and R234 are reserved by other workstreams.
+**Next R number: R245**
 
 ## Dataset and access
 
@@ -38,9 +38,10 @@ live in the linked document; implementation follows
 - **[R186](R186-access-iceberg-orc-validation.md)** — selected ORC validation.
   **Area:** access server / Iceberg. **Complexity:** Medium. **Status:**
   Deferred as an independent follow-up by user decision.
-- **[R196](R196-access-upload-benchmark-regression.md)** — S3 and Iceberg HTTP
-  upload benchmark regression. **Area:** access server / CLI / benchmarks.
-  **Complexity:** Medium. **Dependencies:** completed upload correctness paths.
+- **[R196](R196-refine-benchmark-tests.md)** — refine benchmark tests: external
+  CLI workloads and shared collection against a three-node container cluster;
+  record results in each driver. **Area:** CLI / storage / access / benchmarks.
+  **Complexity:** Medium. **Dependencies:** existing OCI and service contracts.
 
 ## Chunk, Chunk-KV, and recovery
 

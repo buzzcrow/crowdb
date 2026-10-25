@@ -92,6 +92,7 @@ fn catalog_rejects_holes_overlaps_and_checksum_changes() {
 fn serving_grant_digest_binds_sorted_partition_epochs() {
     let mut grant = ServingGrant {
         instance_id: 9,
+        process_epoch: 1,
         lease_sequence: 2,
         catalog_generation: 5,
         issued_at_ms: 100,
@@ -219,7 +220,7 @@ fn split_transition_requires_retained_parent_and_exact_child_cutover() {
         parent_owner: owner.clone(),
         parent_epoch: 4,
         parent_artifact: artifact(5, 5),
-        retained_parent_artifact: artifact(6, 6),
+        retained_parent_artifact: artifact(5, 5),
         parent_next_epoch: 5,
         split_key: b"m".to_vec(),
         child: child(3, b"m", Some(b"z"), 7),
@@ -234,7 +235,7 @@ fn split_transition_requires_retained_parent_and_exact_child_cutover() {
         source_partition_id: transition.parent_id,
         source_epoch: transition.parent_epoch,
         source_stream_name: transition.parent_artifact.stream_name,
-        source_stream_manifest_generation: 1,
+        source_stream_generation: 1,
         replay_offset: 0,
         cutover_offset: 11,
         base_root_manifest_generation: 1,
@@ -243,7 +244,6 @@ fn split_transition_requires_retained_parent_and_exact_child_cutover() {
         cutover_seq: 11,
         target_stream_start_seq: 12,
     };
-    transition.retained_parent_artifact.tail_overlay = Some(overlay.clone());
     transition.child.artifact.tail_overlay = Some(overlay.clone());
     transition.phase = SplitPhase::ChildPrepared;
     transition.readiness_proof = Some(SplitReadinessProof {
@@ -256,12 +256,11 @@ fn split_transition_requires_retained_parent_and_exact_child_cutover() {
         child_applied_seq: 11,
         child_tree_manifest: 1,
         child_root_manifest_generation: 1,
-        retained_parent_tail_overlay: Some(overlay.clone()),
         child_tail_overlay: overlay,
     });
     transition.validate().unwrap();
 
-    verify_split_parent_recovery_formats(&mut transition);
+    verify_current_split_recovery_record(&transition);
 
     transition.child.range.start = b"n".to_vec();
     assert_eq!(
@@ -280,39 +279,25 @@ fn split_transition_requires_retained_parent_and_exact_child_cutover() {
     );
 }
 
-fn verify_split_parent_recovery_formats(transition: &mut SplitTransition) {
-    let legacy_json = serde_json::to_value(&*transition).unwrap();
-    assert!(legacy_json["readiness_proof"]["retained_parent_tail_overlay"].is_object());
+fn verify_current_split_recovery_record(transition: &SplitTransition) {
+    let current = serde_json::to_value(transition).unwrap();
     assert_eq!(
-        serde_json::from_value::<SplitTransition>(legacy_json).unwrap(),
+        serde_json::from_value::<SplitTransition>(current.clone()).unwrap(),
         *transition
     );
-    transition.retained_parent_artifact = transition.parent_artifact.clone();
-    let proof = transition.readiness_proof.as_mut().unwrap();
-    proof.retained_parent_artifact = transition.retained_parent_artifact.clone();
-    proof.retained_parent_tail_overlay = None;
-    transition.validate().unwrap();
-    let mut stable_json = serde_json::to_value(&*transition).unwrap();
-    stable_json["readiness_proof"]
-        .as_object_mut()
-        .unwrap()
-        .remove("retained_parent_tail_overlay");
-    assert_eq!(
-        serde_json::from_value::<SplitTransition>(stable_json).unwrap(),
-        *transition
-    );
-    let mut invalid = transition.clone();
-    invalid
-        .readiness_proof
-        .as_mut()
-        .unwrap()
-        .retained_parent_tail_overlay = Some(
-        invalid
-            .readiness_proof
-            .as_ref()
-            .unwrap()
-            .child_tail_overlay
-            .clone(),
-    );
-    assert!(invalid.validate().is_err());
+    let mut retired = current.clone();
+    retired["readiness_proof"]["retained_parent_tail_overlay"] = serde_json::Value::Null;
+    assert!(serde_json::from_value::<SplitTransition>(retired).is_err());
+    let mut partial = current;
+    partial.as_object_mut().unwrap().remove("planned_at_ms");
+    assert!(serde_json::from_value::<SplitTransition>(partial).is_err());
+    for phase in [SplitPhase::Planned, SplitPhase::ChildPrepared] {
+        let mut invalid = transition.clone();
+        invalid.phase = phase;
+        if phase == SplitPhase::Planned {
+            invalid.readiness_proof = None;
+        }
+        invalid.retained_parent_artifact.tree_id += 1;
+        assert!(invalid.validate().is_err());
+    }
 }

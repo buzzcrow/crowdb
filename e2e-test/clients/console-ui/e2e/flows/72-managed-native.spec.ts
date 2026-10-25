@@ -10,15 +10,14 @@ test.use({ actionTimeout: 3000 });
 
 // Baseline: 6.0s (2026-10-04); actual monitor and all native services.
 test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware boundaries', async ({ page, request }) => {
-  await step('managed hardware capability rejection', async () => {
+  await step('managed node authority and editing capabilities', async () => {
     await page.goto('/');
-    await expect(page.getByTestId('managed-monitor-phase')).toContainText('ready', { timeout: 3000 });
-    await expect(page.getByRole('button', { name: 'Add Rack' })).toHaveCount(0);
+    await expect(page.getByTestId('deployment-phase')).toHaveText('Active cluster');
+    const capabilities = await request.get('/api/mode');
+    expect(capabilities.ok(), await capabilities.text()).toBeTruthy();
+    const actual = await capabilities.json();
+    expect(actual).toEqual({ mode: 'node', readonly: false });
     await expect(page.getByLabel('Management token')).toHaveCount(0);
-    for (const path of ['/api/racks', '/api/cluster/init', '/internal/reset', '/api/diskdb/scan', '/api/diskdb/recalc', '/api/diskdb/compact', '/api/diskdb/rebuild']) {
-      const response = await request.post(path, { data: {} });
-      expect(response.status(), path).toBe(503);
-    }
   });
   await step('managed user KV read', async () => {
     await page.getByTestId('domain-kv').click();
@@ -82,7 +81,8 @@ test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware bounda
 
     await page.getByTestId('domain-chunk').click();
     await page.getByLabel('Chunk type').selectOption('5');
-    await page.getByRole('table', { name: 'Chunks' }).getByRole('button', { name: chunkId, exact: true }).click();
+    await page.getByLabel('Exact Chunk ID', { exact: true }).fill(chunkId);
+    await page.getByRole('button', { name: 'Lookup ID', exact: true }).click();
     const card = page.getByLabel('Chunk strips').getByTestId('chunk-strip').filter({ has: page.getByRole('button', { name: new RegExp(`^Sequence ${strip.strip_sequence} ·`) }) });
     await card.getByRole('button', { name: /^(Mirror 1|Data 0)( · unavailable)?$/, exact: true }).click();
     const properties = page.getByLabel('Chunk properties');
@@ -97,30 +97,34 @@ test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware bounda
   });
 });
 
-test('Managed native authority outage hides stale topology and retains monitor observation', async ({ page }) => {
+test('Node authority outage rejects mutations and marks retained observations stale', async ({ page, request }) => {
   const pid = Number(process.env.CROWDB_NATIVE_KV_PID);
   expect(pid, 'Run the owned release-container managed runner').toBeGreaterThan(0);
   await page.goto('/');
-  await expect(page.getByTestId('managed-source')).toHaveText('Source: Group 0');
+  await expect(page.getByTestId('deployment-phase')).toHaveText('Active cluster');
   await page.clock.install();
   await signalService(pid, 'STOP');
   try {
-    // One 3-second UI poll plus the backend's 3-second authority budget.
-    const failed = page.waitForResponse(response => response.url().endsWith('/api/preview') && response.status() === 503, { timeout: 10000 });
+    const observed = page.waitForResponse(response => response.url().endsWith('/api/node/status')
+      && response.status() === 200, { timeout: 10000 });
     await page.clock.runFor(3001);
-    const response = await failed;
-    const body = await response.json();
-    expect(body.reason).toBe('group0_unavailable');
-    expect(body.monitor.services.kv.pid).toBe(pid);
-    await expect(page.getByTestId('managed-unavailable')).toContainText('Group 0 is unavailable');
-    await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'N-1', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('region', { name: 'Monitor status' })).toBeVisible();
+    expect((await (await observed).json()).phase).toBe('authority_unavailable');
+    await expect(page.getByTestId('deployment-phase')).toHaveText('Group 0 unavailable · confirmed view is stale');
+    // The API fixture covers the server's bounded authority check.
+    const mutation = await request.post('/api/racks', { data: { id: 2, name: 'must-not-commit' } });
+    expect(mutation.status()).toBe(502);
+    await expect(page.getByRole('region', { name: 'Candidate nodes' })).toBeVisible();
+    await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })
+      .getByRole('button', { name: 'N-1', exact: true })).toBeVisible();
   } finally {
     await signalService(pid, 'CONT');
+    await page.clock.resume();
   }
-  await page.clock.runFor(3001);
-  await expect(page.getByTestId('managed-unavailable')).toHaveCount(0);
-  await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible();
+  await expect(page.getByTestId('deployment-phase')).toHaveText('Active cluster');
+  const racks = await request.get('/api/racks');
+  expect(racks.ok(), await racks.text()).toBe(true);
+  expect((await racks.json()).some((rack: { id: number }) => rack.id === 2)).toBe(false);
+
 });
 
 async function signalService(pid: number, signal: 'STOP' | 'CONT') {

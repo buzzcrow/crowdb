@@ -157,6 +157,7 @@ async fn execute(profile: &DeploymentProfile, request: &Request, local: u64) -> 
     let root = &profile.paths.data_root;
     let operation = &request.operation;
     let credentials = ServerCredentials::load_existing(root)?.server_env();
+    prepare_members(profile, operation, local, &credentials).await?;
     let results = futures::future::join_all(operation.intent.members().iter().map(async |member| {
         control(
             profile,
@@ -212,29 +213,63 @@ async fn execute(profile: &DeploymentProfile, request: &Request, local: u64) -> 
     }
     if request.create_data_group {
         progress(root, request, "data-group", None)?;
-        ensure_data_group(&ctx, operation.intent.members()).await?;
+        ensure_data_group(&ctx, operation).await?;
     }
     progress(root, request, "active", None)
 }
 
-async fn ensure_data_group(ctx: &OpContext, nodes: &[u64]) -> Result<()> {
-    if ctx.sysmd().get_group(0, 1).await?.is_some() {
-        let mut actual: Vec<_> = ctx
-            .sysmd()
-            .list_replicas_in_group(0, 1)
-            .await?
-            .iter()
-            .map(|replica| replica.node_id)
-            .collect();
-        let mut expected = nodes.to_vec();
-        actual.sort_unstable();
-        expected.sort_unstable();
-        if actual != expected {
-            return Err("existing Group 1 membership differs from initialization nodes".into());
-        }
-        return Ok(());
+async fn prepare_members(
+    profile: &DeploymentProfile,
+    operation: &PreparedBootstrap,
+    local: u64,
+    credentials: &str,
+) -> Result<()> {
+    let prepares = futures::future::join_all(operation.intent.members().iter().map(async |member| {
+        control(
+            profile,
+            operation,
+            local,
+            *member,
+            NodeControl::PrepareBootstrap {
+                node_id: *member,
+                bootstrap: operation.identity.clone(),
+                manifest: serde_json::to_value(operation)?,
+                credentials: NodeServiceCredentials {
+                    environment: credentials.to_owned(),
+                },
+            },
+        )
+        .await
+    }))
+    .await;
+    for result in prepares {
+        result?;
     }
-    crowdb_console_shared::ops::kv_logical::add_group(ctx, 0, 1, 1, nodes).await?;
+    let trust = super::recovery::capture(&profile.paths.data_root, operation)?;
+    let pins = futures::future::join_all(operation.intent.members().iter().map(async |member| {
+        control(
+            profile,
+            operation,
+            local,
+            *member,
+            NodeControl::AcceptMemberTrust {
+                trust: serde_json::to_value(&trust)?,
+            },
+        )
+        .await
+    }))
+    .await;
+    for result in pins {
+        result?;
+    }
+    Ok(())
+}
+
+async fn ensure_data_group(ctx: &OpContext, operation: &PreparedBootstrap) -> Result<()> {
+    // Manual initialization and accepted node setup share the same durable
+    // ownership before either runner creates the ordinary metadata group.
+    let accepted = crowdb_console_shared::deployment::preparation::reserve(ctx, &operation.identity).await?;
+    crowdb_console_shared::ops::kv_logical::ensure_default_group(ctx, &accepted).await?;
     Ok(())
 }
 

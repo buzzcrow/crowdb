@@ -13,6 +13,9 @@ workspace = true
 name = "crowdb-web"
 path = "src/main.rs"
 
+[features]
+test-util = []
+
 [dependencies]
 flatbuffers = { workspace = true }
 arc-swap = "1.7"
@@ -40,11 +43,13 @@ sha2 = "0.10"
 percent-encoding = "2"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 hex = "0.4"
+quick-xml = "0.38"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+crowdb-web = { path = ".", features = ["test-util"] }
 crowdb-chunk-kv-client = { path = "../../lib/crowdb-chunk-kv-client" }
 crowdb-access-s3 = { path = "../../lib/crowdb-access-s3" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }

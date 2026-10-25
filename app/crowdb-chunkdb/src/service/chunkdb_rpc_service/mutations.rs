@@ -8,7 +8,7 @@ use super::{
     FBCompleteMirrorToEcConversionRequest, FBDeleteChunkRangeRequest, FBDeleteChunkRequest,
     FBDiscardReplacementSegmentRequest, FBMsgType, FBPrepareMirrorToEcConversionRequest,
     FBReplaceChunkStripRangeRequest, FBSealChunkRequest, FBTriggerConversionBatchRequest,
-    FBTriggerConversionRequest, FBUpdateChunkStripRequest, RequestGuard, RpcServer, ServerRequest,
+    FBTriggerConversionRequest, RequestGuard, RpcServer, ServerRequest,
 };
 use crate::conversion::ConversionError;
 
@@ -913,13 +913,7 @@ impl ChunkdbRpcService {
                 );
                 return;
             };
-            let seal_length = fb_req.seal_length();
-
-            let result = if fb_req.seal_bytes() == 0 {
-                handler.seal_chunk(&chunk_id, seal_length).await
-            } else {
-                handler.seal_chunk_bytes(&chunk_id, fb_req.seal_bytes()).await
-            };
+            let result = handler.seal_chunk_bytes(&chunk_id, fb_req.seal_bytes()).await;
             if result.is_ok() {
                 request.mark_success();
             }
@@ -1054,91 +1048,6 @@ impl ChunkdbRpcService {
                 ctrl,
                 msg_type,
                 req_id,
-            );
-        });
-    }
-
-    // ── UpdateChunkStrip ──────────────────────────────────────────
-
-    pub(super) fn handle_update_strip(
-        &self,
-        req: ServerRequest,
-        server: &Arc<RpcServer>,
-        mut request: RequestGuard,
-    ) {
-        let req_id = req.request_id;
-        let create_nano = req.rpc_create_nano;
-        let msg_type = FBMsgType::EUpdateChunkStripResponse.0 as u16;
-        let conn_handle_usize = req.conn_handle as usize;
-
-        let handler = Arc::clone(&self.handler);
-        let server = Arc::clone(server);
-        self.spawn(async move {
-            let Ok(fb_req) = flatbuffers::root::<FBUpdateChunkStripRequest>(req.control()) else {
-                submit_error(
-                    &server,
-                    conn_handle_usize as *mut std::ffi::c_void,
-                    req_id,
-                    create_nano,
-                    msg_type,
-                    FBChunkdbRetCode::InvalidArgument,
-                    "invalid request flatbuffer",
-                );
-                return;
-            };
-
-            let Some(chunk_id) = fb_req.chunk_id().map(|id| ChunkId {
-                high: id.high(),
-                low: id.low(),
-            }) else {
-                submit_error(
-                    &server,
-                    conn_handle_usize as *mut std::ffi::c_void,
-                    req_id,
-                    create_nano,
-                    msg_type,
-                    FBChunkdbRetCode::InvalidArgument,
-                    "missing chunk_id",
-                );
-                return;
-            };
-            let strip_index = fb_req.strip_index();
-            let Some(fb_strip) = fb_req.strip() else {
-                submit_error(
-                    &server,
-                    conn_handle_usize as *mut std::ffi::c_void,
-                    req_id,
-                    create_nano,
-                    msg_type,
-                    FBChunkdbRetCode::InvalidArgument,
-                    "missing strip",
-                );
-                return;
-            };
-            let Some(strip) = parse_fb_chunk_strip(&fb_strip) else {
-                submit_error(
-                    &server,
-                    conn_handle_usize as *mut std::ffi::c_void,
-                    req_id,
-                    create_nano,
-                    msg_type,
-                    FBChunkdbRetCode::InvalidArgument,
-                    "invalid strip body",
-                );
-                return;
-            };
-
-            let result = handler.update_chunk_strip(&chunk_id, strip_index, strip).await;
-            if result.is_ok() {
-                request.mark_success();
-            }
-            submit_chunk_result(
-                &server,
-                conn_handle_usize as *mut std::ffi::c_void,
-                req_id,
-                create_nano,
-                msg_type,
-                result,
             );
         });
     }

@@ -14,7 +14,7 @@ use crowdb_chunk_kv_server::{
     ChunkKvStorage, DomainMonitorRegistry, Group0ControlStore, ManagementState, StorageRuntimeError,
     TransitionExecutor, TransitionProcessor,
 };
-use crowdb_kv_client::{ServiceRegistryClient, WatchNotifyClient, WatchSubscription};
+use crowdb_kv_client::{WatchNotifyClient, WatchSubscription};
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
     ChunkKvRangeCatalogPartitionState, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, KeyRange,
@@ -50,6 +50,10 @@ struct Cli {
     /// Also emit warning and error logs to the console.
     #[arg(short = 'l', long)]
     log: bool,
+
+    /// Perf log interval in seconds; zero disables periodic metrics.
+    #[arg(long, default_value_t = 1)]
+    metrics_interval: u64,
 
     /// Maximum log file size in MiB before rotation.
     #[arg(long, default_value_t = crowdb_common::logging::DEFAULT_LOG_MAX_FILE_MB)]
@@ -142,17 +146,18 @@ async fn main() -> std::process::ExitCode {
         "crowdb-chunk-kv-server starting"
     );
 
+    let mut metrics_runner = crowdb_chunk_kv_server::metrics::start_stream_perf_log(
+        &log_dir,
+        args.metrics_interval,
+        args.log_max_file_mb,
+        args.log_max_files,
+    )
+    .expect("failed to open stream perf log");
+
     let storage = match connect_storage_with_transient_topology_retry(&config).await {
         Ok(storage) => Arc::new(storage),
         Err(error) => {
             error!(%error, "failed to connect production chunk storage");
-            return std::process::ExitCode::FAILURE;
-        }
-    };
-    let service = match ChunkKvService::new(config.instance_id, config.max_hosted_partitions) {
-        Ok(service) => Arc::new(service),
-        Err(error) => {
-            error!(%error, "failed to initialize chunk KV service");
             return std::process::ExitCode::FAILURE;
         }
     };
@@ -179,6 +184,35 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     }
+
+    let process_lease = match crowdb_chunk_kv_server::serving::process::ProcessLeaseSession::start(
+        Arc::clone(storage.kv()),
+        config.instance_id,
+        &config.monitor,
+    )
+    .await
+    {
+        Ok(lease) => Arc::new(lease),
+        Err(error) => {
+            error!(%error, "failed to claim chunk KV process lease");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = storage
+        .streams()
+        .registry()
+        .bind_owner_process(process_lease.authority())
+    {
+        error!(%error, "failed to bind WAL stream process authority");
+        return std::process::ExitCode::FAILURE;
+    }
+    let service = match ChunkKvService::new(process_lease.authority(), config.max_hosted_partitions) {
+        Ok(service) => Arc::new(service),
+        Err(error) => {
+            error!(%error, "failed to initialize chunk KV service");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
 
     let catalog = Arc::new(ChunkKvRangeCatalogPublisher::new(control_store.clone()));
     let recovery_storage = &storage;
@@ -322,7 +356,7 @@ async fn main() -> std::process::ExitCode {
                             continue;
                         }
                     };
-                    match refresh_service.install_catalog_and_reconcile(&head, &pages, &recovered) {
+                    match refresh_service.reconcile_catalog(&head, &pages, &recovered).await {
                         Ok(()) => info!(
                             generation = head.generation,
                             recovered = recovered.len(),
@@ -396,7 +430,6 @@ async fn main() -> std::process::ExitCode {
         }
     });
 
-    let service_registry = Arc::new(ServiceRegistryClient::from_shared(Arc::clone(storage.kv())));
     let capacity_bytes = u64::try_from(config.max_hosted_partitions)
         .unwrap_or(u64::MAX)
         .saturating_mul(config.balance.target_partition_bytes);
@@ -406,12 +439,8 @@ async fn main() -> std::process::ExitCode {
         .http_advertise_addr
         .as_ref()
         .map(|address| format!("http://{address}"));
-    if let Err(error) = service_registry
-        .register_chunk_kv(
-            config.instance_id,
-            &rpc_advertise_addr.to_string(),
-            &initial_observation,
-        )
+    if let Err(error) = process_lease
+        .publish_observation(&rpc_advertise_addr.to_string(), &initial_observation)
         .await
     {
         error!(%error, "failed to register chunk KV instance");
@@ -433,7 +462,7 @@ async fn main() -> std::process::ExitCode {
         }
     });
     let heartbeat_service = Arc::clone(&service);
-    let heartbeat_registry = Arc::clone(&service_registry);
+    let heartbeat_lease = Arc::clone(&process_lease);
     let heartbeat_store = Arc::clone(&control_store);
     let heartbeat_config = config.clone();
     let heartbeat_endpoint = rpc_advertise_addr.to_string();
@@ -467,8 +496,8 @@ async fn main() -> std::process::ExitCode {
                 .http_advertise_addr
                 .as_ref()
                 .map(|address| format!("http://{address}"));
-            if let Err(error) = heartbeat_registry
-                .heartbeat_chunk_kv(heartbeat_config.instance_id, &heartbeat_endpoint, &observation)
+            if let Err(error) = heartbeat_lease
+                .publish_observation(&heartbeat_endpoint, &observation)
                 .await
             {
                 warn!(%error, "chunk KV heartbeat failed");
@@ -505,10 +534,20 @@ async fn main() -> std::process::ExitCode {
 
     let shutdown_service = Arc::clone(&service);
     let shutdown_rpc = Arc::clone(&rpc_server);
+    let shutdown_lease = Arc::clone(&process_lease);
     let app = management_router(ManagementState::new(Arc::clone(&service)));
     let serving = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            shutdown_signal().await;
+            tokio::select! {
+                () = shutdown_signal() => {},
+                () = shutdown_lease.wait_for_fence() => {
+                    error!("process lease lost; stopping for supervisor restart");
+                }
+                partitions = shutdown_service.wait_for_recovery() => {
+                    error!(?partitions,
+                        "writer outcome requires durable replay; stopping for supervisor restart without reopening uncertain handles");
+                }
+            }
             shutdown_service.begin_drain();
             shutdown_rpc.stop();
             info!("chunk KV service admission drained");
@@ -521,8 +560,20 @@ async fn main() -> std::process::ExitCode {
     materialization_task.abort();
     transition_task.abort();
     refresh_task.abort();
-    if let Err(error) = service_registry.unregister("chunk-kv", config.instance_id).await {
+    let _ = tokio::join!(
+        heartbeat_task,
+        materialization_task,
+        transition_task,
+        refresh_task
+    );
+    if let Err(error) = service.drain_writers().await {
+        warn!(%error, "WAL writer drain incomplete; restart must retain lease exclusion");
+    }
+    if let Err(error) = process_lease.withdraw_observation().await {
         warn!(%error, "failed to unregister chunk KV instance");
+    }
+    if let Some(runner) = &mut metrics_runner {
+        runner.stop().await;
     }
     if serving.is_ok() {
         std::process::ExitCode::SUCCESS

@@ -35,7 +35,7 @@ async fn connect(
     diskio_connections_per_endpoint: usize,
     diskio_rpc_workers: u32,
 ) -> Result<ChunkIoClient, ExitCode> {
-    let seeds = vec![format!("http://{}:{}", cli.system_ip, cli.system_port)];
+    let (seeds, _) = crate::commands::group0_connection(cli).await?;
     ChunkIoClient::connect(ChunkIoClientConfig {
         management_seeds: seeds,
         diskio_connections_per_endpoint,
@@ -54,6 +54,7 @@ fn large_policy(
     block_size: usize,
     data_num: usize,
     code_num: usize,
+    mirror_copies: Option<u32>,
 ) -> LargeWritePolicy {
     LargeWritePolicy {
         ec_scheme: EcScheme::new(data_num, code_num),
@@ -61,6 +62,7 @@ fn large_policy(
             max_chunk_size: object_chunk_size,
             read_buffer_size: block_size,
             max_cached_buffer: block_size.saturating_mul(data_num),
+            large_mirror_copies: mirror_copies,
             ..ChunkClientConfig::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
         }),
     }
@@ -91,7 +93,13 @@ async fn run_large_write(cli: &Cli, args: ChunkioArgs) -> ExitCode {
         Ok(client) => client,
         Err(code) => return code,
     };
-    let mut policy = large_policy(args.chunk_size, args.block_size, args.data_num, args.code_num);
+    let mut policy = large_policy(
+        args.chunk_size,
+        args.block_size,
+        args.data_num,
+        args.code_num,
+        args.mirror_copies,
+    );
     Arc::make_mut(&mut policy.client).prefetch_strips_per_chunk = args.prefetch_strips_per_chunk;
     let mut metrics = BenchMetrics::new(&cli.log_dir, args.metrics_interval);
     let client = client.with_metrics(&metrics.chunk_io);
@@ -213,7 +221,13 @@ async fn run_read(cli: &Cli, args: ChunkioReadArgs, workload: ReadBenchmarkWorkl
             mixed_large_percent: args.mixed_large_percent,
             seed: args.seed,
             workload,
-            large_policy: large_policy(args.chunk_size, args.block_size, args.data_num, args.code_num),
+            large_policy: large_policy(
+                args.chunk_size,
+                args.block_size,
+                args.data_num,
+                args.code_num,
+                args.mirror_copies,
+            ),
         },
     )
     .await;

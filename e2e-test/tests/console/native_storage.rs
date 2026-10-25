@@ -15,7 +15,7 @@ pub(super) async fn start(context: &TestNativeContext) {
     start_with_geometry(context, None).await;
 }
 
-pub(super) async fn start_with_geometry(context: &TestNativeContext, geometry: Option<(u64, u32)>) {
+pub(super) async fn start_with_geometry(context: &TestNativeContext, geometry: Option<u64>) {
     start_through(context, geometry, "access-server").await;
 }
 
@@ -23,7 +23,7 @@ pub(super) async fn start_prerequisites(context: &TestNativeContext) {
     start_through(context, None, "chunkdb").await;
 }
 
-async fn start_through(context: &TestNativeContext, geometry: Option<(u64, u32)>, last: &str) {
+async fn start_through(context: &TestNativeContext, geometry: Option<u64>, last: &str) {
     start_diskdb(context, [128 * 1024; 3]).await;
     for (kind, http, rpc) in [
         ("diskio", None, Some(7200)),
@@ -69,6 +69,7 @@ pub(super) async fn start_diskdb(context: &TestNativeContext, units: [u64; 3]) {
 }
 
 async fn groups(context: &TestNativeContext) {
+    verify_manual_metadata(context).await;
     context
         .api(
             Method::POST,
@@ -77,12 +78,12 @@ async fn groups(context: &TestNativeContext) {
             201,
         )
         .await;
-    for (store, replica) in [(1, 10), (0, 20)] {
+    for (store, group, replica) in [(1, 1, 10), (0, 2, 20)] {
         context
             .api(
                 Method::POST,
                 &format!("/api/stores/{store}/groups"),
-                json!({"group_id":1,"replica_id":replica,"nodes":[1,2,3]}),
+                json!({"group_id":group,"replica_id":replica,"nodes":[1,2,3]}),
                 201,
             )
             .await;
@@ -103,12 +104,33 @@ async fn groups(context: &TestNativeContext) {
     }
 }
 
+async fn verify_manual_metadata(context: &TestNativeContext) {
+    context
+        .api(Method::GET, "/api/stores/0/groups/1", Value::Null, 404)
+        .await;
+    assert!(matches!(
+        context
+            .kv
+            .get(
+                0,
+                0,
+                crowdb_console_shared::deployment::preparation::DEFAULT_PREPARATION_KEY,
+                crowdb_kv_client::ReadMode::Linearizable,
+                None
+            )
+            .await
+            .unwrap(),
+        crowdb_kv_client::GetOutcome::NotFound,
+    ));
+}
+
 async fn disk_group(context: &TestNativeContext, node: u64) {
     context
         .api(
             Method::POST,
             &format!("/api/nodes/{node}/disk-groups"),
-            json!({"id":node,"store_id":u64::from(node == 1),"group_id":1,"name":"storage"}),
+            json!({"id":node,"store_id":u64::from(node == 1),
+                "group_id":if node == 1 { 1 } else { 2 },"name":"storage"}),
             201,
         )
         .await;
@@ -144,7 +166,11 @@ async fn wait_diskdb(context: &TestNativeContext) {
                         .unwrap_or_default()
                 })
                 .collect();
-            if groups == BTreeSet::from([1, 2, 3]) {
+            if groups == BTreeSet::from([1, 2, 3])
+                && crowdb_console_shared::deployment::services::diskdb_storage_ready(context.kv.clone())
+                    .await
+                    .is_ok()
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -160,7 +186,7 @@ async fn deploy(
     kind: &str,
     http: Option<u16>,
     rpc: Option<u16>,
-    geometry: Option<(u64, u32)>,
+    geometry: Option<u64>,
 ) {
     let mut body = context
         .api(
@@ -173,7 +199,7 @@ async fn deploy(
         .clone();
     body["kind"] = json!(kind);
     body["instance_id"] = json!(node.to_string());
-    body["test_single_node"] = json!(false);
+    body["local_deployment"] = json!(false);
     if let Some(port) = http {
         body["http_port"] = json!(port);
     }
@@ -184,10 +210,9 @@ async fn deploy(
         "diskio" => body["disk_group_id"] = json!(node),
         "chunk-kv" => {
             body["metadata_store_id"] = json!(0);
-            body["bootstrap_group_id"] = json!(1);
-            if let Some((bytes, entries)) = geometry {
+            body["bootstrap_group_id"] = json!(2);
+            if let Some(bytes) = geometry {
                 body["stream_chunk_capacity_bytes"] = json!(bytes);
-                body["stream_extent_page_entries"] = json!(entries);
             }
         }
         "access-server" => {

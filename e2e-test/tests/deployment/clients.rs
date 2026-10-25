@@ -15,7 +15,7 @@ async fn official_clients_and_protocol_layout_survive_restart() {
     let runtime: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("deployment-runtime.json")).unwrap()).unwrap();
     assert_eq!(runtime["modes"]["secrets/server.env"], "600");
-    assert_eq!(runtime["modes"]["secrets/client.env"], "600");
+    assert_eq!(runtime["modes"]["console/secrets/client.env"], "600");
     assert_eq!(runtime["modes"]["crash"], "700");
     for role in ["monitor", "kv"] {
         assert_eq!(runtime["cwd"][role], "/opt/crowdb/data/crash");
@@ -57,8 +57,8 @@ async fn official_clients_and_protocol_layout_survive_restart() {
 async fn verify_public_services(address: &str) {
     let client = crate::common::management::client();
     let web = format!("http://{address}:9090");
-    let authority: serde_json::Value = client
-        .get(format!("{web}/api/authority"))
+    let report: serde_json::Value = client
+        .get(format!("{web}/api/cluster/status"))
         .send()
         .await
         .unwrap()
@@ -67,10 +67,17 @@ async fn verify_public_services(address: &str) {
         .json()
         .await
         .unwrap();
-    assert_eq!(authority["source"], "group0");
-    assert_eq!(authority["available"], true);
-    let preview: serde_json::Value = client
-        .get(format!("{web}/api/preview"))
+    assert_eq!(report["phase"], "ready");
+    assert_eq!(report["observation"]["bound"], true);
+    let authority = report["observation"]["dependencies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|fact| fact["id"] == "cluster/authority")
+        .unwrap();
+    assert_eq!(authority["state"], "ready");
+    let services: serde_json::Value = client
+        .get(format!("{web}/api/servers"))
         .send()
         .await
         .unwrap()
@@ -79,8 +86,7 @@ async fn verify_public_services(address: &str) {
         .json()
         .await
         .unwrap();
-    assert_eq!(preview["source"], "group0");
-    assert!(!preview["services"].as_array().unwrap().is_empty());
+    assert!(!services.as_array().unwrap().is_empty());
     let stores: serde_json::Value = client
         .get(format!("{web}/api/stores"))
         .send()
@@ -96,16 +102,32 @@ async fn verify_public_services(address: &str) {
         .unwrap()
         .iter()
         .any(|store| store["store_id"] == 0));
-    for path in ["/api/stores", "/api/racks", "/api/node/admit"] {
+    let mode: serde_json::Value = client
+        .get(format!("{web}/api/mode"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(mode, serde_json::json!({"mode":"node","readonly":false}));
+    for (path, expected) in [
+        ("/api/stores", 422),
+        ("/api/racks", 400),
+        ("/api/node/admit", 422),
+    ] {
+        let response = client
+            .post(format!("{web}{path}"))
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(
-            client
-                .post(format!("{web}{path}"))
-                .json(&serde_json::json!({}))
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            reqwest::StatusCode::FORBIDDEN
+            response.status().as_u16(),
+            expected,
+            "malformed management request: {path}"
         );
     }
     assert_eq!(
@@ -120,7 +142,7 @@ async fn verify_public_services(address: &str) {
 }
 
 async fn verify_layout() {
-    let endpoint = format!("{}:12200", crate::common::management::addresses(1)[0]);
+    let endpoint = format!("{}:7301", crate::common::management::addresses(1)[0]);
     let transport = ChunkdbRpcTransport::new();
     let mut start_token = None;
     let mut seen = [false; 2];

@@ -36,14 +36,25 @@ fn tracked_config_file_loads_and_validates() {
 }
 
 #[test]
-fn single_node_container_declares_test_only_deployment() {
+fn container_declares_release_supported_local_deployment() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../container/single-node-container/templates/chunkdb.toml");
     let config = crowdb_common::config::load_from_file::<ChunkdbConfig>(&path).unwrap();
-    assert_eq!(config.deployment.mode, DeploymentMode::TestSingleNode);
+    assert_eq!(config.deployment.mode, DeploymentMode::Local);
     assert_eq!(config.deployment.max_node_failures, 0);
     assert_eq!(config.placement.mode, PlacementMode::UnsafeColocated);
     assert_eq!(config.conversion_io.rpc_workers, 1);
+}
+
+#[test]
+fn local_service_accepts_explicit_disabled_conversion_with_default_geometry() {
+    let config: ChunkdbConfig = toml::from_str(
+        "[deployment]\nmode = \"local\"\nmax_node_failures = 0\n[placement]\nmode = \"unsafe_colocated\"\n[conversion]\nenabled = false\n",
+    ).unwrap();
+    config.validate().unwrap();
+    assert!(!config.conversion.enabled);
+    assert!(config.conversion.data_num > 0);
+    assert!(config.conversion.code_num > 0);
 }
 
 #[test]
@@ -98,17 +109,17 @@ fn unsafe_colocated_placement_mode_is_explicit() {
     assert!(colocated.validate().is_err());
 
     let single: ChunkdbConfig = toml::from_str(
-        "[deployment]\nmode = \"test_single_node\"\nmax_node_failures = 0\n[placement]\nmode = \"unsafe_colocated\"\n",
+        "[deployment]\nmode = \"local\"\nmax_node_failures = 0\n[placement]\nmode = \"unsafe_colocated\"\n",
     )
     .expect("explicit test mode parses");
-    assert_eq!(single.deployment.mode, DeploymentMode::TestSingleNode);
+    assert_eq!(single.deployment.mode, DeploymentMode::Local);
     single.validate().expect("explicit test mode validates");
 
     let mut bad_budget = single;
     bad_budget.deployment.max_node_failures = 1;
     assert_eq!(
         bad_budget.validate(),
-        Err("test_single_node requires max_node_failures = 0".to_string())
+        Err("local requires max_node_failures = 0".to_string())
     );
 
     let mut bad_production_budget = ChunkdbConfig::default();

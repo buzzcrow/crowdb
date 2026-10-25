@@ -144,6 +144,11 @@ async fn assert_payload_and_status(client: &Arc<DiskioClient>, disk_id: DiskId) 
         )
         .await
         .expect("durable semantic write");
+    assert_eq!(client.status().fsync_operations, 0);
+    client
+        .fsync(disk_id, client.normal_options())
+        .await
+        .expect("explicit semantic fsync");
     let read = client
         .read(
             target,

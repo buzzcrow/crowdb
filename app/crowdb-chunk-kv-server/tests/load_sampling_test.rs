@@ -1,13 +1,16 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/process.rs"]
+mod test_process;
+
 use crowdb_chunk_kv::{
     memory::MemoryPartitionTree, MutationOperation, Partition, PartitionConfig, PartitionId, PartitionRange,
     RequestId, StreamPartitionJournal,
 };
 use crowdb_chunk_kv_server::ChunkKvService;
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, StreamBinding, StreamBindingState, StreamConfig, StreamName,
+    memory::MemoryStreamStore, ChunkStream, StreamConfig, StreamName, StreamRecord, StreamRecordState,
 };
 use std::{
     sync::Arc,
@@ -24,13 +27,15 @@ async fn partition_with_value_size(id: u64, count: u64, value_size: usize) -> Pa
     ));
     let name = StreamName { high: 1, low: id };
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name: name,
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         1,
         StreamConfig::default(),
@@ -71,7 +76,7 @@ async fn partition_with_value_size(id: u64, count: u64, value_size: usize) -> Pa
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn large_values_still_supply_two_live_split_witnesses() {
-    let service = ChunkKvService::new(1, 8).unwrap();
+    let service = ChunkKvService::new(test_process::TestProcess::authority(1), 8).unwrap();
     let partition = partition_with_value_size(3, 4, 64 * 1024).await;
     service.install_partition(&partition).unwrap();
     tokio::time::timeout(Duration::from_secs(1), async {
@@ -94,7 +99,7 @@ async fn large_values_still_supply_two_live_split_witnesses() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn observation_bounds_samples_and_does_not_starve_other_partitions() {
-    let service = ChunkKvService::new(1, 8).unwrap();
+    let service = ChunkKvService::new(test_process::TestProcess::authority(1), 8).unwrap();
     // One unsplittable partition must not stop observation of a larger valid range.
     let one = partition(1, 1).await;
     let many = partition(2, 1000).await;

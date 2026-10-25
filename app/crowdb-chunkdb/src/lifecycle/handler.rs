@@ -15,7 +15,6 @@ use quick_cache::sync::Cache;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{info, warn};
 
-use crowdb_protocol::chunk_stream::chunk_owner_key_matches_type;
 use crowdb_protocol::chunk_task::{
     ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, FINALIZE_CHUNK_KIND_VERSION,
     TASK_KIND_FINALIZE_CHUNK,
@@ -27,8 +26,7 @@ use crowdb_protocol::chunkdb::rpc::{
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::generate_chunk_id;
-use crowdb_protocol::timing::{DEFAULT_MAX_CLOCK_SKEW_MS, DEFAULT_SELF_FENCE_MARGIN_MS};
+use crowdb_protocol::timing::{DEFAULT_SELF_FENCE_MARGIN_MS, MAX_WRITE_CLOCK_SKEW_MS};
 
 use crate::allocator::{AllocError, ChunkAllocator, StripAllocType, StripBatchSpec};
 use crate::metrics::ChunkdbMetrics;
@@ -40,6 +38,9 @@ use crate::storage::{ChunkStore, StoreError};
 use crate::task::TaskStore;
 use crate::topology::TopologyCache;
 
+mod allocation;
+
+use super::replacement::validate_replacement_geometry;
 use super::state::{ChunkState, StateTransitionError};
 
 /// Default lock wait time for `LockPolicy::default()`.
@@ -48,7 +49,7 @@ const DEFAULT_LAYOUT_VALIDITY_MS: u64 = 30_000;
 const FINALIZE_CHUNK_LIVENESS_MS: u64 = 15 * 60 * 1_000;
 const FINALIZE_CHUNK_RENEWAL_MS: u64 = 12 * 60 * 1_000;
 const FINALIZE_CHUNK_SELF_FENCE_MS: u64 =
-    FINALIZE_CHUNK_LIVENESS_MS - DEFAULT_MAX_CLOCK_SKEW_MS - DEFAULT_SELF_FENCE_MARGIN_MS;
+    FINALIZE_CHUNK_LIVENESS_MS - MAX_WRITE_CLOCK_SKEW_MS - DEFAULT_SELF_FENCE_MARGIN_MS;
 
 /// Lifecycle error — maps to crowdb-rpc status codes in the service layer.
 #[derive(Debug, thiserror::Error)]
@@ -79,6 +80,8 @@ pub enum LifecycleError {
     Commit(String),
     #[error("diskdb cleanup failed after metadata publication: {0}")]
     Cleanup(String),
+    #[error("startup recovery is waiting for a dependency: {0}")]
+    RecoveryDependency(String),
     #[error("cluster reservation capacity is exhausted")]
     ReservationLimit,
 }
@@ -128,6 +131,7 @@ mod admission;
 mod append;
 #[path = "lock_map.rs"]
 mod lock_map;
+mod recovery;
 mod reservation;
 mod seal;
 
@@ -273,15 +277,15 @@ impl LifecycleHandler {
             ));
         }
         match self.deployment_mode {
-            Some(DeploymentMode::TestSingleNode) => {
+            Some(DeploymentMode::Local) => {
                 if strip_type != ProtoStripType::Mirror
-                    || copy_count != 1
+                    || !matches!(copy_count, 1 | 2)
                     || data_num != 0
                     || code_num != 0
                     || capacity_kb != 1024
                 {
                     return Err(LifecycleError::InvalidRequest(
-                        "test_single_node requires 1 MiB mirror strips with one copy each".into(),
+                        "local requires 1 MiB mirror strips with one or two copies".into(),
                     ));
                 }
             }
@@ -406,201 +410,6 @@ impl LifecycleHandler {
         }
         self.store.check_authority(chunk_id)?;
         Ok(())
-    }
-
-    /// Allocate a new chunk.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn allocate_chunk(
-        &self,
-        chunk_id: Option<ChunkId>,
-        write_granularity_kb: u32,
-        strip_count: u32,
-        strip_type: ProtoStripType,
-        data_num: u32,
-        code_num: u32,
-        copy_count: u32,
-        chunk_type: ChunkType,
-        writer_epoch: u64,
-        writer_lease_ms: u64,
-    ) -> Result<Chunk, LifecycleError> {
-        self.allocate_chunk_owned(
-            chunk_id,
-            write_granularity_kb,
-            strip_count,
-            strip_type,
-            data_num,
-            code_num,
-            copy_count,
-            chunk_type,
-            writer_epoch,
-            writer_lease_ms,
-            Vec::new(),
-        )
-        .await
-    }
-
-    /// Allocate a new chunk with a stable logical owner identity.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_lines)]
-    pub async fn allocate_chunk_owned(
-        &self,
-        chunk_id: Option<ChunkId>,
-        write_granularity_kb: u32,
-        strip_count: u32,
-        strip_type: ProtoStripType,
-        data_num: u32,
-        code_num: u32,
-        copy_count: u32,
-        chunk_type: ChunkType,
-        writer_epoch: u64,
-        writer_lease_ms: u64,
-        owner_key: Vec<u8>,
-    ) -> Result<Chunk, LifecycleError> {
-        self.validate_strip_layout(strip_type, data_num, code_num, copy_count, write_granularity_kb)?;
-        if !chunk_owner_key_matches_type(chunk_type, &owner_key) {
-            return Err(LifecycleError::InvalidRequest(
-                "chunk owner key does not match chunk type".into(),
-            ));
-        }
-        let id = match chunk_id {
-            Some(id) => id,
-            None => self.generate_owned_chunk_id(chunk_type)?,
-        };
-        if (id.high >> 56) != u64::from(chunk_type as u8) {
-            return Err(LifecycleError::InvalidRequest(
-                "chunk id prefix does not match chunk type".into(),
-            ));
-        }
-        self.check_range(&id)?;
-        let mut allocation_guard = AllocationMetricGuard::new(self.metrics.clone());
-
-        // Caller-supplied ID: acquire lock + existence check.
-        // Auto-generated ID: skip lock (UUID collision negligible).
-        let mut guard = if chunk_id.is_some() {
-            if let Some(locks) = &self.locks {
-                let g = locks
-                    .acquire_for_create(&id, &LockPolicy::default(), CacheHint::Cache)
-                    .await?;
-                // Existence check inside the lock.
-                match self.store.get_chunk(&id).await {
-                    Ok(_) => return Err(LifecycleError::ChunkAlreadyExists),
-                    Err(StoreError::ChunkNotFound) => {}
-                    Err(e) => return Err(LifecycleError::Storage(e)),
-                }
-                Some(g)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let snap = self.topology.snapshot();
-
-        let mirror_copies = if copy_count == 0 { 2 } else { copy_count as usize };
-        let strip_alloc_type =
-            self.protected_degraded_layout(strip_type, &snap)
-                .unwrap_or(match strip_type {
-                    ProtoStripType::Mirror => StripAllocType::Mirror {
-                        copy_count: mirror_copies,
-                    },
-                    ProtoStripType::Ec => StripAllocType::Ec {
-                        data_num: data_num as usize,
-                        code_num: code_num as usize,
-                    },
-                });
-
-        let constraints = self.allocation_constraints(strip_type, &snap);
-        // Convert write_granularity (KB) to unit_count using the unit
-        // size from the topology snapshot. Fall back to treating KB as
-        // units if unit_size_bytes is unavailable (0).
-        let unit_size_kb = snap.unit_size_bytes() / 1024;
-        let unit_count = write_granularity_kb
-            .checked_div(unit_size_kb)
-            .unwrap_or(write_granularity_kb)
-            .max(1);
-
-        let mut strips = self
-            .allocator
-            .allocate_strips(
-                &snap,
-                &id,
-                StripBatchSpec {
-                    strip_type: strip_alloc_type,
-                    unit_count,
-                    start_sequence: 0,
-                    strip_count,
-                },
-                &constraints,
-            )
-            .await?;
-        assign_strip_offsets(&mut strips, 0);
-
-        let now_ms = unix_time_ms();
-        if writer_epoch != 0 && writer_lease_ms == 0 {
-            self.allocator.rollback_strips(&strips).await?;
-            return Err(LifecycleError::InvalidRequest(
-                "writer_lease_ms must be nonzero for a shared writer".into(),
-            ));
-        }
-
-        let chunk = Chunk {
-            id: Some(id),
-            modify_ts: 1,
-            state: ProtoChunkState::Active as i32,
-            create_ts_ms: now_ms,
-            sealed_ts_ms: 0,
-            capacity: strips.iter().map(|s| s.capacity).sum(),
-            sealed_length: 0,
-            strips,
-            chunk_type: chunk_type as i32,
-            writer_epoch,
-            acknowledged_cursor: 0,
-            closed_strip_sequence: None,
-            writer_lease_deadline_ms: writer_lease_deadline(now_ms, writer_epoch, writer_lease_ms),
-            next_strip_sequence: strip_count,
-            cleanup_intents: Vec::new(),
-            last_strip_replacement: None,
-            owner_key,
-        };
-        self.create_chunk_with_liveness_task(&chunk).await?;
-        self.liveness_renewed_at.insert(id, now_ms);
-        self.admit_placement_repairs(&chunk);
-        self.commit_strip_segments_background(chunk.strips.clone());
-
-        // Update cache.
-        if let Some(ref mut g) = guard {
-            g.refresh(chunk.clone());
-        } else if chunk_id.is_none() {
-            // Auto-generated ID: populate cache directly (no guard).
-            if let Some(locks) = &self.locks {
-                locks.populate_cache(&id, chunk.clone());
-            }
-        }
-        info!(chunk_id = ?id, strips = strip_count, "chunk allocated");
-        allocation_guard.mark_success();
-        Ok(chunk)
-    }
-
-    fn generate_owned_chunk_id(&self, chunk_type: ChunkType) -> Result<ChunkId, LifecycleError> {
-        let Some(range_guard) = &self.range_guard else {
-            return Ok(generate_chunk_id(chunk_type as u8).to_proto());
-        };
-        if !range_guard.is_ready() {
-            let candidate = generate_chunk_id(chunk_type as u8).to_proto();
-            return self.check_range(&candidate).map(|()| candidate);
-        }
-        let attempts = 32 * u64::from(crowdb_protocol::chunk_slot::CHUNK_SLOT_COUNT)
-            / range_guard.owned_bucket_count().max(1);
-        for _ in 0..attempts {
-            let candidate = generate_chunk_id(chunk_type as u8).to_proto();
-            if range_guard.check(&candidate).is_ok() {
-                return Ok(candidate);
-            }
-        }
-        Err(LifecycleError::InvalidRequest(
-            "failed to generate a chunk id in the owned range".into(),
-        ))
     }
 
     async fn create_chunk_with_liveness_task(&self, chunk: &Chunk) -> Result<(), LifecycleError> {
@@ -896,36 +705,6 @@ impl LifecycleHandler {
         }
         info!(chunk_id = ?chunk_id, "chunk deleted");
         Ok(chunk)
-    }
-
-    /// Compatibility wrapper for a fenced one-strip range replacement.
-    pub async fn update_chunk_strip(
-        &self,
-        chunk_id: &ChunkId,
-        strip_index: u32,
-        new_strip: ChunkStrip,
-    ) -> Result<Chunk, LifecycleError> {
-        let chunk = self.query_chunk(chunk_id).await?;
-        let idx = usize::try_from(strip_index).unwrap_or(usize::MAX);
-        if idx >= chunk.strips.len() {
-            return Err(LifecycleError::StripIndexOutOfRange {
-                index: strip_index,
-                len: chunk.strips.len(),
-            });
-        }
-        let operation_id = ChunkId {
-            high: chunk_id.high ^ chunk.modify_ts,
-            low: chunk_id.low ^ u64::from(strip_index),
-        };
-        self.replace_chunk_strip_range(
-            chunk_id,
-            chunk.modify_ts,
-            strip_index,
-            std::slice::from_ref(&chunk.strips[idx]),
-            std::slice::from_ref(&new_strip),
-            operation_id,
-        )
-        .await
     }
 
     /// Atomically replace a capacity-compatible strip range under a revision
@@ -1367,9 +1146,9 @@ impl LifecycleHandler {
         data_num: u32,
         code_num: u32,
     ) -> Result<ChunkStrip, LifecycleError> {
-        if self.deployment_mode == Some(crate::chunkdb_config::DeploymentMode::TestSingleNode) {
+        if self.deployment_mode == Some(crate::chunkdb_config::DeploymentMode::Local) {
             return Err(LifecycleError::InvalidRequest(
-                "test_single_node disables mirror-to-EC conversion".into(),
+                "local disables mirror-to-EC conversion".into(),
             ));
         }
         self.check_range(chunk_id)?;
@@ -1535,146 +1314,6 @@ impl LifecycleHandler {
             .map_err(LifecycleError::Storage)
     }
 
-    /// Finish durable `Init` allocation intents left by an interrupted commit.
-    pub async fn reconcile_pending_chunks(&self) -> Result<u64, LifecycleError> {
-        let mut start_after = None;
-        let mut reconciled = 0u64;
-        loop {
-            let chunks = self.list_chunks(start_after.as_ref(), 1_000).await?;
-            if chunks.is_empty() {
-                break;
-            }
-            for mut chunk in chunks.iter().cloned() {
-                if !chunk.cleanup_intents.is_empty() {
-                    let intent_count = chunk.cleanup_intents.len();
-                    let current_segments: HashSet<_> =
-                        chunk.strips.iter().flat_map(extract_segments).collect();
-                    let now_ms = unix_time_ms();
-                    let mut pending = Vec::new();
-                    for intent in std::mem::take(&mut chunk.cleanup_intents) {
-                        if intent.not_before_ms > now_ms {
-                            pending.push(intent);
-                            continue;
-                        }
-                        let retired: Vec<_> = intent
-                            .retired_segments
-                            .iter()
-                            .filter(|segment| !current_segments.contains(segment))
-                            .copied()
-                            .collect();
-                        self.allocator
-                            .pool()
-                            .free_blocks(retired)
-                            .await
-                            .map_err(LifecycleError::Cleanup)?;
-                    }
-                    chunk.cleanup_intents = pending;
-                    if chunk.cleanup_intents.len() != intent_count {
-                        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
-                        self.store.put_chunk(&chunk).await?;
-                        if let (Some(locks), Some(chunk_id)) = (&self.locks, chunk.id) {
-                            locks.populate_cache(&chunk_id, chunk.clone());
-                        }
-                        reconciled = reconciled.saturating_add(1);
-                    }
-                }
-                match ChunkState::from_proto(chunk.state) {
-                    ChunkState::Init => {
-                        self.commit_strip_segments(&chunk.strips).await?;
-                        chunk.state = ProtoChunkState::Active as i32;
-                        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
-                    }
-                    ChunkState::Deleted if !chunk.strips.is_empty() => {
-                        let segments = chunk.strips.iter().flat_map(extract_segments).collect();
-                        self.allocator
-                            .pool()
-                            .free_blocks(segments)
-                            .await
-                            .map_err(LifecycleError::Cleanup)?;
-                        chunk.strips.clear();
-                        chunk.capacity = 0;
-                        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
-                    }
-                    _ => continue,
-                }
-                self.store.put_chunk(&chunk).await?;
-                if let (Some(locks), Some(chunk_id)) = (&self.locks, chunk.id) {
-                    locks.populate_cache(&chunk_id, chunk);
-                }
-                reconciled += 1;
-            }
-            start_after = chunks.last().and_then(|chunk| chunk.id);
-            if chunks.len() < 1_000 {
-                break;
-            }
-        }
-        Ok(reconciled)
-    }
-
-    /// Seal Active shared chunks whose persisted writer lease expired.
-    pub async fn seal_expired_writer_chunks(&self) -> Result<u64, LifecycleError> {
-        let now_ms = unix_time_ms();
-        let mut start_after = None;
-        let mut sealed = 0_u64;
-        loop {
-            let chunks = self.list_chunks(start_after.as_ref(), 1_000).await?;
-            if chunks.is_empty() {
-                break;
-            }
-            for candidate in &chunks {
-                if ChunkState::from_proto(candidate.state) != ChunkState::Active
-                    || candidate.writer_epoch == 0
-                    || candidate.writer_lease_deadline_ms > now_ms
-                {
-                    continue;
-                }
-                let Some(chunk_id) = candidate.id else {
-                    continue;
-                };
-                let mut guard = if let Some(locks) = &self.locks {
-                    Some(
-                        locks
-                            .acquire(&chunk_id, &self.store, &LockPolicy::default(), CacheHint::Cache)
-                            .await?,
-                    )
-                } else {
-                    None
-                };
-                let mut chunk = match &guard {
-                    Some(guard) => guard
-                        .chunk()
-                        .unwrap_or_else(|| unreachable!("acquire guarantees chunk on Ok"))
-                        .clone(),
-                    None => self.store.get_chunk(&chunk_id).await?,
-                };
-                if ChunkState::from_proto(chunk.state) != ChunkState::Active
-                    || chunk.writer_epoch == 0
-                    || chunk.writer_lease_deadline_ms > now_ms
-                {
-                    continue;
-                }
-                self.reclaim_unconsumed_reservations(&chunk_id).await?;
-                chunk.state = ProtoChunkState::Sealed as i32;
-                chunk.modify_ts = chunk.modify_ts.saturating_add(1);
-                chunk.sealed_ts_ms = now_ms;
-                chunk.sealed_length =
-                    u32::try_from(chunk.acknowledged_cursor.div_ceil(1024)).unwrap_or(u32::MAX);
-                close_acknowledged_strips(&mut chunk, now_ms);
-                self.store.put_chunk(&chunk).await?;
-                if let Some(ref mut guard) = guard {
-                    guard.refresh(chunk.clone());
-                }
-                sealed = sealed.saturating_add(1);
-                info!(chunk_id = ?chunk_id, cursor = chunk.acknowledged_cursor, "expired shared writer chunk sealed");
-            }
-            start_after = chunks.last().and_then(|chunk| chunk.id);
-            if chunks.len() < 1_000 {
-                break;
-            }
-        }
-        Ok(sealed)
-    }
-
     /// Commit all segments in the given strips to diskdb (two-phase
     /// commit: mark tentative blocks as permanent after chunk persist).
     async fn commit_strip_segments(&self, strips: &[ChunkStrip]) -> Result<(), LifecycleError> {
@@ -1740,7 +1379,7 @@ impl LifecycleHandler {
 }
 
 /// Extract all segments from a strip (mirror or EC).
-fn extract_segments(strip: &ChunkStrip) -> Vec<crowdb_protocol::diskdb::rpc::Segment> {
+pub(super) fn extract_segments(strip: &ChunkStrip) -> Vec<crowdb_protocol::diskdb::rpc::Segment> {
     use crowdb_protocol::chunkdb::rpc::Strip;
     match &strip.strip {
         Some(Strip::MirrorStrip(m)) => m.segments.clone(),
@@ -1778,82 +1417,6 @@ fn conversion_unit_count(old: &[ChunkStrip], chunk_id: &ChunkId) -> Result<u32, 
         ));
     }
     Ok(unit_count)
-}
-
-fn validate_replacement_geometry(
-    old: &[ChunkStrip],
-    replacement: &[ChunkStrip],
-    chunk_id: &ChunkId,
-) -> Result<(), LifecycleError> {
-    let old_capacity: u32 = old.iter().map(|strip| strip.capacity).sum();
-    let new_capacity: u32 = replacement.iter().map(|strip| strip.capacity).sum();
-    if old_capacity != new_capacity
-        || old[0].chunk_offset != replacement[0].chunk_offset
-        || old[0].strip_sequence != replacement[0].strip_sequence
-    {
-        return Err(LifecycleError::InvalidRequest(
-            "replacement must preserve first offset, first sequence, and total capacity".into(),
-        ));
-    }
-    if replacement
-        .iter()
-        .flat_map(extract_segments)
-        .any(|segment| segment.owner_chunk.as_ref() != Some(chunk_id) || segment.unit_count == 0)
-    {
-        return Err(LifecycleError::InvalidRequest(
-            "replacement segments must be non-empty and owned by the chunk".into(),
-        ));
-    }
-    let mut expected_offset = replacement[0].chunk_offset;
-    for strip in replacement {
-        if strip.capacity == 0 || strip.unit_kb == 0 || strip.chunk_offset != expected_offset {
-            return Err(LifecycleError::InvalidRequest(
-                "replacement strips must be non-empty and contiguous".into(),
-            ));
-        }
-        expected_offset = expected_offset
-            .checked_add(strip.capacity)
-            .ok_or_else(|| LifecycleError::InvalidRequest("replacement strip range overflows u32".into()))?;
-        let segments = extract_segments(strip);
-        let shape_is_valid = match &strip.strip {
-            Some(Strip::MirrorStrip(_)) => {
-                !segments.is_empty()
-                    && segments
-                        .iter()
-                        .all(|segment| segment.unit_count.saturating_mul(strip.unit_kb) == strip.capacity)
-            }
-            Some(Strip::EcStrip(ec)) => {
-                ec.data_num > 0
-                    && ec.code_num > 0
-                    && segments.len()
-                        == usize::try_from(ec.data_num.saturating_add(ec.code_num)).unwrap_or(usize::MAX)
-                    && segments.iter().all(|segment| {
-                        segment
-                            .unit_count
-                            .saturating_mul(strip.unit_kb)
-                            .saturating_mul(ec.data_num)
-                            == strip.capacity
-                    })
-            }
-            None => false,
-        };
-        if !shape_is_valid {
-            return Err(LifecycleError::InvalidRequest(
-                "replacement strip has invalid mirror or EC geometry".into(),
-            ));
-        }
-        let segment_set: HashSet<_> = segments.into_iter().collect();
-        if strip
-            .unavailable_segments
-            .iter()
-            .any(|segment| !segment_set.contains(segment))
-        {
-            return Err(LifecycleError::InvalidRequest(
-                "unavailable replicas must belong to the replacement strip".into(),
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn validate_replacement_sequences(
@@ -1917,29 +1480,6 @@ fn writer_lease_deadline(now_ms: u64, writer_epoch: u64, writer_lease_ms: u64) -
     } else {
         now_ms.saturating_add(writer_lease_ms)
     }
-}
-
-fn close_acknowledged_strips(chunk: &mut Chunk, now_ms: u64) {
-    if chunk.writer_epoch == 0 || chunk.acknowledged_cursor == 0 {
-        return;
-    }
-    let cursor = chunk.acknowledged_cursor;
-    let mut last_closed = chunk.closed_strip_sequence;
-    for strip in &mut chunk.strips {
-        let start = u64::from(strip.chunk_offset) * 1024;
-        if cursor <= start {
-            break;
-        }
-        let end = u64::from(strip.chunk_offset.saturating_add(strip.capacity)) * 1024;
-        let length = cursor.min(end).saturating_sub(start);
-        strip.sealed_length = u32::try_from(length.div_ceil(1024)).unwrap_or(u32::MAX);
-        strip.sealed_ts_ms = now_ms;
-        last_closed = Some(strip.strip_sequence);
-        if cursor < end {
-            break;
-        }
-    }
-    chunk.closed_strip_sequence = last_closed;
 }
 
 fn seal_written_strips(chunk: &mut Chunk, seal_length: u32, now_ms: u64) {

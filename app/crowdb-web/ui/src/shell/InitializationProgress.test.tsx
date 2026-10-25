@@ -10,7 +10,7 @@ vi.mock('../api', () => ({ clusterInitialization: vi.fn(), initCluster: vi.fn() 
 const observe = vi.mocked(clusterInitialization);
 
 describe('InitializationProgress', () => {
-  beforeEach(() => { vi.useFakeTimers(); vi.clearAllMocks(); });
+  beforeEach(() => { vi.useFakeTimers(); vi.resetAllMocks(); });
   afterEach(() => { vi.useRealTimers(); });
 
   it('shows accepted work as running and retains the last observation on failure', async () => {
@@ -21,12 +21,23 @@ describe('InitializationProgress', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Preparing selected nodes');
     expect(screen.getByText('Selected voters: 3, 1, 2')).toBeVisible();
     expect(screen.queryByText('Initialization complete')).toBeNull();
-    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(screen.getByText('Status unavailable · last observation shown')).toBeVisible();
     expect(screen.getByText('Operation fixed')).toBeVisible();
     view.unmount();
     await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
     expect(observe).toHaveBeenCalledTimes(2);
+    expect(initCluster).not.toHaveBeenCalled();
+  });
+
+  it('shows completed initialization within one second while accepted work is running', async () => {
+    observe.mockResolvedValueOnce({ phase: 'data-group', members: [1, 2, 3], operation_id: 'fixed' })
+      .mockResolvedValue({ phase: 'active', members: [1, 2, 3], operation_id: 'fixed' });
+    render(<InitializationProgress />);
+    await act(async () => {});
+    expect(screen.getByRole('status')).toHaveTextContent('Creating initial data group');
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(screen.getByRole('status')).toHaveTextContent('Initialization complete');
     expect(initCluster).not.toHaveBeenCalled();
   });
 

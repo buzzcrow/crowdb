@@ -74,9 +74,6 @@ boto3 = "==1.43.92"
 awscli = "==2.36.47"
 rclone = "==1.75.1"
 
-[feature.s3-e2e.tasks]
-test-boto3-copy-error = { cmd = "python tools/pixi-tasks/test.py unit boto3" }
-
 [environments]
 s3-e2e = { features = ["s3-e2e"], no-default-feature = true }
 iceberg-e2e = { features = ["iceberg-e2e"], no-default-feature = true }
@@ -119,23 +116,45 @@ duckdb = "==1.4.3"
 openjdk = "17.*"
 maven = "3.9.*"
 
-[feature.iceberg-ecosystem.tasks]
-test-iceberg-container-ecosystem = "bash e2e-test/clients/ecosystem/run.sh"
+[pypi-dependencies]
+maturin = ">=1.15, <2"
+pip = ">=25, <27"
 
 [tasks]
-image-build = "bash container/oci-image/image-build.sh"
-image-inspect = "pixi run --manifest-path container/oci-image/pixi.toml inspect"
-image-import = "pixi run --manifest-path container/oci-image/pixi.toml import"
-image-ctl = "pixi run --manifest-path container/oci-image/pixi.toml -e runtime control"
-image-run = "pixi run --manifest-path container/oci-image/pixi.toml -e runtime run"
-test-container-e2e = "python e2e-test/run.py"
+
+################################################################################
+# Build — install dependencies, clean outputs and compile
+################################################################################
+install-deps = { cmd = "bash tools/pixi-tasks/install-deps.sh" }
+# Frontend dependencies only; avoids installing profiling tools for UI tests.
+install-ui-deps = "test -d app/crowdb-web/ui/node_modules || (cd app/crowdb-web/ui && npm ci)"
+# Remove build products and the complete workspace runtime tree.
+clean = { cmd = "bash tools/pixi-tasks/clean-build.sh" }
+# Stop recorded ephemeral processes and remove disposable runtime state.
+clean-env = "bash tools/pixi-tasks/clean-env.sh"
+# Standalone C++ libraries for ctest; Rust FFI builds its own C++ libraries.
+build-cpp = { cmd = "bash tools/pixi-tasks/build-cpp.sh" }
+# Full release build: C++ libraries, Rust binaries and frontend.
+build = { cmd = "bash tools/pixi-tasks/build-release.sh", depends-on = ["build-cpp", "install-ui-deps"] }
+# Optional compile-only check for all workspace test targets.
+build-tests = "cargo test --workspace --all-targets --no-run"
+default = { depends-on = ["build"] }
+
+################################################################################
+# Test — component, SDK and container acceptance suites
+################################################################################
 test = "python tools/pixi-tasks/test.py"
+test-suite = { cmd = "python tools/pixi-tasks/test.py all", depends-on = ["build-cpp", "install-ui-deps"] }
+test-cpp = { cmd = "python tools/pixi-tasks/test.py unit cpp", depends-on = ["build-cpp"] }
+test-core = { cmd = "python tools/pixi-tasks/test.py unit core" }
+test-storage = { cmd = "python tools/pixi-tasks/test.py unit storage" }
+test-access = { cmd = "python tools/pixi-tasks/test.py unit access" }
+test-console = { cmd = "python tools/pixi-tasks/test.py unit console" }
+test-console-ui = { cmd = "python tools/pixi-tasks/test.py unit ui", depends-on = ["install-ui-deps"] }
 test-access-sdk = "python tools/pixi-tasks/test.py unit sdk"
-test-dataset-sdk-python = "python tools/sdk/package.py"
 test-dataset-sdk = "cargo test --manifest-path sdk/Cargo.toml --workspace --locked"
-sdk-fmt-check = "cargo fmt --manifest-path sdk/Cargo.toml --all -- --check"
-sdk-lint = "cargo clippy --manifest-path sdk/Cargo.toml --workspace --all-targets --locked -- -D warnings"
-check-dataset-sdk-boundary = "python tools/ci-checks/check-dataset-sdk-boundary.py"
+test-dataset-sdk-python = "python tools/sdk/package.py"
+test-tree-link-isolation = "bash tools/cpp-checks/tree-link-isolation.sh"
 test-e2e-kv = "python tools/pixi-tasks/test.py e2e kv"
 test-e2e-diskdb = "python tools/pixi-tasks/test.py e2e diskdb"
 test-e2e-diskio = "python tools/pixi-tasks/test.py e2e diskio"
@@ -148,116 +167,60 @@ test-e2e-iceberg = "python tools/pixi-tasks/test.py e2e iceberg"
 test-e2e-dataset = "python tools/pixi-tasks/test.py e2e dataset"
 test-e2e-console = "python tools/pixi-tasks/test.py e2e console"
 test-e2e-deployment = "python tools/pixi-tasks/test.py e2e deployment"
+test-container-e2e = "python e2e-test/run.py"
 test-container-e2e-fixture = "env PYTHONPATH=e2e-test python -m unittest discover -s e2e-test/tests -p '*_test.py' -v"
 test-oci-image = "pixi run --manifest-path container/oci-image/pixi.toml test"
+test-single-node-container = { cmd = "bash container/single-node-container/tests/release-policy.sh && bash container/single-node-container/tests/image-smoke.sh && bash container/single-node-container/tests/container-e2e.sh", depends-on = ["install-ui-deps"] }
 
-# ── Build ────────────────────────────────────────────────────────
-# C++ libraries only (crowdb-tree, crowdb-rpc, crowdb-diskio). Needed by C++
-# ctest tasks. Rust FFI crates compile their own C++ via cc::Build in
-# build.rs, so Rust tests do NOT depend on this.
-build-cpp = { cmd = "bash tools/pixi-tasks/build-cpp.sh" }
-# npm deps only (for UI tests and ts-lint). Separated from install-deps
-# so test-console-ui doesn't trigger cargo installs of profiling tools.
-install-ui-deps = "test -d app/crowdb-web/ui/node_modules || (cd app/crowdb-web/ui && npm ci)"
-install-deps = { cmd = "bash tools/pixi-tasks/install-deps.sh" }
+################################################################################
+# Tools — format, lint, architecture checks and source line counts
+################################################################################
 tree-fmt = '''
 find lib/crowdb-tree/src lib/crowdb-tree/include lib/crowdb-tree/tests lib/crowdb-tree/bench lib/crowdb-common/cpp lib/crowdb-rpc/src lib/crowdb-rpc/include lib/crowdb-rpc/tests -type f \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format -i
 '''
-# CPATH lets clang-tidy find the conda env headers (spdlog, gtest, folly,
-# absl, flatbuffers, zlib, isa-l, liburing, infiniband, ...) at
-# $CONDA_PREFIX/include. The conda gcc has this as a built-in default include
-# path, but clang-tidy (a separate compiler) does not, and compile_commands.json
-# does not list it explicitly because gcc finds those headers automatically.
-# clang treats CPATH entries as system includes, so warnings from third-party
-# headers are suppressed.
-tree-lint = "CPATH=$CONDA_PREFIX/include python3 tools/cpp-checks/clang-tidy.py"
-test-tree-link-isolation = "bash tools/cpp-checks/tree-link-isolation.sh"
 rs-fmt = '''cargo metadata --format-version 1 --no-deps | jq -r '.workspace_members as $members | .packages[] | select(.id as $package_id | $members | index($package_id)) | .name' | xargs sh -c 'cargo fmt --package "$@"' _'''
 rs-fmt-check = '''cargo metadata --format-version 1 --no-deps | jq -r '.workspace_members as $members | .packages[] | select(.id as $package_id | $members | index($package_id)) | .name' | xargs sh -c 'cargo fmt --package "$@" -- --check' _'''
+sdk-fmt-check = "cargo fmt --manifest-path sdk/Cargo.toml --all -- --check"
+# CPATH supplies conda headers omitted from GCC compile_commands.json.
+tree-lint = "CPATH=$CONDA_PREFIX/include python3 tools/cpp-checks/clang-tidy.py"
+rs-lint = { cmd = "cargo clippy --all-targets -- -D warnings", depends-on = ["check-production-dashmap", "check-version"] }
+sdk-lint = "cargo clippy --manifest-path sdk/Cargo.toml --workspace --all-targets --locked -- -D warnings"
+ts-lint = { cmd = "python tools/pixi-tasks/check-console-types.py", depends-on = ["install-ui-deps"] }
 check-production-dashmap = "python3 tools/ci-checks/check-production-dashmap.py"
 check-version = "python3 tools/ci-checks/check-version.py"
-rs-lint = { cmd = "cargo clippy --all-targets -- -D warnings", depends-on = ["check-production-dashmap", "check-version"] }
-ts-lint = { cmd = "python tools/pixi-tasks/check-console-types.py", depends-on = ["install-ui-deps"] }
-# Full build: C++ libs + release Rust binaries + frontend. Used by
-# run/bench/profile. Tests use build-cpp (C++ tests) or nothing (Rust tests).
-build = { cmd = "bash tools/pixi-tasks/build-release.sh", depends-on = ["build-cpp", "install-ui-deps"] }
-default = { depends-on = ["build"] }
-stage-single-node-container = "bash container/single-node-container/build.sh stage"
-build-single-node-container = "bash container/single-node-container/build.sh image"
-start-container = { cmd = "bash container/single-node-container/dev-container.sh start", depends-on = ["build-single-node-container"] }
-inject-container = "bash container/single-node-container/dev-container.sh inject"
-clean-container = "bash container/single-node-container/dev-container.sh clean"
-test-single-node-container = { cmd = "bash container/single-node-container/tests/release-policy.sh && bash container/single-node-container/tests/image-smoke.sh && bash container/single-node-container/tests/container-e2e.sh", depends-on = ["build-single-node-container", "install-ui-deps"] }
-
-# ── Run ──────────────────────────────────────────────────────────
-web = { cmd = "echo 'CROWDB console starting at: http://127.0.0.1:9090/' && cargo run --release -p crowdb-web", depends-on = ["build"] }
-
-# ── Benchmark ────────────────────────────────────────────────────
-bench = { cmd = "cargo run --release -p crowdb-cli -- bench kv --mode mem --duration-secs 12 --loader-num 2 --connections 1 --workload write", depends-on = ["build"] }
-bench-mem = { cmd = "cargo run --release -p crowdb-cli -- bench kv --mode mem --duration-secs 30", depends-on = ["build"] }
-bench-file = { cmd = "cargo run --release -p crowdb-cli -- bench kv --mode file --duration-secs 30", depends-on = ["build"] }
-bench-block = { cmd = "cargo run --release -p crowdb-cli -- bench kv --mode block --duration-secs 30", depends-on = ["build"] }
-bench-burst = { cmd = "cargo run --release -p crowdb-cli -- bench kv --mode mem --duration-secs 10 --loader-num 64 --connections 8 --key-space 10000 --value-size 256 --workload mix", depends-on = ["build"] }
-bench-soak = { cmd = "cargo run --release -p crowdb-cli -- bench kv --mode mem --duration-secs 30 --loader-num 8 --connections 4 --key-space 100000 --value-size 1024 --workload write", depends-on = ["build"] }
-bench-hotread = { cmd = "cargo run --release -p crowdb-cli -- bench kv --mode mem --duration-secs 15 --loader-num 32 --connections 4 --key-space 64 --value-size 64 --workload read", depends-on = ["build"] }
-bench-compare = { cmd = "cargo run --release -p crowdb-cli -- bench compare", depends-on = ["build"] }
-
-# ── Profile ───────────────────────────────────────────────────────
-profile-write = { cmd = "bash tools/profiling/profile-write.sh", depends-on = ["build"] }
-
-# ── Test ─────────────────────────────────────────────────────────
-# Tasks are grouped by CI job (see doc/working/test.md § "Current CI
-# Test Design"). Each group maps 1:1 to a parallel CI job. Run
-# Each test group builds only its own Rust targets. C++ ctest tasks need
-# `pixi run build-cpp`.
-clean-env = "bash tools/pixi-tasks/clean-env.sh"
-# Optional full-workspace compile check. CI test groups use their component
-# tasks to avoid building unrelated test targets on each runner.
-build-tests = "cargo test --workspace --all-targets --no-run"
-# Verify every workspace package is assigned to a test task reachable from CI.
+check-dataset-sdk-boundary = "python tools/ci-checks/check-dataset-sdk-boundary.py"
 check-ci-test-tasks = "python tools/ci-checks/check-ci-test-tasks.py"
-
-# ── Lint job ──
-# (uses rs-fmt / rs-lint / tree-lint defined above, no separate test-* tasks)
-
-test-cpp = { cmd = "python tools/pixi-tasks/test.py unit cpp", depends-on = ["build-cpp"] }
-
-# ── Component tests ─────────────────────────────────────────────
-test-core = { cmd = "python tools/pixi-tasks/test.py unit core" }
-test-storage = { cmd = "python tools/pixi-tasks/test.py unit storage" }
-test-access = { cmd = "python tools/pixi-tasks/test.py unit access" }
-
-# ── ConsoleTests job: deterministic component tests ──
-test-console = { cmd = "python tools/pixi-tasks/test.py unit console" }
-
-# ── UITests job: deterministic UI component tests ──
-test-console-ui = { cmd = "python tools/pixi-tasks/test.py unit ui", depends-on = ["install-ui-deps"] }
-
-# ── Full local suite (not a CI job; runs everything in one invocation) ──
-# Grouped by CI job order. Each group task owns its component list;
-# Component tasks run first; one root container aggregate follows.
-test-suite = { cmd = "python tools/pixi-tasks/test.py all", depends-on = ["build-cpp", "install-ui-deps"] }
-
-# ── Coverage & LOC ───────────────────────────────────────────────
-coverage = { cmd = "cargo tarpaulin --workspace --out Html --output-dir target/coverage --exclude-files '*/tests/*'", depends-on = ["install-deps"] }
 loc = "tokei . .github --exclude swagger-ui --exclude third-party --exclude 'lib/crowdb-tree/build-*' --exclude target --exclude dist --exclude node_modules --exclude package-lock.json"
 
-# ── Clean ────────────────────────────────────────────────────────
-# Removes build products and the complete workspace runtime tree.
-clean = { cmd = "bash tools/pixi-tasks/clean-build.sh" }
-
-# ── lib/crowdb-tree sanitizers ──────────────────────────────────────────
-
-# AddressSanitizer build + tests. setarch -R disables ASLR (Linux only);
-# on macOS we run ctest directly.
+################################################################################
+# Tools — sanitizers, coverage and profiling
+################################################################################
 tree-asan = { cmd = "bash tools/pixi-tasks/tree-asan.sh" }
-
-# ThreadSanitizer build + tests.
 tree-tsan = { cmd = "bash tools/pixi-tasks/tree-tsan.sh" }
-
-# UndefinedBehaviorSanitizer build + tests.
 tree-ubsan = { cmd = "bash tools/pixi-tasks/tree-ubsan.sh" }
+coverage = { cmd = "cargo tarpaulin --workspace --out Html --output-dir target/coverage --exclude-files '*/tests/*'", depends-on = ["install-deps"] }
+profile-write = { cmd = "bash tools/profiling/profile-write.sh", depends-on = ["build"] }
 
-[pypi-dependencies]
-maturin = ">=1.15, <2"
-pip = ">=25, <27"
+################################################################################
+# OCI containers — build once, run isolated clusters, stop or clean owned resources
+################################################################################
+# Build an OCI archive. Add --load to load crowdb-node:dev into local Docker.
+oci-build = "bash container/oci-image/image-build.sh"
+# Run uses the existing image; monitors discover peers and prepare the cluster.
+oci-run = "python container/oci-image/docker-local.py run"
+oci-run-1c = "python container/oci-image/docker-local.py run --nodes 1"
+oci-run-3c = "python container/oci-image/docker-local.py run --nodes 3"
+# Scope defaults to --cluster local. Global scope requires --all explicitly.
+oci-stop = "python container/oci-image/docker-local.py stop"
+# Remove owned containers and bridges; preserve data unless --delete-data is set.
+oci-clean = "python container/oci-image/docker-local.py clean"
+oci-host-clean = "python container/oci-image/host-clean.py"
+
+################################################################################
+# Test environments — isolated client dependencies; run with pixi run -e <name>
+################################################################################
+[feature.s3-e2e.tasks]
+test-boto3-copy-error = { cmd = "python tools/pixi-tasks/test.py unit boto3" }
+
+[feature.iceberg-ecosystem.tasks]
+test-iceberg-container-ecosystem = "bash e2e-test/clients/ecosystem/run.sh"

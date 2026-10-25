@@ -112,11 +112,10 @@ run_bench() {
     local rss_pre_clean; rss_pre_clean=$(sample_rss "$config_file" "pre-clean")
     # Clean: wipe user data on bench group (group 0 sysdata preserved).
     local clean_out
-    clean_out=$(pixi run -- cargo run --release -p crowdb-cli -- --config "$config_file" \
-        cluster clean --store 0 --group 1 --json 2>&1)
+    clean_out=$(regression_fixture_for "$config_file" reset --store 0 --group 1 2>&1)
     local clean_json; clean_json=$(echo "$clean_out" | sed -n '/^{/,/^}/p')
     if [ -z "$clean_json" ] || ! echo "$clean_json" | jq -e '.new_leader' >/dev/null 2>&1; then
-        echo "    ERROR: clean failed"; echo "$clean_out" | tail -5
+        echo "    ERROR: clean failed"; echo "$clean_out"
         append_failed_row "$label" "$duration" "$keyspace" "$value_size"
         return
     fi
@@ -125,20 +124,21 @@ run_bench() {
     local clean_delta=$((rss_pre_clean - rss_post_clean))
     echo "    rss clean delta: ${clean_delta}MB freed"
     local output bench_status=0
-    output=$(pixi run -- cargo run --release -p crowdb-cli -- --config "$config_file" \
+    output=$(regression_client_for "$config_file" \
         bench kv write --store 0 --group 1 --duration-secs "$duration" \
         --loader-num "$threads" --connections "$conn" \
         --key-space "$keyspace" --value-size "$value_size" \
         --event-write --rpc-workers "${RPC_WORKERS:-2}" \
-        --verify-bytes 0 --json 2>&1 | tee "$LOG_ROOT/$label-cli.log") || bench_status=$?
+        --verify-bytes 0 2>&1 | tee "$LOG_ROOT/$label-cli.log") || bench_status=$?
     if [ "$bench_status" -ne 0 ]; then
         echo "    ERROR: benchmark command exited with status $bench_status"
+        echo "$output" >&2
         append_failed_row "$label" "$duration" "$keyspace" "$value_size"
         return
     fi
-    local json; json=$(echo "$output" | sed -n '/^{/,/^}/p')
+    local json; json=$(regression_report_for "$config_file")
     if [ -z "$json" ]; then
-        echo "    ERROR: no JSON output"; echo "$output" | tail -5
+        echo "    ERROR: no JSON output"; echo "$output"
         append_failed_row "$label" "$duration" "$keyspace" "$value_size"
         return
     fi
@@ -196,7 +196,7 @@ run_bench() {
 }
 
 # deploy_group <name> <win> <coalesce> <rpc_workers>
-# Deploy a 3-node cluster with the given server tunables via local-deploy,
+# Deploy a 3-node cluster with the given server tunables via the explicit test fixture,
 # then create a bench group (store 0, group 1) so benchmarks don't touch
 # group 0 sysdata.
 deploy_group() {
@@ -204,15 +204,14 @@ deploy_group() {
     local config_file="$LOG_ROOT/${name}-console.toml"
     echo "=== deploying cluster '$name' (win=$win, coalesce=$coalesce, workers=$workers) ==="
     rm -f "$config_file"
-    pixi run -- cargo run --release -p crowdb-cli -- --config "$config_file" \
-        cluster local-deploy -n 3 -t kv \
+    regression_fixture_for "$config_file" setup -- --nodes 3 --kind kv \
         --event-write --peer-pool-size 4 \
         --max-inflight "$win" --coalesce-max-keys "$coalesce" \
         --rpc-workers "$workers" \
-        --kv-backend mem-block --wal-backend mem-block 2>&1 | tail -3
+        --kv-backend mem-block --wal-backend mem-block 2>&1
     echo "=== creating bench group 0/1 (group 0 sysdata preserved) ==="
-    pixi run -- cargo run --release -p crowdb-cli -- --config "$config_file" \
-        kv group add -s 0 -g 1 -n 1,2,3 2>&1 | tail -3
+    regression_client_for "$config_file" \
+        kv group add -s 0 -g 1 -n 1,2,3 2>&1
     # Store config path for run_bench/teardown_group.
     echo "$config_file" > "$LOG_ROOT/${name}.cfgpath"
     # Baseline RSS right after deploy (before any sub-test).
@@ -225,8 +224,7 @@ teardown_group() {
     local config_file
     config_file=$(cat "$LOG_ROOT/${name}.cfgpath" 2>/dev/null || echo "")
     if [ -n "$config_file" ] && [ -f "$config_file" ]; then
-        pixi run -- cargo run --release -p crowdb-cli -- --config "$config_file" \
-            cluster destroy 2>&1 | tail -2
+        regression_fixture_for "$config_file" stop 2>&1
         rm -f "$LOG_ROOT/${name}.cfgpath"
     fi
 }
@@ -242,7 +240,7 @@ teardown_group() {
 #   sagg/ragg columns are 0 (moved to crowdb-common histograms). p50/p99
 #   use coarser histogram buckets (500us increments) — not directly
 #   comparable to the 2026-08-27 exact values. 128T and 256T show
-#   r2=0us/r3=0us (replicas not responding) after `cluster clean` —
+#   r2=0us/r3=0us (replicas not responding) after the fixture data reset —
 #   consensus instability from the clean→run transition, not storage-
 #   related. A standalone compare-128t run (fresh deploy, no prior
 #   sub-tests) gets 198K ops/s with co=15.75/16, confirming the storage
@@ -264,7 +262,7 @@ teardown_group() {
 #   and calls remove_group BEFORE create_group_with_wal. Bench runs on
 #   group 1 (group 0 sysdata preserved). The 256T consensus instability
 #   is fixed: 22K→181K ops/s, 256→0 errors. r2/r3 now respond at all
-#   thread counts. cluster clean frees RSS between sub-tests (128MB–9.5GB
+#   thread counts. fixture data reset frees RSS between sub-tests (128MB–9.5GB
 #   freed). 512T slightly lower (264K→240K) — within run-to-run noise.
 #
 #   T    C    W    win  co        ops/s     WAL/node  p50    p99     err   sagg  ragg  r2    r2tps    r3    r3tps    enq   wait
@@ -324,7 +322,7 @@ teardown_group() {
 # (cargo skips unchanged crates); this only recompiles if a prior
 # sanitize run left an ASan-instrumented artifact in target/release.
 echo "=== building release (CROWDB_ASAN unset) ==="
-pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server 2>&1 | tail -3
+pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server 2>&1
 
 echo -e "label\twin\tcoalesce\tworkers\tops_s\twal_per_node\tavg_us\tp50_us\tp99_us\terrors\tsrv_sagg\tsrv_ragg\tcli_sagg\tcli_ragg\tr2_avg\tr2_tps\tr3_avg\tr3_tps\tinflight_enq\tinflight_wait_us\tduration_s\tkeyspace\tvalue_size\tcorrectness_errors\tsnapshot_completed\tsnapshot_failed\tsnapshot_max_us\telection_delta" > "$RESULTS_FILE"
 

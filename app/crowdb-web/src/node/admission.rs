@@ -19,6 +19,7 @@ use crate::{
     state::AppState,
 };
 type Failure = (StatusCode, Json<ErrorBody>);
+mod recovery;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,6 +33,9 @@ pub(crate) struct AdmitRequest {
     pub(super) preflight_operation_id: Option<String>,
     #[serde(default)]
     pub(super) setup: Option<crowdb_protocol::mgmt::node::setup::NodeSetupChoices>,
+    /// Automatic callers must confirm discovery hints over authenticated control.
+    #[serde(skip)]
+    pub(super) expected_formation: Option<crowdb_protocol::mgmt::node::deployment::FormationPolicy>,
 }
 
 pub(crate) async fn admit(
@@ -164,7 +168,7 @@ async fn admit_observed(
     if target.ssh_password.is_none() {
         target.ssh_key = Some(key.to_string_lossy().into_owned());
     }
-    admission::prepare(
+    let identity = admission::prepare(
         &control_socket(),
         &key,
         &record.operation_id,
@@ -174,7 +178,18 @@ async fn admit_observed(
     )
     .await
     .map_err(map_config_err)?;
-    super::setup::accept(state, &record, &target, body.setup).await?;
+    record.pin_host_key(&identity.host_key).map_err(map_config_err)?;
+    if let Some(binding) = &binding {
+        record = registry::admit(
+            state.kv_client().await.as_ref(),
+            &binding.bootstrap.cluster_id,
+            record,
+        )
+        .await
+        .map_err(map_config_err)?;
+    }
+    save(&path, &record)?;
+    super::setup::accept(state, &record, &target, body.setup, body.expected_formation).await?;
     target.ssh_password = None;
     target.ssh_key = None;
     target.ssh_credential_ref = Some("id_ed25519".into());
@@ -390,6 +405,7 @@ async fn confirm_admission(
     )
     .await
     .map_err(map_config_err)?;
+    recovery::distribute(&ctx, binding, key).await?;
     Ok(())
 }
 
@@ -420,6 +436,7 @@ fn initial_record(
             ssh_port: body.ssh_port,
             ssh_user: body.ssh_user.clone(),
             operation_id: uuid::Uuid::new_v4().to_string(),
+            host_key: None,
             confirmed: false,
             cancelled: false,
         }

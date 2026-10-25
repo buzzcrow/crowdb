@@ -104,9 +104,14 @@ async fn diskio_discovers_disk_groups_created_after_web_deployment() {
     })
     .await
     .expect("node-local DiskIO discovers both late groups");
+    let readiness = get(&http, &base, "/api/chunk-storage-readiness").await;
     assert_eq!(
-        get(&http, &base, "/api/chunk-storage-readiness").await["ready"],
-        true
+        readiness["ready"], false,
+        "DiskIO ownership alone cannot load DiskDB media"
+    );
+    assert!(
+        readiness["reason"].as_str().unwrap().contains("DiskDB"),
+        "{readiness}"
     );
     assert_eq!(
         get(&http, &base, "/api/nodes/1/disk-groups")

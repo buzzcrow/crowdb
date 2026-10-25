@@ -47,4 +47,4 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 crowdb-access-iceberg = { path = ".", features = ["test-util"] }
 arc-swap = "1.9"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "test-util"] }

@@ -42,6 +42,15 @@ immutable snapshot when a new head or page is absent, corrupt, incomplete, or
 regressing. Unchanged pages may be referenced by later heads through their
 original page generation.
 
+An owner's connection address may change without transferring its partitions.
+Under the Group-0 leader fence, a fresh instance registration advertising the
+same hosted partition and owner epoch may publish an address-only successor.
+The partition, range, owner instance ID, epoch, tree, stream and transition
+remain unchanged, and old pages remain immutable. A recovering owner may update
+its route, but receives no serving authority until normal recovery and grant
+checks succeed. Fixed transition comparisons use owner instance identity rather
+than requiring its historical connection address.
+
 ## 2. Domain Monitors
 
 `EnsureDomainMonitor` carries a persisted descriptor with domain and registry
@@ -57,6 +66,12 @@ before planning; it is never represented as an empty cluster. A supervisor
 restarts failed tasks from durable state and a new leader resumes outstanding
 transitions.
 
+An unfinished split reserves both partition identities and participating owners
+against automatic dead-owner transfer, as it does against ordinary balancing.
+The published parent alone cannot prove that a competing transfer may claim its
+WAL: durable split handoff can precede catalog publication. Owner restart resumes
+that split; heartbeat expiry never authorizes discarding its recovery state.
+
 Normal service discovery filters expired registrations. Monitor observation
 uses the raw scan, preserving expired entries and heartbeat timestamps so
 absence cannot be confused with owner death. The default heartbeat is two
@@ -64,10 +79,23 @@ seconds, `Suspect` begins at six seconds, and `Dead` recovery begins at ten.
 
 ## 3. Serving Authority
 
-The monitor issues one aggregate grant per instance. It contains a monotonic
+Each boot claims one fixed Group-0 WAL process lease. It retains its predecessor
+identity while claiming; a replaced boot cannot claim again or renew. Independent
+background renewal starts before partition recovery. Local expiry or a renewal
+gap permanently fences that boot. Lease records retain process epochs and prior
+process/grant expiry boundaries after expiration.
+
+The monitor issues one aggregate grant per instance and process epoch. It contains a monotonic
 lease sequence, catalog generation, wall-clock expiry, sorted exact
 `(partition_id, owner_epoch)` assignments, and their canonical digest. An
 instance heartbeat advertises health but cannot authorize a request.
+
+Heartbeat publication compares the exact process identity and mutates the same
+lease key atomically with the observation. Grant publication compares that key
+and atomically preserves its sequence and greatest expiry alongside the grant.
+Replacement, renewal and grant publication therefore serialize on one record;
+replacement cannot miss a concurrent extension. An observation for another
+process epoch cannot receive a grant, and a boot rejects grants for other epochs.
 
 On receipt, an owner subtracts maximum clock skew and its self-fence margin
 from the wall-clock remaining duration, then projects that duration onto its
@@ -77,6 +105,22 @@ without taking a lock. The default 12-second lease, one-second skew, and
 one-second self-fence margin fence the old owner by ten seconds. A replacement
 waits until the old wall-clock expiry plus skew unless an explicit source fence
 is durably proven.
+
+Authority revocation retains the highest accepted grant sequence. The same old
+grant cannot reinstall after a clear. Each assignment also carries local
+continuity across live renewal: expiry, removal or clear permanently invalidates
+an admitted context, even if a later grant restores the same partition and epoch.
+Grant publication uses the current monotonic time, so delayed installation
+cannot hide a local expiry gap.
+
+Normal point execution captures that context before asynchronous WAL/tree work
+and validates it again before returning success. A revoked context returns
+`LeaseExpired` without advertising a successful journal position; already durable
+data remains available to replay and a retry with the same request identity.
+The captured IO deadline stays at its original value across continuous renewal.
+Catching-up targets retain their separately validated transfer-artifact authority.
+Both paths also require the live process scope before execution and before
+returning success. Grant installation cannot revive a locally fenced process.
 
 Client catalog revisions and owner epochs are routing references, not serving
 authority. A server may resolve an older reference through a process-local
@@ -130,6 +174,15 @@ sequencer accepts a mutation, dropping the transport response does not cancel
 the partition worker; retrying the same identity retrieves the recorded result.
 Reads may carry a mutation's returned journal position for explicit
 read-after-write ordering.
+
+Multi-get and batch mutation validate their complete key group before IO, then
+capture authority for every resolved serving assignment. All captured contexts
+are checked against one grant snapshot before and after each member. Revoking
+any context stops later members from entering the WAL; a replacement grant cannot
+resume the old group. Continuous live renewal preserves the group. Time spent
+waiting for earlier members counts toward the original request deadline.
+Batch mutation preserves each member's stable identity and individual outcome,
+so retry can retrieve already durable results without replaying their mutations.
 
 ## 5. Ordered Reads
 
@@ -264,6 +317,9 @@ group-0 monitor advance them in this order:
    writes between the fixed frontier and that dispatch change.
 3. Readiness binds the exact common cutover, the retained-parent next epoch,
    and the child's complete tail overlay.
+   Split plans retain the original parent tree/WAL identity in every phase.
+   The strict readiness record contains one child overlay and rejects unknown
+   fields; the planned timestamp is required.
    It is persisted before catalog publication.
 4. One catalog generation atomically replaces the old parent entry with a
    smaller entry having the same partition/tree/stream identity and the next
@@ -379,10 +435,16 @@ phase, release proof, initial readiness proof, final catch-up proof, and
 failure. The live-source phases and actions are:
 
 1. `Planned` → `SourcePreparing`: the source remains `Serving`, checkpoints a
-   pinned base, creates the target-owned empty WAL, and records the initial
-   source cursor in the target overlay.
+   pinned base, registers the target WAL's stable `StreamRecord`, and records
+   the initial source cursor in the target overlay. It acquires no writer lease
+   and allocates no chunks for the target WAL.
+   After pinning the base, an ordered mutation-worker command publishes and
+   captures the WAL sequence, byte offset and Stream generation together.
+   Independently sampled counters cannot define a replay cutover: concurrent
+   mutations may be newer than the previously published Stream prefix.
 2. `TargetPreparing`: the remote target validates the range, page-root and
-   stream identities, opens the exact immutable tree-manifest generation named
+   stream identities, initializes or recovers the target WAL under its own
+   process lease, opens the exact immutable tree-manifest generation named
    by the source-base proof rather than the latest root, and starts one shared
    async initialization coroutine that replays the source suffix into a
    `Prepared` overlay. The source remains writable. The live target handle and
@@ -602,7 +664,7 @@ explicit; UI refresh does not bypass stale cursor rejection.
 ## 9. Lifecycle and Observability
 
 Startup ensures the monitor, registers the instance, loads a complete catalog,
-opens each assignment's latest tree root and stream manifest as `Prepared`,
+opens each assignment's latest tree root and Stream chunk record as `Prepared`,
 reads the applied sequence and WAL replay offset from that tree root, replays
 through the stream's current durable tail, reports readiness, and serves only
 after installing a matching grant. Shutdown
@@ -611,6 +673,19 @@ operations retain handles and finish before bounded checkpoint/drain work.
 Catalog refresh recovers every new or changed local assignment first, then
 replaces the catalog and hosted-partition snapshots; unchanged exact-epoch
 handles remain live and departed assignments are dropped.
+An unknown journal or post-journal apply outcome moves the affected writer to
+`Recovering`, closing its admission and excluding it from serving grants.
+An unchanged catalog cannot repair that terminal handle. The process detects
+this state, clears authority, stops RPC admission and exits so its supervisor
+can relaunch it. The successor reloads the durable catalog, tree checkpoint,
+complete WAL and persisted split/transfer proofs before obtaining a fresh grant.
+No uncertainty flag is cleared in place and no recovery artifact is deleted.
+Diagnostics identify the partition, owner epoch and durable/applied sequences;
+ordinary `Prepared` activation and idle instances do not trigger a restart.
+The recovery check includes prepared transfer targets and retained split
+dispatchers with both ingress writers, even after a newer catalog replaces their
+assignments. Current-range readiness cannot hide terminal uncertainty in a
+compatibility route that remains reachable by older client references.
 Catalog-head watch notifications trigger reconciliation immediately and check
 the matching serving grant afterward. Instance-specific grant notifications
 install authority without reopening or rescanning catalog assignments.

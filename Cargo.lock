@@ -782,6 +782,7 @@ dependencies = [
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
+ "flatbuffers",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -845,6 +846,7 @@ dependencies = [
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
+ "crowdb-test-harness",
  "crowdb-tree-ffi",
  "serde",
  "serde_json",
@@ -861,15 +863,17 @@ version = "0.3.0"
 dependencies = [
  "arc-swap",
  "async-trait",
- "bincode",
  "bytes",
  "crc32fast",
  "crossbeam-skiplist",
  "crowdb-chunk-client",
  "crowdb-chunk-stream",
+ "crowdb-common",
+ "crowdb-kv",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-test-harness",
+ "futures",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -882,14 +886,17 @@ name = "crowdb-chunkdb"
 version = "0.3.0"
 dependencies = [
  "arc-swap",
+ "async-trait",
  "axum",
  "bincode",
  "bytes",
  "clap",
  "crossbeam-skiplist",
+ "crowdb-chunk-client",
  "crowdb-chunkdb",
  "crowdb-chunkdb-client",
  "crowdb-common",
+ "crowdb-console-shared",
  "crowdb-diskdb",
  "crowdb-diskdb-client",
  "crowdb-diskio-client",
@@ -948,6 +955,7 @@ dependencies = [
  "crowdb-test-harness",
  "crowdb-web",
  "flatbuffers",
+ "futures",
  "hex",
  "libc",
  "quick-xml",
@@ -958,12 +966,14 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
 name = "crowdb-common"
 version = "0.3.0"
 dependencies = [
+ "crowdb-common",
  "crowdb-test-harness",
  "flate2",
  "libc",
@@ -985,10 +995,14 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",
+ "bincode",
+ "chrono",
+ "clap",
  "crowdb-chunkdb-client",
  "crowdb-console-shared",
  "crowdb-kv",
  "crowdb-kv-client",
+ "crowdb-kv-server",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
@@ -996,6 +1010,8 @@ dependencies = [
  "form_urlencoded",
  "futures",
  "hex",
+ "hmac",
+ "percent-encoding",
  "reqwest",
  "russh",
  "serde",
@@ -1163,6 +1179,7 @@ dependencies = [
  "tokio",
  "tracing",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]
@@ -1171,6 +1188,7 @@ version = "0.3.0"
 dependencies = [
  "axum",
  "clap",
+ "crowdb-chunk-kv-client",
  "crowdb-console-shared",
  "crowdb-diskio-client",
  "crowdb-kv",
@@ -1193,6 +1211,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml",
+ "tracing",
  "uuid",
 ]
 
@@ -1212,6 +1231,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "url",
  "utoipa",
  "xxhash-rust",
 ]
@@ -1229,6 +1249,23 @@ dependencies = [
  "ctor",
  "flatbuffers",
  "tokio",
+]
+
+[[package]]
+name = "crowdb-rpc-test"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "crowdb-chunk-client",
+ "crowdb-common",
+ "crowdb-protocol",
+ "crowdb-rpc-ffi",
+ "crowdb-test-harness",
+ "flatbuffers",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1273,12 +1310,14 @@ dependencies = [
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
+ "crowdb-web",
  "dirs",
  "flatbuffers",
  "futures",
  "hex",
  "hmac",
  "percent-encoding",
+ "quick-xml",
  "reqwest",
  "serde",
  "serde_json",

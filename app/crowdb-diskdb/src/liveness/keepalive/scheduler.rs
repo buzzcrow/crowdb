@@ -359,7 +359,16 @@ impl BackgroundTask for KeepAlive {
                     Trigger::TimerFn(interval_fn)
                 }
             }
-            None => Trigger::Timer(self.config.interval),
+            None => match &self.sync_trigger {
+                Some(notify) => {
+                    let interval = self.config.interval;
+                    Trigger::TimerOrEvent {
+                        interval_fn: Box::new(move || interval),
+                        notify: Arc::clone(notify),
+                    }
+                }
+                None => Trigger::Timer(self.config.interval),
+            },
         }
     }
 

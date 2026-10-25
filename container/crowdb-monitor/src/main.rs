@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+mod node_args;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -32,18 +34,19 @@ enum Command {
         physical_host_id: String,
     },
     Run {
-        #[arg(long, default_value = "/opt/crowdb/etc/profile.toml")]
-        profile: PathBuf,
-        #[arg(long, default_value = "single", value_parser = ["single", "manual"])]
-        mode: String,
-        #[arg(long, default_value = "eth0")]
-        interface: Vec<String>,
-        #[arg(long)]
-        physical_host_id: Option<String>,
+        #[command(flatten)]
+        args: node_args::NodeRunArgs,
+    },
+    /// Seal startup policy before the container creates its SSH identity.
+    AcceptPolicy {
+        #[command(flatten)]
+        args: node_args::NodeRunArgs,
     },
     Control {
         #[arg(long, default_value = "/opt/crowdb/run/node-control.sock")]
         socket: PathBuf,
+        #[arg(long, default_value = "/opt/crowdb/data")]
+        data_root: PathBuf,
         #[arg(long)]
         json: String,
     },
@@ -128,53 +131,31 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             })
             .await?;
         }
-        Command::Run {
-            profile,
-            mode,
-            interface,
-            physical_host_id,
+        Command::Run { args } => node_args::run(args).await?,
+        Command::AcceptPolicy { args } => println!("{}", node_args::accept(&args)?),
+        Command::Control {
+            socket,
+            data_root,
+            json,
         } => {
-            let addresses = if_addrs::get_if_addrs()?
-                .into_iter()
-                .filter(|address| interface.contains(&address.name))
-                .map(|address| address.ip())
-                .collect();
-            let config = crowdb_monitor::NodeRuntimeConfig {
-                profile,
-                bind: "0.0.0.0:9095".parse()?,
-                discovery: crowdb_monitor::DiscoveryConfig {
-                    interfaces: interface,
-                    addresses,
-                    monitor_port: 9095,
-                    cluster_id: None,
-                    seeds: std::env::var("CROWDB_DISCOVERY_SEEDS")
-                        .unwrap_or_default()
-                        .split(',')
-                        .filter(|seed| !seed.is_empty())
-                        .map(str::to_owned)
-                        .collect(),
-                },
-                physical_host_id: match physical_host_id {
-                    Some(id) => id,
-                    None if mode == "single" => "unspecified-single-node-host".into(),
-                    None => return Err("manual mode requires physical-host-id".into()),
-                },
-            };
-            let result = if mode == "single" {
-                crowdb_monitor::run_single_node(config).await
-            } else {
-                crowdb_monitor::run_node(config).await
-            };
-            result.map_err(|error| error.to_string())?;
-        }
-        Command::Control { socket, json } => {
             if json.len() > 65536 {
                 return Err("control request exceeds limit".into());
             }
             let request = serde_json::from_str(&json)?;
-            let reply = crowdb_monitor::control_node(&socket, &request)
-                .await
-                .map_err(|error| error.to_string())?;
+            let reply = if matches!(
+                request,
+                crowdb_protocol::mgmt::node::NodeControl::RecoveryIdentity
+            ) {
+                serde_json::to_value(
+                    crowdb_monitor::read_recovery_identity(&data_root)
+                        .await
+                        .map_err(|error| error.to_string())?,
+                )?
+            } else {
+                crowdb_monitor::control_node(&socket, &request)
+                    .await
+                    .map_err(|error| error.to_string())?
+            };
             println!("{}", serde_json::to_string(&reply)?);
         }
         Command::Validate { profile } => {
@@ -193,7 +174,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     data_root,
                 },
         } => {
-            print!("{}", show_client_credentials(&data_root)?);
+            let credential_root = if crowdb_monitor::read_node_policy(&data_root)?.is_some() {
+                data_root.join("console")
+            } else {
+                data_root
+            };
+            print!("{}", show_client_credentials(&credential_root)?);
         }
     }
     Ok(())
@@ -201,9 +187,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
 fn validate_profile(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let profile = DeploymentProfile::load(path)?;
-    if profile.name == "single-node-container" {
-        crowdb_monitor::preview_step_names(&profile)?;
-    }
+    profile.validate_node_catalog()?;
     println!("{}", profile.name);
     Ok(())
 }

@@ -121,10 +121,13 @@ mod restart;
 pub use restart::restart_local_service;
 mod native;
 pub use native::prepare_native_launch;
+mod chunkdb;
+pub use chunkdb::chunkdb_config;
 
 /// Inputs for a local `ChunkDB` deployment.
 #[derive(Debug, Clone)]
 pub struct ChunkdbDeployRequest {
+    pub local_deployment: bool,
     pub dynamic_ownership: bool,
     pub server_id: String,
     pub instance_id: u64,
@@ -878,38 +881,6 @@ pub fn crowdb_diskio_bin() -> Option<PathBuf> {
     find_in_path(std::ffi::OsStr::new("crowdb-diskio"))
 }
 
-/// Locate the standalone `crowdb-rpc-fb-server` C++ binary (built via
-/// `pixi run build-cpp`). Search order: `$CROWDB_RPC_FB_SERVER_BIN`,
-/// `lib/crowdb-rpc/build/crowdb-rpc-fb-server` relative to the repo
-/// root (walked up from the current exe), then `$PATH`.
-pub fn crowdb_rpc_fb_server_bin() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("CROWDB_RPC_FB_SERVER_BIN") {
-        return Some(PathBuf::from(p));
-    }
-    // The fb-server is a CMake target under lib/crowdb-rpc/build/.
-    // Walk up from the exe dir to find the repo root, then check the
-    // expected build path.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let mut p = dir.to_path_buf();
-            for _ in 0..5 {
-                let candidate = p.join("lib/crowdb-rpc/build/crowdb-rpc-fb-server");
-                if is_executable(&candidate) {
-                    return Some(candidate);
-                }
-                if !p.pop() {
-                    break;
-                }
-            }
-        }
-    }
-    if let Some(path) = find_in_path(std::ffi::OsStr::new("crowdb-rpc-fb-server")) {
-        return Some(path);
-    }
-    warn!("crowdb-rpc-fb-server binary not found via env, repo build, or $PATH");
-    None
-}
-
 /// Resolve the `--config` path for a diskdb deploy. Uses the
 /// pre-copied config at `<workspace>/conf/crowdb_diskdb_config.toml`.
 /// Falls back to a minimal auto-generated config with all required
@@ -1291,7 +1262,7 @@ pub async fn deploy_chunkdb_local(
         "ChunkDB",
     )
     .await?;
-    std::mem::forget(child);
+    tokio::spawn(reap_child(child, pid, "crowdb-chunkdb"));
     Ok(DeployedDiskdb {
         server_id: req.server_id.clone(),
         endpoint,
@@ -1308,46 +1279,6 @@ pub async fn deploy_chunkdb_local(
             readiness_url: Some(management),
         },
     })
-}
-
-/// Render the node-specific `ChunkDB` configuration after deployment input validation.
-#[must_use]
-pub fn chunkdb_config(req: &ChunkdbDeployRequest, node: &NodeEntry) -> String {
-    let seeds = req
-        .kv_server_mgmt_seeds
-        .iter()
-        .map(|seed| format!("{seed:?}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let deployment_mode = if req.allow_unsafe_ec {
-        "test_unsafe_placement"
-    } else {
-        "production"
-    };
-    let placement_mode = if req.allow_unsafe_ec {
-        "unsafe_colocated"
-    } else {
-        "protected"
-    };
-    format!(
-        "service_ownership = \"{}\"\n\n[deployment]\nmode = \"{}\"\n\n[server]\nrpc_workers = {}\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\nkv_pool_size = {}\nkv_rpc_workers = {}\ndiskdb_pool_size = {}\ndiskdb_rpc_workers = {}\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nmode = \"{}\"\nallow_unsafe_ec = {}\nallow_degraded_failure_domains = {}\n",
-        if req.dynamic_ownership { "dynamic" } else { "fixed" },
-        deployment_mode,
-        req.rpc_workers.unwrap_or(2),
-        node.host,
-        req.http_port,
-        node.host,
-        req.rpc_port,
-        req.instance_id,
-        seeds,
-        req.kv_connections.unwrap_or(1),
-        req.kv_client_rpc_workers.unwrap_or(2),
-        req.diskdb_connections.unwrap_or(1),
-        req.diskdb_client_rpc_workers.unwrap_or(2),
-        placement_mode,
-        req.allow_unsafe_ec,
-        req.allow_unsafe_ec,
-    )
 }
 
 fn chunkdb_launch_args(req: &ChunkdbDeployRequest, config_path: &Path, log_dir: &Path) -> Vec<String> {
@@ -1425,7 +1356,7 @@ pub async fn deploy_diskio_local(
             ),
         });
     }
-    std::mem::forget(child);
+    tokio::spawn(reap_child(child, pid, "crowdb-diskio"));
     Ok(DeployedDiskdb {
         server_id: req.server_id.clone(),
         endpoint,

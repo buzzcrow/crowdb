@@ -1,6 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/process.rs"]
+mod test_process;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -18,8 +21,8 @@ use crowdb_chunk_kv_server::{
 };
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamMetadataStore,
-    StreamName, StreamRegistry,
+    ChunkStream, StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName, StreamRecord,
+    StreamRecordState, StreamRegistry,
 };
 use crowdb_protocol::chunk_kv::{
     AuthorityReleaseProof, ChunkKvRangeCatalogEntry, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
@@ -99,13 +102,15 @@ async fn partition(
 ) -> Partition {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
-        StreamBinding {
+        StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name: artifact.stream_name,
             metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("chunk-kv-partition".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         },
         epoch,
         StreamConfig::default(),
@@ -136,7 +141,7 @@ async fn partition(
                 root_manifest_generation: 1,
                 applied_seq: 0,
                 stream_name: artifact.stream_name,
-                stream_manifest_generation: 1,
+                stream_generation: 1,
                 replay_offset: 0,
             },
             PartitionConfig::default(),
@@ -269,7 +274,7 @@ fn transfer(phase: TransferPhase) -> TransferTransition {
         source_partition_id: id(1),
         source_epoch: 3,
         source_stream_name: source_artifact.stream_name,
-        source_stream_manifest_generation: 1,
+        source_stream_generation: 1,
         replay_offset: 0,
         cutover_offset: 0,
         base_root_manifest_generation: 1,
@@ -319,7 +324,7 @@ fn split_transition() -> SplitTransition {
         parent_owner: owner(1),
         parent_epoch: 3,
         parent_artifact: artifact(11),
-        retained_parent_artifact: artifact(12),
+        retained_parent_artifact: artifact(11),
         parent_next_epoch: 4,
         split_key: b"m".to_vec(),
         child: SplitChildAssignment {
@@ -362,7 +367,7 @@ fn split_artifact(transition: &SplitTransition) -> SplitArtifact {
         },
         parent_epoch: transition.parent_epoch,
         parent_stream_name: StreamName { high: 5, low: 11 },
-        parent_stream_manifest_generation: 1,
+        parent_stream_generation: 1,
         parent_replay_offset: 0,
         parent_cutover_offset: 8,
         applied_seq: 8,
@@ -410,7 +415,7 @@ async fn source_worker_quiesces_before_returning_release_proof() {
     )
     .await;
     let unused = partition(id(9), KeyRange::default(), 1, &artifact(99), true).await;
-    let service = Arc::new(ChunkKvService::new(1, 4).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap());
     service.install_partition(&source).unwrap();
     let worker = TransitionExecutor::with_storage(
         1,
@@ -453,7 +458,7 @@ async fn source_worker_quiesces_before_returning_release_proof() {
 async fn target_worker_recovers_but_does_not_activate_assignment() {
     let target_artifact = transfer(TransferPhase::TargetPreparing).target_artifact;
     let recovered = partition(id(1), KeyRange::default(), 4, &target_artifact, true).await;
-    let service = Arc::new(ChunkKvService::new(2, 4).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(2), 4).unwrap());
     let worker = TransitionExecutor::with_storage(
         2,
         Arc::clone(&service),
@@ -553,7 +558,7 @@ async fn final_target_catchup_reuses_the_live_prepared_partition() {
         true,
     )
     .await;
-    let service = Arc::new(ChunkKvService::new(2, 4).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(2), 4).unwrap());
     service.install_partition(&recovered).unwrap();
     let storage = Arc::new(LiveCatchupStorage {
         recovered,
@@ -581,7 +586,7 @@ async fn split_worker_reports_only_a_common_child_frontier() {
     )
     .await;
     let unused = partition(id(9), KeyRange::default(), 1, &artifact(99), true).await;
-    let service = Arc::new(ChunkKvService::new(1, 4).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap());
     service.install_partition(&parent).unwrap();
     let worker = TransitionExecutor::with_storage(
         1,
@@ -698,7 +703,7 @@ async fn service_after_local_split(first: &SplitTransition) -> (Arc<ChunkKvServi
         false,
     )
     .await;
-    let service = Arc::new(ChunkKvService::new(1, 8).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(1), 8).unwrap());
     service.install_partition(&parent).unwrap();
     let retained = install_zero_seq_local_split(&service, &parent, first).await;
     (service, retained)
@@ -718,8 +723,8 @@ async fn repeated_local_split_uses_current_retained_writer() {
         },
         parent_owner: owner(1),
         parent_epoch: 4,
-        parent_artifact: first.retained_parent_artifact,
-        retained_parent_artifact: artifact(14),
+        parent_artifact: first.retained_parent_artifact.clone(),
+        retained_parent_artifact: first.retained_parent_artifact,
         parent_next_epoch: 5,
         split_key: b"g".to_vec(),
         child: SplitChildAssignment {
@@ -765,7 +770,7 @@ async fn processor_persists_target_preparing_before_readiness() {
         1
     );
     let recovered = partition(id(1), KeyRange::default(), 4, &artifact(11), true).await;
-    let service = Arc::new(ChunkKvService::new(2, 4).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(2), 4).unwrap());
     let executor = Arc::new(
         TransitionExecutor::with_storage(
             2,
@@ -805,7 +810,7 @@ async fn processor_recovers_durable_prepared_target_and_cleans_authoritative_abo
         });
         store.persist_transfer_transition(&transition, 0).await.unwrap();
         let recovered = partition(id(1), KeyRange::default(), 4, &artifact(11), true).await;
-        let service = Arc::new(ChunkKvService::new(2, 4).unwrap());
+        let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(2), 4).unwrap());
         let storage = Arc::new(LiveCatchupStorage {
             recovered: recovered.clone(),
             recover_calls: AtomicUsize::new(0),
@@ -855,7 +860,7 @@ async fn processor_resumes_planned_split_through_durable_readiness() {
     )
     .await;
     let recovered = partition(id(9), KeyRange::default(), 1, &artifact(99), true).await;
-    let service = Arc::new(ChunkKvService::new(1, 4).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap());
     service.install_partition(&parent).unwrap();
     let executor = Arc::new(
         TransitionExecutor::with_storage(
@@ -900,7 +905,7 @@ async fn failed_transfer_does_not_starve_independent_split_processing() {
         false,
     )
     .await;
-    let service = Arc::new(ChunkKvService::new(1, 4).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap());
     service.install_partition(&parent).unwrap();
     let executor = Arc::new(
         TransitionExecutor::with_storage(

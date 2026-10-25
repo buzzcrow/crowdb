@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides;
 use crowdb_protocol::mgmt::node::{NodeBinding, NodeControl};
 use crowdb_protocol::mgmt::SystemBootstrapIdentity;
 use serde::{Deserialize, Serialize};
@@ -18,10 +19,17 @@ use crate::{DeploymentProfile, ProcessManager, ServiceProfile};
 
 mod cleanup;
 mod control;
+mod dispatch;
+#[cfg(feature = "test-util")]
+pub use dispatch::NodeDispatch as NodeDispatchForTests;
 mod health;
+#[cfg(feature = "test-util")]
+pub use health::node_health_for_tests;
 mod ipc;
 mod kv;
 mod observation;
+#[cfg(feature = "test-util")]
+pub use observation::runtime_observation_for_tests;
 mod probes;
 mod services;
 use kv::start_kv;
@@ -32,6 +40,8 @@ mod file_admission;
 #[cfg(feature = "test-util")]
 pub use file_admission::publish_file_for_tests;
 mod file_preparation;
+#[cfg(feature = "test-util")]
+pub use file_preparation::resume_file_operations_for_tests;
 mod initialization;
 mod retained_storage;
 mod setup;
@@ -44,8 +54,15 @@ pub use setup::NodeSetupForTests;
 #[cfg(feature = "test-util")]
 pub use supplied_storage::prepare_supplied_disk_for_tests;
 mod preparation;
+mod recovery;
 pub use ipc::control_node;
 use ipc::read_request;
+#[cfg(feature = "test-util")]
+pub use recovery::unique_member_endpoints_for_tests;
+#[cfg(feature = "test-util")]
+pub use recovery::{
+    accept_member_trust_for_tests, check_member_trust_for_tests, member_trust_ready_for_tests,
+};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -72,9 +89,34 @@ pub(super) struct AcceptedNode {
 /// # Errors
 /// Rejects conflicting persistent state and failed monitor/service startup.
 pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
+    run_node_with_inputs(
+        config,
+        &NodeDeploymentOverrides::default(),
+        &NodeDeploymentOverrides::default(),
+    )
+    .await
+}
+
+/// Start a node with explicit/file inputs sealed before node effects.
+///
+/// # Errors
+/// Rejects incompatible policy, concurrent root use and runtime startup failures.
+pub async fn run_node_with_inputs(
+    config: NodeRuntimeConfig,
+    file: &NodeDeploymentOverrides,
+    explicit: &NodeDeploymentOverrides,
+) -> Result<()> {
+    if config.physical_host_id.is_empty() || config.physical_host_id.len() > 256 {
+        return Err("node requires a bounded physical host identity".into());
+    }
+    DiscoveryConfig::validate_seed_origins(&config.discovery.seeds)?;
     let profile = kv::node_profile(&config)?;
     let root = profile.paths.data_root.clone();
-    super::startup::accept(&root, super::startup::Mode::Standard)?;
+    super::startup::accept_node_policy(&root, file, explicit)?;
+    validate_retained_startup(&profile)?;
+    // Reuse the existing socket ownership guard on the shared durable root,
+    // independently of each container's private runtime directory.
+    let _root_liveness = crate::LivenessServer::start(&root)?;
     NodeIdentity::load_or_create(&root)?;
     std::fs::create_dir_all(&profile.paths.run_root)?;
     std::fs::create_dir_all(&profile.paths.log_root)?;
@@ -85,20 +127,9 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
     let mut processes = ProcessManager::new(profile.paths.log_root.clone(), profile.logs.clone()).await?;
     let web = web_service(&profile, config.bind.port())?;
     processes.start(&web, &BTreeMap::new()).await?;
-    if let Some(accepted) = durable::read::<AcceptedNode>(&root.join("accepted-node.json"))? {
-        if accepted.prepared
-            && !admission::is_cancelled(&root, &accepted)
-            && !services::kv_paused(&profile)?
-            && !root
-                .join(format!(
-                    "retired-bootstrap-{}.json",
-                    accepted.bootstrap.operation_id
-                ))
-                .exists()
-        {
-            start_kv(&profile, &mut processes, &accepted).await?;
-        }
-    }
+    recovery::publish_local(&root, &config.discovery.addresses)?;
+    let endpoint_recovery = recovery::start(root.clone(), config.bind.port());
+    kv::resume(&profile, &mut processes).await?;
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let discovery_root = root.clone();
     let mut discovery = tokio::spawn(async move {
@@ -123,18 +154,15 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
     let mut storage_health = storage_health::StorageHealth::default();
     let mut setup = setup::NodeSetup::default();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
+    let mut dispatch = dispatch::NodeDispatch::default();
     let result = async {
         loop {
             tokio::select! {
-                _ = heartbeat.tick() => {
-                    file_allocator.tick(&root)?;
-                    supplied_storage.tick(&root)?;
-                    storage_health.tick(&root).await;
-                    setup.tick(&profile).await?;
-                    health.tick(&profile, &web, &mut processes).await?;
-                }
-                connection = listener.accept() => {
-                    let (mut stream, _) = connection?;
+                biased;
+                _ = terminate.recv() => break,
+                _ = tokio::signal::ctrl_c() => break,
+                outcome = &mut discovery => { outcome??; return Err("discovery unexpectedly stopped".into()); },
+                work = dispatch.next(&listener, &mut heartbeat) => if let Some(mut stream) = work? {
                     let reply = match read_request(&mut stream).await {
                         Ok(request) => match control::execute(&profile, &mut processes, &mut initialization, &mut file_allocator, &mut supplied_storage, &mut setup, request).await {
                             Ok(value) => json!({"ok": true, "value": value}),
@@ -147,13 +175,18 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
                     }
                     let _ = stream.shutdown().await;
                 }
-                _ = terminate.recv() => break,
-                _ = tokio::signal::ctrl_c() => break,
-                outcome = &mut discovery => { outcome??; return Err("discovery unexpectedly stopped".into()); },
+                else {
+                    file_allocator.tick(&root)?;
+                    supplied_storage.tick(&root)?;
+                    storage_health.tick(&root).await;
+                    setup.tick(&profile).await?;
+                    health.tick(&profile, &web, &mut processes).await?;
+                }
             }
         }
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     }.await;
+    drop(endpoint_recovery);
     initialization.stop().await;
     setup.stop().await;
     storage_health.stop().await;
@@ -166,6 +199,24 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
     stop_services(&profile, &mut processes).await?;
     std::fs::remove_file(socket)?;
     result
+}
+
+fn validate_retained_startup(profile: &DeploymentProfile) -> Result<()> {
+    let root = &profile.paths.data_root;
+    // KV-only admissions can precede credential provisioning. Once secrets or
+    // an Access intent are retained, validate them before launching children.
+    if root.join("secrets").try_exists()?
+        || services::retained(profile)?
+            .iter()
+            .any(|intent| intent.kind == "access")
+    {
+        crate::ServerCredentials::load_existing(root)?;
+    }
+    if let Some(root) = std::env::var_os("CROWDB_CORE_DIR") {
+        let crashes = crate::CrashRetention::open(root.into())?;
+        std::env::set_current_dir(crashes.root())?;
+    }
+    Ok(())
 }
 
 async fn stop_services(profile: &DeploymentProfile, processes: &mut ProcessManager) -> Result<()> {
@@ -283,3 +334,14 @@ fn disk_inventory(root: &std::path::Path) -> Result<Value> {
 
 #[cfg(feature = "test-util")]
 pub use services::NodeServiceForTests;
+
+#[cfg(feature = "test-util")]
+pub use recovery::rebind_recovery_services_for_tests;
+
+pub use recovery::read_recovery_identity;
+
+#[cfg(feature = "test-util")]
+pub use cleanup::cleanup_node_for_tests;
+
+#[cfg(feature = "test-util")]
+pub use recovery::capture_recovery_owners_for_tests;

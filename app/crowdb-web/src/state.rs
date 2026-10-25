@@ -21,6 +21,7 @@ use crowdb_console_shared::{config::ServerEntry, ConsoleConfig};
 /// request (the service registry may not be ready at console startup).
 #[derive(Clone)]
 pub struct AppState {
+    pub(crate) node_observations: Arc<crate::node::observation::NodeObservations>,
     pub(crate) service_operations: Arc<arc_swap::ArcSwap<std::collections::HashSet<String>>>,
     pub config: Arc<RwLock<ConsoleConfig>>,
     pub(crate) config_path: Option<PathBuf>,
@@ -98,6 +99,7 @@ impl AppState {
     #[must_use]
     pub fn with_runtime_root(config: ConsoleConfig, runtime_root: PathBuf) -> Self {
         Self {
+            node_observations: Arc::default(),
             service_operations: Arc::new(arc_swap::ArcSwap::from_pointee(std::collections::HashSet::new())),
             config: Arc::new(RwLock::new(config)),
             config_path: None,
@@ -722,7 +724,7 @@ mod tests {
     fn resolve_group0_endpoint_no_store0_returns_none() {
         let mut config = ConsoleConfig::default();
         let _ = config.add_server(ServerEntry {
-            dataset_origin: None,
+            access_origins: std::collections::BTreeMap::new(),
             id: "s1".into(),
             url: "http://127.0.0.1:10000".into(),
             node_id: Some(1),
@@ -746,7 +748,7 @@ mod tests {
     fn resolve_group0_endpoint_prefers_store0_rpc_url() {
         let mut config = ConsoleConfig::default();
         let _ = config.add_server(ServerEntry {
-            dataset_origin: None,
+            access_origins: std::collections::BTreeMap::new(),
             id: "s1".into(),
             url: "http://127.0.0.1:10000".into(),
             node_id: Some(1),
@@ -781,7 +783,7 @@ mod tests {
     async fn op_context_shares_cached_kv_client() {
         let mut config = ConsoleConfig::default();
         let _ = config.add_server(ServerEntry {
-            dataset_origin: None,
+            access_origins: std::collections::BTreeMap::new(),
             id: "s1".into(),
             url: "http://127.0.0.1:10000".into(),
             node_id: Some(1),
@@ -837,7 +839,7 @@ mod tests {
     async fn commit_op_context_writes_back_config() {
         let mut config = ConsoleConfig::default();
         let _ = config.add_server(ServerEntry {
-            dataset_origin: None,
+            access_origins: std::collections::BTreeMap::new(),
             id: "s1".into(),
             url: "http://127.0.0.1:10000".into(),
             node_id: Some(1),

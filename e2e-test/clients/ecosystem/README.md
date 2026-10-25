@@ -8,7 +8,7 @@
 - Run the **Iceberg container ecosystem** GitHub Actions workflow manually.
   Its `all` profile is the complete verified matrix; `python` is a focused
   Python/DuckDB diagnostic and cannot certify distributed engines.
-- Locally, run `pixi run build-single-node-container`, then
+- Locally, run `pixi run oci-build --load`, then
   `pixi run -e iceberg-ecosystem test-iceberg-container-ecosystem`.
   No default task or default CI job depends on this environment or test.
 - Every run owns an isolated bridge network and normal release node with private

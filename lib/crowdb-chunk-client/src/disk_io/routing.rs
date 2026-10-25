@@ -55,6 +55,12 @@ impl RoutedDiskWriter {
         })
     }
 
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn from_client_for_tests(client: Arc<DiskioClient>) -> Self {
+        Self { client }
+    }
+
     /// Publish a refreshed complete route generation.
     pub async fn refresh(&self, _service: &ServiceRegistryClient, _hardware: &HardwareClient) -> Result<()> {
         self.client
@@ -146,6 +152,100 @@ impl DiskWriter for RoutedDiskWriter {
             .map_err(map_write_error)
     }
 
+    async fn write_synchronized_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        let target = Self::target(seg, unit_bytes)?;
+        self.client
+            .write(
+                target,
+                byte_offset,
+                data,
+                Durability::Fsync,
+                self.client.normal_options(),
+            )
+            .await
+            .map_err(map_write_error)
+    }
+
+    async fn write_synchronized_views_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Vec<Bytes>,
+    ) -> Result<()> {
+        let target = Self::target(seg, unit_bytes)?;
+        self.client
+            .write_views(
+                target,
+                byte_offset,
+                data,
+                Durability::Fsync,
+                self.client.normal_options(),
+            )
+            .await
+            .map_err(map_write_error)
+    }
+
+    async fn initialize_synchronized_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        let target = Self::target(seg, unit_bytes)?;
+        self.client
+            .write(
+                target,
+                byte_offset,
+                data,
+                Durability::Fsync,
+                self.client.normal_options().without_write_retries(),
+            )
+            .await
+            .map_err(map_write_error)
+    }
+
+    async fn write_synchronized_views_until(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        data: Vec<Bytes>,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        let target = Self::target(seg, unit_bytes)?;
+        let mut options = self.client.normal_options();
+        options.deadline = options.deadline.min(deadline);
+        self.client
+            .write_views(target, offset, data, Durability::Fsync, options)
+            .await
+            .map_err(map_write_error)
+    }
+
+    async fn initialize_synchronized_until(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        data: Bytes,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        let target = Self::target(seg, unit_bytes)?;
+        let mut options = self.client.normal_options().without_write_retries();
+        options.deadline = options.deadline.min(deadline);
+        self.client
+            .write(target, offset, data, Durability::Fsync, options)
+            .await
+            .map_err(map_write_error)
+    }
+
     async fn write_priority_at_byte_offset(
         &self,
         seg: &Segment,
@@ -190,6 +290,21 @@ impl DiskWriter for RoutedDiskWriter {
         let disk_id = disk_id(seg).map_err(map_write_error)?;
         self.client
             .fsync(disk_id, self.client.normal_options())
+            .await
+            .map_err(map_write_error)
+    }
+
+    async fn drain_segment(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        let target = Self::target(seg, unit_bytes)?;
+        let mut options = self.client.normal_options();
+        options.deadline = deadline;
+        self.client
+            .drain_segment(target, options)
             .await
             .map_err(map_write_error)
     }

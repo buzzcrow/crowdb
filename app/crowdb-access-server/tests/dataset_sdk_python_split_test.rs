@@ -6,7 +6,7 @@ use dataset::{TestDatasetHttp, TestStore};
 use std::{path::Path, process::Command, sync::Arc};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires CROWDB_DATASET_PYTHON pointing to an installed wheel consumer"]
+#[ignore = "requires an installed SDK wheel; run pixi run test-dataset-sdk-python"]
 async fn installed_python_split_sdk_uses_the_real_http_listener() {
     let python = std::env::var("CROWDB_DATASET_PYTHON").expect("installed wheel Python path");
     let test = TestDatasetHttp::start_payload(Arc::new(TestStore::default())).await;

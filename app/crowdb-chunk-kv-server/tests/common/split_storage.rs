@@ -6,7 +6,7 @@ use crowdb_chunk_kv::{
     StreamPartitionJournal,
 };
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, StreamBinding, StreamBindingState, StreamConfig, StreamName,
+    memory::MemoryStreamStore, ChunkStream, StreamConfig, StreamName, StreamRecord, StreamRecordState,
 };
 use std::sync::Arc;
 
@@ -23,13 +23,15 @@ impl TestSplitStorage {
 
     pub async fn journal(&self, stream_name: StreamName, epoch: u64) -> Arc<dyn PartitionJournal> {
         let stream = ChunkStream::create(
-            StreamBinding {
+            StreamRecord {
                 purpose: crowdb_chunk_stream::StreamPurpose::Wal,
                 stream_name,
                 metadata_group_id: 7,
-                binding_generation: 1,
-                state: StreamBindingState::Active,
-                owner_kind: Some("chunk-kv-partition".into()),
+                record_version: 1,
+                state: StreamRecordState::Active,
+                consumer_kind: Some("chunk-kv-partition".into()),
+                consumer_id: None,
+                created_at_ms: StreamRecord::creation_time_ms(),
             },
             epoch,
             StreamConfig::default(),

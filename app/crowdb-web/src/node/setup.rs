@@ -27,6 +27,7 @@ pub(super) async fn accept(
     record: &NodeRecord,
     target: &NodeEntry,
     choices: Option<NodeSetupChoices>,
+    expected: Option<crowdb_protocol::mgmt::node::deployment::FormationPolicy>,
 ) -> Result<(), Failure> {
     let mut target = target.clone();
     target.ssh_password = None;
@@ -37,13 +38,43 @@ pub(super) async fn accept(
             .map_err(map_config_err)?,
     )
     .map_err(|error| err_502(error.to_string()))?;
-    let choices = choices
-        .or_else(|| {
-            existing
-                .filter(|request| request.operation_id == record.operation_id)
-                .map(|request| request.choices)
-        })
-        .unwrap_or_default();
+    let policy: Option<crowdb_protocol::mgmt::node::deployment::NodeDeploymentPolicy> =
+        serde_json::from_value(
+            remote_control(&target, &NodeControl::DeploymentPolicy)
+                .await
+                .map_err(map_config_err)?,
+        )
+        .map_err(|_| err_502("Target deployment policy is invalid"))?;
+    let choices = if let Some(policy) = policy {
+        policy.validate().map_err(crate::error::err_400)?;
+        if expected
+            .as_ref()
+            .is_some_and(|expected| *expected != policy.formation())
+        {
+            return Err(err_409(
+                "Authenticated target formation policy differs from discovery",
+            ));
+        }
+        if choices.as_ref().is_some_and(|choices| *choices != policy.setup) {
+            return Err(err_409(
+                "Setup overrides differ from the target's accepted deployment policy",
+            ));
+        }
+        policy.setup
+    } else {
+        if expected.is_some() {
+            return Err(err_409(
+                "Automatic formation requires an accepted target deployment policy",
+            ));
+        }
+        choices
+            .or_else(|| {
+                existing
+                    .filter(|request| request.operation_id == record.operation_id)
+                    .map(|request| request.choices)
+            })
+            .unwrap_or_default()
+    };
     let request = NodeSetupRequest {
         version: 1,
         discovery_id: record.discovery_id.clone(),

@@ -5,3 +5,6 @@ pub mod cluster;
 
 #[allow(dead_code)]
 pub mod diskio_stub;
+
+#[allow(dead_code)]
+pub mod finalization;

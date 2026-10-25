@@ -184,6 +184,11 @@ fn execute_reconcile(plan: &[ReconcileAction], registry: &KvStoreRegistry) {
             if let Some(store) = registry.get_store(action.store_id) {
                 if let Some(group) = store.get_group(action.group_id) {
                     let new_group = rebuild_group_with_new_remotes(&group, &action.seed_remotes);
+                    let _ = super::member_routes::apply(
+                        &new_group,
+                        &registry.config.config_root,
+                        action.store_id,
+                    );
                     store.add_group(new_group);
                     seeded += 1;
                     info!(

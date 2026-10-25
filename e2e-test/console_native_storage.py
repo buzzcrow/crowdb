@@ -3,6 +3,7 @@
 """Private monitor file preparation on owned standard release nodes."""
 
 import json
+import time
 import uuid
 
 from fixture import wait
@@ -73,6 +74,16 @@ def file_operation(cluster, node, operation_id):
 def verify_file_admission(cluster):
     """Real queued creation, monitor restart, DiskIO read and protected membership."""
     node = cluster.node_ids[0]
+    # New files remain Init until DiskIO verifies them; only existing media
+    # must be loaded by DiskDB before that consumer can start.
+    expected = {}
+    for member in cluster.node_ids:
+        for disk_group in cluster.api(f"/api/nodes/{member}/disk-groups"):
+            group_id = disk_group["id"]
+            count = len(cluster.api(f"/api/nodes/{member}/disk-groups/{group_id}/disks"))
+            if count:
+                expected[group_id] = count
+
     group = 592
     cluster.api(f"/api/nodes/{node}/disk-groups", {
         "id": group, "name": "managed-file-acceptance", "store_id": 1, "group_id": 1}, status=201)
@@ -97,15 +108,28 @@ def verify_file_admission(cluster):
             raise AssertionError("legacy deletion bypassed retained disk lifecycle")
     cluster.command("restart", cluster.servers[0])
     cluster.ready()
+    loaded_after_ms = time.time_ns() // 1_000_000
     for request in requests:
         resumed = wait(lambda: file_operation(cluster, node, request["operation_id"]),
             lambda result: result["phase"] == "waiting-for-diskio", "monitor resumes original file admission", seconds=10)
         assert resumed["request"]["operation_id"] == request["operation_id"], resumed
     page = cluster.api(f"/api/nodes/{node}/disk-files?limit=32")
     assert {request["operation_id"] for request in requests} <= {row["request"]["operation_id"] for row in page["items"]}, page
+
+    def loaded(instances):
+        for group_id, count in expected.items():
+            owners = [instance for instance in instances if group_id in instance["owned_dg_ids"]]
+            if len(owners) != 1 or owners[0]["last_heartbeat_ms"] <= loaded_after_ms or not any(usage["disk_group_id"] == group_id
+                    and usage["usage_known"] and usage["disk_count"] >= count
+                    and usage["sampled_at_ms"] > loaded_after_ms
+                    for usage in owners[0]["group_usages"]):
+                return False
+        return True
+    wait(lambda: cluster.api("/api/diskdb/instances"), loaded,
+         "DiskDB loads every registered file before DiskIO", seconds=10)
     deployment = cluster.api(f"/api/deployment-defaults?node_id={node}")["diskio"]
     deployment.update({"kind": "diskio", "instance_id": str(node), "rpc_port": 7200,
-        "disk_group_id": 0, "test_single_node": False})
+        "disk_group_id": 0})
     cluster.api(f"/api/nodes/{node}/services/deploy", deployment, status=201)
     completed = [wait(lambda request=request: file_operation(cluster, node, request["operation_id"]),
         lambda result: result["phase"] == "registered", "DiskIO-verified file admission", seconds=10) for request in requests]

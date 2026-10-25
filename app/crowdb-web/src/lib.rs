@@ -32,7 +32,20 @@ pub mod spa;
 mod standalone;
 pub mod state;
 
+pub use node::observation::{start_node_observer, NodeObserver};
 pub use state::AppState;
+
+#[cfg(feature = "test-util")]
+pub use node::observation::{node_observation_time_for_tests, start_node_observer_for_tests};
+
+#[cfg(feature = "test-util")]
+pub use node::observation::protocol_probe_for_tests;
+#[cfg(feature = "test-util")]
+pub use node::observation::s3_protocol_probe_for_tests;
+#[cfg(feature = "test-util")]
+pub use node::observation::sample_node_services_for_tests;
+#[cfg(feature = "test-util")]
+pub use node::observation::service_detail_for_tests;
 
 /// Run standard-node automatic admission independently of browser connections.
 #[must_use]
@@ -65,6 +78,9 @@ pub fn router(state: AppState) -> axum::Router {
             )
             .route("/api/node/admissions", get(node::admissions))
             .route("/api/node/status", get(node::status))
+            .route("/api/cluster/target", get(node::target::identity))
+            .route("/api/cluster/node-observation", get(node::observation::read))
+            .route("/api/cluster/status", get(node::cluster_status::read))
             .route("/api/authority", get(managed::authority))
             .route("/api/preview", get(managed::snapshot))
             .route("/api/chunk-kv/catalog", get(chunk_kv::catalog))
@@ -257,6 +273,9 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/api/node/cleanup", post(node::cleanup))
         .route("/api/node/cancel", post(node::cancel))
         .route("/api/node/status", get(node::status))
+        .route("/api/cluster/target", get(node::target::identity))
+        .route("/api/cluster/node-observation", get(node::observation::read))
+        .route("/api/cluster/status", get(node::cluster_status::read))
         .route(
             "/api/node/auto-join",
             get(node::auto_join::status).post(node::auto_join::update),

@@ -180,7 +180,7 @@ impl LifecycleHandler {
                     rollback.push(group.strips[index].clone());
                 }
                 StripReservationState::Consumed => {
-                    if group.planned_cursors[index] != 0 && now_ms >= reuse_not_before_ms {
+                    if now_ms >= reuse_not_before_ms {
                         // Consume is durable before data I/O, so a crashed
                         // writer cannot prove the mirrors reached stable
                         // storage. Keep its blocks allocated beyond the RPC
@@ -201,8 +201,7 @@ impl LifecycleHandler {
                 self.reservation_admission.release(usage.0, usage.1);
             }
         }
-        // Retain legacy consumed reservations indefinitely and newer consumed
-        // reservations until their reuse grace period has elapsed.
+        // Retain consumed reservations until their reuse grace has elapsed.
         if group.states.contains(&(StripReservationState::Consumed as i32)) {
             return Ok(ReservationRecovery::Reconciled);
         }
@@ -258,58 +257,6 @@ impl LifecycleHandler {
         }
         self.store.delete_reservation_group(chunk_id, group_id).await?;
         Ok(())
-    }
-
-    pub(super) async fn reclaim_unconsumed_reservations(
-        &self,
-        chunk_id: &ChunkId,
-    ) -> Result<u64, LifecycleError> {
-        let groups = self.store.list_reservation_groups(chunk_id).await?;
-        let mut reclaimed = 0_u64;
-        for mut group in groups {
-            validate_group_shape(&group)?;
-            let mut rollback = Vec::new();
-            let mut newly_cancelled = Vec::new();
-            for (index, state) in group.states.iter_mut().enumerate() {
-                if *state == StripReservationState::Reserved as i32 {
-                    *state = StripReservationState::Cancelled as i32;
-                    rollback.push(group.strips[index].clone());
-                    newly_cancelled.push(group.strips[index].clone());
-                } else if *state == StripReservationState::Cancelled as i32 {
-                    rollback.push(group.strips[index].clone());
-                }
-            }
-            if !rollback.is_empty() {
-                self.store.put_reservation_group(&group).await?;
-                self.allocator.rollback_strips(&rollback).await?;
-                for strip in &newly_cancelled {
-                    let usage = strip_usage(strip);
-                    self.reservation_admission.release(usage.0, usage.1);
-                }
-                reclaimed = reclaimed.saturating_add(rollback.len() as u64);
-            }
-            let has_consumed = group.states.contains(&(StripReservationState::Consumed as i32));
-            if !has_consumed
-                && group.states.iter().all(|state| {
-                    *state == StripReservationState::Confirmed as i32
-                        || *state == StripReservationState::Cancelled as i32
-                })
-            {
-                if !group.parity_segments.is_empty() {
-                    self.allocator
-                        .pool()
-                        .free_blocks(group.parity_segments.clone())
-                        .await
-                        .map_err(LifecycleError::Cleanup)?;
-                    let usage = parity_usage(&group);
-                    self.reservation_admission.release(usage.0, usage.1);
-                }
-                if let Some(group_id) = group.group_id {
-                    self.store.delete_reservation_group(chunk_id, &group_id).await?;
-                }
-            }
-        }
-        Ok(reclaimed)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -736,6 +683,16 @@ pub(super) fn validate_group_shape(group: &StripReservationGroup) -> Result<(), 
     {
         return Err(LifecycleError::InvalidRequest(
             "reservation state and strip counts differ".into(),
+        ));
+    }
+    if group
+        .states
+        .iter()
+        .zip(&group.planned_cursors)
+        .any(|(state, cursor)| *state == StripReservationState::Consumed as i32 && *cursor == 0)
+    {
+        return Err(LifecycleError::InvalidRequest(
+            "consumed reservation must record a planned cursor".into(),
         ));
     }
     Ok(())

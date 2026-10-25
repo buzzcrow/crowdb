@@ -63,10 +63,38 @@ class Connection : public std::enable_shared_from_this<Connection>
         return open_.load(std::memory_order_relaxed);
     }
 
+    class SocketUse
+    {
+      public:
+        explicit SocketUse(Connection &connection);
+        ~SocketUse();
+        SocketUse(const SocketUse &)            = delete;
+        SocketUse &operator=(const SocketUse &) = delete;
+
+        explicit operator bool() const
+        {
+            return connection_ != nullptr;
+        }
+
+      private:
+        Connection *connection_ = nullptr;
+    };
+
+    // Closed descriptors cannot be reused until active syscalls and re-arms retire.
+    [[nodiscard]] SocketUse use_socket()
+    {
+        return SocketUse{*this};
+    }
+
+    [[nodiscard]] bool socket_cleanup_ready() const
+    {
+        return socket_users_.load(std::memory_order_acquire) == SOCKET_CLOSED;
+    }
+
     // Exactly one worker owns descriptor teardown, including duplicate events.
     bool claim_socket_cleanup()
     {
-        return !socket_cleanup_claimed_.exchange(true, std::memory_order_acq_rel);
+        return socket_cleanup_ready() && !socket_cleanup_claimed_.exchange(true, std::memory_order_acq_rel);
     }
 
     // TCP ECONNREFUSED proves the peer never accepted this connection.
@@ -198,9 +226,11 @@ class Connection : public std::enable_shared_from_this<Connection>
     BufferPool *pool_;
     FrameParser parser_;
 
-    std::atomic<bool> open_{true};
-    std::atomic<bool> connect_refused_{false};
-    std::atomic<bool> socket_cleanup_claimed_{false};
+    static constexpr uint32_t SOCKET_CLOSED = uint32_t{1} << 31;
+    std::atomic<uint32_t>     socket_users_{0};
+    std::atomic<bool>         open_{true};
+    std::atomic<bool>         connect_refused_{false};
+    std::atomic<bool>         socket_cleanup_claimed_{false};
 
     // Lock-free bounded MPSC ring buffer (crowdb::common::MpscQueue). Multiple
     // producer threads push via enqueue_send (Transport::submit); the I/O

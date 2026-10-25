@@ -11,6 +11,7 @@ use crowdb_chunk_kv::{
     ChunkKvError, CompareCondition, JournalPosition, MutationOperation, MutationResult, Partition,
     PreparedSplitWriterArtifact, RequestId, SplitArtifact, ValueRevision,
 };
+use crowdb_kv_client::StreamProcessAuthority;
 use crowdb_protocol::chunk_kv::{
     BatchMutationRequest, BatchMutationResponse, BatchMutationResult, ChunkKvRangeCatalogEntry,
     ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPartitionState, ChunkKvResponse,
@@ -29,10 +30,16 @@ use crate::{
 
 mod activation;
 mod assignments;
+mod authority;
+mod drain;
+mod group;
 use assignments::{local_partition_for_entry, partition_matches_entry};
 mod load_sampling;
 mod observation;
 mod prepared_transfer;
+mod readiness;
+mod recovery;
+pub use readiness::RangeReadiness;
 mod reconcile;
 mod routing;
 mod scan;
@@ -71,6 +78,9 @@ pub struct ServerHealth {
     pub catalog_generation: u64,
     pub partitions: Vec<HostedPartitionHealth>,
     pub serving_partitions: usize,
+    pub ready: bool,
+    pub range_readiness: Vec<RangeReadiness>,
+    pub detail: String,
 }
 
 #[derive(Debug, Error)]
@@ -113,7 +123,6 @@ impl CatalogSnapshot {
 /// changes replace a snapshot; admitted partition operations retain their own
 /// handles until completion.
 pub struct ChunkKvService {
-    started: Instant,
     instance_id: u64,
     authority: Arc<ServingAuthority>,
     catalog: ArcSwap<CatalogSnapshot>,
@@ -157,9 +166,9 @@ impl ChunkKvService {
     /// # Errors
     ///
     /// Returns an invalid-request error for zero identity or capacity.
-    pub fn new(instance_id: u64, max_partitions: usize) -> Result<Self, ChunkKvError> {
+    pub fn new(process: Arc<StreamProcessAuthority>, max_partitions: usize) -> Result<Self, ChunkKvError> {
         Self::new_with_limits(
-            instance_id,
+            process,
             max_partitions,
             DEFAULT_SCAN_RESPONSE_BYTES,
             DEFAULT_INITIALIZATION_WAITERS,
@@ -173,13 +182,19 @@ impl ChunkKvService {
     ///
     /// Returns an invalid-request error when any identity or bound is zero.
     pub fn new_with_limits(
-        instance_id: u64,
+        process: Arc<StreamProcessAuthority>,
         max_partitions: usize,
         max_scan_response_bytes: usize,
         max_initialization_waiters: usize,
         initialization_wait_ms: u64,
     ) -> Result<Self, ChunkKvError> {
-        if instance_id == 0
+        let identity = process
+            .capture(Instant::now())
+            .map_err(|error| ChunkKvError::InvalidRequest(error.to_string()))?
+            .identity();
+        let instance_id = identity.instance_id;
+        if identity.purpose != crowdb_protocol::chunk_stream::StreamPurpose::Wal
+            || instance_id == 0
             || max_partitions == 0
             || max_scan_response_bytes == 0
             || max_initialization_waiters == 0
@@ -190,9 +205,8 @@ impl ChunkKvService {
             ));
         }
         Ok(Self {
-            started: Instant::now(),
             instance_id,
-            authority: Arc::new(ServingAuthority::new(instance_id)),
+            authority: Arc::new(ServingAuthority::new(process)),
             catalog: ArcSwap::from_pointee(CatalogSnapshot::default()),
             partitions: ArcSwap::from_pointee(HashMap::new()),
             prepared_transfer_targets: ArcSwap::from_pointee(HashMap::new()),
@@ -281,11 +295,11 @@ impl ChunkKvService {
     /// Milliseconds elapsed on the process-local monotonic clock.
     #[must_use]
     pub fn monotonic_ms(&self) -> u64 {
-        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+        self.authority.monotonic_ms()
     }
 
-    /// Stops new admission and clears serving authority. Operations already
-    /// admitted to an R142 sequencer retain their partition handle and finish.
+    /// Stops new admission and revokes successful serving replies. Admitted
+    /// operations retain their partition handle and can finish durable work.
     pub fn begin_drain(&self) {
         self.admitting.store(false, Ordering::Release);
         self.authority.clear();
@@ -316,11 +330,14 @@ impl ChunkKvService {
         partitions.sort_unstable_by_key(|partition| partition.partition_id);
         let lifecycle = if !self.admitting.load(Ordering::Acquire) {
             ServerLifecycle::Draining
-        } else if catalog_generation != 0
-            && (partitions.is_empty()
-                || self
-                    .authority
-                    .has_live_grant(catalog_generation, now_monotonic_ms))
+        } else if self.authority.process().capture(Instant::now()).is_ok()
+            && catalog_generation != 0
+            && (!catalog.entries.iter().any(|entry| {
+                entry.owner.instance_id == self.instance_id
+                    && entry.state != ChunkKvRangeCatalogPartitionState::Retired
+            }) || self
+                .authority
+                .has_live_grant(catalog_generation, now_monotonic_ms))
         {
             ServerLifecycle::Serving
         } else {
@@ -339,12 +356,27 @@ impl ChunkKvService {
                     })
             })
             .count();
+        let range_readiness = self.assignment_readiness(&catalog, now_monotonic_ms);
+        let recovery_required = self.recovery_required();
+        let ready = lifecycle == ServerLifecycle::Serving
+            && range_readiness.iter().all(|range| range.ready)
+            && recovery_required.is_empty();
+        let detail = if !recovery_required.is_empty() {
+            format!("Writer outcome requires durable replay before serving: {recovery_required:?}")
+        } else if range_readiness.is_empty() && ready {
+            format!("Idle stateless instance: catalog generation {catalog_generation} loaded, no tree-range ownership assigned")
+        } else {
+            format!("Instance lifecycle {lifecycle:?}; catalog generation {catalog_generation}; {} owned tree ranges, {} ready", range_readiness.len(), range_readiness.iter().filter(|range| range.ready).count())
+        };
         ServerHealth {
             instance_id: self.instance_id,
             lifecycle,
             catalog_generation,
             partitions,
             serving_partitions,
+            ready,
+            range_readiness,
+            detail,
         }
     }
 
@@ -378,6 +410,13 @@ impl ChunkKvService {
             .collect();
         hosted.sort_unstable_by_key(|partition| partition.partition_id);
         ChunkKvExtra {
+            process_epoch: self
+                .authority
+                .process()
+                .status(Instant::now())
+                .lease
+                .identity
+                .process_epoch,
             capacity_bytes,
             durable_bytes,
             request_rate,
@@ -652,13 +691,12 @@ impl ChunkKvService {
             retained_applied_seq = artifact.retained_parent.applied_seq,
             retained_tree_manifest = artifact.retained_parent.tree_manifest,
             retained_root_manifest_generation = artifact.retained_parent.root_manifest_generation,
-            retained_parent_stream_manifest_generation =
-                artifact.retained_parent.parent_stream_manifest_generation,
+            retained_parent_stream_generation = artifact.retained_parent.parent_stream_generation,
             child_base_seq = artifact.child.base_applied_seq,
             child_applied_seq = artifact.child.applied_seq,
             child_tree_manifest = artifact.child.tree_manifest,
             child_root_manifest_generation = artifact.child.root_manifest_generation,
-            child_parent_stream_manifest_generation = artifact.child.parent_stream_manifest_generation,
+            child_parent_stream_generation = artifact.child.parent_stream_generation,
             "local split writers installed"
         );
         Ok(())
@@ -776,8 +814,8 @@ impl ChunkKvService {
     /// Handles a point request directly; it never proxies to another owner.
     ///
     /// The wall-clock deadline is checked before sequencer admission. Once a
-    /// mutation is admitted, this method awaits its single durable result even
-    /// if the caller drops the surrounding transport future.
+    /// mutation is admitted, this method awaits its durable result and checks
+    /// serving authority again before returning success.
     pub async fn handle_point(
         &self,
         request: PointRequest,
@@ -872,12 +910,13 @@ impl ChunkKvService {
             }
         };
 
-        self.execute_point_operation(
+        self.execute_authorized_point(
             &partition,
             entry,
             catalog.generation,
             request,
             transfer_append_artifact,
+            now_monotonic_ms,
         )
         .await
     }
@@ -992,125 +1031,6 @@ impl ChunkKvService {
                 )))
             }
             Err(_) => Err(Box::new(target_not_ready(map_revision))),
-        }
-    }
-
-    /// Executes a fully range-validated partition-local multi-get.
-    pub async fn handle_multi_get(
-        &self,
-        request: MultiGetRequest,
-        now_wall_ms: u64,
-        now_monotonic_ms: u64,
-    ) -> MultiGetResponse {
-        let catalog = self.catalog.load_full();
-        let Some(range) = self.logical_range_for_request(request.routing.partition_id, &catalog) else {
-            return MultiGetResponse {
-                map_revision: catalog.generation,
-                result: Err(not_my_range_failure(catalog.generation, None)),
-            };
-        };
-        if request.validate_for_range(&range).is_err() {
-            return MultiGetResponse {
-                map_revision: catalog.generation,
-                result: Err(rpc_failure(
-                    ChunkKvRpcErrorCode::InvalidRequest,
-                    "multi-get group contains an out-of-range key",
-                )),
-            };
-        }
-        let mut values = Vec::with_capacity(request.keys.len());
-        for key in request.keys {
-            let response = self
-                .handle_point(
-                    PointRequest {
-                        routing: request.routing.clone(),
-                        operation: PointOperation::Get { key },
-                    },
-                    now_wall_ms,
-                    now_monotonic_ms,
-                )
-                .await;
-            match response.result {
-                Ok(OperationResult::Value(value)) => values.push(value),
-                Ok(_) => {
-                    return MultiGetResponse {
-                        map_revision: response.map_revision,
-                        result: Err(rpc_failure(
-                            ChunkKvRpcErrorCode::Internal,
-                            "multi-get produced a non-value result",
-                        )),
-                    };
-                }
-                Err(error) => {
-                    return MultiGetResponse {
-                        map_revision: response.map_revision,
-                        result: Err(error),
-                    };
-                }
-            }
-        }
-        MultiGetResponse {
-            map_revision: catalog.generation,
-            result: Ok(values),
-        }
-    }
-
-    /// Executes a fully range-validated mutation group in input order.
-    pub async fn handle_batch_mutation(
-        &self,
-        request: BatchMutationRequest,
-        now_wall_ms: u64,
-        now_monotonic_ms: u64,
-    ) -> BatchMutationResponse {
-        let catalog = self.catalog.load_full();
-        let Some(range) = self.logical_range_for_request(request.routing.partition_id, &catalog) else {
-            return BatchMutationResponse {
-                map_revision: catalog.generation,
-                result: Err(not_my_range_failure(catalog.generation, None)),
-            };
-        };
-        if request.validate_for_range(&range).is_err() {
-            return BatchMutationResponse {
-                map_revision: catalog.generation,
-                result: Err(rpc_failure(
-                    ChunkKvRpcErrorCode::InvalidRequest,
-                    "batch group contains an invalid or out-of-range mutation",
-                )),
-            };
-        }
-        let first_id = request.operations[0].request_id;
-        let routing = RequestRouting {
-            request_id: first_id,
-            map_revision: request.routing.map_revision,
-            partition_id: request.routing.partition_id,
-            owner_epoch: request.routing.owner_epoch,
-            min_journal_position: None,
-            deadline_ms: request.routing.deadline_ms,
-        };
-        let mut results = Vec::with_capacity(request.operations.len());
-        for item in request.operations {
-            let response = self
-                .handle_point(
-                    PointRequest {
-                        routing: RequestRouting {
-                            request_id: item.request_id,
-                            ..routing.clone()
-                        },
-                        operation: item.operation,
-                    },
-                    now_wall_ms,
-                    now_monotonic_ms,
-                )
-                .await;
-            results.push(BatchMutationResult {
-                request_id: item.request_id,
-                journal_position: response.journal_position,
-                result: response.result,
-            });
-        }
-        BatchMutationResponse {
-            map_revision: catalog.generation,
-            result: Ok(results),
         }
     }
 
@@ -1277,9 +1197,19 @@ impl ChunkKvService {
         let Some(entry) = catalog.entry_for_partition(request.routing.partition_id) else {
             return not_my_range(catalog.generation, None);
         };
-        let logical_range = self
-            .logical_range_for_request(request.routing.partition_id, &catalog)
-            .unwrap_or_else(|| entry.range.clone());
+        // Select the routed assignment before clipping. A historical parent
+        // scan can start wholly inside the child and still needs both writers.
+        let partition = self.partition_for_request(&request.routing, &entry.range.start, entry);
+        let logical_range = partition.as_ref().map_or_else(
+            || entry.range.clone(),
+            |partition| {
+                let range = partition.snapshot().range;
+                KeyRange {
+                    start: range.start.unwrap_or_default(),
+                    end: range.end,
+                }
+            },
+        );
         let clipped = match validate_and_clip_scan(&request, &logical_range) {
             Ok(clipped) => clipped,
             Err(ScanValidationError::RefreshRequired) => {
@@ -1308,7 +1238,7 @@ impl ChunkKvService {
         ) {
             return authority_failure(catalog.generation, &error, Some(entry));
         }
-        let Some(partition) = self.partition_for_request(&request.routing, &clipped.start, entry) else {
+        let Some(partition) = partition else {
             return failure(
                 catalog.generation,
                 ChunkKvRpcErrorCode::Recovering,
@@ -1538,7 +1468,7 @@ fn final_transfer_artifact(
         && artifact.parent_id.low == overlay.source_partition_id.low
         && artifact.parent_epoch == overlay.source_epoch
         && artifact.parent_stream_name == overlay.source_stream_name
-        && artifact.parent_stream_manifest_generation == overlay.source_stream_manifest_generation
+        && artifact.parent_stream_generation == overlay.source_stream_generation
         && artifact.parent_replay_offset == overlay.replay_offset
         && overlay.target_stream_start_seq == overlay.cutover_seq.checked_add(1)?;
     if !exact_base {

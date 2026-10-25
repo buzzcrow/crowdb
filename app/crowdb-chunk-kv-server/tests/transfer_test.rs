@@ -21,7 +21,7 @@ fn transition() -> TransferTransition {
             source_partition_id: Id128 { high: 3, low: 4 },
             source_epoch: 6,
             source_stream_name: source_artifact.stream_name,
-            source_stream_manifest_generation: 1,
+            source_stream_generation: 1,
             replay_offset: 0,
             cutover_offset: 10,
             base_root_manifest_generation: 1,

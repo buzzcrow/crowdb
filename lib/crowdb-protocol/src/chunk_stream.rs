@@ -9,7 +9,13 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Durable purpose of a logical stream; absent legacy values are not inferred.
+mod chunk_record;
+mod ownership;
+
+pub use chunk_record::*;
+pub use ownership::{StreamLeaseRecordError, StreamProcessIdentity, StreamProcessLease, StreamWriterOwner};
+
+/// Durable purpose of a logical stream.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StreamPurpose {
     Wal,
@@ -118,7 +124,7 @@ mod tests {
         assert!(first < second);
         assert_eq!(first.to_string().len(), 32);
         assert_eq!(
-            super::StreamBinding::creating(first, None, super::StreamPurpose::Stream).metadata_group_id,
+            super::StreamRecord::creating(first, None, super::StreamPurpose::Stream).metadata_group_id,
             super::DEFAULT_STREAM_METADATA_GROUP_ID
         );
     }
@@ -142,7 +148,7 @@ impl std::fmt::Display for StreamName {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum StreamBindingState {
+pub enum StreamRecordState {
     #[default]
     Creating,
     Active,
@@ -150,25 +156,49 @@ pub enum StreamBindingState {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StreamBinding {
+#[serde(deny_unknown_fields)]
+pub struct StreamRecord {
     pub purpose: StreamPurpose,
     pub stream_name: StreamName,
     pub metadata_group_id: u64,
-    pub binding_generation: u64,
-    pub state: StreamBindingState,
-    pub owner_kind: Option<String>,
+    pub record_version: u64,
+    pub state: StreamRecordState,
+    pub consumer_kind: Option<String>,
+    pub consumer_id: Option<String>,
+    pub created_at_ms: u64,
 }
 
-impl StreamBinding {
-    /// Creates an inactive binding in the default nonzero metadata group.
+impl StreamRecord {
     #[must_use]
-    pub fn creating(stream_name: StreamName, owner_kind: Option<String>, purpose: StreamPurpose) -> Self {
+    pub fn creation_time_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(1, |duration| {
+                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX).max(1)
+            })
+    }
+
+    /// Stable identity comparison for idempotent creation; creation time is retained.
+    #[must_use]
+    pub fn same_identity(&self, other: &Self) -> bool {
+        self.purpose == other.purpose
+            && self.stream_name == other.stream_name
+            && self.metadata_group_id == other.metadata_group_id
+            && self.consumer_kind == other.consumer_kind
+            && self.consumer_id == other.consumer_id
+    }
+
+    /// Creates an inactive identity record in the default nonzero metadata group.
+    #[must_use]
+    pub fn creating(stream_name: StreamName, consumer_kind: Option<String>, purpose: StreamPurpose) -> Self {
         Self {
             stream_name,
             metadata_group_id: DEFAULT_STREAM_METADATA_GROUP_ID,
-            binding_generation: 1,
-            state: StreamBindingState::Creating,
-            owner_kind,
+            record_version: 1,
+            state: StreamRecordState::Creating,
+            consumer_kind,
+            consumer_id: None,
+            created_at_ms: Self::creation_time_ms(),
             purpose,
         }
     }
@@ -181,43 +211,4 @@ pub struct ActiveChunkDescriptor {
     pub logical_start: u64,
     pub acknowledged_cursor: u64,
     pub capacity: u64,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StreamExtentPageFence {
-    pub page_index: u64,
-    pub first_logical: u64,
-    pub end_logical: u64,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StreamManifest {
-    pub purpose: StreamPurpose,
-    pub stream_name: StreamName,
-    pub metadata_group_id: u64,
-    pub writer_epoch: u64,
-    pub generation: u64,
-    pub trim_offset: u64,
-    pub sealed_tail: u64,
-    pub active: Option<ActiveChunkDescriptor>,
-    pub extent_pages: Vec<StreamExtentPageFence>,
-    pub previous_generation: Option<u64>,
-    pub closed: bool,
-}
-
-/// Parallel logical-to-physical extent arrays. Entry `i` maps
-/// `[logical_offsets[i], logical_offsets[i + 1])` into `chunk_ids[i]`
-/// starting at `physical_offsets[i]`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StreamExtentPage {
-    pub stream_name: StreamName,
-    pub writer_epoch: u64,
-    pub generation: u64,
-    pub page_index: u64,
-    pub chunk_ids: Vec<ChunkId>,
-    pub logical_offsets: Vec<u64>,
-    /// Physical start of each complete public Stream frame.
-    pub physical_offsets: Vec<u64>,
-    /// Complete physical frame length, including its public header and footer.
-    pub frame_lengths: Vec<u32>,
 }

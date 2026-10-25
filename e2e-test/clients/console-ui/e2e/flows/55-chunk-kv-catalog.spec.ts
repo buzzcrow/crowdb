@@ -17,16 +17,16 @@ test('native diagnostics: journal identity survives Chunk navigation and owner i
     expect(response.ok(), await response.text()).toBe(true);
     const { partition, observed } = await selectActiveJournal(page, request, await response.json());
     const runtime = await observed.json();
-    expect(runtime.journal.active).not.toBeNull();
+    expect(runtime.journal.chunk_record).not.toBeNull();
     await page.getByRole('tab', { name: 'Journal', exact: true }).click();
     const journal = page.getByRole('tabpanel', { name: 'Journal', exact: true });
-    await expect(journal).toContainText(runtime.journal.active.chunk_id);
-    for (const [name, value] of [['Stream manifest generation', runtime.journal.generation], ['Stream writer epoch', runtime.journal.writer_epoch], ['Metadata group', runtime.journal.metadata_group_id]]) {
+    await expect(journal).toContainText(runtime.journal.chunk_record.chunk_id);
+    for (const [name, value] of [['Stream chunk record generation', runtime.journal.generation], ['Stream writer epoch', runtime.journal.writer_epoch], ['Metadata group', runtime.journal.metadata_group_id]]) {
       await expect(journal.locator('dt').filter({ hasText: new RegExp(`^${name}$`) }).locator('..').locator('dd')).toHaveText(value);
     }
-    await expect(journal.getByLabel('Extent page map').getByRole('button')).toHaveCount(runtime.journal.extent_pages.length);
-    await journal.getByRole('button', { name: 'Inspect active Chunk', exact: true }).click();
-    await expect(page.getByLabel('Exact Chunk ID')).toHaveValue(runtime.journal.active.chunk_id);
+    await expect(journal.getByLabel('Stream chunk record', { exact: true })).toContainText(runtime.journal.chunk_record.logical_end);
+    await journal.getByRole('button', { name: 'Inspect Chunk', exact: true }).click();
+    await expect(page.getByLabel('Exact Chunk ID')).toHaveValue(runtime.journal.chunk_record.chunk_id);
     await page.goBack();
     await expect(journal).toBeVisible();
     // Back navigation preserves the selection, but normal placement may have
@@ -46,8 +46,8 @@ test('native diagnostics: journal identity survives Chunk navigation and owner i
       const observation = page.getByRole('region', { name: 'Partition runtime', exact: true });
       await observation.getByRole('button', { name: 'Refresh runtime', exact: true }).click();
       await expect(observation).toContainText('Runtime unavailable');
-      await expect(journal.getByLabel('Extent page map')).toHaveCount(0);
-      await expect(journal.getByRole('button', { name: 'Inspect active Chunk', exact: true })).toHaveCount(0);
+      await expect(journal.getByLabel('Stream chunk record', { exact: true })).toHaveCount(0);
+      await expect(journal.getByRole('button', { name: 'Inspect Chunk', exact: true })).toHaveCount(0);
     } finally {
       expect((await request.post(`/api/services/${owner}/restart`, { data: {} })).ok()).toBe(true);
     }
@@ -60,7 +60,7 @@ test('native diagnostics: journal identity survives Chunk navigation and owner i
     await page.getByRole('tab', { name: 'Journal', exact: true }).click();
     const observation = page.getByRole('region', { name: 'Partition runtime', exact: true });
     await expect(observation).not.toContainText('Runtime unavailable');
-    await expect(journal.getByRole('heading', { name: 'Published extent index', exact: true })).toBeVisible();
+    await expect(journal.getByRole('heading', { name: 'Stream chunk record', exact: true })).toBeVisible();
     const stale = new URL(observed.url());
     stale.searchParams.set('stream_generation', runtime.journal.generation);
     stale.searchParams.set('stream_offset', '0');
@@ -187,7 +187,7 @@ async function selectActiveJournal(page: Page, request: APIRequestContext, initi
   };
   const changed = async (response: APIResponse | Response) => {
     if (response.status() !== 409) return false;
-    expect((await response.json()).error).toMatch(/^(Chunk-KV catalog changed; refresh the range map|Catalog changed during runtime observation|Owner, catalog or tree page observation changed; refresh the catalog or page root)$/);
+    expect((await response.json()).error).toMatch(/^(Chunk-KV catalog changed(?: during observation)?; refresh the range map|Catalog changed during runtime observation|Owner, catalog or tree page observation changed; refresh the catalog or page root)$/);
     await refresh(() => page.getByRole('button', { name: 'Refresh catalog', exact: true }).click());
     return true;
   };
@@ -201,7 +201,7 @@ async function selectActiveJournal(page: Page, request: APIRequestContext, initi
       const response = await request.get(`/api/chunk-kv/runtime?${query}`);
       if (await changed(response)) return false;
       expect(response.ok(), await response.text()).toBe(true);
-      if (!(await response.json()).journal.active) continue;
+      if (!(await response.json()).journal.chunk_record) continue;
       await page.getByLabel('Partition range map').getByRole('button', { name: `Partition ${entry.id}`, exact: true }).click();
       // Selecting the same partition leaves its identity unchanged. Explicitly
       // refresh runtime so owner restart is observed even without a new catalog.
@@ -221,8 +221,8 @@ async function selectActiveJournal(page: Page, request: APIRequestContext, initi
   return selected as { partition: Partition; observed: Response };
 }
 
-// Baseline: actual large native Journal directory (2026-10-04).
-test('native diagnostics: large Journal replaces 100 extent fences with its remainder', async ({ page, request }) => {
+// Baseline: 3.9s (2026-10-24), including owner restart and stale-generation checks.
+test('native diagnostics: large Journal exposes a bounded tail chunk record across restart', async ({ page, request }) => {
   test.skip(!process.env.CROWDB_NATIVE_JOURNAL_WINDOWS, 'requires actual small-geometry native stream writes');
   const response = await request.get('/api/chunk-kv/catalog?page=0&offset=0');
   expect(response.ok(), await response.text()).toBe(true);
@@ -234,49 +234,33 @@ test('native diagnostics: large Journal replaces 100 extent fences with its rema
     const observed = await request.get(`/api/chunk-kv/runtime?${query}`);
     expect(observed.ok(), await observed.text()).toBe(true);
     const runtime = await observed.json();
-    if (runtime.journal.next_offset === 100) { target = entry; first = runtime.journal; break; }
+    if (BigInt(runtime.journal.chunk_record.logical_start) > 0n) { target = entry; first = runtime.journal; break; }
   }
   expect(target).not.toBeNull();
-  expect(first.extent_pages).toHaveLength(100);
-  const query = new URLSearchParams({ id: target.id, epoch: target.epoch, generation: catalog.generation, page: '0', offset: '0', stream_generation: first.generation, stream_offset: '100' });
-  const remainderResponse = await request.get(`/api/chunk-kv/runtime?${query}`);
-  expect(remainderResponse.ok(), await remainderResponse.text()).toBe(true);
-  const remainder = (await remainderResponse.json()).journal;
-  expect(remainder.extent_pages.length).toBeGreaterThan(0);
-  expect(remainder.extent_pages.length).toBeLessThan(100);
-  expect(remainder.next_offset).toBeNull();
+  expect(first.next_offset).toBeNull();
+  expect(first.chunk_record.state).toBe('Active');
+  expect(BigInt(first.chunk_record.logical_end)).toBeGreaterThanOrEqual(BigInt(first.chunk_record.logical_start));
+  const query = new URLSearchParams({ id: target.id, epoch: target.epoch, generation: catalog.generation, page: '0', offset: '0', stream_generation: first.generation, stream_offset: '0' });
   await page.goto('/?domain=Chunk-KV');
   await page.getByLabel('Partition range map').getByRole('button', { name: `Partition ${target.id}`, exact: true }).click();
   await page.getByRole('tab', { name: 'Journal', exact: true }).click();
   const journal = page.getByRole('tabpanel', { name: 'Journal', exact: true });
-  const fences = journal.getByLabel('Extent page map').getByRole('button');
-  await expect(fences).toHaveCount(100);
-  await journal.getByRole('button', { name: 'Next extent pages', exact: true }).click();
-  await expect(fences).toHaveCount(remainder.extent_pages.length);
-  await expect(fences).toHaveText(remainder.extent_pages.map((entry: { page_index: string; first_logical: string; end_logical: string }) => `Extent page ${entry.page_index}[${entry.first_logical}, ${entry.end_logical})`));
-  await expect(journal.getByRole('button', { name: 'Next extent pages', exact: true })).toBeDisabled();
-  const selected = remainder.extent_pages[0];
-  await journal.getByLabel('Extent page map').getByRole('button', { name: new RegExp(`^Extent page ${selected.page_index}\\b`) }).click();
-  await expect(page.getByRole('complementary', { name: 'Selected extent page', exact: true })).toContainText(selected.page_index);
-  await journal.getByRole('button', { name: 'Inspect active Chunk', exact: true }).click();
-  await expect(page.getByLabel('Exact Chunk ID')).toHaveValue(first.active.chunk_id);
+  await expect(journal.getByLabel('Stream chunk record', { exact: true })).toContainText(first.chunk_record.chunk_id);
+  await journal.getByRole('button', { name: 'Select stream chunk record', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: 'Selected stream chunk record', exact: true })).toContainText(first.chunk_record.logical_start);
+  await journal.getByRole('button', { name: 'Inspect Chunk', exact: true }).click();
+  await expect(page.getByLabel('Exact Chunk ID')).toHaveValue(first.chunk_record.chunk_id);
   await page.goBack();
-  await expect(fences).toHaveCount(remainder.extent_pages.length);
-  await expect(page.getByRole('complementary', { name: 'Selected extent page', exact: true })).toContainText(selected.page_index);
+  await expect(page.getByRole('complementary', { name: 'Selected stream chunk record', exact: true })).toContainText(first.chunk_record.logical_end);
   await page.goForward();
-  await expect(page.getByLabel('Exact Chunk ID')).toHaveValue(first.active.chunk_id);
+  await expect(page.getByLabel('Exact Chunk ID')).toHaveValue(first.chunk_record.chunk_id);
   await page.goBack();
-  await expect(fences).toHaveCount(remainder.extent_pages.length);
-  await journal.getByRole('button', { name: 'Previous extent pages', exact: true }).click();
-  await expect(fences).toHaveCount(100);
-  await journal.getByRole('button', { name: 'Next extent pages', exact: true }).click();
-  await expect(fences).toHaveCount(remainder.extent_pages.length);
   const owner = `chunk-kv-${target.owner_id}`;
   expect((await request.post(`/api/services/${owner}/restart`, { data: {} })).ok()).toBe(true);
   expect((await request.get(`/api/chunk-kv/runtime?${query}`)).status()).toBe(409);
   await page.getByRole('region', { name: 'Partition runtime', exact: true }).getByRole('button', { name: 'Refresh runtime', exact: true }).click();
-  await expect(fences).toHaveCount(100);
-  await expect(journal).toContainText('offset 0');
+  await expect(journal.getByLabel('Stream chunk record', { exact: true })).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Selected stream chunk record', exact: true })).toHaveCount(0);
 });
 
 // The slow fixture uses the one-minute production split cooldown.
@@ -325,7 +309,7 @@ test('native diagnostics: production split displays actual inherited and current
   await expect(journal).toContainText(identity(overlay.source_stream_name));
   await expect(journal).toContainText(identity(partition.artifact.stream_name));
   expect(identity(overlay.source_stream_name)).not.toBe(identity(partition.artifact.stream_name));
-  for (const [label, value] of [['Replay offset (bytes)', overlay.replay_offset], ['Cutover offset (bytes)', overlay.cutover_offset], ['Manifest generation', overlay.source_stream_manifest_generation]]) {
+  for (const [label, value] of [['Replay offset (bytes)', overlay.replay_offset], ['Cutover offset (bytes)', overlay.cutover_offset], ['Stream chunk record generation', overlay.source_stream_generation]]) {
     await expect(inherited.locator('dt').filter({ hasText: label }).locator('..').locator('dd')).toHaveText(value);
   }
   await page.getByRole('tab', { name: 'Dependencies', exact: true }).click();

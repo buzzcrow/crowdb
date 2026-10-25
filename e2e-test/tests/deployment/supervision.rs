@@ -4,6 +4,12 @@
 async fn recover(service: &str, signal: &str) {
     super::witness_with_write(true, true).await;
     let observed = crate::common::control::recover_service(service, signal).await;
+    if signal == "STOP" {
+        assert_eq!(observed["hung"]["healthy"], false);
+        assert_eq!(observed["hung"]["pid"], observed["before"]["pid"]);
+        assert_eq!(observed["hung"]["generation"], observed["before"]["generation"]);
+        assert_eq!(observed["recovery_trigger"], "explicit-termination");
+    }
     assert_ne!(observed["before"]["pid"], observed["after"]["pid"]);
     assert!(
         observed["after"]["generation"].as_u64().unwrap()

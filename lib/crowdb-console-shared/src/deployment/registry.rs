@@ -19,6 +19,9 @@ pub struct NodeRecord {
     pub ssh_port: u16,
     pub ssh_user: String,
     pub operation_id: String,
+    /// Public key proved by the authenticated admission, independent of its address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_key: Option<String>,
     pub confirmed: bool,
     #[serde(default)]
     pub cancelled: bool,
@@ -28,6 +31,26 @@ pub struct NodeRecord {
 pub struct NodeRegistry {
     pub cluster_id: String,
     pub nodes: Vec<NodeRecord>,
+}
+
+impl NodeRecord {
+    /// Retain the public SSH key proved by admission; an address update cannot replace it.
+    ///
+    /// # Errors
+    /// Rejects malformed keys or an attempted replacement of an accepted pin.
+    pub fn pin_host_key(&mut self, authenticated: &str) -> Result<()> {
+        use russh::keys::PublicKeyBase64;
+        let key = super::recovery::host_key(authenticated)?;
+        if let Some(previous) = &self.host_key {
+            if super::recovery::host_key(previous)?.fingerprint() != key.fingerprint() {
+                return Err(Error::Config(
+                    "admission changes its authenticated host key".into(),
+                ));
+            }
+        }
+        self.host_key = Some(format!("ssh-ed25519 {}", key.public_key_base64()));
+        Ok(())
+    }
 }
 
 /// # Errors
@@ -61,6 +84,7 @@ pub async fn publish(kv: &CrowdbKvClient, registry: &NodeRegistry) -> Result<()>
 /// Rejects duplicate UUID endpoints, changed clusters and unavailable authority.
 pub async fn admit(kv: &CrowdbKvClient, cluster: &str, mut node: NodeRecord) -> Result<NodeRecord> {
     super::node_update::check_admission(kv, &node.discovery_id).await?;
+    let mut last_conflict = None;
     for attempt in 0..32 {
         let (mut registry, revision) = read(kv)
             .await?
@@ -93,6 +117,15 @@ pub async fn admit(kv: &CrowdbKvClient, cluster: &str, mut node: NodeRecord) -> 
             node.node_id = existing.node_id;
             if !existing.cancelled {
                 node.operation_id = existing.operation_id.clone();
+                if existing.host_key.is_some()
+                    && node.host_key.is_some()
+                    && existing.host_key != node.host_key
+                {
+                    return Err(Error::Config(
+                        "admission changes its authenticated host key".into(),
+                    ));
+                }
+                node.host_key = existing.host_key.clone().or(node.host_key);
             }
             if existing.confirmed {
                 if existing.rack_id != node.rack_id || existing.ssh_user != node.ssh_user {
@@ -117,15 +150,16 @@ pub async fn admit(kv: &CrowdbKvClient, cluster: &str, mut node: NodeRecord) -> 
         let bytes = serde_json::to_vec(&registry).map_err(config_error)?;
         match kv.put_cas(0, 0, NODES_KEY, &bytes, revision).await {
             Ok(_) => return Ok(node),
-            Err(KvError::CasFailed { .. } | KvError::OutcomeUnknown | KvError::CasBusy) => {
+            Err(conflict @ (KvError::CasFailed { .. } | KvError::OutcomeUnknown | KvError::CasBusy)) => {
+                last_conflict = Some((revision, conflict));
                 tokio::time::sleep(std::time::Duration::from_millis(5 + attempt * 2)).await;
             }
             Err(error) => return Err(error.into()),
         }
     }
-    Err(Error::Config(
-        "concurrent admission did not converge; retry".into(),
-    ))
+    Err(Error::Config(format!(
+        "concurrent admission did not converge; last conditional outcome: {last_conflict:?}"
+    )))
 }
 
 fn cancellation_key(operation: &str) -> Vec<u8> {

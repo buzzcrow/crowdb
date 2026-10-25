@@ -10,7 +10,10 @@ use std::sync::Arc;
 use bytes::{Buf, BytesMut};
 use tokio::sync::oneshot;
 
-use super::{MutationRequest, PartitionJournal, PreparedSplitWriterArtifact};
+use super::{
+    lifecycle_code, lifecycle_from_code, write_state_error, MutationRequest, PartitionJournal,
+    PreparedSplitWriterArtifact,
+};
 use crate::{
     canonical_operation_digest, ChunkKvError, JournalPosition, MutationOperation, MutationResponse,
     MutationResult, PartitionLifecycle, RequestId, Result, WalRecord,
@@ -330,7 +333,7 @@ fn validate_extension(
 ) -> Result<()> {
     let same_base = validate_artifact_extension(current, final_artifact).is_ok();
     let valid_journal = parent_journal.stream_name() == final_artifact.parent_stream_name
-        && parent_journal.manifest_generation() >= final_artifact.parent_stream_manifest_generation
+        && parent_journal.record_generation() >= final_artifact.parent_stream_generation
         && parent_journal.tail() >= final_artifact.parent_cutover_offset;
     if !same_base || !valid_journal {
         return Err(ChunkKvError::InvalidRequest(
@@ -355,7 +358,7 @@ fn validate_artifact_extension(
         && current.parent_id == final_artifact.parent_id
         && current.parent_epoch == final_artifact.parent_epoch
         && current.parent_stream_name == final_artifact.parent_stream_name
-        && current.parent_stream_manifest_generation == final_artifact.parent_stream_manifest_generation
+        && current.parent_stream_generation == final_artifact.parent_stream_generation
         && current.parent_replay_offset == final_artifact.parent_replay_offset;
     let valid_frontier = current.applied_seq <= final_artifact.applied_seq
         && current.parent_cutover_offset <= final_artifact.parent_cutover_offset
@@ -456,5 +459,30 @@ impl super::Partition {
             .await
             .map_err(|_| ChunkKvError::WriteStalled)?;
         response.await.map_err(|_| ChunkKvError::WriteStalled)?
+    }
+}
+
+impl super::Partition {
+    /// Stops a transfer source after all previously admitted work completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale-epoch or incompatible-lifecycle error.
+    pub async fn suspend_for_transfer(&self, ownership_epoch: u64) -> Result<()> {
+        self.validate_epoch(ownership_epoch)?;
+        match self.lifecycle.compare_exchange(
+            lifecycle_code(PartitionLifecycle::Serving),
+            lifecycle_code(PartitionLifecycle::TransferFencing),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {}
+            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferFencing => {}
+            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferQuiesced => {
+                return Ok(())
+            }
+            Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
+        }
+        self.release_drained_writer().await
     }
 }

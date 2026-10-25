@@ -60,6 +60,11 @@ pub(crate) fn rebuild_group_with_new_remotes(
             new_group.add_remote_replica(PxRemoteReplica::new(*id, endpoint.clone()).with_voting(*voting));
         }
     }
+    // A deferred bootstrap role has never won a vote. Once its remotes
+    // establish a multi-replica quorum, election must establish the leader.
+    if new_group.quorum() > 1 && new_group.local_replica().current_term_snapshot() == 0 {
+        new_group.local_replica().become_follower(0);
+    }
     new_group
 }
 

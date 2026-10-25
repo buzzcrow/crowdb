@@ -198,9 +198,9 @@ pub struct ServerEntry {
     pub rpc_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rest_port: Option<u16>,
-    /// Configured Dataset origin for an Access service, projected from its intent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dataset_origin: Option<String>,
+    /// Internal protocol origins for Console requests, projected from service listeners.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub access_origins: std::collections::BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rpc_port: Option<u16>,
     #[serde(default)]
@@ -260,7 +260,7 @@ impl ServerEntry {
             node_id: None,
             rpc_url: None,
             rest_port: None,
-            dataset_origin: None,
+            access_origins: std::collections::BTreeMap::new(),
             rpc_port: None,
             auto_start: false,
             binary: None,

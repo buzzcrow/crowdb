@@ -72,3 +72,35 @@ fn buffer_chain_retains_views_and_enforces_native_limit() {
         }
     ));
 }
+
+#[test]
+fn discarded_completion_releases_both_response_owners() {
+    use crowdb_rpc_ffi::{noop_completion, sys};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    struct TestOwner(Arc<AtomicUsize>);
+    impl AsRef<[u8]> for TestOwner {
+        fn as_ref(&self) -> &[u8] {
+            b"response"
+        }
+    }
+    impl Drop for TestOwner {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Release);
+        }
+    }
+    for status in [sys::CROWDB_RPC_OK, sys::CROWDB_RPC_ERR_CONN_CLOSED] {
+        let released = Arc::new(AtomicUsize::new(0));
+        let make_buffer = || Buffer::from_owned_bytes(Bytes::from_owner(TestOwner(Arc::clone(&released))));
+        let control = make_buffer().into_raw();
+        let data = make_buffer().into_raw();
+        // Both live handles transfer to the completion once; it does not use context.
+        unsafe {
+            noop_completion().unwrap()(1, control, data, status, std::ptr::null_mut());
+        }
+        assert_eq!(released.load(Ordering::Acquire), 2);
+    }
+}

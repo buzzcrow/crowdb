@@ -48,7 +48,7 @@ impl FileAllocator {
         loop {
             let page = crate::node::storage::file_operations::list(root, after.as_deref(), 32)?;
             for state in page.items {
-                if resumable(state.phase) || state.phase == FilePreparationPhase::Unknown {
+                if resumable(&state) || state.phase == FilePreparationPhase::Unknown {
                     self.enqueue(state.request.operation_id);
                 }
             }
@@ -76,7 +76,7 @@ impl FileAllocator {
             .collect();
         for id in finished {
             self.tasks.remove(&id);
-            if resumable(files::status(root, &id)?.phase) {
+            if resumable(&files::status(root, &id)?) {
                 self.queued.push_back(id);
             } else {
                 self.known.remove(&id);
@@ -144,14 +144,15 @@ impl FileAllocator {
     }
 }
 
-fn resumable(phase: FilePreparationPhase) -> bool {
-    matches!(
-        phase,
-        FilePreparationPhase::Accepted
-            | FilePreparationPhase::Creating
-            | FilePreparationPhase::Publishing
-            | FilePreparationPhase::WaitingForDiskIO
-    )
+fn resumable(state: &FilePreparation) -> bool {
+    (state.phase == FilePreparationPhase::Prepared && state.request.admission.is_some())
+        || matches!(
+            state.phase,
+            FilePreparationPhase::Accepted
+                | FilePreparationPhase::Creating
+                | FilePreparationPhase::Publishing
+                | FilePreparationPhase::WaitingForDiskIO
+        )
 }
 
 async fn authorize(root: &Path, request: &PrepareDiskFile) -> Result<()> {
@@ -166,5 +167,17 @@ async fn authorize(root: &Path, request: &PrepareDiskFile) -> Result<()> {
         super::file_admission::validate_placement(root, request),
     )
     .await??;
+    Ok(())
+}
+
+#[cfg(feature = "test-util")]
+/// Resume durable file work through the production queue and wait for one pass.
+///
+/// # Errors
+/// Propagates durable queue discovery failures.
+pub async fn resume_file_operations_for_tests(root: &Path) -> Result<()> {
+    let mut allocator = FileAllocator::default();
+    allocator.resume(root)?;
+    allocator.stop().await;
     Ok(())
 }

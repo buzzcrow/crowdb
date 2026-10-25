@@ -366,7 +366,7 @@ fn prepare_native_owner(owner: &mut NativeFramedOwner) -> Result<(), PutOutcome>
             u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
         });
     owner
-        .prepare_frames(FrameMagic::RepoLargeV1, write_time_ms)
+        .prepare_frames(FrameMagic::RepoLargeV2, write_time_ms)
         .map_err(|error| put_error(PutErrorCode::ChunkWrite, error))
 }
 

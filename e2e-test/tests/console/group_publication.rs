@@ -35,7 +35,22 @@ async fn verify_group_publication(drop_reply: bool, target_has_store: bool) {
     let created_store = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(target_has_store));
     let store_state = created_store.clone();
     let group_state = created_store.clone();
+    let topology_state = created_store.clone();
     let app = Router::new()
+        .route(
+            "/topology",
+            get(move || {
+                let hosted = topology_state.load(Ordering::SeqCst);
+                async move {
+                    let stores = if hosted {
+                        vec![serde_json::json!({"store_id": 77, "listen_addr": "127.0.0.1:10100", "groups": []})]
+                    } else {
+                        Vec::new()
+                    };
+                    axum::Json(serde_json::json!({"stores": stores}))
+                }
+            }),
+        )
         .route(
             "/stores",
             post(move || {

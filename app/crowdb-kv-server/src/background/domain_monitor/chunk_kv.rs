@@ -24,6 +24,7 @@ use super::{DomainMonitorDriver, DomainMonitorFuture};
 
 mod balance;
 mod catalog;
+mod grants;
 
 pub struct ChunkKvRangeMonitorDriver;
 
@@ -55,12 +56,15 @@ impl DomainMonitorDriver for ChunkKvRangeMonitorDriver {
         descriptor: &'a DomainMonitorDescriptor,
     ) -> DomainMonitorFuture<'a> {
         Box::pin(async move {
+            if catalog::refresh_endpoints(control, descriptor).await? {
+                return Ok(());
+            }
             plan_dead_owner_transfer(control, descriptor).await?;
             advance_dead_owner_exclusion(control, descriptor).await?;
             balance::plan(control, descriptor).await?;
             authorize_live_source_fences(control, descriptor).await?;
             publish_ready_transitions(control).await?;
-            issue_serving_grants(control, descriptor).await
+            grants::issue(control, descriptor).await
         })
     }
 }
@@ -89,6 +93,17 @@ async fn plan_dead_owner_transfer(
             busy_owners.insert(transition.source.instance_id);
             busy_owners.insert(transition.target.instance_id);
             transitioning_partitions.insert(transition.partition_id);
+        }
+    }
+    // A split may already have durable child authority even while the old
+    // parent remains published. A competing transfer cannot infer its recovery
+    // boundary from the parent catalog entry alone.
+    for (split, _) in read_splits(control).await? {
+        if !matches!(split.phase, SplitPhase::CatalogCommitted | SplitPhase::Aborted) {
+            transitioning_partitions.insert(split.parent_id);
+            transitioning_partitions.insert(split.child.partition_id);
+            busy_owners.insert(split.parent_owner.instance_id);
+            busy_owners.insert(split.child.owner.instance_id);
         }
     }
     let healthy_before = now_ms.saturating_sub(descriptor.suspect_after_ms);
@@ -311,106 +326,6 @@ async fn publish_ready_transitions(control: &Group0ControlPlane) -> Result<(), S
         }
     }
     Ok(())
-}
-
-async fn issue_serving_grants(
-    control: &Group0ControlPlane,
-    descriptor: &DomainMonitorDescriptor,
-) -> Result<(), String> {
-    let Some(catalog) = catalog::load_current(control).await? else {
-        return Ok(());
-    };
-    let ready_instances = read_ready_instances(control, descriptor).await?;
-    let mut assignments: HashMap<u64, Vec<ServingAssignment>> = HashMap::new();
-    for entry in catalog.pages.iter().flat_map(|page| &page.entries) {
-        let assignment = ServingAssignment {
-            partition_id: entry.partition_id,
-            owner_epoch: entry.owner_epoch,
-        };
-        if entry.state == ChunkKvRangeCatalogPartitionState::Serving
-            && ready_instances
-                .get(&entry.owner.instance_id)
-                .is_some_and(|ready| ready.contains(&assignment))
-        {
-            assignments
-                .entry(entry.owner.instance_id)
-                .or_default()
-                .push(assignment);
-        }
-    }
-    let now_ms = wall_time_ms();
-    for (instance_id, assignments) in assignments {
-        let path = ServingGrantKey { instance_id }.to_path();
-        let current = control
-            .get(path.as_bytes())
-            .await
-            .map_err(|error| operation_error(&error))?;
-        let prior_sequence = match current.value.as_deref() {
-            Some(bytes) => {
-                let grant: ServingGrant = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-                grant.validate().map_err(|error| error.to_string())?;
-                grant.lease_sequence
-            }
-            None => 0,
-        };
-        let mut grant = ServingGrant {
-            instance_id,
-            lease_sequence: prior_sequence
-                .checked_add(1)
-                .ok_or_else(|| "serving grant sequence overflowed".to_string())?,
-            catalog_generation: catalog.head.generation,
-            issued_at_ms: now_ms,
-            expires_at_ms: now_ms
-                .checked_add(descriptor.lease_duration_ms)
-                .ok_or_else(|| "serving grant deadline overflowed".to_string())?,
-            assignments,
-            assignment_digest: [0; 32],
-        };
-        grant.seal();
-        grant.validate().map_err(|error| error.to_string())?;
-        let encoded = serde_json::to_vec(&grant).map_err(|error| error.to_string())?;
-        control
-            .compare_and_put(Bytes::from(path), Bytes::from(encoded), current.revision)
-            .await
-            .map_err(|error| operation_error(&error))?;
-    }
-    Ok(())
-}
-
-async fn read_ready_instances(
-    control: &Group0ControlPlane,
-    descriptor: &DomainMonitorDescriptor,
-) -> Result<HashMap<u64, HashSet<ServingAssignment>>, String> {
-    let prefix = InstanceKey::text_prefix_for_service(&descriptor.service_registry_name);
-    let items = control
-        .scan_all_prefix(Bytes::from(prefix), 256)
-        .await
-        .map_err(|error| operation_error(&error))?;
-    let healthy_after = wall_time_ms().saturating_sub(descriptor.suspect_after_ms);
-    let mut ready = HashMap::new();
-    for item in items {
-        let value: InstanceValue = serde_json::from_slice(&item.value).map_err(|error| error.to_string())?;
-        if value.last_heartbeat_ms < healthy_after {
-            continue;
-        }
-        let Some(extra) = value.extra.and_then(|extra| extra.chunk_kv) else {
-            return Err(format!(
-                "chunk-KV instance {} omitted its chunk-KV observation",
-                value.instance_id
-            ));
-        };
-        let assignments = extra
-            .hosted
-            .into_iter()
-            .filter(|hosted| !hosted.recovering)
-            .map(|hosted| ServingAssignment {
-                partition_id: hosted.partition_id,
-                owner_epoch: hosted.owner_epoch,
-            })
-            .collect();
-        ready.insert(value.instance_id, assignments);
-    }
-    Ok(ready)
 }
 
 pub(super) async fn read_instances(

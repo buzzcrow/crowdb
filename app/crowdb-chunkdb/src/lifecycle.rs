@@ -4,6 +4,7 @@
 //! Chunk lifecycle state, serialization, and orchestration.
 
 mod handler;
+mod replacement;
 pub mod state;
 
 pub use handler::{

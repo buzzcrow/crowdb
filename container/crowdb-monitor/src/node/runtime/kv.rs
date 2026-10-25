@@ -7,8 +7,37 @@ use crowdb_protocol::mgmt::node::NodeBinding;
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, time::Duration};
 
+pub(super) fn resume_allowed(profile: &DeploymentProfile, accepted: &AcceptedNode) -> Result<bool> {
+    let root = &profile.paths.data_root;
+    Ok(accepted.prepared
+        && !super::admission::is_cancelled(root, accepted)
+        && !root
+            .join(format!(
+                "retired-bootstrap-{}.json",
+                accepted.bootstrap.operation_id
+            ))
+            .exists()
+        && !super::services::kv_paused(profile)?
+        && super::recovery::ready(root, accepted)?)
+}
+
+pub(super) async fn resume(profile: &DeploymentProfile, processes: &mut ProcessManager) -> Result<()> {
+    if let Some(accepted) = durable::read(&profile.paths.data_root.join("accepted-node.json"))? {
+        if resume_allowed(profile, &accepted)? {
+            ensure_process(profile, processes, &accepted).await?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn node_profile(config: &super::NodeRuntimeConfig) -> Result<DeploymentProfile> {
     let mut profile = DeploymentProfile::load(&config.profile)?;
+    profile.validate_node_catalog()?;
+    for service in &mut profile.services {
+        service
+            .env
+            .insert("CROWDB_PHYSICAL_HOST_ID".into(), config.physical_host_id.clone());
+    }
     let address = config
         .discovery
         .addresses
@@ -69,6 +98,59 @@ pub(super) async fn start_kv(
     processes: &mut ProcessManager,
     accepted: &AcceptedNode,
 ) -> Result<()> {
+    ensure_process(profile, processes, accepted).await?;
+    wait_ready(processes).await
+}
+
+async fn wait_ready(processes: &mut ProcessManager) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(1))
+        .build()?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if client
+            .get("http://127.0.0.1:10000/health")
+            .send()
+            .await
+            .is_ok_and(|reply| reply.status().is_success())
+        {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline || !processes.alive("kv")? {
+            return Err("KV server did not become ready".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+// Retained replicas need authenticated discovery before they can form a quorum.
+// Starting their process must not make discovery wait for that quorum.
+pub(super) async fn ensure_process(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    accepted: &AcceptedNode,
+) -> Result<()> {
+    super::recovery::check(&profile.paths.data_root, accepted)?;
+    spawn(profile, processes, accepted).await
+}
+
+// Explicit cleanup already validates the accepted bootstrap and seals retirement.
+// Its local deletion endpoint must remain available after recovery is fenced.
+pub(super) async fn start_for_cleanup(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    accepted: &AcceptedNode,
+) -> Result<()> {
+    spawn(profile, processes, accepted).await?;
+    wait_ready(processes).await
+}
+
+async fn spawn(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    accepted: &AcceptedNode,
+) -> Result<()> {
     if processes.owns("kv") && processes.alive("kv")? {
         return Ok(());
     }
@@ -76,6 +158,10 @@ pub(super) async fn start_kv(
         processes.stop("kv", Duration::from_secs(5)).await?;
     }
     let mut kv = service(profile, "kv")?;
+    kv.env.insert(
+        "CROWDB_KV_CLUSTER_ID".into(),
+        accepted.bootstrap.cluster_id.clone(),
+    );
     let root = profile
         .paths
         .data_root
@@ -83,6 +169,8 @@ pub(super) async fn start_kv(
         .join(format!("node-{}", accepted.node_id));
     std::fs::create_dir_all(&root)?;
     kv.args = vec![
+        "--node-recovery-root".into(),
+        profile.paths.data_root.to_string_lossy().into_owned(),
         "--root".into(),
         root.to_string_lossy().into_owned(),
         "--management-port".into(),
@@ -105,25 +193,7 @@ pub(super) async fn start_kv(
         }
     }
     processes.start(&kv, &BTreeMap::new()).await?;
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(1))
-        .build()?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        if client
-            .get("http://127.0.0.1:10000/health")
-            .send()
-            .await
-            .is_ok_and(|reply| reply.status().is_success())
-        {
-            return Ok(());
-        }
-        if tokio::time::Instant::now() >= deadline || !processes.alive("kv")? {
-            return Err("KV server did not become ready".into());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    Ok(())
 }
 pub(super) async fn ensure_start_allowed(profile: &crate::DeploymentProfile) -> super::Result<()> {
     use crowdb_protocol::mgmt::node::NodeServiceAction;

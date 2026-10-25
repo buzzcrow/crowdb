@@ -59,7 +59,7 @@ async fn recover_after_handoff(child_has_write: bool, checkpoint_after_dispatch:
         parent_id,
         parent_epoch: 1,
         parent_stream_name: parent_journal.stream_name(),
-        parent_stream_manifest_generation: parent_journal.manifest_generation(),
+        parent_stream_generation: parent_journal.record_generation(),
         parent_replay_offset: base_offset,
         parent_cutover_offset: base_offset,
         applied_seq: 1,
@@ -254,7 +254,7 @@ fn source_checkpoint_at_base(
         root_manifest_generation: 1,
         applied_seq: 1,
         stream_name: journal.stream_name(),
-        stream_manifest_generation: journal.manifest_generation(),
+        stream_generation: journal.record_generation(),
         replay_offset: base_offset,
     }
 }

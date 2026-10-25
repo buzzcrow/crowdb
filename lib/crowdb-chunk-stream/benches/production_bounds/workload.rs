@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use crowdb_chunk_client::STREAM_CHUNK_BYTES;
 use crowdb_chunk_stream::{
-    ChunkStream, ProductionStreamRuntime, ReadHint, Result, StreamBinding, StreamBindingState, StreamName,
+    ChunkStream, ProductionStreamRuntime, ReadHint, Result, StreamName, StreamRecord, StreamRecordState,
     StreamRegistry,
 };
 
@@ -57,13 +57,15 @@ async fn create_stream(runtime: &ProductionStreamRuntime) -> Result<ChunkStream>
     };
     runtime
         .registry()
-        .create(StreamBinding {
+        .create(StreamRecord {
             purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name,
             metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("production-benchmark".into()),
+            record_version: 1,
+            state: StreamRecordState::Active,
+            consumer_kind: Some("production-benchmark".into()),
+            consumer_id: None,
+            created_at_ms: StreamRecord::creation_time_ms(),
         })
         .await?;
     runtime.create_registered(stream_name, 0, 1).await

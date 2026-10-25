@@ -20,12 +20,14 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
 pub mod copy_body;
+mod dependencies;
 mod dispatcher;
+pub use dependencies::{DependencyProbeFuture, StorageReadiness};
 mod inspection;
 pub use inspection::{ObjectInspector, OBJECT_LOCATIONS_PATH};
 mod health;
 mod operations;
-pub use health::AccessHealthHandler;
+pub use health::{AccessHealthHandler, HealthObserver};
 
 pub use crate::http_receive::install_body_receive_provider;
 pub use crate::multipart_complete::{CompletePart, CompleteRequestError, CompleteSelection};

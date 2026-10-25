@@ -157,6 +157,23 @@ def bundle_cli(output):
     shutil.copy2(binaries[0], Path(output) / "crowdb-cli")
 
 
+def bundle_cli_workload(output):
+    """Compile the opt-in regression for explicit execution against an owned node."""
+    result = subprocess.run(["cargo", "test", "--locked", "-p", "crowdb-cli", "--test",
+        "cluster_workloads_test", "--no-run", "--message-format=json"],
+        capture_output=True, text=True, check=False, timeout=600)
+    print(result.stderr, end="", flush=True)
+    if result.returncode:
+        print(result.stdout, end="", flush=True)
+        raise RuntimeError("CLI workload test compilation failed")
+    binaries = [item["executable"] for line in result.stdout.splitlines() if line.startswith("{")
+        and (item := json.loads(line)).get("target", {}).get("name") == "cluster_workloads_test"
+        and item.get("executable")]
+    if len(binaries) != 1:
+        raise RuntimeError("missing or ambiguous CLI workload test executable")
+    shutil.copy2(binaries[0], Path(output) / "cli-workload-test")
+
+
 def bundle_iceberg_rck(output):
     """Verify immutable upstream source and isolate Gradle outputs per run."""
     revision = "6976e020b894f6a6777704df2b8c4458cb291ae9"

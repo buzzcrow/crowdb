@@ -60,15 +60,21 @@ impl RangeBindingClient {
     /// or unsupported changes to the fixed service assignment.
     pub async fn refresh(&self) -> Result<()> {
         let maps = ChunkSlotMapClient::new(Arc::clone(&self.kv));
-        let dynamic = maps.read_dynamic_service_snapshot().await?;
-        let map = if let Some(snapshot) = &dynamic {
-            snapshot.service().clone()
-        } else {
-            maps.read_service().await?
-        };
-        let endpoints: HashMap<_, _> = ServiceRegistryClient::from_shared(Arc::clone(&self.kv))
-            .read_all_chunkdb_instances()
-            .await?
+        let service = ServiceRegistryClient::from_shared(Arc::clone(&self.kv));
+        let (layout, instances) = tokio::join!(
+            async {
+                let dynamic = maps.read_dynamic_service_snapshot().await?;
+                let map = if let Some(snapshot) = &dynamic {
+                    snapshot.service().clone()
+                } else {
+                    maps.read_service().await?
+                };
+                Ok::<_, Error>((dynamic, map))
+            },
+            service.read_all_chunkdb_instances()
+        );
+        let (dynamic, map) = layout?;
+        let endpoints: HashMap<_, _> = instances?
             .into_iter()
             .map(|(id, instance)| (id, instance.rpc_endpoint))
             .collect();

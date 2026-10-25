@@ -4,6 +4,9 @@
 
 """Interrupted SSH admission and cross-UI managed-service lifecycle."""
 import json
+import os
+from pathlib import Path
+import subprocess
 from bridge_node import start_node, origin_for, CLIENT, BROWSER_OUTPUT
 import urllib.error
 from setup_choices import diskless_setup
@@ -30,6 +33,20 @@ def verify(docker, request, wait, IMAGE, PREFIX, names, origins, identities, rec
                    if node["discovery_id"] == admission_body["discovery_id"])
     binding = json.loads(docker("exec", names[1], "cat", "/opt/crowdb/data/node-binding.json"))
     grant = {"operation_id": pending["operation_id"], "management_seeds": binding["management_seeds"]}
+    # Reproduce the authenticated pin that precedes KV preparation. The owned
+    # fixture supplies this public key out of band before interrupting admission.
+    observed = request(origins[1], "/api/stores/0/groups/0/kv/get?key=%2Fdeployment%2Fnodes")
+    assert observed["found"], observed
+    registry = json.loads(observed["value_utf8"])
+    member = next(node for node in registry["nodes"] if node["discovery_id"] == pending["discovery_id"])
+    assert not member["confirmed"] and not member.get("host_key"), member
+    host_key = docker("exec", fourth, "cat", "/opt/crowdb/data/ssh/ssh_host_ed25519_key.pub")
+    member["host_key"] = " ".join(host_key.split()[:2])
+    bundle = Path(os.environ["CROWDB_E2E_CLI_BUNDLE"])
+    env = dict(os.environ, LD_LIBRARY_PATH=str(bundle / "lib") + ":" + os.environ.get("LD_LIBRARY_PATH", ""))
+    subprocess.run(["pixi", "run", str(bundle / "crowdb-cli"), "--management-endpoint", origins[1],
+                    "kv", "data", "put", "--store", "0", "--group", "0", "--key", "/deployment/nodes",
+                    "--value", json.dumps(registry)], env=env, check=True, timeout=30)
     # Interrupt after KV preparation but before hardware confirmation/binding.
     public_key = docker("exec", names[1], "cat", "/opt/crowdb/data/ssh/id_ed25519.pub")
     install = {"command": "install_key", "operation_id": pending["operation_id"], "public_key": public_key}
@@ -60,8 +77,11 @@ def verify(docker, request, wait, IMAGE, PREFIX, names, origins, identities, rec
 
 
 def services(docker, request, wait, origins, fourth, joined):
+    diskdb = request(origins[0], f"/api/nodes/{joined['node_id']}/diskdb/deploy",
+                     {"instance_id": 71, "rpc_port": 19070})
+    assert diskdb["pid"], diskdb
     service = request(origins[0], f"/api/nodes/{joined['node_id']}/services/deploy",
-                      {"kind":"diskio", "instance_id":71, "rpc_port":19071})
+                      {"kind":"diskio", "instance_id":71, "rpc_port":19072})
     assert service["pid"]
     wait(lambda: json.loads(docker("exec", fourth, "cat", "/opt/crowdb/run/status/monitor.json")),
          lambda status: status["services"].get("diskio-71", {}).get("healthy") is True, "remote DiskIO application readiness")

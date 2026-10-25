@@ -94,7 +94,7 @@ test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and val
         await expect(dialog.getByLabel('Metadata store', { exact: true })).toHaveValue('1');
         await expect(dialog.getByLabel('Journal metadata group', { exact: true })).toHaveValue('1');
       }
-      await expect(dialog.getByLabel('Single-node test deployment (reduced redundancy)')).not.toBeChecked();
+      await expect(dialog.getByLabel('Local deployment (reduced redundancy)')).not.toBeChecked();
       await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
       await expect(dialog).toHaveCount(0);
     }
@@ -179,6 +179,12 @@ test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive'
   page.on('request', current => {
     if (current.method() === 'POST' && /\/api\/nodes\/\d+\/(server|diskdb|services)\/deploy$/.test(new URL(current.url()).pathname)) deploys.push(current.postDataJSON().kind);
   });
+  const acceptedDeploys: string[] = [];
+  page.on('response', response => {
+    const current = response.request();
+    if (response.status() === 201 && current.method() === 'POST'
+      && /\/api\/nodes\/\d+\/(server|diskdb|services)\/deploy$/.test(new URL(current.url()).pathname)) acceptedDeploys.push(current.postDataJSON().kind);
+  });
   const dialog = page.getByRole('dialog', { name: 'Node 1 services', exact: true });
   const open = async () => {
     const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
@@ -224,7 +230,8 @@ test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive'
         return Object.values((await response.json())['1'].steps).map((entry: any) => entry.state);
       }, { timeout: 3000, intervals: [100] }).toEqual(kinds.map(() => 'deployed'));
       await expect(dialog.getByRole('listitem').filter({ hasText: 'deployed' })).toHaveCount(6);
-      expect(deploys).toEqual(['chunk-kv', 'access-server']);
+      // A prerequisite may still return Waiting; only accepted requests create services.
+      expect(acceptedDeploys).toEqual(['chunk-kv', 'access-server']);
       const current = await list();
       expect(current).toHaveLength(14);
       for (const kind of kinds) expect(current.filter((row: { node_id: number; service_type: string }) => row.node_id === 1 && row.service_type === kind)).toHaveLength(1);

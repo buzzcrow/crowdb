@@ -4,20 +4,20 @@
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::{
     encode_frame, encode_frame_regions, encode_frames, merge_adjacent_locations, parse_frame,
-    parse_frame_views, ChunkLocation, FrameError, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES,
-    MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+    parse_frame_views, ChunkLocation, FrameError, FrameMagic, FRAME_FOOTER_BYTES, FRAME_V2_HEADER_BYTES,
+    MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES,
 };
 
 const CHUNK: ChunkId = ChunkId { high: 7, low: 11 };
-const REPO_SMALL_VECTOR: [u8; 37] = [
-    0x01, 0x01, 0x0E, 0x00, 0x03, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03,
-    0xEB, 0x45, 0x53, 0x37, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x0B,
+const REPO_SMALL_VECTOR: [u8; 38] = [
+    0x02, 0x01, 0x0f, 0x00, 0x03, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+    0x03, 0xaf, 0x5a, 0xa0, 0xae, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x0b,
 ];
 
 #[test]
-fn frame_matches_cross_language_vector() {
-    let encoded = encode_frame(FrameMagic::RepoSmallV1, CHUNK, &[1, 2, 3], 42).unwrap();
+fn frame_matches_canonical_cross_language_vector() {
+    let encoded = encode_frame(FrameMagic::RepoSmallV2, CHUNK, &[1, 2, 3], 42).unwrap();
     assert_eq!(encoded, REPO_SMALL_VECTOR);
     assert_eq!(
         parse_frame(&REPO_SMALL_VECTOR, CHUNK).unwrap().payload,
@@ -28,7 +28,7 @@ fn frame_matches_cross_language_vector() {
 #[test]
 fn split_frame_views_verify_without_assembling_payload() {
     let payload = vec![0x6b; 1024];
-    let frame = encode_frame(FrameMagic::RepoSmallV1, CHUNK, &payload, 42).unwrap();
+    let frame = encode_frame(FrameMagic::RepoSmallV2, CHUNK, &payload, 42).unwrap();
     let boundaries = [3, 11, 127, frame.len() - 9, frame.len() - 2];
     let mut views = Vec::new();
     let mut start = 0;
@@ -37,7 +37,7 @@ fn split_frame_views_verify_without_assembling_payload() {
         start = end;
     }
     let parsed = parse_frame_views(&views, CHUNK).unwrap();
-    assert_eq!(parsed.header.magic, FrameMagic::RepoSmallV1);
+    assert_eq!(parsed.header.magic, FrameMagic::RepoSmallV2);
     assert_eq!(parsed.physical_length, frame.len());
 
     let mut corrupted = frame;
@@ -56,11 +56,11 @@ fn split_frame_views_verify_without_assembling_payload() {
 
 #[test]
 fn frame_crc_matches_bitwise_reference_across_header_and_payload() {
-    for length in [0, 1, 17, 1024, MAX_FRAME_PAYLOAD_BYTES] {
+    for length in [0, 1, 17, 1024, MAX_FRAME_V2_PAYLOAD_BYTES] {
         let payload: Vec<u8> = (0..length)
             .map(|index| u8::try_from(index % 251).unwrap())
             .collect();
-        let frame = encode_frame(FrameMagic::RepoLargeV1, CHUNK, &payload, 42).unwrap();
+        let frame = encode_frame(FrameMagic::RepoLargeV2, CHUNK, &payload, 42).unwrap();
         let footer = frame.len() - FRAME_FOOTER_BYTES;
         let mut crc = 0_u32;
         for byte in &frame[..footer] {
@@ -76,24 +76,24 @@ fn frame_crc_matches_bitwise_reference_across_header_and_payload() {
 
 #[test]
 fn frame_round_trips_and_has_canonical_maximum_size() {
-    let payload = vec![0xA5; MAX_FRAME_PAYLOAD_BYTES];
-    let frame = encode_frame(FrameMagic::RepoLargeV1, CHUNK, &payload, 42).unwrap();
+    let payload = vec![0xA5; MAX_FRAME_V2_PAYLOAD_BYTES];
+    let frame = encode_frame(FrameMagic::RepoLargeV2, CHUNK, &payload, 42).unwrap();
     assert_eq!(frame.len(), MAX_FRAME_BYTES);
     let decoded = parse_frame(&frame, CHUNK).unwrap();
-    assert_eq!(decoded.header.magic, FrameMagic::RepoLargeV1);
-    assert_eq!(decoded.header.payload_offset as usize, FRAME_HEADER_PREFIX_BYTES);
+    assert_eq!(decoded.header.magic, FrameMagic::RepoLargeV2);
+    assert_eq!(decoded.header.payload_offset as usize, FRAME_V2_HEADER_BYTES);
     assert_eq!(decoded.payload, payload);
     assert_eq!(decoded.physical_length, MAX_FRAME_BYTES);
 }
 
 #[test]
 fn separated_frame_regions_match_contiguous_encoding() {
-    let payload = vec![0x5a; MAX_FRAME_PAYLOAD_BYTES];
-    let expected = encode_frame(FrameMagic::RepoLargeV1, CHUNK, &payload, 42).unwrap();
-    let mut header = [0; FRAME_HEADER_PREFIX_BYTES];
+    let payload = vec![0x5a; MAX_FRAME_V2_PAYLOAD_BYTES];
+    let expected = encode_frame(FrameMagic::RepoLargeV2, CHUNK, &payload, 42).unwrap();
+    let mut header = [0; FRAME_V2_HEADER_BYTES];
     let mut footer = [0; FRAME_FOOTER_BYTES];
     encode_frame_regions(
-        FrameMagic::RepoLargeV1,
+        FrameMagic::RepoLargeV2,
         CHUNK,
         &payload,
         42,
@@ -105,10 +105,10 @@ fn separated_frame_regions_match_contiguous_encoding() {
     assert_eq!(&expected[..header.len()], &header);
     assert_eq!(&expected[header.len()..header.len() + payload.len()], &payload);
     assert_eq!(&expected[header.len() + payload.len()..], &footer);
-    let mut short_header = [0; FRAME_HEADER_PREFIX_BYTES - 1];
+    let mut short_header = [0; FRAME_V2_HEADER_BYTES - 1];
     assert_eq!(
         encode_frame_regions(
-            FrameMagic::RepoLargeV1,
+            FrameMagic::RepoLargeV2,
             CHUNK,
             &payload,
             42,
@@ -121,26 +121,26 @@ fn separated_frame_regions_match_contiguous_encoding() {
 
 #[test]
 fn large_payload_has_full_interior_and_variable_tail_frames() {
-    let payload = vec![0xA5; MAX_FRAME_PAYLOAD_BYTES + 7];
-    let frames = encode_frames(FrameMagic::RepoLargeV1, CHUNK, &payload, 42).unwrap();
+    let payload = vec![0xA5; MAX_FRAME_V2_PAYLOAD_BYTES + 7];
+    let frames = encode_frames(FrameMagic::RepoLargeV2, CHUNK, &payload, 42).unwrap();
     assert_eq!(frames.len(), 2);
     assert_eq!(frames[0].len(), MAX_FRAME_BYTES);
     assert_eq!(parse_frame(&frames[1], CHUNK).unwrap().payload, &[0xA5; 7]);
-    assert!(encode_frames(FrameMagic::RepoLargeV1, CHUNK, &[], 42)
+    assert!(encode_frames(FrameMagic::RepoLargeV2, CHUNK, &[], 42)
         .unwrap()
         .is_empty());
 }
 
 #[test]
 fn frame_rejects_corruption_and_wrong_chunk() {
-    let mut frame = encode_frame(FrameMagic::RepoSmallV1, CHUNK, b"payload", 42).unwrap();
-    frame[FRAME_HEADER_PREFIX_BYTES] ^= 1;
+    let mut frame = encode_frame(FrameMagic::RepoSmallV2, CHUNK, b"payload", 42).unwrap();
+    frame[FRAME_V2_HEADER_BYTES] ^= 1;
     assert!(matches!(
         parse_frame(&frame, CHUNK),
         Err(FrameError::ChecksumMismatch)
     ));
 
-    let frame = encode_frame(FrameMagic::RepoSmallV1, CHUNK, b"payload", 42).unwrap();
+    let frame = encode_frame(FrameMagic::RepoSmallV2, CHUNK, b"payload", 42).unwrap();
     assert!(matches!(
         parse_frame(&frame, ChunkId { high: 7, low: 12 }),
         Err(FrameError::ChunkIdMismatch)
@@ -149,7 +149,7 @@ fn frame_rejects_corruption_and_wrong_chunk() {
 
 #[test]
 fn location_maps_large_object_subrange_to_containing_frames() {
-    let logical = (MAX_FRAME_PAYLOAD_BYTES as u64) + 10;
+    let logical = (MAX_FRAME_V2_PAYLOAD_BYTES as u64) + 10;
     let location = ChunkLocation {
         chunk_id: CHUNK,
         frame_offset: 4096,
@@ -157,11 +157,11 @@ fn location_maps_large_object_subrange_to_containing_frames() {
     };
     assert_eq!(
         location.physical_length().unwrap(),
-        (MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES + 10 + FRAME_FOOTER_BYTES) as u64
+        (MAX_FRAME_BYTES + FRAME_V2_HEADER_BYTES + 10 + FRAME_FOOTER_BYTES) as u64
     );
     assert_eq!(
         location
-            .physical_range_for_subrange((MAX_FRAME_PAYLOAD_BYTES as u64 - 1)..logical)
+            .physical_range_for_subrange((MAX_FRAME_V2_PAYLOAD_BYTES as u64 - 1)..logical)
             .unwrap(),
         4096..(4096 + location.physical_length().unwrap())
     );
@@ -172,7 +172,7 @@ fn only_frame_aligned_locations_merge() {
     let aligned = ChunkLocation {
         chunk_id: CHUNK,
         frame_offset: 0,
-        logical_length: MAX_FRAME_PAYLOAD_BYTES as u64,
+        logical_length: MAX_FRAME_V2_PAYLOAD_BYTES as u64,
     };
     let adjacent = ChunkLocation {
         chunk_id: CHUNK,
@@ -201,18 +201,18 @@ fn encoding_payload_views_preserves_pointers_and_canonical_bytes() {
     let pieces = vec![payload.slice(..7), payload.slice(7..13), payload.slice(13..)];
     let pointers: Vec<_> = pieces.iter().map(|view| view.as_ptr()).collect();
     let encoded =
-        crowdb_protocol::frame::encode_frame_views(FrameMagic::RepoSmallV1, CHUNK, pieces, 42).unwrap();
+        crowdb_protocol::frame::encode_frame_views(FrameMagic::RepoSmallV2, CHUNK, pieces, 42).unwrap();
     assert_eq!(
         encoded[1..4].iter().map(|view| view.as_ptr()).collect::<Vec<_>>(),
         pointers
     );
     assert_eq!(
         encoded.concat(),
-        encode_frame(FrameMagic::RepoSmallV1, CHUNK, &payload, 42).unwrap()
+        encode_frame(FrameMagic::RepoSmallV2, CHUNK, &payload, 42).unwrap()
     );
     let refs: Vec<_> = encoded.iter().map(bytes::Bytes::as_ref).collect();
     assert_eq!(
         parse_frame_views(&refs, CHUNK).unwrap().physical_length,
-        payload.len() + 34
+        payload.len() + 35
     );
 }

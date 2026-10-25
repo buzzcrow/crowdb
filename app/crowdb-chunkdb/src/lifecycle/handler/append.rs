@@ -132,7 +132,7 @@ impl LifecycleHandler {
                 return Err(error);
             }
         };
-        if current.modify_ts != chunk.modify_ts {
+        if !same_allocation_basis(&chunk, &current) {
             drop(guard);
             self.allocator.rollback_strips(&appended).await?;
             return Ok(AppendChunkOutcome {
@@ -196,5 +196,29 @@ impl LifecycleHandler {
             }
         }
         Ok(())
+    }
+}
+
+/// Cursor/lease progress does not invalidate an allocation made against the
+/// same owner and strip layout. Every other field remains an exact fence.
+fn same_allocation_basis(observed: &super::Chunk, current: &super::Chunk) -> bool {
+    if current.modify_ts < observed.modify_ts
+        || current.acknowledged_cursor < observed.acknowledged_cursor
+        || current.writer_lease_deadline_ms < observed.writer_lease_deadline_ms
+    {
+        return false;
+    }
+    let mut basis = observed.clone();
+    basis.modify_ts = current.modify_ts;
+    basis.acknowledged_cursor = current.acknowledged_cursor;
+    basis.writer_lease_deadline_ms = current.writer_lease_deadline_ms;
+    basis == *current
+}
+
+#[cfg(feature = "test-util")]
+impl LifecycleHandler {
+    #[must_use]
+    pub fn append_basis_unchanged_for_tests(observed: &super::Chunk, current: &super::Chunk) -> bool {
+        same_allocation_basis(observed, current)
     }
 }

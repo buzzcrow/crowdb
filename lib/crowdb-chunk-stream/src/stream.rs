@@ -7,26 +7,44 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 use bytes::{Bytes, BytesMut};
-use crowdb_protocol::chunk_stream::{
-    StreamBinding, StreamBindingState, StreamExtentPage, StreamExtentPageFence, StreamManifest, StreamName,
-};
+use crowdb_protocol::chunk_stream::{ActiveChunkDescriptor, StreamName, StreamRecord, StreamRecordState};
 use crowdb_protocol::common::ChunkId;
-use crowdb_protocol::frame::{
-    encode_frames, framed_physical_length, parse_frame, FrameMagic, FRAME_HEADER_PREFIX_BYTES,
-};
+use crowdb_protocol::frame::FrameLayout;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::extent_cache::ExtentPageCache;
-use crate::metadata::{resolve_extent, validate_manifest};
 use crate::metrics::{StreamMetrics, StreamMetricsSnapshot};
 use crate::mirror_shadow::MirrorShadow;
-use crate::storage::{CursorAdvance, StreamChunkStore, StreamMetadataStore, StreamRegistry};
+use crate::storage::{StreamChunkStore, StreamMetadataStore, StreamRegistry};
 use crate::{Result, StreamError};
+use crate::{StreamChunkRecordSnapshot, StreamChunkRecordStore};
 
+mod append;
+mod capacity;
+mod capacity_plan;
+#[cfg(feature = "test-util")]
+pub use capacity_plan::capacity_target_for_tests;
+mod checkpoint;
+mod collection;
 mod liveness;
 mod observation;
-mod recovery;
+mod open;
+mod preparation;
+mod publication;
+mod state;
+use state::{StreamViewState, WriterProgress};
+mod read;
+mod successor;
+mod view;
+mod worker;
 pub use observation::StreamMetadataObservation;
+pub use read::StreamReader;
+use view::ReadView;
+pub use view::StreamViewSource;
+
+use crate::perf::{observe, perf};
+use worker::run_worker;
+
+use capacity::rollover;
 
 #[derive(Clone, Debug)]
 pub struct StreamConfig {
@@ -36,7 +54,6 @@ pub struct StreamConfig {
     pub batch_requests: usize,
     pub batch_bytes: usize,
     pub max_append_bytes: usize,
-    pub extent_page_entries: usize,
     pub read_window_bytes: usize,
     pub read_request_bytes: usize,
     pub read_concurrency: usize,
@@ -54,7 +71,6 @@ impl Default for StreamConfig {
             batch_requests: 64,
             batch_bytes: 1024 * 1024,
             max_append_bytes: 64 * 1024 * 1024,
-            extent_page_entries: 1_024,
             read_window_bytes: 8 * 1024 * 1024,
             read_request_bytes: 1024 * 1024,
             read_concurrency: 8,
@@ -73,7 +89,6 @@ impl StreamConfig {
             || self.batch_requests == 0
             || self.batch_bytes == 0
             || self.max_append_bytes == 0
-            || self.extent_page_entries == 0
             || self.read_window_bytes == 0
             || self.read_request_bytes == 0
             || self.read_concurrency == 0
@@ -114,6 +129,9 @@ struct PhysicalRead {
     frame_length: usize,
     payload_start: usize,
     length: usize,
+    group_start: u64,
+    group_length: u64,
+    ordinal: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,6 +142,7 @@ pub enum ReadHint {
 
 struct AppendRequest {
     data: Bytes,
+    authority: crate::StreamWriteContext,
     enqueued_at: Instant,
     completion: oneshot::Sender<Result<AppendRange>>,
 }
@@ -134,41 +153,46 @@ impl AppendRequest {
     }
 
     fn physical_len(&self) -> Result<usize> {
-        usize::try_from(
-            framed_physical_length(
-                u64::try_from(self.data.len())
-                    .map_err(|_| StreamError::InvalidRequest("append length exceeds u64".into()))?,
-            )
-            .map_err(|error| StreamError::InvalidRequest(error.to_string()))?,
-        )
-        .map_err(|_| StreamError::InvalidRequest("framed append exceeds address space".into()))
+        let length = FrameLayout::StreamGroupV2
+            .physical_length(self.data.len() as u64)
+            .map_err(|error| StreamError::InvalidRequest(error.to_string()))?;
+        usize::try_from(length)
+            .map_err(|_| StreamError::InvalidRequest("framed append exceeds address space".into()))
     }
 }
 
 enum Command {
     Append(AppendRequest),
+    Capture(oneshot::Sender<Result<Arc<ReadView>>>),
     Trim {
         offset: u64,
         completion: oneshot::Sender<Result<u64>>,
     },
     Close(oneshot::Sender<Result<()>>),
+    Release(oneshot::Sender<Result<()>>),
+    Reclaim {
+        retained_generation: u64,
+        max_records: usize,
+        completion: oneshot::Sender<Result<u64>>,
+    },
 }
 
 #[derive(Clone)]
 pub struct ChunkStream {
+    authority: Option<Arc<crate::StreamWriterSession>>,
     stream_name: StreamName,
     writer_epoch: u64,
     config: Arc<StreamConfig>,
-    metadata: Arc<dyn StreamMetadataStore>,
+    metadata: StreamChunkRecordStore,
     chunks: Arc<dyn StreamChunkStore>,
     sender: mpsc::Sender<Command>,
     queued_bytes: Arc<AtomicU64>,
     queued_requests: Arc<AtomicUsize>,
-    tail: Arc<AtomicU64>,
-    manifest: Arc<ArcSwap<StreamManifest>>,
+    state: Arc<ArcSwap<StreamViewState>>,
+    read_view: Arc<ArcSwap<ReadView>>,
+    view_source: StreamViewSource,
     closed: Arc<AtomicBool>,
     metrics: Arc<StreamMetrics>,
-    extent_cache: Arc<ExtentPageCache>,
 }
 
 #[derive(Clone)]
@@ -177,24 +201,37 @@ struct Extent {
     logical_start: u64,
     logical_end: u64,
     frame_start: u64,
-    frame_length: u32,
 }
 
 struct WorkerState {
+    authority: Option<Arc<crate::StreamWriterSession>>,
     stream_name: StreamName,
     writer_epoch: u64,
     config: Arc<StreamConfig>,
-    metadata: Arc<dyn StreamMetadataStore>,
+    metadata: StreamChunkRecordStore,
     chunks: Arc<dyn StreamChunkStore>,
-    manifest_view: Arc<ArcSwap<StreamManifest>>,
+    published_view: Arc<ArcSwap<StreamViewState>>,
+    read_view: Arc<ArcSwap<ReadView>>,
     tail_view: Arc<AtomicU64>,
     queued_bytes: Arc<AtomicU64>,
     queued_requests: Arc<AtomicUsize>,
     closed_view: Arc<AtomicBool>,
-    manifest: StreamManifest,
+    progress: WriterProgress,
+    snapshot: StreamChunkRecordSnapshot,
+    collection_after: Option<u64>,
+    owner_session: [u8; 16],
     extents: Vec<Extent>,
     mirror_shadow: MirrorShadow,
+    checkpoint: Option<checkpoint::PendingCheckpoint>,
+    capacity_preparation: Option<preparation::CapacityPreparation>,
+    capacity_failure: Option<(ChunkId, StreamError)>,
+    capacity_exhausted: Option<ChunkId>,
+    capacity_plan: capacity_plan::CapacityPlan,
+    successor: Option<successor::SuccessorPreparation>,
+    liveness_failed: Arc<AtomicBool>,
+    liveness_changed: Arc<tokio::sync::Notify>,
     stalled: bool,
+    last_unavailable_log: Option<Instant>,
     metrics: Arc<StreamMetrics>,
 }
 
@@ -207,201 +244,19 @@ enum BatchFailure {
 }
 
 impl ChunkStream {
+    #[cfg(feature = "test-util")]
+    pub fn expire_read_lease_for_tests(&self) {
+        self.read_view.load().pin.expire_for_tests();
+    }
     /// Durable chunk purpose of this stream.
     #[must_use]
     pub fn purpose(&self) -> crowdb_protocol::chunk_stream::StreamPurpose {
-        self.manifest.load().purpose
+        self.state.load().purpose
     }
 
     #[must_use]
     pub fn stream_name(&self) -> StreamName {
         self.stream_name
-    }
-
-    /// Creates and publishes a new registered stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed storage, validation, fencing, or duplicate-name error.
-    pub async fn create(
-        binding: StreamBinding,
-        writer_epoch: u64,
-        config: StreamConfig,
-        registry: Arc<dyn StreamRegistry>,
-        metadata: Arc<dyn StreamMetadataStore>,
-        chunks: Arc<dyn StreamChunkStore>,
-    ) -> Result<Self> {
-        config.validate()?;
-        if binding.state != StreamBindingState::Active
-            || binding.metadata_group_id == 0
-            || binding.binding_generation == 0
-            || writer_epoch == 0
-        {
-            return Err(StreamError::InvalidRequest(
-                "stream binding or writer epoch is invalid".into(),
-            ));
-        }
-        if registry.load(binding.stream_name).await?.is_some() {
-            return Err(StreamError::InvalidRequest("stream already exists".into()));
-        }
-        registry.create(binding.clone()).await?;
-        Self::initialize(binding, writer_epoch, config, metadata, chunks).await
-    }
-
-    /// Initializes stream metadata for an active binding already published by
-    /// the control plane.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error if the binding is absent or inactive, metadata
-    /// already exists, or initial metadata publication fails.
-    pub async fn create_registered(
-        stream_name: StreamName,
-        writer_epoch: u64,
-        config: StreamConfig,
-        registry: Arc<dyn StreamRegistry>,
-        metadata: Arc<dyn StreamMetadataStore>,
-        chunks: Arc<dyn StreamChunkStore>,
-    ) -> Result<Self> {
-        config.validate()?;
-        let binding = registry
-            .load(stream_name)
-            .await?
-            .ok_or_else(|| StreamError::InvalidRequest("stream binding does not exist".into()))?;
-        if binding.state != StreamBindingState::Active
-            || binding.metadata_group_id == 0
-            || binding.binding_generation == 0
-            || writer_epoch == 0
-        {
-            return Err(StreamError::InvalidRequest(
-                "stream binding or writer epoch is invalid".into(),
-            ));
-        }
-        if metadata.load_current(stream_name).await?.is_some() {
-            return Err(StreamError::InvalidRequest(
-                "stream metadata already exists".into(),
-            ));
-        }
-        Self::initialize(binding, writer_epoch, config, metadata, chunks).await
-    }
-
-    async fn initialize(
-        binding: StreamBinding,
-        writer_epoch: u64,
-        config: StreamConfig,
-        metadata: Arc<dyn StreamMetadataStore>,
-        chunks: Arc<dyn StreamChunkStore>,
-    ) -> Result<Self> {
-        let manifest = StreamManifest {
-            purpose: binding.purpose,
-            stream_name: binding.stream_name,
-            metadata_group_id: binding.metadata_group_id,
-            writer_epoch,
-            generation: 1,
-            trim_offset: 0,
-            sealed_tail: 0,
-            active: None,
-            extent_pages: Vec::new(),
-            previous_generation: None,
-            closed: false,
-        };
-        metadata.publish(None, manifest.clone(), Vec::new()).await?;
-        Self::start(config, metadata, chunks, manifest, Vec::new(), &[])
-    }
-
-    /// Opens an existing stream and recovers its durable active cursor.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed storage, corruption, or stale-writer error.
-    pub async fn open(
-        stream_name: StreamName,
-        writer_epoch: u64,
-        config: StreamConfig,
-        registry: Arc<dyn StreamRegistry>,
-        metadata: Arc<dyn StreamMetadataStore>,
-        chunks: Arc<dyn StreamChunkStore>,
-    ) -> Result<Self> {
-        config.validate()?;
-        let binding = registry
-            .load(stream_name)
-            .await?
-            .ok_or_else(|| StreamError::InvalidRequest("stream binding does not exist".into()))?;
-        if binding.state != StreamBindingState::Active {
-            return Err(StreamError::InvalidRequest("stream binding is not active".into()));
-        }
-        let mut manifest = metadata
-            .load_current(stream_name)
-            .await?
-            .ok_or_else(|| StreamError::Corruption("stream manifest does not exist".into()))?;
-        if manifest.purpose != binding.purpose {
-            return Err(StreamError::Corruption(
-                "stream binding purpose differs from manifest".into(),
-            ));
-        }
-        if manifest.metadata_group_id != binding.metadata_group_id || manifest.writer_epoch > writer_epoch {
-            return Err(StreamError::StaleWriter);
-        }
-        let pages = load_extent_pages(metadata.as_ref(), &manifest).await?;
-        validate_manifest(&manifest, &pages)?;
-        let expected = (manifest.writer_epoch, manifest.generation);
-        let mut needs_publish = manifest.writer_epoch < writer_epoch;
-        let mut rotate_active = false;
-        let mut extents = collect_extents(&pages);
-        let mut tail = manifest.sealed_tail;
-        if let Some(active) = &mut manifest.active {
-            let durable = chunks.durable_cursor(active.chunk_id, writer_epoch).await?;
-            if durable.offset < active.physical_start || durable.offset > active.capacity {
-                return Err(StreamError::Corruption(
-                    "recovered active cursor is outside chunk bounds".into(),
-                ));
-            }
-            if durable.offset < active.acknowledged_cursor {
-                return Err(StreamError::Corruption(
-                    "recovered active cursor precedes its published cursor".into(),
-                ));
-            }
-            tail = recovery::recover_active_frames(chunks.as_ref(), active, durable.offset, &mut extents)
-                .await?;
-            if !durable.sealed {
-                chunks.seal(active.chunk_id, writer_epoch, durable.offset).await?;
-            }
-            active.acknowledged_cursor = durable.offset;
-            rotate_active = true;
-        }
-        manifest.writer_epoch = writer_epoch;
-        if rotate_active {
-            manifest.active.take();
-            manifest.sealed_tail = tail;
-            let mut successor = chunks
-                .allocate_mirrored(stream_name, writer_epoch, manifest.purpose)
-                .await?;
-            successor.logical_start = tail;
-            manifest.active = Some(successor);
-            needs_publish = true;
-        }
-        if needs_publish {
-            manifest.previous_generation = Some(manifest.generation);
-            manifest.generation = manifest
-                .generation
-                .checked_add(1)
-                .ok_or_else(|| StreamError::Corruption("manifest generation overflows".into()))?;
-            let adopted_pages = build_extent_pages(
-                &extents,
-                manifest.stream_name,
-                writer_epoch,
-                manifest.generation,
-                config.extent_page_entries,
-            );
-            manifest.extent_pages = fences_for(&adopted_pages);
-            validate_manifest(&manifest, &adopted_pages)?;
-            metadata
-                .publish(Some(expected), manifest.clone(), adopted_pages)
-                .await?;
-        }
-        let stream = Self::start(config, metadata, chunks, manifest, extents, &pages)?;
-        stream.tail.store(tail, Ordering::Release);
-        Ok(stream)
     }
 
     /// Opens one immutable view at the exact current writer epoch.
@@ -421,122 +276,149 @@ impl ChunkStream {
         chunks: Arc<dyn StreamChunkStore>,
     ) -> Result<Self> {
         config.validate()?;
-        let binding = registry
+        let record = registry
             .load(stream_name)
             .await?
-            .ok_or_else(|| StreamError::InvalidRequest("stream binding does not exist".into()))?;
-        if binding.state != StreamBindingState::Active || writer_epoch == 0 {
+            .ok_or_else(|| StreamError::InvalidRequest("stream record does not exist".into()))?;
+        if record.state != StreamRecordState::Active || writer_epoch == 0 {
             return Err(StreamError::InvalidRequest(
-                "stream binding or reader epoch is invalid".into(),
+                "stream record or reader epoch is invalid".into(),
             ));
         }
-        let mut manifest = metadata
-            .load_current(stream_name)
+        let metadata = metadata.record_store(record.metadata_group_id)?;
+        let snapshot = metadata
+            .load_tail(stream_name)
             .await?
-            .ok_or_else(|| StreamError::Corruption("stream manifest does not exist".into()))?;
-        if manifest.purpose != binding.purpose {
+            .ok_or_else(|| StreamError::Corruption("Stream tail chunk record does not exist".into()))?;
+        let published = StreamViewState::new(snapshot.clone(), metadata.group_id());
+        if published.purpose != record.purpose {
             return Err(StreamError::Corruption(
-                "stream binding purpose differs from manifest".into(),
+                "stream record purpose differs from published".into(),
             ));
         }
-        if manifest.metadata_group_id != binding.metadata_group_id || manifest.writer_epoch != writer_epoch {
+        if published.metadata_group_id != record.metadata_group_id || published.writer_epoch != writer_epoch {
             return Err(StreamError::StaleWriter);
         }
-        let pages = load_extent_pages(metadata.as_ref(), &manifest).await?;
-        validate_manifest(&manifest, &pages)?;
-        if let Some(active) = &mut manifest.active {
-            let durable = chunks.durable_cursor(active.chunk_id, writer_epoch).await?;
-            if durable.offset < active.physical_start || durable.offset > active.capacity {
-                return Err(StreamError::Corruption(
-                    "observed active cursor is outside chunk bounds".into(),
-                ));
-            }
-            if durable.offset < active.acknowledged_cursor {
-                return Err(StreamError::Corruption(
-                    "observed active cursor precedes the published cursor".into(),
-                ));
-            }
-            // A concurrent append can advance the physical cursor before its
-            // extent pages are published. Keep this reader at the captured
-            // manifest's acknowledged boundary.
-        }
-        validate_manifest(&manifest, &pages)?;
-        let stream = Self::start(
-            config,
-            metadata,
-            chunks,
-            manifest,
-            collect_extents(&pages),
-            &pages,
-        )?;
+        let active = state::load_active(&snapshot, chunks.as_ref()).await?;
+        let mut stream = Self::start(config, metadata, chunks, snapshot, active, None).await?;
         stream.closed.store(true, Ordering::Release);
+        stream.view_source = StreamViewSource::PersistedCheckpoint;
         Ok(stream)
     }
 
-    fn start(
+    async fn start(
         config: StreamConfig,
-        metadata: Arc<dyn StreamMetadataStore>,
+        metadata: StreamChunkRecordStore,
         chunks: Arc<dyn StreamChunkStore>,
-        manifest: StreamManifest,
-        extents: Vec<Extent>,
-        pages: &[StreamExtentPage],
+        snapshot: StreamChunkRecordSnapshot,
+        active: Option<ActiveChunkDescriptor>,
+        authority: Option<Arc<crate::StreamWriterSession>>,
     ) -> Result<Self> {
+        let published = StreamViewState::new(snapshot.clone(), metadata.group_id());
         let (sender, receiver) = mpsc::channel(config.queue_requests);
         let config = Arc::new(config);
         let queued_bytes = Arc::new(AtomicU64::new(0));
         let queued_requests = Arc::new(AtomicUsize::new(0));
-        let tail = Arc::new(AtomicU64::new(durable_tail(&manifest)?));
-        let manifest_view = Arc::new(ArcSwap::from_pointee(manifest.clone()));
-        let closed = Arc::new(AtomicBool::new(manifest.closed));
+        let tail = Arc::new(AtomicU64::new(published.published_tail));
+        let published_view = Arc::new(ArcSwap::from_pointee(published));
+        let read_view = Arc::new(ArcSwap::from_pointee(
+            ReadView::new(metadata.clone(), published_view.load_full()).await?,
+        ));
+        let closed = Arc::new(AtomicBool::new(published_view.load().closed));
         let metrics = Arc::new(StreamMetrics::default());
-        let extent_cache = Arc::new(ExtentPageCache::new(&manifest, pages));
+        metrics
+            .metadata_publications
+            .store(u64::from(authority.is_some()), Ordering::Relaxed);
+        perf();
         let state = WorkerState {
-            stream_name: manifest.stream_name,
-            writer_epoch: manifest.writer_epoch,
+            authority: authority.clone(),
+            stream_name: published_view.load().stream_name,
+            writer_epoch: published_view.load().writer_epoch,
             config: Arc::clone(&config),
-            metadata: Arc::clone(&metadata),
+            metadata: metadata.clone(),
             chunks: Arc::clone(&chunks),
-            manifest_view: Arc::clone(&manifest_view),
+            published_view: Arc::clone(&published_view),
+            read_view: Arc::clone(&read_view),
             tail_view: Arc::clone(&tail),
             queued_bytes: Arc::clone(&queued_bytes),
             queued_requests: Arc::clone(&queued_requests),
             closed_view: Arc::clone(&closed),
-            manifest,
-            extents,
+            progress: WriterProgress::new(snapshot.record(), active),
+            owner_session: snapshot.record().owner_session,
+            snapshot,
+            collection_after: None,
+            extents: Vec::new(),
             mirror_shadow: MirrorShadow::default(),
+            checkpoint: None,
+            capacity_preparation: None,
+            capacity_failure: None,
+            capacity_exhausted: None,
+            capacity_plan: capacity_plan::CapacityPlan::default(),
+            successor: None,
+            liveness_failed: Arc::new(AtomicBool::new(false)),
+            liveness_changed: Arc::new(tokio::sync::Notify::new()),
             stalled: false,
+            last_unavailable_log: None,
             metrics: Arc::clone(&metrics),
         };
-        tokio::spawn(run_worker(state, receiver));
+        if authority.is_some() {
+            tokio::spawn(run_worker(state, receiver));
+        }
         Ok(Self {
-            stream_name: state_name(&manifest_view),
-            writer_epoch: state_epoch(&manifest_view),
+            authority,
+            stream_name: published_view.load().stream_name,
+            writer_epoch: published_view.load().writer_epoch,
             config,
             metadata,
             chunks,
             sender,
             queued_bytes,
             queued_requests,
-            tail,
-            manifest: manifest_view,
+            state: Arc::clone(&published_view),
+            read_view,
+            view_source: StreamViewSource::LiveOwner,
             closed,
             metrics,
-            extent_cache,
         })
     }
 
-    /// Returns the durable end of the published read snapshot.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an internally installed manifest violates the validated
-    /// active-cursor bounds.
-    #[must_use]
-    pub fn tail(&self) -> u64 {
-        durable_tail(&self.manifest.load()).expect("validated stream manifest has a durable tail")
+    pub(crate) fn writer_context(&self) -> Result<crate::StreamWriteContext> {
+        self.authority
+            .as_ref()
+            .ok_or(StreamError::WriteStalled)?
+            .capture()
     }
 
-    /// Appends one logical request after its mirror data and cursor are durable.
+    /// Stop admission, drain and checkpoint before durably releasing this owner.
+    /// # Errors
+    /// Returns a fencing, checkpoint or release error; an error is not a release proof.
+    pub async fn release_writer(&self) -> Result<()> {
+        if self
+            .authority
+            .as_ref()
+            .is_some_and(|authority| authority.is_released())
+        {
+            return Ok(());
+        }
+        if self.authority.is_none() {
+            return Err(StreamError::WriteStalled);
+        }
+        self.closed.store(true, Ordering::Release);
+        let (completion, result) = oneshot::channel();
+        self.sender
+            .send(Command::Release(completion))
+            .await
+            .map_err(|_| StreamError::WriteStalled)?;
+        result.await.map_err(|_| StreamError::WriteStalled)?
+    }
+
+    /// Returns the synchronized logical end visible to this handle.
+    #[must_use]
+    pub fn tail(&self) -> u64 {
+        self.read_view.load().end()
+    }
+
+    /// Appends one logical request after every required mirror is synchronized.
     ///
     /// # Errors
     ///
@@ -545,6 +427,7 @@ impl ChunkStream {
         if self.closed.load(Ordering::Acquire) {
             return Err(StreamError::WriteStalled);
         }
+        let authority = self.writer_context()?;
         let length = buffers
             .iter()
             .try_fold(0_usize, |total, bytes| total.checked_add(bytes.len()))
@@ -572,15 +455,13 @@ impl ChunkStream {
         }
         self.record_queue_high_watermarks();
         self.metrics.submitted.fetch_add(1, Ordering::Relaxed);
-        let mut data = BytesMut::with_capacity(length);
-        for bytes in buffers {
-            data.extend_from_slice(bytes);
-        }
+        let data = owned_payload(buffers, length);
         let (completion, result) = oneshot::channel();
         if self
             .sender
             .try_send(Command::Append(AppendRequest {
-                data: data.freeze(),
+                data,
+                authority,
                 enqueued_at: Instant::now(),
                 completion,
             }))
@@ -617,11 +498,8 @@ impl ChunkStream {
                 "chunk-bound append exceeds maximum chunk capacity".into(),
             ));
         }
-        let mut data = BytesMut::with_capacity(length);
-        for bytes in buffers {
-            data.extend_from_slice(bytes);
-        }
-        self.enqueue_append(data.freeze()).await
+        let data = owned_payload(buffers, length);
+        self.enqueue_append(data).await
     }
 
     /// Enqueues several chunk-bound records in input order and returns their
@@ -652,6 +530,7 @@ impl ChunkStream {
         if self.closed.load(Ordering::Acquire) {
             return Err(StreamError::WriteStalled);
         }
+        let authority = self.writer_context()?;
         let length = data.len();
         if length == 0 || length > self.config.max_append_bytes {
             return Err(StreamError::InvalidRequest("append length is invalid".into()));
@@ -668,6 +547,7 @@ impl ChunkStream {
             .sender
             .try_send(Command::Append(AppendRequest {
                 data,
+                authority,
                 enqueued_at: Instant::now(),
                 completion,
             }))
@@ -699,30 +579,45 @@ impl ChunkStream {
 
     /// Returns the immutable metadata generation currently backing reads.
     #[must_use]
-    pub fn manifest_generation(&self) -> u64 {
-        self.manifest.load().generation
+    pub fn record_generation(&self) -> u64 {
+        self.state.load().generation
     }
 
-    /// Reclaims immutable extent pages older than a caller-proven retained
-    /// manifest generation.
+    /// Reclaims Stream chunk records older than a caller-proven retained
+    /// record generation.
     ///
     /// # Errors
     ///
     /// Returns an error if the watermark could remove the current generation,
     /// the pass bound is zero, or metadata deletion fails.
-    pub async fn reclaim_metadata_before(&self, retained_generation: u64, max_pages: usize) -> Result<u64> {
-        let current = self.manifest.load().generation;
-        if retained_generation == 0 || retained_generation > current || max_pages == 0 {
+    pub async fn reclaim_metadata_before(&self, retained_generation: u64, max_records: usize) -> Result<u64> {
+        let current = self.state.load().generation;
+        if retained_generation == 0 || retained_generation > current || max_records == 0 {
             return Err(StreamError::InvalidRequest(
                 "metadata reclaim watermark is outside retained generations".into(),
             ));
         }
-        self.metadata
-            .reclaim_extent_pages_before(self.stream_name, retained_generation, max_pages)
+        if self
+            .authority
+            .as_ref()
+            .is_some_and(|authority| authority.is_released())
+        {
+            return Ok(0);
+        }
+        self.writer_context()?;
+        let (completion, result) = oneshot::channel();
+        self.sender
+            .send(Command::Reclaim {
+                retained_generation,
+                max_records,
+                completion,
+            })
             .await
+            .map_err(|_| StreamError::WriteStalled)?;
+        result.await.map_err(|_| StreamError::WriteStalled)?
     }
 
-    /// Seals the active chunk and publishes a closed manifest.
+    /// Seals the active chunk and publishes a closed state.
     ///
     /// # Errors
     ///
@@ -740,181 +635,6 @@ impl ChunkStream {
             .await
             .map_err(|_| StreamError::Internal("close worker stopped".into()))?
     }
-
-    /// Reads an exact retained durable logical range.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid range, corrupt metadata, or unavailable data.
-    pub async fn read_at(&self, offset: u64, length: usize) -> Result<Bytes> {
-        let segments = self.read_at_with_provenance(offset, length).await?;
-        let mut output = BytesMut::with_capacity(length);
-        for segment in segments {
-            output.extend_from_slice(&segment.data);
-        }
-        Ok(output.freeze())
-    }
-
-    /// Reads an exact range while retaining the physical chunk identity for
-    /// every returned logical segment.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid range, corrupt metadata, or unavailable data.
-    pub async fn read_at_with_provenance(&self, offset: u64, length: usize) -> Result<Vec<ReadSegment>> {
-        let end = offset
-            .checked_add(length as u64)
-            .ok_or_else(|| StreamError::InvalidRequest("read range overflows".into()))?;
-        let manifest = self.manifest.load_full();
-        if offset < manifest.trim_offset || end > durable_tail(&manifest)? {
-            return Err(StreamError::InvalidRequest(
-                "read is outside retained durable range".into(),
-            ));
-        }
-        let mut cursor = offset;
-        let mut reads = Vec::new();
-        while cursor < end {
-            let fence_index = find_extent_fence(&manifest, cursor)?;
-            let fence = &manifest.extent_pages[fence_index];
-            let page = self.load_extent_page(&manifest, fence).await?;
-            let location = resolve_extent(&page, cursor)?;
-            let read_len = usize::try_from(location.available.min(end - cursor))
-                .map_err(|_| StreamError::InvalidRequest("read length exceeds addressable range".into()))?;
-            let read_len = read_len.min(self.config.read_request_bytes);
-            reads.push(PhysicalRead {
-                chunk_id: location.chunk_id,
-                logical_start: cursor,
-                frame_start: location.frame_offset,
-                frame_length: usize::try_from(location.frame_length).map_err(|_| {
-                    StreamError::Corruption("stream frame length exceeds address space".into())
-                })?,
-                payload_start: usize::try_from(location.payload_offset).map_err(|_| {
-                    StreamError::Corruption("stream frame payload offset exceeds address space".into())
-                })?,
-                length: read_len,
-            });
-            cursor += read_len as u64;
-        }
-        let output = self.read_physical_ranges(&reads).await?;
-        let output_len = output
-            .iter()
-            .fold(0_usize, |total, segment| total.saturating_add(segment.data.len()));
-        if output_len != length {
-            return Err(StreamError::Corruption(
-                "chunk reads returned an unexpected length".into(),
-            ));
-        }
-        self.metrics
-            .read_bytes
-            .fetch_add(length as u64, Ordering::Relaxed);
-        Ok(output)
-    }
-
-    async fn read_physical_ranges(&self, reads: &[PhysicalRead]) -> Result<Vec<ReadSegment>> {
-        self.metrics
-            .physical_read_requests
-            .fetch_add(reads.len() as u64, Ordering::Relaxed);
-        let mut output = vec![None; reads.len()];
-        let mut tasks = tokio::task::JoinSet::new();
-        let mut next = 0_usize;
-        while next < reads.len() || !tasks.is_empty() {
-            while next < reads.len() && tasks.len() < self.config.read_concurrency {
-                let index = next;
-                let read = reads[index];
-                let stream = self.clone();
-                tasks.spawn(async move {
-                    let frame = stream
-                        .read_chunk_with_watchdog(
-                            read.chunk_id,
-                            read.frame_start,
-                            read.frame_length,
-                            read.logical_start,
-                        )
-                        .await?;
-                    let parsed = parse_frame(&frame, read.chunk_id)
-                        .map_err(|error| StreamError::Corruption(format!("invalid stream frame: {error}")))?;
-                    if parsed.header.magic != FrameMagic::StreamV1 {
-                        return Err(StreamError::Corruption(
-                            "stream extent has the wrong frame kind".into(),
-                        ));
-                    }
-                    let payload_end = read.payload_start.checked_add(read.length).ok_or_else(|| {
-                        StreamError::Corruption("stream frame payload range overflows".into())
-                    })?;
-                    let data = Bytes::copy_from_slice(
-                        parsed
-                            .payload
-                            .get(
-                                read.payload_start - FRAME_HEADER_PREFIX_BYTES
-                                    ..payload_end - FRAME_HEADER_PREFIX_BYTES,
-                            )
-                            .ok_or_else(|| {
-                                StreamError::Corruption("stream extent exceeds frame payload".into())
-                            })?,
-                    );
-                    Ok::<_, StreamError>((
-                        index,
-                        ReadSegment {
-                            chunk_id: read.chunk_id,
-                            logical_start: read.logical_start,
-                            data,
-                        },
-                    ))
-                });
-                next += 1;
-            }
-            let completed = tasks
-                .join_next()
-                .await
-                .ok_or_else(|| StreamError::Internal("physical read task set ended early".into()))?
-                .map_err(|error| StreamError::Internal(format!("physical read task failed: {error}")))??;
-            output[completed.0] = Some(completed.1);
-        }
-        output
-            .into_iter()
-            .map(|segment| {
-                segment.ok_or_else(|| StreamError::Internal("physical read result is missing".into()))
-            })
-            .collect()
-    }
-
-    /// Creates a bounded sequential reader ending at the current durable tail.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `offset` is outside the retained durable range.
-    pub fn read_from(&self, offset: u64) -> Result<StreamReader> {
-        self.reader(offset, ReadHint::ToEnd)
-    }
-
-    /// Creates a seekable reader with a finite or captured-tail hint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `offset` or its hint is outside the retained range.
-    pub fn reader(&self, offset: u64, hint: ReadHint) -> Result<StreamReader> {
-        let manifest = self.manifest.load();
-        let tail = durable_tail(&manifest)?;
-        if offset < manifest.trim_offset || offset > tail {
-            return Err(StreamError::InvalidRequest(
-                "read cursor is outside retained range".into(),
-            ));
-        }
-        let end = match hint {
-            ReadHint::ToEnd => tail,
-            ReadHint::Bytes(length) => offset
-                .checked_add(length)
-                .ok_or_else(|| StreamError::InvalidRequest("reader hint overflows".into()))?
-                .min(tail),
-        };
-        Ok(StreamReader {
-            stream: self.clone(),
-            offset,
-            end,
-            pending: None,
-        })
-    }
-
     #[must_use]
     pub fn writer_epoch(&self) -> u64 {
         self.writer_epoch
@@ -934,927 +654,11 @@ impl ChunkStream {
             .max_queued_bytes
             .fetch_max(self.queued_bytes.load(Ordering::Acquire), Ordering::Relaxed);
     }
-
-    async fn load_extent_page(
-        &self,
-        manifest: &StreamManifest,
-        fence: &StreamExtentPageFence,
-    ) -> Result<Arc<StreamExtentPage>> {
-        if let Some(page) =
-            self.extent_cache
-                .get(manifest.writer_epoch, manifest.generation, fence.page_index)
-        {
-            self.metrics
-                .extent_page_cache_hits
-                .fetch_add(1, Ordering::Relaxed);
-            return Ok(page);
-        }
-        self.metrics
-            .extent_page_cache_misses
-            .fetch_add(1, Ordering::Relaxed);
-        let page = self
-            .metadata
-            .load_extent_page(
-                manifest.stream_name,
-                manifest.writer_epoch,
-                manifest.generation,
-                fence.page_index,
-            )
-            .await?
-            .ok_or_else(|| StreamError::Corruption("referenced extent page is missing".into()))?;
-        validate_page_fence(manifest, fence, &page)?;
-        Ok(self.extent_cache.insert(page))
-    }
-
-    async fn read_chunk_with_watchdog(
-        &self,
-        chunk_id: ChunkId,
-        physical_offset: u64,
-        length: usize,
-        logical_offset: u64,
-    ) -> Result<Bytes> {
-        let read = self.chunks.read_verified_frame(chunk_id, physical_offset, length);
-        tokio::pin!(read);
-        let started = Instant::now();
-        loop {
-            tokio::select! {
-                result = &mut read => return result,
-                () = tokio::time::sleep(self.config.watchdog_interval) => {
-                    self.metrics.watchdog_observations.fetch_add(1, Ordering::Relaxed);
-                    tracing::warn!(
-                        stream_high = self.stream_name.high,
-                        stream_low = self.stream_name.low,
-                        writer_epoch = self.writer_epoch,
-                        logical_offset,
-                        read_bytes = length,
-                        operation_age_ms = started.elapsed().as_millis(),
-                        stage = "chunk_read",
-                        "chunk-stream read window remains in flight"
-                    );
-                }
-            }
-        }
-    }
-}
-
-type PrefetchResult = tokio::task::JoinHandle<Result<(u64, Vec<ReadSegment>)>>;
-
-pub struct StreamReader {
-    stream: ChunkStream,
-    offset: u64,
-    end: u64,
-    pending: Option<PrefetchResult>,
-}
-
-impl StreamReader {
-    /// Moves the reader within its captured retained range.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `offset` is outside the captured range.
-    pub fn seek(&mut self, offset: u64) -> Result<()> {
-        let trim = self.stream.manifest.load().trim_offset;
-        if offset < trim || offset > self.end {
-            return Err(StreamError::InvalidRequest(
-                "seek is outside the reader range".into(),
-            ));
-        }
-        if let Some(pending) = self.pending.take() {
-            pending.abort();
-        }
-        self.offset = offset;
-        Ok(())
-    }
-
-    /// Returns the next bounded logical window, or `None` at the captured tail.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed metadata or chunk-read error.
-    pub async fn next(&mut self) -> Result<Option<Bytes>> {
-        let Some(segments) = self.next_with_provenance().await? else {
-            return Ok(None);
-        };
-        let length = segments.iter().map(|segment| segment.data.len()).sum();
-        let mut bytes = BytesMut::with_capacity(length);
-        for segment in segments {
-            bytes.extend_from_slice(&segment.data);
-        }
-        Ok(Some(bytes.freeze()))
-    }
-
-    /// Returns the next bounded logical window split by physical chunk.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed metadata, task, or chunk-read error.
-    pub async fn next_with_provenance(&mut self) -> Result<Option<Vec<ReadSegment>>> {
-        if self.offset == self.end {
-            return Ok(None);
-        }
-        self.start_prefetch()?;
-        let pending = self
-            .pending
-            .take()
-            .ok_or_else(|| StreamError::Internal("reader prefetch was not installed".into()))?;
-        let (offset, segments) = pending
-            .await
-            .map_err(|error| StreamError::Internal(format!("reader prefetch task failed: {error}")))??;
-        if offset != self.offset {
-            return Err(StreamError::Internal(
-                "reader prefetch completed for a stale offset".into(),
-            ));
-        }
-        let length = segments.iter().try_fold(0_u64, |length, segment| {
-            length.checked_add(segment.data.len() as u64)
-        });
-        self.offset = self
-            .offset
-            .checked_add(length.ok_or_else(|| StreamError::Corruption("reader length overflows".into()))?)
-            .ok_or_else(|| StreamError::Corruption("reader offset overflows".into()))?;
-        self.start_prefetch()?;
-        Ok(Some(segments))
-    }
-
-    fn start_prefetch(&mut self) -> Result<()> {
-        if self.pending.is_some() || self.offset == self.end {
-            return Ok(());
-        }
-        let offset = self.offset;
-        let length = usize::try_from((self.end - offset).min(self.stream.config.read_window_bytes as u64))
-            .map_err(|_| StreamError::InvalidRequest("read window exceeds addressable range".into()))?;
-        let stream = self.stream.clone();
-        self.pending = Some(tokio::spawn(async move {
-            stream
-                .read_at_with_provenance(offset, length)
-                .await
-                .map(|segments| (offset, segments))
-        }));
-        Ok(())
-    }
-}
-
-async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Command>) {
-    let mut pending = None;
-    let mut liveness = tokio::time::interval(state.config.liveness_interval);
-    liveness.tick().await;
-    loop {
-        let command = if let Some(command) = pending.take() {
-            command
-        } else {
-            tokio::select! {
-                command = receiver.recv() => match command {
-                    Some(command) => command,
-                    None => break,
-                },
-                _ = liveness.tick() => {
-                    if let Some(chunk_id) = state.manifest.active.as_ref().map(|active| active.chunk_id) {
-                        liveness::maintain(&mut state, chunk_id).await;
-                    }
-                    continue;
-                }
-            }
-        };
-        match command {
-            Command::Append(first) => {
-                process_append_batch(&mut state, first, &mut receiver, &mut pending).await;
-            }
-            Command::Trim { offset, completion } => {
-                let _ = completion.send(process_trim(&mut state, offset).await);
-            }
-            Command::Close(completion) => {
-                let result = process_close(&mut state).await;
-                let _ = completion.send(result);
-                break;
-            }
-        }
-    }
-    state.closed_view.store(true, Ordering::Release);
-}
-
-async fn process_append_batch(
-    state: &mut WorkerState,
-    first: AppendRequest,
-    receiver: &mut mpsc::Receiver<Command>,
-    pending: &mut Option<Command>,
-) {
-    if state.stalled || state.manifest.closed {
-        finish_failed(state, vec![first], &StreamError::WriteStalled);
-        return;
-    }
-    let first_len = match first.physical_len() {
-        Ok(length) => length,
-        Err(error) => {
-            finish_failed(state, vec![first], &error);
-            return;
-        }
-    };
-    if let Err(error) = prepare_active_for_append(state, first_len).await {
-        state.stalled = true;
-        finish_failed(state, vec![first], &error);
-        return;
-    }
-
-    let mut requests = vec![first];
-    let mut bytes = first_len;
-    while requests.len() < state.config.batch_requests && bytes < state.config.batch_bytes {
-        match receiver.try_recv() {
-            Ok(Command::Append(request))
-                if bytes
-                    .checked_add(request.physical_len().unwrap_or(usize::MAX))
-                    .is_some_and(|total| total <= state.config.batch_bytes && fits_active(state, total)) =>
-            {
-                bytes += request.physical_len().expect("checked above");
-                requests.push(request);
-            }
-            Ok(command) => {
-                *pending = Some(command);
-                break;
-            }
-            Err(_) => break,
-        }
-    }
-    let result = write_with_recovery(state, &requests, bytes).await;
-    match result {
-        Ok(ranges) => {
-            for (request, range) in requests.into_iter().zip(ranges) {
-                state
-                    .queued_bytes
-                    .fetch_sub(request.logical_len() as u64, Ordering::AcqRel);
-                state.queued_requests.fetch_sub(1, Ordering::AcqRel);
-                state.metrics.completed.fetch_add(1, Ordering::Relaxed);
-                state
-                    .metrics
-                    .logical_append_bytes
-                    .fetch_add(request.logical_len() as u64, Ordering::Relaxed);
-                let _ = request.completion.send(Ok(range));
-            }
-        }
-        Err(BatchFailure::MirrorWrite(error) | BatchFailure::Other(error)) => {
-            state.stalled = true;
-            finish_failed(state, requests, &error);
-        }
-    }
-}
-
-async fn prepare_active_for_append(state: &mut WorkerState, first_len: usize) -> Result<()> {
-    loop {
-        if state.manifest.active.is_none() {
-            match ensure_active(state).await {
-                Ok(()) => {}
-                Err(
-                    error @ (StreamError::StaleWriter
-                    | StreamError::Corruption(_)
-                    | StreamError::InvalidRequest(_)),
-                ) => {
-                    return Err(error);
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "chunk-stream allocation remains unavailable");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
-                }
-            }
-        }
-        if fits_active(state, first_len) {
-            return Ok(());
-        }
-        match grow_or_rollover(state, first_len).await {
-            Ok(()) if fits_active(state, first_len) => return Ok(()),
-            Ok(()) => return Err(StreamError::Corruption("new chunk cannot fit the append".into())),
-            Err(
-                error @ (StreamError::StaleWriter
-                | StreamError::Corruption(_)
-                | StreamError::InvalidRequest(_)),
-            ) => {
-                return Err(error);
-            }
-            Err(error) => {
-                tracing::warn!(%error, "chunk-stream growth remains unavailable");
-                match rollover(state).await {
-                    Ok(()) if fits_active(state, first_len) => return Ok(()),
-                    Err(StreamError::StaleWriter) => return Err(StreamError::StaleWriter),
-                    _ => tokio::time::sleep(Duration::from_millis(100)).await,
-                }
-            }
-        }
-    }
-}
-
-async fn write_with_recovery(
-    state: &mut WorkerState,
-    requests: &[AppendRequest],
-    bytes: usize,
-) -> std::result::Result<Vec<AppendRange>, BatchFailure> {
-    let mut rotated = false;
-    loop {
-        match write_batch_with_watchdog(state, requests, bytes).await {
-            Err(BatchFailure::MirrorWrite(
-                error @ (StreamError::StaleWriter
-                | StreamError::Corruption(_)
-                | StreamError::InvalidRequest(_)),
-            )) => return Err(BatchFailure::Other(error)),
-            Err(
-                BatchFailure::MirrorWrite(error)
-                | BatchFailure::Other(error @ StreamError::DefinitelyNotCommitted(_)),
-            ) => {
-                if rotated {
-                    return Err(BatchFailure::Other(error));
-                }
-                tracing::warn!(
-                    stream_high = state.stream_name.high,
-                    stream_low = state.stream_name.low,
-                    writer_epoch = state.writer_epoch,
-                    %error,
-                    "chunk-stream append will rotate after an uncommitted write"
-                );
-                rollover(state).await.map_err(BatchFailure::Other)?;
-                rotated = true;
-            }
-            Err(BatchFailure::Other(error)) => {
-                if matches!(rotate_externally_sealed_active(state).await, Ok(true)) {
-                    continue;
-                }
-                return Err(BatchFailure::Other(error));
-            }
-            success => return success,
-        }
-    }
-}
-
-async fn write_batch_with_watchdog(
-    state: &mut WorkerState,
-    requests: &[AppendRequest],
-    bytes: usize,
-) -> std::result::Result<Vec<AppendRange>, BatchFailure> {
-    let interval = state.config.watchdog_interval;
-    let metrics = Arc::clone(&state.metrics);
-    let stream_name = state.stream_name;
-    let writer_epoch = state.writer_epoch;
-    let logical_begin = state.tail_view.load(Ordering::Acquire);
-    let logical_end = logical_begin.saturating_add(bytes as u64);
-    let oldest_queue_age = requests
-        .first()
-        .map_or(Duration::ZERO, |request| request.enqueued_at.elapsed());
-    metrics.batches.fetch_add(1, Ordering::Relaxed);
-    metrics
-        .batch_requests
-        .fetch_add(requests.len() as u64, Ordering::Relaxed);
-    let write = write_batch(state, requests, bytes);
-    tokio::pin!(write);
-    let started = Instant::now();
-    loop {
-        tokio::select! {
-            result = &mut write => return result,
-            () = tokio::time::sleep(interval) => {
-                metrics.watchdog_observations.fetch_add(1, Ordering::Relaxed);
-                tracing::warn!(
-                    stream_high = stream_name.high,
-                    stream_low = stream_name.low,
-                    writer_epoch,
-                    logical_begin,
-                    logical_end,
-                    batch_requests = requests.len(),
-                    batch_bytes = bytes,
-                    operation_age_ms = started.elapsed().as_millis(),
-                    oldest_queue_age_ms = oldest_queue_age.as_millis(),
-                    stage = "append_durability",
-                    "chunk-stream append batch remains in flight"
-                );
-            }
-        }
-    }
-}
-
-async fn write_batch(
-    state: &mut WorkerState,
-    requests: &[AppendRequest],
-    bytes: usize,
-) -> std::result::Result<Vec<AppendRange>, BatchFailure> {
-    let active = state
-        .manifest
-        .active
-        .as_ref()
-        .ok_or_else(|| BatchFailure::Other(StreamError::Internal("append has no active chunk".into())))?
-        .clone();
-    let expected_cursor = active.acknowledged_cursor;
-    let mut new_cursor = expected_cursor;
-    let mut staging = BytesMut::with_capacity(bytes);
-    let logical_begin = state.tail_view.load(Ordering::Acquire);
-    let mut logical_cursor = logical_begin;
-    let mut extents = Vec::new();
-    let mut ranges = Vec::with_capacity(requests.len());
-    for request in requests {
-        let frames = encode_frames(
-            FrameMagic::StreamV1,
-            active.chunk_id,
-            &request.data,
-            unix_time_ms(),
-        )
-        .map_err(|error| BatchFailure::Other(StreamError::InvalidRequest(error.to_string())))?;
-        for frame in frames {
-            let frame_length = u32::try_from(frame.len()).map_err(|_| {
-                BatchFailure::Other(StreamError::InvalidRequest("stream frame exceeds u32".into()))
-            })?;
-            let payload_length = u64::from(frame_length)
-                .checked_sub((FRAME_HEADER_PREFIX_BYTES + crowdb_protocol::frame::FRAME_FOOTER_BYTES) as u64)
-                .ok_or_else(|| {
-                    BatchFailure::Other(StreamError::Corruption("stream frame length underflows".into()))
-                })?;
-            extents.push(Extent {
-                chunk_id: active.chunk_id,
-                logical_start: logical_cursor,
-                logical_end: logical_cursor.saturating_add(payload_length),
-                frame_start: new_cursor,
-                frame_length,
-            });
-            logical_cursor = logical_cursor.saturating_add(payload_length);
-            new_cursor = new_cursor.saturating_add(u64::from(frame_length));
-            staging.extend_from_slice(&frame);
-        }
-        ranges.push(AppendRange {
-            stream_name: state.stream_name,
-            chunk_id: Some(active.chunk_id),
-            begin: logical_cursor.saturating_sub(request.logical_len() as u64),
-            end: logical_cursor,
-        });
-    }
-    let staging = staging.freeze();
-    let images = state
-        .mirror_shadow
-        .stage(active.chunk_id, expected_cursor, &staging)
-        .map_err(BatchFailure::Other)?;
-    let write = state
-        .chunks
-        .write_mirrors_with_images(
-            state.stream_name,
-            state.writer_epoch,
-            active.chunk_id,
-            expected_cursor,
-            staging.clone(),
-            &images,
-        )
-        .await;
-    drop(images);
-    state.mirror_shadow.finish();
-    if let Err(error) = write {
-        return Err(BatchFailure::MirrorWrite(error));
-    }
-    state
-        .metrics
-        .physical_append_bytes
-        .fetch_add((bytes as u64).saturating_mul(3), Ordering::Relaxed);
-    resolve_cursor_advance(
-        state,
-        active.chunk_id,
-        expected_cursor,
-        new_cursor,
-        crc32fast::hash(&staging),
-    )
-    .await
-    .map_err(BatchFailure::Other)?;
-
-    state.extents.extend(extents);
-    if let Some(active) = &mut state.manifest.active {
-        active.acknowledged_cursor = new_cursor;
-        active.physical_start = new_cursor;
-        active.logical_start = logical_cursor;
-    }
-    state.manifest.sealed_tail = logical_cursor;
-    state.tail_view.store(logical_cursor, Ordering::Release);
-    publish_state(state).await.map_err(BatchFailure::Other)?;
-    Ok(ranges)
-}
-
-async fn resolve_cursor_advance(
-    state: &mut WorkerState,
-    chunk_id: ChunkId,
-    expected_cursor: u64,
-    new_cursor: u64,
-    checksum: u32,
-) -> Result<()> {
-    let outcome = state
-        .chunks
-        .advance_cursor(
-            state.stream_name,
-            state.writer_epoch,
-            chunk_id,
-            expected_cursor,
-            new_cursor,
-            checksum,
-        )
-        .await;
-    match outcome {
-        Ok(CursorAdvance::Committed) => Ok(()),
-        Ok(CursorAdvance::DefinitelyNotCommitted) => Err(StreamError::DefinitelyNotCommitted(
-            "durable cursor did not advance".into(),
-        )),
-        Ok(CursorAdvance::Ambiguous) | Err(_) => loop {
-            match state.chunks.durable_cursor(chunk_id, state.writer_epoch).await {
-                Ok(durable) if durable.offset == expected_cursor => {
-                    return Err(StreamError::DefinitelyNotCommitted(
-                        "ambiguous write proved absent".into(),
-                    ));
-                }
-                Ok(durable)
-                    if durable.offset == new_cursor && durable.last_advance_checksum == Some(checksum) =>
-                {
-                    return Ok(());
-                }
-                Ok(durable) if durable.offset == new_cursor => {
-                    return Err(StreamError::Corruption(
-                        "committed cursor has an unexpected checksum".into(),
-                    ));
-                }
-                Ok(durable) => {
-                    return Err(StreamError::Corruption(format!(
-                        "durable cursor is outside the append bounds: chunk={chunk_id:?} epoch={} expected={expected_cursor} new={new_cursor} durable={}",
-                        state.writer_epoch, durable.offset
-                    )));
-                }
-                Err(StreamError::StaleWriter) => return Err(StreamError::StaleWriter),
-                Err(error) => {
-                    tracing::warn!(%error, "chunk-stream cursor resolution remains unavailable");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-        },
-    }
-}
-
-async fn ensure_active(state: &mut WorkerState) -> Result<()> {
-    if state.manifest.active.is_some() {
-        return Ok(());
-    }
-    let mut active = state
-        .chunks
-        .allocate_mirrored(state.stream_name, state.writer_epoch, state.manifest.purpose)
-        .await?;
-    active.logical_start = state.tail_view.load(Ordering::Acquire);
-    if active.acknowledged_cursor < active.physical_start || active.acknowledged_cursor > active.capacity {
-        return Err(StreamError::Corruption(
-            "allocated chunk cursor is invalid".into(),
-        ));
-    }
-    state.manifest.active = Some(active);
-    publish_state(state).await
-}
-
-async fn rollover(state: &mut WorkerState) -> Result<()> {
-    let active = state
-        .manifest
-        .active
-        .as_ref()
-        .ok_or_else(|| StreamError::Internal("rollover has no active chunk".into()))?;
-    let active = active.clone();
-    let durable = state
-        .chunks
-        .durable_cursor(active.chunk_id, state.writer_epoch)
-        .await?;
-    if durable.offset != active.acknowledged_cursor {
-        return Err(StreamError::Corruption(
-            "rollover cursor differs from the acknowledged cursor".into(),
-        ));
-    }
-    if !durable.sealed {
-        state
-            .chunks
-            .seal(active.chunk_id, state.writer_epoch, active.acknowledged_cursor)
-            .await?;
-    }
-    let tail = state.tail_view.load(Ordering::Acquire);
-    state.manifest.sealed_tail = tail;
-    let mut successor = state
-        .chunks
-        .allocate_mirrored(state.stream_name, state.writer_epoch, state.manifest.purpose)
-        .await?;
-    successor.logical_start = tail;
-    state.manifest.active = Some(successor);
-    publish_state(state).await?;
-    state.metrics.rollovers.fetch_add(1, Ordering::Relaxed);
-    Ok(())
-}
-
-async fn grow_or_rollover(state: &mut WorkerState, bytes: usize) -> Result<()> {
-    let active = state
-        .manifest
-        .active
-        .as_ref()
-        .ok_or_else(|| StreamError::Internal("active chunk is missing".into()))?;
-    let required_capacity = active
-        .acknowledged_cursor
-        .checked_add(
-            u64::try_from(bytes)
-                .map_err(|_| StreamError::InvalidRequest("append length exceeds addressable range".into()))?,
-        )
-        .ok_or_else(|| StreamError::InvalidRequest("append cursor overflows".into()))?;
-    if let Some(mut grown) = state
-        .chunks
-        .grow_mirrored(
-            state.stream_name,
-            state.writer_epoch,
-            active.chunk_id,
-            required_capacity,
-        )
-        .await?
-    {
-        grown.physical_start = active.physical_start;
-        grown.logical_start = active.logical_start;
-        grown.acknowledged_cursor = active.acknowledged_cursor;
-        if grown.capacity < required_capacity {
-            return Err(StreamError::Corruption(
-                "grown chunk capacity does not cover the requested append".into(),
-            ));
-        }
-        state.manifest.active = Some(grown);
-        publish_state(state).await?;
-        return Ok(());
-    }
-    rollover(state).await
-}
-
-async fn rotate_externally_sealed_active(state: &mut WorkerState) -> Result<bool> {
-    let Some(active) = state.manifest.active.clone() else {
-        return Ok(false);
-    };
-    let durable = state
-        .chunks
-        .durable_cursor(active.chunk_id, state.writer_epoch)
-        .await?;
-    if !durable.sealed {
-        return Ok(false);
-    }
-    if durable.offset != active.acknowledged_cursor {
-        return Err(StreamError::Corruption(
-            "externally sealed active chunk has an unexpected durable cursor".into(),
-        ));
-    }
-
-    let tail = state.tail_view.load(Ordering::Acquire);
-    state.manifest.active = None;
-    state.manifest.sealed_tail = tail;
-    let mut successor = state
-        .chunks
-        .allocate_mirrored(state.stream_name, state.writer_epoch, state.manifest.purpose)
-        .await?;
-    successor.logical_start = tail;
-    state.manifest.active = Some(successor);
-    publish_state(state).await?;
-    state.stalled = false;
-    state.metrics.rollovers.fetch_add(1, Ordering::Relaxed);
-    Ok(true)
-}
-
-async fn process_trim(state: &mut WorkerState, offset: u64) -> Result<u64> {
-    if state.stalled {
-        return Err(StreamError::WriteStalled);
-    }
-    let tail = state.tail_view.load(Ordering::Acquire);
-    if offset < state.manifest.trim_offset || offset > tail {
-        return Err(StreamError::InvalidRequest(
-            "trim offset regresses or exceeds durable tail".into(),
-        ));
-    }
-    if offset != state.manifest.trim_offset {
-        state.manifest.trim_offset = offset;
-        publish_state(state).await?;
-    }
-    let mut reclaimed = 0_u64;
-    let mut removed = 0_usize;
-    for extent in &state.extents {
-        if extent.logical_end > offset || (removed > 0 && reclaimed >= state.config.gc_bytes_per_pass) {
-            break;
-        }
-        reclaimed = reclaimed.saturating_add(
-            state
-                .chunks
-                .release_trimmed(extent.chunk_id, extent.logical_end)
-                .await?
-                .reclaimed_bytes,
-        );
-        removed += 1;
-    }
-    if removed > 0 {
-        state.extents.drain(..removed);
-        publish_state(state).await?;
-    }
-    state
-        .metrics
-        .reclaimed_bytes
-        .fetch_add(reclaimed, Ordering::Relaxed);
-    Ok(reclaimed)
-}
-
-async fn process_close(state: &mut WorkerState) -> Result<()> {
-    if state.stalled {
-        return Err(StreamError::WriteStalled);
-    }
-    if state.manifest.closed {
-        return Ok(());
-    }
-    if let Some(active) = state.manifest.active.take() {
-        state
-            .chunks
-            .seal(active.chunk_id, state.writer_epoch, active.acknowledged_cursor)
-            .await?;
-        let tail = state.tail_view.load(Ordering::Acquire);
-        state.manifest.sealed_tail = tail;
-    }
-    state.manifest.closed = true;
-    publish_state(state).await?;
-    state.closed_view.store(true, Ordering::Release);
-    Ok(())
-}
-
-async fn publish_state(state: &mut WorkerState) -> Result<()> {
-    let expected = state.manifest.generation;
-    state.manifest.previous_generation = Some(expected);
-    state.manifest.generation = expected + 1;
-    let pages = build_extent_pages(
-        &state.extents,
-        state.stream_name,
-        state.writer_epoch,
-        state.manifest.generation,
-        state.config.extent_page_entries,
-    );
-    state.manifest.extent_pages = fences_for(&pages);
-    loop {
-        match state
-            .metadata
-            .publish(
-                Some((state.writer_epoch, expected)),
-                state.manifest.clone(),
-                pages.clone(),
-            )
-            .await
-        {
-            Ok(()) => break,
-            Err(error) => {
-                match state.metadata.load_current(state.stream_name).await {
-                    Ok(Some(current)) if current == state.manifest => break,
-                    Ok(Some(current))
-                        if current.writer_epoch == state.writer_epoch && current.generation == expected =>
-                    {
-                        if matches!(error, StreamError::InvalidRequest(_) | StreamError::Corruption(_)) {
-                            state.stalled = true;
-                            return Err(error);
-                        }
-                    }
-                    Ok(Some(current)) if current.writer_epoch > state.writer_epoch => {
-                        state.stalled = true;
-                        return Err(StreamError::StaleWriter);
-                    }
-                    Ok(_) => {
-                        state.stalled = true;
-                        return Err(StreamError::Corruption(
-                            "stream manifest head differs from both prior and candidate state".into(),
-                        ));
-                    }
-                    Err(load_error) => {
-                        tracing::warn!(%load_error, "chunk-stream manifest publication remains unresolved");
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        }
-    }
-    state
-        .metrics
-        .metadata_publications
-        .fetch_add(1, Ordering::Relaxed);
-    state.manifest_view.store(Arc::new(state.manifest.clone()));
-    Ok(())
-}
-
-fn fences_for(pages: &[StreamExtentPage]) -> Vec<StreamExtentPageFence> {
-    pages
-        .iter()
-        .map(|page| StreamExtentPageFence {
-            page_index: page.page_index,
-            first_logical: page.logical_offsets[0],
-            end_logical: *page
-                .logical_offsets
-                .last()
-                .expect("built extent page is nonempty"),
-        })
-        .collect()
-}
-
-fn build_extent_pages(
-    extents: &[Extent],
-    stream_name: StreamName,
-    writer_epoch: u64,
-    generation: u64,
-    page_entries: usize,
-) -> Vec<StreamExtentPage> {
-    extents
-        .chunks(page_entries)
-        .map(|chunk| {
-            let mut logical_offsets = Vec::with_capacity(chunk.len() + 1);
-            logical_offsets.push(chunk[0].logical_start);
-            for extent in chunk {
-                logical_offsets.push(extent.logical_end);
-            }
-            StreamExtentPage {
-                stream_name,
-                writer_epoch,
-                generation,
-                page_index: chunk[0].logical_start,
-                chunk_ids: chunk.iter().map(|extent| extent.chunk_id).collect(),
-                logical_offsets,
-                physical_offsets: chunk.iter().map(|extent| extent.frame_start).collect(),
-                frame_lengths: chunk.iter().map(|extent| extent.frame_length).collect(),
-            }
-        })
-        .collect()
-}
-
-async fn load_extent_pages(
-    metadata: &dyn StreamMetadataStore,
-    manifest: &StreamManifest,
-) -> Result<Vec<StreamExtentPage>> {
-    let mut pages = Vec::with_capacity(manifest.extent_pages.len());
-    for fence in &manifest.extent_pages {
-        pages.push(
-            metadata
-                .load_extent_page(
-                    manifest.stream_name,
-                    manifest.writer_epoch,
-                    manifest.generation,
-                    fence.page_index,
-                )
-                .await?
-                .ok_or_else(|| StreamError::Corruption("referenced extent page is missing".into()))?,
-        );
-    }
-    Ok(pages)
-}
-
-fn collect_extents(pages: &[StreamExtentPage]) -> Vec<Extent> {
-    let mut extents = Vec::new();
-    for page in pages {
-        for index in 0..page.chunk_ids.len() {
-            extents.push(Extent {
-                chunk_id: page.chunk_ids[index],
-                logical_start: page.logical_offsets[index],
-                logical_end: page.logical_offsets[index + 1],
-                frame_start: page.physical_offsets[index],
-                frame_length: page.frame_lengths[index],
-            });
-        }
-    }
-    extents
-}
-
-fn find_extent_fence(manifest: &StreamManifest, offset: u64) -> Result<usize> {
-    let index = manifest
-        .extent_pages
-        .partition_point(|fence| fence.end_logical <= offset);
-    let fence = manifest
-        .extent_pages
-        .get(index)
-        .ok_or_else(|| StreamError::Corruption(format!(
-            "sealed offset is not covered by extent directory: offset={offset}, sealed_tail={}, trim={}, generation={}, epoch={}, fences={}",
-            manifest.sealed_tail, manifest.trim_offset, manifest.generation, manifest.writer_epoch, manifest.extent_pages.len()
-        )))?;
-    if offset < fence.first_logical {
-        return Err(StreamError::Corruption(
-            "extent directory has a logical gap".into(),
-        ));
-    }
-    Ok(index)
-}
-
-fn validate_page_fence(
-    manifest: &StreamManifest,
-    fence: &StreamExtentPageFence,
-    page: &StreamExtentPage,
-) -> Result<()> {
-    if page.stream_name != manifest.stream_name
-        || page.writer_epoch != manifest.writer_epoch
-        || page.generation != manifest.generation
-        || page.page_index != fence.page_index
-        || page.logical_offsets.first() != Some(&fence.first_logical)
-        || page.logical_offsets.last() != Some(&fence.end_logical)
-    {
-        return Err(StreamError::Corruption(
-            "extent page fence or identity mismatch".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn fits_active(state: &WorkerState, bytes: usize) -> bool {
-    state.manifest.active.as_ref().is_some_and(|active| {
-        active
-            .acknowledged_cursor
-            .checked_add(bytes as u64)
-            .is_some_and(|end| end <= active.capacity)
-    })
 }
 
 fn finish_failed(state: &WorkerState, requests: Vec<AppendRequest>, error: &StreamError) {
     for request in requests {
+        observe(&perf().append, request.enqueued_at);
         state
             .queued_bytes
             .fetch_sub(request.logical_len() as u64, Ordering::AcqRel);
@@ -1862,6 +666,17 @@ fn finish_failed(state: &WorkerState, requests: Vec<AppendRequest>, error: &Stre
         state.metrics.failed.fetch_add(1, Ordering::Relaxed);
         let _ = request.completion.send(Err(error.clone()));
     }
+}
+
+fn owned_payload(buffers: &[Bytes], length: usize) -> Bytes {
+    if let [only] = buffers {
+        return only.clone();
+    }
+    let mut data = BytesMut::with_capacity(length);
+    for bytes in buffers {
+        data.extend_from_slice(bytes);
+    }
+    data.freeze()
 }
 
 fn reserve_bytes(counter: &AtomicU64, limit: u64, bytes: u64) -> Result<()> {
@@ -1891,30 +706,6 @@ fn reserve_requests(counter: &AtomicUsize, limit: usize) -> Result<()> {
             Err(observed) => current = observed,
         }
     }
-}
-
-fn durable_tail(manifest: &StreamManifest) -> Result<u64> {
-    match &manifest.active {
-        Some(active) => {
-            let durable = active
-                .acknowledged_cursor
-                .checked_sub(active.physical_start)
-                .ok_or_else(|| StreamError::Corruption("active cursor precedes its physical start".into()))?;
-            active
-                .logical_start
-                .checked_add(durable)
-                .ok_or_else(|| StreamError::Corruption("active tail overflows".into()))
-        }
-        None => Ok(manifest.sealed_tail),
-    }
-}
-
-fn state_name(manifest: &ArcSwap<StreamManifest>) -> StreamName {
-    manifest.load().stream_name
-}
-
-fn state_epoch(manifest: &ArcSwap<StreamManifest>) -> u64 {
-    manifest.load().writer_epoch
 }
 
 fn unix_time_ms() -> u64 {

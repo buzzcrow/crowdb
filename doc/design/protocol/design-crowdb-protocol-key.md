@@ -261,6 +261,33 @@ change and is not allowed; add a new key kind instead (§6).
 
 Header for every binary key: `magic:1 | type_tag:2`.
 
+- **StreamDirectoryPageKey** — `stream_name:16 bytes | page_id:32 bytes`.
+  Total 51 bytes. Tag `0x0016`. The page identity is its canonical record's
+  SHA-256 digest; ownership epoch and head generation do not enter this key.
+  Scan prefix `magic|0x0016|stream_name` selects one stream's independent pages.
+- **StreamDirectoryRootKey** — `stream_name:16 bytes | writer_epoch:u64 BE |
+  generation:u64 BE`. Total 35 bytes. Tag `0x0017`.
+  Scan prefix `magic|0x0017|stream_name` selects retained published roots. Root
+  records commit atomically with the stable head and retention control.
+- **StreamPublicationGuardKey** — `stream_name:16 bytes | publication_id:32
+  bytes`. Total 51 bytes. Tag `0x0018`. Ordinary publication identity is SHA-256
+  of the canonical indexed head record. The value protects the base root
+  and a bounded new page set until
+  publication is resolved.
+- **StreamRootPinKey** — `stream_name:16 bytes | pin_id:16 bytes`.
+  Total 35 bytes. Tag `0x0019`. Scan prefix `magic|0x0019|stream_name`
+  selects bounded consumer and reader pins. Each value carries the complete
+  bounded directory head and its captured logical interval, independently of
+  the retained-root index. Pin mutations also change the retention control.
+- **StreamSealedChunkSpanKey** — `stream_name:16 bytes | chunk_id:16 bytes BE`.
+  Total 35 bytes. Tag `0x001a`. Scan prefix `magic|0x001a|stream_name`
+  selects exact whole-chunk bounds. Each span commits atomically with the head
+  that ends its original active attachment; root generation does not enter the
+  span identity.
+- **StreamDirectoryControlKey** — `stream_name:16 bytes`. Total 19 bytes.
+  Tag `0x001b`. The fixed scope record's KV revision changes atomically with
+  guard/root/pin visibility; conditional cleanup uses it to reject stale
+  reachability observations.
 - **RackKey** — `rack_id:u64 BE`. Total 11 bytes.
   Tag `0x0002`. Scan prefix `magic|0x0002` = all racks.
 - **NodeKey** — `rack_id:u64 BE | node_id:u64 BE`. Total 19 bytes.

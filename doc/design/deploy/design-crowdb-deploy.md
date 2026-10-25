@@ -62,7 +62,7 @@ operator browser
     -> any node's Web UI / shared console operations
     -> Group 0: committed topology and operation authority
     -> target node monitor
-    -> Docker node container and managed server processes
+    -> OCI node container and managed server processes
 
 node monitor <-> management-network discovery <-> peer node monitors
 ```
@@ -119,6 +119,10 @@ change either identity. Duplicate live UUID claims are identity conflicts.
 - **I8 — Bootstrap gate:** only Group-0 prerequisite processes and Group-0
   initialization run before the shared information platform is ready. Other
   deployment requires committed initial topology.
+- **I9 — Identity-bound address recovery:** a changed address is usable only
+  after the peer proves possession of the SSH host private key pinned to its
+  accepted cluster UUID, discovery UUID and numeric node ID. Discovery cannot
+  change this binding or the accepted voting membership.
 
 ## 4. Node discovery
 
@@ -251,7 +255,8 @@ requires an explicit recovery/decommission procedure, not an automatic timeout.
 
 1. Any UI collects compatible candidates and the operator's rack assignments.
 2. The operator selects initial Group-0 voting members, or Auto join selects
-   three authenticated eligible candidates in discovery-UUID order. Candidate
+   the explicitly selected one or three authenticated eligible candidates in
+   discovery-UUID order. Candidate
    count is not voting-member count; application nodes need not all vote.
 3. Submit the bootstrap identity, immutable initial manifest and initial data
    group choice to the selected member with the smallest discovery UUID. Its
@@ -299,27 +304,32 @@ them separately and do not automatically merge their logs or topology.
 
 ### 6.3 Recovery and subsequent admission
 
-Standard node workspaces persist an enabled-by-default Auto join policy. The Web
-backend evaluates it without a browser connection, using the existing authenticated
-admission operation and configured rack assignments. A workspace with no rack waits
-for one. Missing key access remains Needs access; automatic admission does not
-supply a password. Multiple advertised clusters without a configured local draft
-require target selection rather than selecting an arbitrary advertisement.
+Node workspaces persist an enabled-by-default Auto join policy. The Web backend
+evaluates it without a browser connection through authenticated admission and
+accepted deployment inputs. Local policy supplies a test rack and credentials;
+Production requires configured rack assignments and access. Missing Production
+credentials remain Needs access, without a Local fallback. Multiple bound cluster
+UUIDs require explicit target selection rather than an arbitrary advertisement.
 
-Before bootstrap, fewer than three eligible nodes remain pending. The first three
-in UUID order form the fixed manifest, and the smallest UUID member's monitor
-executes initialization. Automatic initialization creates only Store 0 / Group 0.
-After publication, admission can add nonvoting nodes but does not replace or expand
-the initial voters. Quorum loss waits for authority recovery. A persisted target
-without its binding is a recovery condition, not permission to create a cluster.
-Turning Auto join off stops new scheduling while accepted monitor work continues.
+The accepted initial voter count is one or three. An incomplete three-node set
+remains pending; an observed overfull fresh set reports conflict before acceptance.
+Eligible UUID ordering selects the coordinator within that set, while monitor and
+KV-server accepted-manifest fencing prevent conflicting execution. Fixed voters
+never expand from later advertisements. Turning Auto join off stops new scheduling
+while already accepted monitor work continues.
 
-Startup mode is durable node policy. Standard and explicit single mode cannot
-replace one another by changing an environment variable, including before the
-first successful bootstrap. Concurrent first starts publish only one mode.
-Existing single-profile manifests retain their identity and profile/configuration
-validation. A single discovered node does not imply single mode, and an accepted
-standard bootstrap cannot be reinterpreted as single-profile state.
+After Group-0 publication, one committed default preparation intent owns the
+ordinary metadata group, replica mapping and shared access credentials. Authorized
+workers resume that intent across Web/coordinator loss. Each monitor interleaves
+disk preparation with dependent service startup; DiskIO may start before Online
+because its ownership proof enables Online. Explicit later service stops or group
+retirement supersede historical setup and prevent automatic recreation.
+
+The versioned deployment policy is durable and independent of UI permissions.
+Local and Production inputs cannot replace one another through an environment
+change. Initial voter count, storage, listeners and scope are sealed before node
+identity or setup effects. Retained values outrank new image defaults; corrupt,
+conflicting or obsolete populated roots fail without implicit reset.
 
 Restart resumes accepted identity and replica WAL state. Lost multicast does
 not erase stored Group-0 contacts. An interrupted bootstrap reuses its operation
@@ -353,7 +363,81 @@ SSH connection/authentication has a ten-second bound; bidirectional proof has a
 twenty-second bound. Passwords are discarded, sessions are reused during setup,
 and only public keys cross nodes.
 
-### 6.4 Voting replica admission
+### 6.4 Authenticated member address recovery
+
+Node identity survives changes to management and data addresses. Each accepted
+member has a durable binding between cluster UUID, discovery UUID, numeric node
+ID and its Ed25519 SSH host public key. Admission retains the canonical public host key in its Group-0 node record;
+normal address/rack updates cannot replace that pin. The SSH login key authenticates a caller;
+the SSH host key authenticates the peer. Both private keys remain on their owning
+node's persistent volume. Address recovery reuses SSH and does not introduce a
+CA, certificate service or custom signature protocol.
+
+Initial trust is established by the existing bootstrap/admission procedure on
+the deployment's trusted management network. Local test credentials are a
+convenience, not production identity verification. An mDNS announcement alone
+cannot establish trust. Before bootstrap replicas start, each selected member
+durably accepts the same member-to-host-key bindings alongside its fixed
+manifest. Subsequent admissions and revocations use committed Group-0 authority;
+participants retain the applicable bindings locally for recovery without quorum.
+A pending non-voter seals the initial manifest's authenticated pins and its own
+admission pin before its first KV start. This does not authorize recovery: only
+confirmation distributes `ConfirmedMemberTrust`, whose registry and pins each
+monitor verifies through current linearizable authority. The retained snapshot
+adds contact hints while preserving the original voting/store configuration.
+The independently running contact worker refreshes it when authority returns;
+its cached confirmed pins permit SSH identity proofs during quorum loss.
+Current authority retirement durably fences the local admission before owned
+KV/storage services stop. Missing or corrupt later-member snapshots cannot
+resume the member or answer a recovery identity request. Discovery cannot promote a pending admission or revive a removed member. Missing
+or corrupt trust records fail closed; a new address never triggers first-use
+trust or automatic key replacement for an existing identity.
+
+Recovery proceeds independently of Group-0 availability:
+
+1. mDNS/DNS-SD or a configured seed reveals a candidate's current management
+   endpoint. Its advertised UUIDs and node ID are untrusted lookup hints.
+2. The monitor selects an already accepted member binding and opens SSH to that
+   address with the expected host key, rather than trusting the IP's previous
+   occupant or accepting a new key. SSH proves possession of the private key.
+3. Through that authenticated connection, the monitor reads the peer's durable
+   discovery identity and cluster/bootstrap binding. All must match the accepted
+   member, and the verified reply supplies that member's current endpoints.
+   The SSH identity command reads private retained state and verifies the owning
+   monitor's independent liveness endpoint. It does not enter the serialized
+   lifecycle executor or wait for service readiness: otherwise slow service
+   startup could suppress peer proofs, fence routes and prevent its own quorum
+   recovery. Offline roots and changed or retired identities still fail closed.
+4. The local transport uses the verified endpoints for the same replica IDs in
+   the existing groups. It does not change votes, membership, WAL, rack placement
+   or bootstrap identity. Endpoint replacement invalidates old connections and
+   applies to subsequent reconnects; mappings use node/replica identity, not a
+   global old-IP-to-new-IP substitution.
+   Restored replicas fence old routes before their election drivers start.
+   Consensus requests identify their intended cluster and replica; a reachable
+   process at a reused address cannot contribute another replica's response.
+5. Once quorum returns, normal authorized operations publish updated addresses
+   in Group 0. Local endpoint evidence never authorizes a management mutation.
+   Committed replica-to-node ownership is retained locally for subsequent
+   recovery. Internal service listeners and management contacts change through
+   conditional new service operations; later stop/delete commands win. Public
+   client URIs are independent of these internal addresses.
+
+This permits all members to restart with changed IPs at once. Neither stable DNS
+names nor fixed IPs nor a complete peer-address list is required. Multicast must
+reach the selected management scope; across discovery boundaries, seed discovery
+remains necessary. Docker bridge DNS is optional and host networking uses the
+same monitor discovery and SSH verification path.
+
+A changed key, foreign cluster/bootstrap, unknown member or conflicting live
+claims is rejected and reported. An unverified advertisement cannot overwrite a
+verified endpoint. Duplicate authenticated live claimants for one identity stop
+automatic selection; a copied data volume is not a new node. Recovery has bounded
+handshake timeouts and retains the last accepted identity on failure. Key rotation,
+lost-identity replacement and removal remain explicit authority-controlled work;
+they are never inferred from address changes or discovery expiry.
+
+### 6.5 Voting replica admission
 
 Node admission grants hardware/service management access; it does not add a voter.
 Adding a replica uses `JoinGroupRequest` to import a snapshot from a confirmed
@@ -369,7 +453,7 @@ Generic join cannot bypass an accepted system bootstrap. Independent clusters
 remain separate: operators explicitly clean one cluster, wait for every node's
 cleanup, admit the released nodes to the retained cluster and add voting replicas.
 
-### 6.5 Accepted node setup and storage
+### 6.6 Accepted node setup and storage
 
 Node access review reads authenticated identity and inventory without installing
 peer authorization or granting admission. The browser keeps an initial password
@@ -379,8 +463,9 @@ operation and sends the selected storage/services to the target monitor.
 The monitor persists an immutable `NodeSetupRequest` and sealed placement before
 starting work. Browser disconnect, another Console session and monitor restart
 reuse that intent. Provisional disk discovery grants no membership: only ready
-Group 0 can register disks. Standard default storage is one 16-GiB preallocated
-file with a 1-GiB reserve; supplied or diskless choices never silently fall back.
+Group 0 can register disks. Local default storage is one 16-GiB sparse file with
+a 1-GiB reserve; Production automatic storage requires preallocation. Supplied
+or diskless choices never silently fall back.
 Different media classes use compatible independent placement. A chosen missing
 ordinary metadata group remains waiting instead of creating an unrelated group.
 
@@ -413,8 +498,16 @@ and unassigning their parents require a separate explicit operator flow; deletio
 must not emulate that flow with an implicit cascade.
 
 Explicit service Stop/Restart/Delete supersedes old setup intent. Consecutive
-startup/readiness failures have a durable five-attempt budget per operation;
-readiness success resets it. Explicit cluster cleanup retires and drains accepted
+process launches have a durable five-attempt budget per operation; readiness
+success resets it. A bounded readiness observation that expires while the
+same operation's process is alive retains that process and its attempt count.
+Further observations continue startup without stopping or launching it again,
+including on the fifth launch. Recovery verifies the committed local dependency
+intents and their live probes before launching a dependent process. Consumers
+that need the complete DiskIO topology also wait for its current authoritative
+owner view, including other nodes. Waiting for these dependencies consumes no
+process-launch attempt. A new explicit operation can supersede it.
+Explicit cluster cleanup retires and drains accepted
 setup/provisioning before deleting system metadata. Cleanup dispatches to at most
 four retained nodes concurrently and saves each result; unreachable nodes stay
 pending under the original confirmed cleanup operation.
@@ -513,12 +606,15 @@ Publish OCI images to Docker Hub or another OCI-compatible registry. The same
 image for a supported CPU architecture contains monitor/UI/server binaries and
 their dependencies. Node-local state and cluster identity are external mounts.
 Single-node and multi-node operation use the same image, monitor and UI.
-Default manual startup awaits candidate selection and bootstrap for one or more
-nodes. Explicit automatic single-node startup creates virtual disks and initializes
-the cluster, then disables UI editing. Startup policy and the UI editing capability differ,
-while identity, discovery, authority and managed-service behavior remain shared.
-Read-only single-node mode rejects UI management mutations in the backend as
-well as disabling editing controls.
+Fresh Local startup prepares an explicitly one- or three-voter cluster through the
+shared authenticated node lifecycle. The default is one voter with file-backed
+test storage and zero physical host failure tolerance. Production selects explicit
+credentials, resources and protected placement. Both expose editable management;
+automatic preparation and node count do not determine authorization. Aggregate
+status distinguishes Group-0 authority, historical setup and current full-cluster
+readiness. Host helpers create runtime resources and observe this lifecycle;
+they do not provision application topology through a second bootstrap path.
+
 Tags identify releases for humans; production plans pin immutable image digests.
 Architecture-specific builds may share a multi-platform image index only when
 their dependencies have been validated.
@@ -584,7 +680,7 @@ plans explicitly assign host resources; monitors validate and execute, rather
 than autonomously choose global placement.
 
 - **CPU/memory:** the production launcher validates CPU quotas and memory limits
-  against host capacity, then verifies Docker applied them. Memory is at least
+  against host capacity, then verifies the selected runtime applied them. Memory is at least
   512 MiB. Hardware observations respect container limits. CPU affinity, NUMA
   and IRQ tuning remain host policy.
 - **Disk:** stable device references, exclusive intended ownership and supported
@@ -599,7 +695,7 @@ than autonomously choose global placement.
 - **Monitoring:** container and process health are separate observations.
   Existing monitor supervision can recover eligible process exits; it must not
   silently override a deliberate stop, expired authorization or upgrade drain.
-- **Runtime access:** the launcher uses the system Docker daemon. Node containers
+- **Runtime access:** the host selects system Docker or rootful containerd. Node containers
   supervise local processes and receive no Docker or containerd socket. Explicit
   permitted block devices are passed through by the host launcher.
 
@@ -626,6 +722,47 @@ Expose:
 - Group-0 authority/renewal status, rejected stale operations and recovery needs.
 - Desired deployment inputs, actual image digest/resources, process/container
   health, drift and operation outcomes.
+
+`cluster status` reads the node's aggregate HTTP observation without a local
+runtime socket. Its collector has an six-second monotonic deadline after the
+bounded local monitor observation. Current linearizable Group-0 publication,
+accepted ordinary metadata replicas and ordinary-group authority, physical disk
+placement/bindings, live DiskDB owner leases and allocatable capacity are
+independent dependencies. Automatic file storage uses its accepted initial group
+reservation. Supplied storage resolves every accepted disk ID from a fresh,
+identity-checked member setup observation through its unique Group-0 disk and
+group membership. All resulting media-class groups must satisfy metadata
+binding, current owner and space checks; a missing, duplicated or conflicting
+medium stays unknown. Observation never changes sealed placement or creates the
+automatic reservation for a supplied-media node. Capacity summaries must be no older than the service
+registry's fifteen-second liveness window. Per-member service evidence matches
+the current committed operation; required S3, Iceberg and Dataset listeners each
+supply their own read-only protocol proof. Historical setup completion cannot
+substitute for these observations. Missing or stale evidence remains unknown.
+A bounded observation may wait for a slightly faster peer's timestamp within
+its existing monotonic deadline and that evidence's freshness window, capped
+at three seconds. It then evaluates the unmodified timestamps against the
+actual local clock. It never treats future evidence as current, extends a
+request deadline or refreshes old evidence to compensate for clock offsets.
+Runtime/image facts remain unknown when runtime access was not supplied.
+
+Access dependency evidence comes from one backend sampler, independently of
+status reads and business request outcomes. ChunkDB evidence uses one routed
+point read in each of the system and user-data maintenance domains. An
+authoritative absent key is healthy evidence; routing, storage, ownership and
+protocol failures remain unhealthy. These observations never create probe
+objects or enumerate the chunk catalog. Hardware discovery and bounded header
+reads on online disks share the same overall probe deadline. Phase latency
+histograms retain failed and cancelled observations and are readable without
+issuing new probes.
+
+The aggregate route bypasses deployment recovery middleware and never reserves
+preparation, restores configuration or repairs topology. Valid unhealthy status
+returns success; `cluster check` returns one while readiness is unmet and zero
+only for current ready evidence. Invalid or unobtainable reports return two.
+Checks support bounded waiting, and JSON stdout contains only the report while
+diagnostics use stderr. Explicit origins must agree with the selected cluster
+UUID and name; attaching never grants runtime cleanup ownership.
 
 Keep local logs/crash artifacts persistent and collect asynchronously. Do not
 replicate every log line into Group 0 or expose credentials in discovery/UI

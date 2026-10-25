@@ -9,7 +9,6 @@ mod durable;
 mod identity;
 mod management;
 mod runtime;
-mod single;
 pub(crate) mod startup;
 mod storage;
 #[cfg(feature = "test-util")]
@@ -24,19 +23,29 @@ pub use storage::retained::check_retained_medium_for_tests;
 #[cfg(feature = "test-util")]
 pub use storage::supplied::SuppliedOperationsForTests;
 mod trust;
-pub use single::run_single_node;
 
+#[cfg(feature = "test-util")]
+pub use runtime::node_health_for_tests;
 #[cfg(feature = "test-util")]
 pub use runtime::prepare_supplied_disk_for_tests;
 #[cfg(feature = "test-util")]
-pub use runtime::publish_file_for_tests;
+pub use runtime::runtime_observation_for_tests;
+#[cfg(feature = "test-util")]
+pub use runtime::unique_member_endpoints_for_tests;
 #[cfg(feature = "test-util")]
 pub use runtime::InitializationForTests;
 #[cfg(feature = "test-util")]
 pub use runtime::NodeSetupForTests;
-pub use runtime::{control_node, run_node, NodeRuntimeConfig};
+#[cfg(feature = "test-util")]
+pub use runtime::{
+    accept_member_trust_for_tests, check_member_trust_for_tests, member_trust_ready_for_tests,
+};
+pub use runtime::{control_node, run_node, run_node_with_inputs, NodeRuntimeConfig};
+#[cfg(feature = "test-util")]
+pub use runtime::{publish_file_for_tests, resume_file_operations_for_tests};
 #[cfg(feature = "test-util")]
 pub use startup::accept_startup_mode_for_tests;
+pub use startup::{accept_node_policy, read_node_policy};
 
 pub use management::{serve_node_management, NodeManagementError};
 
@@ -45,6 +54,7 @@ pub use discovery::{DiscoveryConfig, DiscoveryError, NodeDiscovery, NODE_SERVICE
 
 pub use identity::{NodeIdentity, NodeIdentityError};
 
+#[cfg(feature = "test-util")]
 pub(crate) fn write_single_binding(
     root: &std::path::Path,
     binding: &crowdb_protocol::mgmt::node::NodeBinding,
@@ -54,3 +64,17 @@ pub(crate) fn write_single_binding(
 
 #[cfg(feature = "test-util")]
 pub use runtime::NodeServiceForTests;
+
+#[cfg(feature = "test-util")]
+pub use runtime::rebind_recovery_services_for_tests;
+
+pub use runtime::read_recovery_identity;
+
+#[cfg(feature = "test-util")]
+pub use runtime::cleanup_node_for_tests;
+
+#[cfg(feature = "test-util")]
+pub use runtime::capture_recovery_owners_for_tests;
+
+#[cfg(feature = "test-util")]
+pub use runtime::NodeDispatchForTests;

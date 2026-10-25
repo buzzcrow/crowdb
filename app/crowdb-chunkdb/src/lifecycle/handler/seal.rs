@@ -4,23 +4,43 @@
 //! Exact byte sealing and retirement of unused strips.
 
 use super::{
-    close_acknowledged_strips, extract_segments, reservation, seal_written_strips, unix_time_ms, CacheHint,
-    Chunk, ChunkId, ChunkState, LifecycleError, LifecycleHandler, LockPolicy, ProtoChunkState, Segment,
-    StripCleanupIntent, StripReservationState,
+    extract_segments, reservation, seal_written_strips, unix_time_ms, CacheHint, Chunk, ChunkId, ChunkState,
+    LifecycleError, LifecycleHandler, LockPolicy, ProtoChunkState, Segment, StripCleanupIntent,
+    StripReservationState,
 };
+use crowdb_protocol::chunkdb::rpc::{ChunkStrip, ChunkType, StripReservationGroup};
 use tracing::info;
 
 impl LifecycleHandler {
-    /// Seal a chunk — no more appends allowed.
-    pub async fn seal_chunk(&self, chunk_id: &ChunkId, seal_length: u32) -> Result<Chunk, LifecycleError> {
-        self.seal_chunk_bytes(chunk_id, u64::from(seal_length) * 1024)
-            .await
-    }
-
+    /// Seal a chunk at its exact written byte boundary.
     pub async fn seal_chunk_bytes(
         &self,
         chunk_id: &ChunkId,
         seal_bytes: u64,
+    ) -> Result<Chunk, LifecycleError> {
+        self.seal_chunk_at_boundary(chunk_id, seal_bytes, None).await
+    }
+
+    /// Seal only the exact metadata snapshot whose physical bytes were observed.
+    /// The caller must independently establish writer exclusion and IO completion.
+    pub async fn seal_observed_chunk(
+        &self,
+        observed: &Chunk,
+        seal_bytes: u64,
+    ) -> Result<Chunk, LifecycleError> {
+        let chunk_id = observed
+            .id
+            .as_ref()
+            .ok_or_else(|| LifecycleError::InvalidRequest("observed chunk has no identity".into()))?;
+        self.seal_chunk_at_boundary(chunk_id, seal_bytes, Some(observed))
+            .await
+    }
+
+    async fn seal_chunk_at_boundary(
+        &self,
+        chunk_id: &ChunkId,
+        seal_bytes: u64,
+        observed: Option<&Chunk>,
     ) -> Result<Chunk, LifecycleError> {
         let seal_length = u32::try_from(seal_bytes.div_ceil(1024))
             .map_err(|_| LifecycleError::InvalidRequest("seal size exceeds capacity field".into()))?;
@@ -43,39 +63,14 @@ impl LifecycleHandler {
                 .clone(),
             None => self.store.get_chunk(chunk_id).await?,
         };
-        let current_state = ChunkState::from_proto(chunk.state);
-        current_state.check_can_seal()?;
-        if seal_length > chunk.capacity {
-            return Err(LifecycleError::InvalidRequest(format!(
-                "seal_length {seal_length} exceeds chunk capacity {}",
-                chunk.capacity
-            )));
-        }
-
-        let reservation_groups = self.store.list_reservation_groups(chunk_id).await?;
-        if reservation_groups
-            .iter()
-            .any(|group| group.states.contains(&(StripReservationState::Consumed as i32)))
-        {
+        if observed.is_some_and(|observed| observed != &chunk) {
             return Err(LifecycleError::StateConflict);
         }
-        let mut reserved_strips = Vec::new();
-        let mut reserved_parity = Vec::new();
-        let mut reserved_parity_groups = Vec::new();
-        for mut group in reservation_groups {
-            reservation::validate_group_shape(&group)?;
-            reserved_parity.extend_from_slice(&group.parity_segments);
-            for (index, state) in group.states.iter_mut().enumerate() {
-                if *state == StripReservationState::Reserved as i32 {
-                    *state = StripReservationState::Cancelled as i32;
-                    reserved_strips.push(group.strips[index].clone());
-                } else if *state == StripReservationState::Cancelled as i32 {
-                    reserved_strips.push(group.strips[index].clone());
-                }
-            }
-            self.store.put_reservation_group(&group).await?;
-            reserved_parity_groups.push(group);
-        }
+        let current_state = ChunkState::from_proto(chunk.state);
+        current_state.check_can_seal()?;
+        validate_seal_bounds(&chunk, seal_bytes, seal_length)?;
+
+        let reservations = self.cancel_seal_reservations(chunk_id).await?;
 
         let now_ms = unix_time_ms();
         let (unused_segments, cleanup_operation) = trim_sealed_strips(&mut chunk, chunk_id, seal_length);
@@ -93,7 +88,7 @@ impl LifecycleHandler {
                 not_before_ms: now_ms,
             });
         }
-        self.rollback_reserved_resources(&reserved_strips, reserved_parity, &reserved_parity_groups)
+        self.rollback_reserved_resources(&reservations.strips, reservations.parity, &reservations.groups)
             .await?;
         for group in self.store.list_reservation_groups(chunk_id).await? {
             if let Some(group_id) = group.group_id {
@@ -126,6 +121,45 @@ impl LifecycleHandler {
         info!(chunk_id = ?chunk_id, seal_length, "chunk sealed");
         Ok(chunk)
     }
+
+    async fn cancel_seal_reservations(&self, chunk_id: &ChunkId) -> Result<SealReservations, LifecycleError> {
+        let reservation_groups = self.store.list_reservation_groups(chunk_id).await?;
+        if reservation_groups
+            .iter()
+            .any(|group| group.states.contains(&(StripReservationState::Consumed as i32)))
+        {
+            return Err(LifecycleError::StateConflict);
+        }
+        let mut reserved_strips = Vec::new();
+        let mut reserved_parity = Vec::new();
+        let mut reserved_parity_groups = Vec::new();
+        for mut group in reservation_groups {
+            reservation::validate_group_shape(&group)?;
+            reserved_parity.extend_from_slice(&group.parity_segments);
+            for (index, state) in group.states.iter_mut().enumerate() {
+                if *state == StripReservationState::Reserved as i32 {
+                    *state = StripReservationState::Cancelled as i32;
+                    reserved_strips.push(group.strips[index].clone());
+                } else if *state == StripReservationState::Cancelled as i32 {
+                    reserved_strips.push(group.strips[index].clone());
+                }
+            }
+            self.store.put_reservation_group(&group).await?;
+            reserved_parity_groups.push(group);
+        }
+
+        Ok(SealReservations {
+            strips: reserved_strips,
+            parity: reserved_parity,
+            groups: reserved_parity_groups,
+        })
+    }
+}
+
+struct SealReservations {
+    strips: Vec<ChunkStrip>,
+    parity: Vec<Segment>,
+    groups: Vec<StripReservationGroup>,
 }
 
 fn trim_sealed_strips(
@@ -145,4 +179,46 @@ fn trim_sealed_strips(
         low: chunk_id.low ^ u64::from(seal_length),
     });
     (unused_segments, operation)
+}
+
+fn validate_seal_bounds(chunk: &Chunk, seal_bytes: u64, seal_length: u32) -> Result<(), LifecycleError> {
+    if (chunk.chunk_type == ChunkType::Wal as i32 || chunk.chunk_type == ChunkType::Stream as i32)
+        && seal_bytes < chunk.acknowledged_cursor
+    {
+        return Err(LifecycleError::InvalidRequest(format!(
+            "stream seal boundary {seal_bytes} precedes persisted cursor {}",
+            chunk.acknowledged_cursor
+        )));
+    }
+    if seal_length > chunk.capacity {
+        return Err(LifecycleError::InvalidRequest(format!(
+            "seal_length {seal_length} exceeds chunk capacity {}",
+            chunk.capacity
+        )));
+    }
+
+    Ok(())
+}
+
+fn close_acknowledged_strips(chunk: &mut Chunk, now_ms: u64) {
+    if chunk.writer_epoch == 0 || chunk.acknowledged_cursor == 0 {
+        return;
+    }
+    let cursor = chunk.acknowledged_cursor;
+    let mut last_closed = chunk.closed_strip_sequence;
+    for strip in &mut chunk.strips {
+        let start = u64::from(strip.chunk_offset) * 1024;
+        if cursor <= start {
+            break;
+        }
+        let end = u64::from(strip.chunk_offset.saturating_add(strip.capacity)) * 1024;
+        let length = cursor.min(end).saturating_sub(start);
+        strip.sealed_length = u32::try_from(length.div_ceil(1024)).unwrap_or(u32::MAX);
+        strip.sealed_ts_ms = now_ms;
+        last_closed = Some(strip.strip_sequence);
+        if cursor < end {
+            break;
+        }
+    }
+    chunk.closed_strip_sequence = last_closed;
 }

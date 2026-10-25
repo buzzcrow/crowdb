@@ -26,6 +26,13 @@ mod signing;
 const BODY_LIMIT: usize = 16 * 1024 * 1024;
 type ApiError = (StatusCode, Json<ErrorBody>);
 
+pub(crate) fn sign_local_s3_read(state: &AppState, url: &reqwest::Url) -> Result<HeaderMap, String> {
+    let credentials = credentials::local_s3(state)?;
+    let mut headers = HeaderMap::new();
+    signing::sign(&credentials, &axum::http::Method::GET, url, &[], &mut headers)?;
+    Ok(headers)
+}
+
 pub(crate) fn read_router() -> Router<AppState> {
     Router::new()
         .route("/api/access/connections", get(connections))
@@ -65,6 +72,11 @@ fn validate_origin(origin: &str) -> Result<String, ApiError> {
 
 fn origin(state: &AppState, protocol: &str) -> Result<Option<String>, ApiError> {
     let environment = protocol_environment(protocol).ok_or_else(|| err_400("Unknown Access protocol"))?;
+    if state.node_monitor_url.is_some() {
+        if let Some(value) = crate::services::access::origin(state, protocol) {
+            return validate_origin(&value).map(Some);
+        }
+    }
     if let Ok(value) = std::env::var(environment) {
         return validate_origin(&value).map(Some);
     }
@@ -112,6 +124,10 @@ pub(crate) async fn client_credentials(State(state): State<AppState>) -> Result<
         "iceberg": {
             "uri": value("ICEBERG_URI"),
             "token": value("ICEBERG_TOKEN")
+        },
+        "dataset": {
+            "uri": value("DATASET_URI"),
+            "token": value("DATASET_TOKEN")
         }
     })))
 }

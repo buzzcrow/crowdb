@@ -6,9 +6,14 @@
 pub mod discovery;
 pub mod domain_monitor;
 pub mod registry;
+mod stream_lease;
 pub mod watch_notify;
 
 pub use discovery::ServiceDiscoveryClient;
 pub use domain_monitor::DomainMonitorClient;
 pub use registry::ServiceRegistryClient;
+pub use stream_lease::{
+    StreamProcessAuthority, StreamProcessContext, StreamProcessLeaseClient, StreamProcessLeaseError,
+    StreamProcessLeaseStatus, StreamProcessLeaseTiming,
+};
 pub use watch_notify::{WatchNotify, WatchNotifyClient, WatchSubscription};

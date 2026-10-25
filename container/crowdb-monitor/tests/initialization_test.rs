@@ -12,11 +12,14 @@ use crowdb_protocol::mgmt::node::{NodeControl, NodeServiceCredentials};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[path = "common/member_trust.rs"]
+#[allow(dead_code)]
+mod member_trust;
+
 fn fixture(root: &Path) -> (DeploymentProfile, PreparedBootstrap, NodeServiceCredentials) {
-    let mut profile = DeploymentProfile::load(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml"),
-    )
-    .unwrap();
+    let mut profile =
+        DeploymentProfile::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../oci-image/node-profile.toml"))
+            .unwrap();
     profile.paths.data_root = root.to_path_buf();
     profile.paths.run_root = root.join("run");
     std::fs::create_dir(&profile.paths.run_root).unwrap();
@@ -36,6 +39,7 @@ fn fixture(root: &Path) -> (DeploymentProfile, PreparedBootstrap, NodeServiceCre
         ssh_user: "crowdb".into(),
         operation_id: uuid::Uuid::new_v4().to_string(),
         confirmed: false,
+        host_key: None,
         cancelled: false,
     };
     let operation =
@@ -72,7 +76,7 @@ async fn accepted_initialization_survives_connection_lifetime_and_resumes_fixed_
     connection.read_to_end(&mut bytes).await.unwrap();
     assert!(matches!(
         serde_json::from_slice::<NodeControl>(&bytes).unwrap(),
-        NodeControl::StartKv { node_id: 1, .. }
+        NodeControl::PrepareBootstrap { node_id: 1, .. }
     ));
     first.stop_for_tests().await;
     drop(connection);
@@ -131,4 +135,51 @@ async fn altered_manifest_is_rejected_before_accepting_an_initialization() {
         InitializationForTests::status_for_tests(root).unwrap()["phase"],
         "idle"
     );
+}
+
+#[tokio::test]
+async fn bootstrap_waits_for_member_trust_before_starting_a_replica() {
+    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("init-pins");
+    let root = directory.path();
+    let (profile, operation, credentials) = fixture(root);
+    std::fs::create_dir(root.join("ssh")).unwrap();
+    std::fs::write(root.join("ssh/ssh_host_ed25519_key.pub"), member_trust::key(1)).unwrap();
+    let listener = tokio::net::UnixListener::bind(profile.paths.run_root.join("node-control.sock")).unwrap();
+    let mut runner = InitializationForTests::default();
+    runner
+        .accept_for_tests(
+            &profile,
+            serde_json::to_value(&operation).unwrap(),
+            credentials,
+            Some(false),
+        )
+        .unwrap();
+    for stage in 0..3 {
+        let (mut connection, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut bytes = Vec::new();
+        connection.read_to_end(&mut bytes).await.unwrap();
+        let request: NodeControl = serde_json::from_slice(&bytes).unwrap();
+        match (stage, request) {
+            (0, NodeControl::PrepareBootstrap { node_id: 1, .. })
+            | (2, NodeControl::StartKv { node_id: 1, .. }) => {}
+            (1, NodeControl::AcceptMemberTrust { trust }) => {
+                let trust: crowdb_console_shared::deployment::recovery::MemberTrust =
+                    serde_json::from_value(trust).unwrap();
+                trust.validate_bootstrap(&operation).unwrap();
+                assert_eq!(trust.members[0].host_key, member_trust::key(1));
+            }
+            _ => panic!("unexpected bootstrap request at stage {stage}"),
+        }
+        let reply = if stage == 2 {
+            br#"{"ok":false,"error":"test stops before replica execution"}"#.as_slice()
+        } else {
+            br#"{"ok":true,"value":{}}"#.as_slice()
+        };
+        connection.write_all(reply).await.unwrap();
+        connection.shutdown().await.unwrap();
+    }
+    runner.stop_for_tests().await;
 }

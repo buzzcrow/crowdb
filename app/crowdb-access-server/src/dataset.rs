@@ -166,7 +166,13 @@ pub async fn run_with_shutdown(
     let client = Arc::new(ChunkKvClient::new(chunk_config, source, transport)?);
     client.refresh_catalog().await?;
     let store = Arc::new(ChunkKvDatasetStore::new(client));
-    let chunks = connect_payloads(seeds, control, access.dataset.max_in_flight).await?;
+    let chunks = connect_payloads(
+        seeds,
+        control,
+        access.dataset.max_in_flight,
+        access.dataset_small_write(),
+    )
+    .await?;
     let uploads = Arc::new(DatasetUploads::new(
         store.clone(),
         Arc::new(ChunkPayloadStorage::new(chunks.clone())),
@@ -224,9 +230,9 @@ async fn connect_payloads(
     seeds: Vec<String>,
     control: Arc<CrowdbKvClient>,
     capacity: usize,
+    mut small_write: crowdb_chunk_client::SmallWritePolicy,
 ) -> Result<crowdb_chunk_client::ChunkIoClient, BoxError> {
-    use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
-    let mut small_write = SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::Dataset);
+    use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig};
     small_write.object_limit = 4 * 1024 * 1024;
     small_write.max_batch_bytes = 4 * 1024 * 1024;
     small_write.max_pipelines = capacity.clamp(1, 8);

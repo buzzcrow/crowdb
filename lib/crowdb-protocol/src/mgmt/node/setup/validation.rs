@@ -1,7 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{NodeSetupRequest, NodeSetupStatus, SetupService, SetupServiceKind, SetupStorage};
+use super::{
+    NodeSetupChoices, NodeSetupRequest, NodeSetupStatus, SetupService, SetupServiceKind, SetupStorage,
+};
 use std::collections::BTreeSet;
 
 impl NodeSetupStatus {
@@ -49,17 +51,27 @@ impl NodeSetupRequest {
         {
             return Err("node setup exceeds its control message bound");
         }
+        self.choices.validate()
+    }
+}
+
+impl NodeSetupChoices {
+    /// Validate storage and service inputs before accepting a deployment policy.
+    ///
+    /// # Errors
+    /// Rejects invalid geometry, duplicated media and ambiguous listeners.
+    pub fn validate(&self) -> Result<(), &'static str> {
         let mut kinds = BTreeSet::new();
         let mut ports = BTreeSet::new();
-        if self.choices.services.len() != 6 {
+        if self.services.len() != 6 {
             return Err("node setup requires exactly six service choices");
         }
-        for service in &self.choices.services {
+        for service in &self.services {
             if !kinds.insert(service.kind) || !valid_listeners(service, &mut ports) {
                 return Err("duplicate service choice or invalid listener configuration");
             }
         }
-        match &self.choices.storage {
+        match &self.storage {
             SetupStorage::Diskless => {}
             SetupStorage::Automatic {
                 capacity_bytes,

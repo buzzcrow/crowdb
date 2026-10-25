@@ -3,6 +3,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 
+use crowdb_protocol::mgmt::node::deployment::{DeploymentMode, FormationPolicy};
 use crowdb_protocol::mgmt::node::{CandidateNode, NodeAdvertisement, NODE_PROTOCOL_VERSION};
 use mdns_sd::{DaemonEvent, IfKind, Receiver, ServiceDaemon, ServiceEvent, ServiceInfo};
 use thiserror::Error;
@@ -58,6 +59,18 @@ impl NodeDiscovery {
         if cluster == self.local.cluster_id {
             return Ok(());
         }
+        self.advertise(cluster.as_deref())?;
+        self.local.cluster_id = cluster;
+        Ok(())
+    }
+
+    pub(super) fn set_formation(&mut self, policy: FormationPolicy) -> Result<(), DiscoveryError> {
+        policy.validate().map_err(DiscoveryError::Invalid)?;
+        self.local.formation = Some(policy);
+        self.advertise(self.local.cluster_id.as_deref())
+    }
+
+    fn advertise(&self, cluster: Option<&str>) -> Result<(), DiscoveryError> {
         let instance = self
             .fullname
             .strip_suffix(NODE_SERVICE_TYPE)
@@ -67,8 +80,23 @@ impl NodeDiscovery {
             ("id".to_owned(), self.local.discovery_id.clone()),
             ("version".to_owned(), self.local.protocol_version.to_string()),
         ];
-        if let Some(cluster) = &cluster {
-            properties.push(("cluster".to_owned(), cluster.clone()));
+        if let Some(cluster) = cluster {
+            properties.push(("cluster".to_owned(), cluster.to_owned()));
+        }
+        if let Some(policy) = &self.local.formation {
+            properties.extend([
+                ("scope".into(), policy.cluster.clone()),
+                ("initial-voters".into(), policy.initial_voters.to_string()),
+                ("policy-version".into(), policy.version.to_string()),
+                (
+                    "deployment-mode".into(),
+                    match policy.mode {
+                        DeploymentMode::Local => "local",
+                        DeploymentMode::Production => "production",
+                    }
+                    .into(),
+                ),
+            ]);
         }
         let mut addresses = Vec::new();
         let mut port = 0;
@@ -93,7 +121,6 @@ impl NodeDiscovery {
             port,
             properties.as_slice(),
         )?)?;
-        self.local.cluster_id = cluster;
         Ok(())
     }
     /// # Errors
@@ -174,6 +201,7 @@ impl NodeDiscovery {
                 protocol_version: NODE_PROTOCOL_VERSION,
                 monitor_endpoints: endpoints,
                 cluster_id: config.cluster_id.map(|id| id.to_string()),
+                formation: None,
             },
             cache: CandidateCache::default(),
         })
@@ -218,6 +246,21 @@ impl NodeDiscovery {
                             })
                             .collect(),
                         cluster_id: service.get_property_val_str("cluster").map(str::to_owned),
+                        formation: (|| {
+                            Some(FormationPolicy {
+                                version: service.get_property_val_str("policy-version")?.parse().ok()?,
+                                mode: match service.get_property_val_str("deployment-mode")? {
+                                    "local" => DeploymentMode::Local,
+                                    "production" => DeploymentMode::Production,
+                                    _ => return None,
+                                },
+                                cluster: service.get_property_val_str("scope")?.into(),
+                                initial_voters: service
+                                    .get_property_val_str("initial-voters")?
+                                    .parse()
+                                    .ok()?,
+                            })
+                        })(),
                     };
                     self.cache
                         .observe(service.get_fullname().to_owned(), advertisement);

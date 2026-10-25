@@ -16,12 +16,50 @@ use crowdb_console_shared::{
 use crowdb_protocol::mgmt::node::{NodeControl, NodeServiceAction, NodeServiceIntent};
 use serde_json::{json, Value};
 
+#[derive(Default)]
+pub(super) struct ProcessObservations {
+    pub pids: std::collections::BTreeMap<(u64, String), u32>,
+    exhausted: std::collections::BTreeSet<(u64, String)>,
+}
+
+impl ProcessObservations {
+    fn record(&mut self, node: u64, value: &Value, intents: &[NodeServiceIntent]) {
+        if let Some(processes) = value["processes"].as_object() {
+            for (id, value) in processes {
+                if let Some(pid) = value
+                    .as_u64()
+                    .and_then(|pid| u32::try_from(pid).ok())
+                    .filter(|pid| *pid > 0)
+                {
+                    self.pids.insert((node, id.clone()), pid);
+                }
+            }
+        }
+        for intent in intents.iter().filter(|intent| intent.node_id == node) {
+            let failure = &value["service_failures"][&intent.service_id];
+            if failure["operation_id"] == intent.operation_id && failure["exhausted"] == true {
+                self.exhausted.insert((node, intent.service_id.clone()));
+            }
+        }
+    }
+
+    pub fn start_pending(&self, entry: &ServerEntry, remote: bool, pid: Option<u32>) -> bool {
+        remote
+            && entry.auto_start
+            && pid.is_none()
+            && !entry
+                .node_id
+                .is_some_and(|node| self.exhausted.contains(&(node, entry.id.clone())))
+    }
+}
+
 pub(super) async fn processes(
     state: &AppState,
     config: &crowdb_console_shared::ConsoleConfig,
-) -> std::collections::BTreeMap<(u64, String), u32> {
+    intents: &[NodeServiceIntent],
+) -> ProcessObservations {
     let Some(binding) = crate::node::cluster_binding(state).ok().flatten() else {
-        return std::collections::BTreeMap::new();
+        return ProcessObservations::default();
     };
     let cluster = &binding.bootstrap.cluster_id;
     let observations = futures::future::join_all(config.nodes.iter().map(|node| async move {
@@ -44,21 +82,11 @@ pub(super) async fn processes(
         Some((node.id, result))
     }))
     .await;
-    let mut pids = std::collections::BTreeMap::new();
+    let mut processes = ProcessObservations::default();
     for (node, observation) in observations.into_iter().flatten() {
-        if let Some(services) = observation["processes"].as_object() {
-            for (id, value) in services {
-                if let Some(pid) = value
-                    .as_u64()
-                    .and_then(|pid| u32::try_from(pid).ok())
-                    .filter(|pid| *pid > 0)
-                {
-                    pids.insert((node, id.clone()), pid);
-                }
-            }
-        }
+        processes.record(node, &observation, intents);
     }
-    pids
+    processes
 }
 
 pub(crate) async fn act(
@@ -97,12 +125,18 @@ pub(crate) async fn act(
 }
 
 pub(crate) async fn refresh(state: &AppState) -> crowdb_console_shared::error::Result<()> {
+    refresh_with_intents(state).await.map(|_| ())
+}
+
+pub(super) async fn refresh_with_intents(
+    state: &AppState,
+) -> crowdb_console_shared::error::Result<Vec<NodeServiceIntent>> {
     let intents = services::list(state.kv_client().await.as_ref()).await?;
     let mut config = state
         .config
         .write()
         .map_err(|error| crowdb_console_shared::error::Error::Config(error.to_string()))?;
-    for intent in intents {
+    for intent in &intents {
         // KV endpoints come from admitted node bootstrap, not auxiliary
         // service configuration. Its lifecycle intent must not erase them.
         if intent.kind == "kv" {
@@ -112,11 +146,11 @@ pub(crate) async fn refresh(state: &AppState) -> crowdb_console_shared::error::R
         if matches!(intent.action, NodeServiceAction::Delete) {
             continue;
         }
-        if let Some(entry) = project(&intent) {
+        if let Some(entry) = project(intent) {
             config.servers.push(entry);
         }
     }
-    Ok(())
+    Ok(intents)
 }
 
 fn project(intent: &NodeServiceIntent) -> Option<ServerEntry> {
@@ -165,7 +199,13 @@ fn project(intent: &NodeServiceIntent) -> Option<ServerEntry> {
     );
     entry.node_id = Some(intent.node_id);
     if intent.kind == "access" {
-        entry.dataset_origin = intent.environment.get("CROWDB_DATASET_PUBLIC_URI").cloned();
+        for protocol in ["s3", "iceberg", "dataset"] {
+            if let Some(address) = lookup(&value, &[protocol, "listen"]) {
+                entry
+                    .access_origins
+                    .insert(protocol.into(), format!("http://{address}"));
+            }
+        }
     }
     entry.service_type = kind;
     entry.rpc_url = diskio_address
@@ -223,3 +263,7 @@ pub(crate) async fn kv_action(
         .await
         .map_err(map_config_err)
 }
+
+#[cfg(test)]
+#[path = "../../tests/internal/service_start_pending_test.rs"]
+mod tests;

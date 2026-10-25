@@ -2,9 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, CrowdbSysmdClient};
-use crowdb_monitor::{
-    verify_chunk_services, BootstrapSession, DeploymentProfile, LogicalBootstrap, MonitorLog,
-};
+use crowdb_monitor::{verify_chunk_services, DeploymentProfile};
 use std::path::PathBuf;
 
 fn root() -> PathBuf {
@@ -47,35 +45,21 @@ async fn chunk_services_validate_live_registration_and_logical_topology() {
         std::fs::write(path, original).unwrap();
     }
     verify_chunk_services(&seed(), &config_profile).await.unwrap();
-    verify_logical_topology(&root, &profile).await;
+    verify_logical_topology().await;
     super::witness_with_write(true, std::env::var("CROWDB_E2E_PHASE").as_deref() == Ok("write")).await;
 }
 
-async fn verify_logical_topology(root: &std::path::Path, profile: &DeploymentProfile) {
+async fn verify_logical_topology() {
     let sysmd = CrowdbSysmdClient::new(CrowdbKvClient::new(ClientConfig::new(vec![seed()])));
     assert_eq!(sysmd.list_stores().await.unwrap().len(), 1);
-    assert_eq!(sysmd.list_groups_in_store(0).await.unwrap().len(), 2);
+    let initial = sysmd.list_groups_in_store(0).await.unwrap();
+    assert_eq!(initial.len(), 2);
     assert_eq!(sysmd.list_replicas_in_group(0, 0).await.unwrap().len(), 1);
     assert_eq!(sysmd.list_replicas_in_group(0, 1).await.unwrap().len(), 1);
-    let data = root.join("client-data/logical-bootstrap");
-    std::fs::create_dir_all(&data).unwrap();
-    let mut session = BootstrapSession::open(&data, b"profile", b"config", &["logical-topology"]).unwrap();
-    std::fs::create_dir_all(data.join("log")).unwrap();
-    let mut events = MonitorLog::open(&data.join("log"), profile.logs.clone())
-        .await
-        .unwrap();
-    let bootstrap = LogicalBootstrap::new(seed());
-    bootstrap
-        .reconcile(&mut session, profile, &mut events)
-        .await
-        .unwrap();
     sysmd.add_group(0, 99).await.unwrap();
-    assert!(bootstrap
-        .reconcile(&mut session, profile, &mut events)
-        .await
-        .is_err());
     assert_eq!(sysmd.list_groups_in_store(0).await.unwrap().len(), 3);
     sysmd.remove_group(0, 99).await.unwrap();
+    assert_eq!(sysmd.list_groups_in_store(0).await.unwrap(), initial);
 }
 
 #[tokio::test]

@@ -11,9 +11,6 @@ use std::sync::Arc;
 /// An RPC server. Accepts connections and dispatches to handlers.
 pub struct RpcServer {
     handle: sys::crowdb_rpc_server_t,
-    // Raw pointers from Box::into_raw in register_handler. Freed in
-    // Drop to avoid leaking the Rust handler closures.
-    handler_ptrs: std::sync::Mutex<Vec<*mut std::ffi::c_void>>,
 }
 
 impl std::fmt::Debug for RpcServer {
@@ -76,10 +73,7 @@ impl RpcServer {
         let pool_handle = pool.map(|p| p.handle()).unwrap_or(ptr::null_mut());
         let handle =
             unsafe { sys::crowdb_rpc_server_create_with_engines(pool_handle, io_engines, effective_workers) };
-        RpcServer {
-            handle,
-            handler_ptrs: std::sync::Mutex::new(Vec::new()),
-        }
+        RpcServer { handle }
     }
 
     /// Listen on the given address and port. If port is 0, the OS assigns
@@ -109,23 +103,11 @@ impl RpcServer {
         unsafe { sys::crowdb_rpc_server_stop(self.handle) };
     }
 
-    /// Clear all registered handlers and free the Rust closures.
+    /// Remove registered handlers; active invocations retain their Rust closures.
     /// Called automatically by `stop`. Safe to call multiple times.
     pub fn clear_handlers(&self) {
-        // Clear the C++ handler registry first so no dispatch can
-        // access the closures after we free them.
+        // Native dispatch retains each closure until its final invocation returns.
         unsafe { sys::crowdb_rpc_server_clear_handlers(self.handle) };
-        // Free the Rust handler closures (drops captured Arcs).
-        let ptrs = std::mem::take(&mut *self.handler_ptrs.lock().unwrap());
-        for user_data in ptrs {
-            if !user_data.is_null() {
-                unsafe {
-                    drop(Box::from_raw(
-                        user_data.cast::<Box<dyn Fn(ServerRequest) + Send + 'static>>(),
-                    ));
-                }
-            }
-        }
     }
 
     /// The port the server is listening on (0 if not listening).
@@ -208,10 +190,8 @@ impl RpcServer {
     /// for zero-copy flatbuffer parsing — the Frame is released when the
     /// `ServerRequest` is dropped. This mirrors the C++ async-handler
     /// pattern (return nullptr, submit later). Re-registering the same
-    /// msg_type replaces the prior handler (the old closure is leaked —
-    /// there is no unregister API; handlers live for the server's
-    /// lifetime, which for a server registered once at startup is the
-    /// process lifetime).
+    /// msg_type replaces the prior handler. The previous closure remains alive
+    /// until its last active invocation returns.
     pub fn register_handler<F>(&self, msg_type: u16, handler: F)
     where
         F: Fn(ServerRequest) + Send + 'static,
@@ -225,9 +205,9 @@ impl RpcServer {
                 msg_type,
                 Some(rust_handler_trampoline),
                 user_data,
+                Some(release_handler),
             );
         }
-        self.handler_ptrs.lock().unwrap().push(user_data);
     }
 
     /// Submit a response on a server-side connection. Thread-safe — may
@@ -320,18 +300,6 @@ impl RpcServer {
 impl Drop for RpcServer {
     fn drop(&mut self) {
         if !self.handle.is_null() {
-            // Free any handler closures not already freed by
-            // clear_handlers/stop (e.g. if stop was never called).
-            let ptrs = std::mem::take(&mut *self.handler_ptrs.lock().unwrap());
-            for user_data in ptrs {
-                if !user_data.is_null() {
-                    unsafe {
-                        drop(Box::from_raw(
-                            user_data.cast::<Box<dyn Fn(ServerRequest) + Send + 'static>>(),
-                        ));
-                    }
-                }
-            }
             unsafe { sys::crowdb_rpc_server_destroy(self.handle) };
             self.handle = ptr::null_mut();
         }
@@ -607,4 +575,12 @@ unsafe extern "C" fn rust_handler_trampoline(
     };
     closure(req);
     // req is dropped here if the closure didn't move it — frame released.
+}
+
+unsafe extern "C" fn release_handler(user_data: *mut std::ffi::c_void) {
+    if !user_data.is_null() {
+        drop(Box::from_raw(
+            user_data.cast::<Box<dyn Fn(ServerRequest) + Send + 'static>>(),
+        ));
+    }
 }

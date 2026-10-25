@@ -28,6 +28,7 @@ use crate::ops::hardware::{self, AddDiskInput};
 use crate::ops::OpContext;
 
 mod bootstrap;
+pub mod readiness;
 mod storage_readiness;
 #[cfg(feature = "test-util")]
 pub use bootstrap::publish_topology_for_tests;
@@ -625,7 +626,7 @@ async fn local_deploy_diskio(
             .insert(server_id.clone(), deployed.launch.clone());
         expected_owners.insert(30_000 + node.id, (deployed.endpoint.clone(), node.id * 100 + 1));
         ctx.config_mut().add_server(ServerEntry {
-            dataset_origin: None,
+            access_origins: std::collections::BTreeMap::new(),
             id: server_id,
             url: deployed.endpoint.clone(),
             node_id: Some(node.id),
@@ -723,6 +724,7 @@ pub async fn local_deploy_chunkdb(
                 .join(format!("node{}", node.id))
                 .join(&server_id);
             let request = ChunkdbDeployRequest {
+                local_deployment: false,
                 dynamic_ownership: config.dynamic_ownership,
                 server_id: server_id.clone(),
                 instance_id,
@@ -750,7 +752,7 @@ pub async fn local_deploy_chunkdb(
             .local_launches
             .insert(server_id.clone(), deployed.launch.clone());
         ctx.config_mut().add_server(ServerEntry {
-            dataset_origin: None,
+            access_origins: std::collections::BTreeMap::new(),
             id: server_id,
             url: deployed.endpoint.clone(),
             node_id: Some(node.id),
@@ -1095,7 +1097,7 @@ async fn deploy_diskdb_instances(
             .local_launches
             .insert(server_id.clone(), deployed.launch.clone());
         ctx.config_mut().add_server(ServerEntry {
-            dataset_origin: None,
+            access_origins: std::collections::BTreeMap::new(),
             id: server_id,
             url: deployed.endpoint.clone(),
             node_id: Some(node.id),
@@ -1407,7 +1409,7 @@ async fn deploy_servers(
 
         let mut cfg = ctx.config_mut();
         cfg.add_server(ServerEntry {
-            dataset_origin: None,
+            access_origins: std::collections::BTreeMap::new(),
             id: nid.to_string(),
             url: deployed.mgmt_url.clone(),
             node_id: Some(*nid),
@@ -1424,164 +1426,4 @@ async fn deploy_servers(
         })?;
     }
     Ok(())
-}
-
-// ── RPC fb-server deploy ──────────────────────────────────────────
-
-/// Summary of a completed RPC fb-server deploy.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct RpcDeploySummary {
-    pub port: u16,
-    pub pid: u32,
-    pub io_engines: u32,
-    pub io_workers: u32,
-    pub nagle: bool,
-}
-
-/// Configuration for [`local_deploy_rpc`].
-#[derive(Debug, Clone)]
-pub struct RpcDeployConfig {
-    /// Listen port. 0 = auto-allocate.
-    pub port: u16,
-    pub io_engines: u32,
-    pub io_workers: u32,
-    pub enable_nagle: bool,
-    pub metrics_interval: u32,
-}
-
-impl Default for RpcDeployConfig {
-    fn default() -> Self {
-        Self {
-            port: 0,
-            io_engines: 1,
-            io_workers: 1,
-            enable_nagle: false,
-            metrics_interval: 2,
-        }
-    }
-}
-
-/// Deploy a standalone `crowdb-rpc-fb-server` (C++ echo server) on
-/// `127.0.0.1`. Spawns the process, waits for the `listening port=`
-/// readiness line on stdout, and records the PID + port in the config
-/// so `cluster destroy` can stop it.
-///
-/// Unlike [`local_deploy`], this does not create rack/node entries or
-/// bootstrap group 0 — the fb-server is a raw RPC echo endpoint with
-/// no KV layer.
-///
-/// # Errors
-/// Returns [`Error::NotFound`] if the binary cannot be located.
-/// Returns [`Error::Io`] on spawn or readiness failures.
-pub async fn local_deploy_rpc(
-    ctx: &OpContext,
-    cfg: &RpcDeployConfig,
-    workspace_dir: Option<&std::path::Path>,
-) -> Result<RpcDeploySummary> {
-    let bin = lifecycle::crowdb_rpc_fb_server_bin().ok_or_else(|| Error::NotFound {
-        kind: "binary".into(),
-        id: "crowdb-rpc-fb-server".into(),
-    })?;
-    if !bin.exists() {
-        return Err(Error::NotFound {
-            kind: "binary".into(),
-            id: bin.display().to_string(),
-        });
-    }
-
-    let workspace = workspace_dir.map_or_else(default_workspace, std::path::PathBuf::from);
-
-    let port = if cfg.port == 0 {
-        alloc_workspace_ports(&workspace, ServicePort::KvServerListen, 0, 1)?[0]
-    } else {
-        cfg.port
-    };
-    let log_dir = workspace.join("log");
-    std::fs::create_dir_all(&log_dir)?;
-
-    let mut cmd = std::process::Command::new(&bin);
-    cmd.arg(format!("--port={port}"))
-        .arg(format!("--io_engines={}", cfg.io_engines))
-        .arg(format!("--io_workers={}", cfg.io_workers))
-        .arg(format!("--logdir={}", log_dir.display()))
-        .arg(format!("--metrics_interval={}", cfg.metrics_interval));
-    if cfg.enable_nagle {
-        cmd.arg("--enable_nagle");
-    }
-    // Redirect stdout/stderr to a log file so the child doesn't get
-    // SIGPIPE when the CLI exits. The fb-server also writes structured
-    // logs to --logdir, but stdout has the "listening port=" line.
-    let stdout_path = log_dir.join("fb-server.stdout.log");
-    let stdout = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&stdout_path)
-        .map_err(Error::Io)?;
-    let stderr = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(stdout_path)
-        .map_err(Error::Io)?;
-    cmd.stdout(std::process::Stdio::from(stdout))
-        .stderr(std::process::Stdio::from(stderr));
-
-    let child = cmd.spawn()?;
-
-    let pid = child.id();
-    let ready = wait_for_rpc_ready(port, pid, 10).await;
-
-    if !ready {
-        let _ = lifecycle::stop_pid(pid);
-        return Err(Error::Io(std::io::Error::other(format!(
-            "crowdb-rpc-fb-server did not bind on port {port} within 10s"
-        ))));
-    }
-
-    // Record in config so reset() can stop it.
-    let server_id = format!("rpc-fb-{pid}");
-    let mut config = ctx.config_mut();
-    config.add_server(ServerEntry {
-        dataset_origin: None,
-        id: server_id.clone(),
-        url: format!("http://127.0.0.1:{port}"),
-        node_id: None,
-        rpc_url: Some(format!("http://127.0.0.1:{port}")),
-        rest_port: None,
-        rpc_port: Some(port),
-        auto_start: false,
-        binary: Some(bin.display().to_string()),
-        election_profile: None,
-        pid: Some(pid),
-        service_type: ServiceType::Rpc,
-        rpc_workers: None,
-        no_fsync: false,
-    })?;
-
-    Ok(RpcDeploySummary {
-        port,
-        pid,
-        io_engines: cfg.io_engines,
-        io_workers: cfg.io_workers,
-        nagle: cfg.enable_nagle,
-    })
-}
-
-/// Poll-connect to `127.0.0.1:port` until success or timeout. Drops
-/// the stdout pipe (the fb-server writes logs to `--logdir`, not stdout
-/// — stdout is only used for the `listening port=` line which we don't
-/// need since we know the port).
-async fn wait_for_rpc_ready(port: u16, pid: u32, timeout_secs: u64) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
-    loop {
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        if !lifecycle::process_is_alive(pid) {
-            return false;
-        }
-        if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
-            return true;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
 }

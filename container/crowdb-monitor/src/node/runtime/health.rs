@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use super::{durable, start_kv, AcceptedNode, Result};
+use super::{durable, AcceptedNode, Result};
 use crate::{
     DeploymentProfile, MonitorPhase, MonitorStatus, ProcessManager, ServiceProfile, ServiceStatus,
     StatusStore,
@@ -42,18 +42,15 @@ impl NodeHealth {
         if let Some(accepted) =
             durable::read::<AcceptedNode>(&profile.paths.data_root.join("accepted-node.json"))?
         {
-            let retired = profile.paths.data_root.join(format!(
-                "retired-bootstrap-{}.json",
-                accepted.bootstrap.operation_id
-            ));
-            if accepted.prepared
-                && !super::admission::is_cancelled(&profile.paths.data_root, &accepted)
-                && !retired.exists()
-                && !super::services::kv_paused(profile)?
+            if super::admission::is_cancelled(&profile.paths.data_root, &accepted) {
+                self.retire_services(profile, processes).await?;
+                return Ok(());
+            }
+            if super::kv::resume_allowed(profile, &accepted)?
                 && (!processes.owns("kv") || !processes.alive("kv")?)
             {
                 self.restart_allowed("kv")?;
-                start_kv(profile, processes, &accepted).await?;
+                super::kv::ensure_process(profile, processes, &accepted).await?;
             }
         }
         self.reconcile_services(profile, processes).await?;
@@ -65,7 +62,18 @@ impl NodeHealth {
             if processes.owns(id) {
                 let mut healthy = processes.alive(id)?;
                 if healthy {
-                    if let Some(intent) = retained
+                    if id == "web" || id == "kv" {
+                        let service = if id == "web" {
+                            web.clone()
+                        } else {
+                            super::service(profile, "kv")?
+                        };
+                        healthy = self
+                            .probes
+                            .probe_service(&service, &BTreeMap::new())
+                            .await
+                            .is_ok();
+                    } else if let Some(intent) = retained
                         .iter()
                         .find(|intent| intent.service_id == *id && intent.kind != "kv")
                     {
@@ -82,6 +90,10 @@ impl NodeHealth {
                 self.status.services.insert(
                     id.clone(),
                     ServiceStatus {
+                        operation_id: retained
+                            .iter()
+                            .find(|intent| intent.service_id == *id || (id == "kv" && intent.kind == "kv"))
+                            .map(|intent| intent.operation_id.clone()),
                         pid: processes.pid(id),
                         generation: 1 + u64::from(*self.attempts.get(id.as_str()).unwrap_or(&0)),
                         healthy,
@@ -99,7 +111,7 @@ impl NodeHealth {
         Ok(())
     }
 
-    async fn reconcile_services(
+    pub(in crate::node::runtime) async fn reconcile_services(
         &mut self,
         profile: &DeploymentProfile,
         processes: &mut ProcessManager,
@@ -107,16 +119,24 @@ impl NodeHealth {
         if !profile.paths.data_root.join("node-binding.json").exists() {
             return Ok(());
         }
-        let Ok(intents) = super::services::desired(profile).await else {
-            return Ok(());
+        let intents = match super::services::desired(profile).await {
+            Ok(intents) => intents,
+            Err(error) => {
+                tracing::debug!(%error, "service recovery awaits committed intents");
+                return Ok(());
+            }
         };
-        for intent in intents {
-            if !super::services::pending(profile, &intent, processes)? {
+        for intent in &intents {
+            if !super::services::pending(profile, intent, processes)? {
+                continue;
+            }
+            if let Err(error) = super::services::dependencies_ready(profile, intent, &intents).await {
+                tracing::debug!(service = %intent.service_id, %error, "service recovery waits for dependencies");
                 continue;
             }
             match super::services::execute(profile, processes, intent.clone()).await {
                 Ok(_) => {
-                    *self.attempts.entry(intent.service_id).or_default() += 1;
+                    *self.attempts.entry(intent.service_id.clone()).or_default() += 1;
                 }
                 Err(error) => eprintln!("service recovery deferred for {}: {error}", intent.service_id),
             }
@@ -134,4 +154,41 @@ impl NodeHealth {
         *attempts += 1;
         Ok(())
     }
+
+    async fn retire_services(
+        &mut self,
+        profile: &DeploymentProfile,
+        processes: &mut ProcessManager,
+    ) -> Result<()> {
+        let mut ids: Vec<_> = super::services::retained(profile)?
+            .into_iter()
+            .map(|intent| intent.service_id)
+            .collect();
+        ids.reverse();
+        ids.push("kv".into());
+        for id in ids {
+            if processes.owns(&id) && processes.alive(&id)? {
+                processes.stop(&id, Duration::from_secs(5)).await?;
+            }
+        }
+        self.status.services.clear();
+        self.status.phase = MonitorPhase::Failed;
+        self.store.publish(&mut self.status)?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "test-util")]
+/// Collect one production health pass for owned processes.
+///
+/// # Errors
+/// Propagates process, durable state and status publication failures.
+pub async fn node_health_for_tests(
+    profile: &DeploymentProfile,
+    web: &ServiceProfile,
+    processes: &mut ProcessManager,
+) -> Result<MonitorStatus> {
+    let mut health = NodeHealth::new(profile)?;
+    health.tick(profile, web, processes).await?;
+    Ok(health.status)
 }

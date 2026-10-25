@@ -23,25 +23,20 @@ export function TreeStorage({ value }: { value?: TreeObservation }) {
   </section>;
 }
 
-export function JournalStorage({ value, disabled, onPage, onChunk, propertyHost, selected, onSelected }: { selected: string | null; onSelected: (index: string) => void; propertyHost: HTMLDivElement | null; onChunk: (id: string) => void; value?: JournalObservation | null; disabled: boolean; onPage: (offset: number) => void }) {
+export function JournalStorage({ value, disabled, onChunk, propertyHost, selected, onSelected }: { selected: string | null; onSelected: (id: string) => void; propertyHost: HTMLDivElement | null; onChunk: (id: string) => void; value?: JournalObservation | null; disabled: boolean }) {
   if (!value) return <p role="status">Journal storage observation unavailable.</p>;
-  const extent = value.extent_pages.find(page => page.page_index === selected);
+  const record = value.chunk_record;
+  const fields = { 'Chunk ID': record.chunk_id, 'Chunk state': record.state, 'Logical start (bytes)': record.logical_start,
+    'Logical end (exclusive bytes)': record.logical_end, 'Append mappings': record.mapping_count, 'Compressed mapping bytes': record.mapping_bytes };
   return <section aria-label="Journal storage" className="tw-space-y-4">
-    <Fields values={{ 'Stream manifest generation': value.generation, 'Stream writer epoch': value.writer_epoch, 'Metadata group': value.metadata_group_id,
-      'Trim offset (logical bytes)': value.trim_offset, 'Sealed tail (logical bytes)': value.sealed_tail, 'Stream state': value.closed ? 'Closed' : 'Open' }} />
-    <div className="tw-border tw-border-accent tw-rounded tw-p-3 tw-space-y-3"><h3 className="tw-font-semibold">Active chunk</h3>
-      {value.active ? <Fields values={{ 'Chunk ID': value.active.chunk_id, 'Logical start (bytes)': value.active.logical_start, 'Physical start (bytes)': value.active.physical_start,
-        'Acknowledged physical cursor (bytes)': value.active.acknowledged_cursor, 'Physical capacity (bytes)': value.active.capacity }} /> : <p>No active chunk in this manifest.</p>}
-      {value.active && <button className={buttonClass} disabled={disabled} onClick={() => onChunk(value.active!.chunk_id)}>Inspect active Chunk</button>}
+    <Fields values={{ 'Stream chunk record generation': value.generation, 'Stream writer epoch': value.writer_epoch, 'Metadata group': value.metadata_group_id,
+      'Trim offset (logical bytes)': value.trim_offset, 'Published tail (logical bytes)': value.published_tail, 'Stream state': value.closed ? 'Closed' : 'Open' }} />
+    <h3 className="tw-font-semibold">Stream chunk record</h3>
+    <p className="tw-text-xs tw-text-muted">Published tail record. Logical bounds describe its checkpoint; current appends may extend beyond it.</p>
+    <div aria-label="Stream chunk record"><Fields values={fields} />
+      <button className={buttonClass} aria-pressed={selected === record.chunk_id} onClick={() => onSelected(record.chunk_id)}>Select stream chunk record</button>
+      <button className={buttonClass} disabled={disabled} onClick={() => onChunk(record.chunk_id)}>Inspect Chunk</button>
     </div>
-    <h3 className="tw-font-semibold">Published extent index</h3>
-    <p className="tw-text-xs tw-text-muted">{value.extent_pages.length} loaded page fences · offset {value.offset}. Ordered blocks show logical byte ranges; widths do not represent sizes. Extent records and journal payloads are not read.</p>
-    <div aria-label="Extent page map" className="tw-grid tw-grid-cols-[repeat(auto-fill,minmax(180px,1fr))] tw-gap-2">{value.extent_pages.map(page => <button key={page.page_index} className={`${buttonClass} tw-text-left`} aria-pressed={selected === page.page_index} onClick={() => onSelected(page.page_index)}>
-      <span className="tw-block">Extent page {page.page_index}</span><span className="tw-font-mono tw-break-all">[{page.first_logical}, {page.end_logical})</span>
-    </button>)}</div>
-    {!value.extent_pages.length && <p>No published extent pages in this window.</p>}
-    {extent && propertyHost && createPortal(<aside aria-label="Selected extent page" className="tw-mt-5 tw-space-y-3"><h3 className="tw-font-semibold">Journal extent page</h3><Fields values={{ 'Page index': extent.page_index, 'First logical byte': extent.first_logical, 'End logical byte (exclusive)': extent.end_logical }} /></aside>, propertyHost)}
-    <div className="tw-flex tw-gap-2"><button className={buttonClass} disabled={disabled || value.offset === 0} onClick={() => onPage(Math.max(0, value.offset - 100))}>Previous extent pages</button>
-      <button className={buttonClass} disabled={disabled || value.next_offset === null} onClick={() => onPage(value.next_offset!)}>Next extent pages</button></div>
+    {selected === record.chunk_id && propertyHost && createPortal(<aside aria-label="Selected stream chunk record" className="tw-mt-5 tw-space-y-3"><h3 className="tw-font-semibold">Stream chunk record</h3><Fields values={fields} /></aside>, propertyHost)}
   </section>;
 }

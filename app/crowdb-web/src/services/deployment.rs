@@ -21,6 +21,7 @@ mod credentials;
 mod geometry;
 mod launch;
 pub(super) mod planned;
+mod policy;
 mod remote;
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -78,9 +79,18 @@ pub(super) struct Deploy {
     #[serde(default)]
     stream_chunk_capacity_bytes: Option<u64>,
     #[serde(default)]
-    stream_extent_page_entries: Option<std::num::NonZeroU32>,
+    local_deployment: Option<bool>,
     #[serde(default)]
-    test_single_node: bool,
+    local_mirror_copies: Option<u32>,
+}
+
+impl Deploy {
+    fn local(&self) -> bool {
+        self.local_deployment.unwrap_or(false)
+    }
+    fn local_copies(&self) -> u32 {
+        self.local_mirror_copies.unwrap_or(1)
+    }
 }
 
 fn deserialize_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
@@ -111,8 +121,9 @@ pub(super) async fn deploy(
 async fn deploy_inner(
     state: AppState,
     node_id: u64,
-    body: Deploy,
+    mut body: Deploy,
 ) -> Result<(StatusCode, Json<Value>), Failure> {
+    policy::apply(&state, &mut body)?;
     validate(&body)?;
     if state.node_monitor_url.is_some() {
         return remote::deploy(&state, node_id, &body).await;
@@ -140,7 +151,7 @@ async fn deploy_inner(
     .collect();
     let port_claim = super::defaults::claim_ports(&state, &ports)?;
     let (node, seeds) = inputs(&state, node_id, &id, &body)?;
-    if matches!(body.kind, Kind::Chunkdb | Kind::ChunkKv) && !body.test_single_node {
+    if matches!(body.kind, Kind::Chunkdb | Kind::ChunkKv) && !body.local() {
         if let Some(reason) = super::dependencies::storage_wait_reason(&state).await {
             return Err(err_409(reason));
         }
@@ -162,6 +173,14 @@ async fn deploy_inner(
 }
 
 fn validate(body: &Deploy) -> Result<(), Failure> {
+    if body
+        .local_mirror_copies
+        .is_some_and(|copies| !body.local() || !matches!(copies, 1 | 2))
+    {
+        return Err(err_400(
+            "Local mirror copies must be one or two and require local deployment",
+        ));
+    }
     if body.instance_id == 0 || body.instance_id > (u64::MAX >> 1) {
         return Err(err_400("Instance ID must be in 1..=9223372036854775807"));
     }
@@ -194,8 +213,7 @@ fn validate(body: &Deploy) -> Result<(), Failure> {
         || (!matches!(body.kind, Kind::ChunkKv)
             && (body.metadata_store_id.is_some()
                 || body.bootstrap_group_id.is_some()
-                || body.stream_chunk_capacity_bytes.is_some()
-                || body.stream_extent_page_entries.is_some()))
+                || body.stream_chunk_capacity_bytes.is_some()))
         || (!matches!(body.kind, Kind::AccessServer) && body.s3_port.is_some())
         || (!matches!(body.kind, Kind::AccessServer) && body.dataset_port.is_some())
         || (!matches!(body.kind, Kind::AccessServer) && body.health_port.is_some())
@@ -266,7 +284,7 @@ fn inputs(
             });
         let origins = std::iter::once(service.url.as_str())
             .chain(service.rpc_url.as_deref())
-            .chain(service.dataset_origin.as_deref())
+            .chain(service.access_origins.values().map(String::as_str))
             .chain(public);
         for origin in origins {
             let normalized = if origin.contains("://") {
@@ -309,9 +327,7 @@ fn inputs(
             .iter()
             .filter(|disk| disk.node_id == node_id && disk.disk_group_id == group)
             .collect();
-        if !body.test_single_node
-            && (disks.is_empty() || disks.iter().any(|disk| disk.device_path.is_empty()))
-        {
+        if !body.local() && (disks.is_empty() || disks.iter().any(|disk| disk.device_path.is_empty())) {
             return Err(err_400(
                 "Production DiskIO requires configured disks with device paths; configure them in Capacity",
             ));

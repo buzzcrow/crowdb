@@ -173,8 +173,31 @@ int Connection::drain_send_queue(OutFrame **out, int max)
 // re-enqueued to the MPSC queue, which would break order with concurrent
 // enqueues). The next try_send sends partials first, then drains the queue.
 // The caller arms EPOLLOUT for retry.
+Connection::SocketUse::SocketUse(Connection &connection)
+{
+    auto state = connection.socket_users_.load(std::memory_order_acquire);
+    while ((state & SOCKET_CLOSED) == 0) {
+        if (connection.socket_users_.compare_exchange_weak(state, state + 1, std::memory_order_acq_rel,
+                                                           std::memory_order_acquire)) {
+            connection_ = &connection;
+            return;
+        }
+    }
+}
+
+Connection::SocketUse::~SocketUse()
+{
+    if (connection_ != nullptr) {
+        connection_->socket_users_.fetch_sub(1, std::memory_order_release);
+    }
+}
+
 bool Connection::try_send(int fd, TransportStats *stats)
 {
+    const auto socket_use = use_socket();
+    if (!socket_use) {
+        return false;
+    }
     bool expected = false;
     if (!in_send_.compare_exchange_strong(expected, true)) {
         return true; // another thread is sending; our frame is queued
@@ -364,6 +387,7 @@ void Connection::close()
     if (!open_.exchange(false, std::memory_order_acq_rel)) {
         return; // already closed
     }
+    socket_users_.fetch_or(SOCKET_CLOSED, std::memory_order_acq_rel);
     CRB_LOG_INFO("close: conn_id={} name={}", static_cast<long long>(id_), name_);
     bool expected = false;
     if (in_send_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {

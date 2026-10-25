@@ -15,7 +15,7 @@ async fn small_write_repairs_failed_replica_through_real_chunkdb_and_diskio() {
         failed_disk: Mutex::new(None),
     });
     let client = ChunkIoClient::from_parts_with_small_policy(allocator, fault.clone(), policy()).unwrap();
-    let data = Bytes::from(vec![0x5a; MAX_FRAME_PAYLOAD_BYTES]);
+    let data = Bytes::from(vec![0x5a; MAX_FRAME_V2_PAYLOAD_BYTES]);
     let location = write_object(&client, data.clone()).await;
     let failed_disk = fault.failed_disk.lock().unwrap().expect("injected disk identity");
     client.shutdown_small_writes().await.unwrap();
@@ -46,7 +46,7 @@ async fn small_write_repairs_failed_replica_through_real_chunkdb_and_diskio() {
 async fn protected_small_write_reports_real_diskio_write_failure() {
     let stack = E2eStack::start_with_diskio_fault_rate(policy(), 1.0).await;
     let result = tokio::time::timeout(Duration::from_secs(15), async {
-        let data = Bytes::from(vec![0x5a; MAX_FRAME_PAYLOAD_BYTES]);
+        let data = Bytes::from(vec![0x5a; MAX_FRAME_V2_PAYLOAD_BYTES]);
         let mut writer = stack.client.prepare_small_write(data.len()).await?;
         writer.on_data(data).await?;
         writer.on_finish().await.map(|_| ())

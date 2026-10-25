@@ -46,7 +46,7 @@ fn request(action: ManagementAction, epoch: u64, name: &str) -> ManagementReques
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn completed_clear_admits_one_retired_catalog_task() {
     let store = Arc::new(TestStore::default());
     let catalog = repository(&store);
@@ -95,7 +95,7 @@ async fn completed_clear_admits_one_retired_catalog_task() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn explicit_activation_preserves_catalog_and_replays_across_restarts() {
     let store = Arc::new(TestStore::default());
     let catalog = repository(&store);
@@ -179,7 +179,7 @@ async fn explicit_activation_preserves_catalog_and_replays_across_restarts() {
     assert_eq!(replacement.config_generation, 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn initialize_rename_clear_and_old_result_replay_preserve_identity() {
     let store = Arc::new(TestStore::default());
     let repository = repository(&store);
@@ -243,7 +243,7 @@ async fn initialize_rename_clear_and_old_result_replay_preserve_identity() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn every_lost_initialize_response_recovers_on_another_server() {
     for fail_after in 1..=8 {
         let store = Arc::new(TestStore::default());
@@ -266,7 +266,7 @@ async fn every_lost_initialize_response_recovers_on_another_server() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn every_lost_activation_response_recovers_one_profile_without_replacing_tables() {
     for failure in 1..=8 {
         let store = Arc::new(TestStore::default());
@@ -314,7 +314,7 @@ async fn every_lost_activation_response_recovers_one_profile_without_replacing_t
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn every_lost_clear_response_preserves_one_replacement_and_persisted_grace() {
     for failure in 1..=10 {
         let store = Arc::new(TestStore::default());
@@ -362,7 +362,7 @@ async fn every_lost_clear_response_preserves_one_replacement_and_persisted_grace
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn denied_clear_and_digest_reuse_do_not_mutate() {
     let store = Arc::new(TestStore::default());
     let initialize = request(ManagementAction::Initialize, 0, "catalog");
@@ -462,7 +462,7 @@ async fn concurrent_initializers() {
     assert_eq!(repository(&store).status().await.unwrap(), (root, authority));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn delayed_fence_and_crash_restart_cannot_shorten_persisted_grace() {
     let store = Arc::new(TestStore::default());
     let bounds = ClearBounds {
@@ -538,7 +538,7 @@ async fn delayed_fence_and_crash_restart_cannot_shorten_persisted_grace() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn explicit_clear_can_raise_delegation_bounds_without_shortening_old_reader_grace() {
     let store = Arc::new(TestStore::default());
     let old = repository(&store)
@@ -572,6 +572,7 @@ async fn explicit_clear_can_raise_delegation_bounds_without_shortening_old_reade
     assert_eq!(transition.bounds.delegated_access_ms, 50);
     assert_eq!(authority.admission_bounds, transition.bounds);
     let restarted = repository(&store);
+    let writes = store.writes.load(Ordering::SeqCst);
     assert!(matches!(
         restarted
             .execute(
@@ -582,6 +583,7 @@ async fn explicit_clear_can_raise_delegation_bounds_without_shortening_old_reade
             .await,
         Err(CatalogError::Busy)
     ));
+    assert_eq!(store.writes.load(Ordering::SeqCst), writes);
     let ready = restarted
         .execute(clear, ManagementPrivilege::Clear, transition.complete_after_ms)
         .await
@@ -590,7 +592,7 @@ async fn explicit_clear_can_raise_delegation_bounds_without_shortening_old_reade
     assert_ne!(ready.catalog, old.catalog);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn clear_epoch_exhaustion_and_missing_confirmation_do_not_write() {
     use crowdb_access_iceberg::key::{IcebergKey, SystemScope};
     use crowdb_access_iceberg::record::StorageRecord;

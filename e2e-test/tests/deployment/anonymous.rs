@@ -12,7 +12,13 @@ async fn default_anonymous_volume_is_ready_and_monitor_death_exits_container() {
         .unwrap()
         .iter()
         .any(|mount| mount["Destination"] == "/opt/crowdb/data" && mount["Type"] == "volume"));
-    assert_eq!(info["manifest"]["state"], "ready");
+    assert_eq!(info["status"]["phase"], "ready");
+    assert_eq!(info["accepted"]["prepared"], true);
+    assert_eq!(info["accepted"]["node_id"], 1);
+    assert_eq!(
+        info["status"]["observation"]["cluster_id"],
+        info["accepted"]["bootstrap"]["cluster_id"]
+    );
     assert!(info["log"]
         .as_str()
         .unwrap()

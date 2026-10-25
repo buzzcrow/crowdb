@@ -100,7 +100,7 @@ enum FBMsgType : int16 {
     EWatchUnsubscribe = 1118,
     EWatchNotify = 1119,
     EWatchNotifyError = 1120,
-    // chunkdb service (range 3300s, see chunkdb.fbs — R116)
+    // ChunkDB service (range 3300s, see chunkdb.fbs).
     EAllocateChunkRequest = 3300,
     EAllocateChunkResponse = 3301,
     EAppendChunkRequest = 3302,
@@ -113,8 +113,6 @@ enum FBMsgType : int16 {
     EDeleteChunkResponse = 3309,
     EDeleteChunkRangeRequest = 3310,
     EDeleteChunkRangeResponse = 3311,
-    EUpdateChunkStripRequest = 3312,
-    EUpdateChunkStripResponse = 3313,
     EListChunksRequest = 3314,
     EListChunksResponse = 3315,
     EAdvanceChunkWriteRequest = 3316,

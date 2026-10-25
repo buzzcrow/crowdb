@@ -35,6 +35,7 @@ pub enum MonitorPhase {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceStatus {
+    pub operation_id: Option<String>,
     pub pid: Option<u32>,
     pub generation: u64,
     pub healthy: bool,

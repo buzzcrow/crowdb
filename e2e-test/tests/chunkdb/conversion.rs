@@ -29,7 +29,6 @@ pub(super) async fn converted_partial() -> (ChunkdbClient, ConversionDiskIo, Chu
         .seal_chunk(SealChunkRequest {
             chunk_id: Some(id),
             seal_bytes: length,
-            ..Default::default()
         })
         .await
         .unwrap()

@@ -1404,26 +1404,21 @@ impl OwnedChunk {
                     chunk_id: Some(chunk_id),
                 })
                 .await?;
-        } else {
-            let seal_length = u32::try_from(self.cursor.div_ceil(1024)).unwrap_or(u32::MAX);
-            if let Err(error) = self
-                .allocator
-                .seal_chunk(SealChunkRequest {
-                    chunk_id: Some(chunk_id),
-                    seal_length,
-                    seal_bytes: self.cursor,
-                })
-                .await
-            {
-                // The chunkdb background sealer (`seal_expired_writer_chunks`)
-                // may have already sealed this chunk when our writer lease
-                // expired during a conversion fault. Treat an already-sealed
-                // chunk as success; otherwise propagate the original error.
-                if !self.accept_external_seal().await? {
-                    return Err(IoError::MetadataConflict(format!(
-                        "seal reserved chunk failed: {error}"
-                    )));
-                }
+        } else if let Err(error) = self
+            .allocator
+            .seal_chunk(SealChunkRequest {
+                chunk_id: Some(chunk_id),
+                seal_bytes: self.cursor,
+            })
+            .await
+        {
+            // The background finalizer may have sealed this chunk when its lease
+            // expired during a conversion fault. Reconcile the exact seal before
+            // returning the original failure.
+            if !self.accept_external_seal().await? {
+                return Err(IoError::MetadataConflict(format!(
+                    "seal reserved chunk failed: {error}"
+                )));
             }
         }
         Ok(())
@@ -1485,7 +1480,8 @@ fn batch_shape(batch: &[PendingObject]) -> Result<(usize, usize, usize)> {
 }
 
 fn frame_bytes(payload_bytes: usize) -> Result<usize> {
-    crowdb_protocol::frame::framed_physical_length(payload_bytes as u64)
+    crowdb_protocol::frame::FrameLayout::OrdinaryV2
+        .physical_length(payload_bytes as u64)
         .map_err(|error| IoError::WriteFailed(error.to_string()))
         .and_then(|bytes| usize::try_from(bytes).map_err(|error| IoError::WriteFailed(error.to_string())))
 }

@@ -290,22 +290,15 @@ async fn main() {
         temp_failure_timeout_secs: config.load().heartbeat.temp_failure_timeout_secs,
     };
     let notify_enabled = config.load().notify.notify_enabled;
-    let sync_trigger = if notify_enabled {
-        Some(Arc::new(tokio::sync::Notify::new()))
-    } else {
-        None
-    };
+    // Local completion events wake publication even when remote watch is off.
+    let sync_trigger = Arc::new(tokio::sync::Notify::new());
     let keepalive = KeepAlive::new(hw, svc, container.clone(), keepalive_cfg)
         .with_ownership_fencing()
         .with_cas_retry_metric(Arc::clone(&metrics.allocate_retry_cas_bit))
         .with_config_handle(Arc::clone(&config))
         .with_rpc_endpoint(config.load().server.rpc_listen_addr.clone())
         .with_metrics(metrics.clone());
-    let keepalive = if let Some(ref trigger) = sync_trigger {
-        keepalive.with_sync_trigger(Arc::clone(trigger))
-    } else {
-        keepalive
-    };
+    let keepalive = keepalive.with_sync_trigger(Arc::clone(&sync_trigger));
 
     info!("running blocking initial keep-alive tick");
     let init_outcome = keepalive.tick().await;
@@ -381,8 +374,10 @@ async fn main() {
     let load_kv = Arc::clone(&dg_kv);
     let load_cfg = (**config.load()).clone();
     let load_metrics = metrics.clone();
+    let loaded = Arc::clone(&sync_trigger);
     let load_handle = tokio::spawn(async move {
         run_zone_load(load_kv, load_container, &load_cfg, &load_metrics).await;
+        loaded.notify_one();
     });
 
     // Build the background-task runner with keepalive + compaction.
@@ -434,10 +429,7 @@ async fn main() {
     // keys). The timer remains as a safety-net poller.
     let notify_handle = if notify_enabled {
         let watch_client = WatchNotifyClient::from_shared(Arc::clone(&kv_client));
-        let trigger = sync_trigger
-            .as_ref()
-            .map(Arc::clone)
-            .expect("sync_trigger set when notify_enabled");
+        let trigger = Arc::clone(&sync_trigger);
         let notify_stop = stop.clone();
         Some(tokio::spawn(async move {
             let handler = NotifyHandler::new(watch_client, trigger);
@@ -479,10 +471,14 @@ async fn main() {
             .expect("HTTP health server error");
     });
 
-    // Wait for shutdown signal.
     let rpc_server_stop = Arc::clone(&rpc_server);
-    shutdown_signal().await;
-    info!("received shutdown signal");
+    tokio::select! {
+        () = shutdown_signal() => info!("received shutdown signal"),
+        writes = crowdb_diskdb::liveness::recovery::wait_required(&container) => {
+            error!(?writes,
+                "metadata write outcome is unknown; stopping for supervisor restart under a new fenced process session");
+        }
+    }
     rpc_service.close_free_admission().await;
     rpc_server_stop.stop();
     stop.notify_waiters();

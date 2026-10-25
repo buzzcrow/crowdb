@@ -15,6 +15,8 @@ name = "crowdb-cli"
 path = "src/main.rs"
 
 [dependencies]
+futures = "0.3"
+uuid = { version = "1", features = ["v4"] }
 crowdb-console-shared = { path = "../../lib/crowdb-console-shared" }
 crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
 crowdb-common = { path = "../../lib/crowdb-common/rust" }
@@ -53,8 +55,8 @@ name = "cluster_cli_test"
 path = "tests/cluster_cli_test.rs"
 
 [[test]]
-name = "launch_registry_cli_test"
-path = "tests/launch_registry_cli_test.rs"
+name = "cluster_target_test"
+path = "tests/cluster_target_test.rs"
 
 [[test]]
 name = "direct_cli_test"
@@ -77,5 +79,13 @@ name = "s3_cli_test"
 path = "tests/s3_cli_test.rs"
 
 [[test]]
-name = "container_cluster_test"
-path = "tests/container_cluster_test.rs"
+name = "cluster_status_test"
+path = "tests/cluster_status_test.rs"
+
+[[test]]
+name = "cluster_lifecycle_test"
+path = "tests/cluster_lifecycle_test.rs"
+
+[[test]]
+name = "cluster_workloads_test"
+path = "tests/cluster_workloads_test.rs"

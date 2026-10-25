@@ -21,6 +21,7 @@ async fn provisional_init_waits_for_activation_and_only_then_loads_allocatable_z
     let id = DiskId { high: 4, low: 5 };
     let hw = prepare_hardware(&metadata, HwStatus::Init).await;
     let container = Arc::new(DdbDiskGroupContainer::new(999));
+    let completion = Arc::new(tokio::sync::Notify::new());
     let keepalive = KeepAlive::new(
         metadata.make_hardware_client(),
         metadata.make_service_registry_client(),
@@ -33,7 +34,8 @@ async fn provisional_init_waits_for_activation_and_only_then_loads_allocatable_z
             temp_failure_timeout_secs: 900,
         },
     )
-    .with_ddb_kv_client(metadata.make_ddb_kv_client());
+    .with_ddb_kv_client(metadata.make_ddb_kv_client())
+    .with_sync_trigger(completion.clone());
     for _ in 0..2 {
         let outcome = keepalive.tick().await;
         assert_eq!(outcome.disks_added, 0);
@@ -48,6 +50,26 @@ async fn provisional_init_waits_for_activation_and_only_then_loads_allocatable_z
     wait_for_disks_ready(&container, 3, 1, 1).await;
     let group = container.get_disk_group(3).unwrap();
     assert!(group.disk_snapshot()[0].allocatable());
+    tokio::time::timeout(Duration::from_millis(100), completion.notified())
+        .await
+        .expect("completed zone loading must wake publication without another heartbeat interval");
+    keepalive.tick().await;
+    let instances = metadata
+        .make_service_registry_client()
+        .read_all_diskdb_instances()
+        .await
+        .unwrap();
+    let summary = &instances[0]
+        .1
+        .extra
+        .as_ref()
+        .unwrap()
+        .diskdb
+        .as_ref()
+        .unwrap()
+        .group_usages[0];
+    assert!(summary.usage_known);
+    assert_eq!(summary.allocatable_disk_count, 1);
 }
 
 #[test]

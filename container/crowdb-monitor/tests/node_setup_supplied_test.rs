@@ -4,9 +4,8 @@
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
 use crowdb_monitor::{DeploymentProfile, NodeIdentity, NodeSetupForTests};
 use crowdb_protocol::{
-    common::{BindMapValue, GroupValue, NodeValue, RackValue},
+    common::{BindMapValue, NodeValue, RackValue},
     diskdb::rpc::DiskGroupValue,
-    key::{KvGroupKey, TextKey},
     mgmt::node::{
         setup::{
             NodeSetupChoices, NodeSetupPhase, NodeSetupRequest, SetupMedium, SetupStepPhase, SetupStorage,
@@ -20,6 +19,8 @@ use crowdb_protocol::{
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 #[path = "common/node_setup.rs"]
 mod node_setup;
+#[path = "common/node_setup_groups.rs"]
+mod node_setup_groups;
 
 struct TestSetup {
     root: crowdb_test_harness::test_dirs::TestDir,
@@ -84,7 +85,7 @@ impl TestSetup {
         )
         .unwrap();
         let mut profile = DeploymentProfile::load(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../oci-image/node-profile.toml"),
         )
         .unwrap();
         profile.paths.data_root = root.path().to_path_buf();
@@ -136,26 +137,7 @@ impl TestSetup {
             .await
             .unwrap();
         hardware.set_bind(1, 2, 7, 0, 1).await.unwrap();
-        authority
-            .kv
-            .put(
-                0,
-                0,
-                KvGroupKey {
-                    store_id: 0,
-                    group_id: 1,
-                }
-                .to_path()
-                .as_bytes(),
-                &serde_json::to_vec(&GroupValue {
-                    store_id: 0,
-                    group_id: 1,
-                })
-                .unwrap(),
-                None,
-            )
-            .await
-            .unwrap();
+        node_setup_groups::publish_group(&authority, 1).await;
         authority
     }
 
@@ -330,7 +312,7 @@ async fn failed_medium_keeps_successful_siblings_and_only_explicit_retry_dispatc
     assert_eq!(observer.await.unwrap(), vec![requests[1].clone()]);
     let state: serde_json::Value =
         serde_json::from_slice(&fs::read(test.root.path().join("node-setup.json")).unwrap()).unwrap();
-    assert!(state["retry_supplied"].as_array().unwrap().is_empty());
+    assert!(state["retry_disks"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]

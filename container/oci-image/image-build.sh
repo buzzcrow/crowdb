@@ -11,6 +11,8 @@ while (($#)); do
     case "$1" in
         --output) output=$(realpath -m "${2:?output path required}"); shift 2 ;;
         --staged) staged=true; shift ;;
+        --load) load_image=${CROWDB_CONTAINER_IMAGE:-crowdb-node:dev}; shift ;;
+        --load-image) load_image=${2:?image reference required}; shift 2 ;;
         --platform)
             [[ ${2:?platform required} == linux/amd64 ]] || { echo 'Only linux/amd64 is supported' >&2; exit 1; }
             args+=("--platform" "$2"); shift 2 ;;
@@ -21,5 +23,8 @@ while (($#)); do
 done
 pixi run --manifest-path container/oci-image/pixi.toml python "$PWD/container/oci-image/preflight.py" "${preflight_args[@]}"
 if [[ "${staged:-false}" != true ]]; then bash container/oci-image/stage.sh; fi
-exec pixi run --manifest-path container/oci-image/pixi.toml build \
+pixi run --manifest-path container/oci-image/pixi.toml build \
     --context "$PWD/target/container-runtime" --output "$output" "${args[@]}"
+if [[ -n ${load_image:-} ]]; then
+    pixi run --manifest-path container/oci-image/pixi.toml import "$output" --image "$load_image"
+fi

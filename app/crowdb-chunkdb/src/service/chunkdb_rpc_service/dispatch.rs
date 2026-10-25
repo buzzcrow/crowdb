@@ -10,7 +10,7 @@ use crowdb_protocol::chunkdb_fb::{
     FBDeleteChunkRangeRequest, FBDeleteChunkRequest, FBDiscardReplacementSegmentRequest,
     FBMutateStripReservationRequest, FBPrepareMirrorToEcConversionRequest, FBQueryChunkRequest,
     FBQuerySegmentOwnerRequest, FBRelocateSegmentHandoffRequest, FBReplaceChunkStripRangeRequest,
-    FBReserveStripGroupRequest, FBSealChunkRequest, FBTriggerConversionRequest, FBUpdateChunkStripRequest,
+    FBReserveStripGroupRequest, FBSealChunkRequest, FBTriggerConversionRequest,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::fb::FBMsgType;
@@ -40,7 +40,6 @@ pub(super) fn is_system_request(message: u16, control: &[u8]) -> bool {
         ESealChunkRequest => FBSealChunkRequest,
         EDeleteChunkRequest => FBDeleteChunkRequest,
         EDeleteChunkRangeRequest => FBDeleteChunkRangeRequest,
-        EUpdateChunkStripRequest => FBUpdateChunkStripRequest,
         EAllocateReplacementSegmentRequest => FBAllocateReplacementSegmentRequest,
         EDiscardReplacementSegmentRequest => FBDiscardReplacementSegmentRequest,
         EReplaceChunkStripRangeRequest => FBReplaceChunkStripRangeRequest,

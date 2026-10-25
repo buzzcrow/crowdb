@@ -12,7 +12,7 @@ import sys
 import time
 import uuid
 from fixture import docker, redact
-from client import bundle_client
+from native_containerd_profile import client_bundle
 from image_identity import verify_server_sources
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,15 +41,13 @@ def cleanup(prefix):
 
 
 def run_profile(args, parser):
-    cluster = args.profile == "containerd-cluster"
-    needed_cpu = 2 if cluster else 1.5
-    needed_memory = 5120 if cluster else 2048
+    needed_cpu, needed_memory = 3.5, 8192
     if args.layer != "all" or args.scope != "all" or args.case or args.require_isolation:
         parser.error("containerd cluster is an explicit deployment profile; domain selectors do not apply")
-    if args.node_cpus <= 0 or args.concurrency != 1 or args.cpus < needed_cpu or args.memory_mib < needed_memory:
-        parser.error(f"{args.profile} requires --concurrency 1, {needed_cpu:g} CPU and {needed_memory} MiB including Linux hosts")
+    if args.node_cpus != 1 or args.concurrency != 1 or args.cpus < needed_cpu or args.memory_mib < needed_memory:
+        parser.error(f"{args.profile} requires --node-cpus 1, --concurrency 1, {needed_cpu:g} CPU and {needed_memory} MiB including Linux hosts")
     if args.list:
-        print(json.dumps([{"scope":"deployment.containerd", "case":"three_host_quorum_and_recovery" if cluster else "manual_and_single_host_recovery", "nodes":3 if cluster else 1}]))
+        print(json.dumps([{"scope":"deployment.containerd", "case":"three_host_quorum_and_recovery", "nodes":3}]))
         return
     info = json.loads(docker("info", "--format", "{{json .}}"))
     if info["OSType"] != "linux" or info["NCPU"] < needed_cpu or info["MemTotal"] < needed_memory * 1048576:
@@ -69,27 +67,16 @@ def run_profile(args, parser):
     (run_root / "identity.json").write_text(json.dumps({"profile":args.profile, "artifact":verified,
         "sources":source,"concurrency":1,"cpus":needed_cpu,"memory_mib":needed_memory,
         "node_cpus":args.node_cpus,"host_data":str(data)}, indent=2))
-    client = None
-    if not cluster:
-        staged = ROOT / "target/container-runtime"
-        if (staged / "SOURCE_REVISION").read_text().strip() != verified["revision"]:
-            raise RuntimeError("storage SDK probe requires the exact OCI dependency stage")
-        client = bundle_client(run_root / "media-client")
-        for library in (ROOT / "target/container-runtime/lib").iterdir():
-            destination = client / "lib" / library.name
-            if library.is_file() and not destination.exists():
-                shutil.copy2(library, destination)
-    env = os.environ.copy()
-    if client:
-        env["CROWDB_CONTAINERD_MEDIA_CLIENT"] = str(client)
-
+    client = client_bundle(run_root / 'host-client')
+    env = dict(os.environ, CROWDB_E2E_CLI_BUNDLE=str(client),
+               CROWDB_CONTAINERD_CLUSTER='oci-' + run_root.name[-20:])
     env.update(CROWDB_CONTAINERD_DATA=str(data), CROWDB_CONTAINERD_PREFIX=prefix,
                CROWDB_CONTAINERD_ARCHIVE=str(archive), CROWDB_CONTAINERD_HOST_IMAGE=verified["base_image"],
                CROWDB_CONTAINERD_NODE_CPUS=str(args.node_cpus))
     started = time.monotonic()
     status, code = "failed", None
     print(f"Containerd {args.profile} profile: {verified['image_digest']}; artifacts {run_root}", flush=True)
-    script = "containerd-cluster.py" if cluster else "containerd-single-host.py"
+    script = "containerd-cluster.py"
     child = subprocess.Popen([sys.executable,str(ROOT / "e2e-test/profiles" / script)],
         cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
     try:

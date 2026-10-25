@@ -29,8 +29,15 @@ use crowdb_protocol::key::{
     DomainMonitorKey, InstanceKey, ServingGrantKey, TextKey,
 };
 
+#[path = "common/grant_process.rs"]
+mod grant_process;
+#[path = "common/process_lease.rs"]
+mod test_process;
+
 #[path = "common/catalog_publication.rs"]
 mod catalog_publication;
+#[path = "common/endpoint_publication.rs"]
+mod endpoint_publication;
 
 struct CountingDriver {
     ticks: Arc<AtomicUsize>,
@@ -201,6 +208,8 @@ async fn assert_ready_transfer_publication() -> (Group0ControlPlane, TransferTra
 
     let (_, store) = registry_with_group_zero(PxLocalReplicaRole::Leader);
     let control = Group0ControlPlane::acquire(&store).await.unwrap();
+    test_process::TestProcessLease::seed(&control, 1).await;
+    test_process::TestProcessLease::seed(&control, 2).await;
     let partition_id = Id128 { high: 1, low: 1 };
     let transition_id = Id128 { high: 9, low: 9 };
     let artifact = PartitionArtifact {
@@ -264,7 +273,7 @@ async fn assert_ready_transfer_publication() -> (Group0ControlPlane, TransferTra
         source_partition_id: partition_id,
         source_epoch: 1,
         source_stream_name: artifact.stream_name,
-        source_stream_manifest_generation: 1,
+        source_stream_generation: 1,
         replay_offset: 0,
         cutover_offset: 7,
         base_root_manifest_generation: 1,
@@ -325,6 +334,7 @@ async fn assert_ready_transfer_publication() -> (Group0ControlPlane, TransferTra
             last_heartbeat_ms: u64::MAX,
             extra: Some(ServiceExtra {
                 chunk_kv: Some(ChunkKvExtra {
+                    process_epoch: 1,
                     hosted: vec![HostedPartition {
                         partition_id,
                         owner_epoch: 1,
@@ -355,6 +365,7 @@ async fn assert_ready_transfer_publication() -> (Group0ControlPlane, TransferTra
         last_heartbeat_ms: u64::MAX,
         extra: Some(ServiceExtra {
             chunk_kv: Some(ChunkKvExtra {
+                process_epoch: 1,
                 hosted: vec![HostedPartition {
                     partition_id,
                     owner_epoch: 2,
@@ -501,15 +512,7 @@ async fn chunk_kv_driver_plans_dead_owner_recovery_once_and_waits_for_target() {
             instance_id: 2,
         }
         .to_path(),
-        &InstanceValue {
-            instance_id: 2,
-            rpc_endpoint: "127.0.0.1:17002".into(),
-            last_heartbeat_ms: u64::MAX,
-            extra: Some(ServiceExtra {
-                chunk_kv: Some(ChunkKvExtra::default()),
-                ..ServiceExtra::default()
-            }),
-        },
+        &test_process::TestProcessLease::idle_instance(2, "127.0.0.1:17002"),
     )
     .await;
     let mut policy = descriptor();
@@ -614,6 +617,7 @@ async fn assert_chunk_kv_split_plan(
             last_heartbeat_ms: u64::MAX,
             extra: Some(ServiceExtra {
                 chunk_kv: Some(ChunkKvExtra {
+                    process_epoch: 1,
                     capacity_bytes: 1_000,
                     durable_bytes: 600,
                     request_rate: 0,
@@ -677,7 +681,7 @@ async fn assert_chunk_kv_split_plan(
         source_partition_id: prepared.parent_id,
         source_epoch: prepared.parent_epoch,
         source_stream_name: prepared.parent_artifact.stream_name,
-        source_stream_manifest_generation: 1,
+        source_stream_generation: 1,
         replay_offset: 0,
         cutover_offset: 10,
         base_root_manifest_generation: 1,
@@ -698,7 +702,7 @@ async fn assert_chunk_kv_split_plan(
         child_applied_seq: 11,
         child_tree_manifest: 1,
         child_root_manifest_generation: 1,
-        retained_parent_tail_overlay: None,
+
         child_tail_overlay: overlay,
     });
     prepared.validate().unwrap();
@@ -851,6 +855,7 @@ async fn put_balance_fixture(control: &Group0ControlPlane) {
         (
             1,
             ChunkKvExtra {
+                process_epoch: 1,
                 capacity_bytes: 1_000,
                 durable_bytes: 200,
                 request_rate: 0,
@@ -869,6 +874,7 @@ async fn put_balance_fixture(control: &Group0ControlPlane) {
         (
             2,
             ChunkKvExtra {
+                process_epoch: 1,
                 capacity_bytes: 1_000,
                 ..ChunkKvExtra::default()
             },

@@ -142,6 +142,16 @@ def main():
         for origin in origins:
             wait(lambda: request(origin, "/api/node/status"), lambda result: result["phase"] == "unbound_draft", "cleanup releases UI binding")
         print("Shared rack mutations, minority gating and explicit cleanup passed", flush=True)
+        # Default setup is a separate policy acceptance. Preserve each retired
+        # root, then launch fresh owned roots with the full storage policy.
+        for index in range(3):
+            docker("stop", "--time", "10", names[index])
+            docker("rm", names[index])
+            (DATA / str(index)).rename(DATA / f"retired-{index}")
+            origins[index] = start_node(names[index], default_setup=True)
+            wait(lambda index=index: request(origins[index], "/api/node/candidates"),
+                 lambda result: bool(result["local"]), "fresh default-policy node")
+            request(origins[index], "/api/node/auto-join", {"enabled": False})
         scenario("node-default-setup.py").verify(docker, request, wait, names, origins)
         resources = capture_resources(docker, names, DATA / "node-resources.json")
         for name, state in resources.items():

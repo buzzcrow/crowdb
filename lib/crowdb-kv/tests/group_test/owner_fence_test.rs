@@ -349,3 +349,66 @@ owner_fence_tests!(
     new_leader_tenure_does_not_reuse_a_closed_old_admission,
     unresolved_old_proposal_blocks_a_topology_replacement_from_claiming_ownership,
 );
+
+#[tokio::test]
+async fn uncertain_owner_proposal_reenters_election_before_reopening_reads() {
+    let cluster = crate::common::cluster::start_cluster_no_leader(&[1, 2, 3]).await;
+    let leader = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(node) = cluster.elected_leader() {
+                let group = node.get_group(1).unwrap();
+                if group.leader_read_ready() {
+                    break group;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("initial leader recovery");
+    let term = leader.local_replica().current_term_snapshot();
+    let fence = Bytes::from_static(b"/diskdb/ownership-fence/1/1/1");
+    // Losing an admitted proposal's result must close this tenure, even
+    // while the peer connections and heartbeat quorum remain healthy.
+    drop(leader.hold_owner_proposal_for_tests(fence.clone()));
+    assert!(matches!(
+        leader
+            .propose_cas(encode(&fence, b"owner"), fence, 0, 21, 1)
+            .await,
+        ProposeResult::OutcomeUnknown
+    ));
+    assert!(!leader.leader_read_ready());
+    let recovered = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(node) = cluster.elected_leader() {
+                let group = node.get_group(1).unwrap();
+                if group.local_replica().current_term_snapshot() > term && group.leader_read_ready() {
+                    break group;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("an uncertain tenure must yield and recover despite healthy heartbeats");
+    let key = Bytes::from_static(b"after-owner-recovery");
+    assert!(matches!(
+        recovered
+            .propose_cas(encode(&key, b"confirmed"), key.clone(), 0, 22, 1)
+            .await,
+        ProposeResult::Chosen { .. }
+    ));
+    assert_eq!(
+        recovered
+            .local_replica()
+            .learner
+            .engine()
+            .get_versioned(&key)
+            .await
+            .unwrap()
+            .unwrap()
+            .1,
+        Bytes::from_static(b"confirmed")
+    );
+    cluster.shutdown().await;
+}

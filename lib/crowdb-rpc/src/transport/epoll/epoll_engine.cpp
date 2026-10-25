@@ -152,12 +152,22 @@ void EpollEngine::remove_connection(int read_fd, int write_fd)
 
 void EpollEngine::arm_read(int read_fd, Connection *conn)
 {
+    const auto socket_use = conn->use_socket();
+    if (!socket_use) {
+        return;
+    }
+
     // MOD read fd with EPOLLIN only — does not touch the write fd.
     mod_fd(read_fd, EPOLLIN, conn);
 }
 
 void EpollEngine::arm_write(int write_fd, Connection *conn)
 {
+    const auto socket_use = conn->use_socket();
+    if (!socket_use) {
+        return;
+    }
+
     // MOD write fd with EPOLLOUT only — does not re-arm read.
     // Uses mod_fd_write to preserve the token's write bit
     // so wait() can distinguish write events from read events.
@@ -166,6 +176,11 @@ void EpollEngine::arm_write(int write_fd, Connection *conn)
 
 void EpollEngine::disarm_write(int write_fd, Connection *conn)
 {
+    const auto socket_use = conn->use_socket();
+    if (!socket_use) {
+        return;
+    }
+
     // MOD write fd with 0 events — disarms write without touching read.
     mod_fd_write(write_fd, 0, conn);
 }

@@ -13,6 +13,7 @@ pub(in crate::node::runtime) async fn execute(
     intent: NodeServiceIntent,
 ) -> Result<Value> {
     validate(&intent)?;
+    super::policy::validate(&profile.paths.data_root, &intent)?;
     let binding: NodeBinding =
         durable::read(&profile.paths.data_root.join("node-binding.json"))?.ok_or("node is unbound")?;
     if binding.node_id != intent.node_id || binding.bootstrap.cluster_id != intent.cluster_id {
@@ -29,12 +30,18 @@ pub(in crate::node::runtime) async fn execute(
     std::fs::create_dir_all(&directory)?;
     let state = directory.join("execution.json");
     let mut attempts = 0;
+    let mut continuing = false;
     if let Some(previous) = durable::read::<Execution>(&state)? {
         if previous.intent.operation_id == intent.operation_id {
             if previous.intent != intent {
                 return Err("operation identity reused with other inputs".into());
             }
             attempts = previous.attempts;
+            continuing = matches!(
+                intent.action,
+                NodeServiceAction::Start | NodeServiceAction::Restart
+            ) && processes.owns(process_id)
+                && processes.alive(process_id)?;
             if previous.complete
                 && (previous.pid.is_none() || (processes.owns(process_id) && processes.alive(process_id)?))
             {
@@ -45,7 +52,11 @@ pub(in crate::node::runtime) async fn execute(
     if matches!(
         intent.action,
         NodeServiceAction::Start | NodeServiceAction::Restart
-    ) {
+    ) && !continuing
+    {
+        super::dependencies::committed_ready(profile, &intent, &binding)
+            .await
+            .map_err(|error| crowdb_console_shared::error::Error::DependenciesNotReady(error.to_string()))?;
         if attempts >= 5 {
             return Err(
                 "service operation exceeded its durable restart budget; use explicit service controls".into(),
@@ -63,10 +74,20 @@ pub(in crate::node::runtime) async fn execute(
             error: None,
         },
     )?;
-    let result = apply(profile, processes, &binding, &intent, process_id, &directory).await;
+    let result = if continuing {
+        observe_ready(profile, &intent)
+            .await
+            .map(|()| processes.pid(process_id))
+    } else {
+        apply(profile, processes, &binding, &intent, process_id, &directory).await
+    };
     let (complete, pid, error) = match &result {
         Ok(pid) => (true, *pid, None),
-        Err(error) => (false, None, Some(bounded_error(&error.to_string()))),
+        Err(error) => (
+            false,
+            processes.pid(process_id),
+            Some(bounded_error(&error.to_string())),
+        ),
     };
     durable::write(
         &state,
@@ -109,11 +130,15 @@ async fn apply(
             processes.pid("kv")
         } else {
             let mut service = service(profile, &intent.kind)?;
+            let physical_host = service.env.get("CROWDB_PHYSICAL_HOST_ID").cloned();
             service.id.clone_from(&intent.service_id);
             let config = directory.join("service.toml");
             durable::write_bytes(&config, intent.configuration.as_bytes())?;
             service.args = vec!["--config".into(), config.to_string_lossy().into_owned()];
             service.env = intent.environment.clone();
+            if let Some(host) = physical_host {
+                service.env.insert("CROWDB_PHYSICAL_HOST_ID".into(), host);
+            }
             let logs = profile.paths.log_root.join(&intent.service_id);
             if matches!(intent.kind.as_str(), "diskdb" | "chunkdb" | "chunk-kv") {
                 service
@@ -142,6 +167,16 @@ async fn apply(
         None
     };
     Ok(pid)
+}
+
+// A live process has already had its initial startup window. Later health
+// observations must yield after one probe so control requests can make progress.
+async fn observe_ready(profile: &DeploymentProfile, intent: &NodeServiceIntent) -> Result<()> {
+    let service = super::super::probes::for_intent(profile, intent)?;
+    crate::ProbeExecutor::new(intent.kind == "diskio")?
+        .probe_service(&service, &std::collections::BTreeMap::new())
+        .await
+        .map_err(|error| format!("managed service {} readiness failed: {error}", intent.service_id).into())
 }
 
 async fn wait_ready(

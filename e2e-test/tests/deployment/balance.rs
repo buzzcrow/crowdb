@@ -2,13 +2,13 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
-use crowdb_protocol::chunk_kv::DomainMonitorDescriptor;
+use crowdb_protocol::chunk_kv::{ChunkKvRangeBalancePolicy, DomainMonitorDescriptor, SplitTransition};
 use crowdb_protocol::key::{ChunkKvSplitKey, DomainMonitorKey, TextKey};
 use std::time::{Duration, Instant};
 
 #[tokio::test]
 #[ignore = "requires the complete release single-node profile"]
-async fn single_node_disables_local_chunk_kv_split_planning() {
+async fn single_node_preserves_default_chunk_kv_balance_policy() {
     super::witness_with_write(true, true).await;
     let address = crate::common::management::addresses(1)[0].clone();
     let client = CrowdbKvClient::new(ClientConfig::new(vec![format!("http://{address}:10000")]));
@@ -24,7 +24,10 @@ async fn single_node_disables_local_chunk_kv_split_planning() {
         panic!("single-node Chunk-KV monitor descriptor is missing");
     };
     let monitor: DomainMonitorDescriptor = serde_json::from_slice(&value).unwrap();
-    assert!(monitor.chunk_kv_range_balance.is_none());
+    assert_eq!(
+        monitor.chunk_kv_range_balance,
+        Some(ChunkKvRangeBalancePolicy::default())
+    );
     let deadline = Instant::now() + Duration::from_secs(12);
     loop {
         let observed = client
@@ -34,7 +37,7 @@ async fn single_node_disables_local_chunk_kv_split_planning() {
                 ChunkKvSplitKey::text_prefix_all().as_bytes(),
                 &[],
                 &[],
-                1,
+                128,
                 ReadMode::Linearizable,
                 None,
                 false,
@@ -42,10 +45,15 @@ async fn single_node_disables_local_chunk_kv_split_planning() {
             )
             .await
             .unwrap();
-        assert!(
-            observed.items.is_empty(),
-            "disabled balancing created a split transition"
-        );
+        for (_, value) in &observed.items {
+            let split: SplitTransition = serde_json::from_slice(value).unwrap();
+            assert!(
+                split.validate().is_ok(),
+                "default local split must preserve its durable identity: {split:?}"
+            );
+            assert_eq!(split.parent_owner.instance_id, 1);
+            assert_eq!(split.child.owner.instance_id, 1);
+        }
         assert!(!observed.truncated && !observed.timed_out);
         if Instant::now() >= deadline {
             break;
@@ -61,10 +69,7 @@ async fn single_node_disables_local_chunk_kv_split_planning() {
         let path = entry.unwrap().path();
         if path.is_file() {
             count += 1;
-            let body = std::fs::read(path).unwrap();
-            assert!(!body
-                .windows(b"local split planned".len())
-                .any(|window| window == b"local split planned"));
+            assert!(std::fs::metadata(path).unwrap().len() > 0);
         }
     }
     assert!(count > 0, "the actual KV service must produce diagnostic logs");

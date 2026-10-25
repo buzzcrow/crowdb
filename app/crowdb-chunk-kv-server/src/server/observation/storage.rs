@@ -43,30 +43,17 @@ pub(super) fn tree(observation: Result<TreeObservation>) -> Value {
 }
 
 pub(super) fn journal(value: &StreamMetadataObservation) -> Value {
-    let active = value.active.as_ref().map(|active| {
-        json!({
-            "chunk_id":format!("{:016x}{:016x}",active.chunk_id.high,active.chunk_id.low),
-            "physical_start":active.physical_start.to_string(),
-            "logical_start":active.logical_start.to_string(),
-            "acknowledged_cursor":active.acknowledged_cursor.to_string(),
-            "capacity":active.capacity.to_string(),
-        })
+    let chunk = &value.chunk;
+    let chunk = json!({
+        "chunk_id":format!("{:016x}{:016x}",chunk.chunk_id.high,chunk.chunk_id.low),
+        "state":format!("{:?}",chunk.state),
+        "logical_start":chunk.logical_start.to_string(),"logical_end":chunk.logical_end.to_string(),
+        "mapping_count":chunk.mapping_count.to_string(),"mapping_bytes":chunk.mapping_bytes.to_string(),
     });
-    let pages: Vec<_> = value
-        .extent_pages
-        .iter()
-        .map(|page| {
-            json!({
-                "page_index":page.page_index.to_string(),
-                "first_logical":page.first_logical.to_string(),
-                "end_logical":page.end_logical.to_string(),
-            })
-        })
-        .collect();
     json!({
         "generation":value.generation.to_string(), "writer_epoch":value.writer_epoch.to_string(),
         "metadata_group_id":value.metadata_group_id.to_string(), "trim_offset":value.trim_offset.to_string(),
-        "sealed_tail":value.sealed_tail.to_string(), "closed":value.closed,
-        "active":active, "extent_pages":pages, "offset":value.offset, "next_offset":value.next_offset,
+        "published_tail":value.published_tail.to_string(), "closed":value.closed,
+        "chunk_record":chunk, "offset":value.offset, "next_offset":value.next_offset,
     })
 }

@@ -70,6 +70,19 @@ impl ServerClient {
         self.post_empty(&format!("/stores/{sid}/groups"), req).await
     }
 
+    /// Read durable creation ownership independently of current runtime health.
+    ///
+    /// # Errors
+    /// Rejects unavailable, absent or malformed ownership observations.
+    pub async fn group_creation(
+        &self,
+        sid: u64,
+        gid: u64,
+    ) -> Result<crowdb_protocol::mgmt::GroupCreationStatus> {
+        self.get_json(&format!("/stores/{sid}/groups/{gid}/creation"))
+            .await
+    }
+
     /// Import a new replica's snapshot before it participates in voting.
     ///
     /// # Errors

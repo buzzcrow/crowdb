@@ -28,6 +28,7 @@ async fn a_preflight_review_is_not_admission_and_discard_is_operation_fenced_and
         ssh_port: 2222,
         ssh_user: "crowdb".into(),
         confirmed: false,
+        host_key: None,
         cancelled: false,
     };
     let path = root.join(format!("node-preflight-{discovery}.json"));

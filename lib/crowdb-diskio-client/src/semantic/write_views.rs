@@ -2,7 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    Bytes, DiskioClient, DiskioError, DiskioResult, Durability, OperationOptions, SegmentTarget, WritePayload,
+    Bytes, DiskioClient, DiskioError, DiskioResult, Durability, OperationOptions, SegmentTarget, WriteMode,
+    WritePayload,
 };
 
 impl DiskioClient {
@@ -12,8 +13,8 @@ impl DiskioClient {
     ///
     /// Returns a typed input, topology, backpressure, disk, durability, or
     /// ambiguous-outcome error. Larger view lists use consecutive bounded RPC
-    /// frames without copying payload. Frames complete in byte order; requested
-    /// fsync follows the whole range.
+    /// frames without copying payload. Frames complete in byte order; the last
+    /// request synchronizes the whole range when requested.
     pub async fn write_views(
         &self,
         target: SegmentTarget,
@@ -40,7 +41,7 @@ impl DiskioClient {
                     target,
                     offset,
                     WritePayload::Views(data.into()),
-                    durability,
+                    WriteMode::Data(durability),
                     options,
                 )
                 .await;
@@ -49,8 +50,8 @@ impl DiskioClient {
         let mut views = data.into_iter();
         // All frames belong to one strip's disk block. Wait for each reply
         // before submitting the next frame, even at aligned boundaries: RPC
-        // arrival order across connections is not guaranteed, and server-side
-        // partial-block padding can overwrite a later frame's stored bytes.
+        // arrival order across connections is not guaranteed. This preserves
+        // the contiguous prefix and makes final synchronization cover all data.
         // Callers may overlap independent strip blocks and different disks
         // holding the same strip's shards or mirror replicas.
         loop {
@@ -66,14 +67,15 @@ impl DiskioClient {
                 target,
                 position,
                 WritePayload::Views(batch.into()),
-                Durability::Buffered,
+                WriteMode::Data(if views.len() == 0 {
+                    durability
+                } else {
+                    Durability::Buffered
+                }),
                 options,
             )
             .await?;
             position += length as u64;
-        }
-        if durability == Durability::Fsync {
-            self.fsync(target.disk_id, options).await?;
         }
         Ok(())
     }

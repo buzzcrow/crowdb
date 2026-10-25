@@ -235,6 +235,7 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
     status.services.insert(
         "diskio".into(),
         ServiceStatus {
+            operation_id: None,
             pid: Some(123),
             generation: 2,
             healthy: true,
@@ -313,6 +314,7 @@ async fn verify_chunk_kv_placement(app: &axum::Router, sysmd: &CrowdbSysmdClient
             "127.0.0.1:15201",
             &ServiceExtra {
                 chunk_kv: Some(crowdb_protocol::common::ChunkKvExtra {
+                    process_epoch: 1,
                     node_id: Some(1),
                     http_endpoint: Some("http://127.0.0.1:15101".into()),
                     ..Default::default()

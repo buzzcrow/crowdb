@@ -1,13 +1,11 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! `crowdb-cli` CLI entrypoint (R126 restructure).
+//! `crowdb-cli` CLI entrypoint.
 //!
-//! Four top-level domains: `cluster`, `kv`, `chunk`, `bench`. The CLI
-//! talks directly to the system group via `CrowdbSysmdClient`
-//! and to individual `crowdb-kv-server` management APIs — no
-//! `crowdb-web` intermediary. The connection target can be any system-group
-//! node; leader discovery is automatic.
+//! Cluster operations, logical KV operations and attached workloads. The CLI
+//! resolves a confirmed application target, then uses Group 0 and native
+//! service clients for metadata, data and attached workloads.
 
 macro_rules! eprintln {
     () => {
@@ -33,35 +31,26 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use crowdb_protocol::KV_SERVER_MGMT_BASE;
 
 use commands::{
-    run_bench_verb, run_chunk_diskdb_verb, run_chunk_stub_verb, run_cluster_verb, run_group_verb,
-    run_kv_data_verb, run_kv_server_verb, run_port_alloc, run_replica_verb, run_s3_verb, run_store_verb,
-    BenchVerb, ChunkDiskdbVerb, ChunkStubVerb, ClusterVerb, GroupVerb, KvDataVerb, KvServerVerb,
-    PortAllocArgs, ReplicaVerb, S3Verb, StoreVerb,
+    run_bench_verb, run_cluster_verb, run_group_verb, run_kv_data_verb, run_port_alloc, run_replica_verb,
+    run_s3_verb, run_store_verb, BenchVerb, ClusterVerb, GroupVerb, KvDataVerb, PortAllocArgs, ReplicaVerb,
+    S3Verb, StoreVerb,
 };
 
 #[derive(Parser, Debug)]
 #[command(name = "crowdb-cli", version, about = "CrowDB cluster console (CLI)")]
 struct Cli {
-    /// Versioned bare-metal launch registry; process identity is stored separately.
-    #[arg(long, global = true, value_name = "PATH")]
-    registry: Option<PathBuf>,
+    /// Select a saved application cluster binding.
+    #[arg(long, global = true, env = "CROWDB_CLUSTER")]
+    cluster: Option<String>,
 
-    /// IP address of any system-group node; leader discovery is automatic.
-    #[arg(
-        long,
-        global = true,
-        alias = "sysmd-ip",
-        env = "CROWDB_SYSTEM_IP",
-        default_value = "127.0.0.1"
-    )]
-    system_ip: String,
+    /// Console management origin; repeat to verify multiple cluster members.
+    #[arg(long = "management-endpoint", global = true)]
+    management_endpoints: Vec<String>,
 
-    /// Management port of any system-group node; leader discovery is automatic.
-    #[arg(long, global = true, alias = "sysmd-port", env = "CROWDB_SYSTEM_PORT", default_value_t = KV_SERVER_MGMT_BASE, value_parser = clap::value_parser!(u16).range(1..))]
-    system_port: u16,
+    #[arg(skip)]
+    target: Option<crowdb_console_shared::deployment::target::ResolvedClusterTarget>,
 
     /// Latest-run benchmark log directory, computed in `main()` after parse.
     /// This is not a CLI flag and remains empty for non-benchmark commands.
@@ -78,7 +67,6 @@ impl Cli {
         match &self.command {
             Domain::Bench { verb } => Some(match verb {
                 BenchVerb::Kv(_) => "bench-kv",
-                BenchVerb::Rpc(_) => "bench-rpc",
                 BenchVerb::Diskdb(_) => "bench-diskdb",
                 BenchVerb::Chunkdb(_) => "bench-chunkdb",
                 BenchVerb::Chunkio(_) => "bench-chunkio",
@@ -91,31 +79,23 @@ impl Cli {
 
 #[derive(Subcommand, Debug)]
 enum Domain {
-    /// Start, restart, stop, or inspect services from the launch registry.
-    #[command(subcommand)]
-    Launch(commands::launch::LaunchVerb),
     /// Hardware topology + cluster-level ops.
     #[command(alias = "cls")]
     Cluster {
         #[command(subcommand)]
         verb: ClusterVerb,
     },
-    /// KV layer: server lifecycle + logical concepts + data-plane.
+    /// Logical KV topology and data operations.
     Kv {
         #[command(subcommand)]
         verb: KvVerb,
-    },
-    /// Chunk storage service cluster.
-    Chunk {
-        #[command(subcommand)]
-        verb: ChunkVerb,
     },
     /// Load injection only.
     Bench {
         #[command(subcommand)]
         verb: BenchVerb,
     },
-    /// Persistent S3 mini-cluster and bucket/object operations.
+    /// Signed bucket and object operations on the selected cluster.
     S3 {
         #[command(subcommand)]
         verb: S3Verb,
@@ -132,8 +112,6 @@ enum Domain {
 #[derive(Subcommand, Debug)]
 enum KvVerb {
     #[command(subcommand)]
-    Server(KvServerVerb),
-    #[command(subcommand)]
     Store(StoreVerb),
     #[command(subcommand)]
     Group(GroupVerb),
@@ -141,14 +119,6 @@ enum KvVerb {
     Replica(ReplicaVerb),
     #[command(subcommand)]
     Data(KvDataVerb),
-}
-
-#[derive(Subcommand, Debug)]
-enum ChunkVerb {
-    #[command(subcommand)]
-    Diskdb(ChunkDiskdbVerb),
-    #[command(subcommand)]
-    Stub(ChunkStubVerb),
 }
 
 fn main() -> ExitCode {
@@ -253,25 +223,26 @@ fn shell_quote(value: &str) -> String {
 }
 
 async fn dispatch(mut cli: Cli) -> ExitCode {
+    cli.target = match commands::cluster::target::resolve(&cli).await {
+        Ok(target) => target,
+        Err(code) => return code,
+    };
     let command = std::mem::replace(
         &mut cli.command,
         Domain::Cluster {
-            verb: ClusterVerb::Status,
+            verb: ClusterVerb::Status {
+                json: false,
+                timeout: 10,
+            },
         },
     );
     match command {
-        Domain::Launch(verb) => commands::launch::run(&cli, verb).await,
         Domain::Cluster { verb } => run_cluster_verb(&cli, verb).await,
         Domain::Kv { verb } => match verb {
-            KvVerb::Server(sv) => run_kv_server_verb(&cli, sv).await,
             KvVerb::Store(sv) => run_store_verb(&cli, sv).await,
             KvVerb::Group(gv) => run_group_verb(&cli, gv).await,
             KvVerb::Replica(rv) => run_replica_verb(&cli, rv).await,
             KvVerb::Data(dv) => run_kv_data_verb(&cli, dv).await,
-        },
-        Domain::Chunk { verb } => match verb {
-            ChunkVerb::Diskdb(dv) => run_chunk_diskdb_verb(&cli, dv).await,
-            ChunkVerb::Stub(sv) => run_chunk_stub_verb(&cli, sv).await,
         },
         Domain::Bench { verb } => run_bench_verb(&cli, verb).await,
         Domain::S3 { verb } => run_s3_verb(&cli, verb).await,

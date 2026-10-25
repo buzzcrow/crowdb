@@ -17,7 +17,7 @@ test('native diagnostics: Zone canvas colors match every actual allocation bit',
   expect(zone.busy_block_count).toBeGreaterThan(0);
   expect(zone.free_block_count).toBeGreaterThan(0);
   await step('native zone DOM setup', async () => {
-    await page.goto('/?domain=Capacity');
+    await page.goto('/?domain=Cluster');
     await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible();
   });
   // Open the actual Storage branch before its DiskGroup and disk.

@@ -8,10 +8,10 @@ use std::{
 
 use axum::{extract::State, Json};
 use crowdb_console_shared::deployment::PreparedBootstrap;
-use crowdb_protocol::mgmt::node::CandidateState;
+use crowdb_protocol::mgmt::node::deployment::DeploymentMode;
 use serde_json::{json, Value};
 
-use super::{Failure, Policy};
+use super::Failure;
 use crate::{
     error::{err_409, err_502, map_config_err},
     node,
@@ -54,7 +54,7 @@ async fn step(
     if !state.runtime_root.join("auto-join.json").exists() {
         let _operation = crate::services::Operation::claim(state, vec!["node/auto-join".into()])?;
         if !state.runtime_root.join("auto-join.json").exists() {
-            node::save(&state.runtime_root.join("auto-join.json"), &Policy::default())?;
+            node::save(&state.runtime_root.join("auto-join.json"), &policy)?;
         }
     }
     if !policy.enabled {
@@ -93,6 +93,10 @@ async fn admit_candidates(
     attempts: &mut BTreeMap<String, (Instant, String)>,
     bound: bool,
 ) -> Result<Value, Failure> {
+    if bound {
+        return finish(state, true, Vec::new(), Vec::new()).await;
+    }
+    let deployment = super::deployment(state)?;
     let snapshot = node::candidates(State(state.clone()))
         .await
         .map_err(|status| {
@@ -104,6 +108,11 @@ async fn admit_candidates(
             )
         })?
         .0;
+    let selected = super::formation::candidates(&snapshot, &deployment)?;
+    if let Some(waiting) = super::formation::waiting_for_peers(state, &snapshot, &selected, &deployment)? {
+        return Ok(waiting);
+    }
+    super::formation::prepare_local_rack(state, &deployment).await?;
     let config = state
         .config
         .read()
@@ -114,41 +123,22 @@ async fn admit_candidates(
     let Some(rack) = config.racks.first() else {
         return Ok(json!({"phase": "needs-rack"}));
     };
-    let mut candidates: Vec<_> = snapshot
-        .candidates
-        .iter()
+    let candidates: Vec<_> = selected
+        .into_iter()
         .filter(|candidate| {
-            candidate.state == CandidateState::Unbound
-                && (!prepared_access.contains(&candidate.advertisement.discovery_id)
-                    || records.iter().any(|record| {
-                        record.discovery_id == candidate.advertisement.discovery_id
-                            && !record.cancelled
-                            && config.node(record.node_id).is_some()
-                    }))
+            !prepared_access.contains(&candidate.advertisement.discovery_id)
+                || records.iter().any(|record| {
+                    record.discovery_id == candidate.advertisement.discovery_id
+                        && !record.cancelled
+                        && config.node(record.node_id).is_some()
+                })
         })
         .collect();
-    candidates.sort_by(|left, right| {
-        left.advertisement
-            .discovery_id
-            .cmp(&right.advertisement.discovery_id)
-    });
     attempts.retain(|id, _| {
         candidates
             .iter()
             .any(|candidate| candidate.advertisement.discovery_id == *id)
     });
-    if !bound && config.nodes.is_empty() && !super::read(state)?.local_draft_selected {
-        let clusters: std::collections::BTreeSet<_> = snapshot
-            .candidates
-            .iter()
-            .filter_map(|candidate| candidate.advertisement.cluster_id.as_ref())
-            .collect();
-        if clusters.len() > 1 {
-            return Ok(
-                json!({"phase": "needs-target", "error": "Open the intended cluster Console or select nodes for this local draft"}),
-            );
-        }
-    }
     let mut eligible = Vec::new();
     let mut needs_access = Vec::new();
     for candidate in candidates {
@@ -159,7 +149,7 @@ async fn admit_candidates(
         }
         if let Some(record) = record.filter(|record| config.node(record.node_id).is_some() && !bound) {
             eligible.push(record.node_id);
-            if eligible.len() == 3 {
+            if eligible.len() == usize::from(deployment.initial_voters) {
                 break;
             }
             continue;
@@ -185,9 +175,10 @@ async fn finish(
         return Ok(json!({"phase": "ready", "needs_access": needs_access,
             "members": operation.intent.members(), "operation_id": operation.identity.operation_id}));
     }
-    if eligible.len() < 3 {
+    let required = super::deployment(state)?.initial_voters;
+    if eligible.len() < usize::from(required) {
         return Ok(
-            json!({"phase": "waiting", "members": eligible, "required_voters": 3, "needs_access": needs_access}),
+            json!({"phase": "waiting", "members": eligible, "required_voters": required, "needs_access": needs_access}),
         );
     }
     if !super::read(state)?.enabled {
@@ -214,15 +205,22 @@ async fn admit_candidate(
     {
         return Ok(None);
     }
-    // Existing node keys must authenticate admission; the worker never supplies passwords.
+    let deployment = super::deployment(state)?;
+    // Only compatible local formation can use the documented test credential.
+    let password = if deployment.mode == DeploymentMode::Local {
+        Some(super::formation::local_password(state)?)
+    } else {
+        None
+    };
     let body = node::admission::AdmitRequest {
         discovery_id: id.clone(),
         rack_id: record.map_or(default_rack, |record| record.rack_id),
         ssh_user: record.map_or_else(|| "crowdb".into(), |record| record.ssh_user.clone()),
         ssh_port: record.map_or(2222, |record| record.ssh_port),
-        ssh_password: None,
+        ssh_password: password,
         preflight_operation_id: None,
         setup: None,
+        expected_formation: Some(deployment.formation()),
     };
     if !super::read(state)?.enabled {
         return Ok(Some(json!({"phase": "disabled"})));

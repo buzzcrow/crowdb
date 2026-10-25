@@ -72,6 +72,7 @@ pub(crate) async fn cleanup(
             )),
             &operation,
         )?;
+        retire_credentials(&state, &operation.identity)?;
         for entry in
             std::fs::read_dir(state.runtime_root.as_ref()).map_err(|error| err_502(error.to_string()))?
         {
@@ -101,6 +102,37 @@ pub(crate) async fn cleanup(
     Ok(Json(
         serde_json::to_value(progress).map_err(|error| err_502(error.to_string()))?,
     ))
+}
+
+pub(super) fn retire_credentials(
+    state: &AppState,
+    bootstrap: &crowdb_protocol::mgmt::SystemBootstrapIdentity,
+) -> Result<(), (StatusCode, Json<ErrorBody>)> {
+    let source = state.runtime_root.join("secrets");
+    match std::fs::symlink_metadata(&source) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Err(err_409("Invalid Console credential directory")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(err_502(error.to_string())),
+    }
+    let operation =
+        uuid::Uuid::parse_str(&bootstrap.operation_id).map_err(|error| err_409(error.to_string()))?;
+    let retired = state.runtime_root.join(format!("retired-secrets-{operation}"));
+    match std::fs::symlink_metadata(&retired) {
+        Ok(_) => return Err(err_409("Retired Console credential directory already exists")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(err_502(error.to_string())),
+    }
+    match std::fs::rename(&source, &retired) {
+        Ok(()) => {}
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && std::fs::symlink_metadata(&retired).is_ok_and(|metadata| metadata.is_dir()) => {}
+        Err(error) => return Err(err_502(error.to_string())),
+    }
+    std::fs::File::open(state.runtime_root.as_ref())
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| err_502(error.to_string()))
 }
 
 fn cleanup_config(

@@ -19,6 +19,7 @@ pub(super) async fn create_local(
     let groups = client.list_groups(store_id).await?;
     if let Some(group) = groups.iter().find(|group| group.group_id == request.group_id) {
         return if group.local_replica_id == request.replica_id {
+            verify_creation(client, store_id, request).await?;
             Ok(false)
         } else {
             Err(Error::Conflict {
@@ -30,17 +31,44 @@ pub(super) async fn create_local(
     match client.add_group(store_id, request).await {
         Ok(()) => Ok(true),
         Err(error) => {
-            if matches!(&error, Error::UpstreamRpc { status, .. } if status.contains("HTTP 409")) {
+            if request.deployment.is_some()
+                || matches!(&error, Error::UpstreamRpc { status, .. } if status.contains("HTTP 409"))
+            {
                 let groups = client.list_groups(store_id).await?;
                 if groups.iter().any(|group| {
                     group.group_id == request.group_id && group.local_replica_id == request.replica_id
                 }) {
+                    verify_creation(client, store_id, request).await?;
                     return Ok(false);
                 }
             }
             Err(error)
         }
     }
+}
+
+async fn verify_creation(client: &ServerClient, store_id: u64, request: &AddGroupRequest) -> Result<()> {
+    let actual = match client.group_creation(store_id, request.group_id).await {
+        Ok(actual) => actual,
+        Err(Error::UpstreamRpc { status, .. })
+            if request.deployment.is_none() && status.contains("HTTP 404") =>
+        {
+            return Ok(())
+        }
+        Err(error) => return Err(error),
+    };
+    if actual.version != 1
+        || actual.store_id != store_id
+        || actual.group_id != request.group_id
+        || actual.replica_id != request.replica_id
+        || actual.deployment != request.deployment
+        || actual.retired
+    {
+        return Err(Error::Config(
+            "local group creation ownership differs or is retired".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) async fn resolve(

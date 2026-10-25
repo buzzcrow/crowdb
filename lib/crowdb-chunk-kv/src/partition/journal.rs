@@ -12,15 +12,21 @@ pub trait PartitionJournal: Send + Sync {
     async fn append_frames(&self, frames: &[Bytes]) -> Result<Vec<JournalPosition>>;
     async fn read_window(&self, offset: u64, max_bytes: usize) -> Result<Bytes>;
     async fn trim_prefix(&self, offset: u64) -> Result<u64>;
-    async fn reclaim_metadata_before(&self, generation: u64, max_pages: usize) -> Result<u64>;
+    async fn reclaim_metadata_before(&self, generation: u64, max_records: usize) -> Result<u64>;
+    /// Publishes the ordered WAL prefix before a durable checkpoint or cutover proof.
+    async fn checkpoint(&self) -> Result<u64>;
+    /// Drain and release writer authority before publishing an explicit transfer proof.
+    async fn release_writer(&self) -> Result<()> {
+        self.checkpoint().await.map(|_| ())
+    }
     async fn close(&self) -> Result<()>;
     fn stream_name(&self) -> StreamName;
-    fn manifest_generation(&self) -> u64;
+    fn record_generation(&self) -> u64;
     fn tail(&self) -> u64;
     /// Returns published metadata only; implementations without inspection return `None`.
     ///
     /// # Errors
-    /// Rejects stale generations and invalid extent-index continuations.
+    /// Rejects stale generations and invalid chunk-record observation offsets.
     fn observe_metadata(
         &self,
         _generation: Option<u64>,
@@ -112,9 +118,9 @@ impl PartitionJournal for StreamPartitionJournal {
         self.stream.trim_prefix(offset).await.map_err(map_stream_error)
     }
 
-    async fn reclaim_metadata_before(&self, generation: u64, max_pages: usize) -> Result<u64> {
+    async fn reclaim_metadata_before(&self, generation: u64, max_records: usize) -> Result<u64> {
         self.stream
-            .reclaim_metadata_before(generation, max_pages)
+            .reclaim_metadata_before(generation, max_records)
             .await
             .map_err(map_stream_error)
     }
@@ -123,12 +129,20 @@ impl PartitionJournal for StreamPartitionJournal {
         self.stream.close().await.map_err(map_stream_error)
     }
 
+    async fn checkpoint(&self) -> Result<u64> {
+        self.stream.checkpoint().await.map_err(map_stream_error)
+    }
+
+    async fn release_writer(&self) -> Result<()> {
+        self.stream.release_writer().await.map_err(map_stream_error)
+    }
+
     fn stream_name(&self) -> StreamName {
         self.stream_name
     }
 
-    fn manifest_generation(&self) -> u64 {
-        self.stream.manifest_generation()
+    fn record_generation(&self) -> u64 {
+        self.stream.record_generation()
     }
 
     fn tail(&self) -> u64 {
@@ -152,9 +166,7 @@ fn map_stream_error(error: StreamError) -> ChunkKvError {
         StreamError::InvalidRequest(message) => ChunkKvError::InvalidRequest(message),
         StreamError::Backpressure => ChunkKvError::Overloaded,
         StreamError::StaleWriter => ChunkKvError::StaleEpoch,
-        StreamError::DefinitelyNotCommitted(_)
-        | StreamError::ResolvingAmbiguousAppend
-        | StreamError::WriteStalled => ChunkKvError::WriteStalled,
+        StreamError::ResolvingAmbiguousAppend | StreamError::WriteStalled => ChunkKvError::WriteStalled,
         StreamError::ReadUnavailable(message) => ChunkKvError::TreeUnavailable(message),
         StreamError::Corruption(message) => ChunkKvError::JournalCorruption(message),
         StreamError::Internal(message) => ChunkKvError::Internal(message),

@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Actual large extent directory through the owned Chunk-KV process chain.
+//! Actual ordered Stream chunk records through the owned Chunk-KV process chain.
 
 use super::native_context::TestNativeContext;
 use crowdb_chunk_kv_client::{
@@ -51,11 +51,11 @@ impl TestNativeJournal {
             panic!("large journal lost its actual value");
         };
         assert_eq!(record.value, value);
-        verify_directory(context).await;
+        verify_chunk_records(context).await;
     }
 }
 
-async fn verify_directory(context: &TestNativeContext) {
+async fn verify_chunk_records(context: &TestNativeContext) {
     let catalog = context
         .api(
             Method::GET,
@@ -73,16 +73,20 @@ async fn verify_directory(context: &TestNativeContext) {
             catalog["generation"].as_str().unwrap()
         );
         let observed = context.api(Method::GET, &path, Value::Null, 200).await;
-        if observed["journal"]["next_offset"] == 100 {
-            assert_eq!(observed["journal"]["extent_pages"].as_array().unwrap().len(), 100);
+        if observed["journal"]["chunk_record"]["logical_start"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > 0
+        {
+            assert!(observed["journal"]["next_offset"].is_null());
+            assert_eq!(observed["journal"]["chunk_record"]["state"], "Active");
             found = true;
             break;
         }
     }
-    assert!(
-        found,
-        "actual writes must publish more than 100 extent page fences"
-    );
+    assert!(found, "actual writes must rotate to a later Stream chunk record");
 }
 
 pub(super) async fn wait_initial_split(source: &Group0ChunkKvRangeCatalogSource) {
@@ -98,7 +102,7 @@ pub(super) async fn wait_initial_split(source: &Group0ChunkKvRangeCatalogSource)
             .map(|entry| entry.owner.instance_id)
             .collect();
         // First placement changes the owning stream. Produce the large current
-        // directory after that real handoff rather than pinning its source.
+        // Stream chunk records after that real handoff rather than pinning its source.
         if catalog.entries().len() >= 2
             && owners.len() >= 2
             && catalog.entries().iter().all(|entry| {
@@ -115,7 +119,8 @@ pub(super) async fn wait_initial_split(source: &Group0ChunkKvRangeCatalogSource)
         }
         assert!(
             started.elapsed() < std::time::Duration::from_secs(60),
-            "native initial split did not settle before directory workload"
+            "native initial split did not settle before chunk record workload: {:?}",
+            catalog.entries()
         );
     }
 }

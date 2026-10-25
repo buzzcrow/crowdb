@@ -180,6 +180,7 @@ async fn ensure_group_local(
                         replica_id,
                         initial_role: Some(initial_role),
                         start_election,
+                        deployment: None,
                     },
                 )
                 .await
@@ -197,6 +198,7 @@ async fn ensure_group_local(
                         replica_id,
                         initial_role: Some(initial_role),
                         start_election,
+                        deployment: None,
                     },
                 )
                 .await

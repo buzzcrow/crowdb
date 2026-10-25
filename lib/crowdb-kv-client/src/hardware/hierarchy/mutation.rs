@@ -4,6 +4,7 @@
 //! Shared revision fence for status and hierarchy membership changes.
 
 use crowdb_protocol::key::{RackKey, TextKey};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use crate::{BatchOp, CrowdbKvClient, Error, GetOutcome, ReadMode, Result};
 
@@ -40,7 +41,9 @@ where
     T: serde::de::DeserializeOwned + serde::Serialize + PartialEq,
     F: Fn(&mut T) -> Result<()>,
 {
-    for _ in 0..10 {
+    let mut last_error = Error::CasBusy;
+    let mut uncertain = false;
+    for attempt in 0..10 {
         let rack_path = RackKey { rack_id }.to_path();
         let rack = read(kv, &rack_path)
             .await?
@@ -69,9 +72,26 @@ where
             .await
         {
             Ok(_) => return Ok(()),
-            Err(Error::CasFailed { .. } | Error::CasBusy | Error::OutcomeUnknown) => {}
+            Err(error @ (Error::CasFailed { .. } | Error::CasBusy | Error::OutcomeUnknown)) => {
+                uncertain |= matches!(error, Error::OutcomeUnknown);
+                last_error = error;
+                if attempt < 9 {
+                    // Give the in-flight rack mutation time to settle before
+                    // re-reading its revision. Spread competing records across
+                    // the next window instead of synchronizing their retries.
+                    let mut hash = DefaultHasher::new();
+                    (path, attempt).hash(&mut hash);
+                    let window = 1 << attempt.min(6);
+                    let delay = window + hash.finish() % window;
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+            }
             Err(error) => return Err(error),
         }
     }
-    Err(Error::OutcomeUnknown)
+    Err(if uncertain {
+        Error::OutcomeUnknown
+    } else {
+        last_error
+    })
 }

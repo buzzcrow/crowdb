@@ -42,13 +42,14 @@ pub(super) async fn launch(
                 err_502("Chunk slot initialization timed out; reconcile the layout before retrying")
             })??;
             let request = ChunkdbDeployRequest {
+                local_deployment: body.local(),
                 dynamic_ownership: body.dynamic_ownership,
                 server_id: id.into(),
                 instance_id: body.instance_id,
                 http_port: body.http_port.unwrap(),
                 rpc_port: body.rpc_port.unwrap(),
                 kv_server_mgmt_seeds: seeds.to_vec(),
-                allow_unsafe_ec: body.test_single_node,
+                allow_unsafe_ec: false,
                 rpc_workers: None,
                 kv_connections: None,
                 kv_client_rpc_workers: None,
@@ -179,13 +180,13 @@ pub(super) async fn chunk_kv_config(
         "rpc_advertise_addr":format!("{}:{}",node.host,body.rpc_port.unwrap()),
         "http_listen_addr":format!("{}:{}",node.host,body.http_port.unwrap()),
         "http_advertise_addr":format!("{}:{}",node.host,body.http_port.unwrap()),
-        "group0_mgmt_seeds":seeds, "storage":{"metadata_store_id":store,"stream_mirror_copies":if body.test_single_node {1} else {2}},
+        "group0_mgmt_seeds":seeds, "storage":{"metadata_store_id":store,"stream_mirror_copies":if body.local() {body.local_copies()} else {2}},
     });
+    if body.local() {
+        config["storage"]["tree_strip_capacity_bytes"] = json!(1024 * 1024);
+    }
     if let Some(bytes) = body.stream_chunk_capacity_bytes {
         config["storage"]["stream_chunk_capacity_bytes"] = json!(bytes);
-    }
-    if let Some(entries) = body.stream_extent_page_entries {
-        config["storage"]["stream_extent_page_entries"] = json!(entries);
     }
     if let Some(group) = body.bootstrap_group_id {
         let client =
@@ -221,14 +222,15 @@ pub(super) fn access_config(body: &Deploy, seeds: &[String], node: &NodeEntry) -
     if let Some(port) = body.dataset_port {
         config["dataset"] = json!({"listen":format!("{}:{port}",node.host),"request_timeout_seconds":60});
     }
-    if body.test_single_node {
-        config["deployment"] = json!({"mode":"test_single_node","max_node_failures":0});
-        config["small_write"] = json!({"mirror_copies":1,"conversion_enabled":false,"ec_data":2,"ec_code":1});
+    if body.local() {
+        config["deployment"] = json!({"mode":"local","max_node_failures":0});
+        config["small_write"] =
+            json!({"mirror_copies":body.local_copies(),"conversion_enabled":false,"ec_data":2,"ec_code":1});
         for name in ["s3", "iceberg"] {
-            config[name]["large_mirror_copies"] = json!(1);
+            config[name]["large_mirror_copies"] = json!(body.local_copies());
         }
         config["s3"]["small_write"] =
-            json!({"mirror_copies":1,"conversion_enabled":false,"ec_data":2,"ec_code":1});
+            json!({"mirror_copies":body.local_copies(),"conversion_enabled":false,"ec_data":2,"ec_code":1});
     }
     config
 }

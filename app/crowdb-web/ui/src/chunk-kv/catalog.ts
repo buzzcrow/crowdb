@@ -6,7 +6,7 @@ export interface Overlay {
   source_partition_id: Identity;
   source_epoch: string;
   source_stream_name: Identity;
-  source_stream_manifest_generation: string;
+  source_stream_generation: string;
   replay_offset: string;
   cutover_offset: string;
   base_root_manifest_generation: string;

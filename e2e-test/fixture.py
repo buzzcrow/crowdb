@@ -37,7 +37,7 @@ def request(origin, path, body=None):
             content = response.read()
             return json.loads(content) if content else None
     except urllib.error.HTTPError as error:
-        error.add_note(error.read().decode())
+        error.add_note(f"{origin}{path}: {redact(error.read().decode())}")
         raise
 
 
