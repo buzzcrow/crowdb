@@ -546,6 +546,23 @@ remaining user design decision and no requirement `Blocked` condition.
 
 ## Current acceptance preparation (2026-10-25)
 
+- Subsequent source `be5eca5c` passes the affected 823 Iceberg tests, 201 Access
+  tests (11 ignored), workspace all-feature clippy, normal lint, formatting and
+  163 fixture unit tests. Its matching `access-cleanup-v3-20261025` image passes
+  all 12 affected GC/namespace/S3 container cases. GC now continues bounded
+  backlog windows instead of waiting the full idle interval after every step.
+- The subsequent unchanged full TCP workload outputs all 18 trials / 4,608
+  successful reads, but does not complete semantic/restart acceptance. While its
+  installed Python consumer runs, `.crowdb-runtime` and `target` disappear;
+  the consumer exits 1 and the runner fails to read its deleted stderr or write
+  the final manifest. The deletion source is unconfirmed. All original runtime
+  artifact paths below are consequently historical identifiers, not files still
+  available for inspection. Source commits and bundle backups are intact.
+  Recovered trial JSON, GC observations and console logs are saved outside those
+  directories in `/tmp/crowdb-access-continuation-evidence-20261025`.
+  The imported image remains available. Keep real-service acceptance open and
+  rerun after shared-directory cleanup stops; do not infer semantic success from
+  the completed performance trials. The user has been asked about concurrent cleanup.
 - The final seven-crate Access/Dataset/Iceberg/S3/native/ChunkClient/Chunk-KV
   all-target gate at `7b2c61aa` passes: 1,699 tests, zero failures, four ignored cases.
   Workspace all-target/all-feature clippy, standard Rust lint, formatting and

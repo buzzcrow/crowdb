@@ -22,6 +22,24 @@ Client recipes: [container development](../../../container/single-node-container
   Provisioned allocation capacity bounds storage; cumulative orphan storage
   is not bounded by active request limits.
 
+## Evidence retention after shared-directory removal
+
+During the subsequent Dataset run, the repository's `.crowdb-runtime` and
+`target` directories disappeared. The deletion source is unconfirmed. Artifact
+IDs below identify their completed executions; the original runtime directories
+are no longer present. Source commits and Git bundle backups remain intact.
+
+The new image's 12-case acceptance stdout, component/lint logs, recovered GC
+observations and all 18 Dataset trial JSON records are retained in
+`/tmp/crowdb-access-continuation-evidence-20261025`. The Dataset trials complete
+4,608 reads with zero errors, but the semantic process exits unsuccessfully and
+its deleted stderr cannot be recovered. The runner then fails on missing log and
+manifest paths. This execution does not pass installed-binding or restart
+acceptance, and its service cgroup manifest is unavailable. Rerun only with a
+stable artifact directory; do not substitute the completed trials for the missing
+semantic/restart gate. The imported Docker image remains available independently
+of the removed OCI archive.
+
 ## Performance work to consolidate later
 
 - A native fault-matrix diagnostic run returned `Store(Client(Deadline))` from
@@ -65,13 +83,79 @@ Client recipes: [container development](../../../container/single-node-container
 - Create one consolidated optimization backlog later. No new performance backlog
   or latency guarantee is introduced by the functional-test split itself.
 
+## Current cleanup regression gates
+
+At source `be5eca5c`, the affected Iceberg crate passes all 823 tests; Access
+Server passes 201 tests with 11 existing ignored cases. Workspace all-target /
+all-feature clippy, normal `rs-lint`, formatting, the 163 fixture unit tests and
+container-client compilation pass.
+
+The matching `access-cleanup-v3-20261025` image passes 12 affected real-service
+cases. GC evidence is below. Namespace CRUD and native-storage/listener restart
+pass in `container-e2e/run-79033ed427994b0ca117463063119374`.
+Seven independent `s3.protocol` cases pass with the original checks and timeouts:
+
+- AWS chunked trailers: `run-b59ea5a1911247dc802bbe593b2357df`.
+- Default boto3 checksums and multipart: `run-704e090a405f47b9835b83e98e96b75d`.
+- Fragmentation and storage boundaries: `run-a4f03ef2a6b642daa229a5b03af0b6f1`.
+- Ordinary PUT size matrix: `run-37c54686be42429d8cee6ecf9de4afa3`.
+- Slow signed upload and buffer release: `run-4b60cd2091a5470dafcc065bd1214c42`.
+- Truncated signed upload and credit release: `run-b757efd59d334ed58237fd9ae846556c`.
+- Signed raw HTTP wire contract: `run-5d9fbbfe7b894eb685dd6c68ac037ed3`.
+
+These are functional and request-cost regressions. They do not measure the hit
+rate or end-to-end throughput benefit of forwarding complete S3 body owners.
+
+## GC scheduling and foreground observations
+
+The four GC container cases pass on `crowdb-node:access-cleanup-v3-20261025`
+in `container-e2e/run-15dee04958f34b6f9ad7207fcff1d679`. The imported Docker ID is
+`sha256:6636ec6d437cc3bbe32d4c0d355cd1b0a778fbc156797fb39f00ee8eed3cbe0d`,
+source revision `be5eca5c52e8f64bdbc4c5c2e96fc6091af6729e`, source tree
+`c4e3b70c54ba6c4b4aef2d54b0af21cf98b3f473`.
+
+The foreground case uses the production default 30-minute idle interval,
+one-item discovery pages, 128 seeded files and the original per-window budgets.
+Four PyIceberg workers each create, commit, read and drop three tables while a
+native chunk writer completes 64 writes of 128 bytes. All operations succeed.
+The task is observed at revisions 1 and 2 at 0 and 1,018 ms; the continuation
+check observes revision 3 at 4,077 ms. It remains in `Discover`: this proves
+continued advancement, not complete backlog retirement or a sustained cleanup rate.
+
+The test prints every successful operation's latency and nearest-rank quantiles:
+
+| Operation             | Samples | p50 (ms) | p99 (ms) |
+| --------------------- | ------- | -------- | -------- |
+| Create namespace      | 4       | 281.07   | 282.19   |
+| Create table          | 12      | 72.68    | 472.67   |
+| Commit                | 12      | 33.58    | 50.15    |
+| Load table            | 12      | 2.95     | 7.65     |
+| Credentials           | 12      | 3.14     | 5.97     |
+| Read metadata         | 12      | 2.79     | 20.89    |
+| Drop table            | 12      | 146.84   | 151.18   |
+| Drop namespace        | 4       | 243.95   | 244.53   |
+| Native chunk write    | 64      | 0.54     | 85.17    |
+
+Chunk timing includes writer preparation, payload delivery and finish; it excludes
+the intentional 50-ms sleeps and initial client connection. It does not measure
+an HTTP object PUT or object metadata publication. Its first sample is 85.17 ms
+and remains included. The observer adds one task GET per 100 ms during overlap
+and continuation checks. These same-host, unpinned, small-sample observations have
+no isolated baseline; their p99 values are near maxima, not production latency
+guarantees or evidence that GC adds no foreground cost.
+
+```sh
+pixi run clean-env && pixi run python e2e-test/run.py --layer iceberg --scope iceberg.gc --image crowdb-node:access-cleanup-v3-20261025 --concurrency 1 --cpus 4 --memory-mib 12288
+```
+
 ## Dataset HTTP/native comparison
 
-The complete same-host TCP workload and installed Python/storage-restart
-acceptance pass in `dataset-workload/abea0a0568824233a32ba85a063e522a` under
-`.crowdb-runtime/artifacts/`. `manifest.json` retains image labels, CPU placement
-and per-phase service counters; each client log retains all per-size p50/p99
-observations and digest timings. `summary.json` aggregates the three trials.
+The previous complete same-host TCP workload and installed Python/storage-restart
+acceptance passed in `dataset-workload/abea0a0568824233a32ba85a063e522a` under
+`.crowdb-runtime/artifacts/`. Its manifest recorded image labels, CPU placement
+and per-phase service counters; client logs recorded all per-size p50/p99
+observations and digest timings. Its summary aggregated the three trials.
+The shared-directory removal described above also removed these original files.
 
 - Image: `crowdb-node:access-cleanup-20261025`, imported Docker ID
   `sha256:43e6d9e595055b506c664d3dcca018a9b62c7cb64d56bfdb286da695b97d5a14`.
@@ -130,8 +214,8 @@ The explicit local-HCA profile remains a separate gate. Its current host setup
 needs restoration; environment-gated unit cases are not counted as hardware
 acceptance.
 
-The earlier accepted run `dataset-workload/9dbf56c386e142e995b8eb400305b467`
-and its original image remain available. Differences between independent runs
+The earlier accepted run was `dataset-workload/9dbf56c386e142e995b8eb400305b467`.
+Differences between independent runs
 are not an isolated before/after measurement of any one code change.
 
 ## Bounded immutable write comparison
