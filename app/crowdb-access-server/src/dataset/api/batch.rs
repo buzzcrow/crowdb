@@ -37,18 +37,18 @@ impl BatchRequest {
     }
 }
 #[derive(Serialize)]
-struct BatchField {
-    sample: String,
-    field: String,
+struct BatchField<'a> {
+    sample: &'a str,
+    field: &'a str,
     state: &'static str,
     length: u64,
     md5: Option<String>,
 }
 #[derive(Serialize)]
-struct Header {
+struct Header<'a> {
     snapshot: String,
-    sample_ids: Vec<String>,
-    fields: Vec<BatchField>,
+    sample_ids: &'a [String],
+    fields: Vec<BatchField<'a>>,
     next: Option<String>,
     end: bool,
 }
@@ -112,15 +112,7 @@ impl DatasetHttpService {
             request.next,
             end,
         );
-        let encoded = serde_json::to_vec(&header).map_err(|_| ApiError::integrity())?;
-        if encoded.len() > 8 * 1024 * 1024 {
-            return Err(ApiError::too_large());
-        }
-        let length = u32::try_from(encoded.len()).map_err(|_| ApiError::too_large())?;
-        let mut prefix = Vec::with_capacity(13);
-        prefix.extend_from_slice(b"CDBDS001");
-        prefix.push(1);
-        prefix.extend_from_slice(&length.to_be_bytes());
+        let (prefix, encoded) = encode_header(&header)?;
         let locators = samples
             .into_iter()
             .flat_map(|mut sample| {
@@ -138,8 +130,8 @@ impl DatasetHttpService {
             index: 0,
             part: 0,
             upload: None,
-            pending: Some(Bytes::from(prefix)),
-            metadata: Some(Bytes::from(encoded)),
+            pending: Some(prefix),
+            metadata: Some(encoded),
             finished: false,
         };
         Ok(Response::builder()
@@ -148,14 +140,49 @@ impl DatasetHttpService {
             .expect("static response"))
     }
 }
-fn make_header(
+
+#[cfg(feature = "test-util")]
+impl DatasetHttpService {
+    /// Encodes only the real batch prefix and metadata, without storage IO.
+    ///
+    /// # Errors
+    /// Returns the API error code if metadata serialization exceeds the header limit.
+    pub fn batch_header_for_tests(resolved: ResolvedReadPage) -> Result<(Bytes, Bytes), &'static str> {
+        let request = resolved.page;
+        let ids: Vec<_> = request.ids.iter().map(|id| STANDARD.encode(id)).collect();
+        let end = request.next.is_none();
+        let header = make_header(
+            request.snapshot,
+            &ids,
+            &request.fields,
+            &resolved.samples,
+            request.next,
+            end,
+        );
+        encode_header(&header).map_err(|error| error.code())
+    }
+}
+fn encode_header(header: &Header<'_>) -> Result<(Bytes, Bytes), ApiError> {
+    let encoded = serde_json::to_vec(header).map_err(|_| ApiError::integrity())?;
+    if encoded.len() > 8 * 1024 * 1024 {
+        return Err(ApiError::too_large());
+    }
+    let length = u32::try_from(encoded.len()).map_err(|_| ApiError::too_large())?;
+    let mut prefix = Vec::with_capacity(13);
+    prefix.extend_from_slice(b"CDBDS001");
+    prefix.push(1);
+    prefix.extend_from_slice(&length.to_be_bytes());
+    Ok((Bytes::from(prefix), Bytes::from(encoded)))
+}
+
+fn make_header<'a>(
     snapshot: SnapshotId,
-    ids: &[String],
-    fields: &[String],
+    ids: &'a [String],
+    fields: &'a [String],
     samples: &[SampleView],
     next: Option<String>,
     end: bool,
-) -> Header {
+) -> Header<'a> {
     let mut values = Vec::new();
     for (sample, id) in samples.iter().zip(ids) {
         for name in fields {
@@ -168,8 +195,8 @@ fn make_header(
                 None => ("missing", 0, None),
             };
             values.push(BatchField {
-                sample: id.clone(),
-                field: name.clone(),
+                sample: id,
+                field: name,
                 state,
                 length,
                 md5,
@@ -178,7 +205,7 @@ fn make_header(
     }
     Header {
         snapshot: snapshot.to_string(),
-        sample_ids: ids.to_vec(),
+        sample_ids: ids,
         fields: values,
         next,
         end,
