@@ -122,7 +122,7 @@ impl TestMatrix {
             self.records.validate(&task)?;
             self.records.observe_sparse().await?;
             let multipart = self.records.multipart().await?;
-            let deleted = task.deleted + multipart.as_ref().map_or(0, |task| task.deleted);
+            let deleted = task.deleted;
             self.observe(&task, multipart.as_ref());
             if let Some(pressure) = &mut self.pressure {
                 pressure.observe(deleted).await?;
