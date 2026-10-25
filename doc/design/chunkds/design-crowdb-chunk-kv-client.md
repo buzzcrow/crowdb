@@ -114,9 +114,12 @@ native traversal deadline with no progress is an explicit failure, not an empty
 completed range. Partial native pages retain their last emitted key.
 
 The strict client returns after a nonempty owner page so the next request gets
-a fresh byte budget. A continuation may therefore require one final empty page
-to establish completion. Dataset metadata reads additionally bound total request
-time and observe cancellation while waiting for the client. Ordinary scan retains
+a fresh byte budget. It returns a terminal page when the entire owner response
+has been consumed, the owner reports no continuation, this is the last relevant
+partition in the pinned catalog, and the response matches that catalog generation.
+Otherwise it retains the conservative continuation, which may require a final
+empty page to establish completion. Dataset metadata reads additionally bound
+total request time and observe cancellation while waiting for the client. Ordinary scan retains
 its existing first-entry and response-validation behavior.
 
 The public continuation contains direction, original bounds, last emitted key,

@@ -246,7 +246,8 @@ impl ChunkKvClient {
             if request.direction == ScanDirection::Reverse {
                 entries.reverse();
             }
-            for entry in entries {
+            let entry_count = entries.len();
+            for (entry_index, entry) in entries.into_iter().enumerate() {
                 if partition_consumed(
                     &entry.range.start,
                     entry.range.end.as_deref(),
@@ -367,6 +368,16 @@ impl ChunkKvClient {
                             // A strict page ends at the first native budget boundary. Resume
                             // in a new request with a fresh budget, even across partitions.
                             if strict && !items.is_empty() {
+                                if continuation.is_none()
+                                    && entry_index + 1 == entry_count
+                                    && response.map_revision == map.generation()
+                                {
+                                    return Ok(MultiScanPage {
+                                        items,
+                                        continuation: None,
+                                        terminal_failure: None,
+                                    });
+                                }
                                 return Ok(scan_page(&request, items, last_key, map.generation(), None));
                             }
                             attempts = 0;

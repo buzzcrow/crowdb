@@ -224,7 +224,8 @@ async fn metadata_pages_preserve_binary_prefix_cursor_and_exact_keys() {
     request.after = first.after;
     let second = store.scan_page(&request, &cancel).await.unwrap();
     assert_eq!(second.entries[0].0, b"p\0b");
-    request.after = second.after;
+    assert!(second.after.is_none());
+    request.after = Some(second.entries[0].0.clone());
     let end = store.scan_page(&request, &cancel).await.unwrap();
     assert!(end.entries.is_empty());
     assert!(end.after.is_none());
@@ -243,6 +244,34 @@ async fn metadata_pages_preserve_binary_prefix_cursor_and_exact_keys() {
         7
     );
 }
+#[tokio::test]
+async fn metadata_terminal_page_preserves_the_complete_raw_prefix_without_an_empty_probe() {
+    let (store, transport) = fixture();
+    let page = store
+        .scan_page(
+            &MetadataScan {
+                prefix: b"p\0".to_vec(),
+                after: None,
+                budget: MetadataScanBudget {
+                    items: 256,
+                    ..budget()
+                },
+            },
+            &ReadCancellation::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        page.entries
+            .iter()
+            .map(|(key, _)| key.as_slice())
+            .collect::<Vec<_>>(),
+        [b"p\0a".as_slice(), b"p\0b"]
+    );
+    assert!(page.after.is_none());
+    assert_eq!(transport.calls.load(Ordering::Relaxed), 1);
+}
+
 #[tokio::test]
 async fn metadata_limits_and_cancellation_never_fall_back_to_unbounded_reads() {
     let (store, transport) = fixture();
