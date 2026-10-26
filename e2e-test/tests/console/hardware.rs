@@ -175,6 +175,7 @@ async fn committed_rack_survives_a_lost_conditional_write_response() {
     proxy.armed.store(true, Ordering::SeqCst);
     hardware::add_rack_to_group0(&ctx, 9, "rack-nine").await.unwrap();
     assert_eq!(proxy.dropped.load(Ordering::SeqCst), 1);
+    assert!(proxy.forwarded_handshakes.load(Ordering::SeqCst) >= 1);
     assert_eq!(ctx.sysmd().get_rack(9).await.unwrap().unwrap().name, "rack-nine");
 }
 

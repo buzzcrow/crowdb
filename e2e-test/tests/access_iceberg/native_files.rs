@@ -141,27 +141,38 @@ async fn abandon_attempts_then_restart(stack: &mut TestNativeStorage, owner: Fil
     assert_unpublished_tree_intents(stack, owner, &abandoned).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires the owned release native-file storage"]
-async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart() {
-    let mut stack = TestNativeStorage::new();
-    let context = seed_root(&stack).await;
-    let owner = FileIdentity {
+fn owner(context: CatalogContext) -> FileIdentity {
+    FileIdentity {
         table: TableLocation {
             storage_namespace: Some(crowdb_access_iceberg::key::NamespaceId::random()),
             catalog: context.catalog,
             table: TableId::random(),
         },
         file: FileId::random(),
-    };
-    let bytes: Vec<u8> = (0..50_000)
+    }
+}
+
+fn payload() -> Vec<u8> {
+    (0..50_000)
         .map(|index| u8::try_from(index % 251).unwrap())
-        .collect();
-    abandon_attempts_then_restart(&mut stack, owner, &bytes).await;
-    let owner = FileIdentity {
-        file: FileId::random(),
-        ..owner
-    };
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the owned release native-file storage"]
+async fn native_file_abandoned_attempts_and_intents_survive_catalog_storage_restart() {
+    let mut stack = TestNativeStorage::new();
+    let context = seed_root(&stack).await;
+    abandon_attempts_then_restart(&mut stack, owner(context), &payload()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the owned release native-file storage"]
+async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart() {
+    let stack = TestNativeStorage::new();
+    let context = seed_root(&stack).await;
+    let owner = owner(context);
+    let bytes = payload();
     let client = chunks(&stack).await;
     let blocks = Arc::new(NativeFileBlocks::new(client.clone(), stack.store().await));
     let mut writer = FileTreeWriter::new(blocks.clone(), owner, 16 * 1024).unwrap();
@@ -211,6 +222,5 @@ async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart
     assert_eq!(repository.publish(context, &candidate).await.unwrap(), candidate);
     client.shutdown_small_writes().await.unwrap();
     drop(client);
-    Box::pin(multipart::verify_restart(&mut stack, context, owner.table)).await;
     worker::verify(&stack, context, owner.table).await;
 }

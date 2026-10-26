@@ -4,7 +4,7 @@
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbClientError, ChunkdbRpcTransport};
 use crowdb_kv_client::{GetOutcome, ReadMode, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateChunkRequest, ChunkState, ChunkType, DeleteChunkRangeRequest, DeleteChunkRequest,
+    AllocateChunkRequest, Chunk, ChunkState, ChunkType, DeleteChunkRangeRequest, DeleteChunkRequest,
     QueryChunkRequest, SealChunkRequest, Strip, StripType,
 };
 use crowdb_protocol::key::{BinaryKey, FreeBlockKey};
@@ -69,18 +69,44 @@ async fn allocate_seal_delete_preserves_physical_placement_and_free_facts() {
         .chunk
         .unwrap();
     assert_eq!(queried.state, ChunkState::Deleted as i32);
+    verify_deleted_notification(&client, &queried).await;
+    verify_range_notification(&client).await;
+}
+
+async fn verify_deleted_notification(client: &ChunkdbClient, deleted: &Chunk) {
+    let request = DeleteChunkRangeRequest {
+        chunk_id: deleted.id,
+        chunk_offset: 0,
+        chunk_size: 1,
+        expected_modify_ts: deleted.modify_ts,
+    };
     assert!(matches!(
         client
             .delete_chunk_range(DeleteChunkRangeRequest {
-                chunk_id: Some(id),
-                chunk_offset: 0,
-                chunk_size: 1,
-                expected_modify_ts: queried.modify_ts,
+                chunk_size: 0,
+                ..request.clone()
             })
             .await,
         Err(ChunkdbClientError::InvalidArgument(_))
     ));
-    verify_range_notification(&client).await;
+    for _ in 0..2 {
+        assert!(
+            client
+                .delete_chunk_range(request.clone())
+                .await
+                .unwrap()
+                .reclaimed
+        );
+    }
+    assert_eq!(
+        client
+            .query_chunk(QueryChunkRequest { chunk_id: deleted.id })
+            .await
+            .unwrap()
+            .chunk
+            .unwrap(),
+        *deleted
+    );
 }
 
 async fn verify_range_notification(client: &ChunkdbClient) {

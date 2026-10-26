@@ -29,6 +29,8 @@ SERVER_PATHS = (
     # Host launch resource flags do not enter the release artifact (stage.sh).
     ":(exclude)container/oci-image/runtime.py",
     ":(exclude)container/oci-image/run-node.py",
+    # Image transfer runs on the host and never enters the staged runtime.
+    ":(exclude)container/oci-image/transfer.py",
     # These host CLI/cleanup modules are embedded only in crowdb-cli. stage.sh
     # builds the node services and never reads or packages these Python files.
     ":(exclude)container/oci-image/host_inputs.py",

@@ -122,17 +122,19 @@ async fn a_mismatched_prefetch_offset_cannot_publish_overlapping_objects() {
     let disk = Arc::new(RecordingDiskWriter::default());
     let client =
         ChunkIoClient::from_parts_with_small_policy(allocator.clone(), disk.clone(), policy()).unwrap();
+    let mut original_chunk_id = None;
     for _ in 0..5 * 16 {
         let mut writer = client
             .prepare_shared_object_write_for_key(MAX_SMALL, b"aligned")
             .await
             .unwrap();
         writer.on_data(Bytes::from(vec![0x5a; MAX_SMALL])).await.unwrap();
-        writer.on_finish().await.unwrap();
+        original_chunk_id = writer.on_finish().await.unwrap()[0].chunk_id;
     }
     tokio::time::timeout(Duration::from_secs(1), allocator.refill_entered.notified())
         .await
         .unwrap();
+    assert_eq!(allocator.reserve_calls.load(Ordering::Relaxed), 2);
     gate.notify_one();
     let mut writer = client
         .prepare_shared_object_write_for_key(MAX_SMALL, b"next")
@@ -144,6 +146,26 @@ async fn a_mismatched_prefetch_offset_cannot_publish_overlapping_objects() {
         matches!(result, Err(IoError::WriteFailed(message)) if message.contains("prefetch append offset mismatch"))
     );
     assert_eq!(client.small_write_metrics().completed, 5 * 16);
-    assert_eq!(allocator.reserve_calls.load(Ordering::Relaxed), 2);
-    assert!(client.shutdown_small_writes().await.is_err());
+    assert_eq!(client.small_write_metrics().failed, 1);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while client.small_write_metrics().pipeline_replacements == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("failed prefetch pipeline should be replaced");
+    let mut recovered = client
+        .prepare_shared_object_write_for_key(MAX_SMALL, b"recovered")
+        .await
+        .unwrap();
+    recovered
+        .on_data(Bytes::from(vec![0x9c; MAX_SMALL]))
+        .await
+        .unwrap();
+    let locations = recovered.on_finish().await.unwrap();
+    assert_ne!(locations[0].chunk_id, original_chunk_id);
+    assert_eq!(locations[0].offset, 0);
+    assert_eq!(client.small_write_metrics().completed, 5 * 16 + 1);
+    assert_eq!(allocator.reserve_calls.load(Ordering::Relaxed), 3);
+    client.shutdown_small_writes().await.unwrap();
 }

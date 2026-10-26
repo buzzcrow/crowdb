@@ -23,6 +23,25 @@ class TransferTest(unittest.TestCase):
     def test_rewritten_image_id_preserves_config_and_filesystem(self):
         verify_import(self.image, self.artifact)
 
+    def test_docker_28_explicit_defaults_preserve_oci_execution_config(self):
+        self.image["Config"].update({
+            "Hostname": "", "Domainname": "", "User": "", "AttachStdin": False,
+            "AttachStdout": False, "AttachStderr": False, "Tty": False,
+            "OpenStdin": False, "StdinOnce": False, "Cmd": None, "Image": "",
+            "Volumes": None, "WorkingDir": "", "OnBuild": None, "Labels": None,
+        })
+        verify_import(self.image, self.artifact)
+
+    def test_non_default_and_unknown_docker_fields_are_rejected(self):
+        for key, value in (("Hostname", "changed"), ("AttachStdin", True),
+                           ("WorkingDir", "/changed"), ("Cmd", ["changed"]),
+                           ("OnBuild", ["RUN changed"]), ("Unexpected", None)):
+            with self.subTest(field=key):
+                image = copy.deepcopy(self.image)
+                image["Config"][key] = value
+                with self.assertRaisesRegex(RuntimeError, "image config differs"):
+                    verify_import(image, self.artifact)
+
     def test_changed_execution_config_is_rejected(self):
         self.image["Config"]["Entrypoint"] = ["/another-entrypoint"]
         with self.assertRaisesRegex(RuntimeError, "image config differs"):

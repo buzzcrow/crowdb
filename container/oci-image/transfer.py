@@ -34,11 +34,31 @@ def publish(archive, image, authfile):
     return observed
 
 
+def execution_config(config):
+    # Docker 28 inspect serializes absent OCI fields as Go zero values.
+    # Keep all non-default values and unknown fields in the comparison.
+    defaults = {
+        "Hostname": "", "Domainname": "", "User": "", "AttachStdin": False,
+        "AttachStdout": False, "AttachStderr": False, "Tty": False,
+        "OpenStdin": False, "StdinOnce": False, "Env": None, "Cmd": None,
+        "Image": "", "Volumes": None, "WorkingDir": "", "Entrypoint": None,
+        "OnBuild": None, "Labels": None,
+    }
+    return {key: value for key, value in config.items()
+            if key not in defaults or value != defaults[key]}
+
+
 def verify_import(image, artifact):
     # Local image stores may rewrite the config envelope and its image ID.
     # Verify the execution config and ordered filesystem content directly.
-    if image.get("Config") != artifact["config"]:
+    if not isinstance(image.get("Config"), dict):
         raise RuntimeError("imported Docker image config differs from the OCI artifact")
+    observed, expected = execution_config(image["Config"]), execution_config(artifact["config"])
+    if observed != expected:
+        missing = object()
+        fields = sorted(key for key in observed.keys() | expected.keys()
+                        if observed.get(key, missing) != expected.get(key, missing))
+        raise RuntimeError("imported Docker image config differs from the OCI artifact: " + ", ".join(fields))
     rootfs = image.get("RootFS", {})
     if rootfs.get("Type") != artifact["rootfs"]["type"] or rootfs.get("Layers") != artifact["rootfs"]["diff_ids"]:
         raise RuntimeError("imported Docker image filesystem differs from the OCI artifact")

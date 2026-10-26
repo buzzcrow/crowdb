@@ -129,7 +129,7 @@ class SelectionTest(unittest.TestCase):
                                  else 5 if case["scope"].startswith("console.web.")
                                  else 1 if case["scope"] in ("console.managed", "console.browser.shell", "console.browser.registry", "console.browser.lifecycle", "console.browser.kv", "console.browser.canvas", "console.browser.inspector", "console.clients") else 3)
         iceberg = json.loads(self.invoke("--list", "--layer", "iceberg"))
-        self.assertEqual(len(iceberg), 35)
+        self.assertEqual(len(iceberg), 37)
         gc = [case for case in iceberg if case["scope"] == "iceberg.gc"]
         self.assertEqual(len(gc), 7)
         self.assertIn("access_iceberg::gc::convergence::expired_inline_backlog_completes_with_foreground_progress",
@@ -146,6 +146,17 @@ class SelectionTest(unittest.TestCase):
             self.invoke("--layer", "kv", "--case", diskdb[0]["case"])
         with self.assertRaises(SystemExit):
             self.invoke("--layer", "diskdb", "--require-isolation")
+
+    def test_native_file_recoveries_keep_independent_default_client_deadlines(self):
+        from scenarios import select_cases
+        cases = [case for case in select_cases("iceberg", "all", None, "iceberg-core")
+                 if case.iceberg_native_files]
+        self.assertEqual({case.name for case in cases}, {
+            "access_iceberg::native_files::native_file_tree_publication_and_ranges_survive_catalog_storage_restart",
+            "access_iceberg::native_files::native_file_abandoned_attempts_and_intents_survive_catalog_storage_restart",
+            "access_iceberg::native_files::multipart::native_file_multipart_progress_and_bytes_survive_catalog_storage_restart",
+        })
+        self.assertTrue(all(case.client_timeout == 120 for case in cases))
 
 
 class CaseResourcesTest(unittest.TestCase):

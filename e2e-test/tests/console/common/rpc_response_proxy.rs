@@ -14,6 +14,7 @@ pub struct TestResponseProxy {
     pub management_endpoint: String,
     pub armed: Arc<AtomicBool>,
     pub dropped: Arc<AtomicUsize>,
+    pub forwarded_handshakes: Arc<AtomicUsize>,
     server: tokio::task::JoinHandle<()>,
     management_server: tokio::task::JoinHandle<()>,
 }
@@ -55,8 +56,10 @@ impl TestResponseProxy {
         });
         let armed = Arc::new(AtomicBool::new(false));
         let dropped = Arc::new(AtomicUsize::new(0));
+        let forwarded_handshakes = Arc::new(AtomicUsize::new(0));
         let arm = armed.clone();
         let drop_count = dropped.clone();
+        let handshakes = forwarded_handshakes.clone();
         let server = tokio::spawn(async move {
             let mut connections = tokio::task::JoinSet::new();
             loop {
@@ -66,8 +69,9 @@ impl TestResponseProxy {
                         let upstream = upstream.clone();
                         let arm = arm.clone();
                         let drop_count = drop_count.clone();
+                        let handshakes = handshakes.clone();
                         connections.spawn(async move {
-                            forward(downstream, &upstream, arm, drop_count).await;
+                            forward(downstream, &upstream, arm, drop_count, handshakes).await;
                         });
                     }
                     Some(_) = connections.join_next() => {}
@@ -79,6 +83,7 @@ impl TestResponseProxy {
             management_endpoint,
             armed,
             dropped,
+            forwarded_handshakes,
             server,
             management_server,
         }
@@ -92,26 +97,45 @@ impl Drop for TestResponseProxy {
     }
 }
 
-async fn forward(downstream: TcpStream, upstream: &str, armed: Arc<AtomicBool>, dropped: Arc<AtomicUsize>) {
+async fn forward(
+    downstream: TcpStream,
+    upstream: &str,
+    armed: Arc<AtomicBool>,
+    dropped: Arc<AtomicUsize>,
+    handshakes: Arc<AtomicUsize>,
+) {
     let upstream = TcpStream::connect(upstream).await.unwrap();
     let (mut input, mut output) = downstream.into_split();
     let (mut responses, mut requests) = upstream.into_split();
     let send = tokio::io::copy(&mut input, &mut requests);
     let receive = async {
-        let mut buffer = [0; 8192];
+        let mut header = [0; 14];
         loop {
-            let Ok(count) = responses.read(&mut buffer).await else {
-                return;
-            };
-            if count == 0 {
+            if responses.read_exact(&mut header).await.is_err() {
                 return;
             }
-            if armed.swap(false, Ordering::SeqCst) {
+            assert_eq!(u16::from_le_bytes(header[..2].try_into().unwrap()), 0xca70);
+            let message_type = u16::from_le_bytes(header[2..4].try_into().unwrap());
+            let control_bytes = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+            let data_bytes = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
+            let offset = usize::from(header[12]);
+            assert!(offset >= header.len());
+            let mut body = vec![0; offset - header.len() + control_bytes + data_bytes];
+            if responses.read_exact(&mut body).await.is_err() {
+                return;
+            }
+            // Capability advertisements precede application replies and do not
+            // establish that the conditional write has completed.
+            let handshake = message_type == 0xfffe;
+            if !handshake && armed.swap(false, Ordering::SeqCst) {
                 dropped.fetch_add(1, Ordering::SeqCst);
                 return;
             }
-            if output.write_all(&buffer[..count]).await.is_err() {
+            if output.write_all(&header).await.is_err() || output.write_all(&body).await.is_err() {
                 return;
+            }
+            if handshake {
+                handshakes.fetch_add(1, Ordering::SeqCst);
             }
         }
     };

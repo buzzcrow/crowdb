@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 import { test, expect } from '../fixtures/realBackend';
 import { diskMenu } from '../fixtures/capacity';
+import { step } from '../fixtures/stepTimer';
 
 // Baseline: 6.0s (2026-10-15).
 test('shell defaults and tree interactions distinguish live and stopped release nodes', async ({ page, request }) => {
@@ -43,6 +44,15 @@ test('shell defaults and tree interactions distinguish live and stopped release 
   await addGroup.getByLabel(/^3\b/).uncheck();
   await addGroup.getByRole('button', { name: 'Create Group', exact: true }).click();
   await expect(addGroup).toHaveCount(0);
+  await step('shell defaults: initial group election', async () => {
+    await expect.poll(async () => {
+      const response = await request.get('/api/stores/207/groups/1');
+      expect(response.ok(), await response.text()).toBe(true);
+      const detail = await response.json();
+      return detail.replicas.filter((row: { role: string; state: string; election?: { lease_remaining_ms?: number } }) =>
+        row.role === 'leader' && row.state === 'running' && (row.election?.lease_remaining_ms ?? 0) > 0).length;
+    }, { timeout: 10_000, intervals: [100] }).toBe(1);
+  });
   const storeBranch = sidebar.getByTestId('tree-node-S-207');
   await expect(storeRow).toHaveAttribute('aria-expanded', /^(true|false)$/);
   if (await storeRow.getAttribute('aria-expanded') !== 'true') await storeRow.getByRole('button', { name: 'Expand', exact: true }).click();
@@ -55,8 +65,10 @@ test('shell defaults and tree interactions distinguish live and stopped release 
     options.filter(option => !(option as HTMLOptionElement).disabled).map(option => (option as HTMLOptionElement).value));
   expect(await eligible()).toEqual(['3', '4']);
   await replica.getByLabel('Node', { exact: true }).selectOption('3');
-  await replica.getByRole('button', { name: 'Add Replica', exact: true }).click();
-  await expect(replica).toHaveCount(0);
+  await step('shell defaults: add replica and close dialog', async () => {
+    await replica.getByRole('button', { name: 'Add Replica', exact: true }).click();
+    await expect(replica).toHaveCount(0);
+  });
   await group.click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Add Replica', exact: true }).click();
   await expect(replica.getByLabel('Replica ID (optional)')).toHaveValue('4');

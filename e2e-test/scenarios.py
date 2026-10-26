@@ -384,6 +384,8 @@ ICEBERG_CASES = (
     Case("iceberg.gc", "access_iceberg::gc::enabled_scheduler_admits_and_advances_completed_clear", iceberg_gc=True, iceberg_gc_page_items=1),
     Case("iceberg.catalog", "access_iceberg::catalog::catalog_recovery_survives_real_chunk_kv_restart", iceberg_catalog_lifecycle=True),
     Case("iceberg.files", "access_iceberg::native_files::native_file_tree_publication_and_ranges_survive_catalog_storage_restart", iceberg_native_files=True),
+    Case("iceberg.files", "access_iceberg::native_files::native_file_abandoned_attempts_and_intents_survive_catalog_storage_restart", iceberg_native_files=True),
+    Case("iceberg.files", "access_iceberg::native_files::multipart::native_file_multipart_progress_and_bytes_survive_catalog_storage_restart", iceberg_native_files=True),
     Case("iceberg.metadata", "access_iceberg::metadata::metadata_create_and_commit_stay_within_operation_budget"),
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )

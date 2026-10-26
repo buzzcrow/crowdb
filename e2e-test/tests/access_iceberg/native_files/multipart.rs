@@ -13,6 +13,14 @@ use crowdb_access_iceberg::key::{FileId, OperationId};
 
 use super::{chunks, read_all, TestNativeStorage};
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the owned release native-file storage"]
+async fn native_file_multipart_progress_and_bytes_survive_catalog_storage_restart() {
+    let mut stack = TestNativeStorage::new();
+    let context = super::seed_root(&stack).await;
+    Box::pin(verify_restart(&mut stack, context, super::owner(context).table)).await;
+}
+
 fn initial_session(context: CatalogContext, table: TableLocation) -> MultipartSession {
     MultipartSession {
         context,
