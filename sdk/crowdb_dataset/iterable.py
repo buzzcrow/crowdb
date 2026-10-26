@@ -2,6 +2,8 @@
 # Licensed under the Apache License, Version 2.0.
 """Server-partitioned batches with explicit application acknowledgement."""
 
+from .client import IntegrityError
+
 
 class WorkerPartition:
     def __init__(self, worker=0, workers=1, rank=0, world_size=1):
@@ -18,38 +20,48 @@ class WorkerPartition:
 
 
 class DatasetBatch:
-    def __init__(self, batch, client, session, expected):
+    """A processed batch and its client-owned checkpoint; acknowledgement makes no RPC."""
+    def __init__(self, batch):
         self.header, self.fields = batch.header, batch.fields
-        self._client, self._session, self._expected = client, session, expected
         self.acknowledged = False
 
     def acknowledge(self):
-        progress = self._client.acknowledge(self._session, self._expected, self.header["next"])
         self.acknowledged = True
-        return progress
+        return self.header["next"]
 
 
 class DatasetIterable:
-    """Yield bounded DatasetBatch objects; acknowledge each before requesting more.
+    """Bounded batches with local acknowledgement. Save checkpoint after processing.
 
-    Tensor decoding/collation belongs above this adapter. Large fields use
-    next_batch streams directly. Unacknowledged batches replay on resume.
+    Supplying a previous checkpoint replays the corresponding immutable batch.
+    Closing/dropping an iterator needs no remote cleanup.
     """
-    def __init__(self, client, plan, *, partition=None, prefetch=1):
+    def __init__(self, client, plan, *, partition=None, prefetch=1, checkpoint=None):
         if prefetch != 1:
-            raise ValueError("this acknowledged iterator supports one batch in flight")
+            raise ValueError("this iterator supports one batch in flight")
         self.client, self.plan = client, dict(plan)
         self.plan["partition"] = (partition or WorkerPartition()).as_dict()
+        self.checkpoint = checkpoint
+        self.complete = False
 
     def __iter__(self):
-        session = self.client.start_read(self.plan)
-        expected = session["acknowledged"]
+        if self.complete:
+            return
+        if self.checkpoint is None:
+            self.checkpoint = self.client.bind_read(self.plan)["cursor"]
         while True:
-            with self.client.next_batch(session["id"]) as stream:
-                batch = DatasetBatch(stream.batch(), self.client, session["id"], expected)
-            yield batch
-            if not batch.acknowledged:
-                raise RuntimeError("acknowledge the consumed batch before requesting the next batch")
-            expected = batch.header["next"]
-            if batch.header["end"]:
+            with self.client.next_batch(self.checkpoint) as stream:
+                batch = DatasetBatch(stream.batch())
+            following = batch.header["next"]
+            if (batch.header["end"] != (following is None)
+                    or following == self.checkpoint
+                    or (not batch.header["sample_ids"] and batch.fields)):
+                raise IntegrityError({"code": "integrity", "message": "invalid read continuation"})
+            if batch.header["sample_ids"]:
+                yield batch
+                if not batch.acknowledged:
+                    raise RuntimeError("acknowledge the consumed batch before requesting the next batch")
+            self.checkpoint = batch.header["next"]
+            self.complete = batch.header["end"]
+            if self.complete:
                 return

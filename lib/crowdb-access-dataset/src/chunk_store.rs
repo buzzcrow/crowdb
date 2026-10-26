@@ -151,8 +151,11 @@ impl DatasetStore for ChunkKvDatasetStore {
         mutation_outcome(response)
     }
     async fn delete(&self, key: &[u8]) -> Result<(), StoreError> {
-        self.client.delete(key.to_vec()).await.map_err(StoreError::from)?;
-        Ok(())
+        let response = self.client.delete(key.to_vec()).await?;
+        match response.result.map_err(|error| failure(&error))? {
+            OperationResult::Mutation { applied: true, .. } => Ok(()),
+            _ => Err(StoreError::Response),
+        }
     }
 }
 fn stored_value(value: RpcValue) -> StoredValue {

@@ -1,46 +1,43 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{decode_session, encode, DatasetUploads, UploadError, UploadState};
+use super::{decode_session, encode_session, DatasetUploads, UploadError, UploadState, MAX_RETIRED_OWNERS};
 use crate::{CasOutcome, OperationId};
 
 impl DatasetUploads {
     /// Permanently revokes one terminal publication's ownership without affecting other owners.
     /// A delayed or retried claim for that operation cannot reacquire bytes after cleanup.
     /// # Errors
-    /// Returns unknown uploads, corrupt metadata, bounded retirement capacity or storage failures.
+    /// Returns unknown uploads, corrupt metadata, exhausted retries or storage failures.
     pub async fn retire_owner(&self, location: &[u8], owner: OperationId) -> Result<(), UploadError> {
         OperationId::from_bytes(owner.as_bytes()).map_err(|_| UploadError::Invalid)?;
-        self.register(location).await?;
+        let mut stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
         for _ in 0..16 {
-            let stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
             let mut record = decode_session(&stored.bytes)?;
-            if record.retired_owners.binary_search(&owner).is_ok() {
-                if !record.owners.is_empty() || record.cleanup_complete {
-                    self.untrack(location).await?;
-                }
+            let Err(insertion) = record.retired_owners.binary_search(&owner) else {
                 return Ok(());
+            };
+            if record.retired_owners.len() == MAX_RETIRED_OWNERS {
+                if record.version == 5 && !record.owners.contains(&owner) {
+                    return Ok(());
+                }
+                // Older writers must reject retirement without an individual negative owner ID.
+                record.version = 5;
+            } else {
+                record.retired_owners.insert(insertion, owner);
             }
-            if record.retired_owners.len() >= 4096 {
-                return Err(UploadError::Capacity);
-            }
-            record.version = 3;
-            record.retired_owners.push(owner);
-            record.retired_owners.sort();
             record.owners.retain(|current| *current != owner);
             if record.owners.is_empty() && record.state == UploadState::Claimed {
                 record.state = UploadState::Complete;
             }
-            if matches!(
-                self.store
-                    .compare_exchange(location, Some(&stored.bytes), &encode(&record)?)
-                    .await?,
-                CasOutcome::Applied(_)
-            ) {
-                if !record.owners.is_empty() || record.cleanup_complete {
-                    self.untrack(location).await?;
-                }
-                return Ok(());
+            match self
+                .store
+                .compare_exchange(location, Some(&stored.bytes), &encode_session(&record)?)
+                .await?
+            {
+                CasOutcome::Applied(_) => return Ok(()),
+                CasOutcome::Conflict(Some(value)) => stored = value,
+                CasOutcome::Conflict(None) => return Err(UploadError::NotFound),
             }
         }
         Err(UploadError::Pending)

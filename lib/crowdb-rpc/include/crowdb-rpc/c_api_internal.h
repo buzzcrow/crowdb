@@ -11,6 +11,12 @@
 
 // Concrete struct definitions for the C API opaque handles.
 // Defined here so both c_api.cpp and co_client.cpp can access them.
+struct crowdb_rpc_pool_s
+{
+    crowdb::rpc::BufferPool *pool;
+    bool                     owns;
+};
+
 struct crowdb_rpc_buffer_s
 {
     crowdb::rpc::Buffer *buf;
@@ -37,12 +43,12 @@ namespace crowdb::rpc
 {
 
 // Internal helpers shared between RpcClient (slab path) and the C API
-// adapter. Implemented in c_api.cpp where the crowdb_rpc_buffer_s concrete
-// struct is defined.
+// adapter. Implemented in the private C ABI frame module.
 
 // Convert a response Frame into C ABI buffer handles. Takes ownership of
 // the frame (deletes it). The data buffer is ref_clone'd so the handle
-// owns its own reference. Control is nullptr (fields extracted during parse).
+// owns its own reference. Budget-owned controls move their exact storage and
+// admission; ordinary controls preserve their copied response handle.
 // On error (frame == nullptr), both handles are set to nullptr.
 void frame_to_c_handles(Frame *frame, crowdb_rpc_buffer_t *out_ctrl, crowdb_rpc_buffer_t *out_data);
 
@@ -52,7 +58,7 @@ void frame_to_c_handles(Frame *frame, crowdb_rpc_buffer_t *out_ctrl, crowdb_rpc_
 void invoke_c_complete(crowdb_rpc_on_complete cb, void *user_data, uint64_t request_id, Frame *frame, RpcError err);
 
 // Shared handler trampoline: extracts request fields from the frame,
-// invokes the C dispatch callback, and deletes the frame. Used by both
+// invokes the C dispatch callback, and transfers the retained frame. Used by both
 // server-side and client-side handler dispatch. The callback submits the
 // response later via crowdb_rpc_server_submit_response (async pattern).
 void invoke_c_handler(crowdb_rpc_handler_fn callback, void *user_data, Frame *request, Connection *conn);

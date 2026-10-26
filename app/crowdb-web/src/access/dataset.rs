@@ -37,7 +37,7 @@ pub(super) async fn proxy(state: AppState, request: Request) -> Result<Response,
     };
     tokio::time::timeout(Duration::from_secs(seconds), forward(state, request))
         .await
-        .map_err(|_| err_502("Dataset outcome unknown; inspect operation status before retrying"))?
+        .map_err(|_| err_502("Dataset reply unavailable; retry the saved complete request"))?
 }
 
 async fn forward(state: AppState, request: Request) -> Result<Response, super::ApiError> {
@@ -72,9 +72,18 @@ async fn forward(state: AppState, request: Request) -> Result<Response, super::A
     }
     let method = request.method().clone();
     let headers = super::request_headers(request.headers());
-    let body = axum::body::to_bytes(request.into_body(), 4 * METADATA_LIMIT)
+    let limit = if method == Method::PUT
+        && matches!(path.strip_prefix(API).map(|path| path.split('/').collect::<Vec<_>>()).as_deref(),
+            Some(["", "namespaces", "dataset-ns", "datasets", dataset, "snapshots", snapshot])
+                if !dataset.is_empty() && snapshot.len() == 32 && snapshot.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        8 * METADATA_LIMIT
+    } else {
+        4 * METADATA_LIMIT
+    };
+    let body = axum::body::to_bytes(request.into_body(), limit)
         .await
-        .map_err(|_| err_400("Dataset request exceeds 4 MiB"))?;
+        .map_err(|_| err_400("Dataset request exceeds its body limit"))?;
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -88,7 +97,7 @@ async fn forward(state: AppState, request: Request) -> Result<Response, super::A
         .body(body)
         .send()
         .await
-        .map_err(|_| err_502("Dataset outcome unknown; inspect operation status before retrying"))?;
+        .map_err(|_| err_502("Dataset reply unavailable; retry the saved complete request"))?;
     let mut response = Response::builder().status(upstream.status());
     for name in ["content-type", "x-request-id", "www-authenticate"] {
         if let Some(value) = upstream.headers().get(name) {
@@ -99,7 +108,7 @@ async fn forward(state: AppState, request: Request) -> Result<Response, super::A
     while let Some(chunk) = upstream
         .chunk()
         .await
-        .map_err(|_| err_502("Dataset response interrupted; reconcile operation status"))?
+        .map_err(|_| err_502("Dataset response interrupted; retry the saved complete request"))?
     {
         if bytes.len().saturating_add(chunk.len()) > METADATA_LIMIT {
             return Err(err_502("Dataset metadata response exceeds 1 MiB"));

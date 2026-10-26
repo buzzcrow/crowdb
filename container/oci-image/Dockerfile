@@ -1,5 +1,5 @@
 FROM ubuntu:24.04@sha256:496754492fb28b4d3049432f2ca787449331e23fb14f0dd3fffea86bf5a93eb4
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssh-server util-linux curl tini && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssh-server util-linux curl tini libibverbs1 librdmacm1 ibverbs-providers ibverbs-utils && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 crowdb \
     && useradd --system --uid 10001 --gid 10001 --home-dir /opt/crowdb --shell /bin/sh crowdb \
     && echo 'crowdb:crowdb' | chpasswd \
@@ -16,11 +16,13 @@ RUN --mount=type=bind,source=.,target=/staged,ro \
     && test "$(cat /staged/VERSION)" = "$PREVIEW_VERSION" \
     && mkdir -p /opt/crowdb/etc /opt/crowdb/data /opt/crowdb/run \
     && cp -a /staged/bin /staged/lib /staged/ui /opt/crowdb/ \
+    && if test -d /staged/etc; then cp -a /staged/etc /opt/crowdb/; fi \
     && cp /staged/profile.toml /opt/crowdb/etc/profile.toml \
     && cp /staged/entrypoint.sh /opt/crowdb/bin/entrypoint \
     && chown -R crowdb:crowdb /opt/crowdb/data /opt/crowdb/run \
     && chmod 0755 /opt/crowdb/bin/entrypoint \
-    && for binary in /opt/crowdb/bin/crowdb-*; do \
+    && for binary in /opt/crowdb/bin/crowdb-* /opt/crowdb/lib/* /opt/crowdb/lib/libibverbs/*.so; do \
+        test -f "$binary" || continue; \
         LD_LIBRARY_PATH=/opt/crowdb/lib ldd -r "$binary" > /tmp/dependencies.txt 2>&1 || { cat /tmp/dependencies.txt; exit 1; }; \
         if grep -Eq 'not found|undefined symbol' /tmp/dependencies.txt; then cat /tmp/dependencies.txt; exit 1; fi; \
     done && rm /tmp/dependencies.txt
@@ -39,6 +41,7 @@ LABEL org.opencontainers.image.title="CROWDB Node" \
       org.crowdb.startup.default="local"
 ENV PATH="/opt/crowdb/bin:${PATH}" \
     LD_LIBRARY_PATH="/opt/crowdb/lib" \
+    RDMAV_DRIVERS_DIR="/opt/crowdb/lib/libibverbs" \
     CROWDB_RUNTIME_ROOT="/opt/crowdb/run"
 USER root
 VOLUME ["/opt/crowdb/data"]

@@ -10,6 +10,8 @@ use crate::{
 
 use super::{GcCandidate, GcPage, GcStalledReason, GcStore, GcTask, GcTaskKind};
 
+mod progress;
+
 #[derive(Clone)]
 pub struct GcRepository {
     pub(super) store: Arc<dyn GcStore>,
@@ -129,23 +131,7 @@ impl GcRepository {
         now_ms: u64,
         limits: super::GcLimits,
     ) -> Result<GcTask, CatalogError> {
-        limits.validate()?;
-        let mut next = task.advance()?;
-        next.attempts = if task.stalled == reason {
-            task.attempts
-                .checked_add(1)
-                .ok_or(ValidationError::GenerationExhausted)?
-        } else {
-            1
-        };
-        next.stalled = reason;
-        next.retry_at_ms = now_ms
-            .checked_add(limits.retry_delay_ms(next.attempts))
-            .ok_or(ValidationError::Deadline)?;
-        if reason == GcStalledReason::Corruption && next.attempts >= u32::from(limits.corruption_attempts) {
-            next.phase = super::GcPhase::Quarantined;
-            next.quarantined_from = Some(task.phase);
-        }
+        let next = Self::deferred(task, reason, now_ms, limits)?;
         self.update(task, &next).await?;
         Ok(next)
     }
@@ -202,6 +188,31 @@ impl GcRepository {
         before: Option<&StorageRecord>,
         after: &StorageRecord,
     ) -> Result<(), CatalogError> {
+        let (outcome, expected) = self.exchange_storage(key, before, after).await?;
+        match outcome {
+            CasOutcome::Applied(_) => Ok(()),
+            CasOutcome::Conflict(Some(value)) if value.bytes == expected => Ok(()),
+            CasOutcome::Conflict(_) => Err(CatalogError::Conflict),
+        }
+    }
+
+    pub(super) async fn exchange(
+        &self,
+        key: &IcebergKey,
+        before: Option<&StorageRecord>,
+        after: &StorageRecord,
+    ) -> Result<CasOutcome, CatalogError> {
+        self.exchange_storage(&crate::key::StorageKey::Legacy(key.clone()), before, after)
+            .await
+            .map(|(outcome, _)| outcome)
+    }
+
+    async fn exchange_storage(
+        &self,
+        key: &crate::key::StorageKey,
+        before: Option<&StorageRecord>,
+        after: &StorageRecord,
+    ) -> Result<(CasOutcome, Vec<u8>), CatalogError> {
         match key {
             crate::key::StorageKey::Legacy(key) => self.check_retirement_mutation(key, after).await?,
             crate::key::StorageKey::NativeTable(key) => {
@@ -214,14 +225,10 @@ impl GcRepository {
         let after = after.encode()?;
         let before = before.map(StorageRecord::encode).transpose()?;
         let expected = before.as_deref();
-        match self
+        let outcome = self
             .store
             .compare_exchange(&key, expected, &after, mutation_identity(&key, expected, &after))
-            .await?
-        {
-            CasOutcome::Applied(_) => Ok(()),
-            CasOutcome::Conflict(Some(value)) if value.bytes == after => Ok(()),
-            CasOutcome::Conflict(_) => Err(CatalogError::Conflict),
-        }
+            .await?;
+        Ok((outcome, after))
     }
 }

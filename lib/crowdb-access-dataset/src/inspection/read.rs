@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{key, work::InspectionWork, InspectionError};
+use super::{key, read_fields::FieldRequest, work::InspectionWork, InspectionError};
 use crate::{
     AuthorityError, DatasetAuthority, DatasetError, DatasetIdentity, MetadataScanBudget, ReadCancellation,
     SampleView, SnapshotId,
@@ -24,14 +24,10 @@ impl DatasetAuthority {
         fields: &[String],
         cancel: &ReadCancellation,
     ) -> Result<Vec<SampleView>, InspectionError> {
-        if ids.is_empty()
-            || ids.len() > crate::MAX_BATCH_SIZE
-            || fields.len() > 256
-            || ids.iter().collect::<BTreeSet<_>>().len() != ids.len()
-            || fields.iter().collect::<BTreeSet<_>>().len() != fields.len()
-        {
+        if ids.is_empty() {
             return Err(AuthorityError::Invalid(DatasetError::InvalidManifest).into());
         }
+        validate_inputs(ids, fields)?;
         let mut work = InspectionWork::new(
             self.store.as_ref(),
             cancel,
@@ -45,47 +41,124 @@ impl DatasetAuthority {
         let schema = self
             .inspection_schema_definitions(identity, &summary, &mut work)
             .await?;
+        PreparedInspectionRead {
+            authority: self,
+            identity,
+            snapshot,
+            schema,
+            summaries: BTreeMap::from([(snapshot, summary)]),
+        }
+        .resolve_validated(ids, fields, &mut work, false)
+        .await
+    }
+}
+
+pub(crate) struct PreparedInspectionRead<'a> {
+    pub(super) authority: &'a DatasetAuthority,
+    pub(super) identity: &'a DatasetIdentity,
+    pub(super) snapshot: SnapshotId,
+    pub(super) schema: Vec<crate::FieldDefinition>,
+    pub(super) summaries: BTreeMap<SnapshotId, super::SnapshotSummary>,
+}
+
+impl PreparedInspectionRead<'_> {
+    pub(crate) async fn resolve(
+        &mut self,
+        ids: &[Vec<u8>],
+        fields: &[String],
+        work: &mut InspectionWork<'_>,
+        known_members: bool,
+    ) -> Result<Vec<SampleView>, InspectionError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        validate_inputs(ids, fields)?;
+        self.resolve_validated(ids, fields, work, known_members).await
+    }
+
+    async fn resolve_validated(
+        &mut self,
+        ids: &[Vec<u8>],
+        fields: &[String],
+        work: &mut InspectionWork<'_>,
+        known_members: bool,
+    ) -> Result<Vec<SampleView>, InspectionError> {
         if fields
             .iter()
-            .any(|field| !schema.iter().any(|known| known.name == *field))
+            .any(|field| !self.schema.iter().any(|known| known.name == *field))
         {
             return Err(AuthorityError::Invalid(DatasetError::InvalidManifest).into());
         }
-        let mut summaries = BTreeMap::from([(snapshot, summary)]);
-        let mut output = Vec::new();
-        for id in ids {
-            if id.is_empty() || id.len() > 16 * 1024 {
-                return Err(InspectionError::Limit);
-            }
-            let mut member = key::scope(identity, snapshot, b'M').map_err(AuthorityError::from)?;
-            key::component(&mut member, id);
-            let value = work
-                .get(&member, 128 * 1024)
-                .await?
-                .ok_or(AuthorityError::Invalid(DatasetError::SampleNotFound))?;
-            let stored: Vec<u8> =
-                serde_json::from_slice(&value.bytes).map_err(|_| InspectionError::Corrupt)?;
-            if stored != *id {
-                return Err(InspectionError::Corrupt);
-            }
-            let mut sample = SampleView {
+        if ids.iter().any(|id| id.is_empty() || id.len() > 16 * 1024) {
+            return Err(InspectionError::Limit);
+        }
+        if !known_members {
+            self.members(ids, work).await?;
+        }
+        let mut output: Vec<_> = ids
+            .iter()
+            .map(|id| SampleView {
                 sample_id: id.clone(),
                 fields: BTreeMap::new(),
                 values: BTreeMap::new(),
-            };
-            for field in fields {
-                if let Some(metadata) = self
-                    .effective_field_metadata(identity, snapshot, id, field, &mut summaries, &mut work)
-                    .await?
-                {
-                    let locator = self
-                        .composition_field_locator(identity, id, &metadata, &mut work)
-                        .await?;
-                    sample.fields.insert(field.clone(), locator);
+            })
+            .collect();
+        for start in (0..ids.len() * fields.len()).step_by(16) {
+            let end = (start + 16).min(ids.len() * fields.len());
+            let requests: Vec<_> = (start..end)
+                .map(|index| FieldRequest {
+                    sample: &ids[index / fields.len()],
+                    field: &fields[index % fields.len()],
+                })
+                .collect();
+            let locators = self.fields(&requests, work).await?;
+            for (index, (request, locator)) in (start..end).zip(requests.into_iter().zip(locators)) {
+                if let Some(locator) = locator {
+                    output[index / fields.len()]
+                        .fields
+                        .insert(request.field.to_owned(), locator);
                 }
             }
-            output.push(sample);
         }
         Ok(output)
     }
+
+    pub(super) async fn members(
+        &self,
+        ids: &[Vec<u8>],
+        work: &mut InspectionWork<'_>,
+    ) -> Result<(), InspectionError> {
+        let prefix = key::scope(self.identity, self.snapshot, b'M').map_err(AuthorityError::from)?;
+        for window in ids.chunks(16) {
+            let keys = window
+                .iter()
+                .map(|id| {
+                    let mut key = prefix.clone();
+                    key::component(&mut key, id);
+                    key
+                })
+                .collect();
+            let rows = work.get_many(keys, 128 * 1024).await?;
+            for (id, row) in window.iter().zip(rows) {
+                let row = row.ok_or(AuthorityError::Invalid(DatasetError::SampleNotFound))?;
+                let stored: Vec<u8> =
+                    serde_json::from_slice(&row.bytes).map_err(|_| InspectionError::Corrupt)?;
+                if stored != *id {
+                    return Err(InspectionError::Corrupt);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_inputs(ids: &[Vec<u8>], fields: &[String]) -> Result<(), InspectionError> {
+    if ids.len() > crate::MAX_BATCH_SIZE
+        || fields.len() > 256
+        || ids.iter().collect::<BTreeSet<_>>().len() != ids.len()
+        || fields.iter().collect::<BTreeSet<_>>().len() != fields.len()
+    {
+        return Err(AuthorityError::Invalid(DatasetError::InvalidManifest).into());
+    }
+    Ok(())
 }

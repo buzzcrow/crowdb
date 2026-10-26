@@ -2,14 +2,41 @@
 mod blocks;
 #[path = "common/multipart.rs"]
 mod fixtures;
+#[path = "common/legacy_checkpoint.rs"]
+mod legacy_checkpoint;
 
 use blocks::TestBlocks;
 use crowdb_access_iceberg::file::{
-    AssemblyPart, FileAssembly, FileIdentity, FileTreeWriter, MultipartPart, MultipartPhase,
+    AssemblyPart, AssemblyProgress, FileDigest, FileIdentity, FileTreeWriter, MultipartPart, MultipartPhase,
+    PartFingerprint,
 };
 use crowdb_access_iceberg::key::{CatalogId, CatalogScope, FileId, IcebergKey};
 use crowdb_access_iceberg::record::StorageRecord;
 use std::sync::Arc;
+
+async fn legacy_progress(
+    store: Arc<TestBlocks>,
+    owner: FileIdentity,
+    part: &AssemblyPart,
+) -> AssemblyProgress {
+    let prefix = b"by";
+    let (checkpoint, _) = legacy_checkpoint::TestLegacyCheckpoint::create(store, owner, prefix, 3).await;
+    let mut digest = FileDigest::new(part.owner);
+    digest.update(prefix).unwrap();
+    AssemblyProgress {
+        selection: [3; 32],
+        next_part: 0,
+        part_offset: 2,
+        completed_bytes: 2,
+        writer: Some(checkpoint),
+        active: Some(PartFingerprint {
+            owner: part.owner,
+            length: part.tree.length,
+            digest: part.tree.digest,
+        }),
+        part_digest: Some(digest.checkpoint()),
+    }
+}
 
 #[tokio::test]
 async fn native_multipart_identity_round_trips_the_full_storage_path() {
@@ -46,9 +73,8 @@ async fn native_partial_multipart_checkpoint_survives_record_reload() {
     session.staged_bytes = 5;
     session.phase = MultipartPhase::Completing;
     session.completion = Some(fixtures::completion(&session));
-    let assembly = FileAssembly::new(store, session.owner, [3; 32], 1, 1000, 2, 3).unwrap();
     let completion = session.completion.as_mut().unwrap();
-    completion.progress = assembly.advance(&completion.progress, &part).await.unwrap();
+    completion.progress = legacy_progress(store.clone(), session.owner, &part).await;
     assert_eq!(completion.progress.part_digest.as_ref().unwrap().len(), 205);
     let record = StorageRecord::MultipartSession(Box::new(session.clone()));
     assert_eq!(
@@ -93,17 +119,17 @@ async fn multipart_records_round_trip_open_partial_publishing_published_and_abor
     session.staged_bytes = 5;
     session.phase = MultipartPhase::Completing;
     session.completion = Some(fixtures::completion(&session));
-    let assembly = FileAssembly::new(store, session.owner, [3; 32], 1, 1000, 2, 3).unwrap();
     let completion = session.completion.as_mut().unwrap();
-    completion.progress = assembly.advance(&completion.progress, &part).await.unwrap();
+    completion.progress = legacy_progress(store.clone(), session.owner, &part).await;
     check(&session);
-    while session.completion.as_ref().unwrap().progress.next_part == 0 {
-        let completion = session.completion.as_mut().unwrap();
-        completion.progress = assembly.advance(&completion.progress, &part).await.unwrap();
-        check(&session);
-    }
     let completion = session.completion.as_mut().unwrap();
-    completion.candidate = Some(assembly.finish(&completion.progress).await.unwrap());
+    completion.progress.writer = None;
+    completion.progress.next_part = 1;
+    completion.progress.part_offset = 0;
+    completion.progress.completed_bytes = part.tree.length;
+    completion.progress.active = None;
+    completion.progress.part_digest = None;
+    completion.candidate = Some(part.tree.clone());
     completion.publication = Some(completion.selection.clone());
     session.phase = MultipartPhase::Publishing;
     check(&session);

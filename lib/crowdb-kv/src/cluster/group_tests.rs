@@ -20,6 +20,17 @@ impl PxGroup {
         self.cas_transient_map.get(key).is_some()
     }
 
+    pub fn reclamation_certificate_for_tests(&self) -> u64 {
+        self.reclamation_certificate()
+    }
+
+    pub fn local_reclamation_slot_for_tests(&self) -> u64 {
+        self.local_reclamation_slot()
+    }
+
+    pub fn record_reclamation_heartbeat_for_tests(&self, request: &super::replica::HeartbeatRequestPayload) {
+        self.record_reclamation_heartbeat(request);
+    }
     /// Run one heartbeat round without depending on the election timer.
     pub async fn heartbeat_round_for_tests(self: &std::sync::Arc<Self>) -> bool {
         matches!(

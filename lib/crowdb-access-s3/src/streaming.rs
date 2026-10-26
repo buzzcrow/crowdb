@@ -487,7 +487,7 @@ pub async fn cleanup_after_definite_error(
     outcome
 }
 
-fn classify_publication_error(error: PublicationError) -> PutOutcome {
+pub(crate) fn classify_publication_error(error: PublicationError) -> PutOutcome {
     match error {
         timeout @ PublicationError::Store(MetadataStoreError::Client(
             ClientError::Deadline | ClientError::Transport(_),

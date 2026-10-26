@@ -38,7 +38,7 @@ def main():
         "POST /v1/{prefix}/namespaces/{namespace}/properties",
         "DELETE /v1/{prefix}/namespaces/{namespace}",
     }
-    assert response.json()["idempotency-key-lifetime"] == "PT24H"
+    assert "idempotency-key-lifetime" not in response.json()
     catalog = load_catalog("crowdb", **properties)
     namespaces = catalog.list_namespaces()
     assert isinstance(namespaces, list)

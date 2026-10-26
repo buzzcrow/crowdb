@@ -59,7 +59,7 @@ async fn bounded_sweeps_settle_abandoned_part_mutations_then_expire_without_dele
     }
     let physical = blocks.values.load_full();
     for _ in 0..2 {
-        let recovery = MultipartRecovery::new(fixture.store.clone(), blocks.clone(), 4, 8).unwrap();
+        let recovery = MultipartRecovery::new(fixture.store.clone());
         let mut cursor = None;
         let mut progressed = 0;
         loop {
@@ -93,7 +93,7 @@ async fn bounded_sweeps_settle_abandoned_part_mutations_then_expire_without_dele
 }
 
 #[tokio::test]
-async fn recovery_advances_one_byte_window_per_visit_and_reports_unpublished_sealing_work() {
+async fn recovery_waits_for_client_completion_without_touching_payload_and_expiry_still_aborts() {
     let fixture = file::TestFile::new(common::TestStore::default()).await;
     let blocks = Arc::new(blocks::TestBlocks::default());
     let repository = MultipartRepository::new(fixture.store.clone());
@@ -136,23 +136,24 @@ async fn recovery_advances_one_byte_window_per_visit_and_reports_unpublished_sea
         .freeze_completion(&current, &selection, 102)
         .await
         .unwrap();
-    for expected in [4, 8, 10] {
-        let recovery = MultipartRecovery::new(fixture.store.clone(), blocks.clone(), 4, 8).unwrap();
+    let mutations = fixture.store.writes.load(Ordering::SeqCst);
+    let physical_reads = blocks.reads.load(Ordering::SeqCst);
+    let physical_writes = blocks.writes.load(Ordering::SeqCst);
+    let recovery = MultipartRecovery::new(fixture.store.clone());
+    for _ in 0..3 {
         let report = recovery.recover_page(initial.context, None, 103).await.unwrap();
-        assert_eq!(report.progressed, 1);
+        assert_eq!((report.progressed, report.retained), (0, 1));
         assert!(report.failures.is_empty());
         let current = repository
             .load(initial.context, initial.upload)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(current.completion.unwrap().progress.completed_bytes, expected);
+        assert_eq!(current.completion.unwrap().progress.completed_bytes, 0);
     }
-    let recovery = MultipartRecovery::new(fixture.store.clone(), blocks, 4, 8).unwrap();
-    let mutations = fixture.store.writes.load(Ordering::SeqCst);
-    let report = recovery.recover_page(initial.context, None, 103).await.unwrap();
-    assert_eq!(report.awaiting_seal, vec![initial.upload]);
     assert_eq!(fixture.store.writes.load(Ordering::SeqCst), mutations);
+    assert_eq!(blocks.reads.load(Ordering::SeqCst), physical_reads);
+    assert_eq!(blocks.writes.load(Ordering::SeqCst), physical_writes);
     let report = recovery.recover_page(initial.context, None, 1100).await.unwrap();
     assert_eq!(report.progressed, 1);
     assert_eq!(
@@ -169,7 +170,6 @@ async fn recovery_advances_one_byte_window_per_visit_and_reports_unpublished_sea
 #[tokio::test]
 async fn recovery_rejects_corrupt_pages_foreign_cursors_and_retired_contexts_before_work() {
     let fixture = file::TestFile::new(common::TestStore::default()).await;
-    let blocks = Arc::new(blocks::TestBlocks::default());
     let repository = MultipartRepository::new(fixture.store.clone());
     let mut sessions = Vec::new();
     for _ in 0..5 {
@@ -177,7 +177,7 @@ async fn recovery_rejects_corrupt_pages_foreign_cursors_and_retired_contexts_bef
         repository.begin(&initial, 100).await.unwrap();
         sessions.push(initial);
     }
-    let recovery = MultipartRecovery::new(fixture.store.clone(), blocks, 4, 8).unwrap();
+    let recovery = MultipartRecovery::new(fixture.store.clone());
     let report = recovery.recover_page(fixture.context, None, 101).await.unwrap();
     assert_eq!(report.retained, 4);
     let cursor = report.continuation.unwrap();
@@ -214,12 +214,7 @@ async fn recovery_rejects_corrupt_pages_foreign_cursors_and_retired_contexts_bef
 }
 
 #[test]
-fn recovery_limits_and_session_cursor_domains_are_independent() {
-    let store = Arc::new(common::TestStore::default());
-    let blocks = Arc::new(blocks::TestBlocks::default());
-    for (step, block) in [(0, 8), (1_048_577, 8), (1, 0), (1, 262_145)] {
-        assert!(MultipartRecovery::new(store.clone(), blocks.clone(), step, block).is_err());
-    }
+fn session_cursor_rejects_payload_keys_and_limits_its_scan() {
     let initial = fixtures::session();
     let mut completion = fixtures::completion(&initial);
     completion.selection.operation = OperationId::random();

@@ -30,7 +30,6 @@ fn service() -> DatasetReadService {
         authority,
         DatasetIdentity::new(NamespacePath::root(), "transport").unwrap(),
         1,
-        10,
     )
     .unwrap()
 }
@@ -44,7 +43,7 @@ async fn transport_rejects_invalid_wire_request_before_admission() {
         fields: Vec::new(),
     };
     assert!(matches!(
-        service.read(request, 10).await,
+        service.read(request).await,
         Err(crowdb_access_dataset::ReadTransportError::Invalid(
             DatasetError::InvalidManifest
         ))
@@ -61,7 +60,7 @@ async fn transport_cancel_releases_window_and_rejects_future_reads() {
         sample_ids: vec![b"sample".to_vec()],
         fields: vec!["value".into()],
     };
-    assert!(service.read(request, 10).await.is_err());
+    assert!(service.read(request).await.is_err());
     assert_eq!(service.in_flight(), 0);
     assert!(service.is_cancelled());
 }

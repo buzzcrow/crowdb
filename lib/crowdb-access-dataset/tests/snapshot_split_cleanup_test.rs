@@ -1,8 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-#[path = "common/composition.rs"]
-#[allow(dead_code)]
-mod common;
+#[path = "common/legacy_split.rs"]
+mod legacy;
 #[path = "common/publication.rs"]
 mod publication;
 #[path = "common/split_store.rs"]
@@ -12,11 +11,19 @@ use crowdb_access_dataset::{split::*, *};
 #[tokio::test]
 async fn retired_owner_recovers_all_draft_work_without_touching_other_snapshots() {
     let (store, authority, identity, parent) = split_store::fixture().await;
+    let clock = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1000));
+    let authority = authority.with_reclaim_clock_for_tests(clock.clone());
     let snapshot = split_store::publish_binary_samples(&authority, &identity, parent).await;
-    let record = split_store::prepared(&authority, &identity, snapshot, None).await;
+    let record = legacy::prepared(store.as_ref(), &authority, &identity, snapshot, None).await;
+    let mut split_cursor = SnapshotSplitCleanup::new(snapshot);
     assert!(matches!(
         authority
-            .cleanup_snapshot_split_drafts_step(&identity, snapshot, &ReadCancellation::new())
+            .cleanup_snapshot_split_drafts_step_for_tests(
+                &identity,
+                snapshot,
+                &mut split_cursor,
+                &ReadCancellation::new()
+            )
             .await,
         Err(SplitLifecycleError::Frozen)
     ));
@@ -24,11 +31,7 @@ async fn retired_owner_recovers_all_draft_work_without_touching_other_snapshots(
     let key = key::membership_page(&identity, snapshot, record.revision, &split.name, 0).unwrap();
     let delayed = store.get(&key).await.unwrap().unwrap();
     store.delete(&key).await.unwrap();
-    // A terminated draft worker leaves only its expiring target lease.
-    authority
-        .release_read_handle(&identity, snapshot, record.operation)
-        .await
-        .unwrap();
+    // A terminated draft worker does not block snapshot deletion.
     let root = authority
         .prepare_snapshot_candidate(
             &identity,
@@ -38,29 +41,38 @@ async fn retired_owner_recovers_all_draft_work_without_touching_other_snapshots(
         )
         .await
         .unwrap();
-    authority
-        .publish_snapshot_candidate(&identity, &common::attempt(&authority, &identity, root).await)
-        .await
-        .unwrap();
-    let foreign = split_store::prepared(&authority, &identity, root, None).await;
+    split_store::publish_snapshot_head(&authority, &identity, root).await;
+    let foreign = legacy::prepared(store.as_ref(), &authority, &identity, root, None).await;
     split_store::publish_revision(&authority, &identity, &foreign).await;
     authority.begin_reclaim(&identity, snapshot).await.unwrap();
-    let restarted = DatasetAuthority::new(store.clone());
+    clock.store(2200, std::sync::atomic::Ordering::Release);
+    let restarted = DatasetAuthority::new(store.clone()).with_reclaim_clock_for_tests(clock);
     let mut complete = false;
+    let mut lost_cursor = false;
     for _ in 0..100 {
         let progress = restarted
-            .cleanup_snapshot_split_drafts_step(&identity, snapshot, &ReadCancellation::new())
+            .cleanup_snapshot_split_drafts_step_for_tests(
+                &identity,
+                snapshot,
+                &mut split_cursor,
+                &ReadCancellation::new(),
+            )
             .await
             .unwrap();
         if progress.complete {
             assert_eq!(progress.scanned_drafts, 2);
+            assert!(lost_cursor);
             complete = true;
             break;
+        }
+        if progress.scanned_drafts != 0 && !lost_cursor {
+            lost_cursor = true;
+            split_cursor = SnapshotSplitCleanup::new(snapshot);
         }
     }
     assert!(complete);
     restarted
-        .reclaim_snapshot_metadata(&identity, snapshot)
+        .reclaim_snapshot_metadata_for_tests(&identity, snapshot)
         .await
         .unwrap();
     assert!(matches!(
@@ -73,7 +85,7 @@ async fn retired_owner_recovers_all_draft_work_without_touching_other_snapshots(
                 &identity,
                 root,
                 foreign.revision,
-                common::budget(),
+                split_store::budget(),
                 &ReadCancellation::new()
             )
             .await
@@ -82,7 +94,12 @@ async fn retired_owner_recovers_all_draft_work_without_touching_other_snapshots(
     );
     assert!(
         restarted
-            .cleanup_snapshot_split_drafts_step(&identity, snapshot, &ReadCancellation::new())
+            .cleanup_snapshot_split_drafts_step_for_tests(
+                &identity,
+                snapshot,
+                &mut split_cursor,
+                &ReadCancellation::new()
+            )
             .await
             .unwrap()
             .complete

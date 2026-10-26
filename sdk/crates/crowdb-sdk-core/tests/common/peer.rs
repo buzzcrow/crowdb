@@ -24,7 +24,11 @@ impl TestPeer {
         Self::start_statuses(body, gated, vec![200]).await
     }
     pub async fn start_statuses(body: &'static str, gated: bool, statuses: Vec<u16>) -> Self {
-        let statuses = Arc::new(statuses);
+        Self::start_responses(statuses.into_iter().map(|status| (status, body)).collect(), gated).await
+    }
+    pub async fn start_responses(responses: Vec<(u16, &'static str)>, gated: bool) -> Self {
+        assert!(!responses.is_empty());
+        let responses = Arc::new(responses);
         let calls = Arc::new(AtomicUsize::new(0));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -38,7 +42,7 @@ impl TestPeer {
                 tokio::select! {
                     accepted=listener.accept()=> {
                         let (socket,_)=accepted.unwrap(); counter.fetch_add(1,Ordering::AcqRel);
-                        clients.spawn(serve(socket,tx.clone(),gate.clone(),body,statuses.clone(),calls.clone()));
+                        clients.spawn(serve(socket,tx.clone(),gate.clone(),responses.clone(),calls.clone()));
                     },
                     Some(_)=clients.join_next(),if !clients.is_empty()=>{},
                 }
@@ -63,8 +67,7 @@ async fn serve(
     mut socket: TcpStream,
     tx: mpsc::Sender<String>,
     mut gate: watch::Receiver<bool>,
-    body: &str,
-    statuses: Arc<Vec<u16>>,
+    responses: Arc<Vec<(u16, &'static str)>>,
     calls: Arc<AtomicUsize>,
 ) {
     loop {
@@ -88,13 +91,13 @@ async fn serve(
         tx.send(format!("{header}{}", String::from_utf8_lossy(&data)))
             .await
             .unwrap();
+        let index = calls.fetch_add(1, Ordering::AcqRel);
+        let (status, body) = responses[index.min(responses.len() - 1)];
         while !*gate.borrow() {
             if gate.changed().await.is_err() {
                 return;
             }
         }
-        let index = calls.fetch_add(1, Ordering::AcqRel);
-        let status = statuses[index.min(statuses.len() - 1)];
         let response = format!(
             "HTTP/1.1 {status} Result\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()

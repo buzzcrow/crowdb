@@ -32,8 +32,9 @@ selection, or reclamation authority.
 
 Dataset provides a stable logical model for samples and heterogeneous fields. It
 supports HTTP access through an independently packaged Rust SDK and Python
-native wrapper. Direct storage access is a future client mode with the same
-selection and integrity semantics. It does not own disk placement, replication,
+wrapper, plus trusted direct storage access through the shared native runtime
+and its optional Python extension. Both surfaces preserve the same selection
+and integrity semantics. It does not own disk placement, replication,
 erasure coding, repair, or physical chunk layout. It does not become a query
 engine or a training-framework-specific storage protocol.
 
@@ -120,9 +121,11 @@ would be exceeded. Shuffle never moves or rewrites published payload.
 ## 6. Access surfaces and bounded delivery
 
 HTTP is the portable Dataset surface used by the public Rust SDK and its
-Python native wrapper. In-process typed authority calls preserve the same
-Snapshot semantics. A future direct client uses a bounded versioned routing
-view to reach responsible metadata/data services; it cannot replace authority.
+Python wrapper. The trusted native facade reuses in-process Dataset authority
+and reaches Chunk-KV and ChunkIO/DiskIO through the shared runtime. Its bounded
+versioned routing observations do not replace storage authority. See the
+[native runtime contract](../design-crowdb-native-sdk.md) and
+[native SDK guide](../../../../lib/crowdb-sdk-native/README.md).
 
 `GetSample`, `GetBatch`, and bounded Scan resolve metadata first, apply field
 projection, and then read inline values or chunk ranges/streams. Batch size,
@@ -138,15 +141,21 @@ within the group. The client advances a cursor after batch confirmation. A crash
 may replay the last unconfirmed batch, but may not skip or change the snapshot.
 Epoch and sampler state remain client state.
 
-An active-read lease protects payloads reachable from the selected snapshot while
-the read is in progress. Normal close or cancel releases it immediately. If the
-connection has no activity for 60 seconds, the lease is invalid and GC may treat
-the read as disconnected; this TTL is the crash and network-failure fallback.
+Read admission checks the selected snapshot's authoritative deletion state without
+registering a reader. Deletion durably fences new reads and records a twenty-minute
+`reclaim_after` deadline; retries and restarts preserve that deadline. Existing
+streams can finish using resolved metadata and payloads during the grace period.
+Unusually long reads may fail after reclamation; partial delivery is never complete
+success. Access Servers and native clients do not acknowledge deletion. Client
+checkpoints and local request/buffer admission have independent lifetimes. EOF,
+cancel and drop release local request admission without remote cleanup writes;
+caller-held buffers remain valid and charged until their final release.
 
 Dataset owns the lifetime of its metadata and payload references. Reclamation
-requires that no retained snapshot, tombstone needed by a retained history, or
-active read lease can reach the value or chunk. External S3 or Iceberg references
-are provenance unless an explicit cross-model retention contract says otherwise.
+preserves explicit retention, live snapshot ancestry and shared payload owners.
+External S3 or Iceberg references are provenance unless an explicit cross-model
+retention contract says otherwise. Physical I/O identity checks and buffer ownership
+remain necessary when storage is reclaimed or reused.
 
 ## 8. Interactions
 
@@ -170,8 +179,11 @@ Python package calls that implementation through PyO3. Clients share pooled
 connections, atomic request/byte admission and process-owned runtime resources.
 Blocking native waits release the GIL; live handles inherited across fork are
 rejected. File transfers and batched iteration bound memory independently of
-file size. Tensor decoding and collation stay above the SDK. Direct Chunk-KV,
-chunk access, local staging and RDMA remain extensions.
+file size. The optional native Python extension calls the shared Rust native
+facade, retaining the same bounded ownership and runtime shutdown contracts.
+Direct metadata and chunk access use the runtime's configured TCP/RDMA policy
+without implicit HTTP fallback. Tensor decoding and collation stay above both
+SDK surfaces; optional local staging remains a separate extension.
 
 ## 9. Correctness invariants
 
@@ -191,8 +203,9 @@ chunk access, local staging and RDMA remain extensions.
   limits bound memory and registration.
 - **DATA-I8 — Cursor binding:** a cursor and Read Plan cannot resume against a
   different snapshot or selection identity.
-- **DATA-I9 — Safe reclamation:** retained snapshots and active reads protect all
-  reachable metadata and payload.
+- **DATA-I9 — Safe reclamation:** retention and live ownership protect reachable
+  metadata and payload. Deletion rejects new reads and delays reclamation for the
+  grace period; overdue reads may fail without returning truncated success.
 - **DATA-I10 — Surface equivalence:** HTTP and native access return the same
   logical selection and integrity result.
 
@@ -201,8 +214,8 @@ chunk access, local staging and RDMA remain extensions.
 The implementation is split into a `crowdb-access-dataset` library and a thin
 `crowdb-access-server` Dataset listener, following the S3 and Iceberg boundary.
 `DatasetAuthority` owns keys, records, publication state, ancestry, retention,
-and durable progress through the `DatasetStore` interface. `DatasetReadService`
-owns admission, bounded delivery, plan/cursor execution, and lease lifetime.
+through the `DatasetStore` interface; read checkpoints stay with the caller. `DatasetReadService`
+owns admission, bounded delivery, plan/cursor execution, and request lifetime.
 `DatasetHttpService` owns HTTP framing, authentication, route/status mapping,
 shutdown, and health wiring. `ChunkKvDatasetStore` adapts Dataset metadata and
 payload access to the chunk-backed KV client without exposing physical layout
@@ -210,8 +223,8 @@ to the authority.
 
 ### 10.1 Upload and publication flow
 
-`DatasetUploads` persists bounded upload sessions, immutable numbered parts,
-accepted receipt pages and Dataset-scoped ownership in `DatasetStore`.
+`DatasetUploads` persists bounded upload resources, immutable numbered part
+receipts and Dataset-scoped ownership in `DatasetStore`.
 `ChunkPayloadStorage` writes parts through the shared small-object pipeline with
 Dataset chunk type 7. Each part is at most 4 MiB; 10000 parts bound an upload to
 39.0625 GiB. A write intent records the exact physical location before payload I/O.
@@ -219,46 +232,156 @@ Successful durable completion accepts the receipt. Recovery accepts an intent
 only after the chunk's acknowledged cursor covers the location and the bytes
 pass integrity checks. Readable but unconfirmed bytes remain pending. A fenced
 abandoned allocation is reclaimed before replacing it under the same part ID.
+Upload resources hold at most 256 active and 4096 retired owner identities. A full
+retirement list closes admission to new owners while existing owner retries remain
+valid. Retiring an owner not recorded in a full list upgrades the same resource to
+version 5 before success, even if that owner has not yet claimed it; an active owner
+is removed in that CAS. This prevents an older writer paused before its claim from
+reintroducing the owner after cleanup. Readers supporting only versions 2 through 4
+reject this final fence. Older Access servers and native SDKs must upgrade before
+reading or writing that saturated resource. New mutators retain version 5 and
+require its retirement list to remain full.
+Ordinary resources use version 4. The first upgrade costs one GET and one CAS;
+repeating retirement of an absent owner in version 5 needs one GET and no write.
+Upload storage uses an independent binary envelope: a 52-byte fixed header
+followed by sixteen bytes per active or retired owner. Counts and exact encoded
+length are checked before allocating identity vectors; the maximum authority
+contains 4352 identities in 69,684 bytes. Public `UploadRecord` JSON and its
+logical versions remain unchanged. Part receipts retain their JSON encoding.
+Readers accept legacy JSON versions 2 through 5 with the same validation and
+identity representation; writers emit the binary envelope. Conditions compare
+the actual stored bytes, so a paused JSON mutation cannot overwrite a converted
+resource. JSON-only Access servers and direct native clients reject this
+envelope; their storage readers and writers require a coordinated upgrade.
 Completion verifies every part and the whole declared MD5 with bounded buffers.
+For one part whose declared length and MD5 match the whole upload, verification
+hashes the stored bytes once and reuses that exact-range result. Multiple part
+digests cannot be concatenated into the whole-upload MD5.
+
+Expiry scans bounded pages of upload authorities directly. Each caller retains
+its scan cursor locally; restart repeats the scan and loses no cleanup obligation.
+Discovery reads at most twenty keys / 1 MiB and seeks past each upload's child
+subtree. A bounded local queue schedules uploads in turn; each cleanup window
+scans at most 32 actual part records / 1 MiB and attempts at most 64 range
+notifications. Discovery and cleanup each have a two-second deadline. Sparse
+uploads do not perform a point GET for every declared but absent part.
+Each cleanup authority point read has a fixed 352 KiB budget. Canonical JSON needs
+at most 66 bytes per owner including a separator, plus 1 KiB for other fields;
+4352 owner identities and a metadata key shorter than 64 KiB fit this bound.
+Noncanonical or otherwise oversized records still return a visible limit error.
+Accepted range retirement permits deletion of that aborted upload's part record;
+the upload cannot accept a new part or owner. Deferred or uncertain notification
+retains the exact range. A full queue can discard a hint only after serving it,
+leaving a discovery slot; removed part records ensure useful progress survives
+hint eviction and restart. There is no persistent scan or queue record.
+Independent upload creation writes only its own authority. No shared registry tail,
+registration generation, registry fence or durable scan cursor participates in
+creation, part upload or owner release. Corrupt/failed entries are reported and
+retried next cycle without starving subsequent records. Legacy registry pages are
+ignored. Claimed payloads and terminal owner revocation remain authoritative;
+removing an owner cannot release another owner's bytes. Immutable Accepted part
+records are the sole part-listing facts. Listing and completion scan at most
+128 records / 1 MiB per page, with sixteen concurrent disjoint prefixes of 256
+part IDs. A part write updates only its own record; it does not rewrite a shared
+index page. Legacy index records are ignored.
 
 Prepare validates the complete current sample membership, schema, parent and
 operation token, then persists an invisible candidate and claims completed
-uploads. Omitted samples disappear; surviving samples inherit omitted optional
+uploads. New caller tokens directly select the immutable Snapshot ID; they do
+not create a separate operation-to-Snapshot mapping. Existing legacy mappings
+remain readable and select their original Snapshot. Retirement retains a small
+negative fence for legacy delayed writers and the selected Snapshot resource.
+Omitted samples disappear; surviving samples inherit omitted optional
 fields through explicit ancestry. Tombstones remove inherited values. Required
 field names cannot be removed from a child schema.
 
 Publish reuses the prepared Snapshot ID, marks its complete record Published,
-and CAS-advances the head. A Published operation record can precede head
+and CAS-advances the head. A Published Snapshot record can precede head
 advancement; a successful publish response establishes the completed operation.
 Lost responses are resolved by inspecting status and retrying identical content
 with the same operation token. Historical retries cannot rewind a newer head.
-Divergent retries conflict. Prepared candidates remain until publication or
-explicit reclaim; upload expiry does not reclaim claimed candidate payloads.
+Divergent retries conflict. The first Snapshot resource write includes a fixed
+internal `gc_after` deadline twenty-four hours after creation; content bindings
+inherit it. Retries and publication-state changes preserve that deadline. The
+background worker scans Snapshot resources directly, including writes interrupted
+before the content binding exists. Each page has at most twenty rows, nine MiB
+and a two-second deadline; its position is discardable and restarts from the
+beginning. Head, retention and ancestry checks protect referenced resources
+without writes. Eligible resources use the ordinary authoritative reclamation
+fence and twenty-minute deletion grace. Eligibility alone does not revoke reads.
+An old resource inherits its existing content-binding deadline. If neither
+record has one, the worker assigns a fixed deadline twenty-four hours after its
+first observation. Legacy opaque resources without a supported Manifest remain
+excluded from automatic retirement because their payload references are unknown.
+No per-resource discovery task is created.
+Upload expiry does not reclaim claimed candidate payloads.
 
 ### 10.2 Read flow
 
-`DatasetSessions` resolves latest/stable once, binds the request to that
-immutable Snapshot, and persists immutable pages of selected IDs separately
-from a small progress record. Selection, deterministic shuffle and rank/worker
-partition execute before fetching payloads. Projection walks explicit ancestry
-only until all requested fields are resolved. Plans admit at most 100000 IDs;
-metadata is capped at 8 MiB and selection pages contain at most 1024 IDs.
+`DatasetReads` resolves latest/stable and optional currentSplit into immutable
+versions and returns a self-contained continuation. The server stores no read
+record, selected-ID pages, progress, TTL or cancellation state. Every next request
+supplies its continuation and passes ordinary authentication and deletion admission.
+The token binds Dataset, Snapshot, Split, selection, projection, worker partition,
+shuffle seed/group size and position. It is a cursor, not an authorization grant.
 
-Fetching issues a plan-bound opaque next cursor without advancing acknowledged
-progress. Repeated fetches replay that batch. Acknowledgement CAS-advances only
-its issued cursor and is idempotent; progress inspection performs no payload
-read. Resume restores acknowledged progress. Explicit close affects only that
-handle; a disconnected handle expires after 60 seconds and can resume while its
-Snapshot remains available.
+Selection uses bounded inspection windows without fetching a full Manifest.
+Within one next request, selection windows share admission, immutable summaries,
+schema and compiled predicates. Explicit IDs are validated once. This prepared
+query is local to the request and binds its authority, Dataset and Snapshot;
+independent page requests still perform their own admission. Per-window storage
+budgets and the overall group deadline remain enforced.
+Split filtering precedes deterministic shuffle and worker partitioning. The cursor
+carries a group start and offset, not the Dataset's selected IDs. A partly consumed
+shuffle group is reconstructed from immutable metadata; this bounds memory but
+adds metadata reads when groups are much larger than delivered batches. Groups
+are capped at 100000 selected IDs and 8 MiB of IDs; selection work has a two-second
+deadline and at most 5000 scan windows of up to 20 candidates. Serialized cursor
+content is capped at 256 KiB before base64 encoding. Invalid or excessive work
+returns an explicit error. Stream metadata and headers remain capped at 8 MiB.
+
+Repeating a continuation replays its batch, including from another Access Server
+or native client. After successful application processing, the caller saves the
+returned next continuation in its own checkpoint. EOF and buffer release never
+save progress. There is no remote ack, resume or close; cancelling a request stops
+its local producer. The SDK iterable's acknowledgement is a local operation.
 
 The public binary response streams a bounded JSON header, integrity-checked
 payload frames, field terminators and a batch terminator. Success also requires
-HTTP EOF with no trailing bytes. Each active transfer owns a unique scoped read
-lease and admission credits through transport delivery/drop. Heartbeats renew
-leases during active streaming. Cancellation stops the producer and returns
-credits; retained SDK-owned buffers keep their byte credits until released.
-The internal legacy scan adapter retains its compatibility behavior; public
-fetch never implies application acknowledgement.
+HTTP EOF with no trailing bytes. Each active transfer owns local admission
+credits through delivery/drop. Snapshot reads perform no persistent activity
+updates or heartbeat writes. Cancellation stops the producer and returns credits;
+retained SDK-owned buffers keep their byte credits until released.
+For an uploaded field, HTTP and native readers validate one immutable upload
+description per request, then fetch each part record once. Part indices, lengths
+and payload digests remain checked; EOF does not reload metadata. The description
+is request-owned and registers no remote reader or retention. New requests still
+perform admission, and reclaimed parts fail instead of producing successful EOF.
+Native delivery reuses a single part's successful-EOF length and MD5 proof only
+when the part is the complete field range and matches the field's expected digest.
+Partial data and failed streams provide no proof. Multiple parts still require
+the independent whole-field digest, and inline fields remain checked directly.
+The internal legacy scan adapter also returns a caller-owned cursor without
+loading or persisting progress. Requests have no shared inactivity TTL.
+Legacy scan planning retains one flat ordered ID vector, extracts only the
+current window by moving its IDs, and releases the remaining vector before
+payload delivery. Batch adapters move IDs into windows. Selection and budget
+accounting share one pass; sample shuffle computes its plan identity once and
+orders by the existing MD5 seed/epoch/plan/ID key with binary-ID tie breaking.
+The legacy path still scans its full selection; flat planning does not provide
+the incremental metadata behavior of inspection-backed reads.
+
+Binding reuses its committed-Snapshot admission. Independent selection, preview
+and batch calls retain their own admission. Combined continuation selection and
+delivery share one request-local Snapshot/schema/membership proof under separate
+work budgets; wrappers do not repeat the same deletion lookup. Empty and legacy
+batch entry points retain independent admission. No proof is cached across requests.
+
+Legacy Snapshots without a stored visibility proof are checked against head and
+anchor ancestry using bounded, cancellable reads. The traversal validates the
+Snapshot identity and publication state, rejects cycles and never fills a
+persistent proof cache. Existing proofs remain readable; modern unpublished
+candidates cannot use legacy ancestry as evidence of publication.
 
 ### 10.3 Retention and reclaim flow
 
@@ -267,29 +390,77 @@ head nonce, and rechecks latest, stable, explicit retention and all live committ
 child branches. Temporary child admission fences do not prove retirement. A
 reclaimer owns a CAS token; only that owner can reopen admission or enter the
 irreversible retiring phase. Concurrent stale reclaimers cannot undo retirement.
-An Aborted Snapshot tombstone preserves the original Manifest while payload
-cleanup is pending and prevents publication retry resurrection. Upload ownership
-is released for that operation only; other Snapshot owners preserve shared
-bytes. Deferred physical cleanup remains pending. Shared range retirement does
-not count as a reclaimed whole chunk.
+After the terminal deletion mark, cleanup waits until the persisted grace
+deadline. The Access Server scans bounded pages of deletion records and resumes
+cleanup independently of reader processes. An Aborted Snapshot tombstone preserves
+the original Manifest while payload cleanup is pending and prevents publication retry resurrection.
+REST and bincode deletion requests only establish this mark and observe durable
+completion; repeated requests do not drive metadata deletion or accept a client
+cleanup cursor. Background workers release upload ownership for that operation
+only; other Snapshot owners preserve shared bytes. Owner, legacy Split-draft,
+index-fence and metadata scan positions are local, bound to one Dataset/Snapshot.
+Lost positions repeat idempotent retirement without a stored progress record.
 
-`reclaim_snapshot_metadata_step` persists phase and continuation while deleting
-at most twenty metadata keys per step. It removes Manifest storage and inspection
-projections. Snapshot-owned Split revision/member records become small permanent
-CAS fences so delayed immutable writes cannot restore removed contents. Commit
+Background discovery reads at most twenty deletion marks / 512 KiB and keeps
+at most 32 local cleanup hints. Each window has a two-second deadline. Pending
+work runs at a 50 ms interval; failures back off to 500 ms and rotate the queue,
+so one slow Snapshot cannot starve another. An empty backlog waits fifteen
+seconds. Restart rescans durable marks. Metadata deletion starts only after the
+owner cursor completes; clients cannot skip that boundary. Accepted range
+notifications end Access responsibility without waiting for physical capacity
+recovery. Shared range retirement does not count as a reclaimed whole chunk.
+
+Local queues reserve a full discovery page against failed work. Each hint tracks
+whether its previous window failed. Successful incomplete windows keep their
+positions. Failed hints may occupy at most `32 - discovery_page_items` slots;
+overflow discards the oldest failed hint, leaving every durable resource fact
+untouched. This opens discovery capacity even when 32 operations never respond.
+An outer deadline marks a hint failed only while its window is active, not while
+discovery or legacy-checkpoint sweeping runs. Dropped positions repeat idempotent
+retirement. After discarding a hint, a completed discovery pass restarts when its
+remaining hints have all failed, so no discarded resource is permanently skipped. Empty
+passes retain the normal fifteen-second idle interval. No scheduler position or
+failure bit is persisted.
+
+Metadata cleanup deletes at most twenty keys per local window. It removes
+obsolete Manifest storage and inspection projections while retaining small
+permanent CAS fences for all possible immutable index and Split revision/member
+writes. A failed fence write does not advance the local row position. Commit
 receipts, head fences and terminal retirement evidence remain. A retry helps the
-final status marker if cleanup completed before the response or status write failed.
+final status marker if cleanup completed before the response or status write
+failed. Old upload, metadata, Split-discovery and index checkpoint keys are swept
+in pages of twenty only after authoritative Snapshot completion. The sweep reads
+no checkpoint payload and never deletes the completion or immutable-write fences;
+its scan position is also local. Empty legacy scans wait fifteen seconds.
+
+Legacy Composition cleanup scans existing draft facts into a separate local queue
+of at most 32 operations, discovering eight drafts / 9 MiB at a time. Each
+two-second window advances candidate fences, upload owner retirement, scratch
+fences or registered edit fences. The queue rotates failures and slow operations;
+restart rediscovers every obligation from the retained draft, work-page and edit
+registration facts. No candidate, scratch, edit or upload-retirement checkpoint is
+written. Complete result owners remain independent of draft abandonment. Old
+checkpoint keys are deleted after the local pass; immutable discovery facts and
+negative fences remain. The retired HTTP Composition cleanup action returns 501
+before storage, and no client supplies or confirms background cleanup progress.
 
 Composition evaluation work pages record their possible row writes before applying
 those writes. Obsolete-window cleanup seals rows before sealing their work page,
 then seals the first absent work page to exclude delayed next-window creation.
 Split evaluation similarly registers immutable page keys/digests before writing
-members. Split cleanup processes at most twenty page references per step, retaining
-committed live revision data. Initial Split cleanup requires terminal retirement of
-its data Snapshot. Both cleanup cursors survive restart and preserve active input
-revisions. Split drafts without the work-intent format remain readable but are
-rejected by draft scratch cleanup; new roots carry an explicit work format marker
-that older strict decoders reject. Terminal Snapshot cleanup walks Dataset draft
+members. Split cleanup processes at most twenty page references per local window. A
+separate background queue discovers eight historical drafts / 9 MiB at a time and
+keeps at most 32 hints. Snapshot and Composition cleanup embed the same local
+Split cursor; no Split checkpoint or work-format migration is written. Restart
+repeats idempotent fences. Complete final roots preserve their member pages; an
+absent root competes with cleanup on that same key before member retirement.
+Readable Snapshot owners wait for the persisted deletion grace. A permanently
+sealed incomplete root can retire without creating or waiting for a reader
+deadline. Grace waiting and initial work still protected by a live owner leave
+the current queue pass and are rescanned after fifteen seconds. The retired
+HTTP Split cleanup action returns 501 before storage. Work-intent facts and
+negative fences remain; old drafts without that format are retired with their
+Snapshot metadata instead of receiving a process-format upgrade. Terminal Snapshot cleanup walks Dataset draft
 roots in resumable single-root windows, including drafts without a published
 revision summary. Under that terminal fence it can upgrade an older root's work
 marker before retiring its stored pages. Split revision summaries remain valid
@@ -314,7 +485,7 @@ cleanup retires the staging owner and obsolete candidate owners, preserving
 published candidates and independent owners of shared uploads. Snapshot upload
 reclaim walks at most twenty retained Manifest field positions per step after
 terminal admission fencing. It revokes only that Snapshot publication's owner;
-physical cleanup stays in the durable upload registry. The retained Manifest
+physical cleanup stays discoverable from durable upload authorities. The retained Manifest
 allows owner cleanup even after inspection indexes have been retired.
 
 Composition version 3 registers each edit ID in the root before writing its
@@ -326,13 +497,22 @@ root while preserving its journal and payload ownership.
 
 `retire_owner` permanently revokes one publication's upload claim with the same
 session CAS that removes its ownership. A delayed claim for that operation then
-conflicts; other owners remain valid. Sessions retain at most 4096 retired owner
-IDs and report capacity explicitly. Ordinary `release` remains reversible.
+fails; other owners remain valid. Resources retain at most 4096 retired owner IDs.
+Below that limit, retirement records a negative fence even for an absent owner.
+At the limit, new claims report capacity; retirement upgrades the resource to
+version 5 before removing an unrecorded owner or acknowledging its absence.
+The full list remains unchanged, so retired owners cannot rejoin and the final
+active owner can still be removed before abort or expiry. Ordinary `release`
+remains reversible below saturation; a released owner cannot rejoin a full resource.
 
-Upload expiry scans one bounded registry page per background sweep. Registration
-and removal use generation nonces and session CAS fences so stale cleanup cannot
-remove a newer registration. Restart restores sessions, accepted parts, progress
-and pending cleanup from the durable store; in-memory state is not authoritative.
+Upload expiry uses local continuation/queue hints and existing upload/part resource
+facts. Shared registry registration and removal are absent. Snapshot deletion
+sweeps also yield after a two-second page deadline, keeping durable deletion marks
+and advancing past a stalled item. The listener schedules snapshot pages every
+fifteen seconds and upload catch-up windows fifty milliseconds apart; failed
+upload windows back off five hundred milliseconds while other work remains.
+Idle discovery runs every fifteen seconds. Limits bound work per window rather
+than promise a maximum reclamation latency or measured foreground p99.
 
 ### 10.4 Transport and compatibility
 
@@ -351,15 +531,19 @@ conflicts are not blanket retried. File downloads use a private temporary file
 and rename only after successful integrity verification.
 
 Head envelopes decode legacy versions and use version 3 for commit-attempt
-markers. Access envelopes decode versions 1 and 2 and write version 3 with scoped
-leases, reclaim ownership and terminal retirement. Upload sessions decode version
-2; permanent owner retirement upgrades a session to version 3 so an older writer
-cannot ignore revocation. This metadata upgrade is one-way:
-do not downgrade an upgraded authority or run old and new authority writers
-against the same Dataset store. Immutable Dataset/Snapshot/Manifest encodings
-remain compatible. Upload registry pages also decode the initial array form and
-write generation-tagged entries. Private read-session progress is version 2;
-public API versions do not expose these private persistence formats.
+markers. Access envelopes decode versions 1 through 4 and write version 4 with
+reclaim ownership, terminal deletion, grace deadline, cleanup target and completion.
+Legacy reader activity is ignored; all authority writers must use this contract.
+Upload sessions decode versions 2 through 4 and write version 4 without registry
+fields. Permanent retired-owner identities still reject delayed claims. This
+metadata upgrade is one-way: do not downgrade an upgraded authority or mix old
+and new authority writers against the same Dataset store. Immutable Dataset/Snapshot/Manifest encodings
+remain compatible. Persisted read-session records and legacy cursor keys are
+unused. Session read routes are absent; clients use `POST reads/bind` and
+`POST reads/next`. Upgraded clients and servers must deploy together. Control v2
+advertises `stateless-reads` so an SDK cannot treat the retired session capability
+as support for this contract. Physical purging of unused keys is an explicit
+maintenance operation, not a read-path side effect.
 
 Hot-path synchronization uses atomics, immutable owned views, CAS and bounded
 notification channels. No application-wide request lock serializes independent

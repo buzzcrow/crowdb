@@ -55,6 +55,28 @@ impl RpcServer {
     /// differences. Linux (epoll) is unaffected. A warning is logged
     /// once per process when the clamp activates.
     pub fn with_engines(pool: Option<&crate::BufferPool>, io_engines: u32, io_workers: u32) -> Self {
+        Self::with_rdma_layout(
+            pool,
+            io_engines,
+            io_workers,
+            crate::RdmaWireLayout::Contiguous,
+            1 << 20,
+        )
+        .expect("valid RPC engine and layout defaults")
+    }
+
+    /// Set service layout/capacity defaults before environment configuration.
+    /// This preserves the process's existing RDMA enablement/fallback policy.
+    ///
+    /// # Errors
+    /// Rejects invalid engine counts or a data capacity outside the RDMA classes.
+    pub fn with_rdma_layout(
+        pool: Option<&crate::BufferPool>,
+        io_engines: u32,
+        io_workers: u32,
+        layout: crate::RdmaWireLayout,
+        data_capacity: u32,
+    ) -> Result<Self, RpcError> {
         #[cfg(feature = "test-util")]
         crate::logging::init_test_logging();
 
@@ -71,9 +93,19 @@ impl RpcServer {
             io_workers
         };
         let pool_handle = pool.map(|p| p.handle()).unwrap_or(ptr::null_mut());
-        let handle =
-            unsafe { sys::crowdb_rpc_server_create_with_engines(pool_handle, io_engines, effective_workers) };
-        RpcServer { handle }
+        let handle = unsafe {
+            sys::crowdb_rpc_server_create_with_layout(
+                pool_handle,
+                io_engines,
+                effective_workers,
+                layout as u32,
+                data_capacity,
+            )
+        };
+        if handle.is_null() {
+            return Err(RpcError::InvalidArg);
+        }
+        Ok(RpcServer { handle })
     }
 
     /// Listen on the given address and port. If port is 0, the OS assigns
@@ -208,6 +240,22 @@ impl RpcServer {
                 Some(release_handler),
             );
         }
+    }
+
+    /// Registers a handler whose requests retain their original server and can
+    /// use `ServerRequest::reply` without exposing raw connection lifetimes.
+    /// The registry keeps a weak server owner to avoid a reference cycle.
+    pub fn register_owned_handler<F>(self: &Arc<Self>, msg_type: u16, handler: F)
+    where
+        F: Fn(ServerRequest) + Send + 'static,
+    {
+        let server = Arc::downgrade(self);
+        self.register_handler(msg_type, move |mut request| {
+            if let Some(server) = server.upgrade() {
+                request.response_server = Some(server);
+                handler(request);
+            }
+        });
     }
 
     /// Submit a response on a server-side connection. Thread-safe — may
@@ -365,6 +413,13 @@ impl Connection {
         unsafe { sys::crowdb_rpc_conn_is_open(self.inner.handle) != 0 }
     }
 
+    /// Selected RDMA path, retained even after this connection closes.
+    #[must_use]
+    pub fn is_rdma(&self) -> bool {
+        // SAFETY: this owned handle retains immutable path metadata.
+        unsafe { sys::crowdb_rpc_conn_is_rdma(self.inner.handle) != 0 }
+    }
+
     /// Whether TCP was refused before the peer accepted this connection.
     /// Established connection loss and timeouts do not prove an unsent request.
     #[must_use]
@@ -490,6 +545,8 @@ pub struct ServerRequest {
     pub rpc_create_nano: u64,
     pub msg_type: u16,
     pub conn_handle: *mut std::ffi::c_void,
+    response_connection: *mut std::ffi::c_void,
+    response_server: Option<Arc<RpcServer>>,
     frame_handle: *mut std::ffi::c_void,
     control_ptr: *const u8,
     control_len: u32,
@@ -498,6 +555,31 @@ pub struct ServerRequest {
 }
 
 impl ServerRequest {
+    /// Consumes a request from `register_owned_handler` and transfers immutable
+    /// response buffers to its retained original server/connection.
+    /// # Errors
+    /// Rejects legacy unowned handlers, a closed connection or a full send queue.
+    pub fn reply(
+        self,
+        control: crate::Buffer,
+        data: Option<crate::Buffer>,
+        msg_type: u16,
+    ) -> Result<(), RpcError> {
+        let server = self.response_server.as_ref().ok_or(RpcError::InvalidArg)?;
+        // SAFETY: the private connection was captured by the original callback;
+        // this request retains its Frame connection owner and originating server.
+        unsafe {
+            server.submit_response_buffer(self.response_connection, control, data, msg_type, self.request_id)
+        }
+    }
+
+    /// Fail this logical connection when a response cannot be submitted.
+    /// The native Frame retains the connection through this request's release.
+    pub fn close_connection(&self) {
+        // SAFETY: this wrapper owns the handler Frame for the duration of self.
+        unsafe { crate::sys::crowdb_rpc_frame_close_connection(self.frame_handle) };
+    }
+
     /// Borrow the control (flatbuffer) bytes. Valid as long as `self`
     /// is alive.
     #[must_use]
@@ -567,6 +649,8 @@ unsafe extern "C" fn rust_handler_trampoline(
         rpc_create_nano,
         msg_type,
         conn_handle,
+        response_connection: conn_handle,
+        response_server: None,
         frame_handle,
         control_ptr: control,
         control_len,

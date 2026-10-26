@@ -4,6 +4,7 @@
 //! KV RPC transport and cluster metadata client.
 
 pub mod cluster;
+mod comparison;
 pub mod rpc_transport;
 
 pub use cluster::{KVClusterAdmin, KVClusterMetaClient};

@@ -20,6 +20,8 @@ fn heartbeat(term: u64, leader_id: u64, commit_slot: u64) -> HeartbeatRequestPay
         committed_safe_slot: commit_slot,
         lease_grant_until_ms_mono: 0,
         t_send_ms_mono: 0,
+        gc_before_slot: 0,
+        gc_membership_epoch: 0,
     }
 }
 

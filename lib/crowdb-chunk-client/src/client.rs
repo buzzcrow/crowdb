@@ -9,6 +9,9 @@ use disk_metrics::MetricsDiskWriter;
 mod readiness;
 #[cfg(feature = "test-util")]
 pub use readiness::observe_readiness_phase_for_tests;
+mod connection;
+mod observation;
+mod writer_policy;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -16,11 +19,9 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
+use crowdb_chunkdb_client::ChunkdbClient;
 use crowdb_common::ec::EcScheme;
-use crowdb_kv_client::{
-    ClientConfig, CrowdbKvClient, HardwareClient, RangeBindingClient, ServiceRegistryClient,
-};
+use crowdb_kv_client::{CrowdbKvClient, HardwareClient, RangeBindingClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
     AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
@@ -99,77 +100,24 @@ struct ClientTopology {
     service: ServiceRegistryClient,
     hardware: HardwareClient,
     chunkdb: Arc<ChunkdbClient>,
+    chunkdb_transport: Arc<crowdb_chunkdb_client::ChunkdbRpcTransport>,
     disk_writer: Arc<RoutedDiskWriter>,
 }
 
 impl ChunkIoClient {
-    /// Discover services and build lock-free DiskIO routing.
-    pub async fn connect(config: ChunkIoClientConfig) -> Result<Self> {
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
-            config.management_seeds.clone(),
-        )));
-        Self::connect_with_kv(config, kv).await
-    }
-
-    /// Discover services using an existing KV topology client shared with the
-    /// embedding process.
-    pub async fn connect_with_kv(config: ChunkIoClientConfig, kv: Arc<CrowdbKvClient>) -> Result<Self> {
-        Self::connect_with_kv_read_policy(config, kv, ChunkReadPolicy::default()).await
-    }
-
-    /// Connect with explicit shared read resource limits.
-    pub async fn connect_with_kv_read_policy(
-        config: ChunkIoClientConfig,
-        kv: Arc<CrowdbKvClient>,
-        read_policy: ChunkReadPolicy,
-    ) -> Result<Self> {
-        let service = ServiceRegistryClient::from_shared(kv.clone());
-        let hardware = HardwareClient::from_shared(kv.clone());
-        let range_binding = discover_current_range_bindings(&service, kv.clone()).await?;
-        let mut chunkdb = ChunkdbClient::new(service.clone(), Arc::new(ChunkdbRpcTransport::new()));
-        if let Some(range_binding) = range_binding {
-            chunkdb = chunkdb.with_range_binding(range_binding);
+    /// Stops owned data and chunk-metadata RPC workers after writer drain.
+    /// Embedded borrowers must leave transport shutdown to their original owner.
+    pub fn shutdown_transports(&self) {
+        if let Some(topology) = &self.topology {
+            topology.chunkdb_transport.shutdown();
         }
-        let chunkdb = Arc::new(chunkdb);
-        chunkdb.refresh_endpoints().await?;
-        let disk_writer = Arc::new(
-            RoutedDiskWriter::connect_with_connections_and_workers(
-                &service,
-                &hardware,
-                config.diskio_connections_per_endpoint,
-                config.diskio_rpc_workers,
-            )
-            .await?,
-        );
-        let failed_disks = Arc::new(FailedDiskList::new(config.small_write.failed_disk_ttl));
-        let large_write_repair = Arc::new(crate::metrics::LargeWriteRepairMetrics::default());
-        let large_write_buffer = Arc::new(crate::metrics::LargeWriteBufferMetrics::default());
-        let small_pool = SmallWritePool::new(
-            chunkdb.clone(),
-            disk_writer.clone(),
-            config.small_write,
-            Arc::new(SmallWriteMetrics::default()),
-            Arc::clone(&failed_disks),
-        )?;
-        let reader = ChunkReader::new(chunkdb.clone(), disk_writer.clone(), read_policy)
-            .map_err(|error| crate::IoError::Internal(error.to_string()))?;
-        Ok(Self {
-            allocator: chunkdb.clone(),
-            disk_writer: disk_writer.clone(),
-            topology: Some(Arc::new(ClientTopology {
-                service,
-                hardware,
-                chunkdb,
-                disk_writer,
-            })),
-            metrics: None,
-            readiness: Arc::default(),
-            small_pool,
-            reader,
-            failed_disks,
-            large_write_repair,
-            large_write_buffer,
-        })
+        self.disk_writer.shutdown();
+    }
+
+    /// Reuse the DiskIO transport's bounded native producer allocation source.
+    #[must_use]
+    pub fn producer_allocator(&self) -> Option<crowdb_rpc_ffi::ProducerBufferAllocator> {
+        self.disk_writer.producer_allocator()
     }
 
     /// Construct from low-level seams. Intended for focused tests and embedded fixtures.

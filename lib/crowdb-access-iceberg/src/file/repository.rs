@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use crate::catalog::{check_context, CasOutcome, CatalogContext, CatalogError, CatalogStore};
 use crate::error::ValidationError;
-use crate::gc::GcCandidate;
 use crate::operation::mutation_identity;
 use crate::record::StorageRecord;
 
 use super::{canonical_file_key, file_key, DeletedFile, FileLocation, FileRecord};
+
+mod deletion;
 
 #[derive(Clone)]
 pub struct FileRepository {
@@ -19,8 +20,8 @@ impl FileRepository {
         Self { store }
     }
 
-    /// Finalizes an injection using its durably selected upload tree.
-    /// The caller retains that same owner/tree in its upload recovery state.
+    /// Publishes one complete native upload. The caller retains its input and
+    /// retries the whole transfer after failure; no request selection is stored.
     ///
     /// # Errors
     /// Rejects legacy scope, corrupt trees and conflicting filename publication.
@@ -48,6 +49,20 @@ impl FileRepository {
         location: &FileLocation,
     ) -> Result<Option<FileRecord>, CatalogError> {
         self.check_context(context, location).await?;
+        self.resolve(location).await
+    }
+
+    // The enclosing composite read checks catalog availability before and after
+    // resolving its namespace, table and immutable file bindings.
+    pub(crate) async fn load_in_context(
+        &self,
+        context: CatalogContext,
+        location: &FileLocation,
+    ) -> Result<Option<FileRecord>, CatalogError> {
+        context.validate()?;
+        if context.catalog != location.table().catalog {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
         self.resolve(location).await
     }
 
@@ -168,17 +183,7 @@ impl FileRepository {
                     if candidate.file == deleted.file.file {
                         return Err(CatalogError::Conflict);
                     }
-                    let gc_key = GcCandidate::deleted_key(&deleted.file);
-                    let Some(claim) = self.store.get(&gc_key.encode()?).await? else {
-                        return Err(CatalogError::Busy);
-                    };
-                    let StorageRecord::GcCandidate(claim) = StorageRecord::decode(&gc_key, &claim.bytes)?
-                    else {
-                        return Err(ValidationError::Record.into());
-                    };
-                    if claim.file != deleted.file {
-                        return Err(CatalogError::Conflict);
-                    }
+                    self.retain_deleted(context, &deleted).await?;
                     match self
                         .store
                         .compare_exchange(

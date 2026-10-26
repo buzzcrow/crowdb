@@ -472,10 +472,15 @@ pub struct DeleteChunkRangeRequest {
     pub chunk_id: Option<ChunkId>,
     pub chunk_offset: u32,
     pub chunk_size: u32,
+    /// Optional layout precondition. Zero lets ChunkDB qualify its current layout.
+    pub expected_modify_ts: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
-pub struct DeleteChunkRangeResponse {}
+pub struct DeleteChunkRangeResponse {
+    /// True only after physical resources for the requested range are released.
+    pub reclaimed: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct AllocateReplacementSegmentRequest {

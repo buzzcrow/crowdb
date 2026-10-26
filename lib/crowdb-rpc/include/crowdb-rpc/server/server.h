@@ -26,12 +26,19 @@ class RpcServer
   public:
     // Multi-engine ctor: io_engines independent epoll/kqueue instances,
     // with io_workers total workers (per-engine = io_workers / io_engines).
-    RpcServer(BufferPool *pool = nullptr, uint32_t io_engines = 1, uint32_t io_workers = 1);
+    RpcServer(BufferPool *pool = nullptr, uint32_t io_engines = 1, uint32_t io_workers = 1,
+              RdmaConfig rdma_config = {});
     ~RpcServer();
 
     // Listen on the given address + port. Must be called before start().
     // If port is 0, the OS assigns an ephemeral port.
     bool listen(const std::string &addr, int port);
+
+    bool configure_rdma(RdmaConfig config, bool enabled, bool allow_tcp_fallback, bool listen_enabled)
+    {
+        return listen_fd_ < 0 && !running_.load(std::memory_order_acquire) &&
+               transport_->configure_rdma(std::move(config), enabled, allow_tcp_fallback, listen_enabled);
+    }
 
     int listen_port() const
     {
@@ -70,6 +77,14 @@ class RpcServer
         return transport_.get();
     }
 
+    // Async service callbacks retain the stopped transport and default pool
+    // until their final I/O completion, independently of this server facade.
+    // An externally supplied pool must outlive all retained transport users.
+    std::shared_ptr<SocketTransport> shared_transport() const
+    {
+        return transport_;
+    }
+
     // The buffer pool (for handlers that allocate response buffers).
     BufferPool *pool()
     {
@@ -85,13 +100,13 @@ class RpcServer
 
   private:
     BufferPool                      *pool_;
-    bool                             owns_pool_;
-    std::unique_ptr<SocketTransport> transport_;
+    std::shared_ptr<SocketTransport> transport_;
     HandlerRegistry                  handlers_;
     RpcClient                       *request_client_{nullptr}; // server-initiated request-response
 
     int                                listen_fd_   = -1;
     int                                listen_port_ = 0;
+    std::string                        listen_addr_;
     std::string                        listener_key_;
     int                                listener_lock_fd_ = -1;
     std::atomic<bool>                  running_{false};

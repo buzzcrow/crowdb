@@ -109,7 +109,7 @@ pub struct SplitHead {
 
 impl SplitHead {
     fn validate(&self) -> Result<(), SplitError> {
-        if self.version != 1 {
+        if !matches!(self.version, 1 | 3) {
             return Err(SplitError::InvalidRecord);
         }
         SnapshotId::from_bytes(self.snapshot.as_bytes()).map_err(|_| SplitError::InvalidRecord)?;

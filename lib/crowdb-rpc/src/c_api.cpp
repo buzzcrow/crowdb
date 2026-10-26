@@ -36,12 +36,6 @@
 // The opaque C handles are wrappers around the C++ objects. The struct
 // names match the forward declarations in c_api.h (crowdb_rpc_pool_s, etc.).
 
-struct crowdb_rpc_pool_s
-{
-    crowdb::rpc::BufferPool *pool;
-    bool                     owns;
-};
-
 // Opaque handle struct definitions are in c_api_internal.h (shared
 // with co_client.cpp).
 
@@ -90,7 +84,7 @@ const uint8_t *crowdb_rpc_buffer_data(crowdb_rpc_buffer_t buf)
         if (buf == nullptr || buf->buf == nullptr) {
             return nullptr;
         }
-        return buf->buf->data;
+        return buf->buf->payload_data();
     }
     catch (...) {
         return nullptr;
@@ -108,6 +102,67 @@ uint32_t crowdb_rpc_buffer_len(crowdb_rpc_buffer_t buf)
     catch (...) {
         return 0;
     }
+}
+
+uint32_t crowdb_rpc_buffer_capacity(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr) ? buf->buf->capacity : 0;
+}
+
+uint64_t crowdb_rpc_buffer_request_id(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr) ? buf->buf->request_id : 0;
+}
+
+uint64_t crowdb_rpc_buffer_stream_id(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr) ? buf->buf->stream_id : 0;
+}
+
+uint64_t crowdb_rpc_buffer_sequence(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr) ? buf->buf->sequence : 0;
+}
+
+uint64_t crowdb_rpc_buffer_logical_offset(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr) ? buf->buf->logical_offset : 0;
+}
+
+uint32_t crowdb_rpc_buffer_registration_id(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr) ? buf->buf->registration_id : 0;
+}
+
+int crowdb_rpc_buffer_ownership(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr)
+             ? static_cast<int>(buf->buf->ownership.load(std::memory_order_acquire))
+             : -1;
+}
+
+void crowdb_rpc_buffer_set_metadata(crowdb_rpc_buffer_t buf, uint64_t request_id, uint64_t stream_id, uint64_t sequence,
+                                    uint64_t logical_offset, uint32_t registration_id)
+{
+    if (buf != nullptr && buf->buf != nullptr) {
+        buf->buf->set_metadata(request_id, stream_id, sequence, logical_offset, registration_id);
+    }
+}
+
+int crowdb_rpc_buffer_transition(crowdb_rpc_buffer_t buf, int from, int to)
+{
+    if (buf == nullptr || buf->buf == nullptr || from < 0 || from > 6 || to < 0 || to > 6) {
+        return 0;
+    }
+    return buf->buf->transition(static_cast<crowdb::rpc::BufferOwnership>(from),
+                                static_cast<crowdb::rpc::BufferOwnership>(to))
+             ? 1
+             : 0;
+}
+
+int crowdb_rpc_buffer_quarantine(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr && buf->buf->quarantine()) ? 1 : 0;
 }
 
 bool crowdb_rpc_buffer_detach(crowdb_rpc_buffer_t buf)
@@ -130,8 +185,9 @@ crowdb_rpc_buffer_t crowdb_rpc_buffer_ref(crowdb_rpc_buffer_t buf)
         if (buf == nullptr || buf->buf == nullptr) {
             return nullptr;
         }
-        buf->buf->ref_clone();
-        return buf;
+        auto clone = std::make_unique<crowdb_rpc_buffer_s>();
+        clone->buf = buf->buf->ref_clone();
+        return clone->buf == nullptr ? nullptr : clone.release();
     }
     catch (...) {
         return nullptr;
@@ -234,206 +290,19 @@ void crowdb_rpc_pool_destroy(crowdb_rpc_pool_t pool)
     }
 }
 
-// ── Server ────────────────────────────────────────────────────────
-
-crowdb_rpc_server_t crowdb_rpc_server_create(crowdb_rpc_pool_t pool)
-{
-    try {
-        crowdb::rpc::BufferPool *bp = (pool != nullptr) ? pool->pool : nullptr;
-        return new crowdb_rpc_server_s{new crowdb::rpc::RpcServer(bp, 1, 1)};
-    }
-    catch (...) {
-        return nullptr;
-    }
-}
-
-crowdb_rpc_server_t crowdb_rpc_server_create_with_workers(crowdb_rpc_pool_t pool, uint32_t num_workers)
-{
-    try {
-        crowdb::rpc::BufferPool *bp = (pool != nullptr) ? pool->pool : nullptr;
-        return new crowdb_rpc_server_s{new crowdb::rpc::RpcServer(bp, 1, num_workers)};
-    }
-    catch (...) {
-        return nullptr;
-    }
-}
-
-crowdb_rpc_server_t crowdb_rpc_server_create_with_engines(crowdb_rpc_pool_t pool, uint32_t io_engines,
-                                                          uint32_t io_workers)
-{
-    try {
-        crowdb::rpc::BufferPool *bp = (pool != nullptr) ? pool->pool : nullptr;
-        return new crowdb_rpc_server_s{new crowdb::rpc::RpcServer(bp, io_engines, io_workers)};
-    }
-    catch (...) {
-        return nullptr;
-    }
-}
-
-void crowdb_rpc_server_set_send_queue_capacity(crowdb_rpc_server_t server, uint32_t capacity)
-{
-    try {
-        if (server == nullptr || capacity == 0) {
-            return;
-        }
-        server->server->transport()->set_send_queue_capacity(capacity);
-    }
-    catch (...) {
-    }
-}
-
-void crowdb_rpc_server_set_tcp_nodelay(crowdb_rpc_server_t server, int enabled)
-{
-    try {
-        if (server == nullptr) {
-            return;
-        }
-        server->server->transport()->set_tcp_nodelay(enabled != 0);
-    }
-    catch (...) {
-    }
-}
-
-void crowdb_rpc_server_set_quickack(crowdb_rpc_server_t server, int enabled)
-{
-    try {
-        if (server == nullptr) {
-            return;
-        }
-        server->server->transport()->set_quickack(enabled != 0);
-    }
-    catch (...) {
-    }
-}
-
-void crowdb_rpc_server_set_event_write(crowdb_rpc_server_t server, int enabled)
-{
-    try {
-        if (server == nullptr) {
-            return;
-        }
-        server->server->transport()->set_event_write(enabled != 0);
-    }
-    catch (...) {
-    }
-}
-
-void crowdb_rpc_server_destroy(crowdb_rpc_server_t server)
-{
-    try {
-        if (server == nullptr) {
-            return;
-        }
-        delete server->server;
-        delete server;
-    }
-    catch (...) {
-    }
-}
-
-void crowdb_rpc_server_clear_handlers(crowdb_rpc_server_t server)
-{
-    try {
-        if (server == nullptr) {
-            return;
-        }
-        server->server->clear_handlers();
-    }
-    catch (...) {
-    }
-}
-
-static void copy_latency(crowdb_rpc_latency_stats_t *out, const crowdb::rpc::LatencyHistogram &h)
-{
-    out->count  = h.count.load(std::memory_order_relaxed);
-    out->sum_ns = h.sum_ns.load(std::memory_order_relaxed);
-    out->min_ns = h.min_ns.load(std::memory_order_relaxed);
-    out->max_ns = h.max_ns.load(std::memory_order_relaxed);
-}
-
-void crowdb_rpc_server_transport_stats(crowdb_rpc_server_t server, crowdb_rpc_transport_stats_t *out)
-{
-    try {
-        if (server == nullptr || out == nullptr) {
-            return;
-        }
-        auto *t = server->server->transport();
-        if (t == nullptr) {
-            return;
-        }
-        auto &s = t->stats();
-        copy_latency(&out->submit_to_writev, s.submit_to_writev);
-        out->send_queue_rejects = s.send_queue_rejects.load(std::memory_order_relaxed);
-    }
-    catch (...) {
-    }
-}
-
 void crowdb_rpc_client_get_counters(crowdb_rpc_client_t /*client*/, crowdb_rpc_client_counters_t *out)
 {
     try {
         if (out == nullptr) {
             return;
         }
-        out->submit_fail  = crowdb::rpc::cnt_send_queue_full().window();
-        out->submit_retry = crowdb::rpc::rpc_submit_retry().window();
-        out->resp_missed  = crowdb::rpc::rpc_resp_missed().window();
-        out->reaped       = crowdb::rpc::rpc_reaped().window();
+        const auto cumulative = [](const auto &counter) { return counter.total() + counter.window(); };
+        out->submit_fail      = cumulative(crowdb::rpc::cnt_send_queue_full());
+        out->submit_retry     = cumulative(crowdb::rpc::rpc_submit_retry());
+        out->resp_missed      = cumulative(crowdb::rpc::rpc_resp_missed());
+        out->reaped           = cumulative(crowdb::rpc::rpc_reaped());
     }
     catch (...) {
-    }
-}
-
-crowdb_rpc_status crowdb_rpc_server_listen(crowdb_rpc_server_t server, const char *addr, int port)
-{
-    try {
-        if (server == nullptr || addr == nullptr) {
-            return CROWDB_RPC_ERR_INVALID_ARG;
-        }
-        if (!server->server->listen(addr, port)) {
-            return CROWDB_RPC_ERR_CONN_ERROR;
-        }
-        return CROWDB_RPC_OK;
-    }
-    catch (...) {
-        return CROWDB_RPC_ERR_CONN_ERROR;
-    }
-}
-
-void crowdb_rpc_server_start(crowdb_rpc_server_t server)
-{
-    try {
-        if (server == nullptr) {
-            return;
-        }
-        server->server->start();
-    }
-    catch (...) {
-    }
-}
-
-void crowdb_rpc_server_stop(crowdb_rpc_server_t server)
-{
-    try {
-        if (server == nullptr) {
-            return;
-        }
-        server->server->stop();
-    }
-    catch (...) {
-    }
-}
-
-int crowdb_rpc_server_port(crowdb_rpc_server_t server)
-{
-    try {
-        if (server == nullptr) {
-            return 0;
-        }
-        return server->server->listen_port();
-    }
-    catch (...) {
-        return 0;
     }
 }
 
@@ -467,50 +336,6 @@ void crowdb_rpc_client_destroy(crowdb_rpc_client_t client)
 
 namespace crowdb::rpc
 {
-
-// Wrap a pool Buffer in a crowdb_rpc_buffer_s handle. The handle holds a
-// ref_clone so the frame's release doesn't free the buffer.
-static crowdb_rpc_buffer_t wrap_pool_buffer(Buffer *buf)
-{
-    if (buf == nullptr || buf->len == 0) {
-        return nullptr;
-    }
-    Buffer *clone = buf->ref_clone();
-    if (clone == nullptr) {
-        return nullptr;
-    }
-    return new crowdb_rpc_buffer_s{clone};
-}
-
-void frame_to_c_handles(Frame *frame, crowdb_rpc_buffer_t *out_ctrl, crowdb_rpc_buffer_t *out_data)
-{
-    *out_ctrl = nullptr;
-    *out_data = nullptr;
-    if (frame == nullptr) {
-        return;
-    }
-    // Control: raw bytes from frame->control (flatbuffer). Wrap in a
-    // malloc'd Buffer with a standalone refcount so release() and
-    // ref_clone() work normally (no pool recycle on last ref).
-    if (!frame->control.empty()) {
-        auto *buf = new Buffer;
-        buf->data = static_cast<uint8_t *>(std::malloc(frame->control.size()));
-        if (buf->data != nullptr) {
-            std::memcpy(buf->data, frame->control.data(), frame->control.size());
-            buf->len      = static_cast<uint32_t>(frame->control.size());
-            buf->capacity = buf->len;
-            buf->ref      = new std::atomic<int32_t>(1);
-            buf->pool     = nullptr;
-            *out_ctrl     = new crowdb_rpc_buffer_s{buf};
-        }
-        else {
-            delete buf;
-        }
-    }
-    // Data is a pool Buffer — ref_clone so the frame's release doesn't free.
-    *out_data = wrap_pool_buffer(frame->data_buf);
-    delete frame;
-}
 
 static crowdb_rpc_status rpc_error_to_status(RpcError err)
 {
@@ -834,40 +659,13 @@ void crowdb_rpc_conn_close(crowdb_rpc_conn_t conn)
 
 // ── Built-in echo handler ─────────────────────────────────────────
 
-// Echo handler: returns the request data as the response data, with a
-// ConnectionPingResponse control buffer echoing the request_id. Same
-// logic as the load_test.cpp echo handler, compiled into the library.
-static crowdb::rpc::OutFrame *echo_handler(crowdb::rpc::Frame *request, crowdb::rpc::Connection *conn)
-{
-    uint64_t                 req_id      = request->request_id;
-    uint64_t                 create_nano = request->rpc_create_nano;
-    crowdb::rpc::BufferPool *pool        = conn->pool();
-    uint64_t             resp_nano = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
-    crowdb::rpc::Buffer *resp_ctrl = crowdb::rpc::build_ping_response(pool, req_id, create_nano, resp_nano);
-
-    crowdb::rpc::Buffer *resp_data = nullptr;
-    if (request->data_buf != nullptr && request->data_buf->len > 0) {
-        resp_data = pool->alloc(request->data_buf->len);
-        if (resp_data != nullptr) {
-            std::memcpy(resp_data->data, request->data_buf->data, request->data_buf->len);
-            resp_data->write(resp_data->data, request->data_buf->len);
-        }
-    }
-
-    // Capture msg_type from the request header so the response matches.
-    uint16_t msg_type = request->header.msg_type;
-
-    delete request;
-    return crowdb::rpc::build_out_frame(req_id, msg_type, resp_ctrl, resp_data);
-}
-
 void crowdb_rpc_server_register_echo_handler(crowdb_rpc_server_t server, uint16_t msg_type)
 {
     try {
         if (server == nullptr) {
             return;
         }
-        server->server->register_handler(msg_type, echo_handler);
+        server->server->register_handler(msg_type, crowdb::rpc::handle_echo);
     }
     catch (...) {
     }

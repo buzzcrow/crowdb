@@ -3,9 +3,9 @@
 
 use super::{conversion, error::ApiError, json, models, operation, read_json, snapshot, ApiResult};
 use crate::dataset::{unix_seconds, DatasetHttpService};
-use crowdb_access_dataset::{AuthorityError, DatasetIdentity, FieldLocator, ManifestRecord, UploadState};
+use crowdb_access_dataset::{DatasetIdentity, FieldLocator, ManifestRecord, PublicationState, UploadState};
 use hyper::{body::Incoming, Request};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 impl DatasetHttpService {
     pub(super) async fn publication_route(
@@ -21,54 +21,36 @@ impl DatasetHttpService {
         let locations = self.resolve_payloads(&mut manifest).await?;
         let bytes = bincode::serialize(&manifest).map_err(|_| ApiError::integrity())?;
         let authority = self.reads.authority();
-        match authority.publication_status(identity, operation).await {
-            Ok(record) if record.publication.parent != parent || record.publication.manifest != bytes => {
-                return Err(ApiError::conflict())
-            }
-            Ok(_) => {}
-            Err(AuthorityError::SnapshotNotFound) => {
-                if authority.latest(identity).await? != parent {
-                    return Err(ApiError::conflict());
-                }
-                if let Some(parent) = parent {
-                    authority.get_snapshot(identity, parent).await?;
-                }
-            }
-            Err(error) => return Err(error.into()),
-        }
         // The candidate is durable before ownership is acquired, so failed or
         // disconnected requests always have a recoverable publication identity.
-        authority
-            .prepare_snapshot_with_operation(identity, parent, bytes.clone(), operation)
+        let snapshot = authority
+            .prepare_snapshot_with_operation(identity, parent, bytes, operation)
             .await?;
         if !locations.is_empty() {
             let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
-            for location in &locations {
+            for location in locations.keys() {
                 uploads.claim(location, operation, unix_seconds()).await?;
             }
         }
-        let result = if action == "prepare" {
+        authority.complete_snapshot_candidate(identity, snapshot).await?;
+        if action == "publish" {
             authority
-                .prepare_snapshot_with_operation(identity, parent, bytes, operation)
-                .await
-        } else {
-            authority
-                .publish_snapshot_with_operation(identity, parent, bytes, operation)
-                .await
-        };
-        let _snapshot = result?;
-        if let Some(uploads) = &self.uploads {
-            for location in &locations {
-                uploads.untrack(location).await?;
-            }
+                .publish_prepared_snapshot(identity, snapshot, parent)
+                .await?;
         }
-        json(&conversion::snapshot(
-            authority.publication_status(identity, operation).await?,
+        json(&conversion::snapshot_metadata(
+            snapshot,
+            parent,
+            operation,
+            PublicationState::Published,
             authority.latest(identity).await?,
         ))
     }
-    async fn resolve_payloads(&self, manifest: &mut ManifestRecord) -> Result<BTreeSet<Vec<u8>>, ApiError> {
-        let mut locations = BTreeSet::new();
+    async fn resolve_payloads(
+        &self,
+        manifest: &mut ManifestRecord,
+    ) -> Result<BTreeMap<Vec<u8>, (u64, [u8; 16])>, ApiError> {
+        let mut locations = BTreeMap::new();
         for field in manifest.samples.iter_mut().flat_map(|s| &mut s.fields) {
             if let FieldLocator::Chunk {
                 location,
@@ -76,14 +58,20 @@ impl DatasetHttpService {
                 md5,
             } = &mut field.value
             {
-                let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
-                let record = uploads.metadata(location).await?;
-                if !matches!(record.state, UploadState::Complete | UploadState::Claimed) {
-                    return Err(ApiError::conflict());
-                }
-                *length = record.length;
-                *md5 = record.md5;
-                locations.insert(location.clone());
+                let (resolved_length, resolved_md5) = if let Some(metadata) = locations.get(location) {
+                    *metadata
+                } else {
+                    let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
+                    let record = uploads.metadata(location).await?;
+                    if !matches!(record.state, UploadState::Complete | UploadState::Claimed) {
+                        return Err(ApiError::conflict());
+                    }
+                    let metadata = (record.length, record.md5);
+                    locations.insert(location.clone(), metadata);
+                    metadata
+                };
+                *length = resolved_length;
+                *md5 = resolved_md5;
             }
         }
         manifest.validate().map_err(|_| ApiError::invalid())?;

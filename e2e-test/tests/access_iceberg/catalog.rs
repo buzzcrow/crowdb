@@ -12,6 +12,7 @@ use super::frontend;
 mod journal;
 mod namespace;
 mod property;
+mod scan;
 use super::{
     native::{self, TestNativeStorage},
     now_ms,
@@ -126,7 +127,7 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
     assert_eq!(execute(&repository, initialize).await, original);
     assert_eq!(repository.status().await.unwrap().0.context.activation_epoch, 3);
     native::activate(&repository).await;
-    verify_retry_scan(&stack, &repository).await;
+    scan::verify_legacy_records(&stack, &repository).await;
     frontend.stop().await;
     second_frontend.stop().await;
     namespace::verify_name_index(&stack, latest.catalog).await;
@@ -177,80 +178,4 @@ async fn verify_interrupted_clear(stack: &TestNativeStorage, repository: &Catalo
         );
         assert_eq!(execute(repository, clear).await, recovered);
     }
-}
-
-async fn verify_retry_scan(stack: &TestNativeStorage, repository: &CatalogRepository) {
-    use crowdb_access_iceberg::key::IcebergKey;
-    use crowdb_access_iceberg::operation::{RetryAdmission, RetryLedger, RetryRecord};
-    use crowdb_chunk_kv_client::MultiScanRequest;
-    use crowdb_protocol::chunk_kv::ScanDirection;
-    let store = stack.store().await;
-    let ledger = RetryLedger::new(store.clone());
-    let context = repository.status().await.unwrap().0.context;
-    for _ in 0..3 {
-        let request = RetryRecord {
-            identity: RequestIdentity {
-                operation: OperationId::random(),
-                issued_ms: now_ms(),
-            },
-            principal: "reader".into(),
-            route: "test mutation".into(),
-            digest: [1; 32],
-            context,
-            retained_until_ms: 0,
-            status: 0,
-            body: Vec::new(),
-        };
-        assert!(matches!(
-            ledger.begin(request.clone(), now_ms()).await.unwrap(),
-            RetryAdmission::New(_)
-        ));
-        assert!(!ledger
-            .finish(request.clone(), 503, Vec::new(), now_ms())
-            .await
-            .unwrap());
-        assert!(matches!(
-            ledger.begin(request.clone(), now_ms()).await.unwrap(),
-            RetryAdmission::Resume(_)
-        ));
-        ledger
-            .finish(request.clone(), 409, b"conflict".to_vec(), now_ms())
-            .await
-            .unwrap();
-        let RetryAdmission::Replay(result) = RetryLedger::new(stack.store().await)
-            .begin(request, now_ms())
-            .await
-            .unwrap()
-        else {
-            panic!("durable result replay")
-        };
-        assert_eq!(result.status, 409);
-        assert_eq!(result.body, b"conflict");
-    }
-    let range = IcebergKey::catalog_range(context.catalog);
-    let mut scan = MultiScanRequest {
-        start: Some(range.start.clone()),
-        end: Some(range.end.clone()),
-        direction: ScanDirection::Forward,
-        max_items: 1,
-        max_bytes: 64 * 1024,
-        continuation: None,
-    };
-    let mut count = 0;
-    loop {
-        let page = store.scan(scan.clone()).await.unwrap();
-        assert!(page.items.len() <= 1);
-        for item in &page.items {
-            assert!(range.contains(&item.key));
-        }
-        count += page.items.len();
-        scan.continuation = page.continuation;
-        if scan.continuation.is_none() {
-            break;
-        }
-        assert!(count <= 4);
-    }
-    assert_eq!(count, 4);
-    scan.start = None;
-    assert!(store.scan(scan).await.is_err());
 }

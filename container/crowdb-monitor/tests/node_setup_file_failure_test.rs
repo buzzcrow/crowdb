@@ -12,10 +12,12 @@ mod node_setup;
 mod node_setup_file;
 #[path = "common/node_setup_groups.rs"]
 mod node_setup_groups;
+#[path = "common/run_root.rs"]
+mod run_root;
 
 #[tokio::test]
 async fn failed_file_is_terminal_and_explicit_retry_preserves_its_operation_and_geometry() {
-    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("file-fail");
+    let directory = run_root::TestRunRoot::new("file-fail");
     let root = directory.path();
     let (request, _authority, profile) = node_setup_file::prepare(root, false).await;
     let socket = profile.paths.run_root.join("node-control.sock");
@@ -73,7 +75,7 @@ async fn failed_file_is_terminal_and_explicit_retry_preserves_its_operation_and_
 async fn storage_consumers_wait_for_disk_registration_after_prerequisite_services_are_ready() {
     use crowdb_protocol::mgmt::node::{setup::SetupServiceKind, NodeControl};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("setup-order");
+    let directory = run_root::TestRunRoot::new("setup-order");
     let root = directory.path();
     let (_request, _authority, profile) = node_setup_file::prepare(root, true).await;
     let path = root.join("node-setup.json");

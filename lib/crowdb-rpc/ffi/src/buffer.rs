@@ -13,6 +13,51 @@ pub struct Buffer {
     handle: sys::crowdb_rpc_buffer_t,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BufferLeaseMetadata {
+    pub request_id: u64,
+    pub stream_id: u64,
+    pub sequence: u64,
+    pub logical_offset: u64,
+    pub capacity: u32,
+    pub registration_id: u32,
+    pub ownership: BufferOwnership,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BufferAllocationMetadata {
+    pub identity: u64,
+    pub capacity: u32,
+    pub offset: u32,
+}
+
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum BufferOwnership {
+    #[default]
+    Available = 0,
+    PostedReceive = 1,
+    ReceiveInFlight = 2,
+    SendInFlight = 3,
+    DiskOwned = 4,
+    CallerOwned = 5,
+    Quarantined = 6,
+}
+
+impl BufferOwnership {
+    fn from_raw(value: i32) -> Self {
+        match value {
+            0 => Self::Available,
+            1 => Self::PostedReceive,
+            2 => Self::ReceiveInFlight,
+            3 => Self::SendInFlight,
+            4 => Self::DiskOwned,
+            5 => Self::CallerOwned,
+            _ => Self::Quarantined,
+        }
+    }
+}
+
 /// An immutable, bounded scatter/gather data payload.
 ///
 /// Every view owns its underlying allocation until the RPC transport finishes
@@ -129,6 +174,10 @@ impl std::fmt::Debug for Buffer {
 }
 
 impl Buffer {
+    pub(crate) fn handle(&self) -> sys::crowdb_rpc_buffer_t {
+        self.handle
+    }
+
     /// Transfer a receive buffer out of its pool, preserving its allocation.
     /// Returns false for pool types that cannot detach receive memory.
     pub fn detach(&mut self) -> bool {
@@ -164,6 +213,71 @@ impl Buffer {
                 std::slice::from_raw_parts(ptr, len as usize)
             }
         }
+    }
+
+    #[must_use]
+    pub fn lease_metadata(&self) -> BufferLeaseMetadata {
+        unsafe {
+            BufferLeaseMetadata {
+                request_id: sys::crowdb_rpc_buffer_request_id(self.handle),
+                stream_id: sys::crowdb_rpc_buffer_stream_id(self.handle),
+                sequence: sys::crowdb_rpc_buffer_sequence(self.handle),
+                logical_offset: sys::crowdb_rpc_buffer_logical_offset(self.handle),
+                capacity: sys::crowdb_rpc_buffer_capacity(self.handle),
+                registration_id: sys::crowdb_rpc_buffer_registration_id(self.handle),
+                ownership: BufferOwnership::from_raw(sys::crowdb_rpc_buffer_ownership(self.handle)),
+            }
+        }
+    }
+
+    /// Returns canonical allocation information when native ownership knows
+    /// the backing capacity. External opaque Bytes wrappers may return None.
+    #[must_use]
+    pub fn allocation_metadata(&self) -> Option<BufferAllocationMetadata> {
+        // SAFETY: the borrowed Buffer retains its native handle and parents.
+        let capacity = unsafe { sys::crowdb_rpc_buffer_allocation_capacity(self.handle) };
+        (capacity != 0).then(|| BufferAllocationMetadata {
+            // SAFETY: identity is read from that same retained allocation.
+            identity: unsafe { sys::crowdb_rpc_buffer_allocation_id(self.handle) },
+            capacity,
+            // SAFETY: the same handle retains the initialized parent span.
+            offset: unsafe { sys::crowdb_rpc_buffer_allocation_offset(self.handle) },
+        })
+    }
+
+    /// Retains the canonical initialized allocation span for shared accounting.
+    /// It can include framing; object data remains the original logical view.
+    #[must_use]
+    pub fn allocation_view(&self) -> Option<Self> {
+        // SAFETY: native code validates and retains the borrowed parent.
+        let handle = unsafe { sys::crowdb_rpc_buffer_allocation_ref(self.handle) };
+        (!handle.is_null()).then(|| Self::from_raw(handle))
+    }
+
+    pub fn ownership(&self) -> BufferOwnership {
+        BufferOwnership::from_raw(unsafe { sys::crowdb_rpc_buffer_ownership(self.handle) })
+    }
+
+    pub fn transition(&mut self, from: BufferOwnership, to: BufferOwnership) -> bool {
+        !self.handle.is_null()
+            && unsafe { sys::crowdb_rpc_buffer_transition(self.handle, from as i32, to as i32) != 0 }
+    }
+
+    pub fn set_lease_metadata(&mut self, metadata: BufferLeaseMetadata, registration_id: u32) {
+        unsafe {
+            sys::crowdb_rpc_buffer_set_metadata(
+                self.handle,
+                metadata.request_id,
+                metadata.stream_id,
+                metadata.sequence,
+                metadata.logical_offset,
+                registration_id,
+            );
+        }
+    }
+
+    pub fn quarantine(&mut self) -> bool {
+        !self.handle.is_null() && unsafe { sys::crowdb_rpc_buffer_quarantine(self.handle) != 0 }
     }
 
     /// Take ownership of the handle (prevents Drop from releasing it).

@@ -23,6 +23,7 @@ impl DiskioClient {
         durability: Durability,
         options: OperationOptions,
     ) -> DiskioResult<()> {
+        self.check_open()?;
         let total = data.iter().try_fold(0usize, |total, view| {
             if view.is_empty() {
                 return Err(DiskioError::InvalidInput("write views must be nonempty".into()));

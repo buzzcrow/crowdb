@@ -67,33 +67,25 @@ impl SampleShuffle {
         manifest: &ManifestRecord,
         spec: &ShuffleSpec,
     ) -> Result<Vec<Vec<u8>>, DatasetError> {
-        spec.validate()?;
-        let ids = plan.scan_ids(manifest)?;
-        if ids.len() > spec.max_shuffle_objects {
-            return Err(DatasetError::ReadLimitExceeded);
-        }
-        let metadata_bytes = manifest
-            .samples
-            .iter()
-            .filter(|sample| ids.iter().any(|id| id == &sample.sample_id))
-            .map(|sample| {
-                sample.sample_id.len()
-                    + sample
-                        .fields
-                        .iter()
-                        .map(|field| field.name.len() + locator_size(&field.value))
-                        .sum::<usize>()
-            })
-            .sum::<usize>();
-        if metadata_bytes > spec.max_shuffle_bytes {
-            return Err(DatasetError::ReadLimitExceeded);
-        }
-        let mut keyed = ids
-            .into_iter()
-            .map(|id| (shuffle_key(spec, plan, &id), id))
-            .collect::<Vec<_>>();
-        keyed.sort_unstable_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+        let mut keyed = selected_keys(plan, manifest, spec)?;
+        keyed.sort_unstable();
         Ok(keyed.into_iter().map(|(_, id)| id).collect())
+    }
+
+    pub(crate) fn execute_window(
+        plan: &ReadPlan,
+        manifest: &ManifestRecord,
+        spec: &ShuffleSpec,
+        cursor: &ReadCursor,
+    ) -> Result<(Vec<Vec<u8>>, usize), DatasetError> {
+        let keyed = selected_keys(plan, manifest, spec)?;
+        let total = keyed.len();
+        let range = crate::planner::batch_range(total, plan.batch_size, cursor.group, cursor.offset)?;
+        let ids = crate::planner::sorted_window(keyed, range)
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect();
+        Ok((ids, total))
     }
 
     /// Produces stable bounded windows from one globally shuffled sequence.
@@ -108,7 +100,7 @@ impl SampleShuffle {
         spec: &ShuffleSpec,
     ) -> Result<Vec<Vec<Vec<u8>>>, DatasetError> {
         let ids = Self::execute(plan, manifest, spec)?;
-        Ok(ids.chunks(plan.batch_size).map(<[Vec<u8>]>::to_vec).collect())
+        Ok(crate::planner::into_batches(ids, plan.batch_size))
     }
 
     /// Groups selected IDs using the indexed prefix grouping rule.
@@ -153,25 +145,43 @@ impl SampleShuffle {
         cursor: &ReadCursor,
     ) -> Result<Vec<Vec<u8>>, DatasetError> {
         cursor.validate_for(plan)?;
-        let windows = Self::execute_windows(plan, manifest, spec)?;
-        let group = usize::try_from(cursor.group).map_err(|_| DatasetError::CursorMismatch)?;
-        if group > windows.len() {
-            return Err(DatasetError::CursorMismatch);
-        }
-        if group == windows.len() {
-            if cursor.offset != 0 {
-                return Err(DatasetError::CursorMismatch);
-            }
-            return Ok(Vec::new());
-        }
-        let offset = usize::try_from(cursor.offset).map_err(|_| DatasetError::CursorMismatch)?;
-        if offset > windows[group].len() {
-            return Err(DatasetError::CursorMismatch);
-        }
-        let mut result = windows[group][offset..].to_vec();
-        result.extend(windows.iter().skip(group + 1).flatten().cloned());
-        Ok(result)
+        let ids = Self::execute(plan, manifest, spec)?;
+        let range = crate::planner::batch_range(ids.len(), plan.batch_size, cursor.group, cursor.offset)?;
+        Ok(ids.into_iter().skip(range.start).collect())
     }
+}
+
+type KeyedId = ([u8; 16], Vec<u8>);
+
+fn selected_keys(
+    plan: &ReadPlan,
+    manifest: &ManifestRecord,
+    spec: &ShuffleSpec,
+) -> Result<Vec<KeyedId>, DatasetError> {
+    spec.validate()?;
+    let mut ids = Vec::new();
+    let mut metadata_bytes = 0_usize;
+    for sample in plan.selected_samples(manifest)? {
+        if ids.len() >= spec.max_shuffle_objects {
+            return Err(DatasetError::ReadLimitExceeded);
+        }
+        metadata_bytes = metadata_bytes.saturating_add(sample.sample_id.len());
+        for field in &sample.fields {
+            metadata_bytes = metadata_bytes
+                .saturating_add(field.name.len())
+                .saturating_add(locator_size(&field.value));
+        }
+        if metadata_bytes > spec.max_shuffle_bytes {
+            return Err(DatasetError::ReadLimitExceeded);
+        }
+        ids.push(sample.sample_id.clone());
+    }
+    let identity = plan.identity();
+    let keyed = ids
+        .into_iter()
+        .map(|id| (shuffle_key(spec, &identity, &id), id))
+        .collect::<Vec<_>>();
+    Ok(keyed)
 }
 
 fn locator_size(locator: &crate::FieldLocator) -> usize {
@@ -182,11 +192,11 @@ fn locator_size(locator: &crate::FieldLocator) -> usize {
     }
 }
 
-fn shuffle_key(spec: &ShuffleSpec, plan: &ReadPlan, id: &[u8]) -> [u8; 16] {
+fn shuffle_key(spec: &ShuffleSpec, identity: &[u8; 16], id: &[u8]) -> [u8; 16] {
     let mut digest = Md5::new();
     digest.update(spec.seed.to_le_bytes());
     digest.update(spec.epoch.to_le_bytes());
-    digest.update(plan.identity());
+    digest.update(identity);
     digest.update(id);
     digest.finalize().into()
 }

@@ -93,6 +93,22 @@ table FBNamespaceAuthority {
     lifecycle:ubyte = 255;
     pending_operation:[ubyte] (required);
     properties:[FBNamespaceProperty] (required);
+    rename:FBNameMove;
+    creating_child:[ubyte];
+}
+
+table FBRetiredNamespace {
+    catalog:[ubyte] (required);
+    namespace_id:[ubyte] (required);
+}
+
+table FBNameMove {
+    source:FBTableMapping (required);
+    destination_namespace:[ubyte] (required);
+    destination_name:string (required);
+    operation:[ubyte] (required);
+    head_generation:ulong;
+    head_fence:ulong;
 }
 
 table FBNamespaceMapping {
@@ -491,7 +507,13 @@ table FBNativeInjection {
     file:FBFileRecord (required);
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask, FBGcTask, FBGcCandidate, FBGcPage, FBGcNode, FBFileWriteIntent, FBDeletedFile, FBNativeInjection }
+table FBRetiredTable {
+    catalog:[ubyte] (required);
+    table_id:[ubyte] (required);
+    storage_namespace:[ubyte];
+}
+
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask, FBGcTask, FBGcCandidate, FBGcPage, FBGcNode, FBFileWriteIntent, FBDeletedFile, FBNativeInjection, FBRetiredTable, FBRetiredNamespace }
 
 table FBIcebergRecord {
     schema_version:ushort;

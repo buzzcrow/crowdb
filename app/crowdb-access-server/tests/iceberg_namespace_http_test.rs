@@ -242,6 +242,8 @@ async fn complete_list_exhaustion_never_returns_a_truncated_success() {
                     mutation_revision: 1,
                     lifecycle: NamespaceLifecycle::Ready,
                     pending_operation: None,
+                    creating_child: None,
+                    rename: None,
                     properties: NamespaceProperties::default(),
                 };
                 values.insert(

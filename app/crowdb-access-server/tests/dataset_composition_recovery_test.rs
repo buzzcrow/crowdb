@@ -11,32 +11,29 @@ mod dataset;
 use common::response;
 use dataset::{TestDatasetHttp, TestStore};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::sync::Arc;
 
 #[tokio::test]
-async fn restart_and_head_conflict_preserve_candidates_and_receipts() {
+async fn restart_and_head_conflict_preserve_candidates_without_receipt_writes() {
     let store = Arc::new(TestStore::default());
     let first = TestDatasetHttp::start_payload(store.clone()).await;
     let client = Client::new();
     let (root, parent) = common::fixture(&client, &first.origin).await;
     let origin = first.origin.clone();
     let old_head = response(client.get(format!("{root}/head")), 200).await;
-    let operation = "12121212121212121212121212121212";
-    response(
-        client
-            .post(format!("{root}/compositions"))
-            .json(&composition::begin(operation, &json!(parent))),
-        200,
-    )
-    .await;
+    let snapshot = "12121212121212121212121212121212";
+    let input = composition::input(&json!(parent));
+    let prepared = composition::prepare(&client, &root, snapshot, &input).await;
     drop(client);
     first.stop().await;
     let second = TestDatasetHttp::start_payload(store).await;
     let root = root.replacen(&origin, &second.origin, 1);
     let client = Client::new();
-    let draft = format!("{root}/compositions/{operation}");
-    let prepared = composition::prepare(&client, &draft, "1", "45").await;
+    assert_eq!(
+        composition::prepare(&client, &root, snapshot, &input).await,
+        prepared
+    );
     response(
         client
             .put(format!("{root}/names/stable"))
@@ -44,25 +41,15 @@ async fn restart_and_head_conflict_preserve_candidates_and_receipts() {
         200,
     )
     .await;
-    let attempt = "13131313131313131313131313131313";
-    let mut publish = json!({"attempt":attempt,"snapshot":prepared["preparation"]["snapshot"],"expected_head":old_head["generation"]});
-    response(client.post(format!("{draft}/publish")).json(&publish), 409).await;
-    assert_eq!(
-        response(client.get(&draft), 200).await["progress"]["state"],
-        "prepared"
-    );
-    publish["attempt"] = json!("14141414141414141414141414141414");
-    publish["expected_head"] = response(client.get(format!("{root}/head")), 200).await["generation"].clone();
-    let receipt = response(client.post(format!("{draft}/publish")).json(&publish), 200).await;
-    composition::cleanup(&client, &draft).await;
-    assert_eq!(
-        response(client.post(format!("{draft}/publish")).json(&publish), 200).await,
-        receipt
-    );
-    assert_eq!(
-        response(client.get(format!("{root}/commits/{attempt}")), 200).await["receipt"],
-        Value::Null
-    );
+    let mut publish = json!({"snapshot":snapshot,"expected_head":old_head["generation"]});
+    let url = format!("{root}/head");
+    let conflict = response(client.put(&url).json(&publish), 409).await;
+    assert_eq!(conflict["observed_head"]["latest"], parent);
+    assert_eq!(conflict["observed_head"]["stable"], parent);
+    response(client.get(format!("{root}/snapshots/{snapshot}/summary")), 200).await;
+    publish["expected_head"] = conflict["observed_head"]["generation"].clone();
+    let current = response(client.put(&url).json(&publish), 200).await;
+    assert_eq!(response(client.put(&url).json(&publish), 200).await, current);
     drop(client);
     second.stop().await;
 }

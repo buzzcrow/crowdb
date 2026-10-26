@@ -103,6 +103,24 @@ reapplying them, then applies only the suffix above the checkpoint sequence.
 WAL trim cannot cross the checkpoint's replay offset. Requests below the
 declared retained floor return `RequestExpired` and are not executed anew.
 
+Serving maintenance scans retired ordered WAL chunk records within the configured
+record and byte budgets. Collection retains the current tail, records above the
+existing trim offset or generation horizon, and chunks protected by live interval
+pins. It releases at most one eligible physical chunk and its record per pass,
+then recaptures the retention proof before another deletion. A successful deletion
+schedules another bounded pass after yielding to other hosted partitions; a pass
+without deletion resumes on the periodic tick, even if the generation is unchanged.
+Maintenance does not publish a new tree root or advance WAL trim or tree retention.
+Split preparation and exact-root transition pins suppress metadata reclamation
+under the existing maintenance exclusion. Source checkpoint publication and its
+durable generation pin share that exclusion, so GC cannot pass between them.
+
+Physical WAL trim at a nonzero replay offset requires durable expired-request
+floors as well as retained results. That floor state is not yet checkpointed,
+so the explicit trim API rejects such reclamation with `MaintenanceDegraded`.
+The WAL remains retained until the recovery format carries this state; keeping
+only the recent result window would let expired requests execute after restart.
+
 The frontiers satisfy
 `checkpoint_seq <= applied_seq <= journal_durable_seq`. The stream resolves
 uncertain cursor and manifest outcomes against durable state before completing

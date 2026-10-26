@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    content::validate_page_budget, key, work::InspectionWork, FieldMetadata, InspectionError, InspectionPage,
-    SnapshotSummary,
+    content::validate_page_budget, key, read::PreparedInspectionRead, read_fields::FieldRequest,
+    work::InspectionWork, FieldMetadata, InspectionError, InspectionPage, SnapshotSummary,
 };
 use crate::{
     AuthorityError, DatasetAuthority, DatasetIdentity, FieldDefinition, MetadataScanBudget, ReadCancellation,
@@ -44,7 +44,8 @@ impl DatasetAuthority {
         }
         let mut work = InspectionWork::new(self.store.as_ref(), cancel, budget)?;
         let summary = self.ready_inspection(identity, snapshot, &mut work).await?;
-        self.validate_inspection_projection(identity, &summary, fields, &mut work)
+        let schema = self
+            .validate_inspection_projection(identity, &summary, fields, &mut work)
             .await?;
         let prefix = key::scope(identity, snapshot, b'M').map_err(AuthorityError::from)?;
         let query = serde_json::to_vec(fields).map_err(|_| InspectionError::Corrupt)?;
@@ -53,28 +54,15 @@ impl DatasetAuthority {
         let samples = self
             .inspection_member_window(identity, snapshot, after, budget.items, &mut work)
             .await?;
-        let mut summaries = BTreeMap::from([(snapshot, summary)]);
-        let mut entries = Vec::new();
-        for sample_id in samples.entries {
-            let mut metadata = Vec::new();
-            for field in fields {
-                metadata.push(
-                    self.effective_field_metadata(
-                        identity,
-                        snapshot,
-                        &sample_id,
-                        field,
-                        &mut summaries,
-                        &mut work,
-                    )
-                    .await?,
-                );
-            }
-            entries.push(InspectionSample {
-                sample_id,
-                fields: metadata,
-            });
+        let entries = PreparedInspectionRead {
+            authority: self,
+            identity,
+            snapshot,
+            schema,
+            summaries: BTreeMap::from([(snapshot, summary)]),
         }
+        .metadata_matrix(&samples.entries, fields, &mut work)
+        .await?;
         Ok(InspectionPage {
             entries,
             after: cursor.encode(samples.after)?,
@@ -87,15 +75,15 @@ impl DatasetAuthority {
         summary: &SnapshotSummary,
         fields: &[String],
         work: &mut InspectionWork<'_>,
-    ) -> Result<(), InspectionError> {
+    ) -> Result<Vec<FieldDefinition>, InspectionError> {
         let definitions = self
             .inspection_schema_definitions(identity, summary, work)
             .await?;
-        let names: HashSet<_> = definitions.into_iter().map(|f| f.name).collect();
+        let names: HashSet<_> = definitions.iter().map(|field| &field.name).collect();
         if fields.iter().any(|field| !names.contains(field)) {
             return Err(AuthorityError::Invalid(crate::DatasetError::InvalidManifest).into());
         }
-        Ok(())
+        Ok(definitions)
     }
 
     pub(super) async fn inspection_schema_definitions(
@@ -137,42 +125,34 @@ impl DatasetAuthority {
         }
         Ok(definitions)
     }
+}
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn effective_field_metadata(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-        sample_id: &[u8],
-        field: &str,
-        summaries: &mut BTreeMap<SnapshotId, SnapshotSummary>,
+impl PreparedInspectionRead<'_> {
+    pub(super) async fn metadata_matrix(
+        &mut self,
+        ids: &[Vec<u8>],
+        fields: &[String],
         work: &mut InspectionWork<'_>,
-    ) -> Result<Option<FieldMetadata>, InspectionError> {
-        let mut current = Some(snapshot);
-        let mut seen = HashSet::new();
-        while let Some(snapshot) = current {
-            if !seen.insert(snapshot) {
-                return Err(AuthorityError::AncestryCycle.into());
+    ) -> Result<Vec<InspectionSample>, InspectionError> {
+        let mut rows: Vec<_> = ids
+            .iter()
+            .map(|id| InspectionSample {
+                sample_id: id.clone(),
+                fields: Vec::new(),
+            })
+            .collect();
+        for start in (0..ids.len() * fields.len()).step_by(16) {
+            let end = (start + 16).min(ids.len() * fields.len());
+            let requests: Vec<_> = (start..end)
+                .map(|index| FieldRequest {
+                    sample: &ids[index / fields.len()],
+                    field: &fields[index % fields.len()],
+                })
+                .collect();
+            for (index, metadata) in (start..end).zip(self.metadata(&requests, work).await?) {
+                rows[index / fields.len()].fields.push(metadata);
             }
-            if seen.len() > 64 {
-                return Err(InspectionError::Limit);
-            }
-            if let std::collections::btree_map::Entry::Vacant(entry) = summaries.entry(snapshot) {
-                entry.insert(self.ready_inspection(identity, snapshot, work).await?);
-            }
-            let mut key = key::scope(identity, snapshot, b'F').map_err(AuthorityError::from)?;
-            key::component(&mut key, sample_id);
-            key::component(&mut key, field.as_bytes());
-            if let Some(value) = work.get(&key, 128 * 1024).await? {
-                let metadata: FieldMetadata =
-                    serde_json::from_slice(&value.bytes).map_err(|_| InspectionError::Corrupt)?;
-                if metadata.name != field || metadata.source_snapshot != snapshot {
-                    return Err(InspectionError::Corrupt);
-                }
-                return Ok(Some(metadata));
-            }
-            current = summaries[&snapshot].parent;
         }
-        Ok(None)
+        Ok(rows)
     }
 }

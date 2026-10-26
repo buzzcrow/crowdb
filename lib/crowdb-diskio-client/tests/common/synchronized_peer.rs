@@ -134,6 +134,19 @@ async fn serve(
         let mut data = vec![0; data_length];
         stream.read_exact(&mut control).await.unwrap();
         stream.read_exact(&mut data).await.unwrap();
+        if kind == 0xfffe {
+            assert_eq!(control.len(), 160);
+            assert_eq!(&control[..4], &[0x44, 0x52, 4, 0]);
+            assert!(data.is_empty());
+            let mut capability = vec![0; 160];
+            capability[..4].copy_from_slice(&[0x44, 0x52, 4, 0]);
+            capability[4..12].copy_from_slice(&1_u64.to_le_bytes());
+            let mut outgoing = header;
+            outgoing[13] = 0;
+            stream.write_all(&outgoing).await.unwrap();
+            stream.write_all(&capability).await.unwrap();
+            continue;
+        }
         let (id, sync) = if kind == FBMsgType::EDiskWriteRequest.0 as u16 {
             let request = flatbuffers::root::<FBDiskWriteRequest>(&control).unwrap();
             assert_eq!(data.len(), request.size() as usize);

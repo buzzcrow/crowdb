@@ -8,6 +8,7 @@
 #include "crowdb-rpc/connection_callback.h"
 #include "crowdb-rpc/framing.h"
 #include "crowdb-rpc/transport.h"
+#include "crowdb-rpc/transport/rdma/rdma_capability.h"
 
 #include <sys/uio.h>
 
@@ -23,6 +24,8 @@ namespace crowdb::rpc
 // Lock-free bounded MPSC ring buffer for the per-connection send queue.
 // Alias of the shared crowdb-common primitive specialized for OutFrame*.
 using SendQueue = crowdb::common::MpscQueue<OutFrame *>;
+
+enum class ConnectionPath : uint8_t { Tcp, Rdma };
 
 // Forward declaration — Connection::try_send records latency here.
 struct TransportStats;
@@ -51,6 +54,39 @@ class Connection : public std::enable_shared_from_this<Connection>
     [[nodiscard]] int64_t id() const
     {
         return id_;
+    }
+
+    [[nodiscard]] ConnectionPath path() const
+    {
+        return path_;
+    }
+
+    void set_path(ConnectionPath path)
+    {
+        path_ = path;
+    }
+
+    [[nodiscard]] std::string status_json() const;
+
+    [[nodiscard]] bool peer_handshake_received() const
+    {
+        return peer_handshake_received_.load(std::memory_order_acquire);
+    }
+
+    void set_peer_capability(const RdmaEndpointCapability &capability)
+    {
+        if (peer_handshake_received_.load(std::memory_order_acquire)) {
+            if (rdma_capability_identity(peer_capability_) != rdma_capability_identity(capability))
+                close();
+            return;
+        }
+        peer_capability_ = capability;
+        peer_handshake_received_.store(true, std::memory_order_release);
+    }
+
+    [[nodiscard]] const RdmaEndpointCapability &peer_capability() const
+    {
+        return peer_capability_;
     }
 
     [[nodiscard]] const std::string &name() const
@@ -157,7 +193,25 @@ class Connection : public std::enable_shared_from_this<Connection>
     // Callbacks (set by RpcClient / RpcServer).
     void set_on_frame(OnFrameCallback cb)
     {
+        const bool ready = static_cast<bool>(cb);
         on_frame_callback_.set(std::move(cb));
+        const auto *notify = on_frame_ready_.get();
+        if (ready && notify != nullptr && *notify) {
+            (*notify)();
+        }
+    }
+
+    [[nodiscard]] bool has_frame_handler() const
+    {
+        const auto *callback = on_frame_callback_.get();
+        return callback != nullptr && static_cast<bool>(*callback);
+    }
+
+    // The transport installs this before publishing the connection. Handler
+    // publication wakes an owner retaining an early completed receive.
+    void set_frame_ready_notifier(std::function<void()> notify)
+    {
+        on_frame_ready_.set(std::move(notify));
     }
 
     void set_on_close(OnCloseCallback cb)
@@ -221,10 +275,16 @@ class Connection : public std::enable_shared_from_this<Connection>
     }
 
   private:
-    int64_t     id_;
-    std::string name_;
-    BufferPool *pool_;
-    FrameParser parser_;
+    std::string transport_info_json_ = "{}"; // immutable after connection publication
+    friend class RdmaTransport;
+    std::shared_ptr<void>  transport_context_;
+    int64_t                id_;
+    std::string            name_;
+    BufferPool            *pool_;
+    ConnectionPath         path_ = ConnectionPath::Tcp;
+    std::atomic<bool>      peer_handshake_received_{false};
+    RdmaEndpointCapability peer_capability_;
+    FrameParser            parser_;
 
     static constexpr uint32_t SOCKET_CLOSED = uint32_t{1} << 31;
     std::atomic<uint32_t>     socket_users_{0};
@@ -253,9 +313,11 @@ class Connection : public std::enable_shared_from_this<Connection>
     OutFrame *pending_frames_[BATCH_MAX];
     int       pending_count_{0};
 
-    ConnectionCallback<OnFrameCallback> on_frame_callback_;
-    ConnectionCallback<OnCloseCallback> on_close_callback_;
-    ConnectionCallback<OnCloseCallback> on_rpc_close_callback_;
+    ConnectionCallback<OnFrameCallback>       on_frame_callback_;
+    ConnectionCallback<std::function<void()>> on_frame_ready_;
+    ConnectionCallback<std::function<void()>> on_transport_close_;
+    ConnectionCallback<OnCloseCallback>       on_close_callback_;
+    ConnectionCallback<OnCloseCallback>       on_rpc_close_callback_;
 };
 
 } // namespace crowdb::rpc

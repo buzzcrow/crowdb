@@ -58,18 +58,8 @@ async fn import(client: &v2::ControlClient) -> Result<(v2::OpaqueId, v2::OpaqueI
     client.upload_reader(&mut &b"data"[..], &upload).await?;
     assert!(client.upload_reader(&mut &b"date"[..], &upload).await.is_err());
     let sample = v2::SampleId::new(vec![0, 255, 128])?;
-    let operation = v2::OpaqueId::random();
-    let splits = vec![v2::DraftSplit {
-        name: "train/a b".into(),
-        definition: v2::SplitDefinition::Selection {
-            predicate: v2::Predicate::Explicit {
-                ids: vec![sample.clone()],
-            },
-        },
-        origin: v2::SplitOrigin::Evaluated,
-    }];
-    let begin = v2::BeginComposition {
-        operation: operation.clone(),
+    let snapshot = v2::OpaqueId::random();
+    let prepare = v2::PrepareSnapshot {
         parent: None,
         source: v2::CompositionSource::All,
         schema: Some(v2::Schema {
@@ -79,104 +69,50 @@ async fn import(client: &v2::ControlClient) -> Result<(v2::OpaqueId, v2::OpaqueI
                 required: true,
             }],
         }),
-        inherit_parent_splits: false,
-        parent_split_revision: None,
-        splits,
-        policy: None,
-    };
-    client.begin_composition(&begin).await?;
-    let edit = v2::EditComposition {
-        edit: v2::OpaqueId::random(),
-        expected_revision: 1.into(),
-        schema: None,
-        samples: vec![v2::SampleChange::Upsert {
+        samples: vec![v2::SnapshotChange::Upsert {
             id: sample.clone(),
-            fields: vec![v2::Field {
+            fields: vec![v2::SnapshotField {
                 name: "value".into(),
-                value: v2::FieldValue::Upload { id: upload.id },
+                value: v2::SnapshotValue::Upload {
+                    id: upload.id.clone(),
+                    length: upload.length,
+                    md5: upload.md5.clone(),
+                },
             }],
         }],
-        splits: None,
-        policy: None,
+        splits: vec![v2::DraftSplit {
+            name: "train/a b".into(),
+            definition: v2::SplitDefinition::Selection {
+                predicate: v2::Predicate::Explicit {
+                    ids: vec![sample.clone()],
+                },
+            },
+            origin: v2::SplitOrigin::Evaluated,
+        }],
+        policy: v2::SplitPolicy::default(),
     };
-    let edited = client.edit_composition(&operation, &edit).await?;
-    assert_eq!(edited.revision, 2.into());
+    let prepared = client.prepare_snapshot(&snapshot, &prepare).await?;
     assert_eq!(
-        client.edit_composition(&operation, &edit).await?.revision,
-        edited.revision
+        client.prepare_snapshot(&snapshot, &prepare).await?.snapshot,
+        snapshot
     );
-    let prepared = prepare(client, &operation, edited.revision).await?;
-    let snapshot = prepared.preparation.unwrap().snapshot;
-    let request = v2::PublishComposition {
-        attempt: v2::OpaqueId::random(),
+    let request = v2::UpdateSnapshotHead {
         snapshot: snapshot.clone(),
-        expected_head: client.head().await?.generation,
+        expected_head: None,
     };
-    let receipt = client.publish_composition(&operation, &request).await?;
+    let head = client.update_snapshot_head(&request).await?;
     let lifecycle = client.lifecycle(&snapshot).await?;
     assert_eq!(lifecycle.snapshot, snapshot);
     assert!(lifecycle.latest);
     assert!(!lifecycle.retained);
     assert_eq!(
-        client.commit_status(&request.attempt).await?.unwrap().attempt,
-        receipt.attempt
+        client.update_snapshot_head(&request).await?.generation,
+        head.generation
     );
-    assert_eq!(
-        client.publish_composition(&operation, &request).await?.attempt,
-        receipt.attempt
-    );
-    cleanup(client, &operation).await?;
-    let revision = client.split_head(&snapshot).await?.revision.unwrap();
+    let revision = prepared.initial_split.unwrap();
     Ok((snapshot, revision, sample))
 }
 
-async fn prepare(
-    client: &v2::ControlClient,
-    operation: &v2::OpaqueId,
-    revision: v2::Decimal,
-) -> Result<v2::CompositionDraft> {
-    let mut page = 0.into();
-    let mut done = false;
-    for _ in 0..100 {
-        let preview = client
-            .evaluate_composition(
-                operation,
-                &v2::EvaluateDraft {
-                    expected_revision: revision,
-                    expected_page: page,
-                },
-            )
-            .await?;
-        if preview.complete {
-            done = true;
-            break;
-        }
-        page = preview.next_page;
-    }
-    assert!(done, "composition evaluation exceeded the example's work budget");
-    for _ in 0..100 {
-        let draft = client
-            .prepare_composition(
-                operation,
-                &v2::DraftRevision {
-                    expected_revision: revision,
-                },
-            )
-            .await?;
-        if draft.uploads.publication_ready {
-            return Ok(draft);
-        }
-    }
-    Err("composition preparation exceeded the example's work budget".into())
-}
-async fn cleanup(client: &v2::ControlClient, operation: &v2::OpaqueId) -> Result<()> {
-    for _ in 0..100 {
-        if client.cleanup_composition(operation).await?.complete {
-            return Ok(());
-        }
-    }
-    Err("cleanup exceeded the example's work budget".into())
-}
 async fn inspect(client: &v2::ControlClient, snapshot: &v2::OpaqueId, sample: &v2::SampleId) -> Result<()> {
     assert_eq!(client.summary(snapshot).await?.sample_count, 1.into());
     assert!(client.contains(snapshot, sample).await?);
@@ -208,50 +144,47 @@ async fn revise_splits(
 ) -> Result<()> {
     let head = client.head().await?;
     let split_head = client.split_head(snapshot).await?;
-    let begin = v2::BeginSplit {
-        operation: v2::OpaqueId::random(),
-        expected_revision: Some(previous.clone()),
+    let revision_id = v2::OpaqueId::random();
+    let prepare = v2::PrepareSplitRevision {
         policy: v2::SplitPolicy::default(),
-        splits: vec![],
+        splits: Vec::new(),
     };
-    client.begin_split(snapshot, &begin).await?;
-    let mut page = 0.into();
-    let mut done = false;
-    for _ in 0..100 {
-        let p = client
-            .evaluate_split(
-                &begin.operation,
-                &v2::EvaluateDraft {
-                    expected_revision: 1.into(),
-                    expected_page: page,
-                },
-            )
-            .await?;
-        if p.complete {
-            done = true;
-            break;
-        }
-        page = p.next_page;
-    }
-    assert!(done);
     let revision = client
-        .prepare_split(
-            &begin.operation,
-            &v2::DraftRevision {
-                expected_revision: 1.into(),
-            },
-        )
+        .prepare_split_revision(snapshot, &revision_id, &prepare)
         .await?;
-    client
-        .publish_split(
-            &begin.operation,
-            &v2::PublishSplit {
-                attempt: v2::OpaqueId::random(),
-                revision: revision.revision.clone(),
-                expected_head: split_head.generation,
-            },
-        )
-        .await?;
+    assert_eq!(
+        client
+            .prepare_split_revision(snapshot, &revision_id, &prepare)
+            .await?
+            .revision,
+        revision.revision
+    );
+    assert_eq!(
+        client
+            .split_revision(snapshot, &revision.revision)
+            .await?
+            .revision,
+        revision.revision
+    );
+    assert_eq!(
+        client.split_head(snapshot).await?.revision,
+        Some(previous.clone())
+    );
+    let update = v2::UpdateSplitHead {
+        revision: revision.revision.clone(),
+        expected_revision: Some(previous.clone()),
+        expected_head: split_head.generation.clone(),
+    };
+    client.update_split_head(snapshot, &update).await?;
+    let stale = v2::UpdateSplitHead {
+        revision: previous.clone(),
+        ..update
+    };
+    let conflict = client.update_split_head(snapshot, &stale).await.unwrap_err();
+    assert_eq!(
+        v2::SplitHead::from_conflict(&conflict).unwrap().revision,
+        Some(revision.revision.clone())
+    );
     assert_eq!(client.head().await?.generation, head.generation);
     assert_eq!(
         client.split_head(snapshot).await?.revision,
@@ -271,38 +204,57 @@ async fn revise_splits(
     Ok(())
 }
 async fn branch(client: &v2::ControlClient, source: v2::SplitSource) -> Result<v2::OpaqueId> {
-    let operation = v2::OpaqueId::random();
-    client
-        .begin_composition(&v2::BeginComposition {
-            operation: operation.clone(),
-            parent: Some(source.snapshot.clone()),
-            source: v2::CompositionSource::Split {
-                source: source.clone(),
-                selection: None,
+    let expected_head = client.head().await?.generation;
+    let snapshot = v2::OpaqueId::random();
+    let inherited = client.split_revision(&source.snapshot, &source.revision).await?;
+    let policy = inherited.policy;
+    let splits = inherited
+        .splits
+        .into_iter()
+        .map(|split| v2::DraftSplit {
+            origin: v2::SplitOrigin::Inherited {
+                source: v2::SplitSource {
+                    name: split.name.clone(),
+                    ..source.clone()
+                },
             },
-            schema: None,
-            inherit_parent_splits: true,
-            parent_split_revision: Some(source.revision),
-            splits: vec![],
-            policy: None,
+            name: split.name,
+            definition: split.definition,
         })
-        .await?;
-    let snapshot = prepare(client, &operation, 1.into())
-        .await?
-        .preparation
-        .unwrap()
-        .snapshot;
+        .collect();
     client
-        .publish_composition(
-            &operation,
-            &v2::PublishComposition {
-                attempt: v2::OpaqueId::random(),
-                snapshot: snapshot.clone(),
-                expected_head: client.head().await?.generation,
+        .prepare_snapshot(
+            &snapshot,
+            &v2::PrepareSnapshot {
+                parent: Some(source.snapshot.clone()),
+                source: v2::CompositionSource::Split {
+                    source: source.clone(),
+                    selection: None,
+                },
+                schema: None,
+                samples: Vec::new(),
+                splits,
+                policy,
             },
         )
         .await?;
-    cleanup(client, &operation).await?;
+    client
+        .update_snapshot_head(&v2::UpdateSnapshotHead {
+            snapshot: snapshot.clone(),
+            expected_head,
+        })
+        .await?;
+    let error = client
+        .update_snapshot_head(&v2::UpdateSnapshotHead {
+            snapshot: source.snapshot,
+            expected_head: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        v2::Head::from_conflict(&error).unwrap().latest,
+        Some(snapshot.clone())
+    );
     Ok(snapshot)
 }
 async fn read_split(
@@ -310,8 +262,7 @@ async fn read_split(
     snapshot: &v2::OpaqueId,
     revision: &v2::OpaqueId,
 ) -> Result<()> {
-    let mut request = v2::ReadPlan {
-        id: v2::OpaqueId::random(),
+    let request = v2::ReadPlan {
         snapshot: snapshot.to_string(),
         selection: v2::Predicate::All,
         fields: vec!["value".into()],
@@ -322,49 +273,24 @@ async fn read_split(
             revision: Some(revision.clone()),
             name: "train/a b".into(),
         }),
-        expected_page: 0.into(),
     };
-    let mut ready = false;
-    for _ in 0..100 {
-        let p = client.prepare_read(&request).await?;
-        if p.complete {
-            ready = true;
-            break;
-        }
-        request.expected_page = p.next_page;
-    }
-    assert!(ready);
-    assert_eq!(
-        client.read_status(&request.id).await?.split.unwrap().revision,
-        *revision
-    );
-    let before = client.progress(&request.id).await?;
-    let mut stream = client.next_batch(&request.id).await?;
+    let bound = client.bind_read(&request).await?;
+    assert_eq!(bound.split.as_ref().unwrap().revision, *revision);
+    let mut stream = client.next_batch(&bound.cursor).await?;
     let mut data = Vec::new();
-    let mut next = None;
     while let Some(event) = stream.next_event().await? {
-        match event {
-            BatchEvent::Data(bytes) => data.extend_from_slice(&bytes),
-            BatchEvent::Header(header) => next.clone_from(&header.next),
-            _ => {}
+        if let BatchEvent::Data(bytes) = event {
+            data.extend_from_slice(&bytes);
         }
     }
     assert_eq!(data, b"data");
-    assert_eq!(client.progress(&request.id).await?.cursor, before.cursor);
-    let next = next.unwrap();
-    assert_eq!(
-        client
-            .acknowledge(
-                &request.id,
-                &crowdb_sdk_dataset::Acknowledge {
-                    expected: before.cursor,
-                    next: next.clone()
-                }
-            )
-            .await?
-            .cursor,
-        next
-    );
-    assert!(client.close_read(&request.id).await?.closed);
+    let mut replay = client.next_batch(&bound.cursor).await?;
+    let mut again = Vec::new();
+    while let Some(event) = replay.next_event().await? {
+        if let BatchEvent::Data(bytes) = event {
+            again.extend_from_slice(&bytes);
+        }
+    }
+    assert_eq!(again, data);
     Ok(())
 }

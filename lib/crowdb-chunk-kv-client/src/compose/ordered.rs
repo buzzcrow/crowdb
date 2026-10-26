@@ -37,6 +37,16 @@ pub struct MultiScanPage {
     pub terminal_failure: Option<RpcFailure>,
 }
 
+/// Legacy scan result with the validated key of an oversized first row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MultiScanOutcome {
+    Page(MultiScanPage),
+    /// The transport already materialized this row; only its key is retained.
+    OversizedRow {
+        key: Vec<u8>,
+    },
+}
+
 impl ChunkKvClient {
     /// Executes one ordered seek directly against its routed partition.
     ///
@@ -155,7 +165,25 @@ impl ChunkKvClient {
     /// deadline, identity exhaustion, or configured response-bound violation.
     #[allow(clippy::too_many_lines)]
     pub async fn scan(&self, request: MultiScanRequest) -> Result<MultiScanPage> {
-        self.scan_inner(request, false).await
+        self.scan_inner(request, false, None).await
+    }
+
+    /// Preserves a validated first row's key when it exceeds an aggregate byte cap.
+    ///
+    /// Uses the legacy scan transport and its existing materialization behavior.
+    /// The oversized value is discarded; the caller may retain the key for a
+    /// later scan without treating that row as successfully processed.
+    ///
+    /// # Errors
+    /// Returns ordinary scan failures. Invalid bounds, order and continuation
+    /// never expose an oversized-row key.
+    pub async fn scan_with_oversized_key(&self, request: MultiScanRequest) -> Result<MultiScanOutcome> {
+        let mut oversized = None;
+        let result = self.scan_inner(request, false, Some(&mut oversized)).await;
+        match (result, oversized) {
+            (Err(ClientError::TooLarge), Some(key)) => Ok(MultiScanOutcome::OversizedRow { key }),
+            (result, _) => result.map(MultiScanOutcome::Page),
+        }
     }
 
     /// Scans forward with a server-enforced pre-materialization byte budget.
@@ -167,11 +195,16 @@ impl ChunkKvClient {
                 "strict forward scan requires positive budgets".into(),
             ));
         }
-        self.scan_inner(request, true).await
+        self.scan_inner(request, true, None).await
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn scan_inner(&self, request: MultiScanRequest, strict: bool) -> Result<MultiScanPage> {
+    async fn scan_inner(
+        &self,
+        request: MultiScanRequest,
+        strict: bool,
+        mut oversized_key: Option<&mut Option<Vec<u8>>>,
+    ) -> Result<MultiScanPage> {
         validate_scan(&request)?;
         if request.max_items == 0 || request.max_bytes == 0 {
             return Ok(MultiScanPage {
@@ -213,7 +246,8 @@ impl ChunkKvClient {
             if request.direction == ScanDirection::Reverse {
                 entries.reverse();
             }
-            for entry in entries {
+            let entry_count = entries.len();
+            for (entry_index, entry) in entries.into_iter().enumerate() {
                 if partition_consumed(
                     &entry.range.start,
                     entry.range.end.as_deref(),
@@ -320,6 +354,9 @@ impl ChunkKvClient {
                                     || bytes.saturating_add(item_bytes) > self.config.max_response_bytes
                                 {
                                     if items.is_empty() {
+                                        if let Some(observed) = oversized_key.as_mut() {
+                                            **observed = Some(item.key);
+                                        }
                                         return Err(ClientError::TooLarge);
                                     }
                                     return Ok(scan_page(&request, items, last_key, map.generation(), None));
@@ -331,6 +368,16 @@ impl ChunkKvClient {
                             // A strict page ends at the first native budget boundary. Resume
                             // in a new request with a fresh budget, even across partitions.
                             if strict && !items.is_empty() {
+                                if continuation.is_none()
+                                    && entry_index + 1 == entry_count
+                                    && response.map_revision == map.generation()
+                                {
+                                    return Ok(MultiScanPage {
+                                        items,
+                                        continuation: None,
+                                        terminal_failure: None,
+                                    });
+                                }
                                 return Ok(scan_page(&request, items, last_key, map.generation(), None));
                             }
                             attempts = 0;

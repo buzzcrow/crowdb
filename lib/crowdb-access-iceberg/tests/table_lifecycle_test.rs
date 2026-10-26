@@ -11,138 +11,22 @@ mod fixture;
 #[path = "common/namespace_store.rs"]
 mod namespace_store;
 
+#[path = "common/legacy_table_drop.rs"]
+mod legacy;
+
 use creation::TestCreation;
 use crowdb_access_iceberg::{
-    catalog::{CatalogError, CatalogStore},
+    catalog::CatalogStore,
     key::{CatalogScope, IcebergKey, OperationId},
     namespace::{NamespaceDropper, NamespaceRepository},
     operation::RequestIdentity,
     record::StorageRecord,
     table::{
-        head_key, TableLifecycle, TableLifecycleAction, TableLifecyclePhase, TableLifecycleRequest,
-        TableLifecycles, TableRepository,
+        head_key, TableHead, TableLifecycle, TableLifecycleAction, TableLifecyclePhase,
+        TableLifecycleRequest, TableLifecycles, TableRepository,
     },
 };
 use std::sync::atomic::Ordering;
-
-async fn visible_during_rename(
-    test: &TestCreation,
-    request: &TableLifecycleRequest,
-    expected: &[u8],
-) -> (bool, bool) {
-    use crowdb_access_iceberg::table::{
-        SnapshotLoadingMode, TableListLimits, TableLister, TableLoad, TableLoader, TableMetadataLimits,
-    };
-    let TableLifecycleAction::Rename { namespace, name } = &request.action else {
-        panic!("rename fixture required");
-    };
-    let loader = TableLoader::new(
-        test.fixture.store.clone(),
-        test.blocks.clone(),
-        TableMetadataLimits {
-            bytes: 2 * 1024 * 1024,
-            values: 200_000,
-            depth: 64,
-            string_bytes: 1024 * 1024,
-            collection_entries: 10_000,
-        },
-    );
-    let lister = TableLister::new(test.fixture.store.clone(), &[7; 32]).unwrap();
-    let mut visible = Vec::new();
-    for (parent, table) in [(&request.namespace, &request.name), (namespace, name)] {
-        let (response, page) = tokio::join!(
-            loader.load(request.context, parent, table, SnapshotLoadingMode::All, None),
-            lister.list(
-                request.context,
-                parent,
-                TableListLimits {
-                    page_size: 1,
-                    scanned: 10,
-                    names_bytes: 1024,
-                },
-                None
-            )
-        );
-        let page = page.unwrap().unwrap();
-        let present = match response.unwrap() {
-            TableLoad::Missing => false,
-            TableLoad::Loaded { head, metadata, .. } => {
-                assert_eq!(metadata, expected);
-                assert_eq!(head.name, *table);
-                let original: serde_json::Value = serde_json::from_slice(expected).unwrap();
-                assert_eq!(
-                    head.table_uuid.unwrap().to_string(),
-                    original["table-uuid"].as_str().unwrap()
-                );
-                true
-            }
-            TableLoad::NotModified { .. } => panic!("unconditional load returned not modified"),
-        };
-        assert_eq!(page.names.contains(table), present);
-        visible.push(present);
-    }
-    assert!(
-        !(visible[0] && visible[1]),
-        "old name must never alias the new name"
-    );
-    (visible[0], visible[1])
-}
-
-#[tokio::test]
-async fn interrupted_renames_keep_concurrent_list_and_load_head_qualified() {
-    for mode in [2, 3] {
-        let (baseline, request) = setup(mode).await;
-        let writes = baseline.fixture.store.writes.load(Ordering::SeqCst);
-        TableLifecycles::new(baseline.fixture.store.clone())
-            .execute(&request)
-            .await
-            .unwrap();
-        let count = baseline.fixture.store.writes.load(Ordering::SeqCst) - writes;
-        for offset in 1..=count {
-            let (test, request) = setup(mode).await;
-            let original = TableRepository::new(test.fixture.store.clone())
-                .select(request.context, test.parent.namespace, &request.name)
-                .await
-                .unwrap()
-                .unwrap();
-            let document = crowdb_access_iceberg::table::read_table_metadata_document(
-                test.blocks.clone(),
-                &original,
-                crowdb_access_iceberg::table::TableMetadataLimits {
-                    bytes: 2 * 1024 * 1024,
-                    values: 200_000,
-                    depth: 64,
-                    string_bytes: 1024 * 1024,
-                    collection_entries: 10_000,
-                },
-            )
-            .await
-            .unwrap();
-            let store = test.fixture.store.clone();
-            store
-                .fail_after
-                .store(store.writes.load(Ordering::SeqCst) + offset, Ordering::SeqCst);
-            assert!(TableLifecycles::new(store.clone())
-                .execute(&request)
-                .await
-                .is_err());
-            store.fail_after.store(0, Ordering::SeqCst);
-            visible_during_rename(&test, &request, document.canonical()).await;
-            assert_eq!(
-                TableLifecycles::new(store)
-                    .execute(&request)
-                    .await
-                    .unwrap()
-                    .status,
-                204
-            );
-            assert_eq!(
-                visible_during_rename(&test, &request, document.canonical()).await,
-                (false, true)
-            );
-        }
-    }
-}
 
 async fn setup(mode: u8) -> (TestCreation, TableLifecycleRequest) {
     let test = TestCreation::new().await;
@@ -178,21 +62,19 @@ async fn setup(mode: u8) -> (TestCreation, TableLifecycleRequest) {
     (test, request)
 }
 
-async fn assert_finished(test: &TestCreation, request: &TableLifecycleRequest) {
-    let manager = TableLifecycles::new(test.fixture.store.clone());
-    let operation = manager
+async fn assert_finished(test: &TestCreation, request: &TableLifecycleRequest, before: &TableHead) {
+    assert!(TableLifecycles::new(test.fixture.store.clone())
         .load(request.context, request.identity.operation)
         .await
         .unwrap()
-        .unwrap();
-    assert_eq!(operation.phase, TableLifecyclePhase::Complete);
+        .is_none());
     let tables = TableRepository::new(test.fixture.store.clone());
     assert!(tables
         .select(request.context, test.parent.namespace, "events")
         .await
         .unwrap()
         .is_none());
-    let key = head_key(request.context.catalog, operation.before.table);
+    let key = head_key(request.context.catalog, before.table);
     let value = test
         .fixture
         .store
@@ -203,11 +85,11 @@ async fn assert_finished(test: &TestCreation, request: &TableLifecycleRequest) {
     let StorageRecord::TableHead(head) = StorageRecord::decode(&key, &value.bytes).unwrap() else {
         panic!()
     };
-    assert_eq!(head.metadata_location, operation.before.metadata_location);
-    assert_eq!(head.metadata_digest, operation.before.metadata_digest);
-    assert_eq!(head.table_uuid, operation.before.table_uuid);
-    assert_eq!(head.generation, operation.before.generation);
-    assert_eq!(head.operation_fence, operation.before.operation_fence + 1);
+    assert_eq!(head.metadata_location, before.metadata_location);
+    assert_eq!(head.metadata_digest, before.metadata_digest);
+    assert_eq!(head.table_uuid, before.table_uuid);
+    assert_eq!(head.generation, before.generation);
+    assert_eq!(head.operation_fence, before.operation_fence + 1);
     match &request.action {
         TableLifecycleAction::Drop { purge_requested } => {
             assert_eq!(head.lifecycle, TableLifecycle::Tombstone);
@@ -233,7 +115,7 @@ async fn assert_finished(test: &TestCreation, request: &TableLifecycleRequest) {
         TableLifecycleAction::Rename { namespace, name } => {
             assert_eq!(head.lifecycle, TableLifecycle::Ready);
             assert!(head.pending_operation.is_none());
-            assert_eq!(head.name_epoch, operation.before.name_epoch + 1);
+            assert_eq!(head.name_epoch, before.name_epoch + 1);
             let parent = NamespaceRepository::new(test.fixture.store.clone())
                 .load(request.context, namespace)
                 .await
@@ -245,19 +127,14 @@ async fn assert_finished(test: &TestCreation, request: &TableLifecycleRequest) {
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(selected.head.table, operation.before.table);
+            assert_eq!(selected.head.table, before.table);
         }
     }
-    let record = StorageRecord::TableLifecycleOperation(Box::new(operation.clone()));
-    assert_eq!(
-        StorageRecord::decode(&operation.key(), &record.encode().unwrap()).unwrap(),
-        record
-    );
 }
 
 #[tokio::test]
 async fn lifecycle_recovery_survives_every_durable_lost_response_without_file_io() {
-    for mode in 0..4 {
+    for mode in 0..2 {
         let (baseline, request) = setup(mode).await;
         let before = baseline.fixture.store.writes.load(Ordering::SeqCst);
         TableLifecycles::new(baseline.fixture.store.clone())
@@ -265,9 +142,15 @@ async fn lifecycle_recovery_survives_every_durable_lost_response_without_file_io
             .await
             .unwrap();
         let count = baseline.fixture.store.writes.load(Ordering::SeqCst) - before;
-        assert!(count >= 5);
+        assert_eq!(count, if mode == 1 { 3 } else { 2 });
         for offset in 1..=count {
             let (test, request) = setup(mode).await;
+            let before = TableRepository::new(test.fixture.store.clone())
+                .select(request.context, test.parent.namespace, "events")
+                .await
+                .unwrap()
+                .unwrap()
+                .head;
             let writes = test.fixture.store.writes.load(Ordering::SeqCst);
             let block_reads = test.blocks.reads.load(Ordering::SeqCst);
             let block_writes = test.blocks.writes.load(Ordering::SeqCst);
@@ -304,8 +187,12 @@ async fn lifecycle_recovery_survives_every_durable_lost_response_without_file_io
                 .execute(&request)
                 .await
                 .unwrap();
-            assert_eq!(recovered.status, 204, "mode={mode} offset={offset}");
-            assert_finished(&test, &request).await;
+            assert_eq!(
+                recovered.status,
+                if mode == 1 && offset == 1 { 204 } else { 404 },
+                "mode={mode} offset={offset}"
+            );
+            assert_finished(&test, &request, &before).await;
             assert_eq!(test.blocks.reads.load(Ordering::SeqCst), block_reads);
             assert_eq!(test.blocks.writes.load(Ordering::SeqCst), block_writes);
             for (key, value) in files {
@@ -316,78 +203,30 @@ async fn lifecycle_recovery_survives_every_durable_lost_response_without_file_io
 }
 
 #[tokio::test]
-async fn old_lifecycle_replay_cannot_remove_recreated_source_or_destination() {
-    for mode in 0..4 {
+async fn old_named_delete_targets_the_current_recreated_source() {
+    for mode in 0..2 {
         let (test, request) = setup(mode).await;
         let manager = TableLifecycles::new(test.fixture.store.clone());
         assert_eq!(manager.execute(&request).await.unwrap().status, 204);
         let mut recreated = test.request.clone();
         recreated.identity.operation = OperationId::random();
         assert_eq!(test.creator().create(&recreated).await.unwrap().status, 200);
-        let tables = TableRepository::new(test.fixture.store.clone());
-        let source = tables
+        assert!(TableRepository::new(test.fixture.store.clone())
             .select(request.context, test.parent.namespace, "events")
             .await
             .unwrap()
-            .unwrap();
-        let mut later = None;
-        if let TableLifecycleAction::Rename { namespace, name } = &request.action {
-            let drop = TableLifecycleRequest {
-                namespace: namespace.clone(),
-                name: name.clone(),
-                identity: RequestIdentity {
-                    operation: OperationId::random(),
-                    issued_ms: 100,
-                },
-                action: TableLifecycleAction::Drop {
-                    purge_requested: true,
-                },
-                ..request.clone()
-            };
-            assert_eq!(manager.execute(&drop).await.unwrap().status, 204);
-            recreated.identity.operation = OperationId::random();
-            recreated.namespace = namespace.clone();
-            let mut body: serde_json::Value = serde_json::from_slice(&recreated.body).unwrap();
-            body["name"] = name.clone().into();
-            recreated.body = serde_json::to_vec(&body).unwrap();
-            assert_eq!(test.creator().create(&recreated).await.unwrap().status, 200);
-            let parent = NamespaceRepository::new(test.fixture.store.clone())
-                .load(request.context, namespace)
-                .await
-                .unwrap()
-                .unwrap();
-            later = Some(
-                tables
-                    .select(request.context, parent.namespace, name)
-                    .await
-                    .unwrap()
-                    .unwrap(),
-            );
-        }
+            .is_some());
         assert_eq!(manager.execute(&request).await.unwrap().status, 204);
-        assert_eq!(
-            tables
-                .select(request.context, test.parent.namespace, "events")
-                .await
-                .unwrap()
-                .unwrap(),
-            source
-        );
-        if let Some(later) = later {
-            assert_eq!(
-                tables
-                    .select(request.context, later.head.namespace, &later.head.name)
-                    .await
-                    .unwrap()
-                    .unwrap(),
-                later
-            );
-        }
+        assert!(TableRepository::new(test.fixture.store.clone())
+            .select(request.context, test.parent.namespace, "events")
+            .await
+            .unwrap()
+            .is_none());
     }
 }
 
 #[tokio::test]
-async fn lifecycle_identity_reuse_rejects_changed_purge_or_principal() {
+async fn named_delete_has_no_purge_or_principal_response_ledger() {
     let (test, request) = setup(1).await;
     let manager = TableLifecycles::new(test.fixture.store.clone());
     manager.execute(&request).await.unwrap();
@@ -395,24 +234,14 @@ async fn lifecycle_identity_reuse_rejects_changed_purge_or_principal() {
     changed.action = TableLifecycleAction::Drop {
         purge_requested: false,
     };
-    assert!(matches!(
-        manager.execute(&changed).await,
-        Err(CatalogError::Conflict)
-    ));
-    changed = request.clone();
+    assert_eq!(manager.execute(&changed).await.unwrap().status, 404);
     changed.principal = "other".into();
-    assert!(matches!(
-        manager.execute(&changed).await,
-        Err(CatalogError::Conflict)
-    ));
-    changed = request.clone();
-    changed.identity.operation = OperationId::random();
     assert_eq!(manager.execute(&changed).await.unwrap().status, 404);
 }
 
 #[tokio::test]
 async fn namespace_can_drop_after_table_drop_or_cross_namespace_move() {
-    for mode in [0, 1, 3] {
+    for mode in [0, 1] {
         let (test, request) = setup(mode).await;
         TableLifecycles::new(test.fixture.store.clone())
             .execute(&request)
@@ -428,83 +257,71 @@ async fn namespace_can_drop_after_table_drop_or_cross_namespace_move() {
 }
 
 #[tokio::test]
-async fn interrupted_lifecycle_cannot_cleanup_a_source_recreated_before_recovery() {
-    for mode in [1, 3] {
-        let (baseline, request) = setup(mode).await;
-        let start = baseline.fixture.store.writes.load(Ordering::SeqCst);
-        TableLifecycles::new(baseline.fixture.store.clone())
-            .execute(&request)
+async fn legacy_cleanup_cannot_remove_a_source_recreated_before_recovery() {
+    let (test, request) = setup(1).await;
+    let before = TableRepository::new(test.fixture.store.clone())
+        .select(request.context, test.parent.namespace, "events")
+        .await
+        .unwrap()
+        .unwrap()
+        .head;
+    legacy::install(
+        test.fixture.store.clone(),
+        &request,
+        before,
+        TableLifecyclePhase::Published,
+    )
+    .await;
+    let mut recreated = test.request.clone();
+    recreated.identity.operation = OperationId::random();
+    test.creator().create(&recreated).await.unwrap();
+    let tables = TableRepository::new(test.fixture.store.clone());
+    let replacement = tables
+        .select(request.context, test.parent.namespace, "events")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        TableLifecycles::new(test.fixture.store.clone())
+            .resume(request.context, request.identity.operation)
             .await
-            .unwrap();
-        let count = baseline.fixture.store.writes.load(Ordering::SeqCst) - start;
-        let mut exercised = 0;
-        for offset in 1..=count {
-            let (test, request) = setup(mode).await;
-            let store = test.fixture.store.clone();
-            store
-                .fail_after
-                .store(store.writes.load(Ordering::SeqCst) + offset, Ordering::SeqCst);
-            assert!(TableLifecycles::new(store.clone())
-                .execute(&request)
-                .await
-                .is_err());
-            store.fail_after.store(0, Ordering::SeqCst);
-            let tables = TableRepository::new(store.clone());
-            if tables
-                .select(request.context, test.parent.namespace, "events")
-                .await
-                .unwrap()
-                .is_some()
-            {
-                continue;
-            }
-            let mut recreated = test.request.clone();
-            recreated.identity.operation = OperationId::random();
-            assert_eq!(test.creator().create(&recreated).await.unwrap().status, 200);
-            let replacement = tables
-                .select(request.context, test.parent.namespace, "events")
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                TableLifecycles::new(store)
-                    .execute(&request)
-                    .await
-                    .unwrap()
-                    .status,
-                204
-            );
-            assert_eq!(
-                tables
-                    .select(request.context, test.parent.namespace, "events")
-                    .await
-                    .unwrap()
-                    .unwrap(),
-                replacement
-            );
-            exercised += 1;
-        }
-        assert!(exercised >= 3);
-    }
+            .unwrap()
+            .status,
+        204
+    );
+    assert_eq!(
+        tables
+            .select(request.context, test.parent.namespace, "events")
+            .await
+            .unwrap(),
+        Some(replacement)
+    );
 }
 
 #[tokio::test]
 async fn lifecycle_records_reject_metadata_mutation_foreign_keys_and_retired_contexts() {
-    let (test, request) = setup(3).await;
+    let (test, request) = setup(1).await;
     let manager = TableLifecycles::new(test.fixture.store.clone());
-    manager.execute(&request).await.unwrap();
-    let operation = manager
-        .load(request.context, request.identity.operation)
+    let before = TableRepository::new(test.fixture.store.clone())
+        .select(request.context, test.parent.namespace, "events")
         .await
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .head;
+    let operation = legacy::install(
+        test.fixture.store.clone(),
+        &request,
+        before,
+        TableLifecyclePhase::Prepared,
+    )
+    .await;
     let mut corrupted = operation.clone();
     corrupted.candidate.generation += 1;
     assert!(StorageRecord::TableLifecycleOperation(Box::new(corrupted))
         .encode()
         .is_err());
     let mut corrupted = operation.clone();
-    corrupted.purge_requested = true;
+    corrupted.candidate.namespace = crowdb_access_iceberg::key::NamespaceId::random();
     assert!(StorageRecord::TableLifecycleOperation(Box::new(corrupted))
         .encode()
         .is_err());

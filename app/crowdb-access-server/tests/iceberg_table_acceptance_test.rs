@@ -13,7 +13,7 @@ use crowdb_access_iceberg::{
     catalog::StoredValue,
     key::{CatalogScope, IcebergKey, OperationId, StorageKey, TableId, TableStorageKey, TableStorageScope},
     record::StorageRecord,
-    table::{head_key, name_key, TableHead, TableLifecycle, TableMapping, TableMappingState},
+    table::{name_key, storage_head_key, TableHead, TableLifecycle, TableMapping, TableMappingState},
 };
 use fixture::TestTableHttp;
 use reqwest::Method;
@@ -95,7 +95,7 @@ fn mapping(test: &TestTableHttp, head: &TableHead, name: &str, state: TableMappi
     test.put(
         &name_key(head.catalog, head.namespace, name).unwrap(),
         &StorageRecord::TableMapping(TableMapping {
-            storage_namespace: None,
+            storage_namespace: head.storage_location().storage_namespace,
             catalog: head.catalog,
             namespace: head.namespace,
             name: name.into(),
@@ -119,8 +119,8 @@ async fn mixed_mapping_pages_and_exists_expose_only_current_table_heads() {
     let (mut dropped, _) = test.install("dropped").await;
     dropped.lifecycle = TableLifecycle::Tombstone;
     dropped.pending_operation = Some(OperationId::random());
-    test.put(
-        &head_key(dropped.catalog, dropped.table),
+    test.put_storage(
+        &storage_head_key(dropped.storage_location()),
         &StorageRecord::TableHead(Box::new(dropped)),
     );
     let mut token = String::new();
@@ -199,10 +199,10 @@ async fn unsupported_table_operations_do_not_change_any_table_or_file_authority(
 }
 
 #[tokio::test]
-async fn lost_drop_publication_reply_replays_once_and_preserves_files_for_both_purge_modes() {
+async fn lost_drop_reply_retries_the_current_name_and_preserves_exact_purge_ownership() {
     for purge in [false, true] {
         let test = TestTableHttp::writable().await;
-        create(&test).await;
+        let original = create(&test).await;
         let before = authority(&test);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -212,41 +212,14 @@ async fn lost_drop_publication_reply_replays_once_and_preserves_files_for_both_p
         let path = format!("{}{TABLE}?purgeRequested={purge}", test.endpoint());
         let client = reqwest::Client::new();
         test.store.lose_reply_kind.store(5, Ordering::SeqCst);
-        let failed = client
-            .delete(&path)
-            .bearer_auth("w".repeat(32))
-            .header("idempotency-key", &identity)
-            .send()
-            .await
-            .unwrap();
+        let failed = delete(&client, &path, &identity).await;
         value(failed, 503).await;
         assert_eq!(test.request(Method::HEAD, TABLE, "r", None).await.status(), 404);
         for _ in 0..2 {
-            let response = client
-                .delete(&path)
-                .bearer_auth("w".repeat(32))
-                .header("idempotency-key", &identity)
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(response.status(), 204);
-            assert!(response.bytes().await.unwrap().is_empty());
+            value(delete(&client, &path, &identity).await, 404).await;
         }
         let after = authority(&test);
-        for (key, value) in before {
-            if matches!(
-                StorageKey::decode(&key).unwrap(),
-                StorageKey::Legacy(IcebergKey::Catalog {
-                    scope: CatalogScope::File | CatalogScope::FileLocation,
-                    ..
-                }) | StorageKey::NativeTable(TableStorageKey {
-                    scope: TableStorageScope::File,
-                    ..
-                })
-            ) {
-                assert_eq!(after.get(&key), Some(&value));
-            }
-        }
+        assert_files_preserved(&before, &after);
         let tasks = after
             .keys()
             .filter(|key| {
@@ -260,6 +233,54 @@ async fn lost_drop_publication_reply_replays_once_and_preserves_files_for_both_p
             })
             .count();
         assert_eq!(tasks, usize::from(purge));
+        let replacement = create(&test).await;
+        assert_ne!(
+            original["metadata"]["table-uuid"],
+            replacement["metadata"]["table-uuid"]
+        );
+        let replacement_authority: BTreeMap<_, _> = authority(&test)
+            .into_iter()
+            .filter(|(key, stored)| after.get(key) != Some(stored))
+            .collect();
+        assert!(replacement_authority.keys().any(|key| is_file(key)));
+        assert_eq!(
+            value(test.request(Method::GET, TABLE, "r", None).await, 200).await["metadata"],
+            replacement["metadata"]
+        );
+        let response = delete(&client, &path, &identity).await;
+        assert_eq!(response.status(), 204);
+        assert!(response.bytes().await.unwrap().is_empty());
+        assert_files_preserved(&replacement_authority, &authority(&test));
+        value(delete(&client, &path, &identity).await, 404).await;
         test.finish().await;
+    }
+}
+
+async fn delete(client: &reqwest::Client, path: &str, identity: &str) -> reqwest::Response {
+    client
+        .delete(path)
+        .bearer_auth("w".repeat(32))
+        .header("idempotency-key", identity)
+        .send()
+        .await
+        .unwrap()
+}
+
+fn is_file(key: &[u8]) -> bool {
+    matches!(
+        StorageKey::decode(key).unwrap(),
+        StorageKey::Legacy(IcebergKey::Catalog {
+            scope: CatalogScope::File | CatalogScope::FileLocation,
+            ..
+        }) | StorageKey::NativeTable(TableStorageKey {
+            scope: TableStorageScope::File,
+            ..
+        })
+    )
+}
+
+fn assert_files_preserved(before: &BTreeMap<Vec<u8>, StoredValue>, after: &BTreeMap<Vec<u8>, StoredValue>) {
+    for (key, value) in before.iter().filter(|(key, _)| is_file(key)) {
+        assert_eq!(after.get(key), Some(value));
     }
 }

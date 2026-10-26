@@ -7,8 +7,9 @@ use crate::file::{
 use crate::operation::PayloadStore;
 use crate::record::StorageRecord;
 use crowdb_access_multipart::MultipartComposer;
+use sha2::{Digest, Sha256};
 
-use super::{check_live, increment, MultipartRepository};
+use super::{check_live, increment, MultipartMutation, MultipartRepository};
 
 fn raw_md5(etag: &str) -> Result<[u8; 16], ValidationError> {
     let mut raw = [0_u8; 16];
@@ -29,24 +30,27 @@ impl MultipartRepository {
     pub async fn prepare_stream_publication(
         &self,
         session: &MultipartSession,
+        selection: &MultipartSelection,
         now_ms: u64,
-    ) -> Result<Option<bool>, CatalogError> {
+    ) -> Result<Option<MultipartMutation<()>>, CatalogError> {
         session.validate()?;
         check_live(session, now_ms)?;
         if session.phase != MultipartPhase::Completing {
             return Err(CatalogError::Conflict);
         }
         let completion = session.completion.as_ref().ok_or(ValidationError::Record)?;
+        if selection.count() != completion.selected_parts
+            || <[u8; 32]>::from(Sha256::digest(selection.encode())) != completion.selection.digest
+        {
+            return Err(ValidationError::Record.into());
+        }
         if completion.progress.next_part != 0 {
             return Ok(None);
         }
-        if self.load(session.context, session.upload).await?.as_ref() != Some(session) {
-            return Ok(Some(false));
+        let current = self.load(session.context, session.upload).await?;
+        if current.as_ref() != Some(session) {
+            return Ok(Some(MultipartMutation::Conflict(current)));
         }
-        let bytes = PayloadStore::new(self.store.clone())
-            .get(&completion.selection)
-            .await?;
-        let selection = MultipartSelection::decode(&bytes)?;
         let mut composer = MultipartComposer::new(session.limits.max_file_bytes);
         for (index, selected) in selection.parts().iter().enumerate() {
             let snapshot = selection.snapshots().and_then(|snapshots| snapshots.get(index));
@@ -81,7 +85,7 @@ impl MultipartRepository {
         completion.progress.next_part = selection.count();
         completion.progress.completed_bytes = assembled.length;
         completion.publication = Some(publication);
-        Ok(Some(self.exchange(session, &next).await?))
+        Ok(Some(self.exchange_state(session, &next, ()).await?))
     }
 
     async fn selected_stream(
@@ -117,17 +121,24 @@ impl MultipartRepository {
         tree: &FileTree,
         sealed: &FileRecord,
         now_ms: u64,
-    ) -> Result<bool, CatalogError> {
+    ) -> Result<MultipartMutation<()>, CatalogError> {
         session.validate()?;
         check_live(session, now_ms)?;
         if session.phase != MultipartPhase::Completing {
             return Err(CatalogError::Conflict);
         }
-        validate_candidate(session, tree, sealed)?;
         session.revision.checked_add(2).ok_or(ValidationError::Record)?;
         let mut next = increment(session)?;
-        if self.load(session.context, session.upload).await?.as_ref() != Some(session) {
-            return Ok(false);
+        let completion = next.completion.as_mut().ok_or(ValidationError::Record)?;
+        if completion.progress.writer.is_some() {
+            return Err(CatalogError::Conflict);
+        }
+        completion.progress.next_part = completion.selected_parts;
+        completion.progress.completed_bytes = tree.length;
+        validate_candidate(&next, tree, sealed)?;
+        let current = self.load(session.context, session.upload).await?;
+        if current.as_ref() != Some(session) {
+            return Ok(MultipartMutation::Conflict(current));
         }
         let bytes = StorageRecord::File(Box::new(sealed.clone())).encode()?;
         let publication = PayloadStore::new(self.store.clone())
@@ -137,13 +148,16 @@ impl MultipartRepository {
         let completion = next.completion.as_mut().ok_or(ValidationError::Record)?;
         completion.candidate = Some(tree.clone());
         completion.publication = Some(publication);
-        self.exchange(session, &next).await
+        self.exchange_state(session, &next, ()).await
     }
 
     /// Publishes a frozen seal or replays the exact previously selected file identity.
     /// # Errors
     /// Rejects changed intent, immutable-location conflicts and uncertain writes.
-    pub async fn publish(&self, session: &MultipartSession) -> Result<Option<FileRecord>, CatalogError> {
+    pub async fn publish(
+        &self,
+        session: &MultipartSession,
+    ) -> Result<MultipartMutation<FileRecord>, CatalogError> {
         session.validate()?;
         if !matches!(
             session.phase,
@@ -151,8 +165,9 @@ impl MultipartRepository {
         ) {
             return Err(CatalogError::Conflict);
         }
-        if self.load(session.context, session.upload).await?.as_ref() != Some(session) {
-            return Ok(None);
+        let current = self.load(session.context, session.upload).await?;
+        if current.as_ref() != Some(session) {
+            return Ok(MultipartMutation::Conflict(current));
         }
         let candidate = self.publication_intent(session).await?;
         let files = FileRepository::new(self.store.clone());
@@ -170,7 +185,10 @@ impl MultipartRepository {
             {
                 return Err(ValidationError::Record.into());
             }
-            return Ok(Some(selected));
+            return Ok(MultipartMutation::Applied {
+                session: session.clone(),
+                value: selected,
+            });
         }
         let mut next = increment(session)?;
         let selected = match files.publish(session.context, &candidate).await {
@@ -183,7 +201,7 @@ impl MultipartRepository {
         };
         next.phase = MultipartPhase::Published;
         next.published = Some(selected.file);
-        Ok(self.exchange(session, &next).await?.then_some(selected))
+        self.exchange_state(session, &next, selected).await
     }
 
     async fn retain_location_conflict(
@@ -241,6 +259,8 @@ fn validate_candidate(
     let completion = session.completion.as_ref().ok_or(ValidationError::Record)?;
     if completion.progress.next_part != completion.selected_parts
         || completion.progress.completed_bytes != tree.length
+        || tree.length > session.limits.max_file_bytes
+        || (session.staged_bytes != 0 && tree.length > session.staged_bytes)
         || sealed.file != session.owner.file
         || sealed.location != session.location
         || sealed.length != tree.length

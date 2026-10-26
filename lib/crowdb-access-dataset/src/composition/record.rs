@@ -20,7 +20,7 @@ pub enum CompositionSource {
 }
 
 /// Evaluation output is valid only at the editing revision that produced it.
-/// Prepared content is frozen; commit attempts are separate durable records.
+/// Prepared content is frozen; older publication phases remain decodable.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum DraftProgress {
@@ -99,6 +99,7 @@ pub struct CompositionRecord {
     pub source: CompositionSource,
     pub revision: u64,
     pub edit_pages: u64,
+    /// Compatibility field; new drafts have no source activity lease and use zero.
     pub source_lease_deadline: u64,
     pub progress: DraftProgress,
 }

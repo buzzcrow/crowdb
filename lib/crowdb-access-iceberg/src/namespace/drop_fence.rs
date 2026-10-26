@@ -26,6 +26,30 @@ impl NamespaceDropper {
         if authority.namespace != operation.namespace || authority.parent != operation.parent {
             return self.finish_outcome(operation, 404).await;
         }
+        if authority.creating_child.is_some() {
+            super::NamespaceCreator::help_creating_child(
+                self.creator.repository.store.clone(),
+                self.creator.names.clone(),
+                operation.context,
+                authority,
+                budget,
+            )
+            .await?;
+            return Ok(());
+        }
+        if let Some(rename) = &authority.rename {
+            crate::table::TableRenames::from_parts(
+                self.creator.repository.store.clone(),
+                self.creator.names.clone(),
+            )
+            .recover(operation.context, rename)
+            .await?;
+            return Err(CatalogError::Busy);
+        }
+        if authority.lifecycle == NamespaceLifecycle::Dropping && authority.pending_operation.is_none() {
+            let _ = Box::pin(self.help_resource_drop(operation.context, authority, budget)).await?;
+            return Ok(());
+        }
         if let Some(pending) = authority.pending_operation {
             let owner = NamespaceJournal::new(self.creator.repository.store.clone())
                 .load(operation.context, pending)
@@ -65,6 +89,7 @@ impl NamespaceDropper {
     pub(super) async fn apply_fence(&self, operation: &NamespaceOperation) -> Result<(), CatalogError> {
         let (before, after, expected) = self.mutation_bytes(operation).await?;
         if expected.lifecycle != NamespaceLifecycle::Ready
+            || expected.creating_child.is_some()
             || expected.pending_operation.is_some()
             || Self::transition(expected.clone(), operation, NamespaceLifecycle::Dropping)?.encode()? != after
         {
@@ -97,12 +122,13 @@ impl NamespaceDropper {
         let CasOutcome::Conflict(Some(value)) = result else {
             return Err(ValidationError::Record.into());
         };
-        let StorageRecord::NamespaceAuthority(current) = StorageRecord::decode(
+        let current = match StorageRecord::decode(
             &authority_key(operation.context.catalog, operation.namespace),
             &value.bytes,
-        )?
-        else {
-            return Err(ValidationError::Record.into());
+        )? {
+            StorageRecord::NamespaceAuthority(current) => current,
+            StorageRecord::RetiredNamespace { .. } => return self.finish_outcome(operation, 404).await,
+            _ => return Err(ValidationError::Record.into()),
         };
         if current.mutation_revision <= expected.mutation_revision {
             return Err(ValidationError::Record.into());

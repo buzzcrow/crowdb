@@ -75,6 +75,7 @@ impl HttpClient {
                         message: "invalid error response".into(),
                         request_id: String::new(),
                         retryable: false,
+                        observed_head: None,
                     });
                     Error::Service { status, error }
                 }

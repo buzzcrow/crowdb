@@ -35,6 +35,7 @@ mod drain;
 mod group;
 use assignments::{local_partition_for_entry, partition_matches_entry};
 mod load_sampling;
+mod maintenance;
 mod observation;
 mod prepared_transfer;
 mod readiness;
@@ -491,59 +492,6 @@ impl ChunkKvService {
             .partition_loads
             .sort_unstable_by_key(|load| load.partition_id);
         std::future::ready(Ok(observation))
-    }
-
-    /// Runs one bounded ownership-materialization pass for every local split child.
-    ///
-    /// Returns child identities whose own checkpoint no longer depends on the
-    /// split-parent suffix.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first materialization or checkpoint error.
-    pub async fn materialize_split_overlays(&self) -> Result<Vec<Id128>, ChunkKvError> {
-        let catalog = self.catalog.load_full();
-        let partitions = self.partitions.load_full();
-        let mut completed = Vec::new();
-        for entry in &catalog.entries {
-            if entry.owner.instance_id != self.instance_id
-                || entry.state != ChunkKvRangeCatalogPartitionState::Serving
-                || entry.artifact.tail_overlay.is_none()
-                || self
-                    .independently_recoverable
-                    .load()
-                    .contains(&(entry.partition_id, entry.owner_epoch))
-            {
-                continue;
-            }
-            let Some(partition) = partitions.get(&entry.partition_id) else {
-                continue;
-            };
-            if partition.snapshot().lifecycle != crowdb_chunk_kv::PartitionLifecycle::Serving {
-                continue;
-            }
-            if !partition
-                .materialize_split_ownership(entry.owner_epoch)
-                .await?
-                .complete
-            {
-                continue;
-            }
-            let checkpoint = partition.checkpoint(entry.owner_epoch).await?;
-            let Some(overlay) = entry.artifact.tail_overlay.as_ref() else {
-                continue;
-            };
-            if checkpoint.applied_seq < overlay.cutover_seq {
-                return Err(ChunkKvError::ApplyStateUnknown);
-            }
-            self.independently_recoverable.rcu(|current| {
-                let mut next = (**current).clone();
-                next.insert((entry.partition_id, entry.owner_epoch));
-                Arc::new(next)
-            });
-            completed.push(entry.partition_id);
-        }
-        Ok(completed)
     }
 
     /// Validates and atomically activates a newer complete catalog snapshot.

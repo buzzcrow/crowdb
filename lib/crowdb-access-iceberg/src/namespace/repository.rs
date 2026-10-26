@@ -22,7 +22,7 @@ impl NamespaceRepository {
         if let Some(authority) = self.load(context, &identifier).await? {
             return Ok(authority);
         }
-        let outcome = super::NamespaceCreator::from_parts(self.store.clone(), self.names.clone())
+        super::NamespaceCreator::from_parts(self.store.clone(), self.names.clone())
             .create(&super::NamespaceCreateRequest {
                 context,
                 identity: crate::operation::RequestIdentity {
@@ -33,11 +33,10 @@ impl NamespaceRepository {
                 identifier: identifier.clone(),
                 properties: super::NamespaceProperties::default(),
             })
-            .await;
+            .await?;
         if let Some(authority) = self.load(context, &identifier).await? {
             Ok(authority)
         } else {
-            outcome?;
             Err(CatalogError::Busy)
         }
     }
@@ -102,7 +101,50 @@ impl NamespaceRepository {
         Ok(self.load(context, identifier).await?.is_some())
     }
 
-    async fn resolve(
+    // Composite readers check the catalog context around their complete request.
+    pub(crate) async fn ensure_current_in_context(
+        &self,
+        context: CatalogContext,
+        selected: &NamespaceAuthority,
+    ) -> Result<(), CatalogError> {
+        if selected.catalog != context.catalog {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
+        let key = name_key(context.catalog, selected.parent, selected.identifier.name())?;
+        let value = self
+            .store
+            .get(&key.encode()?)
+            .await?
+            .ok_or(CatalogError::Conflict)?;
+        let StorageRecord::NamespaceMapping(mapping) = StorageRecord::decode(&key, &value.bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        let key = authority_key(context.catalog, selected.namespace);
+        let value = self
+            .store
+            .get(&key.encode()?)
+            .await?
+            .ok_or(CatalogError::Conflict)?;
+        let current = match StorageRecord::decode(&key, &value.bytes)? {
+            StorageRecord::NamespaceAuthority(current) => current,
+            StorageRecord::RetiredNamespace { .. } => return Err(CatalogError::Conflict),
+            _ => return Err(ValidationError::Record.into()),
+        };
+        // Namespaces cannot move, and a live child prevents every ancestor's
+        // deletion. Recheck the selected leaf and its name within this request.
+        if !mapping.resolves(&current)
+            || current.namespace != selected.namespace
+            || current.name_epoch != selected.name_epoch
+            || current.identifier != selected.identifier
+            || current.parent != selected.parent
+        {
+            return Err(CatalogError::Conflict);
+        }
+        Ok(())
+    }
+
+    // The caller brackets this binding read with catalog availability checks.
+    pub(crate) async fn resolve(
         &self,
         context: CatalogContext,
         identifier: &NamespaceIdentifier,
@@ -124,9 +166,10 @@ impl NamespaceRepository {
             let Some(value) = self.store.get(&key.encode()?).await? else {
                 return Ok(None);
             };
-            let StorageRecord::NamespaceAuthority(authority) = StorageRecord::decode(&key, &value.bytes)?
-            else {
-                return Err(ValidationError::Record.into());
+            let authority = match StorageRecord::decode(&key, &value.bytes)? {
+                StorageRecord::NamespaceAuthority(authority) => authority,
+                StorageRecord::RetiredNamespace { .. } => return Ok(None),
+                _ => return Err(ValidationError::Record.into()),
             };
             if !mapping.resolves(&authority)
                 || authority.identifier.components() != &identifier.components()[..=index]

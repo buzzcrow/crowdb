@@ -211,9 +211,10 @@ impl PxGroup {
                                 tokio::select! {
                                     biased;
                                     () = cancel.cancelled() => return,
-                                    Some(tagged) = futs.next() =>
-                                        prepare_drain_side_effect(&group_drain, slot, tagged),
-                                    else => return,
+                                    tagged = futs.next() => match tagged {
+                                        Some(tagged) => prepare_drain_side_effect(&group_drain, slot, tagged),
+                                        None => return,
+                                    },
                                 }
                             }
                         }

@@ -7,4 +7,4 @@ mod batch;
 mod ordered;
 
 pub use batch::{BatchItem, ComposedItemError, MultiGetItemResult};
-pub use ordered::{MultiScanContinuation, MultiScanPage, MultiScanRequest};
+pub use ordered::{MultiScanContinuation, MultiScanOutcome, MultiScanPage, MultiScanRequest};

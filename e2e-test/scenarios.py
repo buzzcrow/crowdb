@@ -15,6 +15,7 @@ from fixture import Cluster
 from diskdb_fixture import DiskdbCluster
 from chunkdb_fixture import ChunkdbCluster, ChunkdbStorageCluster
 from chunk_kv_fixture import ChunkKvCluster
+from native_s3_fixture import NativeS3Cluster
 from access_s3_fixture import AccessS3Cluster
 from s3_node_fixture import S3NodeCluster
 from access_protocol_fixture import AccessProtocolCluster
@@ -84,6 +85,8 @@ class Case:
     iceberg_catalog_lifecycle: bool = False
     iceberg_gc: bool = False
     iceberg_gc_page_items: int | None = None
+    iceberg_gc_interval_ms: int | None = 100
+    iceberg_gc_catalogs: tuple = ()
     iceberg_deferred_access: bool = False
     console_web: bool = False
     preserve_network: bool = False
@@ -339,6 +342,10 @@ S3_SPECIAL_CASES = tuple(Case("s3.nodes", f"access_s3::node_failure::node_{node}
                     Case("s3.benchmark", "s3.benchmark::s3_request_path", sdk_client=True, s3_script="benchmark"))
 S3_LANGUAGE_CASES = tuple(Case("s3.sdk", "s3.sdk::" + language, sdk_client=True, s3_language=language)
                           for language in ("java", "js", "go"))
+S3_SPECIAL_CASES += (
+    Case("s3.native", "access_s3::native::complete_corpus_survives_storage_restart_without_access_or_credentials", restart=True),
+    Case("s3.native.parity", "access_s3::native::parity::http_and_native_share_bytes_metadata_conditions_copy_and_multipart", access_protocol=True),
+)
 ICEBERG_CASES = (
     Case("iceberg.files.listing", "access_iceberg::file_http::listing::native_list_objects_v2_serves_selected_files_and_rejects_foreign_scope", iceberg_deferred_access=True),
     Case("iceberg.files.listing", "access_iceberg::file_http::listing::official_pyarrow_native_fileio_creates_exact_files_and_lists_table_prefixes", iceberg_deferred_access=True),
@@ -366,7 +373,10 @@ ICEBERG_CASES = (
     Case("iceberg.files", "access_iceberg::file_http::cleanup::explicit_cleanup_rejects_a_retained_metadata_file", iceberg_deferred_access=True),
 
     Case("iceberg.sdk.rust", "access_iceberg::rust_sdk::official_rust_client_namespace_and_table_lifecycle", iceberg_deferred_access=True, client_timeout=600),
-    Case("iceberg.gc", "access_iceberg::gc::foreground::official_sdk_foreground_progresses_under_gc_backlog", iceberg_gc=True, iceberg_gc_page_items=1, client_timeout=180),
+    Case("iceberg.gc", "access_iceberg::gc::foreground::official_sdk_foreground_progresses_under_gc_backlog", iceberg_gc=True, iceberg_gc_page_items=1, iceberg_gc_interval_ms=None, client_timeout=180),
+    Case("iceberg.gc", "access_iceberg::gc::convergence::expired_inline_backlog_completes_with_foreground_progress", iceberg_gc=True, iceberg_gc_page_items=1, iceberg_gc_interval_ms=None, client_timeout=3600),
+    Case("iceberg.gc", "access_iceberg::gc::notifications::mixed_external_and_tree_notifications_complete_without_reclaiming_live_ranges", iceberg_gc=True, iceberg_gc_page_items=1, iceberg_gc_interval_ms=None, client_timeout=600),
+    Case("iceberg.gc", "access_iceberg::gc::notifications::matrix::restarted_cleaners_finish_large_and_sparse_backlogs_beside_an_invalid_catalog", iceberg_gc=True, iceberg_gc_page_items=1, iceberg_gc_interval_ms=None, iceberg_gc_catalogs=("01010101010101010101010101010101",), client_timeout=900),
     Case("iceberg.sdk.rust", "access_iceberg::rust_sdk::official_rust_client_lost_reply_survives_native_storage_restart", iceberg_deferred_access=True, client_timeout=1200),
     Case("iceberg.sdk.rust", "access_iceberg::rust_retired::official_rust_client_rejects_retired_native_catalog_after_full_grace", iceberg_deferred_access=True, client_timeout=1500),
     Case("iceberg.gc", "access_iceberg::gc::authenticated_gc_controls_survive_separate_processes", iceberg_gc=True),
@@ -374,6 +384,8 @@ ICEBERG_CASES = (
     Case("iceberg.gc", "access_iceberg::gc::enabled_scheduler_admits_and_advances_completed_clear", iceberg_gc=True, iceberg_gc_page_items=1),
     Case("iceberg.catalog", "access_iceberg::catalog::catalog_recovery_survives_real_chunk_kv_restart", iceberg_catalog_lifecycle=True),
     Case("iceberg.files", "access_iceberg::native_files::native_file_tree_publication_and_ranges_survive_catalog_storage_restart", iceberg_native_files=True),
+    Case("iceberg.files", "access_iceberg::native_files::native_file_abandoned_attempts_and_intents_survive_catalog_storage_restart", iceberg_native_files=True),
+    Case("iceberg.files", "access_iceberg::native_files::multipart::native_file_multipart_progress_and_bytes_survive_catalog_storage_restart", iceberg_native_files=True),
     Case("iceberg.metadata", "access_iceberg::metadata::metadata_create_and_commit_stay_within_operation_budget"),
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
@@ -600,6 +612,8 @@ def case_nodes(case):
         return 13
     if case.scope.startswith("iceberg."):
         return 14
+    if case.scope == "s3.native":
+        return 12
     if case.scope.startswith("s3."):
         return 14
     if case.scope.startswith("chunk-kv."):
@@ -708,6 +722,8 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
     if case.scope.startswith("iceberg."):
         return AccessIcebergCluster(image, artifacts, bundle, native_files=case.iceberg_native_files, catalog_lifecycle=case.iceberg_catalog_lifecycle,
                                     gc_worker=case.iceberg_gc, gc_page_items=case.iceberg_gc_page_items,
+                                    gc_interval_ms=case.iceberg_gc_interval_ms,
+                                    gc_catalogs=case.iceberg_gc_catalogs,
                                     deferred_access=case.iceberg_deferred_access,
                                     data_root=data_root)
     if case.access_protocol:
@@ -718,6 +734,8 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
         return ChunkKvCluster(image, artifacts, bundle, service_instances=(11, 12, 13),
                               storage_groups=(1, 2, 3), diskio_process_exit=case.diskio_process_exit,
                               data_root=data_root)
+    if case.scope == "s3.native":
+        return NativeS3Cluster(image, artifacts, bundle, data_root=data_root)
     if case.scope.startswith("s3."):
         return AccessS3Cluster(image, artifacts, bundle, data_root=data_root)
     if case.scope.startswith("chunk-kv."):
@@ -829,7 +847,9 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.client(bundle, case.name.rsplit("::", 1)[-1], case.name)
 
     def stable_network(case):
-        return (case.cli_replay or case.native_client or case.native_browser or case.shell_browser
+        # CLI fixtures run immediately after startup in the earlier resource
+        # phase, then finish before any browser batch creates its networks.
+        return (case.native_client or case.native_browser or case.shell_browser
                 or case.console_browser or case.oci_editable_ui or case.scope == "deployment.browser")
 
     budget = resource_budget or (float("inf"), float("inf"))

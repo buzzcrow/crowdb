@@ -103,6 +103,18 @@ impl HardwareClient {
         target: &str,
         retained_prefix: &str,
     ) -> Result<()> {
+        for attempt in 0..9 {
+            match self.legacy_delete_once(rack_id, target, retained_prefix).await {
+                Err(Error::CasFailed { .. } | Error::CasBusy) => {
+                    mutation::wait_for_rack_conflict(target, attempt).await;
+                }
+                result => return result,
+            }
+        }
+        self.legacy_delete_once(rack_id, target, retained_prefix).await
+    }
+
+    async fn legacy_delete_once(&self, rack_id: u64, target: &str, retained_prefix: &str) -> Result<()> {
         let rack_path = RackKey { rack_id }.to_path();
         let rack = mutation::read(&self.kv, &rack_path).await?;
         if self.storage_prefix_exists(retained_prefix).await? {

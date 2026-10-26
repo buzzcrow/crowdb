@@ -3,6 +3,7 @@
 
 #include "crowdb-rpc/client/co_client.h"
 
+#include "co_state.h"
 #include "crowdb-rpc/buffer.h"
 #include "crowdb-rpc/c_api.h"
 #include "crowdb-rpc/c_api_internal.h"
@@ -24,175 +25,6 @@
 namespace crowdb::rpc
 {
 
-// Coroutine state machine: synchronizes co_on_complete (I/O worker
-// thread) with await_suspend (coroutine thread). The race is:
-//   1. Coroutine submits request, then tries to suspend.
-//   2. I/O worker receives response, calls co_on_complete.
-//   3. If co_on_complete runs before await_suspend sets the handle,
-//      resuming a null handle crashes.
-// The state machine ensures co_on_complete only resumes when the
-// coroutine is actually suspended (handle is valid). If the response
-// arrives while RUNNING, it sets RESPONSE_READY — the coroutine sees
-// this in await_suspend and doesn't suspend (returns false → resumes).
-enum CoStateFlag : int {
-    CO_IDLE           = 0, // coroutine not started or already exited
-    CO_RUNNING        = 1, // coroutine is running (handle may be stale)
-    CO_SUSPENDED      = 2, // coroutine is suspended, handle is valid
-    CO_RESPONSE_READY = 3, // response arrived while RUNNING — don't suspend
-};
-
-// Per-coroutine state. Allocated on the heap (one per coroutine),
-// lives until the coroutine exits + is joined.
-struct CoState
-{
-    // Rust callbacks.
-    crowdb_rpc_co_build_request build_fn;
-    crowdb_rpc_co_on_response   on_response_fn;
-    void                       *rust_ctx;
-
-    // C++ handles.
-    RpcClient  *client;
-    Transport  *transport;
-    Connection *conn;
-    uint16_t    msg_type;
-
-    // Per-coroutine stats.
-    uint64_t total_ops        = 0;
-    uint64_t total_errors     = 0;
-    uint64_t total_latency_ns = 0;
-    uint64_t min_latency_ns   = UINT64_MAX;
-    uint64_t max_latency_ns   = 0;
-
-    // The awaitable for the current in-flight request. Filled by
-    // co_on_complete; read by the coroutine after resume.
-    crowdb_rpc_buffer_t     resp_control = nullptr;
-    crowdb_rpc_buffer_t     resp_data    = nullptr;
-    crowdb_rpc_status       resp_status  = CROWDB_RPC_OK;
-    std::coroutine_handle<> handle; // set by await_suspend
-
-    std::atomic<bool> *running;
-
-    // State machine: IDLE → RUNNING → SUSPENDED ↔ RESPONSE_READY → IDLE.
-    // Replaces the old `active` boolean — see CoStateFlag above.
-    std::atomic<int> co_state{CO_IDLE};
-
-    // Slot index for this coroutine (fixed, no collision with others).
-    // request_id = slot_index + iteration * (pool_mask + 1).
-    // This guarantees each coroutine always uses the same slab slot,
-    // so no two coroutines ever collide on the same slot.
-    size_t   slot_index  = 0;
-    size_t   pool_mask   = 0;
-    uint64_t next_req_id = 0; // per-coroutine request_id counter
-};
-
-// The C++ → Rust callback that resumes the coroutine. Set as the slab
-// slot's callback. Called inline on the I/O worker thread when the
-// response arrives.
-[[maybe_unused]] static void co_on_complete(uint64_t /*request_id*/, crowdb_rpc_buffer_t control,
-                                            crowdb_rpc_buffer_t data, crowdb_rpc_status status, void *user_data)
-{
-    auto *s = static_cast<CoState *>(user_data);
-    // Store the response — the coroutine reads it after resume (or
-    // immediately if it hasn't suspended yet).
-    s->resp_control = control;
-    s->resp_data    = data;
-    s->resp_status  = status;
-    // Try to transition SUSPENDED → RESPONSE_READY. If successful,
-    // the coroutine was suspended (handle is valid) — resume it.
-    int expected = CO_SUSPENDED;
-    if (s->co_state.compare_exchange_strong(expected, CO_RESPONSE_READY, std::memory_order_acq_rel)) {
-        s->handle.resume();
-        return;
-    }
-    // If RUNNING, the coroutine hasn't suspended yet (handle may be
-    // null). Set RESPONSE_READY so await_suspend sees it and doesn't
-    // suspend — the coroutine picks up the response immediately.
-    if (expected == CO_RUNNING) {
-        s->co_state.store(CO_RESPONSE_READY, std::memory_order_release);
-        return;
-    }
-    // IDLE or RESPONSE_READY — late/duplicate response, drop it.
-}
-
-// Awaitable: suspends the coroutine, resumed by co_on_complete.
-// The CoState pointer is passed to the awaitable so co_on_complete
-// can store the response + resume.
-struct CoAwait
-{
-    CoState *state;
-
-    [[nodiscard]] constexpr bool await_ready() const noexcept
-    {
-        return false;
-    }
-
-    bool await_suspend(std::coroutine_handle<> h) const noexcept
-    {
-        state->handle = h;
-        // Try to transition RUNNING → SUSPENDED. If successful, the
-        // response hasn't arrived yet — suspend and wait for
-        // co_on_complete to resume us.
-        int expected = CO_RUNNING;
-        if (state->co_state.compare_exchange_strong(expected, CO_SUSPENDED, std::memory_order_acq_rel)) {
-            return true; // suspend
-        }
-        // State is not RUNNING — co_on_complete already set
-        // RESPONSE_READY (response arrived before we suspended).
-        // Don't suspend — resume immediately. The response is already
-        // stored in state->resp_*.
-        return false; // don't suspend — resume inline
-    }
-
-    void await_resume() const noexcept
-    {
-        // Coroutine is about to continue — mark it as running.
-        state->co_state.store(CO_RUNNING, std::memory_order_release);
-    }
-};
-
-// ── Coroutine task type ───────────────────────────────────────────
-//
-// We use a minimal coroutine type. The promise stores nothing — all
-// state is in the CoState struct, accessed via the captured pointer
-// in the coroutine body. The coroutine body is a lambda that captures
-// CoState* by value.
-
-struct CoTask
-{
-    struct promise_type
-    {
-        CoTask get_return_object()
-        {
-            return CoTask{std::coroutine_handle<promise_type>::from_promise(*this)};
-        }
-
-        std::suspend_always initial_suspend() noexcept
-        {
-            return {};
-        }
-
-        std::suspend_always final_suspend() noexcept
-        {
-            return {};
-        }
-
-        void return_void() noexcept
-        {
-        }
-
-        void unhandled_exception() noexcept
-        {
-            std::abort();
-        }
-    };
-
-    std::coroutine_handle<promise_type> handle;
-
-    explicit CoTask(std::coroutine_handle<promise_type> h) : handle(h)
-    {
-    }
-};
-
 // The coroutine body. Captures CoState* by value (it's a pointer,
 // stable on the heap). Loops: build → submit → co_await → on_response.
 //
@@ -202,7 +34,7 @@ struct CoTask
 static CoTask co_run(CoState *s)
 {
     s->co_state.store(CO_RUNNING, std::memory_order_release);
-    while (s->running->load(std::memory_order_relaxed)) {
+    while (true) {
         // 1. Build request via Rust callback.
         crowdb_rpc_buffer_t control = nullptr;
         crowdb_rpc_buffer_t data    = nullptr;
@@ -215,10 +47,8 @@ static CoTask co_run(CoState *s)
         }
 
         // 2. Record start time (after build, before submit).
-        // e2e = now - start measures submit + network + parse + callback.
-        // This excludes the build time (negligible for echo). The design
-        // suggests using rpc_create_nano from the echoed response, but
-        // that requires passing it through the C callback ABI.
+        // Measures submission, transport and response parsing on the client
+        // clock. Request construction and the Rust response handler are outside.
         auto start = std::chrono::steady_clock::now();
 
         // 3. Submit via send(). user_data = s (CoState*).
@@ -245,10 +75,9 @@ static CoTask co_run(CoState *s)
             // the inner Buffer* via release_frame. Just yield and retry.
             s->total_errors++;
             rpc_submit_retry().inc();
-            // Yield this thread — suspend until resumed. We use a
-            // self-resume: set handle, then suspend. A helper thread
-            // (or the spin-wait loop) will resume us shortly.
-            // For now, just yield the OS thread.
+            if (!s->conn->is_open()) {
+                break;
+            }
             std::this_thread::yield();
             continue;
         }
@@ -309,7 +138,7 @@ extern "C" void crowdb_rpc_co_spawn(crowdb_rpc_client_t client, crowdb_rpc_serve
     auto *client_ptr = client->client.get();
     auto *transport  = server->server->transport();
 
-    std::atomic<bool> running{true};
+    std::atomic<uint32_t> finished_count{0};
 
     // Create + start N coroutines.
     std::vector<crowdb::rpc::CoTask> tasks;
@@ -334,7 +163,7 @@ extern "C" void crowdb_rpc_co_spawn(crowdb_rpc_client_t client, crowdb_rpc_serve
         state->transport      = transport;
         state->conn           = conns[i % num_conns]->conn.get();
         state->msg_type       = msg_type;
-        state->running        = &running;
+        state->finished_count = &finished_count;
         state->slot_index     = i;
         state->pool_mask      = pool_mask;
         state->next_req_id    = 0;
@@ -363,31 +192,17 @@ extern "C" void crowdb_rpc_co_spawn(crowdb_rpc_client_t client, crowdb_rpc_serve
     // Wait for all coroutines to complete. The coroutines exit when
     // build_fn or on_response_fn returns false (Rust sets this when
     // the deadline is reached).
-    auto wait_start = std::chrono::steady_clock::now();
-    while (true) {
-        uint32_t not_done = 0;
-        for (auto &task : tasks) {
-            if (!task.handle.done()) {
-                not_done++;
-            }
+    while (finished_count.load(std::memory_order_acquire) != num_coroutines) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    // Final suspension publishes statistics, but a completing callback can
+    // still be unwinding after resume(). Keep both state and Rust context
+    // alive until every callback has returned. Request timeouts use RpcClient's
+    // reaper and ordinary completion path; never resume a pending await here.
+    for (const auto &state : states) {
+        while (state->active_callbacks.load(std::memory_order_acquire) != 0) {
+            std::this_thread::yield();
         }
-        if (not_done == 0) {
-            break;
-        }
-        // After 5s past the expected deadline, force-stop: set running=false
-        // and resume any still-suspended coroutines.
-        auto elapsed = std::chrono::steady_clock::now() - wait_start;
-        if (elapsed > std::chrono::seconds(30)) {
-            std::fprintf(stderr, "co_spawn: timeout, %u coroutines still running, forcing exit\n", not_done);
-            running.store(false, std::memory_order_release);
-            for (auto &task : tasks) {
-                if (!task.handle.done()) {
-                    task.handle.resume();
-                }
-            }
-            break;
-        }
-        std::this_thread::yield();
     }
 
     // Aggregate stats.

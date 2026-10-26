@@ -3,35 +3,65 @@
 
 use super::{state::DraftState, SplitLifecycleError};
 use crate::{
-    inspection::work::InspectionWork, AuthorityError, CasOutcome, DatasetAuthority, DatasetIdentity,
-    MetadataScanBudget, OperationId, ReadCancellation, SnapshotId,
+    inspection::work::InspectionWork, AuthorityError, DatasetAuthority, DatasetIdentity, MetadataScanBudget,
+    OperationId, ReadCancellation, SnapshotId,
 };
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnapshotSplitCleanup {
     pub version: u16,
     pub snapshot: SnapshotId,
     pub after: Option<Vec<u8>>,
     pub scanned_drafts: u64,
     pub complete: bool,
+    identity: Option<DatasetIdentity>,
+    child: Option<super::SplitReclaimCursor>,
+}
+impl SnapshotSplitCleanup {
+    #[must_use]
+    pub fn new(snapshot: SnapshotId) -> Self {
+        Self {
+            version: 1,
+            snapshot,
+            after: None,
+            scanned_drafts: 0,
+            complete: false,
+            identity: None,
+            child: None,
+        }
+    }
 }
 impl DatasetAuthority {
+    #[cfg(feature = "test-util")]
+    /// Advances an isolated legacy-draft cleanup fixture.
+    /// # Errors
+    /// Rejects live owners, malformed progress, cancellation and storage failures.
+    pub async fn cleanup_snapshot_split_drafts_step_for_tests(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        progress: &mut SnapshotSplitCleanup,
+        cancel: &ReadCancellation,
+    ) -> Result<SnapshotSplitCleanup, SplitLifecycleError> {
+        self.cleanup_snapshot_split_drafts_step(identity, snapshot, progress, cancel)
+            .await
+    }
+
     /// Finds and retires work from all drafts of a terminal Snapshot in resumable windows.
     /// Draft roots remain as durable receipts; newly started drafts cannot evaluate a retired owner.
     /// # Errors
     /// Rejects live owners, invalid cursors, cancellation and bounded-work failures.
-    pub async fn cleanup_snapshot_split_drafts_step(
+    pub(crate) async fn cleanup_snapshot_split_drafts_step(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
+        progress: &mut SnapshotSplitCleanup,
         cancel: &ReadCancellation,
     ) -> Result<SnapshotSplitCleanup, SplitLifecycleError> {
         tokio::time::timeout(
             Duration::from_secs(2),
-            self.cleanup_snapshot_draft_window(identity, snapshot, cancel),
+            self.cleanup_snapshot_draft_window(identity, snapshot, progress, cancel),
         )
         .await
         .map_err(|_| SplitLifecycleError::Limit)?
@@ -40,6 +70,7 @@ impl DatasetAuthority {
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
+        progress: &mut SnapshotSplitCleanup,
         cancel: &ReadCancellation,
     ) -> Result<SnapshotSplitCleanup, SplitLifecycleError> {
         let mut work = InspectionWork::new(
@@ -57,24 +88,13 @@ impl DatasetAuthority {
         {
             return Err(SplitLifecycleError::Frozen);
         }
+        self.require_reclaim_ready(identity, snapshot).await?;
         let mut prefix = b"DS\0SD\0".to_vec();
         prefix.extend(identity.key().map_err(AuthorityError::from)?);
-        let mut cursor_key = b"DS\0GSD\0".to_vec();
-        cursor_key.extend(identity.key().map_err(AuthorityError::from)?);
-        cursor_key.extend(snapshot.as_bytes());
-        let stored = work.get(&cursor_key, 4096).await?;
-        let mut progress: SnapshotSplitCleanup = stored.as_ref().map_or_else(
-            || {
-                Ok(SnapshotSplitCleanup {
-                    version: 1,
-                    snapshot,
-                    after: None,
-                    scanned_drafts: 0,
-                    complete: false,
-                })
-            },
-            |v| super::codec::decode(&v.bytes),
-        )?;
+        if progress.identity.as_ref().is_some_and(|bound| bound != identity) {
+            return Err(SplitLifecycleError::Corrupt);
+        }
+        progress.identity = Some(identity.clone());
         if progress.version != 1
             || progress.snapshot != snapshot
             || progress
@@ -85,7 +105,7 @@ impl DatasetAuthority {
             return Err(SplitLifecycleError::Corrupt);
         }
         if progress.complete {
-            return Ok(progress);
+            return Ok(progress.clone());
         }
         let page = work.scan(prefix.clone(), progress.after.clone(), 1).await?;
         if let Some((key, value)) = page.entries.first() {
@@ -95,21 +115,15 @@ impl DatasetAuthority {
             )
             .map_err(AuthorityError::from)?;
             if value.bytes != super::cleanup::SEALED {
-                let mut state = DraftState::decode(&value.bytes, operation)?;
+                let state = DraftState::decode(&value.bytes, operation)?;
                 if state.record.snapshot == snapshot {
-                    if state.work_version.is_none() {
-                        let old = state.clone();
-                        state.work_version = Some(1);
-                        self.replace_split_draft(identity, value, &old, &state).await?;
+                    let child = progress
+                        .child
+                        .get_or_insert_with(|| super::SplitReclaimCursor::new(identity.clone(), operation));
+                    if !self.advance_split_reclaim(child, cancel).await?.complete {
+                        return Ok(progress.clone());
                     }
-                    if !self
-                        .cleanup_split_scratch_step(identity, operation, cancel)
-                        .await?
-                        .complete
-                    {
-                        return Ok(progress);
-                    }
-                    self.release_split_draft_leases(identity, &state).await?;
+                    progress.child = None;
                 }
             }
             progress.after = Some(key.clone());
@@ -119,15 +133,6 @@ impl DatasetAuthority {
                 .ok_or(SplitLifecycleError::Limit)?;
         }
         progress.complete = page.after.is_none();
-        let bytes = super::codec::encode(&progress)?;
-        match self
-            .store
-            .compare_exchange(&cursor_key, stored.as_ref().map(|v| v.bytes.as_slice()), &bytes)
-            .await?
-        {
-            CasOutcome::Applied(_) => Ok(progress),
-            CasOutcome::Conflict(Some(value)) if value.bytes == bytes => Ok(progress),
-            CasOutcome::Conflict(_) => Err(SplitLifecycleError::Conflict),
-        }
+        Ok(progress.clone())
     }
 }

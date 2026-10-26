@@ -16,9 +16,6 @@ live in the linked document; implementation follows
 - **[R233](R233-sdk-local-cache-checkpoint.md)** — optional local disk read cache
   and recoverable checkpoint staging with explicit remote durability.
   **Area:** SDK. **Complexity:** High. **Status:** Deferred until dedicated HTTP workload measurements.
-- **[R220](R220-dataset-fat-client-plan.md)** — Dataset SDK fat-client direct
-  access and optimization contract. **Area:** Dataset SDK. **Complexity:** High.
-  **Status:** Deferred until the core Dataset contract has workload measurements.
 
 ## Access server and external data
 
@@ -96,9 +93,6 @@ live in the linked document; implementation follows
 
 - **[R4](R4-bounded-mempool.md)** — bounded memory pool for tree allocations.
   **Area:** crowdb-tree engine. **Complexity:** Medium.
-- **[R5](R5-rdma-alloc.md)** — RDMA-registered host-buffer allocation.
-  **Area:** crowdb-tree / RDMA. **Complexity:** High. **Status:** Design
-  proposal; blocked on an RDMA backend.
 - **[R60](R60-tree-scan-sibling-leaf-readahead.md)** — sibling-leaf readahead on
   cold scans. **Area:** crowdb-tree / scan / DiskIO. **Complexity:** Medium.
   **Status:** Deferred pending cold file/block-backed measurements.

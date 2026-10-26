@@ -35,6 +35,24 @@ impl DatasetAuthority {
         work: &mut InspectionWork<'_>,
     ) -> Result<bool, InspectionError> {
         use crate::AuthorityError;
+        let candidate = work
+            .get(
+                &super::candidate::candidate_key(identity, snapshot).map_err(AuthorityError::from)?,
+                4096,
+            )
+            .await?;
+        if let Some(candidate) = &candidate {
+            if candidate.bytes == super::complete::RETIRED {
+                return Ok(false);
+            }
+            let candidate = super::candidate::decode_candidate(&candidate.bytes, snapshot)?;
+            if candidate.version == 2 {
+                return Ok(true);
+            }
+            if candidate.version == 3 {
+                return Ok(false);
+            }
+        }
         if let Some(value) = work
             .get(
                 &snapshot_commit_key(identity, snapshot).map_err(AuthorityError::from)?,
@@ -48,10 +66,10 @@ impl DatasetAuthority {
             }
             return Ok(true);
         }
-        if let Some(value) = work
+        let head = work
             .get(&crate::key::head(identity).map_err(AuthorityError::from)?, 8192)
-            .await?
-        {
+            .await?;
+        if let Some(value) = &head {
             if head_attempt(&value.bytes)?.is_some_and(|a| a.target == (CommitTarget::Snapshot { snapshot }))
             {
                 return Ok(true);
@@ -67,32 +85,20 @@ impl DatasetAuthority {
             super::legacy::validate_visibility(&value.bytes, snapshot)?;
             return Ok(true);
         }
-        Ok(false)
-    }
-}
-
-impl DatasetAuthority {
-    pub(crate) async fn inspection_initial_split(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-        work: &mut InspectionWork<'_>,
-    ) -> Result<Option<crate::SplitRevisionId>, InspectionError> {
-        let Some(value) = work
-            .get(
-                &super::candidate::candidate_key(identity, snapshot).map_err(crate::AuthorityError::from)?,
-                4096,
-            )
-            .await?
-        else {
-            return Ok(None);
-        };
-        let binding: super::candidate::CandidateBinding =
-            serde_json::from_slice(&value.bytes).map_err(|_| InspectionError::Corrupt)?;
-        if binding.version != 1 || binding.snapshot != snapshot {
-            return Err(InspectionError::Corrupt);
+        // A prepared modern candidate is not a legacy publication, even when
+        // a malformed old head happens to name it.
+        if let Some(candidate) = candidate {
+            return self
+                .legacy_candidate_available(
+                    identity,
+                    &super::candidate::decode_candidate(&candidate.bytes, snapshot)?,
+                    work,
+                )
+                .await;
         }
-        Ok(binding.initial_split)
+        Ok(self
+            .legacy_snapshot_visible(identity, snapshot, head.as_ref(), work)
+            .await?)
     }
 }
 
@@ -112,11 +118,10 @@ impl DatasetAuthority {
         else {
             return Ok(None);
         };
-        let binding: super::candidate::CandidateBinding =
-            serde_json::from_slice(&value.bytes).map_err(|_| InspectionError::Corrupt)?;
-        if binding.version != 1 || binding.snapshot != snapshot {
-            return Err(InspectionError::Corrupt);
+        if value.bytes == super::complete::RETIRED {
+            return Ok(None);
         }
+        let binding = super::candidate::decode_candidate(&value.bytes, snapshot)?;
         Ok(Some(binding.operation))
     }
 }

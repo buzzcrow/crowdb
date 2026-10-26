@@ -30,11 +30,11 @@ use crowdb_protocol::fb::FBMsgType;
 use crowdb_protocol::kv_consensus_fb::{
     FBAcceptRequest, FBAcceptedResponse, FBAcceptedResponseArgs, FBAcceptedValue, FBAcceptedValueArgs,
     FBBatchChosenNotification, FBChosenNotification, FBFetchGapRequest, FBFetchGapResponse,
-    FBFetchGapResponseArgs, FBHeartbeatRequest, FBHeartbeatResponse, FBHeartbeatResponseArgs, FBKvRetCode,
-    FBPreVoteRequest, FBPreVoteResponse, FBPreVoteResponseArgs, FBPrepareRequest, FBPromiseResponse,
-    FBPromiseResponseArgs, FBRequestVoteRequest, FBRequestVoteResponse, FBRequestVoteResponseArgs,
-    FBSnapshotAbortRequest, FBSnapshotAbortResponse, FBSnapshotAbortResponseArgs, FBSnapshotBeginRequest,
-    FBSnapshotBeginResponse, FBSnapshotBeginResponseArgs, FBSnapshotFinishRequest, FBSnapshotFinishResponse,
+    FBFetchGapResponseArgs, FBHeartbeatResponse, FBHeartbeatResponseArgs, FBKvRetCode, FBPreVoteRequest,
+    FBPreVoteResponse, FBPreVoteResponseArgs, FBPrepareRequest, FBPromiseResponse, FBPromiseResponseArgs,
+    FBRequestVoteRequest, FBRequestVoteResponse, FBRequestVoteResponseArgs, FBSnapshotAbortRequest,
+    FBSnapshotAbortResponse, FBSnapshotAbortResponseArgs, FBSnapshotBeginRequest, FBSnapshotBeginResponse,
+    FBSnapshotBeginResponseArgs, FBSnapshotFinishRequest, FBSnapshotFinishResponse,
     FBSnapshotFinishResponseArgs, FBSnapshotReadRequest, FBSnapshotReadResponse, FBSnapshotReadResponseArgs,
     FBStepDownRequest, FBStepDownResponse, FBStepDownResponseArgs,
 };
@@ -45,9 +45,7 @@ use tracing::{debug, field, info_span, warn, Instrument, Span};
 
 use crate::cluster::local_replica::PxLocalReplica;
 use crate::cluster::px_kv_store::PxKvStore;
-use crate::cluster::replica::{
-    HeartbeatRequestPayload, PxReplicaError, ReplicaHandler, StepDownRequestPayload, VoteRequestPayload,
-};
+use crate::cluster::replica::{PxReplicaError, ReplicaHandler, StepDownRequestPayload, VoteRequestPayload};
 use crate::paxos::roles::{PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
 use crate::rpc::snapshot_registry::{
     SnapshotRegistration, SnapshotRegistry, SnapshotSessionError, SnapshotSessionId, SnapshotSourceMetrics,
@@ -246,6 +244,7 @@ impl Drop for PxRpcService {
 
 mod accept;
 mod election;
+mod heartbeat;
 mod notifications;
 #[allow(clippy::too_many_arguments)]
 mod prepare;

@@ -9,7 +9,7 @@ mod deletion_vector;
 mod digest;
 mod direct_location;
 mod injection;
-pub use injection::{NativeInjection, NativeInjectionRepository, NativeInjectionRequest};
+pub use injection::NativeInjection;
 mod directory;
 mod format;
 mod json;
@@ -19,7 +19,6 @@ mod location;
 pub use listing::{FileListPage, FileListRequest, FileListTokens, FileLocationScan, ListedFile};
 mod multipart;
 mod multipart_admission;
-mod multipart_credits;
 mod multipart_list;
 mod multipart_recovery;
 mod multipart_repository;
@@ -76,13 +75,11 @@ pub use multipart_admission::{
     MultipartAdmissionLimits, MultipartAdmissionRecord, MultipartCredit, MultipartCreditAction,
     MultipartCreditMutation,
 };
-pub use multipart_credits::MultipartAdmission;
 pub use multipart_list::{MultipartLister, MultipartPartPage, MultipartPartScan, MultipartPartStore};
 pub use multipart_recovery::{
-    MultipartRecovery, MultipartRecoveryObservation, MultipartRecoveryPage, MultipartRecoveryScan,
-    MultipartRecoveryStore,
+    MultipartRecovery, MultipartRecoveryPage, MultipartRecoveryScan, MultipartRecoveryStore,
 };
-pub use multipart_repository::{MultipartRepository, MultipartWorkError};
+pub use multipart_repository::{MultipartMutation, MultipartRepository, MultipartWorkError};
 pub use multipart_selection::{MultipartSelection, SelectedPart, SelectedStreamPart};
 #[cfg(feature = "test-util")]
 pub use parquet::{

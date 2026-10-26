@@ -1,8 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{key, prepare::candidate_operation, CompositionError, DraftProgress};
-use crate::{CasOutcome, DatasetAuthority, DatasetIdentity, OperationId, ReadCancellation};
+use super::{identity::candidate_operation, CompositionError, DraftProgress};
+use crate::{DatasetAuthority, DatasetIdentity, OperationId, ReadCancellation};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -11,25 +11,35 @@ pub struct CompositionCandidateCleanup {
     pub input_revision: u64,
     pub complete: bool,
 }
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Cursor {
-    version: u16,
+#[derive(Clone, Debug)]
+pub(super) struct CandidateCursor {
     revision: u64,
+    indexes: crate::inspection::CandidateRetirementCursor,
+    split: Option<crate::split::SplitReclaimCursor>,
+}
+impl Default for CandidateCursor {
+    fn default() -> Self {
+        Self {
+            revision: 1,
+            indexes: crate::inspection::CandidateRetirementCursor::default(),
+            split: None,
+        }
+    }
 }
 impl DatasetAuthority {
     /// Recovers failed and superseded preparations by their deterministic operation identity.
     /// # Errors
     /// Returns unavailable fences, ownership protection, corrupt records and work limits.
-    pub async fn cleanup_composition_candidates_step(
+    pub(super) async fn cleanup_composition_candidates_step(
         &self,
         identity: &DatasetIdentity,
         operation: OperationId,
+        cursor: &mut CandidateCursor,
         cancel: &ReadCancellation,
     ) -> Result<CompositionCandidateCleanup, CompositionError> {
         tokio::time::timeout(
             Duration::from_secs(2),
-            self.cleanup_candidate_window(identity, operation, cancel),
+            self.cleanup_candidate_window(identity, operation, cursor, cancel),
         )
         .await
         .map_err(|_| CompositionError::Limit)?
@@ -38,6 +48,7 @@ impl DatasetAuthority {
         &self,
         identity: &DatasetIdentity,
         operation: OperationId,
+        cursor: &mut CandidateCursor,
         cancel: &ReadCancellation,
     ) -> Result<CompositionCandidateCleanup, CompositionError> {
         if cancel.is_cancelled() {
@@ -53,37 +64,24 @@ impl DatasetAuthority {
                 DraftProgress::Abandoned
             )))
             .ok_or(CompositionError::Limit)?;
-        let cursor_key = key::scope(b"DS\0CCP\0", identity, operation)?;
-        let stored = self.composition_get(&cursor_key).await?;
-        let mut cursor: Cursor = stored.as_ref().map_or_else(
-            || {
-                Ok(Cursor {
-                    version: 1,
-                    revision: 1,
-                })
-            },
-            |v| crate::split::codec::decode(&v.bytes),
-        )?;
-        if cursor.version != 1 || cursor.revision == 0 || cursor.revision > end {
+        if cursor.revision == 0 || cursor.revision > end {
             return Err(CompositionError::Corrupt);
         }
         if cursor.revision < end {
             let candidate = candidate_operation(operation, cursor.revision)?;
             if self
-                .retire_composition_candidate(identity, candidate, cancel)
+                .retire_composition_candidate(
+                    identity,
+                    candidate,
+                    &mut cursor.indexes,
+                    &mut cursor.split,
+                    cancel,
+                )
                 .await?
             {
                 cursor.revision += 1;
-                let bytes = crate::split::codec::encode(&cursor)?;
-                match self
-                    .store
-                    .compare_exchange(&cursor_key, stored.as_ref().map(|v| v.bytes.as_slice()), &bytes)
-                    .await?
-                {
-                    CasOutcome::Applied(_) => {}
-                    CasOutcome::Conflict(Some(value)) if value.bytes == bytes => {}
-                    CasOutcome::Conflict(_) => return Err(CompositionError::Conflict),
-                }
+                cursor.indexes = crate::inspection::CandidateRetirementCursor::default();
+                cursor.split = None;
             }
         }
         Ok(CompositionCandidateCleanup {
@@ -95,6 +93,8 @@ impl DatasetAuthority {
         &self,
         identity: &DatasetIdentity,
         candidate: OperationId,
+        indexes: &mut crate::inspection::CandidateRetirementCursor,
+        split: &mut Option<crate::split::SplitReclaimCursor>,
         cancel: &ReadCancellation,
     ) -> Result<bool, CompositionError> {
         let Some(record) = self.fence_candidate_reservation(identity, candidate).await? else {
@@ -107,14 +107,13 @@ impl DatasetAuthority {
         if self
             .abort_uncommitted_candidate(identity, record.publication.snapshot)
             .await?
-            .is_some()
         {
             return Ok(true);
         }
         let mut retired = record;
         retired.publication.state = crate::PublicationState::Aborted;
         if !self
-            .retire_candidate_metadata_step(identity, &retired, cancel)
+            .retire_candidate_metadata_step(identity, &retired, indexes, cancel)
             .await?
         {
             return Ok(false);
@@ -122,10 +121,9 @@ impl DatasetAuthority {
         if !initial_exists {
             return Ok(true);
         }
-        match self
-            .cleanup_split_scratch_step(identity, split_operation, cancel)
-            .await
-        {
+        let split = split
+            .get_or_insert_with(|| crate::split::SplitReclaimCursor::new(identity.clone(), split_operation));
+        match self.advance_split_reclaim(split, cancel).await {
             Ok(progress) => Ok(progress.complete),
             Err(crate::split::SplitLifecycleError::NotFound) => Ok(true),
             Err(error) => Err(error.into()),

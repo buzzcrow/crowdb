@@ -77,7 +77,7 @@ impl Drop for TestRoot {
 async fn failed_child_never_marks_preview_ready_and_template_drift_fails_closed() {
     let root = TestRoot::new();
     let profile = root.profile_path();
-    assert!(run_preview_for_tests(&profile).await.is_err());
+    assert!(Box::pin(run_preview_for_tests(&profile)).await.is_err());
     let status = StatusStore::open(&root.0.join("run"))
         .unwrap()
         .read(std::time::Duration::from_secs(10))
@@ -93,7 +93,7 @@ async fn failed_child_never_marks_preview_ready_and_template_drift_fails_closed(
     let template = root.0.join("templates/kv.toml");
     fs::write(&template, format!("{}\n", fs::read_to_string(&template).unwrap())).unwrap();
     let before = fs::read(root.0.join("data/bootstrap/manifest.json")).unwrap();
-    assert!(run_preview_for_tests(&profile).await.is_err());
+    assert!(Box::pin(run_preview_for_tests(&profile)).await.is_err());
     assert_eq!(
         fs::read(root.0.join("data/bootstrap/manifest.json")).unwrap(),
         before
@@ -105,7 +105,7 @@ async fn nonempty_uninitialized_root_is_not_adopted() {
     let root = TestRoot::new();
     let profile = root.profile_path();
     fs::write(root.0.join("data/foreign"), b"unrelated").unwrap();
-    assert!(run_preview_for_tests(&profile).await.is_err());
+    assert!(Box::pin(run_preview_for_tests(&profile)).await.is_err());
     assert!(!root.0.join("data/bootstrap").exists());
     assert!(!root.0.join("data/secrets").exists());
 }
@@ -129,7 +129,7 @@ async fn invalid_release_selection_fails_before_writing_bootstrap_state() {
         }
         profile.validate().unwrap();
         fs::write(&path, toml::to_string(&profile).unwrap()).unwrap();
-        assert!(run_preview_for_tests(&path).await.is_err());
+        assert!(Box::pin(run_preview_for_tests(&path)).await.is_err());
         assert!(!root.0.join("data/node-identity").exists());
         assert!(!root.0.join("data/bootstrap").exists());
         assert!(!root.0.join("data/secrets").exists());
@@ -144,7 +144,7 @@ async fn kv_subset_supervises_only_kv_and_does_not_render_or_create_storage() {
     let mut profile = DeploymentProfile::load(&path).unwrap();
     profile.services.retain(|service| service.id == "kv");
     fs::write(&path, toml::to_string(&profile).unwrap()).unwrap();
-    assert!(run_preview_for_tests(&path).await.is_err());
+    assert!(Box::pin(run_preview_for_tests(&path)).await.is_err());
     let status = StatusStore::open(&root.0.join("run"))
         .unwrap()
         .read(std::time::Duration::from_secs(10))

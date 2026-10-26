@@ -57,7 +57,12 @@ impl BenchRecorder {
 
     /// Record one successful op with its latency (µs) and payload bytes.
     pub fn record_ok(&self, us: u64, bytes: u64) {
-        self.latency.observe(us.saturating_mul(1000));
+        self.record_ok_ns(us.saturating_mul(1000), bytes);
+    }
+
+    /// Preserve nanosecond precision for RPC completion callbacks.
+    pub fn record_ok_ns(&self, ns: u64, bytes: u64) {
+        self.latency.observe(ns);
         self.bytes.observe(bytes);
     }
 

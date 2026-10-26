@@ -12,16 +12,66 @@ info:
     available under their original routes. Metadata GET routes require
     bounded-inspection; explicit POST inspection preparation requires
     inspection-preparation. Dataset creation, stable/retention changes and receipts
-    require dataset-management; Split lifecycle requires split-revisions; versioned
-    read plans require split-reads. Upload, composition and Snapshot retirement
-    require uploads, composition and snapshot-reclaim respectively, advertised only
+    require dataset-management; direct Snapshot head updates require snapshot-head-update;
+    Split reads require split-revisions; complete Split preparation requires split-preparation;
+    direct Split head updates require split-head-update; explicit complete-revision
+    deletion requires split-revision-delete and never falls back to draft abandonment; versioned
+    stateless reads require stateless-reads. Upload, Snapshot composition preparation and retirement
+    require uploads, composition-preparation and snapshot-reclaim respectively, advertised only
     when the upload service is configured. Query parameters are strict and duplicate
-    keys fail. Composition JSON bodies are limited to 1 MiB.
+    keys fail. Snapshot preparation JSON/input/Manifest are limited to 8 MiB;
+    standalone Split preparation JSON and final bindings are limited to 1 MiB.
+    Composition and standalone Split begin/edit/evaluate/prepare/publish workflow routes return 501;
+    legacy draft reads, abandonment and cleanup remain available for old records.
 servers:
   - url: /api/dataset/v2
 security:
   - bearerAuth: []
 paths:
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}:
+    put:
+      operationId: prepareSnapshot
+      summary: Prepare complete Snapshot content from retained caller inputs
+      description: >-
+        Requires composition-preparation and a configured upload service. Caller
+        chooses the Snapshot ID and retains the complete parent/source/schema/
+        Sample patches/Split definitions. Parent and schema are required nullable
+        fields; null schema inherits the fixed parent's schema. Frozen sources and
+        inherited definitions name exact revisions; currentSplit is never resolved
+        during retries. Body, native input and final Manifest are bounded to 8 MiB,
+        with 30 seconds for computation. Each patch ID occurs once; upsert patches
+        specified fields and preserves other effective parent fields. Uploaded
+        fields carry id/length/md5 from a completed result; conversion performs no
+        metadata query and the authority validates the descriptor before claiming
+        its final Snapshot owner. The complete root is installed last, after final
+        index, initial Split membership and payload ownership. Complete results
+        are readable by ID before head publication. Retry the same ID and full
+        input after unknown outcomes; different content or initial Split binding
+        conflicts. No editing/evaluation progress, operation mapping or staging
+        owner is stored. Capture the intended head base before computation, then
+        update the Dataset head separately. There is no workflow or v1 fallback.
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PrepareSnapshot'}
+      responses:
+        '200':
+          description: Complete immutable result; latest/stable are unchanged
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PreparedSnapshot'}
+        '409':
+          description: Resource content, descriptor or Split policy conflicts
+          $ref: '#/components/responses/InspectionError'
+        '413':
+          description: Body, native input, final Manifest or computation exceeds bounds
+          $ref: '#/components/responses/InspectionError'
+        default:
+          $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/head:
     get:
       operationId: datasetHead
@@ -44,6 +94,31 @@ paths:
               schema: {$ref: '#/components/schemas/Head'}
         '404':
           description: Dataset or namespace is unavailable
+    put:
+      operationId: updateSnapshotHead
+      summary: Select a complete Snapshot using an explicit head condition
+      description: >-
+        Requires snapshot-head-update. The input contains only the complete resource ID
+        and explicit nullable expected_head; no draft or attempt identity is read.
+        Stable is preserved. Same-current-target retries confirm the current effect;
+        stale conditions after another publication return observed_head without
+        a confirmation query or implicit content rebase. Unknown outcomes do not
+        create response history. The JSON body is limited to 4096 bytes.
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateSnapshotHead'}
+      responses:
+        '200':
+          description: Current effect confirmed without a historical response receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Head'}
+        default:
+          $ref: '#/components/responses/InspectionError'
   /capabilities:
     get:
       operationId: datasetCapabilities
@@ -81,7 +156,7 @@ paths:
   /namespaces/dataset-ns/datasets/{dataset}/snapshot-inventory:
     get:
       operationId: snapshotInventory
-      summary: List committed Snapshot inventory
+      summary: List complete Snapshot inventory
       parameters:
         - {$ref: '#/components/parameters/dataset'}
         - {$ref: '#/components/parameters/after'}
@@ -97,7 +172,7 @@ paths:
   /namespaces/dataset-ns/datasets/{dataset}/roots:
     get:
       operationId: snapshotRoots
-      summary: List committed parentless Snapshot roots
+      summary: List complete parentless Snapshot roots
       parameters:
         - {$ref: '#/components/parameters/dataset'}
         - {$ref: '#/components/parameters/after'}
@@ -113,7 +188,7 @@ paths:
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/children:
     get:
       operationId: snapshotChildren
-      summary: List committed children of a concrete Snapshot
+      summary: List complete children of a concrete Snapshot
       parameters:
         - {$ref: '#/components/parameters/dataset'}
         - {$ref: '#/components/parameters/snapshot'}
@@ -130,7 +205,7 @@ paths:
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/summary:
     get:
       operationId: snapshotSummary
-      summary: Read bounded committed Snapshot metadata
+      summary: Read bounded complete Snapshot metadata
       parameters:
         - {$ref: '#/components/parameters/dataset'}
         - {$ref: '#/components/parameters/snapshot'}
@@ -266,20 +341,40 @@ paths:
           $ref: '#/components/responses/InspectionError'
     post:
       operationId: prepareSnapshotInspection
-      summary: Advance one bounded legacy metadata preparation window
-      description: Explicit mutation; retry resumes durable progress. Does not publish data or acknowledge reads.
+      summary: Rebuild complete legacy inspection metadata
+      description: Explicit mutation with a thirty-second deadline, a 9 MiB source-record limit and an 8 MiB embedded-Manifest limit. Writes complete index rows and installs the summary last without durable preparation progress. Retry rebuilds from the source or reuses an existing summary without writes. Errors propagate without confirmation reads. Does not change publication heads or acknowledge reads.
       parameters:
         - {$ref: '#/components/parameters/dataset'}
         - {$ref: '#/components/parameters/snapshot'}
       responses:
         '200':
-          description: Durable preparation progress
+          description: Complete metadata readiness; revision and rows_written are zero compatibility fields.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/InspectionPreparation'}
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-head:
+    put:
+      operationId: updateSplitHead
+      summary: Conditionally update currentSplit from a complete resource
+      description: Requires split-head-update. Caller supplies the target and both explicit nullable preconditions, without a draft or attempt ID. A conflict carries observed_head for caller review; the server does not rebase or query again to confirm a CAS outcome.
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateSplitHead'}
+      responses:
+        '200':
+          description: Current effect confirmed, without a historical response receipt.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SplitHead'}
+        default:
+          $ref: '#/components/responses/InspectionError'
     get:
       operationId: splitHead
       parameters:
@@ -302,6 +397,7 @@ paths:
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-revisions:
     get:
       operationId: splitHistory
+      description: Lists complete revisions, including results that have not updated currentSplit. Snapshot read admission applies.
       parameters:
         - in: path
           name: dataset
@@ -322,8 +418,83 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-revisions/{revision}:
+    delete:
+      operationId: deleteSplitRevision
+      summary: Mark one historical complete Split revision for delayed metadata reclamation
+      description: >-
+        Requires split-revision-delete. Accepts only the two resource IDs, with no
+        query parameters or request body. The current Split and the Snapshot's
+        initial Split are protected. A successful mark rejects new reads and
+        persists one fixed twenty-minute reclaim_after deadline. Repeating the
+        same DELETE preserves that deadline. Background cleanup seals membership
+        metadata; it does not delete sample payloads. The owner Snapshot may
+        reclaim this metadata after its own read admission closes and its own
+        twenty-minute grace expires. Complete revisions otherwise follow their
+        owner Snapshot's lifetime, without an independent automatic TTL. No
+        request, response or progress session is persisted. Unknown outcomes
+        return directly; an explicit client retry repeats the same two-ID DELETE.
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+        - in: path
+          name: revision
+          required: true
+          schema: {$ref: '#/components/schemas/OpaqueId'}
+      responses:
+        '200':
+          description: Fixed deletion mark or terminal metadata reclamation status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SplitRevisionDeletion'}
+        '404':
+          description: The scoped revision was not found
+          $ref: '#/components/responses/InspectionError'
+        '409':
+          description: Current or initial revision is protected, or the resource changed concurrently
+          $ref: '#/components/responses/InspectionError'
+        default:
+          $ref: '#/components/responses/InspectionError'
+    put:
+      operationId: prepareSplitRevision
+      summary: Prepare complete immutable membership from caller-owned inputs
+      description: >-
+        Requires split-preparation. The caller retains revision ID, policy and
+        complete definitions. No operation, edit or evaluation cursor is accepted.
+        Computation is bounded to 30 seconds and 1 MiB input/final bindings.
+        Retry the same ID and input after an unknown outcome; incomplete work is
+        recomputed, while an identical complete result is reused. Different input
+        at a complete ID conflicts. Frozen sources retain their supplied revision.
+        This operation does not update currentSplit; capture its intended base
+        before computation and update split-head separately. No draft fallback.
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+        - in: path
+          name: revision
+          required: true
+          schema: {$ref: '#/components/schemas/OpaqueId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PrepareSplitRevision'}
+      responses:
+        '200':
+          description: Complete immutable resource, readable before head publication
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SplitRevision'}
+        '409':
+          description: Resource ID already has different input, or validation conflicts
+          $ref: '#/components/responses/InspectionError'
+        '413':
+          description: Request body exceeds 1 MiB
+          $ref: '#/components/responses/InspectionError'
+        default:
+          $ref: '#/components/responses/InspectionError'
     get:
       operationId: splitRevision
+      description: Reads a complete immutable revision by ID without requiring currentSplit publication. Snapshot read admission applies. Deletion-marked revisions are unavailable, normally with 404; existing bounded-work errors may take precedence.
       parameters:
         - in: path
           name: dataset
@@ -375,33 +546,10 @@ paths:
               schema: {$ref: '#/components/schemas/SamplePage'}
         default:
           $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-drafts:
-    post:
-      operationId: beginSplitDraft
-      parameters:
-        - in: path
-          name: dataset
-          required: true
-          schema: {type: string}
-        - in: path
-          name: snapshot
-          required: true
-          schema: {type: string}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/BeginSplit'}
-      responses:
-        '200':
-          description: Revision-bound operation result
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/SplitDraft'}
-        default:
-          $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}:
     get:
+      deprecated: true
+      description: Read-only observation of an existing legacy draft; never resumes work.
       operationId: splitDraft
       parameters:
         - in: path
@@ -420,31 +568,9 @@ paths:
               schema: {$ref: '#/components/schemas/SplitDraft'}
         default:
           $ref: '#/components/responses/InspectionError'
-    put:
-      operationId: editSplitDraft
-      parameters:
-        - in: path
-          name: dataset
-          required: true
-          schema: {type: string}
-        - in: path
-          name: operation
-          required: true
-          schema: {type: string}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/EditSplit'}
-      responses:
-        '200':
-          description: Revision-bound operation result
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/SplitDraft'}
-        default:
-          $ref: '#/components/responses/InspectionError'
     delete:
+      deprecated: true
+      description: Abandon an existing legacy draft for cleanup.
       operationId: abandonSplitDraft
       parameters:
         - in: path
@@ -468,84 +594,10 @@ paths:
               schema: {$ref: '#/components/schemas/SplitDraft'}
         default:
           $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}/evaluate:
+  /namespaces/dataset-ns/datasets/{dataset}/reads/bind:
     post:
-      operationId: evaluateSplitDraft
-      parameters:
-        - in: path
-          name: dataset
-          required: true
-          schema: {type: string}
-        - in: path
-          name: operation
-          required: true
-          schema: {type: string}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/EvaluateDraft'}
-      responses:
-        '200':
-          description: Revision-bound operation result
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/SplitPreview'}
-        default:
-          $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}/prepare:
-    post:
-      operationId: prepareSplitDraft
-      parameters:
-        - in: path
-          name: dataset
-          required: true
-          schema: {type: string}
-        - in: path
-          name: operation
-          required: true
-          schema: {type: string}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/DraftRevision'}
-      responses:
-        '200':
-          description: Revision-bound operation result
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/SplitRevision'}
-        default:
-          $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}/publish:
-    post:
-      operationId: publishSplitDraft
-      parameters:
-        - in: path
-          name: dataset
-          required: true
-          schema: {type: string}
-        - in: path
-          name: operation
-          required: true
-          schema: {type: string}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/PublishSplit'}
-      responses:
-        '200':
-          description: Revision-bound operation result
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CommitReceipt'}
-        default:
-          $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/read-plans:
-    post:
-      operationId: prepareSplitRead
+      operationId: bindRead
+      description: Resolve immutable Snapshot and Split versions without creating read state.
       parameters:
         - {$ref: '#/components/parameters/dataset'}
       requestBody:
@@ -555,99 +607,29 @@ paths:
             schema: {$ref: '#/components/schemas/ReadPlanV2'}
       responses:
         '200':
-          description: Revision-bound read result; only explicit acknowledgement advances consumption.
+          description: Client-owned continuation; no TTL, remote acknowledgement or close.
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/ReadPreparation'}
+              schema: {$ref: '#/components/schemas/ReadBinding'}
         default:
           $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/read-plans/{operation}:
-    get:
-      operationId: splitReadStatus
+  /namespaces/dataset-ns/datasets/{dataset}/reads/next:
+    post:
+      operationId: nextReadBatch
+      description: Replay this continuation; save the returned next cursor after processing.
       parameters:
         - {$ref: '#/components/parameters/dataset'}
-        - in: path
-          name: operation
-          required: true
-          schema: {$ref: '#/components/schemas/OpaqueId'}
-      responses:
-        '200':
-          description: Revision-bound read result; only explicit acknowledgement advances consumption.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ReadPreparation'}
-        default:
-          $ref: '#/components/responses/InspectionError'
-    delete:
-      operationId: cancelSplitRead
-      parameters:
-        - {$ref: '#/components/parameters/dataset'}
-        - in: path
-          name: operation
-          required: true
-          schema: {$ref: '#/components/schemas/OpaqueId'}
-      responses:
-        '200':
-          description: Revision-bound read result; only explicit acknowledgement advances consumption.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ReadSessionV2'}
-        default:
-          $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/read-plans/{operation}/progress:
-    get:
-      operationId: splitReadProgress
-      parameters:
-        - {$ref: '#/components/parameters/dataset'}
-        - in: path
-          name: operation
-          required: true
-          schema: {$ref: '#/components/schemas/OpaqueId'}
-      responses:
-        '200':
-          description: Revision-bound read result; only explicit acknowledgement advances consumption.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ReadProgress'}
-        default:
-          $ref: '#/components/responses/InspectionError'
-    put:
-      operationId: acknowledgeSplitRead
-      parameters:
-        - {$ref: '#/components/parameters/dataset'}
-        - in: path
-          name: operation
-          required: true
-          schema: {$ref: '#/components/schemas/OpaqueId'}
       requestBody:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/ReadAcknowledgement'}
+            schema: {$ref: '#/components/schemas/ReadContinuation'}
       responses:
         '200':
-          description: Revision-bound read result; only explicit acknowledgement advances consumption.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ReadProgress'}
-        default:
-          $ref: '#/components/responses/InspectionError'
-  /namespaces/dataset-ns/datasets/{dataset}/read-plans/{operation}/next:
-    post:
-      operationId: nextSplitBatch
-      parameters:
-        - {$ref: '#/components/parameters/dataset'}
-        - in: path
-          name: operation
-          required: true
-          schema: {$ref: '#/components/schemas/OpaqueId'}
-      responses:
-        '200':
-          description: Revision-bound read result; only explicit acknowledgement advances consumption.
+          description: Bounded batch; null next means end of selection.
           content:
             application/vnd.crowdb.dataset-batch.v1:
               schema: {type: string, format: binary}
-              description: Existing CDBDS001 framing, field integrity and end/error records.
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/preview:
@@ -800,7 +782,7 @@ paths:
           $ref: '#/components/responses/InspectionError'
     post:
       operationId: reclaimSnapshotV2
-      summary: Advance bounded Snapshot retirement
+      summary: Mark Snapshot deletion and observe background retirement
       parameters:
       - $ref: '#/components/parameters/dataset'
       - in: path
@@ -809,19 +791,23 @@ paths:
         schema: *id001
       responses:
         '200':
-          description: Successful bounded operation. Integer counts are exact decimal strings.
+          description: Durable deletion status. Background workers advance cleanup after the grace deadline.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SnapshotReclaim'
         default:
           $ref: '#/components/responses/InspectionError'
-      description: Repeat until complete. Latest, stable, retained, leased or live-parent Snapshots are protected.
-        Completion fences logical metadata and owners; physical upload deletion remains deferred.
+      description: Latest, stable, retained or live-parent Snapshots are protected.
+        This empty-body action only marks deletion and observes durable status; repeated calls
+        do not drive cleanup. Nonempty bodies, including cleanup cursor or completion inputs,
+        are rejected. Background workers retire owners before metadata. Physical capacity
+        recovery remains a separate ChunkDB responsibility.
   /namespaces/dataset-ns/datasets/{dataset}/commits/{attempt}:
     get:
       operationId: commitStatusV2
-      summary: Recover a successful publication receipt
+      summary: Read a legacy publication receipt
+      description: Returns existing legacy receipts without backfill. New Snapshot and Split publication creates no historical receipts; retry the same conditional request to confirm its current effect.
       parameters:
       - $ref: '#/components/parameters/dataset'
       - in: path
@@ -839,21 +825,19 @@ paths:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}/cleanup:
     post:
+      deprecated: true
       operationId: cleanupSplitDraft
-      summary: Retire obsolete Split work
+      summary: Retired Split cleanup action
       parameters:
       - $ref: '#/components/parameters/dataset'
       - in: path
         name: operation
         required: true
         schema: *id001
+      description: Returns unsupported after authentication and route validation, before storage. Background workers discover historical Split draft and work facts using local cursors. Readable Snapshot owners retain their deletion grace; permanently sealed incomplete roots do not require a reader deadline.
       responses:
-        '200':
-          description: Successful bounded operation. Integer counts are exact decimal strings.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SplitCleanup'
+        '501':
+          $ref: '#/components/responses/InspectionError'
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/uploads:
@@ -965,31 +949,11 @@ paths:
               type: string
               format: binary
               maxLength: 4194304
-  /namespaces/dataset-ns/datasets/{dataset}/compositions:
-    post:
-      operationId: beginComposition
-      summary: Pin source membership and begin a composition
-      parameters:
-      - $ref: '#/components/parameters/dataset'
-      responses:
-        '200':
-          description: Successful bounded operation. Integer counts are exact decimal strings.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CompositionDraft'
-        default:
-          $ref: '#/components/responses/InspectionError'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BeginComposition'
   /namespaces/dataset-ns/datasets/{dataset}/compositions/{operation}:
     get:
+      deprecated: true
       operationId: getComposition
-      summary: Read current composition status
+      summary: Observe an existing legacy composition without resuming it
       parameters:
       - $ref: '#/components/parameters/dataset'
       - in: path
@@ -1005,34 +969,8 @@ paths:
                 $ref: '#/components/schemas/CompositionDraft'
         default:
           $ref: '#/components/responses/InspectionError'
-    put:
-      operationId: editComposition
-      summary: Apply an idempotent revision-bound edit
-      parameters:
-      - $ref: '#/components/parameters/dataset'
-      - in: path
-        name: operation
-        required: true
-        schema: *id001
-      responses:
-        '200':
-          description: Successful bounded operation. Integer counts are exact decimal strings.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CompositionDraft'
-        default:
-          $ref: '#/components/responses/InspectionError'
-      description: At most 20 Sample changes and a 1 MiB JSON body. Historical edit retries return the historical
-        draft result; use GET for current status. Upload references are resolved within this Dataset; raw storage
-        locators are rejected.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/EditComposition'
     delete:
+      deprecated: true
       operationId: abandonComposition
       summary: Abandon an unpublished composition
       parameters:
@@ -1050,96 +988,18 @@ paths:
                 $ref: '#/components/schemas/CompositionDraft'
         default:
           $ref: '#/components/responses/InspectionError'
-      description: Cleanup is separately resumable through POST cleanup; abandonment never removes a successful publication.
+      description: Background workers clean existing draft resources after abandonment; no client cleanup action is required. Complete resource owners remain independent of the draft.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/DraftRevision'
-  /namespaces/dataset-ns/datasets/{dataset}/compositions/{operation}/evaluate:
-    post:
-      operationId: evaluateComposition
-      summary: Evaluate one bounded composition window
-      parameters:
-      - $ref: '#/components/parameters/dataset'
-      - in: path
-        name: operation
-        required: true
-        schema: *id001
-      responses:
-        '200':
-          description: Successful bounded operation. Integer counts are exact decimal strings.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CompositionPreview'
-        default:
-          $ref: '#/components/responses/InspectionError'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/EvaluateDraft'
-  /namespaces/dataset-ns/datasets/{dataset}/compositions/{operation}/prepare:
-    post:
-      operationId: prepareComposition
-      summary: Prepare data, initial Splits and upload ownership
-      parameters:
-      - $ref: '#/components/parameters/dataset'
-      - in: path
-        name: operation
-        required: true
-        schema: *id001
-      responses:
-        '200':
-          description: Successful bounded operation. Integer counts are exact decimal strings.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CompositionDraft'
-        default:
-          $ref: '#/components/responses/InspectionError'
-      description: Repeat until uploads.publication_ready is true. Prepared candidates remain invisible until publication.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DraftRevision'
-  /namespaces/dataset-ns/datasets/{dataset}/compositions/{operation}/publish:
-    post:
-      operationId: publishComposition
-      summary: Publish data and initial Splits atomically
-      parameters:
-      - $ref: '#/components/parameters/dataset'
-      - in: path
-        name: operation
-        required: true
-        schema: *id001
-      responses:
-        '200':
-          description: Successful bounded operation. Integer counts are exact decimal strings.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CommitReceipt'
-        default:
-          $ref: '#/components/responses/InspectionError'
-      description: Successful publication advances latest only. Null expected_head is explicit; omission fails. Keep
-        the exact attempt and request on unknown outcome. A head conflict preserves the prepared candidate; refresh
-        the head and use a new attempt.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PublishComposition'
   /namespaces/dataset-ns/datasets/{dataset}/compositions/{operation}/cleanup:
     post:
+      deprecated: true
       operationId: cleanupComposition
-      summary: Advance bounded obsolete composition cleanup
+      summary: Retired Composition cleanup action
       parameters:
       - $ref: '#/components/parameters/dataset'
       - in: path
@@ -1147,16 +1007,11 @@ paths:
         required: true
         schema: *id001
       responses:
-        '200':
-          description: Successful bounded operation. Integer counts are exact decimal strings.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CompositionCleanup'
+        '501':
+          $ref: '#/components/responses/InspectionError'
         default:
           $ref: '#/components/responses/InspectionError'
-      description: Repeat until complete. Active drafts preserve current work; terminal drafts also retire staging
-        owners and edit payloads. Successful publication receipts remain available.
+      description: Returns unsupported after authentication and route validation, before storage. Background workers discover historical draft facts and retire them using local cursors; no client cleanup state or completion confirmation is accepted.
 components:
   parameters:
     dataset:
@@ -1195,6 +1050,10 @@ components:
               message: {type: string}
               request_id: {type: string}
               retryable: {type: boolean}
+              observed_head:
+                oneOf:
+                  - {$ref: '#/components/schemas/SplitHead'}
+                  - {$ref: '#/components/schemas/Head'}
   securitySchemes:
     bearerAuth:
       type: http
@@ -1211,6 +1070,15 @@ components:
           type: [string, 'null']
           pattern: '^[0-9a-f]{32}$'
         generation:
+          type: [string, 'null']
+          pattern: '^[0-9a-f]{64}$'
+    UpdateSnapshotHead:
+      type: object
+      additionalProperties: false
+      required: [snapshot, expected_head]
+      properties:
+        snapshot: {$ref: '#/components/schemas/OpaqueId'}
+        expected_head:
           type: [string, 'null']
           pattern: '^[0-9a-f]{64}$'
     Capabilities:
@@ -1283,9 +1151,9 @@ components:
       required: [snapshot, revision, rows_written, state, reason]
       properties:
         snapshot: {type: string}
-        revision: {type: string, pattern: '^[0-9]+$'}
-        rows_written: {type: string, pattern: '^[0-9]+$'}
-        state: {enum: [preparing, ready, unsupported]}
+        revision: {type: string, pattern: '^[0-9]+$', description: Zero for complete rebuilds; historical GET progress can retain a nonzero value.}
+        rows_written: {type: string, pattern: '^[0-9]+$', description: Zero for complete rebuilds; historical GET progress can retain a nonzero value.}
+        state: {enum: [preparing, ready, unsupported], description: Preparing is observable only for historical progress through GET. New POST results describe a complete index.}
         reason: {type: [string, 'null']}
     DatasetPage:
       type: object
@@ -1454,22 +1322,11 @@ components:
         name: {type: string}
         definition: {$ref: '#/components/schemas/SplitDefinition'}
         origin: {$ref: '#/components/schemas/SplitOrigin'}
-    BeginSplit:
+    PrepareSplitRevision:
       type: object
       additionalProperties: false
-      required: [operation, expected_revision, policy, splits]
+      required: [policy, splits]
       properties:
-        operation: {$ref: '#/components/schemas/OpaqueId'}
-        expected_revision: {$ref: '#/components/schemas/NullableRevision'}
-        policy: {$ref: '#/components/schemas/SplitPolicy'}
-        splits: {type: array, items: {$ref: '#/components/schemas/DraftSplit'}}
-    EditSplit:
-      type: object
-      additionalProperties: false
-      required: [edit, expected_revision, policy, splits]
-      properties:
-        edit: {$ref: '#/components/schemas/OpaqueId'}
-        expected_revision: {$ref: '#/components/schemas/Decimal'}
         policy: {$ref: '#/components/schemas/SplitPolicy'}
         splits: {type: array, items: {$ref: '#/components/schemas/DraftSplit'}}
     DraftRevision:
@@ -1478,22 +1335,14 @@ components:
       required: [expected_revision]
       properties:
         expected_revision: {$ref: '#/components/schemas/Decimal'}
-    EvaluateDraft:
+    UpdateSplitHead:
       type: object
       additionalProperties: false
-      required: [expected_revision, expected_page]
+      required: [revision, expected_revision, expected_head]
       properties:
-        expected_revision: {$ref: '#/components/schemas/Decimal'}
-        expected_page: {$ref: '#/components/schemas/Decimal'}
-    PublishSplit:
-      type: object
-      additionalProperties: false
-      required: [attempt, revision, expected_head]
-      properties:
-        attempt: {$ref: '#/components/schemas/OpaqueId'}
         revision: {$ref: '#/components/schemas/OpaqueId'}
+        expected_revision: {$ref: '#/components/schemas/NullableRevision'}
         expected_head: {$ref: '#/components/schemas/NullableGeneration'}
-      description: Expected revision was pinned by BeginSplit. Null head is explicit; omission is invalid. A conflict retains the candidate.
     CommitTarget:
       oneOf:
         - type: object
@@ -1554,6 +1403,19 @@ components:
         snapshot: {$ref: '#/components/schemas/OpaqueId'}
         revision: {$ref: '#/components/schemas/NullableRevision'}
         generation: {$ref: '#/components/schemas/NullableGeneration'}
+    SplitRevisionDeletion:
+      type: object
+      additionalProperties: false
+      required: [snapshot, revision, reclaim_after, complete]
+      properties:
+        snapshot: {$ref: '#/components/schemas/OpaqueId'}
+        revision: {$ref: '#/components/schemas/OpaqueId'}
+        reclaim_after:
+          description: Fixed Unix-seconds cleanup deadline while pending; null after terminal reclamation.
+          anyOf:
+            - {$ref: '#/components/schemas/Decimal'}
+            - {type: 'null'}
+        complete: {type: boolean}
     SplitRevisionPage:
       type: object
       required: [entries, after]
@@ -1599,19 +1461,16 @@ components:
     ReadPlanV2:
       type: object
       additionalProperties: false
-      required: [id, snapshot, selection, fields, batch_size, partition, shuffle, split, expected_page]
+      required: [snapshot, selection, fields, batch_size, partition, shuffle, split]
       description: >-
-        Retry preserves all inputs except expected_page. Snapshot latest/stable and
-        null Split revision resolve once before evaluation. Selection and Split
-        intersection precede shuffle and worker/rank partitioning. GET status does
-        not prepare or acknowledge a batch. Cancelled IDs cannot be reopened.
+        Snapshot latest/stable and null Split revision resolve into the returned
+        continuation. Selection and Split filtering precede shuffle and worker
+        partitioning. There is no persisted read plan, preparation or progress.
       properties:
-        id: {$ref: '#/components/schemas/OpaqueId'}
         snapshot: {type: string, description: Concrete ID or latest/stable}
         selection: {$ref: '#/components/schemas/Predicate'}
         fields: {type: array, maxItems: 256, uniqueItems: true, items: {type: string}}
         batch_size: {type: integer, minimum: 1, maximum: 10000}
-        expected_page: {$ref: '#/components/schemas/Decimal'}
         partition:
           type: object
           additionalProperties: false
@@ -1629,7 +1488,7 @@ components:
               required: [seed, group_size]
               properties:
                 seed: {$ref: '#/components/schemas/Decimal'}
-                group_size: {type: integer, minimum: 1, maximum: 1000000}
+                group_size: {type: integer, minimum: 1, maximum: 100000}
         split:
           oneOf:
             - {type: 'null'}
@@ -1639,45 +1498,87 @@ components:
               properties:
                 revision: {$ref: '#/components/schemas/NullableRevision'}
                 name: {type: string}
-    ReadSessionV2:
+    ReadBinding:
       type: object
-      required: [id, snapshot, plan, acknowledged, expires_at, closed]
-      properties:
-        id: {$ref: '#/components/schemas/OpaqueId'}
-        snapshot: {$ref: '#/components/schemas/OpaqueId'}
-        plan: {type: string}
-        acknowledged: {type: string}
-        expires_at: {$ref: '#/components/schemas/Decimal'}
-        closed: {type: boolean}
-    ReadPreparation:
-      type: object
-      required: [snapshot, split, next_page, admitted, complete, session]
+      required: [snapshot, split, cursor]
       properties:
         snapshot: {$ref: '#/components/schemas/OpaqueId'}
         split:
           oneOf:
             - {type: 'null'}
             - {$ref: '#/components/schemas/SplitSource'}
-        next_page: {$ref: '#/components/schemas/Decimal'}
-        admitted: {$ref: '#/components/schemas/Decimal'}
-        complete: {type: boolean}
-        session:
-          oneOf:
-            - {type: 'null'}
-            - {$ref: '#/components/schemas/ReadSessionV2'}
-    ReadAcknowledgement:
+        cursor: {type: string, maxLength: 349530}
+    ReadContinuation:
       type: object
       additionalProperties: false
-      required: [expected, next]
+      required: [cursor]
       properties:
-        expected: {type: string, maxLength: 4096}
-        next: {type: string, maxLength: 4096}
-    ReadProgress:
+        cursor: {type: string, maxLength: 349530}
+    PrepareSnapshot:
       type: object
-      required: [plan, cursor]
+      additionalProperties: false
+      required: [parent, source, schema, samples, splits, policy]
       properties:
-        plan: {type: string}
-        cursor: {type: string}
+        parent: {$ref: '#/components/schemas/NullableRevision'}
+        source: {$ref: '#/components/schemas/CompositionSource'}
+        schema:
+          anyOf:
+            - {$ref: '#/components/schemas/CompositionSchema'}
+            - {type: 'null'}
+        samples: {type: array, items: {$ref: '#/components/schemas/SnapshotChange'}}
+        splits: {type: array, maxItems: 64, items: {$ref: '#/components/schemas/DraftSplit'}}
+        policy: {$ref: '#/components/schemas/SplitPolicy'}
+    SnapshotValue:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, data]
+          properties:
+            kind: {const: inline}
+            data: {type: string, description: Canonical padded base64 of at most 65536 decoded bytes}
+        - type: object
+          additionalProperties: false
+          required: [kind, id, length, md5]
+          properties:
+            kind: {const: upload}
+            id: {$ref: '#/components/schemas/OpaqueId'}
+            length: {$ref: '#/components/schemas/Decimal'}
+            md5: {type: string, pattern: '^[0-9a-f]{32}$'}
+        - type: object
+          additionalProperties: false
+          required: [kind]
+          properties:
+            kind: {const: tombstone}
+    SnapshotField:
+      type: object
+      additionalProperties: false
+      required: [name, value]
+      properties:
+        name: {type: string, minLength: 1, description: At most 1024 UTF-8 bytes}
+        value: {$ref: '#/components/schemas/SnapshotValue'}
+    SnapshotChange:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, id]
+          properties:
+            kind: {const: remove}
+            id: {type: string}
+        - type: object
+          additionalProperties: false
+          required: [kind, id, fields]
+          properties:
+            kind: {const: upsert}
+            id: {type: string}
+            fields: {type: array, maxItems: 256, items: {$ref: '#/components/schemas/SnapshotField'}}
+      description: Canonical base64 Sample IDs decode to 1 through 16384 bytes. Each ID occurs once; an upsert preserves unspecified effective parent fields.
+    PreparedSnapshot:
+      type: object
+      required: [snapshot, initial_split, sample_count]
+      properties:
+        snapshot: {$ref: '#/components/schemas/OpaqueId'}
+        initial_split: {$ref: '#/components/schemas/NullableRevision'}
+        sample_count: {$ref: '#/components/schemas/Decimal'}
     CompositionSchema:
       type: object
       additionalProperties: false
@@ -1687,7 +1588,8 @@ components:
       properties:
         version:
           type: integer
-          const: 1
+          minimum: 0
+          maximum: 4294967295
         fields:
           type: array
           items:
@@ -1726,152 +1628,6 @@ components:
             anyOf:
             - $ref: '#/components/schemas/Predicate'
             - type: 'null'
-    BeginComposition:
-      type: object
-      additionalProperties: false
-      required:
-      - operation
-      - parent
-      - source
-      - inherit_parent_splits
-      - splits
-      properties:
-        operation: &composition001
-          $ref: '#/components/schemas/OpaqueId'
-        parent:
-          $ref: '#/components/schemas/NullableRevision'
-        source:
-          $ref: '#/components/schemas/CompositionSource'
-        schema:
-          anyOf:
-          - $ref: '#/components/schemas/CompositionSchema'
-          - type: 'null'
-        inherit_parent_splits: &composition005
-          type: boolean
-        parent_split_revision:
-          $ref: '#/components/schemas/NullableRevision'
-        splits: &composition003
-          type: array
-          items:
-            $ref: '#/components/schemas/DraftSplit'
-          maxItems: 64
-        policy:
-          anyOf:
-          - $ref: '#/components/schemas/SplitPolicy'
-          - type: 'null'
-    CompositionValue:
-      oneOf:
-      - type: object
-        additionalProperties: false
-        required:
-        - kind
-        - data
-        properties:
-          kind:
-            const: inline
-          data:
-            type: string
-            description: Canonical padded base64; decoded length at most 65536 bytes, including empty.
-      - type: object
-        additionalProperties: false
-        required:
-        - kind
-        - id
-        properties:
-          kind:
-            const: upload
-          id: *composition001
-      - type: object
-        additionalProperties: false
-        required:
-        - kind
-        properties:
-          kind:
-            const: tombstone
-    CompositionField:
-      type: object
-      additionalProperties: false
-      required:
-      - name
-      - value
-      properties:
-        name: &composition002
-          type: string
-        value:
-          $ref: '#/components/schemas/CompositionValue'
-    SampleChange:
-      oneOf:
-      - type: object
-        additionalProperties: false
-        required:
-        - kind
-        - id
-        properties:
-          kind:
-            const: remove
-          id: *composition002
-      - type: object
-        additionalProperties: false
-        required:
-        - kind
-        - id
-        - fields
-        properties:
-          kind:
-            const: upsert
-          id: *composition002
-          fields:
-            type: array
-            items:
-              $ref: '#/components/schemas/CompositionField'
-            maxItems: 256
-      description: Sample IDs are canonical padded base64 of 1 through 16384 bytes. Upsert replaces the complete field
-        set for that Sample.
-    EditComposition:
-      type: object
-      additionalProperties: false
-      required:
-      - edit
-      - expected_revision
-      - samples
-      properties:
-        edit: *composition001
-        expected_revision: &composition004
-          $ref: '#/components/schemas/Decimal'
-        schema:
-          anyOf:
-          - $ref: '#/components/schemas/CompositionSchema'
-          - type: 'null'
-        samples:
-          type: array
-          items:
-            $ref: '#/components/schemas/SampleChange'
-          maxItems: 20
-        splits:
-          anyOf:
-          - *composition003
-          - type: 'null'
-        policy:
-          anyOf:
-          - $ref: '#/components/schemas/SplitPolicy'
-          - type: 'null'
-    CompositionPreview:
-      type: object
-      additionalProperties: false
-      required:
-      - input_revision
-      - next_page
-      - members
-      - complete
-      - binding
-      properties:
-        input_revision: *composition004
-        next_page: *composition004
-        members: *composition004
-        complete: *composition005
-        binding:
-          type: string
-          pattern: ^[0-9a-f]{64}$
     CompositionUploadStatus:
       type: object
       additionalProperties: false
@@ -1880,9 +1636,9 @@ components:
       - staged_uploads
       - candidate_uploads
       properties:
-        publication_ready: *composition005
-        staged_uploads: *composition004
-        candidate_uploads: *composition004
+        publication_ready: {type: boolean}
+        staged_uploads: {$ref: '#/components/schemas/Decimal'}
+        candidate_uploads: {$ref: '#/components/schemas/Decimal'}
     CompositionDraft:
       type: object
       additionalProperties: false
@@ -1900,8 +1656,8 @@ components:
       - preparation
       - uploads
       properties:
-        operation: *composition001
-        revision: *composition004
+        operation: {$ref: '#/components/schemas/OpaqueId'}
+        revision: {$ref: '#/components/schemas/Decimal'}
         parent:
           $ref: '#/components/schemas/NullableRevision'
         source:
@@ -1910,12 +1666,14 @@ components:
           $ref: '#/components/schemas/NullableRevision'
         schema:
           $ref: '#/components/schemas/CompositionSchema'
-        splits: *composition003
+        splits: {type: array, maxItems: 64, items: {$ref: '#/components/schemas/DraftSplit'}}
         policy:
           $ref: '#/components/schemas/SplitPolicy'
         progress:
           $ref: '#/components/schemas/DraftProgress'
-        source_lease_deadline: *composition004
+        source_lease_deadline:
+          <<: {$ref: '#/components/schemas/Decimal'}
+          description: Compatibility field; new drafts and edits use zero and hold no source lease.
         preparation:
           anyOf:
           - type: object
@@ -1924,7 +1682,7 @@ components:
             - snapshot
             - split_preview
             properties:
-              snapshot: *composition001
+              snapshot: {$ref: '#/components/schemas/OpaqueId'}
               split_preview:
                 anyOf:
                 - $ref: '#/components/schemas/SplitPreview'
@@ -1932,74 +1690,6 @@ components:
           - type: 'null'
         uploads:
           $ref: '#/components/schemas/CompositionUploadStatus'
-    PublishComposition:
-      type: object
-      additionalProperties: false
-      required:
-      - attempt
-      - snapshot
-      - expected_head
-      properties:
-        attempt: *composition001
-        snapshot: *composition001
-        expected_head:
-          $ref: '#/components/schemas/NullableGeneration'
-    CompositionCleanup:
-      type: object
-      additionalProperties: false
-      required:
-      - complete
-      - candidates
-      - uploads
-      - scratch
-      - edits
-      - physical_cleanup_deferred
-      properties:
-        complete: *composition005
-        candidates:
-          type: object
-          additionalProperties: false
-          required:
-          - input_revision
-          - complete
-          properties:
-            input_revision: *composition004
-            complete: *composition005
-        uploads:
-          type: object
-          additionalProperties: false
-          required:
-          - retired_owners
-          - complete
-          properties:
-            retired_owners: *composition004
-            complete: *composition005
-        scratch:
-          $ref: '#/components/schemas/SplitCleanup'
-        edits:
-          anyOf:
-          - type: object
-            additionalProperties: false
-            required:
-            - retired_pages
-            - complete
-            properties:
-              retired_pages: *composition004
-              complete: *composition005
-          - type: 'null'
-        physical_cleanup_deferred:
-          const: true
-    SplitCleanup:
-      type: object
-      additionalProperties: false
-      required:
-      - input_revision
-      - next_page
-      - complete
-      properties:
-        input_revision: *composition004
-        next_page: *composition004
-        complete: *composition005
     CreateUpload:
       type: object
       additionalProperties: false
@@ -2009,8 +1699,8 @@ components:
       - part_size
       - md5
       properties:
-        id: *composition001
-        length: *composition004
+        id: {$ref: '#/components/schemas/OpaqueId'}
+        length: {$ref: '#/components/schemas/Decimal'}
         part_size:
           type: integer
           minimum: 1
@@ -2029,7 +1719,7 @@ components:
         index:
           type: integer
           minimum: 0
-        length: *composition004
+        length: {$ref: '#/components/schemas/Decimal'}
         md5: *composition006
     UploadStatus:
       type: object
@@ -2044,8 +1734,8 @@ components:
       - cleanup_complete
       - parts
       properties:
-        id: *composition001
-        length: *composition004
+        id: {$ref: '#/components/schemas/OpaqueId'}
+        length: {$ref: '#/components/schemas/Decimal'}
         part_size:
           type: integer
         md5: *composition006
@@ -2055,8 +1745,8 @@ components:
           - complete
           - claimed
           - aborted
-        expires_at: *composition004
-        cleanup_complete: *composition005
+        expires_at: {$ref: '#/components/schemas/Decimal'}
+        cleanup_complete: {type: boolean}
         parts:
           type: array
           items:
@@ -2068,7 +1758,7 @@ components:
       required:
       - snapshot
       properties:
-        snapshot: *composition001
+        snapshot: {$ref: '#/components/schemas/OpaqueId'}
     RetainedSnapshot:
       type: object
       additionalProperties: false
@@ -2076,8 +1766,8 @@ components:
       - snapshot
       - retained
       properties:
-        snapshot: *composition001
-        retained: *composition005
+        snapshot: {$ref: '#/components/schemas/OpaqueId'}
+        retained: {type: boolean}
     SnapshotLifecycle:
       type: object
       required: [snapshot, operation, latest, stable, retained, active_read_lease, state, physical_cleanup_deferred, parent_protection]
@@ -2093,6 +1783,12 @@ components:
           type: boolean
         active_read_lease:
           type: boolean
+          const: false
+          description: Compatibility field; readers do not register persistent activity.
+        reclaim_after:
+          type: [integer, 'null']
+          minimum: 0
+          description: Durable Unix-seconds deadline for destructive cleanup.
         state:
           type: string
           enum: [not_started, pending, completed]
@@ -2110,15 +1806,19 @@ components:
       - complete
       - physical_cleanup_deferred
       properties:
-        snapshot: *composition001
+        snapshot: {$ref: '#/components/schemas/OpaqueId'}
         phase:
           enum:
+          - grace_period
           - upload_owners
           - split_drafts
           - index_fences
           - metadata
           - complete
-        complete: *composition005
+        complete: {type: boolean}
+        reclaim_after:
+          type: integer
+          minimum: 0
         physical_cleanup_deferred:
           const: true
     CommitStatus:

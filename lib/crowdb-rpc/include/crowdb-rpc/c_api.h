@@ -37,7 +37,33 @@ crowdb_rpc_buffer_t crowdb_rpc_buffer_alloc(crowdb_rpc_pool_t pool, uint32_t cap
 void                crowdb_rpc_buffer_write(crowdb_rpc_buffer_t buf, const uint8_t *data, uint32_t len);
 const uint8_t      *crowdb_rpc_buffer_data(crowdb_rpc_buffer_t buf);
 uint32_t            crowdb_rpc_buffer_len(crowdb_rpc_buffer_t buf);
-bool                crowdb_rpc_buffer_detach(crowdb_rpc_buffer_t buf);
+// Writable access requires the unique, uncommitted allocation owner. Commit
+// only an initialized prefix; success permanently ends writable access.
+uint8_t *crowdb_rpc_buffer_mutable_data(crowdb_rpc_buffer_t handle);
+int      crowdb_rpc_buffer_commit(crowdb_rpc_buffer_t handle, uint32_t initialized_length);
+uint32_t crowdb_rpc_buffer_capacity(crowdb_rpc_buffer_t buf);
+// Canonical backing capacity, independent of a slice's logical view size.
+// Zero means unknown external storage or an invalid/null handle. Allocation
+// identity is opaque and meaningful only while a backing owner is retained.
+uint32_t crowdb_rpc_buffer_allocation_capacity(crowdb_rpc_buffer_t handle);
+uint64_t crowdb_rpc_buffer_allocation_id(crowdb_rpc_buffer_t handle);
+uint32_t crowdb_rpc_buffer_allocation_offset(crowdb_rpc_buffer_t handle);
+// Retains only the canonical allocation's initialized span, including any
+// wire framing. Ordinary logical payload access remains on the original view.
+crowdb_rpc_buffer_t crowdb_rpc_buffer_allocation_ref(crowdb_rpc_buffer_t handle);
+uint64_t            crowdb_rpc_buffer_request_id(crowdb_rpc_buffer_t buf);
+uint64_t            crowdb_rpc_buffer_stream_id(crowdb_rpc_buffer_t buf);
+uint64_t            crowdb_rpc_buffer_sequence(crowdb_rpc_buffer_t buf);
+uint64_t            crowdb_rpc_buffer_logical_offset(crowdb_rpc_buffer_t buf);
+uint32_t            crowdb_rpc_buffer_registration_id(crowdb_rpc_buffer_t buf);
+int                 crowdb_rpc_buffer_ownership(crowdb_rpc_buffer_t buf);
+void crowdb_rpc_buffer_set_metadata(crowdb_rpc_buffer_t buf, uint64_t request_id, uint64_t stream_id, uint64_t sequence,
+                                    uint64_t logical_offset, uint32_t registration_id);
+int  crowdb_rpc_buffer_transition(crowdb_rpc_buffer_t buf, int from, int to);
+int  crowdb_rpc_buffer_quarantine(crowdb_rpc_buffer_t buf);
+bool crowdb_rpc_buffer_detach(crowdb_rpc_buffer_t buf);
+// Return an independent handle retaining the same immutable allocation.
+// Each handle must be released once; releasing one leaves other handles valid.
 crowdb_rpc_buffer_t crowdb_rpc_buffer_ref(crowdb_rpc_buffer_t buf);
 void                crowdb_rpc_buffer_release(crowdb_rpc_buffer_t buf);
 // Create a standalone buffer (not pool-allocated) from raw bytes. The
@@ -57,10 +83,95 @@ crowdb_rpc_pool_t crowdb_rpc_pool_create(uint32_t max_buffers);
 void              crowdb_rpc_pool_destroy(crowdb_rpc_pool_t pool);
 
 // ── Server ────────────────────────────────────────────────────────
+typedef struct crowdb_rpc_rdma_config
+{
+    uint32_t    struct_size;
+    uint32_t    version;
+    uint32_t    enabled;
+    uint32_t    allow_tcp_fallback;
+    uint32_t    listen_enabled;
+    uint32_t    port;
+    uint32_t    cq_count;
+    uint32_t    cq_depth;
+    uint32_t    sq_depth;
+    uint32_t    rq_depth;
+    uint32_t    posted_receive_target;
+    uint32_t    wire_slot_capacity;
+    uint32_t    poll_batch;
+    uint32_t    verbs_poll_batch;
+    uint32_t    poll_empty_budget;
+    uint32_t    send_queue_capacity;
+    uint32_t    aggregation_enabled;
+    uint32_t    aggregation_max_bytes;
+    uint32_t    aggregation_max_frames;
+    uint64_t    send_arena_bytes;
+    uint64_t    receive_arena_bytes;
+    uint64_t    registered_memory_budget_bytes;
+    const char *device;
+    const char *source_address;
+    const char *gid;
+} crowdb_rpc_rdma_config_t;
+
+void crowdb_rpc_rdma_config_init(crowdb_rpc_rdma_config_t *config);
+
+// Posting settings are separate to preserve earlier config layouts.
+typedef struct crowdb_rpc_rdma_post_config
+{
+    uint32_t struct_size;
+    uint32_t version;
+    uint32_t send_batch_size;
+    uint32_t receive_batch_size;
+    uint32_t send_window_size;
+    uint64_t send_window_bytes;
+} crowdb_rpc_rdma_post_config_t;
+
+void crowdb_rpc_rdma_post_config_init(crowdb_rpc_rdma_post_config_t *config);
+// Explicit cold configuration overrides environment; rejected after listen.
+crowdb_rpc_status crowdb_rpc_server_configure_rdma(crowdb_rpc_server_t server, const crowdb_rpc_rdma_config_t *config);
+// Version-two configuration adds the negotiated wire layout without changing
+// the version-one struct or initializer. wire_layout: 0 contiguous, 1 control/data.
+crowdb_rpc_status crowdb_rpc_server_configure_rdma_v2(crowdb_rpc_server_t             server,
+                                                      const crowdb_rpc_rdma_config_t *config, uint32_t wire_layout);
+
+// Version-three entry adds bounded logical controls. The original config ABI
+// remains unchanged; previous configure entries select the stream defaults.
+typedef struct crowdb_rpc_rdma_stream_config
+{
+    uint32_t struct_size;
+    uint32_t version;
+    uint32_t max_control_message_bytes;
+    uint32_t control_assembly_timeout_ms;
+    uint64_t control_send_budget_bytes;
+    uint64_t control_receive_budget_bytes;
+} crowdb_rpc_rdma_stream_config_t;
+
+crowdb_rpc_status crowdb_rpc_server_configure_rdma_v4(crowdb_rpc_server_t             server,
+                                                      const crowdb_rpc_rdma_config_t *config, uint32_t wire_layout,
+                                                      const crowdb_rpc_rdma_stream_config_t *streams,
+                                                      const crowdb_rpc_rdma_post_config_t   *sends);
+
+void              crowdb_rpc_rdma_stream_config_init(crowdb_rpc_rdma_stream_config_t *config);
+crowdb_rpc_status crowdb_rpc_server_configure_rdma_v3(crowdb_rpc_server_t             server,
+                                                      const crowdb_rpc_rdma_config_t *config, uint32_t wire_layout,
+                                                      const crowdb_rpc_rdma_stream_config_t *streams);
+// Owned, versioned UTF-8 JSON snapshots. Release using buffer_release.
+crowdb_rpc_buffer_t crowdb_rpc_server_status_json(crowdb_rpc_server_t server);
+crowdb_rpc_buffer_t crowdb_rpc_conn_status_json(crowdb_rpc_conn_t connection);
+void                crowdb_rpc_server_register_status_handler(crowdb_rpc_server_t server, uint16_t msg_type);
+int                 crowdb_rpc_server_rdma_listening(crowdb_rpc_server_t server);
+// Null means bounded exhaustion/unavailable registration. No replacement
+// system allocation is made when require_registered is nonzero.
+crowdb_rpc_buffer_t crowdb_rpc_server_alloc_producer_buffer(crowdb_rpc_server_t server, uint32_t capacity,
+                                                            int require_registered);
+
 crowdb_rpc_server_t crowdb_rpc_server_create(crowdb_rpc_pool_t pool);
 crowdb_rpc_server_t crowdb_rpc_server_create_with_workers(crowdb_rpc_pool_t pool, uint32_t num_workers);
 crowdb_rpc_server_t crowdb_rpc_server_create_with_engines(crowdb_rpc_pool_t pool, uint32_t io_engines,
                                                           uint32_t io_workers);
+// Service defaults precede environment overrides; this does not enable RDMA.
+crowdb_rpc_server_t crowdb_rpc_server_create_with_layout(crowdb_rpc_pool_t pool, uint32_t io_engines,
+                                                         uint32_t io_workers, uint32_t wire_layout,
+                                                         uint32_t data_capacity);
 // Set per-connection send queue capacity (backpressure bound). Must be
 // called before listen/connect creates connections. Default 1024.
 // Rounded up to next power of two internally.
@@ -108,6 +219,8 @@ void crowdb_rpc_server_transport_stats(crowdb_rpc_server_t server, crowdb_rpc_tr
 // Global (static) — shared across all RpcClient instances. Read via
 // crowdb_rpc_client_get_counters (the client param is ignored, kept for
 // ABI compatibility).
+// Includes flushed and current windows. Exact after writers and metric flush
+// join; live reads can overlap a flush and are approximate.
 typedef struct crowdb_rpc_client_counters
 {
     uint64_t submit_fail;  // send() submit failed
@@ -221,6 +334,8 @@ void crowdb_rpc_conn_destroy(crowdb_rpc_conn_t conn);
 
 // Return non-zero while the underlying transport connection is open.
 int crowdb_rpc_conn_is_open(crowdb_rpc_conn_t conn);
+// Selected path remains readable after the connection closes.
+int crowdb_rpc_conn_is_rdma(crowdb_rpc_conn_t conn);
 // True only for a TCP refusal before peer acceptance; resets remain ambiguous.
 int crowdb_rpc_conn_connect_refused(crowdb_rpc_conn_t conn);
 
@@ -271,6 +386,12 @@ typedef void (*crowdb_rpc_handler_release_fn)(void *user_data);
 // Release a frame_handle previously passed to a crowdb_rpc_handler_fn.
 // Must be called exactly once per frame_handle. Passing nullptr is a no-op.
 void crowdb_rpc_frame_release(void *frame_handle);
+// Close the retained connection of a live handler Frame without releasing it.
+void crowdb_rpc_frame_close_connection(void *frame_handle);
+#ifdef CROWDB_RPC_TEST_UTIL
+// Deterministic service failure after a bounded number of control fragments.
+int crowdb_rpc_server_limit_control_fragments_for_tests(crowdb_rpc_server_t server, uint64_t limit);
+#endif
 
 // Register a custom dispatch callback for the given msg_type. The
 // callback is invoked for every incoming frame with that msg_type. This

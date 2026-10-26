@@ -5,6 +5,30 @@
 
 use crate::{DatasetClient, Error};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::Ordering;
+
+const KNOWN_CAPABILITIES: [&str; 13] = [
+    "head-inspection",
+    "bounded-inspection",
+    "inspection-preparation",
+    "dataset-management",
+    "split-revisions",
+    "split-head-update",
+    "stateless-reads",
+    "uploads",
+    "snapshot-reclaim",
+    "snapshot-head-update",
+    "split-preparation",
+    "composition-preparation",
+    "split-revision-delete",
+];
+
+fn capability_bit(capability: &str) -> u64 {
+    KNOWN_CAPABILITIES
+        .iter()
+        .position(|known| *known == capability)
+        .map_or(0, |index| 1 << index)
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DatasetCapabilities {
@@ -49,14 +73,15 @@ impl DatasetClient {
     /// # Errors
     /// Rejects unsupported capability, missing Dataset or invalid server responses.
     pub async fn head(&self) -> Result<DatasetHead, Error> {
-        self.capabilities().await?.require(&["head-inspection"])?;
+        self.require_capability("head-inspection").await?;
         let mut path = self.path(&["head"]);
         path[2] = "v2";
         self.http.json_idempotent::<(), _>("GET", &path, None).await
     }
 
-    /// Discovers capabilities without mutating a Dataset. A v1-only server returns
-    /// an explicit service error; the SDK never retries a v2 write through v1.
+    /// Always refreshes capabilities and replaces the positive hints shared by clones.
+    /// Hints never bypass server authentication, resource admission or mutation conditions.
+    /// A v1-only server returns an error; mutations never fall back to v1.
     /// # Errors
     /// Returns unsupported-version, service, decoding or transport errors.
     pub async fn capabilities(&self) -> Result<DatasetCapabilities, Error> {
@@ -64,7 +89,25 @@ impl DatasetClient {
             .http
             .json_idempotent::<(), _>("GET", &["api", "dataset", "v2", "capabilities"], None)
             .await?;
-        capabilities.require(&[])?;
+        let valid = capabilities.require(&[]);
+        let bits = if valid.is_ok() {
+            capabilities
+                .capabilities
+                .iter()
+                .fold(0, |bits, capability| bits | capability_bit(capability))
+        } else {
+            0
+        };
+        self.capability_hints.store(bits, Ordering::Release);
+        valid?;
         Ok(capabilities)
+    }
+
+    pub(crate) async fn require_capability(&self, capability: &str) -> Result<(), Error> {
+        let bit = capability_bit(capability);
+        if bit != 0 && self.capability_hints.load(Ordering::Acquire) & bit != 0 {
+            return Ok(());
+        }
+        self.capabilities().await?.require(&[capability])
     }
 }

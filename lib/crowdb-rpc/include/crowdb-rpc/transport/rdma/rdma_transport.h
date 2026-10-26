@@ -6,13 +6,17 @@
 #include "crowdb-rpc/buffer.h"
 #include "crowdb-rpc/connection.h"
 #include "crowdb-rpc/transport.h"
+#include "crowdb-rpc/transport/rdma/rdma_capability.h"
+#include "crowdb-rpc/transport/rdma/rdma_config.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 
 #    include <infiniband/verbs.h>
 #    include <rdma/rdma_cma.h>
 
+#    include <algorithm>
 #    include <atomic>
+#    include <functional>
 #    include <memory>
 #    include <mutex>
 #    include <string>
@@ -23,31 +27,41 @@
 namespace crowdb::rpc
 {
 
+class SocketEngine;
+struct RdmaDevice;
+struct RdmaMemoryStats;
+struct RdmaCmOffer;
+class ControlStreamBudget;
+class ControlStreamReceiver;
+
+constexpr uint32_t RDMA_WIRE_SLOT_CAPACITY = RDMA_DATAPATH_CAPACITY;
+
 // RdmaBufferPool: allocates buffers from ibv_mr-registered memory.
 // The pool pre-registers a large memory region and carves out buffers
 // from it, avoiding per-buffer ibv_reg_mr calls (which are expensive).
-// Each buffer's `mr` field points to the sub-region's MR.
+// Every buffer is a slice of the single MR, so registration is bounded by the
+// pool region. Leases retain the arena and its registration owner; the final
+// release deregisters the MR before dropping the PD/context owner.
 class RdmaBufferPool : public BufferPool
 {
   public:
     // mr_size: total registered memory size. max_buffers: pool capacity.
-    RdmaBufferPool(struct ibv_pd *pd, uint32_t mr_size = 1 << 20, uint32_t max_buffers = 1024);
+    RdmaBufferPool(struct ibv_pd *pd, uint64_t mr_size = 1 << 20, uint32_t max_buffers = 1024,
+                   std::shared_ptr<void> registration_owner = {});
     ~RdmaBufferPool() override;
 
     Buffer *alloc(uint32_t capacity) override;
+    Buffer *borrow_range(const uint8_t *data, uint32_t size);
+    Buffer *borrow_owned_range(Buffer *source, const uint8_t *data, uint32_t size);
     void    recycle(Buffer *buf) override;
 
+    [[nodiscard]] uint64_t quarantined_bytes() const;
+    [[nodiscard]] bool     quiescent() const;
+    [[nodiscard]] bool     ready() const;
+    void                   quarantine_inflight();
+
   private:
-    struct ibv_pd *pd_;
-    struct ibv_mr *mr_;
-    uint32_t       mr_size_;
-    uint32_t       max_buffers_;
-    uint32_t       outstanding_ = 0;
-
-    std::mutex                                          mu_;
-    std::unordered_map<uint32_t, std::vector<Buffer *>> free_list_;
-
-    Buffer *alloc_fresh(uint32_t capacity);
+    std::shared_ptr<BufferArena> arena_;
 };
 
 // RdmaTransport: RDMA transport using libibverbs + librdmacm.
@@ -56,37 +70,390 @@ class RdmaBufferPool : public BufferPool
 class RdmaTransport : public Transport
 {
   public:
-    RdmaTransport();
+    using ConnectionHandler = std::function<void(std::shared_ptr<Connection>)>;
+
+    struct Stats
+    {
+        std::atomic<uint64_t> sends{0};
+        std::atomic<uint64_t> send_post_calls{0};
+        std::atomic<uint64_t> send_completions{0};
+        std::atomic<uint64_t> receives{0};
+        std::atomic<uint64_t> cq_errors{0};
+        std::atomic<uint64_t> fallback_count{0};
+        std::atomic<uint64_t> posted_receives{0};
+        std::atomic<uint64_t> quarantined_bytes{0};
+        std::atomic<uint64_t> cq_polls{0};
+        std::atomic<uint64_t> cq_empty_polls{0};
+        std::atomic<uint64_t> cm_disconnects{0};
+        std::atomic<uint64_t> flush_errors{0};
+        std::atomic<uint64_t> shutdown_flushes{0};
+        std::atomic<uint64_t> local_protection_errors{0};
+        std::atomic<uint64_t> retry_exceeded_errors{0};
+        std::atomic<uint64_t> remote_access_errors{0};
+        std::atomic<uint64_t> poller_count{0};
+        std::atomic<uint64_t> cq_events{0};
+        std::atomic<uint64_t> cq_wakeups{0};
+        std::atomic<uint64_t> pending_deferred_receives{0};
+        std::atomic<uint64_t> registered_memory_budget_bytes{0};
+        std::atomic<uint64_t> registered_bytes{0};
+        std::atomic<uint64_t> registered_bytes_high_water{0};
+        std::atomic<uint64_t> registration_rejects{0};
+        std::atomic<uint64_t> registration_failures{0};
+        std::atomic<uint64_t> cm_attempts{0};
+        std::atomic<uint64_t> preflight_attempts{0};
+        std::atomic<uint64_t> preflight_failures{0};
+        std::atomic<uint64_t> protocol_errors{0};
+        std::atomic<uint64_t> rpc_frames_sent{0};
+        std::atomic<uint64_t> rpc_frames_received{0};
+        std::atomic<uint64_t> wire_bytes_sent{0};
+        std::atomic<uint64_t> wire_bytes_received{0};
+        std::atomic<uint64_t> submit_rejects{0};
+        std::atomic<uint64_t> send_queue_high_water{0};
+        std::atomic<uint64_t> send_errors{0};
+        std::atomic<uint64_t> receive_post_errors{0};
+        std::atomic<uint64_t> receive_post_calls{0};
+        std::atomic<uint64_t> direct_sends{0};
+        std::atomic<uint64_t> direct_payload_bytes{0};
+        std::atomic<uint64_t> copied_payload_bytes{0};
+        std::atomic<uint64_t> copied_aggregate_payload_bytes{0};
+        std::atomic<uint64_t> copied_staging_payload_bytes{0};
+        std::atomic<uint64_t> copied_framing_control_bytes{0};
+        std::atomic<uint64_t> control_fragments_sent{0};
+        std::atomic<uint64_t> control_fragments_received{0};
+        std::atomic<uint64_t> copied_control_send_bytes{0};
+        std::atomic<uint64_t> copied_control_receive_bytes{0};
+        std::atomic<uint64_t> control_stream_timeouts{0};
+        std::atomic<uint64_t> control_send_bytes{0};
+        std::atomic<uint64_t> control_send_bytes_high_water{0};
+        std::atomic<uint64_t> control_send_stalls{0};
+        std::atomic<uint64_t> control_receive_bytes{0};
+        std::atomic<uint64_t> control_receive_bytes_high_water{0};
+        std::atomic<uint64_t> control_receive_stalls{0};
+    };
+
+    explicit RdmaTransport(RdmaConfig config = {}, BufferPool *application_pool = nullptr);
     ~RdmaTransport() override;
 
     bool    submit(Connection *conn, OutFrame *frame) override;
+    bool    post_receive(Connection *conn, Buffer *slot);
     Buffer *register_buffer(Buffer *buf) override;
-    void    shutdown() override;
+    Buffer *allocate_producer_buffer(uint32_t capacity);
+
+    [[nodiscard]] bool has_producer_pool() const
+    {
+        return producer_pool_.load(std::memory_order_acquire) != nullptr;
+    }
+
+    void shutdown() override;
 
     // RDMA-specific: connect to a peer endpoint.
     // Returns a new Connection on success, nullptr on failure.
-    static std::shared_ptr<Connection> connect(const std::string &addr, int port);
+    std::shared_ptr<Connection>          connect(const std::string &addr, int port,
+                                                 const RdmaEndpointCapability *expected_peer = nullptr);
+    [[nodiscard]] RdmaEndpointCapability local_capability() const;
+
+    [[nodiscard]] const RdmaConfig &config() const
+    {
+        return config_;
+    }
+
+    [[nodiscard]] std::string status_json() const;
+
+    [[nodiscard]] const std::string &source_address() const
+    {
+        return config_.source_address;
+    }
 
     // RDMA-specific: listen on an endpoint (server side).
-    static bool listen(const std::string &addr, int port);
+    bool listen(const std::string &addr, int port);
 
-    // Start the CQ poll loop on worker threads.
-    void start();
-    void stop();
+    // Accept one pending CM request and create an RC QP-backed connection.
+    // The caller owns the returned logical connection and should register it
+    // with the common RPC worker before submitting frames.
+    std::shared_ptr<Connection> accept();
+
+    // Start one dedicated polling/event worker per initialized CQ.
+    void              start();
+    void              stop();
+    [[nodiscard]] int completion_fd(uint32_t index = 0) const;
+    [[nodiscard]] int cm_event_fd() const;
+    int               drain_cq(uint32_t max_completions = 0);
+    void              register_events(SocketEngine *engine);
+    int               handle_external_event(uint64_t tag, uint32_t max_completions = 0);
+
+    void set_connection_handler(ConnectionHandler handler)
+    {
+        connection_handler_ = std::move(handler);
+    }
+
+    [[nodiscard]] const Stats &stats() const
+    {
+        refresh_poll_stats();
+        return stats_;
+    }
+
+    Stats &stats()
+    {
+        refresh_poll_stats();
+        return stats_;
+    }
+
+    [[nodiscard]] bool ready() const
+    {
+        return capability_available_.load(std::memory_order_acquire);
+    }
+
+#    ifdef CROWDB_RPC_TEST_UTIL
+    void limit_control_fragments_for_tests(uint64_t limit)
+    {
+        control_fragment_limit_for_tests_.store(limit, std::memory_order_release);
+    }
+#    endif
 
   private:
-    struct ibv_context        *context_    = nullptr;
-    struct ibv_pd             *pd_         = nullptr;
-    struct rdma_event_channel *cm_channel_ = nullptr;
-    struct rdma_cm_id         *listen_id_  = nullptr;
+#    ifdef CROWDB_RPC_TEST_UTIL
+    friend struct TestRdmaTransport;
+    std::atomic<uint64_t> control_fragment_limit_for_tests_{UINT64_MAX};
+#    endif
+    RdmaConfig                                                           config_;
+    RdmaEndpointCapability                                               local_capability_;
+    std::atomic<bool>                                                    listen_active_{false};
+    std::atomic<bool>                                                    capability_available_{false};
+    struct ibv_context                                                  *context_ = nullptr;
+    std::shared_ptr<RdmaDevice>                                          device_;
+    std::shared_ptr<RdmaMemoryStats>                                     memory_stats_;
+    struct ibv_pd                                                       *pd_         = nullptr;
+    struct rdma_event_channel                                           *cm_channel_ = nullptr;
+    struct rdma_cm_id                                                   *listen_id_  = nullptr;
+    std::string                                                          requested_device_;
+    uint8_t                                                              port_ = 1;
+    std::vector<struct rdma_cm_id *>                                     cm_ids_;
+    std::unordered_map<struct rdma_cm_id *, std::shared_ptr<Connection>> cm_connections_;
+    SocketEngine                                                        *event_engine_ = nullptr;
+    std::mutex                                                           cm_mu_;
 
+    SystemBufferPool                default_application_pool_;
+    BufferPool                     *application_pool_;
     std::unique_ptr<RdmaBufferPool> send_pool_;
-    std::unique_ptr<RdmaBufferPool> recv_pool_;
+    std::atomic<RdmaBufferPool *>   producer_pool_{nullptr};
+    std::unique_ptr<RdmaBufferPool> source_pool_;
+    ConnectionHandler               connection_handler_;
 
     std::atomic<bool> running_{false};
-    std::thread       cq_thread_;
+    std::atomic_flag  cm_polling_ = ATOMIC_FLAG_INIT;
 
-    void cq_loop();
+    bool                            prime_receive(const std::shared_ptr<Connection> &connection);
+    std::unique_ptr<RdmaBufferPool> make_pool(uint64_t bytes, uint32_t buffers);
+    mutable Stats                   stats_;
+    void                            refresh_poll_stats() const;
+
+    enum class WorkKind : uint8_t { Send, Receive };
+    struct ConnectionPools;
+    struct ControlSendState;
+    bool                        create_connection_pools(ConnectionPools &pools);
+    void                        configure_peer(ConnectionPools &pools, const RdmaCmOffer &peer);
+    std::shared_ptr<Connection> create_active_connection(rdma_cm_id *id, const std::string &addr,
+                                                         std::shared_ptr<ConnectionPools> &pools,
+                                                         const RdmaEndpointCapability     *expected_peer);
+    bool establish_active_connection(rdma_cm_id *id, rdma_event_channel *channel, const std::string &addr,
+                                     const RdmaEndpointCapability *expected_peer, RdmaCmOffer &peer_offer);
+
+    struct WorkRequest
+    {
+        std::atomic<uint64_t>             token{0};
+        WorkKind                          kind;
+        std::shared_ptr<Connection>       conn;
+        std::atomic<Connection *>         connection_identity{nullptr};
+        std::shared_ptr<ConnectionPools>  pools;
+        Buffer                           *slot   = nullptr;
+        Buffer                           *prefix = nullptr;
+        OutFrame                         *frame  = nullptr;
+        std::shared_ptr<ControlSendState> control_send;
+        uint64_t                          request_id       = 0;
+        uint64_t                          stream_id        = 0;
+        uint64_t                          sequence         = 0;
+        uint64_t                          logical_offset   = 0;
+        WorkRequest                      *send_next        = nullptr;
+        bool                              send_posted      = false;
+        uint32_t                          send_frame_count = 0;
+        uint32_t                          send_wire_bytes  = 0;
+        ibv_send_wr                       send_wr{};
+        ibv_recv_wr                       receive_wr{};
+        std::array<ibv_sge, 2>            regions{};
+    };
+
+    static constexpr uint64_t WORK_RESERVED = UINT64_MAX;
+
+    struct CompletionQueue;
+
+    struct CqReservation
+    {
+        CompletionQueue *queue;
+        uint32_t         capacity;
+        bool             committed = false;
+
+        CqReservation(CompletionQueue *owner, uint32_t entries) : queue(owner), capacity(entries)
+        {
+        }
+
+        ~CqReservation();
+        CqReservation(const CqReservation &)            = delete;
+        CqReservation &operator=(const CqReservation &) = delete;
+    };
+
+    std::vector<std::unique_ptr<CompletionQueue>> completion_queues_;
+    std::atomic<uint32_t>                         next_cq_{0};
+    CompletionQueue                              *reserve_cq(uint32_t capacity);
+    bool                                          create_completion_queues(ibv_context *context);
+    void                                          destroy_completion_queues();
+    int      drain_queue(uint32_t index, uint32_t max_completions, bool wait_for_owner = false);
+    uint32_t process_deferred(CompletionQueue &queue, uint32_t max_completions);
+    void     cancel_deferred(CompletionQueue &queue, Connection *connection);
+    void     start_pollers();
+    void     run_poller(CompletionQueue *queue);
+    void     notify_queue(uint32_t index);
+    void     install_connection_notifiers(const std::shared_ptr<Connection> &connection, uint32_t index);
+    uint32_t flush_sends(CompletionQueue &queue, uint32_t budget);
+    bool prepare_send(Connection *connection, ConnectionPools &pools, Buffer *slot, Buffer *prefix, OutFrame *frames,
+                      uint32_t frame_count, uint32_t wire_bytes, std::shared_ptr<ControlSendState> control_send = {});
+    bool post_prepared(Connection *connection, ConnectionPools &pools);
+    bool send_window_available(const ConnectionPools &pools, uint32_t bytes = 0) const;
+    void complete_send(WorkRequest *work, const ibv_wc &completion);
+    static void unlink_send(WorkRequest *work);
+    uint32_t    flush_connection(Connection *connection, ConnectionPools &pools, uint32_t budget);
+    uint32_t    flush_direct_connection(Connection *connection, ConnectionPools &pools, uint32_t budget);
+    bool        prepare_packed_send(Connection *connection, ConnectionPools &pools, bool &handled);
+    bool     post_direct(Connection *connection, ConnectionPools &pools, Buffer *slot, Buffer *prefix, OutFrame *frame,
+                         std::shared_ptr<ControlSendState> control_send = {});
+    bool     flush_control_fragment(Connection *connection, ConnectionPools &pools);
+    Buffer  *admit_control_frame(const OutFrame &frame, const ConnectionPools &pools);
+    void     check_control_deadlines(CompletionQueue &queue);
+    bool     post_direct_receive(Connection *connection, Buffer *slot);
+    bool     stage_receive(WorkRequest *work, std::span<const ibv_sge> regions);
+    bool     post_prepared_receives(Connection *connection, ConnectionPools &pools);
+    uint32_t flush_receive_reposts(CompletionQueue &queue, uint32_t budget);
+    void     retire_sends(CompletionQueue &queue, Connection *connection);
+    bool     post_aggregate(Connection *connection, ConnectionPools &pools, Buffer *slot, OutFrame *frames,
+                            uint32_t frame_count);
+    static constexpr uint64_t CM_EVENT_TAG  = 1;
+    static constexpr uint64_t CQ_EVENT_BASE = 2;
+
+    WorkRequest            *acquire_work(WorkKind kind, Connection *conn, Buffer *slot, OutFrame *frame = nullptr,
+                                         Buffer *prefix = nullptr);
+    WorkRequest            *claim_work(uint64_t token);
+    void                    release_work(WorkRequest *work);
+    void                    dispatch_completion(const struct ibv_wc &wc);
+    void                    cancel_work(Connection *connection = nullptr);
+    void                    close_after_drain(Connection *connection);
+    void                    destroy_connection_qp(Connection *connection, rdma_cm_id *id);
+    static ConnectionPools *pools_for(Connection *connection);
+    static void             set_connection_pools(Connection *connection, std::shared_ptr<ConnectionPools> pools);
+    static void             request_disconnect(ConnectionPools &pools);
+    bool                    publish_cm_connection(rdma_cm_id *id, const std::shared_ptr<Connection> &connection,
+                                                  std::shared_ptr<ConnectionPools> pools);
+
+    struct RepostState
+    {
+        static constexpr uint64_t STOPPED = uint64_t{1} << 63;
+        std::atomic<uint64_t>     users{0};
+        RdmaTransport            *transport = nullptr;
+    };
+
+    class Operation
+    {
+      public:
+        explicit Operation(std::shared_ptr<RepostState> state) : state_(std::move(state))
+        {
+            uint64_t users = state_->users.load(std::memory_order_acquire);
+            while ((users & RepostState::STOPPED) == 0 &&
+                   !state_->users.compare_exchange_weak(users, users + 1, std::memory_order_acq_rel)) {
+            }
+            entered_ = (users & RepostState::STOPPED) == 0;
+        }
+
+        ~Operation()
+        {
+            if (entered_)
+                state_->users.fetch_sub(1, std::memory_order_release);
+        }
+
+        explicit operator bool() const
+        {
+            return entered_;
+        }
+
+        Operation(const Operation &)            = delete;
+        Operation &operator=(const Operation &) = delete;
+
+      private:
+        std::shared_ptr<RepostState> state_;
+        bool                         entered_ = false;
+    };
+
+    std::shared_ptr<RepostState>         repost_state_;
+    std::shared_ptr<ControlStreamBudget> control_send_budget_;
+    std::shared_ptr<ControlStreamBudget> control_receive_budget_;
+
+    struct ConnectionPools : std::enable_shared_from_this<ConnectionPools>
+    {
+        explicit ConnectionPools(uint32_t queue_capacity = 4096, uint32_t receive_capacity = 0)
+            : send_queue(queue_capacity),
+              receive_reposts(std::max(2U, receive_capacity))
+        {
+        }
+
+        ~ConnectionPools();
+
+        ibv_qp_cap                             effective_capacity{};
+        std::shared_ptr<RepostState>           posting_state = std::make_shared<RepostState>();
+        std::unique_ptr<RdmaBufferPool>        send;
+        std::unique_ptr<RdmaBufferPool>        recv;
+        std::unique_ptr<RdmaBufferPool>        recv_control;
+        uint32_t                               cq_index                       = 0;
+        uint32_t                               reserved_capacity              = 0;
+        uint32_t                               peer_receive_slot_capacity     = 0;
+        uint32_t                               peer_receive_frame_limit       = 1;
+        uint32_t                               qp_number                      = 0;
+        uint32_t                               effective_data_capacity        = 0;
+        uint32_t                               peer_max_control_message_bytes = 0;
+        uint64_t                               peer_generation                = 0;
+        rdma_cm_id                            *cm_id                          = nullptr; // immutable after publication
+        std::atomic<bool>                      disconnect_requested{false};
+        SendQueue                              send_queue;
+        crowdb::common::MpscQueue<Buffer *>    receive_reposts;
+        std::vector<WorkRequest *>             prepared_receives;
+        std::atomic<uint32_t>                  queued_frames{0};
+        OutFrame                              *pending_frame        = nullptr;
+        OutFrame                              *lookahead_frame      = nullptr;
+        uint32_t                               sends_in_flight      = 0; // CQ owner only
+        uint64_t                               send_bytes_in_flight = 0;
+        uint64_t                               prepared_send_bytes  = 0;
+        std::vector<WorkRequest *>             prepared_sends;
+        WorkRequest                           *send_head              = nullptr;
+        WorkRequest                           *send_tail              = nullptr;
+        uint64_t                               next_control_stream_id = 1;
+        std::shared_ptr<ControlSendState>      control_send;
+        std::shared_ptr<ControlStreamReceiver> control_receive;
+        uint32_t                               deferred_receives      = 0;
+        uint64_t                               deferred_blocked_epoch = 0;
+    };
+
+    struct RepostContext
+    {
+        std::shared_ptr<RepostState>     state;
+        std::shared_ptr<Connection>      connection;
+        std::shared_ptr<ConnectionPools> pools;
+    };
+
+    std::unordered_map<struct rdma_cm_id *, std::shared_ptr<ConnectionPools>> cm_pools_;
+
+    void        release_completed_frame(WorkRequest *work, const struct ibv_wc &wc);
+    bool        release_completed_receive(WorkRequest *work, const struct ibv_wc &wc);
+    bool        release_completed_direct_receive(WorkRequest *work, const struct ibv_wc &wc);
+    bool        release_completed_packed_receive(WorkRequest *work, const struct ibv_wc &wc);
+    void        record_completion_error(const struct ibv_wc &wc, bool expected_flush = false);
+    static void repost_frame_release(void *context, Buffer *slot);
+    bool        adopt_cm_context(struct ibv_context *context);
 };
 
 } // namespace crowdb::rpc

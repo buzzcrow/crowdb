@@ -17,6 +17,6 @@ pub use crowdb_sdk_core::Error;
 pub use models::*;
 pub use read::BatchStream;
 
-mod session;
+mod query;
 
 pub use transfer::UploadOptions;

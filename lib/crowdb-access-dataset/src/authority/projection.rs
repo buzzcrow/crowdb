@@ -6,6 +6,8 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod legacy;
+
 impl DatasetAuthority {
     /// Resolves a bounded projection in one metadata traversal per ancestor.
     /// Tombstones remain explicit; no payloads are read here.

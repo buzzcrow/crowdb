@@ -6,12 +6,30 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_rpc_ffi::OwnedPayload;
 
 use crate::{IoError, Result};
 
 /// Block-IO seam. Production routing is owned by `crowdb-diskio-client`.
 #[async_trait]
 pub trait DiskWriter: Send + Sync {
+    /// Explicit owned shutdown; borrowed client groups do not invoke this hook.
+    fn shutdown(&self) {}
+
+    /// Retained route inspection never opens a connection or publishes placement.
+    fn disk_topology(&self) -> Option<crowdb_diskio_client::DiskTopologyView> {
+        None
+    }
+
+    fn transport_observation(&self) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    /// Optional native storage for an owner-backed upstream producer.
+    fn producer_allocator(&self) -> Option<crowdb_rpc_ffi::ProducerBufferAllocator> {
+        None
+    }
+
     /// Write `data` to the disk/zone/offset described by `seg`.
     async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()>;
 
@@ -173,6 +191,19 @@ pub trait DiskWriter: Send + Sync {
         Err(IoError::ReadFailed(
             "reads are unsupported by this DiskIO seam".into(),
         ))
+    }
+
+    /// Read while preserving backing metadata when the transport provides it.
+    async fn read_payload(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        segment_offset: u64,
+        length: u32,
+    ) -> Result<OwnedPayload> {
+        self.read(seg, unit_bytes, segment_offset, length)
+            .await
+            .map(OwnedPayload::from)
     }
 
     /// Write a unit-aligned range relative to the start of `seg`.

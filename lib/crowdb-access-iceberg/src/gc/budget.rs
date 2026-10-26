@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use crowdb_chunk_client::{ChunkIoClient, ReclaimOutcome};
 use crowdb_chunk_kv_client::MultiScanPage;
 use crowdb_protocol::chunk_kv::ClientRequestId;
+use crowdb_protocol::chunkdb::rpc::Location;
 
 pub struct GcIoBudget {
     kv_bytes: AtomicU64,
@@ -160,6 +161,10 @@ impl CatalogStore for BudgetedGcStore {
 
 #[async_trait]
 impl GcStore for BudgetedGcStore {
+    async fn scan_gc_local(&self, request: super::GcLocalScan) -> Result<MultiScanPage, StoreError> {
+        self.budget.reserve_kv(request.byte_budget())?;
+        self.inner.scan_gc_local(request).await
+    }
     async fn scan_gc(&self, request: GcScan) -> Result<MultiScanPage, StoreError> {
         self.budget.reserve_kv(request.bytes)?;
         self.inner.scan_gc(request).await
@@ -211,7 +216,13 @@ impl FileBlockStore for BudgetedGcBlocks {
     }
 
     async fn reclaim(&self, root: &ChunkRoot) -> Result<ReclaimOutcome, FileIoError> {
-        self.budget.reserve_chunk(root.physical_length)?;
+        // The control notification transfers no bytes from the referenced payload.
+        self.budget.reserve_chunk(0)?;
         self.inner.reclaim(root).await
+    }
+
+    async fn reclaim_location(&self, location: &Location) -> Result<ReclaimOutcome, FileIoError> {
+        self.budget.reserve_chunk(0)?;
+        self.inner.reclaim_location(location).await
     }
 }

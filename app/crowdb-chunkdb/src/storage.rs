@@ -7,6 +7,7 @@
 //! routed KV group. Chunk records have one explicit, strictly decoded envelope.
 
 mod chunk_codec;
+pub mod range_retirement;
 pub mod reservation;
 mod scope;
 use chunk_codec::{decode_chunk, encode_chunk};
@@ -29,6 +30,8 @@ use crowdb_protocol::chunk_domain::ChunkDomain;
 /// Storage error.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("invalid retired chunk range: {0}")]
+    InvalidRange(String),
     #[error("chunk not found")]
     ChunkNotFound,
     #[error("chunk already exists")]

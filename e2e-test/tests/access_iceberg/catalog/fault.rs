@@ -52,7 +52,7 @@ impl CatalogStore for TestFaultStore {
         let intercept = matches!(&record, StorageRecord::Active(root) if root.state == RootState::Fencing)
             || (self.mode.load(Ordering::SeqCst) == 3
                 && expected.is_some()
-                && matches!(&record, StorageRecord::NamespaceAuthority(authority) if authority.pending_operation.is_some()));
+                && matches!(&record, StorageRecord::NamespaceAuthority(authority) if authority.property_revision == 2 && authority.pending_operation.is_none()));
         let mode = if intercept {
             self.mode.swap(0, Ordering::SeqCst)
         } else {

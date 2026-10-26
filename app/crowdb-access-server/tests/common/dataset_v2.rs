@@ -8,7 +8,13 @@ use serde_json::{json, Value};
 pub async fn response(request: reqwest::RequestBuilder, expected: u16) -> Value {
     let response = request.bearer_auth("secret").send().await.unwrap();
     let status = response.status().as_u16();
-    let body: Value = response.json().await.unwrap();
+    let url = response.url().to_string();
+    let bytes = response
+        .bytes()
+        .await
+        .unwrap_or_else(|error| panic!("{status} {url}: {error}"));
+    let body: Value = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|error| panic!("{status} {url}: {error}; {}", String::from_utf8_lossy(&bytes)));
     assert_eq!(status, expected, "{body}");
     body
 }
@@ -33,37 +39,29 @@ pub fn definitions() -> Value {
         {"name":"test", "definition":{"kind":"weighted_partition", "seed":"18446744073709551615", "weights":[{"name":"train/a b", "weight":8},{"name":"test", "weight":2}], "index":1}, "origin":{"kind":"evaluated"}}
     ])
 }
-pub fn begin(operation: &str, expected: &Value) -> Value {
-    json!({"operation":operation, "expected_revision":expected, "policy":{"overlap":"disjoint", "coverage":"require_complete"}, "splits":definitions()})
-}
-pub async fn prepare(client: &Client, draft: &str, revision: &str) -> Value {
-    for page in 0..10 {
-        let p = response(
-            client
-                .post(format!("{draft}/evaluate"))
-                .json(&json!({"expected_revision":revision,"expected_page":page.to_string()})),
-            200,
-        )
-        .await;
-        if p["complete"] == true {
-            assert_eq!(p["validation"]["scanned"], "45");
-            return response(
-                client
-                    .post(format!("{draft}/prepare"))
-                    .json(&json!({"expected_revision":revision})),
-                200,
-            )
-            .await;
-        }
+pub fn preparation(empty: bool) -> Value {
+    if empty {
+        json!({"policy":{"overlap":"disjoint", "coverage":"allow_unassigned"}, "splits":[]})
+    } else {
+        json!({"policy":{"overlap":"disjoint", "coverage":"require_complete"}, "splits":definitions()})
     }
-    panic!("Split evaluation did not finish");
 }
-pub async fn publish(client: &Client, draft: &str, prepared: &Value, attempt: &str, head: Value) -> Value {
+pub async fn prepare(client: &Client, root: &str, snapshot: &str, revision: &str, empty: bool) -> Value {
     response(
         client
-            .post(format!("{draft}/publish"))
-            .json(&json!({"attempt":attempt,"revision":prepared["revision"],"expected_head":head})),
+            .put(format!("{root}/snapshots/{snapshot}/split-revisions/{revision}"))
+            .json(&preparation(empty)),
         200,
     )
     .await
+}
+pub async fn publish(
+    client: &Client,
+    root: &str,
+    snapshot: &str,
+    prepared: &Value,
+    expected: &Value,
+) -> Value {
+    response(client.put(format!("{root}/snapshots/{snapshot}/split-head"))
+        .json(&json!({"revision":prepared["revision"], "expected_revision":expected["revision"], "expected_head":expected["generation"]})), 200).await
 }

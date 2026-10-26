@@ -63,3 +63,22 @@ fn durable_record_preserves_user_binding() {
         Err(SecretError::InvalidRecord)
     ));
 }
+
+#[test]
+fn a_selected_public_key_still_gets_random_secrets_and_bound_ciphertext() {
+    let cipher = CredentialCipher::new(&MasterKey::from_hex(&"66".repeat(32)).unwrap());
+    let key = format!("CROWU{}", "ab".repeat(32));
+    let (first, encrypted) = cipher.issue_user_token_for_key(b"user", key.clone(), 1).unwrap();
+    let (second, _) = cipher.issue_user_token_for_key(b"user", key.clone(), 1).unwrap();
+    assert_eq!(first.access_key_id, second.access_key_id);
+    assert_ne!(first.secret_key, second.secret_key);
+    assert_eq!(
+        cipher.decrypt(b"user", &key, &encrypted).unwrap().secret_key,
+        first.secret_key.as_bytes()
+    );
+    assert!(cipher.decrypt(b"other", &key, &encrypted).is_err());
+    assert!(cipher.decrypt(b"user", "CROWOTHER", &encrypted).is_err());
+    for invalid in [String::new(), "a".repeat(81), "a/b".into(), "a\0b".into()] {
+        assert!(cipher.issue_user_token_for_key(b"user", invalid, 1).is_err());
+    }
+}

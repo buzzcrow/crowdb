@@ -104,6 +104,8 @@ async fn remote_status_reports_rpc_success_and_error_totals_by_exact_name() {
         committed_safe_slot: 0,
         lease_grant_until_ms_mono: 0,
         t_send_ms_mono: 0,
+        gc_before_slot: 0,
+        gc_membership_epoch: 0,
     };
     for _ in 0..2 {
         live.send_heartbeat(hb, 1).await.expect("heartbeat to live peer");

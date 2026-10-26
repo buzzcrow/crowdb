@@ -58,6 +58,7 @@ pub struct CommonConfig {
     pub management_seeds: Vec<String>,
     pub diskio_connections_per_endpoint: usize,
     pub diskio_rpc_workers: u32,
+    pub chunk_kv_rpc: crowdb_chunk_kv_client::ChunkKvRpcTransportConfig,
 }
 
 impl Default for CommonConfig {
@@ -66,6 +67,7 @@ impl Default for CommonConfig {
             management_seeds: Vec::new(),
             diskio_connections_per_endpoint: 2,
             diskio_rpc_workers: 2,
+            chunk_kv_rpc: crowdb_chunk_kv_client::ChunkKvRpcTransportConfig::default(),
         }
     }
 }
@@ -249,7 +251,6 @@ pub struct DatasetConfig {
     pub max_in_flight: usize,
     pub max_batch_size: usize,
     pub request_timeout_seconds: u64,
-    pub lease_ttl_seconds: u64,
 }
 
 impl Default for DatasetConfig {
@@ -259,7 +260,6 @@ impl Default for DatasetConfig {
             max_in_flight: 8,
             max_batch_size: 10_000,
             request_timeout_seconds: 60,
-            lease_ttl_seconds: 60,
         }
     }
 }
@@ -311,6 +311,10 @@ pub struct IcebergGcConfig {
 impl BaseConfig for AccessConfig {
     #[allow(clippy::too_many_lines)]
     fn validate(&self) -> Result<(), String> {
+        self.common
+            .chunk_kv_rpc
+            .validate()
+            .map_err(|error| error.to_string())?;
         if self.common.diskio_connections_per_endpoint == 0 || self.common.diskio_rpc_workers == 0 {
             return Err("common DiskIO connections and RPC workers must be nonzero".into());
         }
@@ -431,9 +435,6 @@ impl AccessConfig {
         }
         if self.dataset.request_timeout_seconds == 0 || self.dataset.request_timeout_seconds > 300 {
             return Err("dataset.request_timeout_seconds must be between 1 and 300".into());
-        }
-        if self.dataset.lease_ttl_seconds == 0 || self.dataset.lease_ttl_seconds > 3600 {
-            return Err("dataset.lease_ttl_seconds must be between 1 and 3600".into());
         }
         Ok(())
     }

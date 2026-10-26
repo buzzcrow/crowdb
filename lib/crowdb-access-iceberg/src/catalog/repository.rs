@@ -164,14 +164,23 @@ impl CatalogRepository {
         expected: Option<&[u8]>,
         value: &[u8],
     ) -> Result<bool, CatalogError> {
-        let key = key.encode()?;
-        let identity = mutation_identity(&key, expected, value);
         Ok(matches!(
-            self.store
-                .compare_exchange(&key, expected, value, identity)
-                .await?,
+            self.exchange(key, expected, value).await?,
             CasOutcome::Applied(_)
         ))
+    }
+
+    pub(super) async fn exchange(
+        &self,
+        key: &IcebergKey,
+        expected: Option<&[u8]>,
+        value: &[u8],
+    ) -> Result<CasOutcome, CatalogError> {
+        let key = key.encode()?;
+        Ok(self
+            .store
+            .compare_exchange(&key, expected, value, mutation_identity(&key, expected, value))
+            .await?)
     }
 
     pub(super) async fn phase(
@@ -309,18 +318,20 @@ impl CatalogRepository {
         else {
             return Ok(());
         };
-        let previous = self.store.get(&key.encode()?).await?;
-        if let Some(value) = &previous {
-            let StorageRecord::Management(old) = StorageRecord::decode(&key, &value.bytes)? else {
-                return Err(ValidationError::Record.into());
-            };
-            if old.id() == operation.id() {
-                return Ok(());
+        match self.exchange(&key, None, &operation_bytes(operation)?).await? {
+            CasOutcome::Applied(_) => Ok(()),
+            CasOutcome::Conflict(Some(value)) => {
+                let StorageRecord::Management(existing) = StorageRecord::decode(&key, &value.bytes)? else {
+                    return Err(ValidationError::Record.into());
+                };
+                if existing.id() == operation.id() {
+                    Ok(())
+                } else {
+                    Err(CatalogError::Busy)
+                }
             }
-            return Err(CatalogError::Busy);
+            CasOutcome::Conflict(None) => Err(CatalogError::Busy),
         }
-        self.cas(&key, None, &operation_bytes(operation)?).await?;
-        Ok(())
     }
 }
 

@@ -55,6 +55,27 @@ pub struct MetadataKey;
 
 impl MetadataKey {
     #[must_use]
+    pub(crate) fn tenant_prefix(tenant: &TenantId) -> Vec<u8> {
+        namespace_prefix(tenant)
+    }
+
+    #[must_use]
+    pub(crate) fn tenant_end(tenant: &TenantId) -> Vec<u8> {
+        let mut end = namespace_prefix(tenant);
+        increment_lexicographic(&mut end);
+        end
+    }
+
+    /// Ends every raw metadata key sharing one immutable bucket identity.
+    #[must_use]
+    pub(crate) fn bucket_end(tenant: &TenantId, bucket: BucketId) -> Vec<u8> {
+        let mut end = namespace_prefix(tenant);
+        end.extend_from_slice(bucket.as_bytes());
+        increment_lexicographic(&mut end);
+        end
+    }
+
+    #[must_use]
     pub fn bucket_name_prefix(tenant: &TenantId) -> Vec<u8> {
         let mut key = namespace_prefix(tenant);
         key.push(BUCKET_NAME_KIND);

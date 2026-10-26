@@ -88,6 +88,12 @@ impl NamespaceRecovery {
         key: &[u8],
         bytes: &[u8],
     ) -> Result<(), CatalogError> {
+        if mapping.state == NamespaceMappingState::ReservedResource {
+            self.creator
+                .settle_resource_mapping(context, mapping, &mut 16)
+                .await?;
+            return Ok(());
+        }
         if mapping.state == NamespaceMappingState::Reserved {
             let owner = NamespaceJournal::new(self.creator.repository.store.clone())
                 .load(context, mapping.operation)
@@ -107,14 +113,58 @@ impl NamespaceRecovery {
         }
         let authority_key = authority_key(context.catalog, mapping.namespace);
         if let Some(value) = self.store.get(&authority_key.encode()?).await? {
-            let StorageRecord::NamespaceAuthority(authority) =
-                StorageRecord::decode(&authority_key, &value.bytes)?
-            else {
-                return Err(ValidationError::Record.into());
+            let authority = match StorageRecord::decode(&authority_key, &value.bytes)? {
+                StorageRecord::NamespaceAuthority(authority) => Some(authority),
+                StorageRecord::RetiredNamespace { .. } => None,
+                _ => return Err(ValidationError::Record.into()),
             };
-            if mapping.resolves(&authority) {
+            if let Some(authority) = authority.filter(|authority| mapping.resolves(authority)) {
+                if authority.lifecycle == super::NamespaceLifecycle::Dropping
+                    && authority.pending_operation.is_none()
+                {
+                    return Box::pin(
+                        super::NamespaceDropper {
+                            creator: self.creator.clone(),
+                        }
+                        .resume_resource_drop(
+                            context,
+                            mapping.clone(),
+                            bytes.to_vec(),
+                            *authority,
+                            value.bytes,
+                        ),
+                    )
+                    .await;
+                }
+                if authority.creating_child.is_some() {
+                    super::NamespaceCreator::help_creating_child(
+                        self.creator.repository.store.clone(),
+                        self.creator.names.clone(),
+                        context,
+                        *authority,
+                        &mut 16,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                if let Some(rename) = &authority.rename {
+                    crate::table::TableRenames::from_parts(
+                        self.creator.repository.store.clone(),
+                        self.creator.names.clone(),
+                    )
+                    .recover(context, rename)
+                    .await?;
+                }
                 return Ok(());
             }
+        } else if let super::NamespaceSlot::Existing { .. } = super::retire_absent_namespace(
+            self.creator.repository.store.as_ref(),
+            context.catalog,
+            mapping.namespace,
+        )
+        .await?
+        {
+            return Err(CatalogError::Busy);
         }
         self.creator.repository.check_context(context).await?;
         self.store

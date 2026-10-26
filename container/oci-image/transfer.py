@@ -34,6 +34,38 @@ def publish(archive, image, authfile):
     return observed
 
 
+def execution_config(config):
+    # Docker 28 inspect serializes absent OCI fields as Go zero values.
+    # Keep all non-default values and unknown fields in the comparison.
+    defaults = {
+        "Hostname": "", "Domainname": "", "User": "", "AttachStdin": False,
+        "AttachStdout": False, "AttachStderr": False, "Tty": False,
+        "OpenStdin": False, "StdinOnce": False, "Env": None, "Cmd": None,
+        "Image": "", "Volumes": None, "WorkingDir": "", "Entrypoint": None,
+        "OnBuild": None, "Labels": None,
+    }
+    return {key: value for key, value in config.items()
+            if key not in defaults or value != defaults[key]}
+
+
+def verify_import(image, artifact):
+    # Local image stores may rewrite the config envelope and its image ID.
+    # Verify the execution config and ordered filesystem content directly.
+    if not isinstance(image.get("Config"), dict):
+        raise RuntimeError("imported Docker image config differs from the OCI artifact")
+    observed, expected = execution_config(image["Config"]), execution_config(artifact["config"])
+    if observed != expected:
+        missing = object()
+        fields = sorted(key for key in observed.keys() | expected.keys()
+                        if observed.get(key, missing) != expected.get(key, missing))
+        raise RuntimeError("imported Docker image config differs from the OCI artifact: " + ", ".join(fields))
+    rootfs = image.get("RootFS", {})
+    if rootfs.get("Type") != artifact["rootfs"]["type"] or rootfs.get("Layers") != artifact["rootfs"]["diff_ids"]:
+        raise RuntimeError("imported Docker image filesystem differs from the OCI artifact")
+    if f"{image.get('Os')}/{image.get('Architecture')}" != artifact["platform"]:
+        raise RuntimeError("imported Docker image platform differs from the OCI artifact")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=["import", "publish"])
@@ -42,7 +74,7 @@ def main():
     parser.add_argument("--authfile", type=Path)
     args = parser.parse_args()
     archive = args.archive.resolve()
-    receipt(archive)
+    verified = receipt(archive)
     if args.operation == "publish":
         if args.authfile is None or not args.authfile.is_file() or args.authfile.stat().st_mode & 0o077:
             parser.error("publication requires a private registry authfile")
@@ -56,8 +88,7 @@ def main():
                         f"docker-archive:{converted}:{args.image}"], check=True)
         subprocess.run(["docker", "load", "--input", str(converted)], check=True)
         image = json.loads(subprocess.check_output(["docker", "image", "inspect", args.image], text=True))[0]
-        if image["Id"] != inspect(archive)["config_digest"]:
-            raise RuntimeError("imported Docker image config digest differs from the OCI artifact")
+        verify_import(image, inspect(archive))
 
 
 if __name__ == "__main__":

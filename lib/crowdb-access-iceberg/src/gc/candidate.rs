@@ -32,6 +32,12 @@ pub struct GcCandidate {
 }
 
 impl GcCandidate {
+    pub(crate) fn is_initial_metadata(file: &FileRecord) -> bool {
+        file.kind == FileKind::Metadata
+            && file.format == ContentFormat::Json
+            && file.location.relative_key() == format!("metadata/1-{}.metadata.json", file.file)
+    }
+
     #[must_use]
     pub fn deleted_key(file: &FileRecord) -> IcebergKey {
         let mut suffix = file.location.table().table.as_bytes().to_vec();

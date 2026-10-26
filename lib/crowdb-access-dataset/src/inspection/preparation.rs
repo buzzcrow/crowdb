@@ -25,30 +25,21 @@ pub enum InspectionError {
     Cancelled,
 }
 
+/// Bounds the immutable source read for a complete legacy index rebuild.
 #[derive(Clone, Copy, Debug)]
-pub struct PreparationLimits {
-    pub rows: usize,
-    pub bytes: usize,
-    pub legacy_bytes: usize,
+pub struct InspectionPreparationLimits {
+    pub source_bytes: usize,
 }
-impl Default for PreparationLimits {
+impl Default for InspectionPreparationLimits {
     fn default() -> Self {
         Self {
-            rows: 100,
-            bytes: 1024 * 1024,
-            legacy_bytes: 16 * 1024 * 1024,
+            source_bytes: 9 * 1024 * 1024,
         }
     }
 }
-impl PreparationLimits {
+impl InspectionPreparationLimits {
     pub(super) fn validate(self) -> Result<(), InspectionError> {
-        if self.rows == 0
-            || self.rows > 100
-            || self.bytes == 0
-            || self.bytes > 1024 * 1024
-            || self.legacy_bytes == 0
-            || self.legacy_bytes > 16 * 1024 * 1024
-        {
+        if self.source_bytes == 0 || self.source_bytes > 9 * 1024 * 1024 {
             return Err(InspectionError::Limit);
         }
         Ok(())

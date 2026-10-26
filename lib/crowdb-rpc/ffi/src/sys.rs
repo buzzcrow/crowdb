@@ -51,6 +51,56 @@ pub struct CrowdbRpcTransportStats {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CrowdbRpcRdmaConfig {
+    pub struct_size: u32,
+    pub version: u32,
+    pub enabled: u32,
+    pub allow_tcp_fallback: u32,
+    pub listen_enabled: u32,
+    pub port: u32,
+    pub cq_count: u32,
+    pub cq_depth: u32,
+    pub sq_depth: u32,
+    pub rq_depth: u32,
+    pub posted_receive_target: u32,
+    pub wire_slot_capacity: u32,
+    pub poll_batch: u32,
+    pub verbs_poll_batch: u32,
+    pub poll_empty_budget: u32,
+    pub send_queue_capacity: u32,
+    pub aggregation_enabled: u32,
+    pub aggregation_max_bytes: u32,
+    pub aggregation_max_frames: u32,
+    pub send_arena_bytes: u64,
+    pub receive_arena_bytes: u64,
+    pub registered_memory_budget_bytes: u64,
+    pub device: *const c_char,
+    pub source_address: *const c_char,
+    pub gid: *const c_char,
+}
+
+#[repr(C)]
+pub struct CrowdbRpcRdmaStreamConfig {
+    pub struct_size: u32,
+    pub version: u32,
+    pub max_control_message_bytes: u32,
+    pub control_assembly_timeout_ms: u32,
+    pub control_send_budget_bytes: u64,
+    pub control_receive_budget_bytes: u64,
+}
+
+#[repr(C)]
+pub struct CrowdbRpcRdmaPostConfig {
+    pub struct_size: u32,
+    pub version: u32,
+    pub send_batch_size: u32,
+    pub receive_batch_size: u32,
+    pub send_window_size: u32,
+    pub send_window_bytes: u64,
+}
+
+#[repr(C)]
 #[derive(Default, Debug)]
 pub struct CrowdbRpcClientCounters {
     pub submit_fail: u64,
@@ -120,10 +170,66 @@ pub type crowdb_rpc_co_on_response = Option<
 >;
 
 extern "C" {
+    pub fn crowdb_rpc_rdma_config_init(config: *mut CrowdbRpcRdmaConfig);
+    pub fn crowdb_rpc_rdma_stream_config_init(config: *mut CrowdbRpcRdmaStreamConfig);
+    pub fn crowdb_rpc_rdma_post_config_init(config: *mut CrowdbRpcRdmaPostConfig);
+    pub fn crowdb_rpc_server_configure_rdma_v4(
+        server: crowdb_rpc_server_t,
+        config: *const CrowdbRpcRdmaConfig,
+        wire_layout: u32,
+        streams: *const CrowdbRpcRdmaStreamConfig,
+        sends: *const CrowdbRpcRdmaPostConfig,
+    ) -> crowdb_rpc_status;
+    pub fn crowdb_rpc_server_configure_rdma_v3(
+        server: crowdb_rpc_server_t,
+        config: *const CrowdbRpcRdmaConfig,
+        wire_layout: u32,
+        streams: *const CrowdbRpcRdmaStreamConfig,
+    ) -> crowdb_rpc_status;
+    pub fn crowdb_rpc_server_configure_rdma(
+        server: crowdb_rpc_server_t,
+        config: *const CrowdbRpcRdmaConfig,
+    ) -> crowdb_rpc_status;
+    pub fn crowdb_rpc_server_configure_rdma_v2(
+        server: crowdb_rpc_server_t,
+        config: *const CrowdbRpcRdmaConfig,
+        wire_layout: u32,
+    ) -> crowdb_rpc_status;
+    pub fn crowdb_rpc_server_status_json(server: crowdb_rpc_server_t) -> crowdb_rpc_buffer_t;
+    pub fn crowdb_rpc_conn_status_json(connection: crowdb_rpc_conn_t) -> crowdb_rpc_buffer_t;
+    pub fn crowdb_rpc_server_register_status_handler(server: crowdb_rpc_server_t, msg_type: u16);
     pub fn crowdb_rpc_buffer_alloc(pool: crowdb_rpc_pool_t, capacity: u32) -> crowdb_rpc_buffer_t;
     pub fn crowdb_rpc_buffer_write(buf: crowdb_rpc_buffer_t, data: *const u8, len: u32);
     pub fn crowdb_rpc_buffer_data(buf: crowdb_rpc_buffer_t) -> *const u8;
     pub fn crowdb_rpc_buffer_len(buf: crowdb_rpc_buffer_t) -> u32;
+    pub fn crowdb_rpc_buffer_mutable_data(buf: crowdb_rpc_buffer_t) -> *mut u8;
+    pub fn crowdb_rpc_buffer_commit(buf: crowdb_rpc_buffer_t, initialized_length: u32) -> c_int;
+    pub fn crowdb_rpc_server_alloc_producer_buffer(
+        server: crowdb_rpc_server_t,
+        capacity: u32,
+        require_registered: c_int,
+    ) -> crowdb_rpc_buffer_t;
+    pub fn crowdb_rpc_buffer_capacity(buf: crowdb_rpc_buffer_t) -> u32;
+    pub fn crowdb_rpc_buffer_allocation_capacity(buf: crowdb_rpc_buffer_t) -> u32;
+    pub fn crowdb_rpc_buffer_allocation_id(buf: crowdb_rpc_buffer_t) -> u64;
+    pub fn crowdb_rpc_buffer_allocation_offset(buf: crowdb_rpc_buffer_t) -> u32;
+    pub fn crowdb_rpc_buffer_allocation_ref(buf: crowdb_rpc_buffer_t) -> crowdb_rpc_buffer_t;
+    pub fn crowdb_rpc_buffer_request_id(buf: crowdb_rpc_buffer_t) -> u64;
+    pub fn crowdb_rpc_buffer_stream_id(buf: crowdb_rpc_buffer_t) -> u64;
+    pub fn crowdb_rpc_buffer_sequence(buf: crowdb_rpc_buffer_t) -> u64;
+    pub fn crowdb_rpc_buffer_logical_offset(buf: crowdb_rpc_buffer_t) -> u64;
+    pub fn crowdb_rpc_buffer_registration_id(buf: crowdb_rpc_buffer_t) -> u32;
+    pub fn crowdb_rpc_buffer_ownership(buf: crowdb_rpc_buffer_t) -> i32;
+    pub fn crowdb_rpc_buffer_set_metadata(
+        buf: crowdb_rpc_buffer_t,
+        request_id: u64,
+        stream_id: u64,
+        sequence: u64,
+        logical_offset: u64,
+        registration_id: u32,
+    );
+    pub fn crowdb_rpc_buffer_transition(buf: crowdb_rpc_buffer_t, from: i32, to: i32) -> i32;
+    pub fn crowdb_rpc_buffer_quarantine(buf: crowdb_rpc_buffer_t) -> i32;
     pub fn crowdb_rpc_buffer_detach(buf: crowdb_rpc_buffer_t) -> bool;
     pub fn crowdb_rpc_buffer_ref(buf: crowdb_rpc_buffer_t) -> crowdb_rpc_buffer_t;
     pub fn crowdb_rpc_buffer_release(buf: crowdb_rpc_buffer_t);
@@ -147,6 +253,13 @@ extern "C" {
         pool: crowdb_rpc_pool_t,
         io_engines: u32,
         io_workers: u32,
+    ) -> crowdb_rpc_server_t;
+    pub fn crowdb_rpc_server_create_with_layout(
+        pool: crowdb_rpc_pool_t,
+        io_engines: u32,
+        io_workers: u32,
+        wire_layout: u32,
+        data_capacity: u32,
     ) -> crowdb_rpc_server_t;
     pub fn crowdb_rpc_server_destroy(server: crowdb_rpc_server_t);
     pub fn crowdb_rpc_server_clear_handlers(server: crowdb_rpc_server_t);
@@ -249,12 +362,19 @@ extern "C" {
 
     pub fn crowdb_rpc_conn_destroy(conn: crowdb_rpc_conn_t);
     pub fn crowdb_rpc_conn_is_open(conn: crowdb_rpc_conn_t) -> c_int;
+    pub fn crowdb_rpc_conn_is_rdma(conn: crowdb_rpc_conn_t) -> c_int;
     pub fn crowdb_rpc_conn_connect_refused(conn: crowdb_rpc_conn_t) -> c_int;
     pub fn crowdb_rpc_conn_close(conn: crowdb_rpc_conn_t);
 
     pub fn crowdb_rpc_server_register_echo_handler(server: crowdb_rpc_server_t, msg_type: u16);
 
     pub fn crowdb_rpc_frame_release(frame_handle: *mut c_void);
+    pub fn crowdb_rpc_frame_close_connection(frame_handle: *mut c_void);
+    #[cfg(feature = "test-util")]
+    pub fn crowdb_rpc_server_limit_control_fragments_for_tests(
+        server: crowdb_rpc_server_t,
+        limit: u64,
+    ) -> c_int;
 
     pub fn crowdb_rpc_server_register_handler(
         server: crowdb_rpc_server_t,
@@ -333,6 +453,7 @@ extern "C" {
     pub fn crowdb_common_metrics_global_free(s: *mut c_char);
 
     // ── Coroutine client (Option 3: C++ coroutine + Rust FFI) ────
+    pub fn crowdb_rpc_co_get_stats(client: crowdb_rpc_client_t, out: *mut CrowdbRpcCoStats);
     pub fn crowdb_rpc_co_spawn(
         client: crowdb_rpc_client_t,
         server: crowdb_rpc_server_t,
@@ -344,4 +465,14 @@ extern "C" {
         on_response: crowdb_rpc_co_on_response,
         ctx: *mut c_void,
     );
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CrowdbRpcCoStats {
+    pub total_ops: u64,
+    pub total_errors: u64,
+    pub total_latency_ns: u64,
+    pub min_latency_ns: u64,
+    pub max_latency_ns: u64,
 }

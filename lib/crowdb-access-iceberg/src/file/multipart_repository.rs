@@ -19,6 +19,28 @@ pub struct MultipartRepository {
     store: Arc<dyn CatalogStore>,
 }
 
+/// The exact session installed or observed by one conditional mutation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MultipartMutation<T> {
+    Applied { session: MultipartSession, value: T },
+    Conflict(Option<MultipartSession>),
+}
+
+impl<T> MultipartMutation<T> {
+    #[must_use]
+    pub fn is_applied(&self) -> bool {
+        matches!(self, Self::Applied { .. })
+    }
+
+    #[must_use]
+    pub fn into_value(self) -> Option<T> {
+        match self {
+            Self::Applied { value, .. } => Some(value),
+            Self::Conflict(_) => None,
+        }
+    }
+}
+
 impl MultipartRepository {
     #[must_use]
     pub fn new(store: Arc<dyn CatalogStore>) -> Self {
@@ -42,6 +64,7 @@ impl MultipartRepository {
             || session.revision != 1
             || session.part_count != 0
             || session.pending.is_some()
+            || session.credit.is_some()
         {
             return Err(ValidationError::Record.into());
         }
@@ -114,6 +137,15 @@ impl MultipartRepository {
         previous: &MultipartSession,
         next: &MultipartSession,
     ) -> Result<bool, CatalogError> {
+        Ok(self.exchange_state(previous, next, ()).await?.is_applied())
+    }
+
+    async fn exchange_state<T>(
+        &self,
+        previous: &MultipartSession,
+        next: &MultipartSession,
+        result: T,
+    ) -> Result<MultipartMutation<T>, CatalogError> {
         let key = previous.key().encode()?;
         let expected = encode(previous)?;
         let value = encode(next)?;
@@ -128,7 +160,24 @@ impl MultipartRepository {
             )
             .await?;
         check_context(self.store.as_ref(), previous.context).await?;
-        Ok(matches!(outcome, CasOutcome::Applied(_)))
+        match outcome {
+            CasOutcome::Applied(_) => Ok(MultipartMutation::Applied {
+                session: next.clone(),
+                value: result,
+            }),
+            CasOutcome::Conflict(observed) => {
+                let current = observed
+                    .map(|value| decode(&previous.key(), &value.bytes))
+                    .transpose()?;
+                if current
+                    .as_ref()
+                    .is_some_and(|session| session.context != previous.context)
+                {
+                    return Err(ValidationError::IdentityMismatch.into());
+                }
+                Ok(MultipartMutation::Conflict(current))
+            }
+        }
     }
 }
 

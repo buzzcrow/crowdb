@@ -28,27 +28,6 @@ pub enum TableCreatePhase {
     Staged,
 }
 
-impl TableCreatePhase {
-    pub(super) fn permits(self, next: Self) -> bool {
-        use TableCreatePhase::{
-            Aborted, Aborting, Admitted, Admitting, Complete, FilesReady, Prepared, Published, Publishing,
-            Reserved, Staged,
-        };
-        matches!(
-            (self, next),
-            (Staged, Prepared | Aborted)
-                | (Prepared, Reserved | Aborting)
-                | (Reserved, FilesReady | Aborting)
-                | (FilesReady, Admitting | Publishing | Aborting)
-                | (Admitting, Admitted | FilesReady | Aborting)
-                | (Admitted, Publishing | Aborting)
-                | (Publishing, Published)
-                | (Published, Complete)
-                | (Aborting, Aborted)
-        )
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TableCreateOperation {
     pub context: CatalogContext,
@@ -159,18 +138,5 @@ impl TableCreateOperation {
             return Err(ValidationError::IdentityMismatch);
         }
         Ok(())
-    }
-
-    pub(super) fn next(&self, phase: TableCreatePhase) -> Result<Self, ValidationError> {
-        if !self.phase.permits(phase) {
-            return Err(ValidationError::Record);
-        }
-        let mut next = self.clone();
-        next.phase = phase;
-        next.revision = next
-            .revision
-            .checked_add(1)
-            .ok_or(ValidationError::GenerationExhausted)?;
-        Ok(next)
     }
 }

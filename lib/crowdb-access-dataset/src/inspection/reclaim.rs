@@ -21,6 +21,7 @@ impl DatasetAuthority {
                 InspectionError::Authority(error) => error,
                 InspectionError::Store(error) => error.into(),
                 InspectionError::Limit => DatasetError::ReadLimitExceeded.into(),
+                InspectionError::Cancelled => DatasetError::ReadCancelled.into(),
                 _ => AuthorityError::Corrupt,
             })
     }
@@ -63,14 +64,13 @@ impl DatasetAuthority {
                     if retired.bytes != [1] {
                         return Err(InspectionError::Corrupt);
                     }
+                    // Terminal authority survives a late recreation of this derived index.
+                    work.delete_retired_index(&key).await?;
                     continue;
                 }
-                if self
-                    .snapshot_has_commit_proof(identity, summary.snapshot, &mut work)
-                    .await?
-                {
-                    return Ok(true);
-                }
+                // The child index precedes its complete root. Protecting it until
+                // terminal retirement closes the parent-delete/finalization race.
+                return Ok(true);
             }
             after = page.after;
             if after.is_none() {
@@ -101,11 +101,15 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
-        match self
-            .store
-            .compare_exchange(&retired_key(identity, snapshot)?, None, &[1])
-            .await?
-        {
+        let key = retired_key(identity, snapshot)?;
+        if let Some(value) = self.store.get(&key).await? {
+            return if value.bytes == [1] {
+                Ok(())
+            } else {
+                Err(AuthorityError::Corrupt)
+            };
+        }
+        match self.store.compare_exchange(&key, None, &[1]).await? {
             CasOutcome::Applied(_) => Ok(()),
             CasOutcome::Conflict(Some(value)) if value.bytes == [1] => Ok(()),
             CasOutcome::Conflict(_) => Err(AuthorityError::Corrupt),

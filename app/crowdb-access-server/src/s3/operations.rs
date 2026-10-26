@@ -7,19 +7,15 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
-use crowdb_access_s3::bucket::{self, BucketError, DeleteBucketResult, RandomBucketIdGenerator};
 use crowdb_access_s3::condition::ObjectConditions;
 use crowdb_access_s3::continuation::ContinuationTokenSigner;
 use crowdb_access_s3::error::{S3Error, S3ErrorCode};
+use crowdb_access_s3::execution::{ObjectListRequest, PutObjectInfo, S3Executor, S3WritePolicy};
 use crowdb_access_s3::metadata::{ObjectRecord, TenantId};
-use crowdb_access_s3::object::{self, ListObjectsV2Request, ObjectMetadataError};
-use crowdb_access_s3::publication::PublicationRequest;
-use crowdb_access_s3::retrieval::{self, ObjectHeaders, RetrievalError};
+use crowdb_access_s3::retrieval::{ObjectHeaders, RetrievalError};
 use crowdb_access_s3::route::{S3Operation, S3Route};
-use crowdb_access_s3::streaming::{publish_completed_locations, PutErrorCode, PutOutcome};
-use crowdb_chunk_client::{
-    ChunkClientConfig, ChunkIoWriter, IoError, LargeWritePolicy, PreparedLargeWrite, SharedObjectWriter,
-};
+use crowdb_access_s3::streaming::{PutErrorCode, PutOutcome};
+use crowdb_chunk_client::{ChunkClientConfig, LargeWritePolicy};
 use crowdb_common::ec::EcScheme;
 use futures::stream;
 use http_body_util::{BodyExt, StreamBody};
@@ -43,7 +39,7 @@ mod delete;
 mod multipart;
 mod upload;
 
-use upload::write_object_body;
+pub(crate) use upload::write_object_body;
 
 const DEFAULT_LIST_LIMIT: usize = 1_000;
 const DEFAULT_LIST_SCAN_BYTES: usize = 4 * 1024 * 1024;
@@ -99,7 +95,7 @@ pub struct ProductionS3Operations {
     pub(super) storage: S3StorageClients,
     pub(super) config: S3ServiceConfig,
     signer: ContinuationTokenSigner,
-    bucket_ids: RandomBucketIdGenerator,
+    execution: S3Executor,
     metrics: Option<Arc<crowdb_access_s3::metrics::S3Metrics>>,
 }
 
@@ -113,10 +109,10 @@ impl ProductionS3Operations {
         let signer = ContinuationTokenSigner::new(config.continuation_key.clone())
             .map_err(|_| S3ErrorCode::InvalidRequest)?;
         Ok(Self {
+            execution: S3Executor::new(storage.clone(), config.tenant.clone()),
             storage,
             config,
             signer,
-            bucket_ids: RandomBucketIdGenerator,
             metrics: None,
         })
     }
@@ -165,50 +161,25 @@ impl ProductionS3Operations {
 
     async fn create_bucket(&self, route: S3Route) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let name = required_bucket(&route)?;
-        bucket::create_bucket(
-            &self.storage.metadata,
-            &self.bucket_ids,
-            &self.config.tenant,
-            name,
-        )
-        .await
-        .map_err(|error| map_bucket_error(&error))?;
+        self.execution.create_bucket(name).await?;
         response(StatusCode::OK, Vec::new())
     }
 
     async fn head_bucket(&self, route: S3Route) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let name = required_bucket(&route)?;
-        let exists = bucket::head_bucket(&self.storage.metadata, &self.config.tenant, name)
-            .await
-            .map_err(|error| map_bucket_error(&error))?
-            .is_some();
-        if !exists {
-            return Err(S3ErrorCode::NoSuchBucket);
-        }
+        self.execution.resolve_bucket(name).await?;
         response(StatusCode::OK, Vec::new())
     }
 
     async fn list_buckets(&self) -> Result<Response<ResponseBody>, S3ErrorCode> {
-        let buckets = bucket::list_buckets(&self.storage.metadata, &self.config.tenant, DEFAULT_LIST_LIMIT)
-            .await
-            .map_err(|error| {
-                tracing::error!(%error, "S3 bucket listing failed; returning a service error");
-                map_bucket_error(&error)
-            })?;
+        let buckets = self.execution.list_buckets(DEFAULT_LIST_LIMIT).await?;
         xml_response(wire::list_buckets(self.config.tenant.as_bytes(), &buckets))
     }
 
     async fn delete_bucket(&self, route: S3Route) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let name = required_bucket(&route)?;
-        match bucket::delete_bucket(&self.storage.metadata, &self.config.tenant, name)
-            .await
-            .map_err(|error| map_bucket_error(&error))?
-        {
-            DeleteBucketResult::Deleted => response(StatusCode::NO_CONTENT, Vec::new()),
-            DeleteBucketResult::Missing => Err(S3ErrorCode::NoSuchBucket),
-            DeleteBucketResult::NotEmpty => Err(S3ErrorCode::BucketNotEmpty),
-            DeleteBucketResult::Conflict => Err(S3ErrorCode::ServiceUnavailable),
-        }
+        self.execution.delete_bucket(name).await?;
+        response(StatusCode::NO_CONTENT, Vec::new())
     }
 
     async fn put_object(
@@ -218,25 +189,33 @@ impl ProductionS3Operations {
     ) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let bucket_name = required_bucket(&route)?;
         let key = required_key(&route)?.to_vec();
-        let bucket_id = self.resolve_bucket(bucket_name).await?;
         let streaming = take_streaming(&mut request)?;
         let content_length = upload_length(&request, streaming.is_some())?;
         let content_type = header(&request, CONTENT_TYPE)
             .unwrap_or("application/octet-stream")
             .to_owned();
-        let attributes =
-            crowdb_access_s3::metadata::UserMetadata::from_headers(request.headers())?.encode()?;
+        let user_metadata = crowdb_access_s3::metadata::UserMetadata::from_headers(request.headers())?;
         let content_md5 = content_md5_header(&request)?.map(str::to_owned);
         let payload_sha256 = strict_header(&request, "x-amz-content-sha256", S3ErrorCode::InvalidRequest)?
             .filter(|value| *value != "UNSIGNED-PAYLOAD" && streaming.is_none())
             .map(str::to_owned);
-        let mut route_key =
-            Vec::with_capacity(self.config.tenant.as_bytes().len() + bucket_id.as_bytes().len() + key.len());
-        route_key.extend_from_slice(self.config.tenant.as_bytes());
-        route_key.extend_from_slice(bucket_id.as_bytes());
-        route_key.extend_from_slice(&key);
-        let mut writer = self.prepare_writer(content_length, &route_key).await?;
-        let native_receiver = if writer.is_large() && content_length.is_some() && streaming.is_none() {
+        let mut put = self
+            .execution
+            .prepare_put(
+                bucket_name,
+                &key,
+                PutObjectInfo {
+                    content_length,
+                    content_type,
+                    user_metadata,
+                },
+                &S3WritePolicy {
+                    small_object_limit: self.config.small_object_limit,
+                    large_write: self.config.large_write.clone(),
+                },
+            )
+            .await?;
+        let native_receiver = if put.is_large() && content_length.is_some() && streaming.is_none() {
             install_body_receive_provider(&mut request)
         } else {
             None
@@ -250,7 +229,7 @@ impl ProductionS3Operations {
         body.defer_md5();
         let write_result = write_object_body(
             &mut body,
-            &mut writer,
+            put.writer_mut(),
             native_receiver.as_deref(),
             content_length,
             content_md5.as_deref(),
@@ -262,45 +241,20 @@ impl ProductionS3Operations {
         let (etag, checksum) = match write_result {
             Ok(result) => result,
             Err(outcome) => {
-                let _ = writer.on_error().await;
+                put.abort().await;
                 return Err(body
                     .failure()
                     .map_or_else(|| map_put_outcome(&outcome), encoding_error));
             }
         };
-        let locations = writer.on_finish().await.map_err(|error| {
-            tracing::warn!(%error, "S3 PUT chunk finalization failed");
-            S3ErrorCode::ServiceUnavailable
-        })?;
-        let logical_length = locations.iter().map(|location| location.logical_length).sum();
-        if content_length.is_some_and(|expected| expected != logical_length) {
-            return Err(S3ErrorCode::InvalidRequest);
-        }
-        let now = unix_millis();
-        let mut publication = PublicationRequest {
-            tenant: self.config.tenant.clone(),
-            object: ObjectRecord {
-                bucket_id,
-                key,
-                logical_length,
-                checksum,
-                etag: etag.clone(),
-                created_at_ms: now,
-                modified_at_ms: now,
-                content_type,
-                attributes,
-                data_reference: vec![0],
-                data_length: logical_length,
-            },
-        };
-        match publish_completed_locations(&self.storage.metadata, &mut publication, &locations).await {
-            PutOutcome::Success => Response::builder()
-                .status(StatusCode::OK)
-                .header(ETAG, format!("\"{etag}\""))
-                .body(full_body(Vec::new().into()))
-                .map_err(|_| S3ErrorCode::InternalError),
-            outcome => Err(map_put_outcome(&outcome)),
-        }
+        put.finish(etag.clone(), checksum)
+            .await
+            .map_err(|outcome| map_put_outcome(&outcome))?;
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(ETAG, format!("\"{etag}\""))
+            .body(full_body(Vec::new().into()))
+            .map_err(|_| S3ErrorCode::InternalError)
     }
 
     async fn head_object(
@@ -309,7 +263,7 @@ impl ProductionS3Operations {
         request: &Request<Incoming>,
     ) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let record = self.object(&route).await?;
-        let headers = match retrieval::prepare_head(&record, &conditions(request)) {
+        let headers = match self.execution.prepare_head(&record, &conditions(request)) {
             Ok(headers) => headers,
             Err(RetrievalError::NotModified) => return not_modified(&record.etag),
             Err(error) => return Err(map_retrieval(&error)),
@@ -324,12 +278,10 @@ impl ProductionS3Operations {
         request_id: &str,
     ) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let record = self.object(&route).await?;
-        let prepared = match retrieval::prepare_get(
-            &self.storage.chunks,
-            &record,
-            header(request, RANGE),
-            &conditions(request),
-        ) {
+        let prepared = match self
+            .execution
+            .prepare_get(&record, header(request, RANGE), &conditions(request))
+        {
             Ok(prepared) => prepared,
             Err(RetrievalError::NotModified) => return not_modified(&record.etag),
             Err(error) => return Err(map_retrieval(&error)),
@@ -383,25 +335,24 @@ impl ProductionS3Operations {
             .map_or(Ok(DEFAULT_LIST_LIMIT), |value| value.parse::<usize>())
             .map_err(|_| S3ErrorCode::InvalidRequest)?
             .min(DEFAULT_LIST_LIMIT);
-        let page = object::list_v2(
-            &self.storage.metadata,
-            &self.signer,
-            &ListObjectsV2Request {
-                tenant: &self.config.tenant,
-                bucket: bucket_id,
-                prefix: &prefix,
-                delimiter: delimiter.as_deref(),
-                start_after: start_after.as_deref(),
-                continuation_token: continuation.as_deref(),
-                max_keys,
-                max_scan_items: self.config.list_scan_items,
-                max_scan_bytes: self.config.list_scan_bytes,
-                now_unix_seconds: unix_seconds(),
-                token_ttl_seconds: self.config.continuation_ttl_seconds,
-            },
-        )
-        .await
-        .map_err(|error| map_object_error(&error))?;
+        let page = self
+            .execution
+            .list_objects(
+                &self.signer,
+                &ObjectListRequest {
+                    bucket: bucket_id,
+                    prefix: &prefix,
+                    delimiter: delimiter.as_deref(),
+                    start_after: start_after.as_deref(),
+                    continuation_token: continuation.as_deref(),
+                    max_keys,
+                    max_scan_items: self.config.list_scan_items,
+                    max_scan_bytes: self.config.list_scan_bytes,
+                    now_unix_seconds: unix_seconds(),
+                    token_ttl_seconds: self.config.continuation_ttl_seconds,
+                },
+            )
+            .await?;
         xml_response(wire::list_objects(
             bucket_name,
             &prefix,
@@ -416,67 +367,18 @@ impl ProductionS3Operations {
     async fn delete_object(&self, route: S3Route) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let bucket_name = required_bucket(&route)?;
         let key = required_key(&route)?;
-        let bucket_id = self.resolve_bucket(bucket_name).await?;
-        object::delete(&self.storage.metadata, &self.config.tenant, bucket_id, key)
-            .await
-            .map_err(|error| map_object_error(&error))?;
+        self.execution.delete_object(bucket_name, key).await?;
         response(StatusCode::NO_CONTENT, Vec::new())
     }
 
     async fn resolve_bucket(&self, name: &[u8]) -> Result<crowdb_access_s3::metadata::BucketId, S3ErrorCode> {
-        bucket::head_bucket(&self.storage.metadata, &self.config.tenant, name)
-            .await
-            .map_err(|error| map_bucket_error(&error))?
-            .ok_or(S3ErrorCode::NoSuchBucket)
+        self.execution.resolve_bucket(name).await
     }
 
     async fn object(&self, route: &S3Route) -> Result<ObjectRecord, S3ErrorCode> {
-        let bucket = self.resolve_bucket(required_bucket(route)?).await?;
-        object::head(
-            &self.storage.metadata,
-            &self.config.tenant,
-            bucket,
-            required_key(route)?,
-        )
-        .await
-        .map_err(|error| map_object_error(&error))?
-        .ok_or(S3ErrorCode::NoSuchKey)
-    }
-
-    async fn prepare_writer(
-        &self,
-        content_length: Option<u64>,
-        key: &[u8],
-    ) -> Result<ObjectWriter, S3ErrorCode> {
-        if let Some(length) = content_length
-            .and_then(|length| usize::try_from(length).ok())
-            .filter(|length| *length <= self.config.small_object_limit)
-        {
-            if length > crowdb_protocol::frame::MAX_FRAME_V2_PAYLOAD_BYTES {
-                return self
-                    .storage
-                    .chunks
-                    .prepare_shared_object_write_for_key(length, key)
-                    .await
-                    .map(ObjectWriter::Small)
-                    .map_err(|_| S3ErrorCode::SlowDown);
-            }
-            match self.storage.chunks.prepare_small_write_for_key(length, key).await {
-                Ok(writer) => return Ok(ObjectWriter::Small(writer)),
-                Err(IoError::ObjectTooLarge { .. }) => {}
-                Err(IoError::MemoryBudgetExhausted) => return Err(S3ErrorCode::SlowDown),
-                Err(_) => return Err(S3ErrorCode::ServiceUnavailable),
-            }
-        }
-        let mut prepared = self
-            .storage
-            .chunks
-            .prepare_large_write(content_length, self.config.large_write.clone());
-        prepared.wait_until_prepared().await.map_err(|error| {
-            tracing::warn!(%error, "S3 large write preparation failed");
-            S3ErrorCode::ServiceUnavailable
-        })?;
-        Ok(ObjectWriter::Large(Box::new(prepared)))
+        self.execution
+            .object(required_bucket(route)?, required_key(route)?)
+            .await
     }
 }
 
@@ -493,77 +395,6 @@ impl S3Operations for ProductionS3Operations {
         host_id: String,
     ) -> S3OperationsFuture {
         Box::pin(async move { self.dispatch(route, request, request_id, host_id).await })
-    }
-}
-
-enum ObjectWriter {
-    Small(SharedObjectWriter),
-    Large(Box<PreparedLargeWrite>),
-}
-
-impl ObjectWriter {
-    fn is_large(&self) -> bool {
-        matches!(self, Self::Large(_))
-    }
-}
-
-#[async_trait::async_trait]
-impl ChunkIoWriter for ObjectWriter {
-    async fn on_data(
-        &mut self,
-        buffer: hyper::body::Bytes,
-    ) -> crowdb_chunk_client::Result<crowdb_chunk_client::FeedStatus> {
-        match self {
-            Self::Small(writer) => writer.on_data(buffer).await,
-            Self::Large(writer) => writer.on_data(buffer).await,
-        }
-    }
-
-    async fn on_framed_data(
-        &mut self,
-        buffer: Box<dyn crowdb_chunk_client::FramedWriteBuffer>,
-    ) -> crowdb_chunk_client::Result<crowdb_chunk_client::FeedStatus> {
-        match self {
-            Self::Small(_) => Err(IoError::WriteFailed(
-                "small object writer does not accept framed owners".into(),
-            )),
-            Self::Large(writer) => writer.on_framed_data(buffer).await,
-        }
-    }
-
-    async fn on_finish(&mut self) -> crowdb_chunk_client::Result<Vec<crowdb_chunk_client::ProtoLocation>> {
-        match self {
-            Self::Small(writer) => writer.finish_durable().await,
-            Self::Large(writer) => writer.on_finish().await,
-        }
-    }
-
-    async fn on_error(&mut self) -> crowdb_chunk_client::Result<Vec<crowdb_chunk_client::ProtoLocation>> {
-        match self {
-            Self::Small(writer) => writer.on_error().await,
-            Self::Large(writer) => writer.on_error().await,
-        }
-    }
-
-    fn require_data(&self) -> bool {
-        match self {
-            Self::Small(writer) => writer.require_data(),
-            Self::Large(writer) => writer.require_data(),
-        }
-    }
-
-    fn input_complete(&self) -> bool {
-        match self {
-            Self::Small(writer) => writer.input_complete(),
-            Self::Large(writer) => writer.input_complete(),
-        }
-    }
-
-    async fn wait_for_capacity(&mut self) {
-        match self {
-            Self::Small(writer) => writer.wait_for_capacity().await,
-            Self::Large(writer) => writer.wait_for_capacity().await,
-        }
     }
 }
 
@@ -665,24 +496,6 @@ fn map_retrieval(error: &RetrievalError) -> S3ErrorCode {
         RetrievalError::NotModified | RetrievalError::DataReference | RetrievalError::ChunkRead => {
             S3ErrorCode::InternalError
         }
-    }
-}
-
-fn map_bucket_error(error: &BucketError) -> S3ErrorCode {
-    match error {
-        BucketError::Key(_) => S3ErrorCode::InvalidRequest,
-        BucketError::Record(_) => S3ErrorCode::InternalError,
-        BucketError::Store(_) => S3ErrorCode::ServiceUnavailable,
-    }
-}
-
-fn map_object_error(error: &ObjectMetadataError) -> S3ErrorCode {
-    match error {
-        ObjectMetadataError::Key(_)
-        | ObjectMetadataError::Continuation(_)
-        | ObjectMetadataError::InvalidListLimit => S3ErrorCode::InvalidRequest,
-        ObjectMetadataError::Record(_) => S3ErrorCode::InternalError,
-        ObjectMetadataError::Store(_) => S3ErrorCode::ServiceUnavailable,
     }
 }
 

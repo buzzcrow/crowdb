@@ -1,14 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{
-    key,
-    state::{state_key, DraftState},
-    MembershipPage, SplitLifecycleError,
-};
-use crate::{AuthorityError, DatasetAuthority, DatasetIdentity, OperationId};
+use super::{state::state_key, SplitLifecycleError};
+use crate::{DatasetIdentity, OperationId};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,35 +27,4 @@ pub(super) fn work_key(
     key.extend_from_slice(&revision.to_be_bytes());
     key.extend_from_slice(&page.to_be_bytes());
     Ok(key)
-}
-impl DatasetAuthority {
-    pub(super) async fn register_split_window(
-        &self,
-        identity: &DatasetIdentity,
-        state: &DraftState,
-        page_number: u64,
-        pages: &[MembershipPage],
-    ) -> Result<(), SplitLifecycleError> {
-        let mut intent = EvaluationIntent {
-            version: 1,
-            pages: Vec::new(),
-        };
-        for page in pages {
-            intent.pages.push(PageIntent {
-                key: key::membership_page(identity, page.snapshot, page.revision, &page.name, page.page)
-                    .map_err(AuthorityError::from)?,
-                digest: Sha256::digest(page.encode()?).into(),
-            });
-        }
-        self.put_split_state(
-            &work_key(
-                identity,
-                state.record.operation,
-                state.record.revision,
-                page_number,
-            )?,
-            &super::codec::encode(&intent)?,
-        )
-        .await
-    }
 }

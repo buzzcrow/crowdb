@@ -11,12 +11,13 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 
 use crowdb_access_iceberg::catalog::CatalogError;
-use crowdb_access_iceberg::key::OperationId;
+use crowdb_access_iceberg::key::{NamespaceId, OperationId};
 use crowdb_access_iceberg::namespace::{
-    NamespaceCreateRequest, NamespaceCreator, NamespaceDropRequest, NamespaceDropper, NamespaceIdentifier,
-    NamespaceProperties, NamespacePropertyRequest, NamespaceRepository, PropertyChanges,
+    NamespaceAction, NamespaceCreateRequest, NamespaceCreator, NamespaceDropRequest, NamespaceDropper,
+    NamespaceIdentifier, NamespaceJournal, NamespaceOperation, NamespacePhase, NamespaceProperties,
+    NamespacePropertyRequest, NamespaceRepository, PropertyChanges,
 };
-use crowdb_access_iceberg::operation::RequestIdentity;
+use crowdb_access_iceberg::operation::{PayloadStore, RequestIdentity};
 use fixture::TestNamespace;
 
 fn identity() -> RequestIdentity {
@@ -28,20 +29,40 @@ fn identity() -> RequestIdentity {
 
 #[tokio::test]
 async fn bounded_sweep_recovers_operations_without_client_retries() {
-    use crowdb_access_iceberg::namespace::{NamespaceJournal, NamespacePhase, NamespaceRecovery};
+    use crowdb_access_iceberg::namespace::NamespaceRecovery;
     let (fixture, _) = setup().await;
     let mut identities = Vec::new();
     for index in 0..9 {
         let mut request = creation(&fixture);
         request.identifier = NamespaceIdentifier::new(vec!["parent".into(), index.to_string()]).unwrap();
-        fixture
-            .store
-            .fail_after
-            .store(fixture.store.writes.load(Ordering::SeqCst) + 3, Ordering::SeqCst);
-        assert!(NamespaceCreator::new(fixture.store.clone())
-            .create(&request)
+        let parent = NamespaceRepository::new(fixture.store.clone())
+            .load(fixture.context, &request.identifier.parent().unwrap())
             .await
-            .is_err());
+            .unwrap()
+            .unwrap();
+        let input = PayloadStore::new(fixture.store.clone())
+            .put(fixture.context.catalog, request.identity.operation, b"{}")
+            .await
+            .unwrap();
+        NamespaceJournal::new(fixture.store.clone())
+            .begin(NamespaceOperation {
+                context: fixture.context,
+                identity: request.identity,
+                principal: request.principal,
+                action: NamespaceAction::Create,
+                identifier: request.identifier,
+                namespace: NamespaceId::random(),
+                parent: Some(parent.namespace),
+                phase: NamespacePhase::Prepared,
+                revision: 1,
+                input,
+                mutation: None,
+                scan_after: Vec::new(),
+                scan_generation: 0,
+                outcome: None,
+            })
+            .await
+            .unwrap();
         identities.push(request.identity.operation);
     }
     let recovery = NamespaceRecovery::new(fixture.store.clone());
@@ -135,8 +156,6 @@ async fn setup() -> (TestNamespace, NamespaceIdentifier) {
 async fn update(fixture: &TestNamespace, identifier: NamespaceIdentifier) {
     let request = NamespacePropertyRequest {
         context: fixture.context,
-        identity: identity(),
-        principal: "writer".into(),
         identifier,
         changes: PropertyChanges {
             removals: Vec::new(),
@@ -147,7 +166,7 @@ async fn update(fixture: &TestNamespace, identifier: NamespaceIdentifier) {
     for _ in 0..4 {
         match repository.update_properties(&request).await {
             Ok(Some(outcome)) => {
-                assert_eq!(outcome.status, 200);
+                assert_eq!(outcome.updated, ["updated"]);
                 let authority = repository
                     .load(fixture.context, &request.identifier)
                     .await
@@ -201,7 +220,7 @@ async fn property_writer_settles_every_interrupted_parent_admission() {
                 .await
                 .unwrap()
                 .status,
-            200
+            if offset == 1 { 200 } else { 409 }
         );
         update(&fixture, request.identifier).await;
     }

@@ -675,6 +675,11 @@ Each request's control message is a flatbuffer with
 `ordering_zone_offset`, `write_create_time_ms`, a `sync` option, and a raw data
 payload of exactly `size` bytes. The write handler validates the FlatBuffer,
 zone bounds and payload length before IO. The handler:
+
+Async callbacks retain the disk, connection, buffer and shared transport
+independently of the server facade. Exact registered payload views remain
+DiskOwned through write and synchronization completion; a closed connection
+suppresses response submission without releasing active disk data.
 1. Resolves `disk_id` to a `Disk` via `DiskSet`.
 2. Computes the physical offset: `zone.base_offset + zone_offset`.
 3. Calls `AlignedWriter::submit_ordered` for writes or `IoEngine::read`/`fsync` for
@@ -691,6 +696,15 @@ The data payload is passed from the crowdb-rpc frame decoder to
 `AlignedWriter`. Block-size-one writes remain zero-copy on the server; padded
 writes use one aligned server buffer. The read response includes the raw data
 payload.
+
+The negotiated RDMA control/data layout supplies a separately aligned 1 MiB
+data region. Eligible aligned writes hand this registered receive storage to
+the disk engine and retain DiskOwned state until completion. A READ reuses its
+request's reserved receive data allocation as output, retaining it through disk
+and response SEND completion. Client response leases stay caller-owned until
+their final release. These retained receive allocations propagate disk and
+consumer pressure through the bounded receive window. Alignment edges retain
+the existing explicit staging path; TCP keeps the same result/error mapping.
 
 Related writes are serialized by `ordering_zone_offset` within
 `AlignedWriter`. This ordering protects partial-block read-modify-write state;
@@ -770,6 +784,11 @@ flush returns `FsyncFailed`, exposed as `DurabilityFailure`; no failure is a
 proof of synchronization. Independent fsync remains available and can be
 repeated after an ambiguous response. The lifecycle no-reuse window is what
 makes an identical write retry safe.
+
+Failure of an accepted RDMA read, write or fsync is terminal for that operation:
+the client does not reconnect and replay it through a TCP fallback connection.
+It returns the typed transport error, ambiguous write outcome or durability
+failure. Known pre-submit rejections retain the existing retry handling.
 
 Status exposes route generation and age, topology and pool counts, healthy
 connections, operation/retry/backpressure/ambiguity counters, and operation

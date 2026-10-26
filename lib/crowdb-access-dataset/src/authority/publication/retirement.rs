@@ -30,17 +30,17 @@ impl DatasetAuthority {
         operation: OperationId,
     ) -> Result<Option<SnapshotRecord>, AuthorityError> {
         let operation_key = key::operation(identity, operation)?;
-        let Some(value) = self.seal_missing_candidate_key(&operation_key, 1024).await? else {
-            return Ok(None);
+        let snapshot = match self.seal_missing_candidate_key(&operation_key, 1024).await? {
+            Some(value) => SnapshotId::from_bytes(&value)?,
+            None => SnapshotId::from_bytes(operation.as_bytes())?,
         };
-        let snapshot = SnapshotId::from_bytes(&value)?;
         let Some(value) = self
             .seal_missing_candidate_key(&key::snapshot(identity, snapshot)?, 9 * 1024 * 1024)
             .await?
         else {
             return Ok(None);
         };
-        let record: SnapshotRecord = super::super::decode(&value)?;
+        let record = crate::authority::snapshot_resource::decode_snapshot(&value)?;
         if record.publication.snapshot != snapshot || record.publication.operation != operation {
             return Err(AuthorityError::Corrupt);
         }

@@ -2,6 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 #include "crowdb-rpc/transport/socket_transport.h"
+#ifdef CROWDB_RPC_HAVE_RDMA
+#    include "crowdb-rpc/transport/rdma/rdma_transport.h"
+#endif
 
 #ifdef __linux__
 #    include "crowdb-rpc/transport/epoll/epoll_engine.h"
@@ -11,6 +14,8 @@
 
 #include "crowdb-common/log.h"
 #include "crowdb-rpc/rpc_metrics.h"
+#include "crowdb-rpc/server/message.h"
+#include "crowdb-rpc/transport/rdma/rdma_capability.h"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -24,6 +29,7 @@
 #include <cassert>
 #include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 
 namespace crowdb::rpc
@@ -249,6 +255,9 @@ void Worker::run_loop()
                     break;
                 case SocketEvent::Accept:
                     transport_->on_accept(ev.fd);
+                    break;
+                case SocketEvent::External:
+                    transport_->on_external(ev.external_tag);
                     break;
                 }
             }
@@ -530,13 +539,29 @@ static bool on_writable_impl(Connection *conn, int fd, TransportStats *stats)
 
 // ── SocketTransport ───────────────────────────────────────────────
 
-SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, BufferPool *pool) : pool_(pool)
+SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, BufferPool *pool, RdmaConfig rdma_config)
+    : pool_(pool)
 {
     assert(io_engines >= 1 && io_workers >= 1);
     assert(io_workers % io_engines == 0);
-    if (pool_ == nullptr) {
-        pool_ = new SystemBufferPool(); // own a default pool
+    if (const char *fallback = std::getenv("CROWDB_RDMA_ALLOW_TCP_FALLBACK"); fallback != nullptr) {
+        allow_tcp_fallback_ = std::strcmp(fallback, "1") == 0;
+        if (!allow_tcp_fallback_ && std::strcmp(fallback, "0") != 0) {
+            CRB_LOG_WARN("invalid RDMA TCP fallback policy value={}; TCP fallback disabled", fallback);
+        }
     }
+    if (pool_ == nullptr) {
+        owned_pool_ = std::make_unique<SystemBufferPool>();
+        pool_       = owned_pool_.get();
+    }
+    rdma_config_                       = std::move(rdma_config);
+    rdma_config_.require_tcp_preflight = true;
+#ifdef CROWDB_RPC_HAVE_RDMA
+    if (const char *enabled = std::getenv("CROWDB_RDMA_ENABLED");
+        enabled != nullptr && std::strcmp(enabled, "1") == 0) {
+        rdma_transport_ = std::make_unique<RdmaTransport>(rdma_config_, pool_);
+    }
+#endif
     // Create N independent engines, each with M workers. When M>1, the
     // engine uses EV_ONESHOT/EPOLLONESHOT so only one worker wakes per
     // event; workers re-arm after processing. When M=1, no ONESHOT —
@@ -555,7 +580,21 @@ SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, Buffe
             auto worker    = std::make_unique<Worker>(worker_id, engine_ptr, &stats_, this);
             workers_.push_back(std::move(worker));
         }
+#ifdef CROWDB_RPC_HAVE_RDMA
+        if (rdma_transport_ != nullptr)
+            rdma_transport_->register_events(engine_ptr);
+#endif
     }
+#ifdef CROWDB_RPC_HAVE_RDMA
+    if (rdma_transport_ != nullptr) {
+        rdma_transport_->set_connection_handler([this](const std::shared_ptr<Connection> &conn) {
+            attach_rdma_connection(conn);
+            if (rdma_accept_handler_)
+                rdma_accept_handler_(conn);
+        });
+        set_external_handler([this](uint64_t tag) { rdma_transport_->handle_external_event(tag); });
+    }
+#endif
 }
 
 SocketTransport::SocketTransport(uint32_t num_workers, BufferPool *pool) : SocketTransport(1, num_workers, pool)
@@ -565,10 +604,19 @@ SocketTransport::SocketTransport(uint32_t num_workers, BufferPool *pool) : Socke
 SocketTransport::~SocketTransport()
 {
     stop();
+#ifdef CROWDB_RPC_HAVE_RDMA
+    // Finish CQ ownership before the engines and their wakeup fds disappear.
+    rdma_transport_.reset();
+#endif
 }
 
 void SocketTransport::start()
 {
+    started_.store(true, std::memory_order_release);
+#ifdef CROWDB_RPC_HAVE_RDMA
+    if (rdma_transport_ != nullptr)
+        rdma_transport_->start();
+#endif
     for (auto &w : workers_) {
         w->start();
     }
@@ -588,6 +636,11 @@ void SocketTransport::stop()
     for (auto &w : workers_) {
         w->close_connections();
     }
+#ifdef CROWDB_RPC_HAVE_RDMA
+    if (rdma_transport_ != nullptr)
+        rdma_transport_->shutdown();
+#endif
+    started_.store(false, std::memory_order_release);
 }
 
 void SocketTransport::add_listen_fd(int fd)
@@ -624,6 +677,13 @@ void SocketTransport::shutdown()
 
 bool SocketTransport::submit(Connection *conn, OutFrame *frame)
 {
+#ifdef CROWDB_RPC_HAVE_RDMA
+    if (conn != nullptr && conn->path() == ConnectionPath::Rdma && rdma_transport_ != nullptr) {
+        if (!rdma_transport_->submit(conn, frame))
+            return false;
+        return true;
+    }
+#endif
     if (workers_.empty()) {
         return false;
     }
@@ -712,6 +772,10 @@ bool SocketTransport::submit(Connection *conn, OutFrame *frame)
 
 bool SocketTransport::submit_inline(Connection *conn, OutFrame *frame)
 {
+#ifdef CROWDB_RPC_HAVE_RDMA
+    if (conn != nullptr && conn->path() == ConnectionPath::Rdma && rdma_transport_ != nullptr)
+        return rdma_transport_->submit(conn, frame);
+#endif
     frame->create_nano = now_nano();
     // Both paths: enqueue only. The post-event flush drains the queue
     // (retry_direct for Path A, flush_send for Path B), batching all
@@ -818,55 +882,80 @@ size_t SocketTransport::connection_count() const
     return live_conns_.size();
 }
 
-std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, int port)
+void SocketTransport::attach_rdma_connection(const std::shared_ptr<Connection> &conn,
+                                             Connection::OnFrameCallback on_frame, Connection::OnCloseCallback on_close)
 {
-    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        CRB_LOG_WARN("connect: socket() failed addr={} port={} errno={} ({})", addr, port, errno, std::strerror(errno));
-        return nullptr;
+    if (conn == nullptr || !conn->is_open())
+        return;
+    conn->set_on_frame(std::move(on_frame));
+    conn->set_on_close([this, on_close = std::move(on_close)](Connection *connection) {
+        if (on_close)
+            on_close(connection);
+        unregister_conn(connection);
+    });
+    register_conn(conn);
+    if (!conn->is_open())
+        unregister_conn(conn.get());
+    if (!workers_.empty()) {
+        Worker *worker  = get_worker();
+        conn->io_worker = worker;
+        conn->io_engine = worker == nullptr ? nullptr : worker->engine();
     }
+}
 
-    struct sockaddr_in sa{};
-    sa.sin_family = AF_INET;
-    sa.sin_port   = htons(static_cast<uint16_t>(port));
-    if (::inet_pton(AF_INET, addr.c_str(), &sa.sin_addr) <= 0) {
-        CRB_LOG_WARN("connect: inet_pton failed addr={} port={} errno={} ({})", addr, port, errno,
-                     std::strerror(errno));
-        ::close(fd);
-        return nullptr;
-    }
+void SocketTransport::set_rdma_accept_handler(RdmaAcceptHandler handler)
+{
+    rdma_accept_handler_ = std::move(handler);
+}
 
-    const int flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        CRB_LOG_WARN("connect: nonblocking setup failed addr={} port={} errno={} ({})", addr, port, errno,
-                     std::strerror(errno));
-        ::close(fd);
-        return nullptr;
-    }
-
-    // A missing peer must not block the caller's executor while TCP retries
-    // its handshake. Queued writes wait for writability in the worker;
-    // handshake failures use the same error/close path as established peers.
-    if (::connect(fd, reinterpret_cast<struct sockaddr *>(&sa), sizeof(sa)) < 0 && errno != EINPROGRESS) {
-        CRB_LOG_WARN("connect: connect() failed addr={} port={} errno={} ({})", addr, port, errno,
-                     std::strerror(errno));
-        ::close(fd);
-        return nullptr;
-    }
-
-    int nodelay = tcp_nodelay_ ? 1 : 0;
-    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-#ifdef __linux__
-    if (quickack_) {
-        int quickack = 1;
-        ::setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &quickack, sizeof(quickack));
-    }
+RdmaEndpointCapability SocketTransport::local_rdma_capability() const
+{
+#ifdef CROWDB_RPC_HAVE_RDMA
+    if (rdma_transport_ != nullptr)
+        return rdma_transport_->local_capability();
 #endif
+    RdmaEndpointCapability capability;
+    capability.protocol_version = RDMA_PROTOCOL_VERSION;
+    capability.data_classes     = {RDMA_CONTROL_CAPACITY, RDMA_METADATA_CAPACITY, RDMA_AGGREGATE_CAPACITY,
+                                   RDMA_DATAPATH_CAPACITY};
+    return capability;
+}
 
-    auto conn = create_connection(fd, addr + ":" + std::to_string(port));
-    CRB_LOG_INFO("rpc transport: connection initiated -> {}:{} conn_id={}", addr, port,
-                 static_cast<long long>(conn->id()));
-    return conn;
+bool SocketTransport::send_rdma_handshake(const std::shared_ptr<Connection> &conn)
+{
+    if (!conn || pool_ == nullptr)
+        return false;
+    const auto capability = local_rdma_capability();
+    const auto wire       = serialize_rdma_handshake(capability);
+    Buffer    *control    = build_raw_control(pool_, wire.data(), static_cast<uint32_t>(wire.size()));
+    if (control == nullptr)
+        return false;
+    OutFrame *frame = build_out_frame(0, RDMA_HANDSHAKE_MSG_TYPE, control, nullptr, FLAG_ONE_WAY);
+    if (frame == nullptr) {
+        control->release();
+        return false;
+    }
+    if (!submit(conn.get(), frame)) {
+        control->release();
+        delete frame;
+        return false;
+    }
+    return true;
+}
+
+bool SocketTransport::listen_rdma(const std::string &addr, int port)
+{
+#ifdef CROWDB_RPC_HAVE_RDMA
+    if (rdma_transport_ == nullptr || !rdma_transport_->listen(addr, port))
+        return false;
+    for (auto &engine : engines_)
+        rdma_transport_->register_events(engine.get());
+    return true;
+#else
+    (void)addr;
+    (void)port;
+    return false;
+#endif
 }
 
 std::unique_ptr<SocketEngine> SocketTransport::create_engine()

@@ -63,6 +63,10 @@ impl GcWorker {
             verify_terminal_record(&key, &item.value)?;
             if key != task.key()
                 && !matches!(
+                    StorageRecord::decode(&key, &item.value)?,
+                    StorageRecord::RetiredTable(_) | StorageRecord::RetiredNamespace { .. }
+                )
+                && !matches!(
                     key,
                     IcebergKey::Catalog {
                         scope: CatalogScope::Authority | CatalogScope::GcRetirement,
@@ -112,6 +116,8 @@ fn verify_terminal_record(key: &IcebergKey, bytes: &[u8]) -> Result<(), GcWorkEr
             Err(CatalogError::Busy.into())
         }
         StorageRecord::Authority(_)
+        | StorageRecord::RetiredTable(_)
+        | StorageRecord::RetiredNamespace { .. }
         | StorageRecord::GcTask(_)
         | StorageRecord::GcCandidate(_)
         | StorageRecord::GcPage(_)

@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 use super::{
     ControlClient, CreateUpload, ExactMatrix, FieldPreview, InspectionPreparation, MatrixRequest, OpaqueId,
-    ReadPlan, ReadPreparation, ReadSession, SampleId, SnapshotSummary, UploadPart, UploadStatus,
+    ReadBinding, ReadPlan, SampleId, SnapshotSummary, UploadPart, UploadStatus,
 };
 use crate::{BatchStream, Error};
 use bytes::Bytes;
@@ -154,62 +154,27 @@ impl ControlClient {
             .map_err(|error| error.with_identity(id.as_str()))?;
         Ok(serde_json::from_slice(&bytes)?)
     }
-    /// One bounded plan window. Keep the same plan identity and advance only the returned page.
+    /// Pins immutable versions into a client-owned continuation, without read state.
     /// # Errors
-    /// Returns capability, stale preparation, selection or service errors.
-    pub async fn prepare_read(&self, request: &ReadPlan) -> Result<ReadPreparation, Error> {
-        self.call("split-reads", "POST", &["read-plans"], Some(request))
-            .await
-            .map_err(|error| error.with_identity(request.id.as_str()))
-    }
-    /// # Errors
-    /// Returns capability, missing preparation or service errors.
-    pub async fn read_status(&self, id: &OpaqueId) -> Result<ReadPreparation, Error> {
-        self.call::<(), _>("split-reads", "GET", &["read-plans", id.as_str()], None)
+    /// Returns capability, query, admission or service failures.
+    pub async fn bind_read(&self, request: &ReadPlan) -> Result<ReadBinding, Error> {
+        self.call("stateless-reads", "POST", &["reads", "bind"], Some(request))
             .await
     }
+    /// Dropping cancels only this HTTP stream. Retrying a cursor replays its batch.
     /// # Errors
-    /// Returns capability, closed preparation or service errors.
-    pub async fn close_read(&self, id: &OpaqueId) -> Result<ReadSession, Error> {
-        self.call::<(), _>("split-reads", "DELETE", &["read-plans", id.as_str()], None)
-            .await
-    }
-    /// Only an explicit acknowledgement advances delivery. Dropping cancels the HTTP stream.
-    /// # Errors
-    /// Returns capability, closed session, bounded stream or service errors.
-    pub async fn next_batch(&self, id: &OpaqueId) -> Result<BatchStream, Error> {
-        self.require("split-reads").await?;
+    /// Returns invalid continuations, deletion admission, bounded work or service failures.
+    pub async fn next_batch(&self, cursor: &str) -> Result<BatchStream, Error> {
+        self.require("stateless-reads").await?;
         Ok(BatchStream::new_v2(
             self.inner
                 .http
-                .stream::<()>("POST", &self.path(&["read-plans", id.as_str(), "next"]), None)
+                .stream(
+                    "POST",
+                    &self.path(&["reads", "next"]),
+                    Some(&serde_json::json!({"cursor":cursor})),
+                )
                 .await?,
         ))
-    }
-    /// # Errors
-    /// Returns capability, stale acknowledgement or service errors.
-    pub async fn acknowledge(
-        &self,
-        id: &OpaqueId,
-        request: &crate::Acknowledge,
-    ) -> Result<crate::Progress, Error> {
-        self.call(
-            "split-reads",
-            "PUT",
-            &["read-plans", id.as_str(), "progress"],
-            Some(request),
-        )
-        .await
-    }
-    /// # Errors
-    /// Returns capability, closed session or service errors.
-    pub async fn progress(&self, id: &OpaqueId) -> Result<crate::Progress, Error> {
-        self.call::<(), _>(
-            "split-reads",
-            "GET",
-            &["read-plans", id.as_str(), "progress"],
-            None,
-        )
-        .await
     }
 }

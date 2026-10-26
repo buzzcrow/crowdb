@@ -5,6 +5,8 @@ mod common;
 #[path = "common/manifest_entry.rs"]
 #[allow(dead_code)]
 mod fixture;
+#[path = "common/gc_store.rs"]
+mod gc_store;
 #[path = "common/manifest_list.rs"]
 #[allow(dead_code)]
 mod list_fixture;
@@ -30,6 +32,9 @@ mod snapshot;
 #[path = "common/manifest_stream.rs"]
 #[allow(dead_code)]
 mod stream;
+
+#[path = "common/legacy_table_drop.rs"]
+mod legacy_drop;
 
 use std::sync::atomic::Ordering;
 
@@ -276,8 +281,10 @@ async fn commit_winning_head_cas_forces_pending_lifecycle_to_abort_without_rebas
                 .await
                 .unwrap()
                 .status,
-            409
+            204
         );
+        assert_eq!(head(&fixture).await.generation, committed.generation);
+        assert_eq!(head(&fixture).await.metadata_digest, committed.metadata_digest);
     }
 }
 
@@ -290,13 +297,13 @@ async fn background_lifecycle_sweep_recovers_tombstone_without_client_retry() {
     let fixture = TestPrior::new().await;
     let request = lifecycle_request(&fixture, false).await;
     let store = fixture.namespace.store.clone();
-    store.table_head_pause_after.store(true, Ordering::SeqCst);
-    let task_store = store.clone();
-    let task_request = request.clone();
-    let pending = tokio::spawn(async move { TableLifecycles::new(task_store).execute(&task_request).await });
-    store.table_head_entered.notified().await;
-    pending.abort();
-    assert!(pending.await.unwrap_err().is_cancelled());
+    legacy_drop::install(
+        store.clone(),
+        &request,
+        fixture.selected.head.clone(),
+        TableLifecyclePhase::Published,
+    )
+    .await;
     let recovery = TableRecovery::new(store.clone(), fixture.blocks.clone(), limits());
     let page = recovery
         .recover_page(request.context, TableRecoveryKind::Lifecycle, None, 2000)

@@ -6,7 +6,9 @@ use crowdb_access_iceberg::catalog::{
     RoutedCatalogStore,
 };
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
-use crowdb_access_iceberg::storage::{connect, foreground_blocks, IcebergLargeWriteSettings};
+use crowdb_access_iceberg::storage::{
+    connect_with_chunk_kv_config, foreground_blocks, IcebergLargeWriteSettings,
+};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 use crowdb_chunk_client::ChunkIoClient;
@@ -93,12 +95,13 @@ pub async fn run_with_shutdown(
     if arguments.len() > 7 {
         return Err("too many Iceberg command arguments".into());
     }
-    let (repository, store, chunks) = connect(
+    let (repository, store, chunks) = connect_with_chunk_kv_config(
         config.management_seeds.clone(),
         access_config.read.policy(),
         access_config.iceberg_small_write().policy(),
         access_config.common.diskio_connections_per_endpoint,
         access_config.common.diskio_rpc_workers,
+        &access_config.common.chunk_kv_rpc,
     )
     .await?;
     let result = if arguments.is_empty() || arguments == ["serve"] {
@@ -199,11 +202,7 @@ async fn start_listener(
     let listener = TcpListener::bind(&address).await?;
     tracing::info!(%address, "Iceberg listener ready");
     let serving = serve(listener, service, wait_for_shutdown(shutdown));
-    let multipart = Box::pin(super::file_recovery::run(
-        repository.clone(),
-        store.clone(),
-        blocks.clone(),
-    ));
+    let multipart = Box::pin(super::file_recovery::run(repository.clone(), store.clone()));
     let tables = super::table_recovery::run(repository.clone(), store.clone(), blocks.clone());
     let (gc_store, gc_chunks) =
         connect_gc_pool(&access_config, management_seeds, store.clone(), gc_config.enabled).await?;
@@ -245,12 +244,13 @@ async fn connect_gc_pool(
     if !enabled {
         return Ok((store, None));
     }
-    let (_, gc_store, gc_chunks) = connect(
+    let (_, gc_store, gc_chunks) = connect_with_chunk_kv_config(
         management_seeds,
         access_config.read.policy(),
         access_config.iceberg_small_write().policy(),
         access_config.common.diskio_connections_per_endpoint,
         access_config.common.diskio_rpc_workers,
+        &access_config.common.chunk_kv_rpc,
     )
     .await?;
     Ok((gc_store, Some(gc_chunks)))

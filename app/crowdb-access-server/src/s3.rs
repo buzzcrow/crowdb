@@ -27,6 +27,8 @@ mod inspection;
 pub use inspection::{ObjectInspector, OBJECT_LOCATIONS_PATH};
 mod health;
 mod operations;
+#[cfg(feature = "test-util")]
+pub mod test_support;
 pub use health::{AccessHealthHandler, HealthObserver};
 
 pub use crate::http_receive::install_body_receive_provider;

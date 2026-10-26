@@ -83,3 +83,15 @@ pub(crate) fn membership_prefix(
     key.extend_from_slice(revision.as_bytes());
     Ok(key)
 }
+
+pub(crate) fn revision_identity(
+    key: &[u8],
+) -> Result<(DatasetIdentity, SnapshotId, SplitRevisionId), crate::AuthorityError> {
+    let split = key.len().checked_sub(16).ok_or(crate::AuthorityError::Corrupt)?;
+    let (identity, snapshot) = crate::key::decode_scoped_operation(&key[..split], b"DS\0SR\0")?;
+    Ok((
+        identity,
+        SnapshotId::from_bytes(snapshot.as_bytes())?,
+        SplitRevisionId::from_bytes(&key[split..])?,
+    ))
+}

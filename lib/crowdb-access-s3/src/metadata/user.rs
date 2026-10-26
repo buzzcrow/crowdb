@@ -18,6 +18,20 @@ const MAX_ENCODED_BYTES: u64 = 64 * 1024;
 pub struct UserMetadata(BTreeMap<String, String>);
 
 impl UserMetadata {
+    /// Validates normalized names and values supplied by a native caller.
+    /// # Errors
+    /// Rejects invalid names, non-ASCII values and combined metadata above 2 KiB.
+    pub fn from_values(values: BTreeMap<String, String>) -> Result<Self, S3ErrorCode> {
+        let metadata = Self(values);
+        metadata.validate()?;
+        Ok(metadata)
+    }
+
+    #[must_use]
+    pub fn values(&self) -> &BTreeMap<String, String> {
+        &self.0
+    }
+
     /// Captures normalized names and opaque printable ASCII values.
     ///
     /// # Errors

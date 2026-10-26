@@ -93,8 +93,12 @@ impl NamespaceRepository {
         let CasOutcome::Conflict(Some(value)) = outcome else {
             return Err(ValidationError::Record.into());
         };
-        let StorageRecord::NamespaceAuthority(current) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
+        let current = match StorageRecord::decode(&key, &value.bytes)? {
+            StorageRecord::NamespaceAuthority(current) => current,
+            StorageRecord::RetiredNamespace { .. } => {
+                return self.finish_property_error(operation, 404).await;
+            }
+            _ => return Err(ValidationError::Record.into()),
         };
         if current.mutation_revision <= expected.mutation_revision
             || current.pending_operation == Some(operation.identity.operation)

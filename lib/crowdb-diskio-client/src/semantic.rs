@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 #[cfg(feature = "test-util")]
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -14,7 +14,8 @@ use arc_swap::ArcSwap;
 use bytes::Bytes;
 use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_rpc_ffi::{
-    ConnectionPoolError, ConnectionPoolIndex, OwnedClientRoute, RpcError, RpcServer, SelectedConnection,
+    ConnectionPoolError, ConnectionPoolIndex, OwnedClientRoute, OwnedPayload, RpcError, RpcServer,
+    SelectedConnection,
 };
 
 use crate::client::{DiskIoRetCode, WireClient, WireError, WireWriteTarget};
@@ -23,8 +24,11 @@ use crate::{DiskId, DiskioError, DiskioResult, DiskioStatus, SegmentTarget};
 
 mod connection;
 mod native_routes;
+mod observation;
+mod shutdown;
 pub use native_routes::NativeDiskRouteResolver;
 mod drain;
+pub use observation::{DiskPlacement, DiskTopologyView};
 mod write;
 mod write_views;
 
@@ -87,6 +91,8 @@ impl OperationOptions {
 /// Discovery, pool, and retry bounds for a semantic client.
 #[derive(Debug, Clone)]
 pub struct DiskioClientConfig {
+    /// Explicit data-transport configuration; `None` retains native environment defaults.
+    pub rdma: Option<crowdb_rpc_ffi::RdmaConfig>,
     pub management_seeds: Vec<String>,
     pub normal_connections_per_endpoint: usize,
     pub priority_connections_per_endpoint: usize,
@@ -128,6 +134,7 @@ impl NativeDiskIoRoutes {
 impl Default for DiskioClientConfig {
     fn default() -> Self {
         Self {
+            rdma: None,
             management_seeds: Vec::new(),
             normal_connections_per_endpoint: 2,
             priority_connections_per_endpoint: 1,
@@ -290,6 +297,8 @@ impl Drop for InflightGuard<'_> {
 
 /// Complete routed semantic `DiskIO` client.
 pub struct DiskioClient {
+    closed: AtomicBool,
+    closing: tokio::sync::Notify,
     config: DiskioClientConfig,
     service: Option<ServiceRegistryClient>,
     hardware: Option<HardwareClient>,
@@ -314,6 +323,24 @@ impl std::fmt::Debug for DiskioClient {
 }
 
 impl DiskioClient {
+    /// Snapshot the owned RPC transport's versioned settings and counters.
+    ///
+    /// # Errors
+    /// Returns an error if the native snapshot cannot be allocated.
+    pub fn transport_status_json(&self) -> DiskioResult<Vec<u8>> {
+        self.server
+            .transport_status_json()
+            .map_err(|error| DiskioError::TransportUnavailable(error.to_string()))
+    }
+
+    /// Producer storage uses the same device arena as the discovered routes.
+    /// An exhausted active arena returns no allocation, including in mixed
+    /// TCP/RDMA routing; it never expands the native registered budget.
+    #[must_use]
+    pub fn producer_allocator(&self) -> crowdb_rpc_ffi::ProducerBufferAllocator {
+        crowdb_rpc_ffi::ProducerBufferAllocator::new(Arc::clone(&self.server), false)
+    }
+
     /// Classify an actual wire return code without broadening ordinary read retries.
     #[cfg(feature = "test-util")]
     #[must_use]
@@ -330,13 +357,15 @@ impl DiskioClient {
     #[cfg(feature = "test-util")]
     pub fn connect_for_tests(routes: Vec<TestDiskRoute>, config: DiskioClientConfig) -> DiskioResult<Self> {
         config.validate(false)?;
-        let server = Arc::new(RpcServer::with_engines(None, 1, config.rpc_workers));
+        let server = Self::create_rpc_server(&config)?;
         server.set_send_queue_capacity(config.send_queue_capacity);
         server
             .listen("127.0.0.1", 0)
             .map_err(|error| DiskioError::TransportUnavailable(format!("start RPC client: {error}")))?;
         server.start();
         let client = Self {
+            closed: AtomicBool::new(false),
+            closing: tokio::sync::Notify::new(),
             wire: Arc::new(WireClient::with_completion_capacity(config.max_pending_calls)),
             server,
             normal: ConnectionPoolIndex::new(
@@ -399,6 +428,7 @@ impl DiskioClient {
     /// Returns a control-plane, topology, or connection error without
     /// publishing a partial generation.
     pub async fn refresh(&self) -> DiskioResult<u64> {
+        self.check_open()?;
         let observed = self.routes.load_full();
         let service = self.service.as_ref().ok_or_else(|| {
             DiskioError::TopologyUnavailable("static test topology cannot be refreshed".into())
@@ -418,6 +448,9 @@ impl DiskioClient {
     }
 
     async fn refresh_topology_if_due(&self) {
+        if self.closed.load(Ordering::Acquire) {
+            return;
+        }
         if self.service.is_none() {
             return;
         }
@@ -452,6 +485,7 @@ impl DiskioClient {
         observed: &Arc<RouteSnapshot>,
         draft: topology::TopologyDraft,
     ) -> DiskioResult<u64> {
+        self.check_open()?;
         let mut endpoints = HashMap::<Arc<str>, Arc<str>>::new();
         for route in draft.routes.values() {
             endpoints
@@ -500,10 +534,27 @@ impl DiskioClient {
         length: u32,
         options: OperationOptions,
     ) -> DiskioResult<Bytes> {
+        self.read_payload(target, offset, length, options)
+            .await
+            .map(OwnedPayload::into_bytes)
+    }
+
+    /// Read a view retaining its backing allocation and native receive credit.
+    ///
+    /// # Errors
+    /// Returns the same typed failures and retry boundary as `read`.
+    pub async fn read_payload(
+        &self,
+        target: SegmentTarget,
+        offset: u64,
+        length: u32,
+        options: OperationOptions,
+    ) -> DiskioResult<OwnedPayload> {
+        self.check_open()?;
         self.refresh_topology_if_due().await;
         let (zone_offset, _) = target.checked_range(offset, length as usize)?;
         if length == 0 {
-            return Ok(Bytes::new());
+            return Ok(OwnedPayload::new());
         }
         let _inflight = self.begin_operation(OperationKind::Read, options.lane)?;
         let mut backoff = self.config.reconnect_initial_backoff;
@@ -533,7 +584,23 @@ impl DiskioClient {
             let result = self.await_read(future, length, options.deadline).await;
             match result {
                 Ok(data) => return Ok(data),
-                Err(error) if error.is_retryable_read() && attempt + 1 < self.config.retry_attempts => {
+                Err(error)
+                    if selected.connection().is_rdma()
+                        && matches!(
+                            error,
+                            DiskioError::TransportUnavailable(_)
+                                | DiskioError::Backpressure(_)
+                                | DiskioError::DeadlineExceeded
+                                | DiskioError::Protocol(_)
+                        ) =>
+                {
+                    return Err(DiskioError::AcceptedReadInterrupted(error.to_string()));
+                }
+                Err(error)
+                    if !selected.connection().is_rdma()
+                        && error.is_retryable_read()
+                        && attempt + 1 < self.config.retry_attempts =>
+                {
                     self.refresh_topology_after_read_failure().await;
                     self.prepare_retry(&route, options.lane, &selected, &mut backoff, options.deadline)
                         .await?;
@@ -551,6 +618,7 @@ impl DiskioClient {
     /// Returns a typed topology, transport, durability, protocol, or disk
     /// error.
     pub async fn fsync(&self, disk_id: DiskId, options: OperationOptions) -> DiskioResult<()> {
+        self.check_open()?;
         self.refresh_topology_if_due().await;
         self.fsync_inner(disk_id, options).await
     }
@@ -591,6 +659,7 @@ impl DiskioClient {
     }
 
     fn begin_operation(&self, kind: OperationKind, lane: TrafficLane) -> DiskioResult<InflightGuard<'_>> {
+        self.check_open()?;
         let pending_limit = u64::try_from(self.config.max_pending_calls).unwrap_or(u64::MAX);
         let lane_inflight = match lane {
             TrafficLane::Normal => &self.counters.normal_inflight,
@@ -607,16 +676,19 @@ impl DiskioClient {
             )));
         }
         self.counters.inflight.fetch_add(1, Ordering::Relaxed);
-        Ok(InflightGuard {
+        let guard = InflightGuard {
             counters: &self.counters,
             kind,
             started: Instant::now(),
             counted_inflight: true,
             lane_inflight: Some(lane_inflight),
-        })
+        };
+        self.check_open()?;
+        Ok(guard)
     }
 
     fn select(&self, disk_id: DiskId, lane: TrafficLane) -> DiskioResult<(DiskRoute, SelectedConnection)> {
+        self.check_open()?;
         let route = self.routes.load().routes.get(&disk_id).cloned().ok_or_else(|| {
             DiskioError::TopologyUnavailable(format!(
                 "disk {}:{} has no published route",
@@ -723,6 +795,9 @@ impl DiskioClient {
                 }
                 Err(error) => {
                     last_error = Some(error);
+                    if selected.connection().is_rdma() {
+                        break;
+                    }
                     if attempt + 1 < self.config.retry_attempts
                         && self
                             .prepare_retry(&route, options.lane, &selected, &mut backoff, options.deadline)
@@ -766,13 +841,13 @@ impl DiskioClient {
         future: crowdb_rpc_ffi::CallFuture,
         expected: u32,
         deadline: Instant,
-    ) -> DiskioResult<Bytes> {
+    ) -> DiskioResult<OwnedPayload> {
         if Instant::now() >= deadline {
             return Err(DiskioError::DeadlineExceeded);
         }
         let (code, data) = tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline),
-            WireClient::await_read_response(future),
+            WireClient::await_read_payload(future),
         )
         .await
         .map_err(|_| DiskioError::DeadlineExceeded)?

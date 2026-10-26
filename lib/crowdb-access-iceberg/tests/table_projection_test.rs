@@ -19,7 +19,6 @@ use crowdb_access_iceberg::{
     table::{SnapshotLoadingMode, TableLoad, TableLoader},
 };
 use fixture::TestTable;
-use sha2::{Digest, Sha256};
 
 async fn load(fixture: &TestTable, loader: &TableLoader, mode: SnapshotLoadingMode) -> Vec<u8> {
     let TableLoad::Loaded { metadata, .. } = loader
@@ -49,20 +48,46 @@ fn projection(key: &[u8]) -> bool {
 }
 
 #[tokio::test]
-async fn validated_refs_reuse_pages_but_still_verify_canonical_storage() {
-    let fixture = TestTable::new().await;
-    let loader = fixture.loader();
+async fn cold_repeated_and_concurrent_loads_never_write_or_read_projection_state() {
+    let fixture = Arc::new(TestTable::new().await);
+    let loader = Arc::new(fixture.loader());
+    let store = &fixture.fixture.store;
+    let writes = store.writes.load(Ordering::SeqCst);
+    let attempts = store.cas_attempts.load(Ordering::SeqCst);
+    let before = store.values.load_full();
     let expected = load(&fixture, &loader, SnapshotLoadingMode::Refs).await;
-    assert_eq!(loader.projection_hits_for_tests(), 0);
-    let reads = fixture.blocks.reads.load(Ordering::SeqCst);
-    assert_eq!(load(&fixture, &loader, SnapshotLoadingMode::Refs).await, expected);
-    assert_eq!(loader.projection_hits_for_tests(), 1);
-    assert!(fixture.blocks.reads.load(Ordering::SeqCst) > reads);
+    let canonical_reads = fixture.blocks.reads.load(Ordering::SeqCst);
+    let mut readers = tokio::task::JoinSet::new();
+    for _ in 0..32 {
+        let fixture = fixture.clone();
+        let loader = loader.clone();
+        readers.spawn(async move { load(&fixture, &loader, SnapshotLoadingMode::Refs).await });
+    }
+    while let Some(result) = readers.join_next().await {
+        assert_eq!(result.unwrap(), expected);
+    }
+    assert!(fixture.blocks.reads.load(Ordering::SeqCst) > canonical_reads);
     assert_eq!(
         load(&fixture, &loader, SnapshotLoadingMode::All).await,
         fixture.bytes
     );
-    assert_eq!(loader.projection_hits_for_tests(), 1);
+    assert!(matches!(
+        loader
+            .load(
+                fixture.fixture.context,
+                &fixture.parent.identifier,
+                &fixture.head.name,
+                SnapshotLoadingMode::Refs,
+                Some("*")
+            )
+            .await
+            .unwrap(),
+        TableLoad::NotModified { .. }
+    ));
+    assert_eq!(store.writes.load(Ordering::SeqCst), writes);
+    assert_eq!(store.cas_attempts.load(Ordering::SeqCst), attempts);
+    assert_eq!(store.projection_reads.load(Ordering::SeqCst), 0);
+    assert!(Arc::ptr_eq(&before, &store.values.load_full()));
     fixture.blocks.corrupt_reads.store(true, Ordering::SeqCst);
     assert!(loader
         .load(
@@ -74,66 +99,48 @@ async fn validated_refs_reuse_pages_but_still_verify_canonical_storage() {
         )
         .await
         .is_err());
-    assert_eq!(loader.projection_hits_for_tests(), 1);
 }
 
 #[tokio::test]
-async fn every_missing_or_corrupt_projection_page_and_receipt_falls_back_exactly() {
+async fn existing_or_corrupt_projection_pages_are_ignored_without_repair() {
+    use crowdb_access_iceberg::{file::FileRepository, metadata_projection::ProjectionStore};
     let fixture = TestTable::new().await;
     let loader = fixture.loader();
     let expected = load(&fixture, &loader, SnapshotLoadingMode::Refs).await;
-    let original = fixture.fixture.store.values.load_full();
+    let record = FileRepository::new(fixture.fixture.store.clone())
+        .load(fixture.fixture.context, &fixture.head.metadata_location)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        ProjectionStore::new(fixture.fixture.store.clone(), fixture.blocks.clone())
+            .put(&record, fixture.head.generation, &fixture.bytes)
+            .await
+    );
+    let store = &fixture.fixture.store;
+    let original = store.values.load_full();
     let keys: Vec<_> = original.keys().filter(|key| projection(key)).cloned().collect();
-    assert!(keys.len() > 2);
-    for key in &keys {
+    assert!(!keys.is_empty());
+    let attempts = store.cas_attempts.load(Ordering::SeqCst);
+    assert_eq!(load(&fixture, &loader, SnapshotLoadingMode::Refs).await, expected);
+    for key in keys {
         for remove in [false, true] {
             let mut damaged = (*original).clone();
             if remove {
-                damaged.remove(key);
+                damaged.remove(&key);
             } else {
-                damaged.get_mut(key).unwrap().bytes[0] ^= 1;
+                damaged.get_mut(&key).unwrap().bytes[0] ^= 1;
             }
-            fixture.fixture.store.values.store(Arc::new(damaged));
+            store.values.store(Arc::new(damaged));
             assert_eq!(load(&fixture, &loader, SnapshotLoadingMode::Refs).await, expected);
-            assert_eq!(loader.projection_hits_for_tests(), 0);
-            assert_eq!(
-                load(&fixture, &loader, SnapshotLoadingMode::All).await,
-                fixture.bytes
-            );
         }
     }
+    assert_eq!(store.cas_attempts.load(Ordering::SeqCst), attempts);
+    assert_eq!(store.projection_reads.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
-async fn projection_identity_and_version_cannot_replace_validation_receipt() {
-    let fixture = TestTable::new().await;
-    let loader = fixture.loader();
-    let expected = load(&fixture, &loader, SnapshotLoadingMode::Refs).await;
-    let original = fixture.fixture.store.values.load_full();
-    let root_key = original
-        .keys()
-        .find(|key| projection(key) && key.ends_with(&[0; 4]))
-        .unwrap();
-    for field in ["version", "generation", "digest", "table", "length"] {
-        let mut damaged = (*original).clone();
-        let root = damaged.get_mut(root_key).unwrap();
-        let mut body: serde_json::Value = serde_json::from_slice(&root.bytes[32..]).unwrap();
-        if matches!(field, "digest" | "table") {
-            body[field][0] = serde_json::json!(body[field][0].as_u64().unwrap() ^ 1);
-        } else {
-            body[field] = serde_json::json!(999);
-        }
-        let body = serde_json::to_vec(&body).unwrap();
-        root.bytes = Sha256::digest(&body).to_vec();
-        root.bytes.extend(body);
-        fixture.fixture.store.values.store(Arc::new(damaged));
-        assert_eq!(load(&fixture, &loader, SnapshotLoadingMode::Refs).await, expected);
-        assert_eq!(loader.projection_hits_for_tests(), 0);
-    }
-}
-
-#[tokio::test]
-async fn receipt_never_relaxes_parser_limits_or_selected_head_binding() {
+async fn loads_preserve_parser_limits_and_selected_head_binding() {
     let mut fixture = TestTable::new().await;
     load(&fixture, &fixture.loader(), SnapshotLoadingMode::Refs).await;
     for limit in 0..5 {
@@ -156,7 +163,6 @@ async fn receipt_never_relaxes_parser_limits_or_selected_head_binding() {
             )
             .await
             .is_err());
-        assert_eq!(loader.projection_hits_for_tests(), 0);
     }
     fixture.head.table_uuid = Some(uuid::Uuid::new_v4());
     fixture.publish_head().await;
@@ -171,41 +177,10 @@ async fn receipt_never_relaxes_parser_limits_or_selected_head_binding() {
         )
         .await
         .is_err());
-    assert_eq!(loader.projection_hits_for_tests(), 0);
 }
 
 #[tokio::test]
-async fn optional_projection_write_failures_do_not_fail_canonical_loads() {
-    let fixture = TestTable::new().await;
-    let original = fixture.fixture.store.values.load_full();
-    let loader = fixture.loader();
-    let expected = load(&fixture, &loader, SnapshotLoadingMode::Refs).await;
-    let count = fixture
-        .fixture
-        .store
-        .values
-        .load()
-        .keys()
-        .filter(|key| projection(key))
-        .count();
-    for boundary in 1..=count {
-        fixture.fixture.store.values.store(original.clone());
-        let writes = fixture.fixture.store.writes.load(Ordering::SeqCst);
-        fixture
-            .fixture
-            .store
-            .fail_after
-            .store(writes + boundary, Ordering::SeqCst);
-        assert_eq!(
-            load(&fixture, &fixture.loader(), SnapshotLoadingMode::Refs).await,
-            expected
-        );
-        fixture.fixture.store.fail_after.store(0, Ordering::SeqCst);
-    }
-}
-
-#[tokio::test]
-async fn warm_projections_cannot_hide_head_or_namespace_changes_during_reads() {
+async fn loads_reject_head_or_namespace_changes_during_reads() {
     for change_head in [false, true] {
         let fixture = TestTable::new().await;
         let loader = fixture.loader();
@@ -245,6 +220,5 @@ async fn warm_projections_cannot_hide_head_or_namespace_changes_during_reads() {
                 crowdb_access_iceberg::catalog::CatalogError::Conflict
             ))
         ));
-        assert_eq!(loader.projection_hits_for_tests(), 1);
     }
 }

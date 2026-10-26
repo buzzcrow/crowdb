@@ -7,7 +7,7 @@
 // until SIGTERM/SIGINT. On shutdown, prints transport stats to stdout
 // as key=value lines (parsed by the CLI bench runner).
 //
-// Usage: crowdb-rpc-fb-server [--port=18080] [--io-engines=1] [--io-workers=1]
+// Usage: crowdb-rpc-fb-server [--host=127.0.0.1] [--port=18080] [--io-engines=1] [--io-workers=1]
 //        [--enable-nagle] [--logdir=<path>] [--metrics-interval=5]
 // Short aliases: -p -e -w -n -l -m (e.g. -p=18080 -e=2 -w=4).
 // The default log directory is below the workspace runtime root.
@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 static std::atomic<bool> g_running{true};
@@ -36,6 +37,7 @@ static void on_signal(int /*signo*/)
 // gflags has no native alias support, so short forms (-p, -e, etc.) are
 // separate flags forwarded to the long ones after parse (see main).
 DEFINE_int32(port, 18080, "Listen port");
+DEFINE_string(host, "127.0.0.1", "Listen address");
 DEFINE_int32(p, 18080, "Alias for --port");
 DEFINE_uint32(io_engines, 1, "Independent epoll instances (round-robin). >1 parallelizes event queues.");
 DEFINE_uint32(e, 1, "Alias for --io_engines");
@@ -46,6 +48,8 @@ DEFINE_bool(n, false, "Alias for --enable_nagle");
 DEFINE_bool(quickack, false, "Enable TCP_QUICKACK on connections (Linux only). Breaks Nagle + delayed-ACK deadlock.");
 DEFINE_bool(event_write, false, "Event-write mode: submit() enqueues to I/O worker for coalesced writev.");
 DEFINE_uint32(send_queue_capacity, 4096, "Per-connection send queue capacity (backpressure bound).");
+DEFINE_bool(require_rdma, false, "Fail startup unless the RDMA CM listener is active.");
+DEFINE_string(status_file, "", "Write startup transport status JSON after listener readiness.");
 DEFINE_string(logdir, "", "Log directory for server + metrics logs. Default: workspace runtime root.");
 DEFINE_string(l, "", "Alias for --logdir");
 DEFINE_uint32(metrics_interval, 5, "Metrics flush interval in seconds.");
@@ -109,22 +113,45 @@ int main(int argc, char *argv[])
     crowdb_rpc_server_set_event_write(server, FLAGS_event_write ? 1 : 0);
     crowdb_rpc_server_set_send_queue_capacity(server, FLAGS_send_queue_capacity);
 
-    if (crowdb_rpc_server_listen(server, "127.0.0.1", FLAGS_port) != CROWDB_RPC_OK) {
+    if (crowdb_rpc_server_listen(server, FLAGS_host.c_str(), FLAGS_port) != CROWDB_RPC_OK) {
         std::fprintf(stderr, "error: failed to listen on port %d\n", FLAGS_port);
         crowdb_rpc_server_destroy(server);
         return 1;
     }
 
     int actual_port = crowdb_rpc_server_port(server);
-    // Print the port so the parent process can read it.
-    std::printf("listening port=%d\n", actual_port);
-    std::fflush(stdout);
-
     // Register the built-in echo handler for msg_type 100.
     const uint16_t ECHO_MSG_TYPE = 100;
     crowdb_rpc_server_register_echo_handler(server, ECHO_MSG_TYPE);
+    crowdb_rpc_server_register_status_handler(server, 101);
 
     crowdb_rpc_server_start(server);
+    if (FLAGS_require_rdma && crowdb_rpc_server_rdma_listening(server) == 0) {
+        std::fprintf(stderr, "error: required RDMA CM listener is unavailable\n");
+        crowdb_rpc_server_stop(server);
+        crowdb_rpc_server_destroy(server);
+        return 1;
+    }
+    auto status = crowdb_rpc_server_status_json(server);
+    if (status == nullptr) {
+        std::fprintf(stderr, "error: startup transport status allocation failed\n");
+        crowdb_rpc_server_destroy(server);
+        return 1;
+    }
+    if (!FLAGS_status_file.empty()) {
+        std::ofstream file(FLAGS_status_file);
+        file.write(reinterpret_cast<const char *>(crowdb_rpc_buffer_data(status)), crowdb_rpc_buffer_len(status));
+        file.close();
+        if (!file) {
+            std::fprintf(stderr, "error: cannot write startup status file %s\n", FLAGS_status_file.c_str());
+            crowdb_rpc_buffer_release(status);
+            crowdb_rpc_server_destroy(server);
+            return 1;
+        }
+    }
+    crowdb_rpc_buffer_release(status);
+    std::printf("listening port=%d\n", actual_port);
+    std::fflush(stdout);
 
     // Start metrics flush — the RPC lib registers all histograms,
     // bandwidths, and counters with MetricsRegistry::global() via

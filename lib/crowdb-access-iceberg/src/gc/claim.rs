@@ -1,11 +1,16 @@
-use crate::{catalog::CatalogError, error::ValidationError, record::StorageRecord};
+use crate::{
+    catalog::{CasOutcome, CatalogError},
+    error::ValidationError,
+    key::IcebergKey,
+    record::StorageRecord,
+};
 
 use super::{CandidatePhase, GcCandidate, GcPhase, GcRepository, GcTask, GcTaskKind};
 
 impl GcRepository {
     /// Selects one immutable generation-indexed deletion cursor for a physical file.
     /// # Errors
-    /// Conflicting concurrent claims must be retried by reading their durable winner.
+    /// Rejects changed physical identity or an uncertain durable queue write.
     pub async fn claim_candidate(&self, proposed: &GcCandidate) -> Result<GcCandidate, CatalogError> {
         proposed.validate()?;
         if proposed.phase != CandidatePhase::Retained || proposed.revision != 1 {
@@ -19,13 +24,14 @@ impl GcRepository {
             };
             *selected
         } else {
-            self.change(
-                &claim_key,
-                None,
-                &StorageRecord::GcCandidate(Box::new(proposed.clone())),
-            )
-            .await?;
-            proposed.clone()
+            let outcome = self
+                .exchange(
+                    &claim_key,
+                    None,
+                    &StorageRecord::GcCandidate(Box::new(proposed.clone())),
+                )
+                .await?;
+            selected_candidate(&claim_key, outcome, proposed)?
         };
         if selected.file != proposed.file
             || selected.part != proposed.part
@@ -54,8 +60,21 @@ impl GcRepository {
             }
             return Ok(*current);
         }
-        self.candidate(None, &selected).await?;
-        Ok(selected)
+        let outcome = self
+            .exchange(
+                &key,
+                None,
+                &StorageRecord::GcCandidate(Box::new(selected.clone())),
+            )
+            .await?;
+        let current = selected_candidate(&key, outcome, &selected)?;
+        if current.file != selected.file
+            || current.part != selected.part
+            || current.assembly != selected.assembly
+        {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
+        Ok(current)
     }
 
     pub(super) async fn verify_claim(&self, candidate: &GcCandidate) -> Result<(), CatalogError> {
@@ -88,24 +107,32 @@ impl GcRepository {
             .task(task.context.catalog, candidate.task)
             .await?
             .ok_or(ValidationError::Record)?;
+        let retained_initial = previous.kind == GcTaskKind::MultipartCleanup
+            && previous.phase == GcPhase::Complete
+            && GcCandidate::is_initial_metadata(&candidate.file)
+            && candidate.part.is_none()
+            && candidate.assembly.is_none();
         if previous.context != task.context
             || previous.paused
             || previous.phase == GcPhase::Quarantined
-            || (previous.phase == GcPhase::Complete && previous.kind != GcTaskKind::LiveTable)
+            || (previous.phase == GcPhase::Complete
+                && previous.kind != GcTaskKind::LiveTable
+                && !retained_initial)
             || previous
                 .head
                 .as_ref()
                 .is_some_and(|head| head.storage_location() != candidate.file.location.table())
-            || !matches!(
-                (task.kind, previous.kind),
-                (
-                    GcTaskKind::RetiredCatalog,
-                    GcTaskKind::PurgeTable | GcTaskKind::LiveTable
-                ) | (
-                    GcTaskKind::PurgeTable | GcTaskKind::LiveTable | GcTaskKind::MultipartCleanup,
-                    GcTaskKind::LiveTable
-                )
-            )
+            || (!retained_initial
+                && !matches!(
+                    (task.kind, previous.kind),
+                    (
+                        GcTaskKind::RetiredCatalog,
+                        GcTaskKind::PurgeTable | GcTaskKind::LiveTable
+                    ) | (
+                        GcTaskKind::PurgeTable | GcTaskKind::LiveTable | GcTaskKind::MultipartCleanup,
+                        GcTaskKind::LiveTable
+                    )
+                ))
             || (matches!(task.kind, GcTaskKind::LiveTable | GcTaskKind::MultipartCleanup)
                 && previous.phase != GcPhase::Complete)
             || candidate.phase == CandidatePhase::Complete
@@ -125,5 +152,22 @@ impl GcRepository {
             &StorageRecord::GcCandidate(Box::new(next)),
         )
         .await
+    }
+}
+
+fn selected_candidate(
+    key: &IcebergKey,
+    outcome: CasOutcome,
+    proposed: &GcCandidate,
+) -> Result<GcCandidate, CatalogError> {
+    match outcome {
+        CasOutcome::Applied(_) => Ok(proposed.clone()),
+        CasOutcome::Conflict(Some(value)) => {
+            let StorageRecord::GcCandidate(candidate) = StorageRecord::decode(key, &value.bytes)? else {
+                return Err(ValidationError::Record.into());
+            };
+            Ok(*candidate)
+        }
+        CasOutcome::Conflict(None) => Err(CatalogError::Conflict),
     }
 }

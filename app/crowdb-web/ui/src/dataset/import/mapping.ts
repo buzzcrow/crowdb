@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { bytes, encoded } from '../identity';
-import type { SampleChange, Schema } from '../types';
-export type LocalValue = { kind: 'inline'; data: string } | { kind: 'file'; file: string } | { kind: 'tombstone' };
+import type { FieldValue, SampleChange, Schema, UploadDescriptor } from '../types';
+export type LocalValue = FieldValue | { kind: 'file'; file: string };
 export type LocalSample = { kind: 'remove'; id: string } | { kind: 'upsert'; id: string; fields: Array<{ name: string; value: LocalValue }> };
 export interface Mapping { version: 1; schema: Schema | null; samples: LocalSample[] }
 export function parseMapping(text: string, files: File[]): Mapping {
@@ -30,31 +30,22 @@ export function parseMapping(text: string, files: File[]): Mapping {
       } else if (field.value.kind === 'file') {
         const token = field.value.file;
         if (files.filter(file => (file.webkitRelativePath || file.name) === token).length !== 1) throw new Error(`Select exactly one local file matching ${field.value.file}.`);
+      } else if (field.value.kind === 'upload') {
+        if (!/^[0-9a-f]{32}$/.test(field.value.id) || /^0+$/.test(field.value.id) || !/^(0|[1-9][0-9]*)$/.test(field.value.length) || BigInt(field.value.length) > 18446744073709551615n || !/^[0-9a-f]{32}$/.test(field.value.md5)) throw new Error('Invalid complete upload descriptor.');
       } else if (field.value.kind !== 'tombstone') throw new Error('Unsupported field source.');
     }
   }
-  const placeholders = new Map(files.map(file => [file.webkitRelativePath || file.name, '1'.repeat(32)]));
-  // Reject oversized individual edits before creating uploads.
-  for (const _window of editWindows(value.samples.map(sample => resolveSample(sample, placeholders)))) void _window;
   return value;
 }
-export function resolveSample(sample: LocalSample, uploaded: Map<string, string>): SampleChange {
+export function resolveSample(sample: LocalSample, uploaded: Map<string, UploadDescriptor>): SampleChange {
   if (sample.kind === 'remove') return sample;
   return { ...sample, fields: sample.fields.map(field => {
     if (field.value.kind !== 'file') return { name: field.name, value: field.value };
-    const id = uploaded.get(field.value.file); if (!id) throw new Error('File upload is not complete.');
-    return { name: field.name, value: { kind: 'upload', id } };
+    const descriptor = uploaded.get(field.value.file); if (!descriptor) throw new Error('File upload is not complete.');
+    return { name: field.name, value: { kind: 'upload', ...descriptor } };
   }) };
 }
 
-/** Leave room for operation/revision envelopes in the 1 MiB durable request bound. */
-export function* editWindows(samples: SampleChange[]): Generator<SampleChange[]> {
-  let window: SampleChange[] = []; let size = 0;
-  for (const sample of samples) {
-    const bytes = new TextEncoder().encode(JSON.stringify(sample)).length + 1;
-    if (bytes > 768 * 1024) throw new Error('A Sample edit exceeds 768 KiB; use local payload files for large fields.');
-    if (window.length === 20 || size + bytes > 768 * 1024) { yield window; window = []; size = 0; }
-    window.push(sample); size += bytes;
-  }
-  if (window.length) yield window;
+export function validatePreparation(value: unknown, limit = 8 * 1024 * 1024) {
+  if (new TextEncoder().encode(JSON.stringify(value)).length > limit) throw new Error('Complete Dataset input exceeds its resource limit; use payload files for large fields.');
 }

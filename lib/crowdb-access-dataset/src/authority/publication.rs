@@ -3,10 +3,17 @@
 
 mod candidate;
 mod commit;
+mod complete;
+mod expiry;
+pub use expiry::SnapshotExpirySweep;
+mod identity;
 mod legacy;
+mod legacy_candidate;
 mod legacy_reclaim;
 mod opaque;
+mod partitions;
 mod receipt;
+mod resource;
 mod retirement;
 mod visibility;
 
@@ -15,12 +22,14 @@ enum PublicationMode {
     LegacyPrepare,
     LegacyPublish,
     Candidate(Option<crate::SplitRevisionId>),
+    Resource(Option<crate::SplitRevisionId>),
 }
 
-use super::{decode, decode_head, decode_manifest, encode, DatasetAuthority};
+use super::snapshot_resource::decode_snapshot;
+use super::{decode, decode_head, decode_manifest, DatasetAuthority};
 use crate::{
-    key, AuthorityError, CasOutcome, DatasetError, DatasetIdentity, ManifestBinding, ManifestRecord,
-    OperationId, PublicationState, SnapshotId, SnapshotPublication, SnapshotRecord,
+    key, AuthorityError, DatasetError, DatasetIdentity, ManifestBinding, OperationId, PublicationState,
+    SnapshotId, SnapshotPublication, SnapshotRecord,
 };
 
 impl DatasetAuthority {
@@ -37,10 +46,9 @@ impl DatasetAuthority {
             .await
     }
 
-    /// Publishes or recovers one complete Manifest publication using its
-    /// durable operation token. The operation is visible through `latest` only
-    /// after all Manifest partitions, the binding, and the Published record are
-    /// durable.
+    /// Publishes complete content using the caller token as the Snapshot identity.
+    /// Existing legacy token mappings remain readable; new requests create no mapping.
+    /// Latest changes only after the immutable content is complete.
     ///
     /// # Errors
     /// Rejects missing Dataset, invalid Manifest, invalid parent, duplicate
@@ -85,34 +93,41 @@ impl DatasetAuthority {
         .await
     }
 
-    /// Returns the candidate associated with a durable publication token.
+    /// Compatibility selection of pre-built content using the v1 latest-parent condition.
+    /// The Snapshot's declared parent is immutable and is not implicitly rebased.
+    /// # Errors
+    /// Rejects unavailable content, stale conditions and unknown storage outcomes.
+    pub async fn publish_prepared_snapshot(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        expected_parent: Option<SnapshotId>,
+    ) -> Result<SnapshotId, AuthorityError> {
+        self.advance_head(identity, None, expected_parent, snapshot).await
+    }
+
+    /// Returns the Snapshot selected by a caller token, including prepared content.
     ///
     /// # Errors
-    /// Returns missing, malformed, or unavailable operation records.
+    /// Returns missing, malformed, or unavailable Snapshot records.
     pub async fn publication_status(
         &self,
         identity: &DatasetIdentity,
         operation: OperationId,
     ) -> Result<SnapshotRecord, AuthorityError> {
         self.get_dataset(identity).await?;
+        let resolved = self.publication_identity(identity, operation).await?;
         let record = self
             .store
-            .get(&key::operation(identity, operation)?)
+            .get(&key::snapshot(identity, resolved.snapshot)?)
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
         if record.bytes == retirement::RETIRED {
             return Err(DatasetError::InvalidPublicationState.into());
         }
-        let snapshot = SnapshotId::from_bytes(&record.bytes)?;
-        let record = self
-            .store
-            .get(&key::snapshot(identity, snapshot)?)
-            .await?
-            .ok_or(AuthorityError::SnapshotNotFound)?;
-        decode(&record.bytes)
+        decode_snapshot(&record.bytes)
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn write_publication(
         &self,
         identity: &DatasetIdentity,
@@ -121,11 +136,15 @@ impl DatasetAuthority {
         operation: OperationId,
         mode: PublicationMode,
     ) -> Result<SnapshotId, AuthorityError> {
-        self.get_dataset(identity).await?;
+        if matches!(mode, PublicationMode::Resource(_)) {
+            self.read_dataset_record(identity).await?;
+        } else {
+            self.get_dataset(identity).await?;
+        }
         let mut manifest = match decode_manifest(&manifest_bytes) {
             Ok(manifest) => manifest,
             Err(AuthorityError::Invalid(DatasetError::InvalidManifest))
-                if !matches!(mode, PublicationMode::Candidate(_)) =>
+                if !matches!(mode, PublicationMode::Candidate(_) | PublicationMode::Resource(_)) =>
             {
                 return self
                     .prepare_opaque_snapshot(identity, parent, manifest_bytes, operation)
@@ -150,80 +169,30 @@ impl DatasetAuthority {
                 }
             }
         }
-        let operation_key = key::operation(identity, operation)?;
-        let snapshot = if let Some(value) = self.store.get(&operation_key).await? {
-            if value.bytes == retirement::RETIRED {
-                return Err(DatasetError::InvalidPublicationState.into());
-            }
-            SnapshotId::from_bytes(&value.bytes)?
+        let resolved = if matches!(mode, PublicationMode::Resource(_)) {
+            identity::PublicationIdentity::direct(operation)?
         } else {
-            let current_latest = self.current_latest(identity).await?;
-            if !matches!(mode, PublicationMode::Candidate(_)) && current_latest != parent {
-                return Err(AuthorityError::ParentConflict);
-            }
-            let snapshot = SnapshotId::random();
-            match self
-                .store
-                .compare_exchange(&operation_key, None, snapshot.as_bytes())
-                .await?
-            {
-                CasOutcome::Applied(_) => snapshot,
-                CasOutcome::Conflict(Some(value)) => SnapshotId::from_bytes(&value.bytes)?,
-                CasOutcome::Conflict(None) => return Err(AuthorityError::Corrupt),
-            }
+            self.publication_identity(identity, operation).await?
         };
+        let snapshot = resolved.snapshot;
 
         manifest.snapshot = snapshot;
         manifest.validate()?;
         self.validate_parent(identity, parent).await?;
 
-        let snapshot_key = key::snapshot(identity, snapshot)?;
         let prepared = SnapshotPublication {
             snapshot,
             parent,
             operation,
-            manifest: manifest_bytes.clone(),
+            manifest: manifest_bytes,
             state: PublicationState::Prepared,
         };
         prepared.validate()?;
-        let prepared_bytes = encode(&SnapshotRecord {
-            publication: prepared.clone(),
-        })?;
-        match self.store.get(&snapshot_key).await? {
-            Some(value) => {
-                let existing: SnapshotRecord = decode(&value.bytes)?;
-                if existing.publication.operation != operation
-                    || existing.publication.parent != parent
-                    || existing.publication.manifest != manifest_bytes
-                {
-                    return Err(AuthorityError::AlreadyExists);
-                }
-                if existing.publication.state == PublicationState::Published
-                    && self.snapshot_commit(identity, snapshot).await?.is_some()
-                {
-                    return Ok(snapshot);
-                }
-                if existing.publication.state == PublicationState::Published
-                    && self.snapshot_candidate(identity, snapshot).await?.is_none()
-                {
-                    match self.require_committed_snapshot(identity, snapshot).await {
-                        Ok(()) => return Ok(snapshot),
-                        Err(AuthorityError::SnapshotNotFound) => {}
-                        Err(error) => return Err(error),
-                    }
-                }
-                if existing.publication.state == PublicationState::Aborted {
-                    return Err(AuthorityError::Invalid(DatasetError::InvalidPublicationState));
-                }
-            }
-            None => match self
-                .store
-                .compare_exchange(&snapshot_key, None, &prepared_bytes)
-                .await?
-            {
-                CasOutcome::Applied(_) => {}
-                CasOutcome::Conflict(_) => return Err(AuthorityError::AlreadyExists),
-            },
+        let resource = self
+            .ensure_publication_resource(identity, &prepared, &resolved, mode)
+            .await?;
+        if let Some(snapshot) = resource.reused {
+            return Ok(snapshot);
         }
 
         self.persist_manifest_parts(identity, snapshot, &manifest).await?;
@@ -234,42 +203,19 @@ impl DatasetAuthority {
                 snapshot,
                 parent,
                 operation,
-                &manifest_bytes,
+                &prepared.manifest,
                 match mode {
-                    PublicationMode::Candidate(initial) => initial,
+                    PublicationMode::Candidate(initial) | PublicationMode::Resource(initial) => initial,
                     _ => None,
                 },
             ),
+            resource.gc_after,
         )
         .await?;
         if !matches!(mode, PublicationMode::LegacyPublish) {
             return Ok(snapshot);
         }
-        let published = SnapshotPublication {
-            state: PublicationState::Published,
-            ..prepared
-        };
-        let published_bytes = encode(&SnapshotRecord {
-            publication: published,
-        })?;
-        match self.store.get(&snapshot_key).await? {
-            Some(value) => {
-                let existing: SnapshotRecord = decode(&value.bytes)?;
-                if existing.publication.state == PublicationState::Prepared {
-                    match self
-                        .store
-                        .compare_exchange(&snapshot_key, Some(&value.bytes), &published_bytes)
-                        .await?
-                    {
-                        CasOutcome::Applied(_) => {}
-                        CasOutcome::Conflict(_) => return Err(AuthorityError::HeadConflict),
-                    }
-                } else if existing.publication.state != PublicationState::Published {
-                    return Err(AuthorityError::Invalid(DatasetError::InvalidPublicationState));
-                }
-            }
-            None => return Err(AuthorityError::Corrupt),
-        }
+        self.complete_snapshot_candidate(identity, snapshot).await?;
         self.advance_head(identity, None, parent, snapshot).await
     }
 
@@ -297,7 +243,7 @@ impl DatasetAuthority {
             .get(&key::snapshot(identity, parent)?)
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
-        let record: SnapshotRecord = decode(&value.bytes)?;
+        let record = decode_snapshot(&value.bytes)?;
         if record.publication.state != PublicationState::Published {
             return Err(AuthorityError::ParentConflict);
         }
@@ -313,38 +259,6 @@ impl DatasetAuthority {
         Ok(())
     }
 
-    async fn persist_manifest_parts(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-        manifest: &ManifestRecord,
-    ) -> Result<u32, AuthorityError> {
-        let partitions = manifest.partition(1024)?;
-        if partitions.is_empty() {
-            return Err(DatasetError::InvalidManifest.into());
-        }
-        for partition in &partitions {
-            let partition_key = key::manifest_partition(identity, snapshot, partition.partition)?;
-            let bytes = encode(partition)?;
-            match self.store.compare_exchange(&partition_key, None, &bytes).await? {
-                CasOutcome::Applied(_) => {}
-                CasOutcome::Conflict(Some(existing)) if existing.bytes == bytes => {}
-                CasOutcome::Conflict(_) => return Err(AuthorityError::AlreadyExists),
-            }
-        }
-        let binding = encode(&ManifestBinding {
-            snapshot,
-            partitions: u32::try_from(partitions.len()).map_err(|_| DatasetError::InvalidManifest)?,
-        })?;
-        let binding_key = key::manifest_binding(identity, snapshot)?;
-        match self.store.compare_exchange(&binding_key, None, &binding).await? {
-            CasOutcome::Applied(_) => {}
-            CasOutcome::Conflict(Some(existing)) if existing.bytes == binding => {}
-            CasOutcome::Conflict(_) => return Err(AuthorityError::AlreadyExists),
-        }
-        Ok(decode::<ManifestBinding>(&binding)?.partitions)
-    }
-
     pub(super) async fn advance_head(
         &self,
         identity: &DatasetIdentity,
@@ -352,32 +266,25 @@ impl DatasetAuthority {
         expected_parent: Option<SnapshotId>,
         snapshot: SnapshotId,
     ) -> Result<SnapshotId, AuthorityError> {
-        if self.snapshot_commit(identity, snapshot).await?.is_some()
-            || self.legacy_commit_exists(identity, snapshot).await?
-        {
-            return Ok(snapshot);
-        }
         let current_head = self.store.get(&key::head(identity)?).await?;
-        if let Some(current) = &current_head {
-            self.help_head_commit(identity, current).await?;
-        }
         let current_latest = current_head
             .as_ref()
             .map(|value| decode_head(&value.bytes))
             .transpose()?
             .and_then(|head| head.latest);
-        if current_latest != expected_parent {
-            return Err(AuthorityError::ParentConflict);
+        if current_latest != expected_parent && current_latest != Some(snapshot) {
+            return Err(AuthorityError::SnapshotHeadConflict {
+                observed: Box::new(super::head::reference(current_head.as_ref())?),
+            });
         }
-        let attempt = crate::CommitAttempt {
-            version: 1,
-            id: OperationId::random(),
-            target: crate::CommitTarget::Snapshot { snapshot },
+        let update = crate::SnapshotHeadUpdate {
+            snapshot,
             expected_head: current_head
                 .as_ref()
                 .map(|value| crate::CommitGeneration::from_head(&value.bytes)),
         };
-        self.commit_snapshot_attempt(identity, &attempt, stable).await?;
+        self.commit_snapshot_head(identity, &update, stable, current_head)
+            .await?;
         Ok(snapshot)
     }
 }

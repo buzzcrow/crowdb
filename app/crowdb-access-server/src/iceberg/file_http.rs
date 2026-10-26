@@ -9,7 +9,6 @@ use crowdb_access_iceberg::file::{
     DirectFileLocations, FileBlockStore, FileGrantError, FileGrantIssuer, FileOperation, FileRecord,
     FileRepository, FileSealer, MultipartLister, MultipartPartStore, MultipartRepository, RangeError,
 };
-use crowdb_access_iceberg::gc::{GcRepository, GcStore};
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::storage::{default_large_write, own_large_write};
 use crowdb_access_s3::auth::{RawAuthRequest, StreamingPayloadVerifier};
@@ -30,12 +29,16 @@ use crate::upload_flow::body_encoding::UploadBody;
 
 mod bucket;
 mod delete;
+#[cfg(feature = "test-util")]
+pub use delete::mark_unreferenced_file_for_tests;
 mod injection;
 mod listing;
 mod metrics;
 mod multipart;
 mod read;
 mod stream;
+#[cfg(feature = "test-util")]
+pub use stream::write_iceberg_fallback_body_for_tests;
 
 use metrics::UploadFlowMetrics;
 pub use metrics::UploadFlowSnapshot;
@@ -49,7 +52,6 @@ struct CatalogLocators {
 pub(super) struct FileHttp {
     repository: FileRepository,
     store: Arc<dyn CatalogStore>,
-    gc: GcRepository,
     multipart: MultipartRepository,
     lister: MultipartLister,
     blocks: Arc<dyn FileBlockStore>,
@@ -120,7 +122,7 @@ impl FileHttp {
         self.blocks.chunk_metrics()
     }
 
-    pub(super) fn new<Store: MultipartPartStore + GcStore + 'static>(
+    pub(super) fn new<Store: MultipartPartStore + 'static>(
         store: Arc<Store>,
         blocks: Arc<dyn FileBlockStore>,
         secret: [u8; 32],
@@ -144,7 +146,6 @@ impl FileHttp {
                 .map_err(|_| FileGrantError::Invalid)?,
             repository: FileRepository::new(store.clone()),
             store: store.clone(),
-            gc: GcRepository::new(store.clone()),
             multipart: MultipartRepository::new(store.clone()),
             lister: MultipartLister::new(store),
             blocks,

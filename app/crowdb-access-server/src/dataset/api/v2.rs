@@ -4,10 +4,11 @@
 //! Capability-gated control API. Unsupported operations never fall back to v1.
 
 mod auxiliary;
-mod composition_fields;
 mod composition_models;
+mod composition_preparation;
 mod composition_responses;
 mod compositions;
+mod heads;
 mod inspection;
 mod inspection_models;
 mod predicate;
@@ -16,6 +17,7 @@ mod query;
 mod read_models;
 mod reads;
 mod split_models;
+mod split_preparation;
 mod split_requests;
 mod split_responses;
 mod splits;
@@ -32,13 +34,6 @@ struct Capabilities {
     capabilities: Vec<&'static str>,
 }
 
-#[derive(Serialize)]
-struct Head {
-    latest: Option<String>,
-    stable: Option<String>,
-    generation: Option<String>,
-}
-
 impl DatasetHttpService {
     pub(super) async fn route_v2(&self, parts: &[String], request: Request<Incoming>) -> ApiResult {
         if parts == ["api", "dataset", "v2", "namespaces", "dataset-ns", "datasets"] {
@@ -49,42 +44,31 @@ impl DatasetHttpService {
             read_body(request, false).await?;
             let mut capabilities = vec![
                 "head-inspection",
+                "snapshot-head-update",
                 "bounded-inspection",
                 "inspection-preparation",
                 "dataset-management",
                 "split-revisions",
-                "split-reads",
+                "split-revision-delete",
+                "split-preparation",
+                "split-head-update",
+                "stateless-reads",
             ];
             if self.uploads.is_some() {
-                capabilities.extend(["uploads", "composition", "snapshot-reclaim"]);
+                capabilities.extend(["uploads", "composition-preparation", "snapshot-reclaim"]);
             }
             return json(&Capabilities {
                 api_version: 2,
                 capabilities,
             });
         }
-        if parts.len() == 8
-            && parts[..6] == ["api", "dataset", "v2", "namespaces", "dataset-ns", "datasets"]
-            && parts[7] == "head"
-            && request.method() == Method::GET
-        {
-            query::Query::parse(request.uri().query(), &[])?;
-            read_body(request, false).await?;
-            let identity =
-                DatasetIdentity::new(NamespacePath::root(), &parts[6]).map_err(|_| ApiError::invalid())?;
-            let head = self.reads.authority().inspect_head(&identity).await?;
-            return json(&Head {
-                latest: head.latest.map(|id| id.to_string()),
-                stable: head.stable.map(|id| id.to_string()),
-                generation: head
-                    .generation
-                    .map(|generation| hex::encode(generation.as_bytes())),
-            });
-        }
         if parts.len() >= 7 && parts[..6] == ["api", "dataset", "v2", "namespaces", "dataset-ns", "datasets"]
         {
             let identity =
                 DatasetIdentity::new(NamespacePath::root(), &parts[6]).map_err(|_| ApiError::invalid())?;
+            if parts.len() == 8 && parts[7] == "head" {
+                return self.v2_head(&identity, request).await;
+            }
             let tail: Vec<_> = parts[7..].iter().map(String::as_str).collect();
             if tail.first() == Some(&"uploads") {
                 return self.v2_uploads(&identity, &tail, request).await;
@@ -108,11 +92,16 @@ impl DatasetHttpService {
                         .await;
                 }
             }
+            if let ["snapshots", id] = tail.as_slice() {
+                if request.method() == Method::PUT {
+                    return self.v2_prepare_snapshot(&identity, id, request).await;
+                }
+            }
             if tail.first() == Some(&"compositions") {
                 return self.v2_compositions(&identity, &tail, request).await;
             }
-            if tail.first() == Some(&"read-plans") {
-                return self.v2_read_session(&identity, &tail, request).await;
+            if tail.first() == Some(&"reads") {
+                return self.v2_read_query(&identity, &tail, request).await;
             }
             if matches!(
                 tail.as_slice(),

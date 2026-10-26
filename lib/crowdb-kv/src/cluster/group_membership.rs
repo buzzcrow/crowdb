@@ -166,6 +166,7 @@ impl PxGroup {
     /// re-establish them, which is the conservative guarantee their docs
     /// promise.
     pub(crate) fn reset_safe_slot_tracking(&self) {
+        self.leader_gc_certificate.store(None);
         self.peer_applied.lock().clear();
         self.group_safe_slot.store(0, Ordering::Release);
         self.peer_durable.lock().clear();
@@ -254,6 +255,7 @@ impl PxGroup {
 
     /// Set up the group with a list of remote replicas.
     pub fn set_remote_replicas(&mut self, remote_replicas: Vec<PxRemoteReplica>) {
+        self.reset_safe_slot_tracking();
         let max_node_id = remote_replicas.iter().map(|r| r.node_id).max().unwrap_or(0);
         let vec_len = (max_node_id + 1) as usize;
         self.remote_replicas = (0..vec_len).map(|_| RemoteReplicaKind::Placeholder).collect();
@@ -874,6 +876,7 @@ impl PxGroup {
         }
 
         self.remote_replicas[idx] = RemoteReplicaKind::Real(Box::new(remote));
+        self.reset_safe_slot_tracking();
         self.recompute_quorum();
 
         // Bump the epoch iff this mutation actually changes the voting
@@ -898,6 +901,7 @@ impl PxGroup {
             "removed remote replica from group"
         );
         self.remote_replicas[idx] = RemoteReplicaKind::Placeholder;
+        self.reset_safe_slot_tracking();
         self.valid_replica_count -= 1;
         self.recompute_quorum();
         // Removing a non-voting member never changes the voting set.

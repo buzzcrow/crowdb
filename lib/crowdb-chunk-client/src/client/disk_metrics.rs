@@ -12,6 +12,41 @@ pub(super) struct MetricsDiskWriter {
 
 #[async_trait]
 impl DiskWriter for MetricsDiskWriter {
+    fn disk_topology(&self) -> Option<crowdb_diskio_client::DiskTopologyView> {
+        self.inner.disk_topology()
+    }
+
+    fn transport_observation(&self) -> Result<Option<Vec<u8>>> {
+        self.inner.transport_observation()
+    }
+
+    async fn read_payload(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        segment_offset: u64,
+        length: u32,
+    ) -> Result<crowdb_rpc_ffi::OwnedPayload> {
+        let mut operation = self.metrics.diskio_read.start();
+        let result = self
+            .inner
+            .read_payload(seg, unit_bytes, segment_offset, length)
+            .await;
+        if let Ok(data) = &result {
+            self.metrics
+                .diskio_read_bytes
+                .observe(u64::try_from(data.len()).unwrap_or(u64::MAX));
+            operation.mark_success();
+        }
+        result
+    }
+
+    fn shutdown(&self) {
+        self.inner.shutdown();
+    }
+    fn producer_allocator(&self) -> Option<crowdb_rpc_ffi::ProducerBufferAllocator> {
+        self.inner.producer_allocator()
+    }
     async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()> {
         let bytes = u64::try_from(data.len()).unwrap_or(u64::MAX);
         let mut operation = self.metrics.diskio_write.start();

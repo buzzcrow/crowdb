@@ -21,27 +21,31 @@ pub struct CompositionScratchCleanup {
     pub next_page: u64,
     pub complete: bool,
 }
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Cursor {
-    version: u16,
+#[derive(Clone, Debug)]
+pub(super) struct ScratchCursor {
     revision: u64,
     page: u64,
+}
+impl Default for ScratchCursor {
+    fn default() -> Self {
+        Self { revision: 1, page: 0 }
+    }
 }
 impl DatasetAuthority {
     /// Retires one obsolete evaluation window, retaining small CAS fences.
     /// Active input revisions remain readable; terminal drafts retire all revisions.
     /// # Errors
     /// Returns corrupt cursors, cancellation, bounded-work limits and storage conflicts.
-    pub async fn cleanup_composition_scratch_step(
+    pub(super) async fn cleanup_composition_scratch_step(
         &self,
         identity: &DatasetIdentity,
         operation: OperationId,
+        cursor: &mut ScratchCursor,
         cancel: &ReadCancellation,
     ) -> Result<CompositionScratchCleanup, CompositionError> {
         tokio::time::timeout(
             Duration::from_secs(2),
-            self.cleanup_scratch_window(identity, operation, cancel),
+            self.cleanup_scratch_window(identity, operation, cursor, cancel),
         )
         .await
         .map_err(|_| CompositionError::Limit)?
@@ -50,14 +54,17 @@ impl DatasetAuthority {
         &self,
         identity: &DatasetIdentity,
         operation: OperationId,
+        cursor: &mut ScratchCursor,
         cancel: &ReadCancellation,
     ) -> Result<CompositionScratchCleanup, CompositionError> {
         let (_, mut state) = self.load_composition(identity, operation).await?;
-        self.help_composition_edit(identity, &state).await?;
         let end = state.draft.record.revision
             + u64::from(matches!(
                 state.draft.record.progress,
-                DraftProgress::Published { .. } | DraftProgress::Abandoned
+                DraftProgress::Prepared { .. }
+                    | DraftProgress::Committing { .. }
+                    | DraftProgress::Published { .. }
+                    | DraftProgress::Abandoned
             ));
         let mut work = InspectionWork::new(
             self.store.as_ref(),
@@ -68,19 +75,7 @@ impl DatasetAuthority {
                 timeout: Duration::from_secs(2),
             },
         )?;
-        let cursor_key = key::scope(b"DS\0CCG\0", identity, operation)?;
-        let stored = work.get(&cursor_key, 4096).await?;
-        let mut cursor: Cursor = stored.as_ref().map_or_else(
-            || {
-                Ok(Cursor {
-                    version: 1,
-                    revision: 1,
-                    page: 0,
-                })
-            },
-            |v| crate::split::codec::decode(&v.bytes),
-        )?;
-        if cursor.version != 1 || cursor.revision == 0 || cursor.revision > end {
+        if cursor.revision == 0 || cursor.revision > end {
             return Err(CompositionError::Corrupt);
         }
         if cursor.revision < end {
@@ -94,16 +89,6 @@ impl DatasetAuthority {
                 cursor.page = 0;
             } else {
                 cursor.page = cursor.page.checked_add(1).ok_or(CompositionError::Limit)?;
-            }
-            let bytes = crate::split::codec::encode(&cursor)?;
-            match self
-                .store
-                .compare_exchange(&cursor_key, stored.as_ref().map(|v| v.bytes.as_slice()), &bytes)
-                .await?
-            {
-                CasOutcome::Applied(_) => {}
-                CasOutcome::Conflict(Some(v)) if v.bytes == bytes => {}
-                CasOutcome::Conflict(_) => return Err(CompositionError::Conflict),
             }
         }
         Ok(CompositionScratchCleanup {

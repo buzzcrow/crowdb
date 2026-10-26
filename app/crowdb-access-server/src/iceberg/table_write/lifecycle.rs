@@ -4,11 +4,9 @@ use super::{
 };
 use crowdb_access_iceberg::{
     catalog::{Capabilities, FormatAction},
-    commit::TableCommitOutcome,
     key::NameSuffix,
     namespace::NamespaceIdentifier,
-    operation::RetryRecord,
-    table::{TableLifecycleAction, TableLifecycleRequest},
+    table::{TableLifecycleAction, TableLifecycleOutcome, TableLifecycleRequest},
     wire::IcebergErrorResponse,
 };
 use hyper::{Method, Uri};
@@ -43,13 +41,12 @@ impl Identifier {
 impl TableWrites {
     pub(super) async fn mutate_lifecycle(
         &self,
-        record: &RetryRecord,
+        record: &super::TableMutation,
         capabilities: Capabilities,
-        resuming: bool,
         method: &Method,
         uri: &Uri,
         bytes: &[u8],
-    ) -> Result<TableCommitOutcome, IcebergErrorResponse> {
+    ) -> Result<TableLifecycleOutcome, IcebergErrorResponse> {
         let (namespace, name, action) = if uri.path() == "/v1/tables/rename" {
             if *method != Method::POST {
                 return Err(super::super::table_read::unsupported());
@@ -81,38 +78,44 @@ impl TableWrites {
                 TableLifecycleAction::Drop { purge_requested },
             )
         };
-        let existing = if resuming {
-            self.lifecycles
-                .load(record.context, record.identity.operation)
-                .await
-                .map_err(|_| service_unavailable())?
-        } else {
-            None
-        };
-        let version = if let Some(operation) = existing {
-            operation.before.format_version
-        } else {
-            let parent = self
-                .namespaces
-                .load(record.context, &namespace)
-                .await
-                .map_err(|_| service_unavailable())?
-                .ok_or_else(super::super::table_read::missing_table)?;
-            self.tables
-                .select(record.context, parent.namespace, &name)
-                .await
-                .map_err(|_| service_unavailable())?
-                .ok_or_else(super::super::table_read::missing_table)?
-                .head
-                .format_version
-        };
+        let parent = self
+            .namespaces
+            .load(record.context, &namespace)
+            .await
+            .map_err(|_| service_unavailable())?
+            .ok_or_else(super::super::table_read::missing_table)?;
+        let version = self
+            .tables
+            .select(record.context, parent.namespace, &name)
+            .await
+            .map_err(|_| service_unavailable())?
+            .ok_or_else(super::super::table_read::missing_table)?
+            .head
+            .format_version;
         if !capabilities.supports(version, FormatAction::Write) {
             return Err(super::super::table_read::unsupported());
         }
-        self.lifecycles.execute(&TableLifecycleRequest { context: record.context, identity: record.identity,
-            principal: record.principal.clone(), namespace, name, action }).await.map_err(|error| {
-                tracing::error!(%error, "table lifecycle remains recoverable; retry with the same request key");
-                service_unavailable()
+        self.lifecycles
+            .execute(&TableLifecycleRequest {
+                context: record.context,
+                identity: record.identity,
+                principal: record.principal.clone(),
+                namespace,
+                name,
+                action,
+            })
+            .await
+            .map_err(|error| {
+                if matches!(error, crowdb_access_iceberg::catalog::CatalogError::Conflict) {
+                    IcebergErrorResponse::new(
+                        409,
+                        "CommitFailedException",
+                        "Table lifecycle request conflicts",
+                    )
+                } else {
+                    tracing::error!(%error, "table lifecycle request failed; retry against the current name");
+                    service_unavailable()
+                }
             })
     }
 }

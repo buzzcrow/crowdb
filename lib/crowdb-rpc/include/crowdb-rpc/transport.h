@@ -35,6 +35,7 @@ struct OutFrame
     uint8_t                                  data_view_count = 0; // zero preserves legacy direct `data` assignment
     uint32_t                                 sent_offset     = 0; // bytes already sent (partial write tracking)
     uint64_t                                 create_nano     = 0; // steady_clock ns at submit/submit_inline
+    OutFrame                                *next_aggregate  = nullptr; // SEND completion owns the full chain
 
     [[nodiscard]] uint8_t data_views() const
     {

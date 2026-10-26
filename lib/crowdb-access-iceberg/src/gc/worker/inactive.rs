@@ -81,7 +81,7 @@ impl GcWorker {
                 } => continue,
                 _ => StorageRecord::decode(&key, &item.value)?,
             };
-            if protects(task, &record, now_ms, grace_ms) {
+            if self.record_protected(task, &record, now_ms, grace_ms).await? {
                 let mut next = task.advance()?;
                 next.phase = GcPhase::Waiting;
                 next.scan_after.clear();
@@ -119,6 +119,60 @@ impl GcWorker {
         self.repository.update(task, &next).await?;
         Ok(next)
     }
+
+    pub(super) async fn record_protected(
+        &self,
+        task: &GcTask,
+        record: &StorageRecord,
+        now_ms: u64,
+        grace_ms: u64,
+    ) -> Result<bool, GcWorkError> {
+        let StorageRecord::TableCreateOperation(operation) = record else {
+            return Ok(protects(task, record, now_ms, grace_ms));
+        };
+        let table = operation.candidate.storage_location();
+        if task
+            .head
+            .as_ref()
+            .is_some_and(|head| head.storage_location() != table)
+        {
+            return Ok(false);
+        }
+        if task.kind == GcTaskKind::RetiredCatalog
+            && now_ms
+                < operation
+                    .identity
+                    .issued_ms
+                    .saturating_add(crate::operation::RETRY_WINDOW_MS)
+                    .saturating_add(grace_ms)
+        {
+            return Ok(true);
+        }
+        let key = crate::table::storage_head_key(table);
+        let current = self
+            .repository
+            .store
+            .get(&key.encode()?)
+            .await
+            .map_err(CatalogError::from)?;
+        if task.kind == GcTaskKind::RetiredCatalog {
+            self.retire_table_slot(table, current.as_ref().map(|value| value.bytes.as_slice()))
+                .await?;
+            return Ok(false);
+        }
+        let slot = if let Some(value) = current {
+            match StorageRecord::decode(&key, &value.bytes)? {
+                StorageRecord::RetiredTable(_) => crate::table::TableSlot::Retired,
+                StorageRecord::TableHead(head) => crate::table::TableSlot::Existing(head),
+                _ => return Err(ValidationError::Record.into()),
+            }
+        } else {
+            return Ok(true);
+        };
+        // A final occupied head slot permanently excludes the old None-to-head write.
+        Ok(matches!(slot, crate::table::TableSlot::Existing(head)
+            if task.kind != GcTaskKind::RetiredCatalog && *head == operation.candidate))
+    }
 }
 
 pub(super) fn protects(task: &GcTask, record: &StorageRecord, now_ms: u64, grace_ms: u64) -> bool {
@@ -140,14 +194,6 @@ pub(super) fn protects(task: &GcTask, record: &StorageRecord, now_ms: u64, grace
                     || !matches!(
                         operation.phase,
                         crate::commit::TableCommitPhase::Complete | crate::commit::TableCommitPhase::Rejected
-                    ))
-        }
-        StorageRecord::TableCreateOperation(operation) => {
-            owns(operation.candidate.storage_location())
-                && ((task.kind == GcTaskKind::RetiredCatalog && retained(operation.identity.issued_ms))
-                    || !matches!(
-                        operation.phase,
-                        crate::commit::TableCreatePhase::Complete | crate::commit::TableCreatePhase::Aborted
                     ))
         }
         StorageRecord::TableLifecycleOperation(operation) => {

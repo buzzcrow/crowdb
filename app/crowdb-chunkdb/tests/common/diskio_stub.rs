@@ -95,7 +95,8 @@ async fn serve(mut stream: TcpStream, blocks: Blocks, control: Arc<TestDiskioCon
         let (reply, payload) = response(kind, &ctrl, data, &blocks, &control);
         let mut outgoing = vec![];
         outgoing.extend_from_slice(&0xca70_u16.to_le_bytes());
-        outgoing.extend_from_slice(&(kind + 1).to_le_bytes());
+        let reply_kind = if kind == 0xfffe { kind } else { kind + 1 };
+        outgoing.extend_from_slice(&reply_kind.to_le_bytes());
         outgoing.extend_from_slice(&u32::try_from(reply.len()).unwrap().to_le_bytes());
         outgoing.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
         outgoing.extend_from_slice(&[14, 0]);
@@ -114,6 +115,15 @@ fn response(
     blocks: &Blocks,
     control: &TestDiskioControl,
 ) -> (Vec<u8>, Vec<u8>) {
+    if kind == 0xfffe {
+        assert_eq!(ctrl.len(), 160);
+        assert_eq!(&ctrl[..4], &[0x44, 0x52, 4, 0]);
+        assert!(data.is_empty());
+        let mut capability = vec![0; 160];
+        capability[..4].copy_from_slice(&[0x44, 0x52, 4, 0]);
+        capability[4..12].copy_from_slice(&1_u64.to_le_bytes());
+        return (capability, Vec::new());
+    }
     let mut builder = FlatBufferBuilder::new();
     let mut payload = vec![];
     if kind == FBMsgType::EDiskWriteRequest.0 as u16 {

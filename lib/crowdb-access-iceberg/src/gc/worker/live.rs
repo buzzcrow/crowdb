@@ -40,8 +40,7 @@ impl GcWorker {
         next.discovery_scope = 0;
         next.scan_after.clear();
         next.retry_at_ms = 0;
-        self.repository.update(task, &next).await?;
-        Ok(Some(next))
+        Ok(Some(self.repository.update_observed(task, &next).await?))
     }
 
     pub(super) async fn live_fence(&self, task: &GcTask, now_ms: u64) -> Result<GcTask, GcWorkError> {
@@ -106,7 +105,7 @@ impl GcWorker {
                 continue;
             }
             let record = StorageRecord::decode(&key, &item.value)?;
-            if super::inactive::protects(task, &record, now_ms, grace_ms) {
+            if self.record_protected(task, &record, now_ms, grace_ms).await? {
                 next.stalled = GcStalledReason::Protected;
                 next.scan_after.clear();
                 if task.fenced {

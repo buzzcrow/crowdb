@@ -1,15 +1,18 @@
 mod access;
 pub use access::{
-    MetadataCleanupProgress, SnapshotLifecycle, SnapshotReclaimError, SnapshotReclaimPhase,
-    SnapshotReclaimStatus,
+    MetadataCleanupProgress, SnapshotLifecycle, SnapshotReclaimCursor, SnapshotReclaimError,
+    SnapshotReclaimPhase, SnapshotReclaimStatus, SnapshotReclaimSweep,
 };
 mod discovery;
 mod head;
 mod projection;
+pub(crate) mod snapshot_resource;
+use snapshot_resource::{decode_snapshot, SnapshotResource};
 
-pub use head::DatasetHead;
 use head::{decode_head, encode_head};
+pub use head::{DatasetHead, SnapshotHeadUpdate};
 mod publication;
+pub use publication::SnapshotExpirySweep;
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -19,7 +22,6 @@ use crate::key;
 use crate::manifest::{ManifestPartition, ManifestRecord};
 use crate::record::{DatasetRecord, HeadRecord, ManifestBinding, SnapshotRecord};
 use crate::store::{CasOutcome, DatasetStore, StoreError};
-use crate::ReadCursor;
 use crate::{DatasetError, DatasetId, DatasetIdentity, PublicationState, SnapshotId, SnapshotPublication};
 
 const RECORD_VERSION: u16 = 1;
@@ -54,6 +56,8 @@ pub enum AuthorityError {
     ParentConflict,
     #[error("publication lost its head race")]
     HeadConflict,
+    #[error("Snapshot publication condition no longer matches the head")]
+    SnapshotHeadConflict { observed: Box<DatasetHead> },
     #[error("stored dataset record is malformed")]
     Corrupt,
     #[error("snapshot was not found")]
@@ -62,13 +66,17 @@ pub enum AuthorityError {
     AncestryCycle,
     #[error("read cursor lost its compare-and-exchange race")]
     CursorConflict,
-    #[error("snapshot is protected by a head, retention marker, parent chain, or active read")]
+    #[error("snapshot is protected by a head, retention marker, or parent chain")]
     SnapshotProtected,
+    #[error("snapshot deletion grace period ends at {reclaim_after}")]
+    ReclaimPending { reclaim_after: u64 },
 }
 
 pub struct DatasetAuthority {
     pub(crate) store: Arc<dyn DatasetStore>,
     chunk_reader: Arc<dyn ChunkReader>,
+    #[cfg(feature = "test-util")]
+    reclaim_clock: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -80,20 +88,23 @@ pub struct SampleView {
 
 impl DatasetAuthority {
     #[must_use]
-    /// # Panics
-    /// The built-in non-zero lease duration is always valid.
     pub fn new(store: Arc<dyn DatasetStore>) -> Self {
         Self {
             store,
             chunk_reader: unavailable_chunk_reader(),
+            #[cfg(feature = "test-util")]
+            reclaim_clock: None,
         }
     }
 
     #[must_use]
-    /// # Panics
-    /// The built-in non-zero lease duration is always valid.
     pub fn with_chunk_reader(store: Arc<dyn DatasetStore>, chunk_reader: Arc<dyn ChunkReader>) -> Self {
-        Self { store, chunk_reader }
+        Self {
+            store,
+            chunk_reader,
+            #[cfg(feature = "test-util")]
+            reclaim_clock: None,
+        }
     }
 
     /// # Errors
@@ -124,18 +135,22 @@ impl DatasetAuthority {
     /// # Errors
     /// Returns malformed storage or a missing Dataset.
     pub async fn get_dataset(&self, identity: &DatasetIdentity) -> Result<DatasetRecord, AuthorityError> {
-        let value = self
-            .store
-            .get(&key::dataset(identity)?)
-            .await?
-            .ok_or(AuthorityError::NotFound)?;
-        let mut dataset: DatasetRecord = decode(&value.bytes)?;
+        let mut dataset = self.read_dataset_record(identity).await?;
         if let Some(head) = self.store.get(&key::head(identity)?).await? {
             let head = decode_head(&head.bytes)?;
             dataset.latest = head.latest;
             dataset.stable = head.stable;
         }
         Ok(dataset)
+    }
+
+    async fn read_dataset_record(&self, identity: &DatasetIdentity) -> Result<DatasetRecord, AuthorityError> {
+        let value = self
+            .store
+            .get(&key::dataset(identity)?)
+            .await?
+            .ok_or(AuthorityError::NotFound)?;
+        decode(&value.bytes)
     }
 
     /// # Errors
@@ -158,16 +173,7 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
-        let value = self
-            .store
-            .get(&key::snapshot(identity, snapshot)?)
-            .await?
-            .ok_or(AuthorityError::SnapshotNotFound)?;
-        let record: SnapshotRecord = decode(&value.bytes)?;
-        if record.publication.state != PublicationState::Published {
-            return Err(AuthorityError::SnapshotNotFound);
-        }
-        self.ensure_snapshot_live(identity, snapshot).await?;
+        self.get_snapshot(identity, snapshot).await?;
         let marker = encode(&snapshot)?;
         match self
             .store
@@ -204,12 +210,8 @@ impl DatasetAuthority {
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
         self.get_snapshot(identity, snapshot).await?;
-        self.require_committed_snapshot(identity, snapshot).await?;
         let key = key::head(identity)?;
         let current = self.store.get(&key).await?;
-        if let Some(current) = &current {
-            self.help_head_commit(identity, current).await?;
-        }
         let mut head = current
             .as_ref()
             .map(|value| decode_head(&value.bytes))
@@ -222,12 +224,23 @@ impl DatasetAuthority {
             return Ok(());
         }
         self.ensure_snapshot_live(identity, snapshot).await?;
+        if let Some(current) = &current {
+            self.preserve_legacy_head(identity, current).await?;
+        }
         head.stable = Some(snapshot);
         let bytes = encode_head(head)?;
         let expected = current.as_ref().map(|value| value.bytes.as_slice());
         match self.store.compare_exchange(&key, expected, &bytes).await? {
             CasOutcome::Applied(_) => Ok(()),
-            CasOutcome::Conflict(_) => Err(AuthorityError::HeadConflict),
+            CasOutcome::Conflict(value) => {
+                let observed = head::reference(value.as_ref())?;
+                if observed.stable == Some(snapshot) {
+                    return Ok(());
+                }
+                Err(AuthorityError::SnapshotHeadConflict {
+                    observed: Box::new(observed),
+                })
+            }
         }
     }
 
@@ -248,22 +261,14 @@ impl DatasetAuthority {
             if !seen.insert(id) {
                 return Err(AuthorityError::AncestryCycle);
             }
-            let value = self
-                .store
-                .get(&key::snapshot(identity, id)?)
-                .await?
-                .ok_or(AuthorityError::SnapshotNotFound)?;
-            let record: SnapshotRecord = decode(&value.bytes)?;
-            if record.publication.state != PublicationState::Published {
-                return Err(AuthorityError::SnapshotNotFound);
-            }
+            let record = self.get_snapshot(identity, id).await?;
             current = record.publication.parent;
             chain.push(record);
         }
         Ok(chain)
     }
 
-    /// Opens one published Snapshot without changing the current head.
+    /// Opens one complete Snapshot without changing the current head.
     ///
     /// # Errors
     /// Returns a missing, unpublished, or malformed Snapshot.
@@ -277,10 +282,14 @@ impl DatasetAuthority {
             .get(&key::snapshot(identity, snapshot)?)
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
-        let record: SnapshotRecord = decode(&value.bytes)?;
+        let record = decode_snapshot(&value.bytes)?;
+        if record.publication.snapshot != snapshot {
+            return Err(AuthorityError::Corrupt);
+        }
         if record.publication.state != PublicationState::Published {
             return Err(AuthorityError::SnapshotNotFound);
         }
+        self.require_committed_snapshot(identity, snapshot).await?;
         Ok(record)
     }
 
@@ -319,7 +328,8 @@ impl DatasetAuthority {
             .get(&key::snapshot(identity, snapshot)?)
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
-        let snapshot_record: SnapshotRecord = decode(&snapshot_value.bytes)?;
+        let mut snapshot_resource = SnapshotResource::decode(&snapshot_value.bytes)?;
+        let snapshot_record = &snapshot_resource.record;
         if !matches!(
             snapshot_record.publication.state,
             PublicationState::Prepared | PublicationState::Published
@@ -366,7 +376,7 @@ impl DatasetAuthority {
         }
         self.persist_inspection_index(identity, snapshot_record.publication.parent, manifest)
             .await?;
-        self.bind_completed_manifest(identity, &snapshot_record, manifest)
+        self.bind_completed_manifest(identity, &snapshot_resource, manifest)
             .await?;
         if snapshot_record.publication.state == PublicationState::Prepared {
             let published = SnapshotRecord {
@@ -378,7 +388,8 @@ impl DatasetAuthority {
                     state: PublicationState::Published,
                 },
             };
-            let published_bytes = encode(&published)?;
+            snapshot_resource.record = published;
+            let published_bytes = snapshot_resource.encode()?;
             match self
                 .store
                 .compare_exchange(
@@ -391,11 +402,20 @@ impl DatasetAuthority {
                 CasOutcome::Applied(_) => {}
                 CasOutcome::Conflict(_) => return Err(AuthorityError::HeadConflict),
             }
-            self.advance_head(identity, None, snapshot_record.publication.parent, snapshot)
-                .await?;
+            self.complete_snapshot_candidate(identity, snapshot).await?;
+            self.advance_head(
+                identity,
+                None,
+                snapshot_resource.record.publication.parent,
+                snapshot,
+            )
+            .await?;
         } else if self.current_latest(identity).await? != Some(snapshot) {
+            self.complete_snapshot_candidate(identity, snapshot).await?;
             self.advance_head(identity, None, snapshot_record.publication.parent, snapshot)
                 .await?;
+        } else {
+            self.complete_snapshot_candidate(identity, snapshot).await?;
         }
         Ok(decode::<ManifestBinding>(&binding)?.partitions)
     }
@@ -418,7 +438,8 @@ impl DatasetAuthority {
         decode(&value.bytes)
     }
 
-    /// Loads the lightweight manifest index for bounded planning and shuffle.
+    /// Loads stored Manifest partitions for internal planning and cleanup.
+    /// Public read handlers use `read_manifest` to enforce resource admission.
     ///
     /// # Errors
     /// Returns missing or malformed manifest partitions and storage failures.
@@ -436,7 +457,7 @@ impl DatasetAuthority {
         if binding.snapshot != snapshot || binding.partitions == 0 {
             return Err(AuthorityError::Corrupt);
         }
-        let snapshot_record: SnapshotRecord = decode(
+        let snapshot_record = decode_snapshot(
             &self
                 .store
                 .get(&key::snapshot(identity, snapshot)?)
@@ -469,6 +490,18 @@ impl DatasetAuthority {
         Ok(manifest)
     }
 
+    /// Reads the complete Manifest of an available Snapshot without changing any state.
+    /// # Errors
+    /// Rejects incomplete or deleted resources, corrupt content and storage failures.
+    pub async fn read_manifest(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+    ) -> Result<ManifestRecord, AuthorityError> {
+        self.require_committed_snapshot(identity, snapshot).await?;
+        self.get_manifest(identity, snapshot).await
+    }
+
     /// Plans a scan directly from persisted manifest partitions. Only the
     /// selected IDs and their small locator metadata are retained, bounded by
     /// `limits`; payloads are never opened during planning.
@@ -481,6 +514,17 @@ impl DatasetAuthority {
         plan: &crate::ReadPlan,
         limits: crate::ReadLimits,
     ) -> Result<Vec<Vec<Vec<u8>>>, AuthorityError> {
+        let mut ids = self.selected_ids(identity, plan, limits).await?;
+        ids.sort();
+        Ok(crate::planner::into_batches(ids, plan.batch_size))
+    }
+
+    pub(crate) async fn selected_ids(
+        &self,
+        identity: &DatasetIdentity,
+        plan: &crate::ReadPlan,
+        limits: crate::ReadLimits,
+    ) -> Result<Vec<Vec<u8>>, AuthorityError> {
         plan.validate()?;
         limits.validate()?;
         let binding = self
@@ -516,12 +560,10 @@ impl DatasetAuthority {
                 ids.push(sample.sample_id);
             }
         }
-        ids.sort();
-        let batches: Vec<_> = ids.chunks(plan.batch_size).map(<[Vec<u8>]>::to_vec).collect();
-        if batches.len() > limits.max_batches {
+        if ids.len().div_ceil(plan.batch_size) > limits.max_batches {
             return Err(DatasetError::ReadLimitExceeded.into());
         }
-        Ok(batches)
+        Ok(ids)
     }
 
     /// Deletes one unreachable snapshot's Dataset metadata idempotently.
@@ -529,16 +571,18 @@ impl DatasetAuthority {
     ///
     /// # Errors
     /// Returns storage failures or malformed manifest bindings.
-    pub async fn reclaim_snapshot_metadata(
+    #[cfg(feature = "test-util")]
+    pub async fn reclaim_snapshot_metadata_for_tests(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
         let cancel = ReadCancellation::new();
+        let mut progress = MetadataCleanupProgress::new(snapshot);
         let work = async {
             for _ in 0..64 {
                 if self
-                    .reclaim_snapshot_metadata_step(identity, snapshot, &cancel)
+                    .reclaim_snapshot_metadata_step(identity, snapshot, &mut progress, &cancel)
                     .await?
                     .complete
                 {
@@ -596,7 +640,7 @@ impl DatasetAuthority {
             let Some(value) = self.store.get(&key::snapshot(identity, snapshot)?).await? else {
                 break;
             };
-            current = decode::<SnapshotRecord>(&value.bytes)?.publication.parent;
+            current = decode_snapshot(&value.bytes)?.publication.parent;
         }
         Ok(false)
     }
@@ -717,16 +761,9 @@ impl DatasetAuthority {
         if sample_ids.len() > crate::MAX_BATCH_SIZE {
             return Err(DatasetError::InvalidManifest.into());
         }
-        let mut batch = Vec::with_capacity(sample_ids.len());
-        for sample_id in sample_ids {
-            batch.push(SampleView {
-                sample_id: sample_id.clone(),
-                fields: self
-                    .resolve_projection(identity, snapshot, sample_id, fields)
-                    .await?,
-                values: BTreeMap::new(),
-            });
-        }
+        let mut batch = self
+            .legacy_batch_locators(identity, snapshot, sample_ids, fields)
+            .await?;
         self.materialize_batch(identity, snapshot, &mut batch).await?;
         Ok(batch)
     }
@@ -770,16 +807,9 @@ impl DatasetAuthority {
         if cancel.is_cancelled() {
             return Err(DatasetError::ReadCancelled.into());
         }
-        let mut batch = Vec::with_capacity(sample_ids.len());
-        for sample_id in sample_ids {
-            batch.push(SampleView {
-                sample_id: sample_id.clone(),
-                fields: self
-                    .resolve_projection(identity, snapshot, sample_id, fields)
-                    .await?,
-                values: BTreeMap::new(),
-            });
-        }
+        let mut batch = self
+            .legacy_batch_locators(identity, snapshot, sample_ids, fields)
+            .await?;
         for sample in &mut batch {
             for (name, locator) in &sample.fields {
                 if cancel.is_cancelled() {
@@ -817,49 +847,6 @@ impl DatasetAuthority {
     ) -> Result<Vec<SampleView>, AuthorityError> {
         let _ = surface;
         self.read_batch(identity, snapshot, sample_ids, fields).await
-    }
-
-    /// Loads a durable cursor bound to its logical plan identity.
-    ///
-    /// # Errors
-    /// Returns malformed cursor bytes or storage failures.
-    pub async fn load_cursor(
-        &self,
-        identity: &DatasetIdentity,
-        plan: &crate::ReadPlan,
-    ) -> Result<Option<ReadCursor>, AuthorityError> {
-        let Some(value) = self.store.get(&key::cursor(identity, plan.identity())?).await? else {
-            return Ok(None);
-        };
-        let cursor: ReadCursor = decode(&value.bytes)?;
-        cursor.validate_for(plan)?;
-        Ok(Some(cursor))
-    }
-
-    /// Persists a confirmed cursor using CAS so an older worker cannot move a
-    /// durable replay boundary backwards after a restart.
-    ///
-    /// # Errors
-    /// Rejects a cursor bound to another plan or an unexpected stored value.
-    pub async fn persist_cursor(
-        &self,
-        identity: &DatasetIdentity,
-        plan: &crate::ReadPlan,
-        cursor: &ReadCursor,
-        expected: Option<&ReadCursor>,
-    ) -> Result<(), AuthorityError> {
-        cursor.validate_for(plan)?;
-        let key = key::cursor(identity, plan.identity())?;
-        let expected_bytes = expected.map(encode).transpose()?;
-        let bytes = encode(cursor)?;
-        match self
-            .store
-            .compare_exchange(&key, expected_bytes.as_deref(), &bytes)
-            .await?
-        {
-            CasOutcome::Applied(_) => Ok(()),
-            CasOutcome::Conflict(_) => Err(AuthorityError::CursorConflict),
-        }
     }
 
     async fn manifest_schema(

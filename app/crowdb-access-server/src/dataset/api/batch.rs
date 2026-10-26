@@ -2,9 +2,11 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{error::ApiError, read_json, snapshot, ApiResult};
-use crate::dataset::{unix_seconds, DatasetBody, DatasetHttpService};
+use crate::dataset::{DatasetBody, DatasetHttpService};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use crowdb_access_dataset::{DatasetIdentity, FieldLocator, SampleView, SnapshotId};
+use crowdb_access_dataset::{
+    DatasetIdentity, FieldLocator, ReadPage, ResolvedReadPage, SampleView, SnapshotId, UploadReadDescriptor,
+};
 use futures::stream;
 use http_body_util::{BodyExt, StreamBody};
 use hyper::{
@@ -12,18 +14,13 @@ use hyper::{
     Request, Response,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 
 #[derive(Deserialize)]
 pub(super) struct BatchRequest {
     pub snapshot: String,
     pub sample_ids: Vec<String>,
     pub fields: Vec<String>,
-    #[serde(skip)]
-    pub sample_id_limit: Option<usize>,
 }
 impl BatchRequest {
     fn ids(&self) -> Result<Vec<Vec<u8>>, ApiError> {
@@ -31,10 +28,7 @@ impl BatchRequest {
             .iter()
             .map(|value| {
                 let bytes = STANDARD.decode(value).map_err(|_| ApiError::invalid())?;
-                if bytes.is_empty()
-                    || bytes.len() > self.sample_id_limit.unwrap_or(1024)
-                    || STANDARD.encode(&bytes) != *value
-                {
+                if bytes.is_empty() || bytes.len() > 1024 || STANDARD.encode(&bytes) != *value {
                     return Err(ApiError::invalid());
                 }
                 Ok(bytes)
@@ -43,18 +37,18 @@ impl BatchRequest {
     }
 }
 #[derive(Serialize)]
-struct BatchField {
-    sample: String,
-    field: String,
+struct BatchField<'a> {
+    sample: &'a str,
+    field: &'a str,
     state: &'static str,
     length: u64,
     md5: Option<String>,
 }
 #[derive(Serialize)]
-struct Header {
+struct Header<'a> {
     snapshot: String,
-    sample_ids: Vec<String>,
-    fields: Vec<BatchField>,
+    sample_ids: &'a [String],
+    fields: Vec<BatchField<'a>>,
     next: Option<String>,
     end: bool,
 }
@@ -72,77 +66,60 @@ impl DatasetHttpService {
             .0
             .clone();
         let request: BatchRequest = read_json(request).await?;
-        self.batch(identity, request, None, true, None, request_id).await
+        self.batch(identity, request, request_id).await
     }
     pub(super) async fn batch(
         &self,
         identity: &DatasetIdentity,
         request: BatchRequest,
-        next: Option<String>,
-        end: bool,
-        session: Option<crowdb_access_dataset::OperationId>,
         request_id: String,
     ) -> ApiResult {
         let id = snapshot(&request.snapshot)?;
         let ids = request.ids()?;
         let authority = self.reads.authority();
-        let lease = Lease::acquire(authority.clone(), identity, id, session).await?;
-        let weak = Arc::downgrade(&lease);
-        tokio::spawn(async move {
-            let mut timer = tokio::time::interval(std::time::Duration::from_secs(15));
-            loop {
-                timer.tick().await;
-                let Some(lease) = weak.upgrade() else { break };
-                let result = async {
-                    if let Some(session) = lease.session {
-                        crowdb_access_dataset::DatasetSessions::new(lease.authority.clone())
-                            .resume(&lease.identity, session, unix_seconds())
-                            .await?;
-                    }
-                    lease
-                        .authority
-                        .touch_read_handle(&lease.identity, lease.snapshot, lease.handle, unix_seconds(), 60)
-                        .await
-                }
-                .await;
-                if let Err(error) = result {
-                    lease.failed.store(true, Ordering::Release);
-                    tracing::error!(%error,"Dataset stream lease renewal failed; delivery cancelled");
-                    break;
-                }
-            }
-        });
+        authority.check_snapshot_readable(identity, id).await?;
         let samples = if ids.is_empty() {
             Vec::new()
-        } else if request.sample_id_limit.is_some() {
-            authority
-                .resolve_inspection_batch_locators(
-                    identity,
-                    id,
-                    &ids,
-                    &request.fields,
-                    &crowdb_access_dataset::ReadCancellation::new(),
-                )
-                .await?
         } else {
             authority
                 .resolve_batch_locators(identity, id, &ids, &request.fields)
                 .await?
         };
-        let header = make_header(id, &request.sample_ids, &request.fields, &samples, next, end);
-        let encoded = serde_json::to_vec(&header).map_err(|_| ApiError::integrity())?;
-        if encoded.len() > 8 * 1024 * 1024 {
-            return Err(ApiError::too_large());
-        }
-        let mut prefix = Vec::from(b"CDBDS001".as_slice());
-        prefix.extend_from_slice(&frame(1, &Bytes::from(encoded))?);
+        self.render_batch(
+            ResolvedReadPage {
+                page: ReadPage {
+                    snapshot: id,
+                    ids,
+                    fields: request.fields,
+                    next: None,
+                },
+                samples,
+            },
+            request_id,
+        )
+    }
+
+    pub(super) fn render_batch(&self, resolved: ResolvedReadPage, request_id: String) -> ApiResult {
+        let request = resolved.page;
+        let samples = resolved.samples;
+        let ids: Vec<_> = request.ids.iter().map(|id| STANDARD.encode(id)).collect();
+        let end = request.next.is_none();
+        let header = make_header(
+            request.snapshot,
+            &ids,
+            &request.fields,
+            &samples,
+            request.next,
+            end,
+        );
+        let (prefix, encoded) = encode_header(&header)?;
         let locators = samples
             .into_iter()
-            .flat_map(|sample| {
+            .flat_map(|mut sample| {
                 request
                     .fields
                     .iter()
-                    .filter_map(move |name| sample.fields.get(name).cloned())
+                    .filter_map(move |name| sample.fields.remove(name))
                     .filter(|v| !matches!(v, FieldLocator::Tombstone))
             })
             .collect();
@@ -152,9 +129,10 @@ impl DatasetHttpService {
             locators,
             index: 0,
             part: 0,
-            pending: Some(Bytes::from(prefix)),
+            upload: None,
+            pending: Some(prefix),
+            metadata: Some(encoded),
             finished: false,
-            lease,
         };
         Ok(Response::builder()
             .header("content-type", "application/vnd.crowdb.dataset-batch.v1")
@@ -162,14 +140,49 @@ impl DatasetHttpService {
             .expect("static response"))
     }
 }
-fn make_header(
+
+#[cfg(feature = "test-util")]
+impl DatasetHttpService {
+    /// Encodes only the real batch prefix and metadata, without storage IO.
+    ///
+    /// # Errors
+    /// Returns the API error code if metadata serialization exceeds the header limit.
+    pub fn batch_header_for_tests(resolved: ResolvedReadPage) -> Result<(Bytes, Bytes), &'static str> {
+        let request = resolved.page;
+        let ids: Vec<_> = request.ids.iter().map(|id| STANDARD.encode(id)).collect();
+        let end = request.next.is_none();
+        let header = make_header(
+            request.snapshot,
+            &ids,
+            &request.fields,
+            &resolved.samples,
+            request.next,
+            end,
+        );
+        encode_header(&header).map_err(|error| error.code())
+    }
+}
+fn encode_header(header: &Header<'_>) -> Result<(Bytes, Bytes), ApiError> {
+    let encoded = serde_json::to_vec(header).map_err(|_| ApiError::integrity())?;
+    if encoded.len() > 8 * 1024 * 1024 {
+        return Err(ApiError::too_large());
+    }
+    let length = u32::try_from(encoded.len()).map_err(|_| ApiError::too_large())?;
+    let mut prefix = Vec::with_capacity(13);
+    prefix.extend_from_slice(b"CDBDS001");
+    prefix.push(1);
+    prefix.extend_from_slice(&length.to_be_bytes());
+    Ok((Bytes::from(prefix), Bytes::from(encoded)))
+}
+
+fn make_header<'a>(
     snapshot: SnapshotId,
-    ids: &[String],
-    fields: &[String],
+    ids: &'a [String],
+    fields: &'a [String],
     samples: &[SampleView],
     next: Option<String>,
     end: bool,
-) -> Header {
+) -> Header<'a> {
     let mut values = Vec::new();
     for (sample, id) in samples.iter().zip(ids) {
         for name in fields {
@@ -182,8 +195,8 @@ fn make_header(
                 None => ("missing", 0, None),
             };
             values.push(BatchField {
-                sample: id.clone(),
-                field: name.clone(),
+                sample: id,
+                field: name,
                 state,
                 length,
                 md5,
@@ -192,52 +205,10 @@ fn make_header(
     }
     Header {
         snapshot: snapshot.to_string(),
-        sample_ids: ids.to_vec(),
+        sample_ids: ids,
         fields: values,
         next,
         end,
-    }
-}
-pub(super) struct Lease {
-    authority: Arc<crowdb_access_dataset::DatasetAuthority>,
-    identity: DatasetIdentity,
-    snapshot: SnapshotId,
-    handle: crowdb_access_dataset::OperationId,
-    session: Option<crowdb_access_dataset::OperationId>,
-    failed: AtomicBool,
-}
-impl Lease {
-    pub(super) async fn acquire(
-        authority: Arc<crowdb_access_dataset::DatasetAuthority>,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-        session: Option<crowdb_access_dataset::OperationId>,
-    ) -> Result<Arc<Self>, ApiError> {
-        let handle = crowdb_access_dataset::OperationId::random();
-        authority
-            .touch_read_handle(identity, snapshot, handle, unix_seconds(), 60)
-            .await?;
-        Ok(Arc::new(Self {
-            authority,
-            identity: identity.clone(),
-            snapshot,
-            handle,
-            session,
-            failed: AtomicBool::new(false),
-        }))
-    }
-}
-impl Drop for Lease {
-    fn drop(&mut self) {
-        let authority = self.authority.clone();
-        let identity = self.identity.clone();
-        let snapshot = self.snapshot;
-        let handle = self.handle;
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-  if let Err(error)=authority.release_read_handle(&identity,snapshot,handle).await {tracing::error!(%error,"Dataset read release failed; lease expiry protects disconnected reads");}
- });
-        }
     }
 }
 struct BatchState {
@@ -246,9 +217,10 @@ struct BatchState {
     locators: Vec<FieldLocator>,
     index: usize,
     part: u32,
+    upload: Option<UploadReadDescriptor>,
     pending: Option<Bytes>,
+    metadata: Option<Bytes>,
     finished: bool,
-    lease: Arc<Lease>,
 }
 fn stream_body(state: BatchState) -> DatasetBody {
     let frames = stream::unfold(state, |mut state| async move {
@@ -264,34 +236,19 @@ fn stream_body(state: BatchState) -> DatasetBody {
                 frame(4, &Bytes::from(record.to_string())).expect("bounded error frame")
             }
         };
-        let owner = FrameOwner {
-            bytes,
-            lease: state.lease.clone(),
-        };
-        Some((
-            Ok::<_, crate::dataset::BoxError>(Frame::data(Bytes::from_owner(owner))),
-            state,
-        ))
+        Some((Ok::<_, crate::dataset::BoxError>(Frame::data(bytes)), state))
     });
     StreamBody::new(frames).boxed_unsync()
 }
 impl BatchState {
     async fn next(&mut self) -> Result<Bytes, ApiError> {
-        if self.lease.failed.load(Ordering::Acquire) {
-            return Err(crowdb_access_dataset::AuthorityError::from(
-                crowdb_access_dataset::DatasetError::ReadCancelled,
-            )
-            .into());
-        }
-        if let Some(session) = self.lease.session {
-            crowdb_access_dataset::DatasetSessions::new(self.lease.authority.clone())
-                .check_open(&self.lease.identity, session)
-                .await?;
-        }
         if let Some(bytes) = self.pending.take() {
             return Ok(bytes);
         }
-        let Some(locator) = self.locators.get(self.index) else {
+        if let Some(bytes) = self.metadata.take() {
+            return Ok(bytes);
+        }
+        let Some(locator) = self.locators.get_mut(self.index) else {
             self.finished = true;
             return frame(0, &Bytes::new());
         };
@@ -303,18 +260,29 @@ impl BatchState {
                 if value.is_empty() {
                     return self.end_field();
                 }
-                let bytes = Bytes::copy_from_slice(value);
+                let bytes = Bytes::from(std::mem::take(value));
                 let digest = *md5;
                 self.part = 1;
                 self.data_frame(bytes, digest)
             }
-            FieldLocator::Chunk { location, length, .. } => {
-                let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
-                let metadata = uploads.metadata(location).await?;
-                if u64::from(self.part) >= length.div_ceil(u64::from(metadata.part_size)) {
+            FieldLocator::Chunk {
+                location,
+                length,
+                md5,
+            } => {
+                if self.upload.is_none() {
+                    let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
+                    let descriptor = uploads.open_read(location).await?;
+                    if descriptor.length() != *length || descriptor.md5() != *md5 {
+                        return Err(ApiError::integrity());
+                    }
+                    self.upload = Some(descriptor);
+                }
+                let descriptor = self.upload.as_ref().ok_or_else(ApiError::integrity)?;
+                if self.part >= descriptor.part_count() {
                     return self.end_field();
                 }
-                let (bytes, digest) = uploads.read_part_verified(location, self.part).await?;
+                let (bytes, digest) = descriptor.read_part_verified(self.part).await?;
                 self.part += 1;
                 self.data_frame(bytes, digest)
             }
@@ -333,6 +301,7 @@ impl BatchState {
     fn end_field(&mut self) -> Result<Bytes, ApiError> {
         self.index += 1;
         self.part = 0;
+        self.upload = None;
         frame(3, &Bytes::new())
     }
 }
@@ -343,14 +312,4 @@ fn frame(kind: u8, bytes: &Bytes) -> Result<Bytes, ApiError> {
     output.extend_from_slice(&length.to_be_bytes());
     output.extend_from_slice(bytes);
     Ok(Bytes::from(output))
-}
-struct FrameOwner {
-    bytes: Bytes,
-    lease: Arc<Lease>,
-}
-impl AsRef<[u8]> for FrameOwner {
-    fn as_ref(&self) -> &[u8] {
-        let _ = &self.lease;
-        &self.bytes
-    }
 }

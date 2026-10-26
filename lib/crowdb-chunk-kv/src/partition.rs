@@ -5,11 +5,13 @@
 //! Sub-modules: [`frame`] (wire codec), [`journal`] (durability),
 //! [`tree`] (ordered storage).
 
+mod checkpoint;
 mod drain;
 mod frame;
 mod frontier;
 mod ingress;
 mod journal;
+mod maintenance;
 mod observation;
 mod scan;
 mod split;
@@ -167,6 +169,7 @@ pub struct Partition {
     applied_seq: Arc<AtomicU64>,
     applied_position: Arc<AtomicU64>,
     retry_replay_offset: Arc<AtomicU64>,
+    metadata_reclaim: Arc<ArcSwapOption<maintenance::MetadataReclaim>>,
     checkpoint_pin_generation: Arc<AtomicU64>,
     checkpoint_pin_transition_high: Arc<AtomicU64>,
     checkpoint_pin_transition_low: Arc<AtomicU64>,
@@ -851,6 +854,7 @@ impl Partition {
             applied_seq,
             applied_position,
             retry_replay_offset,
+            metadata_reclaim: Arc::new(ArcSwapOption::empty()),
             checkpoint_pin_generation,
             checkpoint_pin_transition_high,
             checkpoint_pin_transition_low,
@@ -1140,50 +1144,6 @@ impl Partition {
     #[must_use]
     pub fn tree_id(&self) -> u64 {
         self.tree.tree_id()
-    }
-
-    /// Persists an exact root-generation reference before publishing a
-    /// topology artifact that depends on it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a storage error when the generation is absent or conflicts
-    /// with the transition's existing pin.
-    pub fn retain_generation_pin(&self, transition_id: TransitionId, generation: u64) -> Result<()> {
-        let current = self.checkpoint_pin_generation.load(Ordering::Acquire);
-        if current != 0
-            && (current != generation
-                || self.checkpoint_pin_transition_high.load(Ordering::Acquire) != transition_id.high
-                || self.checkpoint_pin_transition_low.load(Ordering::Acquire) != transition_id.low)
-        {
-            return Err(ChunkKvError::InvalidRequest(
-                "another transition already pins the partition checkpoint lineage".into(),
-            ));
-        }
-        self.tree.pin_generation(transition_id, generation)?;
-        self.checkpoint_pin_transition_high
-            .store(transition_id.high, Ordering::Relaxed);
-        self.checkpoint_pin_transition_low
-            .store(transition_id.low, Ordering::Relaxed);
-        self.checkpoint_pin_generation
-            .store(generation, Ordering::Release);
-        Ok(())
-    }
-
-    /// Releases this partition tree's durable generation pin after the
-    /// authoritative catalog has removed its overlay dependency.
-    ///
-    /// # Errors
-    ///
-    /// Returns a storage error when durable pin deletion cannot complete.
-    pub fn release_generation_pin(&self, transition_id: TransitionId) -> Result<()> {
-        self.tree.unpin_generation(transition_id)?;
-        if self.checkpoint_pin_transition_high.load(Ordering::Acquire) == transition_id.high
-            && self.checkpoint_pin_transition_low.load(Ordering::Acquire) == transition_id.low
-        {
-            self.checkpoint_pin_generation.store(0, Ordering::Release);
-        }
-        Ok(())
     }
 
     #[must_use]
@@ -1638,132 +1598,6 @@ impl Partition {
             .store(lifecycle_code(PartitionLifecycle::Serving), Ordering::Release);
         self.metrics.split_abort();
         Ok(())
-    }
-
-    /// Creates an exact checkpoint while a transfer source is quiesced.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless the partition is drained and fenced, or if the
-    /// tree checkpoint fails.
-    pub async fn checkpoint_quiesced(&self, ownership_epoch: u64) -> Result<Checkpoint> {
-        self.validate_epoch(ownership_epoch)?;
-        let _maintenance = self.split_transition.lock().await;
-        if self.lifecycle() != PartitionLifecycle::TransferQuiesced
-            || self.queued_requests.load(Ordering::Acquire) != 0
-        {
-            return Err(ChunkKvError::InvalidRequest(
-                "checkpoint requires a quiesced mutation source".into(),
-            ));
-        }
-        self.create_checkpoint().await
-    }
-
-    /// Publishes a recoverable checkpoint while the partition continues
-    /// serving. The replay offset is captured before the tree flush, so a
-    /// concurrent mutation can only make recovery replay an already included
-    /// record; it cannot create a WAL gap.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stale-epoch, lifecycle, tree, or frontier error.
-    pub async fn checkpoint(&self, ownership_epoch: u64) -> Result<Checkpoint> {
-        self.validate_epoch(ownership_epoch)?;
-        let _maintenance = self.split_transition.lock().await;
-        if self.checkpoint_pin_generation.load(Ordering::Acquire) != 0 {
-            return Err(ChunkKvError::SplitRetry(
-                "checkpoint publication is suppressed by an exact-root transition pin".into(),
-            ));
-        }
-        match self.lifecycle() {
-            PartitionLifecycle::Serving
-            | PartitionLifecycle::TransferQuiesced
-            | PartitionLifecycle::SplitFinalizing => self.create_checkpoint().await,
-            state => Err(read_state_error(state)),
-        }
-    }
-
-    async fn create_checkpoint(&self) -> Result<Checkpoint> {
-        let replay_offset = self.retry_replay_offset.load(Ordering::Acquire);
-        self.journal.checkpoint().await?;
-        let stream_generation = self.journal.record_generation();
-        let (tree_manifest, applied_seq) = self.tree.checkpoint(replay_offset).await?;
-        let root_manifest_generation = self.tree.root_manifest_generation()?;
-        if applied_seq > self.journal_durable_seq.load(Ordering::Acquire)
-            || self.tree.last_applied_seq() < applied_seq
-        {
-            return Err(ChunkKvError::ApplyStateUnknown);
-        }
-        self.metrics.checkpoint();
-        Ok(Checkpoint {
-            tree_id: self.tree.tree_id(),
-            tree_manifest,
-            root_manifest_generation,
-            applied_seq,
-            stream_name: self.journal.stream_name(),
-            stream_generation,
-            replay_offset,
-        })
-    }
-
-    /// Trims WAL bytes only after the caller supplies the published checkpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for stale identity/frontiers or journal GC failure.
-    pub async fn trim_published_checkpoint(
-        &self,
-        ownership_epoch: u64,
-        checkpoint: &Checkpoint,
-    ) -> Result<u64> {
-        self.validate_epoch(ownership_epoch)?;
-        if checkpoint.stream_name != self.journal.stream_name()
-            || checkpoint.stream_generation == 0
-            || checkpoint.stream_generation > self.journal.record_generation()
-            || checkpoint.applied_seq > self.applied_seq.load(Ordering::Acquire)
-            || checkpoint.replay_offset > self.journal.tail()
-            || checkpoint.replay_offset > self.retry_replay_offset.load(Ordering::Acquire)
-        {
-            return Err(ChunkKvError::InvalidRequest(
-                "checkpoint does not belong to this frontier".into(),
-            ));
-        }
-        self.journal.trim_prefix(checkpoint.replay_offset).await
-    }
-
-    /// Advances both durable retention watermarks after the caller has
-    /// published this exact checkpoint, then reclaims unreferenced chunk
-    /// objects left by interrupted page-store work.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for stale authority, a mismatched checkpoint, or a
-    /// journal/tree maintenance failure.
-    pub async fn reclaim_published_checkpoint(
-        &self,
-        ownership_epoch: u64,
-        checkpoint: &Checkpoint,
-    ) -> Result<CheckpointReclaim> {
-        let journal_bytes = self
-            .trim_published_checkpoint(ownership_epoch, checkpoint)
-            .await?;
-        let metadata_records = self
-            .journal
-            .reclaim_metadata_before(
-                checkpoint.stream_generation,
-                self.config.metadata_reclaim_records_per_pass,
-            )
-            .await?;
-        let tree_bytes = self.tree.reclaim_before(checkpoint.root_manifest_generation)?;
-        let orphan_bytes = self.tree.reclaim_orphans()?;
-        self.metrics
-            .reclaim(journal_bytes, metadata_records, tree_bytes, orphan_bytes);
-        Ok(CheckpointReclaim {
-            journal_bytes,
-            metadata_records,
-            tree_bytes,
-            orphan_bytes,
-        })
     }
 
     /// Returns native chunk page-store counters when this partition uses the

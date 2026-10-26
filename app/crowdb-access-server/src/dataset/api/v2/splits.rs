@@ -7,14 +7,11 @@ use super::super::{
 use super::{
     inspection_models::Page,
     query::Query,
-    split_models::{decimal, revision, DraftSplit},
+    split_models::{decimal, revision},
     split_requests as input, split_responses as output,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
-use crowdb_access_dataset::{
-    split::{SplitDraftEdit, SplitName},
-    CommitAttempt, CommitTarget, DatasetIdentity, ReadCancellation,
-};
+use crowdb_access_dataset::{split::SplitName, DatasetIdentity, ReadCancellation};
 use hyper::{body::Incoming, Method, Request};
 
 impl DatasetHttpService {
@@ -39,32 +36,20 @@ impl DatasetHttpService {
         )?;
         let authority = self.reads.authority();
         match (request.method().clone(), tail) {
-            (Method::POST, ["snapshots", owner, "split-drafts"]) => {
-                let input: input::Begin = read_json(request).await?;
-                let splits = input
-                    .splits
-                    .into_iter()
-                    .map(DraftSplit::native)
-                    .collect::<Result<_, _>>()?;
-                let record = authority
-                    .begin_split_draft(
-                        identity,
-                        operation(&input.operation)?,
-                        snapshot(owner)?,
-                        input.expected_revision.as_deref().map(revision).transpose()?,
-                        input.policy.into(),
-                        splits,
-                    )
-                    .await?;
-                json(&output::draft(record))
-            }
+            (Method::POST, ["snapshots", _, "split-drafts"]) => Err(ApiError::unsupported()),
             (_, ["split-drafts", ..]) => self.v2_split_draft(identity, tail, request).await,
             (Method::GET, ["snapshots", owner, "split-head"]) => {
                 read_body(request, false).await?;
-                let head = authority.inspect_split_head(identity, snapshot(owner)?).await?;
-                json(
-                    &serde_json::json!({"snapshot":owner, "revision":head.revision.map(|r|r.to_string()), "generation":head.generation.map(|h|hex::encode(h.as_bytes()))}),
-                )
+                let snapshot = snapshot(owner)?;
+                let head = authority.inspect_split_head(identity, snapshot).await?;
+                json(&output::head(snapshot, &head))
+            }
+            (Method::PUT, ["snapshots", owner, "split-head"]) => {
+                self.v2_update_split_head(identity, owner, request).await
+            }
+            (Method::PUT, ["snapshots", owner, "split-revisions", revision]) => {
+                self.v2_prepare_split_revision(identity, owner, revision, request)
+                    .await
             }
             (Method::GET, ["snapshots", owner, "split-revisions"]) => {
                 read_body(request, false).await?;
@@ -96,6 +81,25 @@ impl DatasetHttpService {
                         .await?,
                 ))
             }
+            (Method::DELETE, ["snapshots", owner, "split-revisions", rev]) => {
+                if !read_body(request, false).await?.is_empty() {
+                    return Err(ApiError::invalid());
+                }
+                json(&output::deletion(
+                    &authority
+                        .delete_split_revision(
+                            identity,
+                            snapshot(owner)?,
+                            revision(rev)?,
+                            &ReadCancellation::new(),
+                        )
+                        .await
+                        .map_err(|error| match error {
+                            crowdb_access_dataset::split::SplitLifecycleError::Frozen => ApiError::conflict(),
+                            error => error.into(),
+                        })?,
+                ))
+            }
             (Method::GET, ["snapshots", owner, "split-revisions", rev, "splits", name, "members"]) => {
                 read_body(request, false).await?;
                 let name = SplitName::new(*name).map_err(|_| ApiError::invalid())?;
@@ -115,6 +119,27 @@ impl DatasetHttpService {
             _ => Err(ApiError::not_found()),
         }
     }
+    async fn v2_update_split_head(
+        &self,
+        identity: &DatasetIdentity,
+        owner: &str,
+        request: Request<Incoming>,
+    ) -> ApiResult {
+        let input: input::UpdateHead = read_json(request).await?;
+        let snapshot = snapshot(owner)?;
+        let update = crowdb_access_dataset::split::SplitHeadUpdate {
+            revision: revision(&input.revision)?,
+            expected_revision: input.expected_revision.as_deref().map(revision).transpose()?,
+            expected_head: input::generation(input.expected_head.as_deref())?,
+        };
+        let head = self
+            .reads
+            .authority()
+            .update_split_head(identity, snapshot, &update)
+            .await?;
+        json(&output::head(snapshot, &head))
+    }
+
     async fn v2_split_draft(
         &self,
         identity: &DatasetIdentity,
@@ -141,62 +166,7 @@ impl DatasetHttpService {
                         .await?,
                 ))
             }
-            (Method::PUT, []) => {
-                let input: input::SplitEdit = read_json(request).await?;
-                let edit = SplitDraftEdit {
-                    id: super::super::operation(&input.edit)?,
-                    expected_revision: decimal(&input.expected_revision)?,
-                    policy: input.policy.into(),
-                    splits: input
-                        .splits
-                        .into_iter()
-                        .map(DraftSplit::native)
-                        .collect::<Result<_, _>>()?,
-                };
-                json(&output::draft(
-                    authority.edit_split_draft(identity, operation, &edit).await?,
-                ))
-            }
-            (Method::POST, ["evaluate"]) => {
-                let input: input::Evaluate = read_json(request).await?;
-                json(&output::preview(
-                    authority
-                        .evaluate_split_draft(
-                            identity,
-                            operation,
-                            decimal(&input.expected_revision)?,
-                            decimal(&input.expected_page)?,
-                            &ReadCancellation::new(),
-                        )
-                        .await?,
-                ))
-            }
-            (Method::POST, ["prepare"]) => {
-                let input: input::Prepare = read_json(request).await?;
-                json(&output::revision(
-                    authority
-                        .prepare_split_draft(identity, operation, decimal(&input.expected_revision)?)
-                        .await?,
-                ))
-            }
-            (Method::POST, ["publish"]) => {
-                let input: input::Publish = read_json(request).await?;
-                let draft = authority.split_draft_status(identity, operation).await?;
-                let attempt = CommitAttempt {
-                    version: 1,
-                    id: super::super::operation(&input.attempt)?,
-                    target: CommitTarget::SplitRevision {
-                        snapshot: draft.snapshot,
-                        revision: revision(&input.revision)?,
-                    },
-                    expected_head: input::generation(input.expected_head.as_deref())?,
-                };
-                json(&output::receipt(
-                    &authority
-                        .publish_split_draft(identity, operation, &attempt)
-                        .await?,
-                ))
-            }
+            (Method::PUT | Method::POST, _) => Err(ApiError::unsupported()),
             _ => Err(ApiError::not_found()),
         }
     }

@@ -209,15 +209,13 @@ impl GcRepository {
             | StorageKey::Legacy(IcebergKey::Catalog {
                 scope: CatalogScope::FileLocation,
                 ..
-            }) => match StorageRecord::decode(key, bytes)? {
-                StorageRecord::File(file) if task.kind != GcTaskKind::MultipartCleanup => (*file, None, None),
-                StorageRecord::DeletedFile(record) => {
-                    deleted_ms = Some(record.deleted_ms);
-                    (record.file, None, None)
-                }
-                StorageRecord::File(_) | StorageRecord::FileMapping(_) => return Ok(None),
-                _ => return Err(ValidationError::Record.into()),
-            },
+            }) => {
+                let Some((file, deleted)) = self.discovery_file(task, key, bytes).await? else {
+                    return Ok(None);
+                };
+                deleted_ms = deleted;
+                (file, None, None)
+            }
             StorageKey::Legacy(IcebergKey::Catalog {
                 scope: CatalogScope::MultipartPart,
                 ..
@@ -289,6 +287,37 @@ impl GcRepository {
         };
         candidate.cursor = candidate.initial_cursor()?;
         Ok(Some(candidate))
+    }
+
+    async fn discovery_file(
+        &self,
+        task: &GcTask,
+        key: &StorageKey,
+        bytes: &[u8],
+    ) -> Result<Option<(crate::file::FileRecord, Option<u64>)>, CatalogError> {
+        match StorageRecord::decode(key, bytes)? {
+            StorageRecord::File(file) if task.kind != GcTaskKind::MultipartCleanup => Ok(Some((*file, None))),
+            StorageRecord::File(file)
+                if GcCandidate::is_initial_metadata(&file) && self.initial_table_absent(&file).await? =>
+            {
+                Ok(Some((*file, None)))
+            }
+            StorageRecord::DeletedFile(record) => Ok(Some((record.file, Some(record.deleted_ms)))),
+            StorageRecord::File(_) | StorageRecord::FileMapping(_) => Ok(None),
+            _ => Err(ValidationError::Record.into()),
+        }
+    }
+
+    async fn initial_table_absent(&self, file: &crate::file::FileRecord) -> Result<bool, CatalogError> {
+        let key = crate::table::storage_head_key(file.location.table());
+        let Some(value) = self.store.get(&key.encode()?).await? else {
+            return Ok(true);
+        };
+        match StorageRecord::decode(&key, &value.bytes)? {
+            StorageRecord::RetiredTable(_) => Ok(true),
+            StorageRecord::TableHead(_) => Ok(false),
+            _ => Err(ValidationError::Record.into()),
+        }
     }
 
     pub(super) async fn part_is_abandoned(

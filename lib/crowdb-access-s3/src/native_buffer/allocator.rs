@@ -34,6 +34,7 @@ impl NativeBodyAllocator {
                 backpressure_events: AtomicUsize::new(0),
                 backpressure_wait_ns: AtomicUsize::new(0),
                 credit_waiters: ArcSwap::from_pointee(Vec::new()),
+                producer: None,
             }),
         })
     }
@@ -91,7 +92,9 @@ impl NativeBodyAllocator {
             .physical_length(payload_bytes as u64)
             .ok()
             .and_then(|bytes| usize::try_from(bytes).ok())
-            .filter(|bytes| *bytes <= self.state.budget_bytes)
+            .filter(|bytes| {
+                *bytes <= self.state.budget_bytes && (self.state.producer.is_none() || *bytes <= 1 << 20)
+            })
             .ok_or(NativeBufferConfigError::InvalidOwnerSize)?;
         Ok(self.receiver_with_owner_bytes(
             physical.max(
@@ -110,6 +113,26 @@ impl NativeBodyAllocator {
             .expect("attach metrics before sharing native allocator")
             .prefix_copy = metric;
         self
+    }
+
+    /// Reuse the selected `DiskIO` transport's native producer arena.
+    ///
+    /// # Errors
+    /// Rejects owner sizes above the largest registered class (1 MiB).
+    ///
+    /// # Panics
+    /// Panics if this allocator has already been shared or used.
+    pub fn with_producer_allocator(
+        mut self,
+        producer: super::ProducerBufferAllocator,
+    ) -> Result<Self, NativeBufferConfigError> {
+        if self.state.owner_bytes > 1 << 20 {
+            return Err(NativeBufferConfigError::InvalidOwnerSize);
+        }
+        Arc::get_mut(&mut self.state)
+            .expect("attach producer before sharing native allocator")
+            .producer = Some(producer);
+        Ok(self)
     }
 
     fn receiver_with_owner_bytes(&self, owner_bytes: usize) -> NativeBodyReceiver {
@@ -136,6 +159,7 @@ impl NativeBodyAllocator {
                 payload_lengths: vec![0; owner_bytes.div_ceil(MAX_FRAME_BYTES)],
                 append_slot: None,
                 credit_wait_started: None,
+                native_retry: None,
                 magic: FrameMagic::RepoLargeV2,
                 owner_bytes,
             }),
@@ -161,6 +185,27 @@ impl NativeBodyAllocator {
             true
         } else {
             false
+        }
+    }
+
+    pub(super) fn try_owner(&self, bytes: usize) -> std::io::Result<Option<Arc<super::NativeOwner>>> {
+        if !self.try_reserve(bytes) {
+            return Ok(None);
+        }
+        match super::NativeOwner::new(bytes, Arc::clone(&self.state)) {
+            Ok(owner) => {
+                self.state.allocations.fetch_add(1, Ordering::Relaxed);
+                Ok(Some(Arc::new(owner)))
+            }
+            Err(error) => {
+                self.state.retained_bytes.fetch_sub(bytes, Ordering::AcqRel);
+                if error.kind() == std::io::ErrorKind::WouldBlock {
+                    Ok(None)
+                } else {
+                    self.wake_credit_waiters();
+                    Err(error)
+                }
+            }
         }
     }
 

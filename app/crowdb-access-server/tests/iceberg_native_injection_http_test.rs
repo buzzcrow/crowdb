@@ -270,6 +270,49 @@ async fn setup() -> (
     (stack, repository, table, client, server)
 }
 
+async fn assert_full_retry(
+    client: &signed::TestFileClient,
+    path: &str,
+    query: &str,
+    bytes: &[u8],
+    previous_uri: &str,
+) -> crowdb_access_iceberg::file::FileLocation {
+    let replay = client.send(Method::PUT, path, query, bytes, false).await;
+    assert_eq!(replay.status(), 200);
+    let repeated: serde_json::Value = replay.json().await.unwrap();
+    let repeated_uri = repeated["location"].as_str().unwrap();
+    assert_ne!(repeated_uri, previous_uri);
+    let repeated_location = repeated_uri
+        .parse::<crowdb_access_iceberg::file::FileLocation>()
+        .unwrap();
+    let repeated_bytes = client
+        .send(
+            Method::GET,
+            &format!("/iceberg/{}", repeated_location.object_key()),
+            "",
+            b"",
+            false,
+        )
+        .await;
+    assert_eq!(repeated_bytes.status(), 200);
+    assert_eq!(repeated_bytes.bytes().await.unwrap(), bytes);
+    repeated_location
+}
+
+async fn list_native_files(client: &signed::TestFileClient, table: TableLocation) -> String {
+    let response = client
+        .send(
+            Method::GET,
+            "/iceberg",
+            &format!("list-type=2&prefix={}", table.storage_path().unwrap()),
+            b"",
+            false,
+        )
+        .await;
+    assert_eq!(response.status(), 200);
+    response.text().await.unwrap()
+}
+
 #[tokio::test]
 async fn direct_http_reads_skip_file_kv_after_upload_restart_rotation_and_logical_delete() {
     let (stack, repository, table, mut client, server) = setup().await;
@@ -290,9 +333,7 @@ async fn direct_http_reads_skip_file_kv_after_upload_restart_rotation_and_logica
     let location = uri.parse::<crowdb_access_iceberg::file::FileLocation>().unwrap();
     let direct = format!("/iceberg/{}", location.object_key());
     assert!(location.relative_key().starts_with("f/v1/part."));
-    let replay = client.send(Method::PUT, &path, &query, bytes, false).await;
-    assert_eq!(replay.status(), 200);
-    assert_eq!(replay.text().await.unwrap(), body);
+    let repeated = assert_full_retry(&client, &path, &query, bytes, &uri).await;
     let file = FileRepository::new(stack.store())
         .load(context, &location)
         .await
@@ -323,17 +364,9 @@ async fn direct_http_reads_skip_file_kv_after_upload_restart_rotation_and_logica
     assert_eq!(head.headers()["content-length"], bytes.len().to_string());
     let tag = head.headers()["etag"].to_str().unwrap().to_owned();
     assert_conditional_ranges(&client, &direct, &tag).await;
-    let response = client
-        .send(
-            Method::GET,
-            "/iceberg",
-            &format!("list-type=2&prefix={}", table.storage_path().unwrap()),
-            b"",
-            false,
-        )
-        .await;
-    let list = response.text().await.unwrap();
-    assert!(list.contains("f/v1/part."), "{list}");
+    let list = list_native_files(&client, table).await;
+    assert!(list.contains(&location.object_key()), "{list}");
+    assert!(list.contains(&repeated.object_key()), "{list}");
     assert_eq!(kv.native_file_reads.load(Ordering::SeqCst), 0);
     kv.deny_native_file_reads.store(false, Ordering::SeqCst);
     FileRepository::new(kv.clone())
@@ -345,16 +378,9 @@ async fn direct_http_reads_skip_file_kv_after_upload_restart_rotation_and_logica
     let response = client.send(Method::GET, &direct, "", b"", false).await;
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await.unwrap(), bytes.as_slice());
-    let response = client
-        .send(
-            Method::GET,
-            "/iceberg",
-            &format!("list-type=2&prefix={}", table.storage_path().unwrap()),
-            b"",
-            false,
-        )
-        .await;
-    assert!(!response.text().await.unwrap().contains("f/v1/part."));
+    let list = list_native_files(&client, table).await;
+    assert!(!list.contains(&location.object_key()), "{list}");
+    assert!(list.contains(&repeated.object_key()), "{list}");
     assert_eq!(kv.native_file_reads.load(Ordering::SeqCst), 0);
     let crowdb_access_iceberg::file::FileContent::Chunks { root: Some(root) } = &file.content else {
         panic!()

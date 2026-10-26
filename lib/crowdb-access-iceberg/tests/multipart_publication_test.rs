@@ -74,13 +74,8 @@ async fn setup() -> (
         .await
         .unwrap();
     session = load(&repository, &session).await;
-    repository
-        .advance_completion(&session, blocks.clone(), 8, 8)
-        .await
-        .unwrap();
-    session = load(&repository, &session).await;
     let tree = repository
-        .assembled_tree(&session, blocks.clone(), 8)
+        .assemble(&session, &selection, blocks.clone(), 1000, 8)
         .await
         .unwrap();
     (fixture, blocks, session, tree, sealed)
@@ -207,13 +202,14 @@ async fn streamed_parts_complete_by_composing_locations_and_saved_md5_only() {
     replace_selected_part(&fixture, &parts[0]).await;
     assert_eq!(
         repository
-            .prepare_stream_publication(&session, 103)
+            .prepare_stream_publication(&session, &selection, 103)
             .await
-            .unwrap(),
+            .unwrap()
+            .map(|change| change.is_applied()),
         Some(true)
     );
     session = load(&repository, &session).await;
-    let published = repository.publish(&session).await.unwrap().unwrap();
+    let published = repository.publish(&session).await.unwrap().into_value().unwrap();
     let locations = published.content.locations(published.length).unwrap().unwrap();
     assert_eq!(published.length, 12);
     assert_eq!(
@@ -237,7 +233,7 @@ async fn streamed_parts_complete_by_composing_locations_and_saved_md5_only() {
 #[tokio::test]
 async fn every_lost_publication_reply_recovers_the_same_seal_and_file_identity() {
     for lost in 1..=5 {
-        let (fixture, blocks, mut session, tree, sealed) = setup().await;
+        let (fixture, _blocks, mut session, tree, sealed) = setup().await;
         let repository = MultipartRepository::new(fixture.store.clone());
         fixture.store.fail_after.store(
             fixture.store.writes.load(Ordering::SeqCst) + lost,
@@ -252,12 +248,13 @@ async fn every_lost_publication_reply_recovers_the_same_seal_and_file_identity()
             assert!(repository
                 .prepare_publication(&session, &tree, &sealed, 103)
                 .await
-                .unwrap());
+                .unwrap()
+                .is_applied());
             session = load(&repository, &session).await;
         }
         let result = repository.publish(&session).await;
         let _ = result;
-        let recovery = MultipartRecovery::new(fixture.store.clone(), blocks, 8, 8).unwrap();
+        let recovery = MultipartRecovery::new(fixture.store.clone());
         let report = recovery
             .recover_page(session.context, None, session.expires_ms)
             .await
@@ -268,7 +265,10 @@ async fn every_lost_publication_reply_recovers_the_same_seal_and_file_identity()
         assert_eq!(session.phase, MultipartPhase::Published);
         assert_eq!(session.published, Some(sealed.file));
         let writes = fixture.store.writes.load(Ordering::SeqCst);
-        assert_eq!(recovery.publish(&session).await.unwrap(), Some(sealed));
+        assert_eq!(
+            recovery.publish(&session).await.unwrap().into_value(),
+            Some(sealed)
+        );
         assert_eq!(fixture.store.writes.load(Ordering::SeqCst), writes);
         assert!(recovery.abort(&session).await.is_err());
     }
@@ -291,11 +291,11 @@ async fn equal_existing_location_replays_its_original_identity_and_different_byt
         let publishing = load(&repository, &session).await;
         let result = repository.publish(&publishing).await;
         if equal {
-            assert_eq!(result.unwrap(), Some(existing.clone()));
+            assert_eq!(result.unwrap().into_value(), Some(existing.clone()));
             let published = load(&repository, &session).await;
             assert_eq!(published.published, Some(existing.file));
             assert_eq!(
-                repository.publish(&published).await.unwrap(),
+                repository.publish(&published).await.unwrap().into_value(),
                 Some(existing.clone())
             );
         } else {
@@ -327,11 +327,11 @@ async fn abort_and_frozen_publication_share_one_fence_without_allowing_post_abor
         first.prepare_publication(&session, &tree, &sealed, 103),
         second.abort(&session)
     );
-    assert_ne!(prepared.unwrap(), aborted.unwrap());
+    assert_ne!(prepared.unwrap().is_applied(), aborted.unwrap());
     let current = load(&first, &session).await;
     if current.phase == MultipartPhase::Publishing {
         assert!(second.abort(&current).await.is_err());
-        assert_eq!(first.publish(&current).await.unwrap(), Some(sealed));
+        assert_eq!(first.publish(&current).await.unwrap().into_value(), Some(sealed));
     } else {
         assert_eq!(current.phase, MultipartPhase::Aborted);
         assert!(first.publish(&current).await.is_err());
@@ -344,7 +344,7 @@ async fn abort_and_frozen_publication_share_one_fence_without_allowing_post_abor
 }
 
 #[tokio::test]
-async fn changed_byte_identity_incomplete_progress_and_corrupt_intent_fail_before_publication() {
+async fn changed_byte_identity_stale_selection_and_corrupt_intent_fail_before_publication() {
     let (fixture, _, session, tree, sealed) = setup().await;
     let repository = MultipartRepository::new(fixture.store.clone());
     for change in [0, 1, 2] {
@@ -359,12 +359,15 @@ async fn changed_byte_identity_incomplete_progress_and_corrupt_intent_fail_befor
             .await
             .is_err());
     }
-    let mut incomplete = session.clone();
-    incomplete.completion = Some(fixtures::completion(&session));
-    assert!(repository
-        .prepare_publication(&incomplete, &tree, &sealed, 103)
+    let mut stale = session.clone();
+    stale.completion = Some(fixtures::completion(&session));
+    let writes = fixture.store.writes.load(Ordering::SeqCst);
+    assert!(!repository
+        .prepare_publication(&stale, &tree, &sealed, 103)
         .await
-        .is_err());
+        .unwrap()
+        .is_applied());
+    assert_eq!(fixture.store.writes.load(Ordering::SeqCst), writes);
     assert!(repository
         .prepare_publication(&session, &tree, &sealed, session.expires_ms)
         .await
@@ -406,7 +409,7 @@ async fn changed_byte_identity_incomplete_progress_and_corrupt_intent_fail_befor
 
 #[tokio::test]
 async fn lost_conflict_marker_reply_retains_a_terminal_nonpublishing_outcome() {
-    let (fixture, blocks, session, tree, sealed) = setup().await;
+    let (fixture, _blocks, session, tree, sealed) = setup().await;
     let existing = fixture.record("metadata.json", b"[]");
     FileRepository::new(fixture.store.clone())
         .publish(session.context, &existing)
@@ -426,7 +429,7 @@ async fn lost_conflict_marker_reply_retains_a_terminal_nonpublishing_outcome() {
     let conflicted = load(&repository, &session).await;
     assert_eq!(conflicted.phase, MultipartPhase::Conflicted);
     assert!(conflicted.published.is_none());
-    let recovery = MultipartRecovery::new(fixture.store.clone(), blocks, 8, 8).unwrap();
+    let recovery = MultipartRecovery::new(fixture.store.clone());
     let report = recovery
         .recover_page(session.context, None, session.expires_ms)
         .await

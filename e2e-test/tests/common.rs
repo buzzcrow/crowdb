@@ -4,6 +4,7 @@
 pub(crate) mod control;
 pub(crate) mod hardware;
 pub(crate) mod management;
+pub(crate) mod native_s3;
 mod test_client;
 
 use bytes::Bytes;

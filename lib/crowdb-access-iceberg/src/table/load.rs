@@ -8,9 +8,8 @@ use sha2::{Digest, Sha256};
 
 use super::{TableHead, TableMetadataDocument, TableMetadataError, TableMetadataLimits, TableRepository};
 use crate::{
-    catalog::{Capabilities, CatalogContext, CatalogError, FormatAction},
+    catalog::{check_context, Capabilities, CatalogContext, CatalogError, CatalogStore, FormatAction},
     file::FileBlockStore,
-    metadata_projection::ProjectionStore,
     namespace::{NamespaceIdentifier, NamespaceRepository, NamespaceStore},
 };
 
@@ -43,14 +42,14 @@ pub enum TableLoadError {
     UnsupportedVersion,
 }
 
+/// Each call brackets its binding reads with fresh catalog availability checks.
+/// Replacement advances the activation epoch; same-context activation only adds capabilities.
 pub struct TableLoader {
+    store: Arc<dyn CatalogStore>,
     namespaces: NamespaceRepository,
     tables: TableRepository,
     blocks: Arc<dyn FileBlockStore>,
     limits: TableMetadataLimits,
-    projections: ProjectionStore,
-    #[cfg(feature = "test-util")]
-    projection_hits: std::sync::atomic::AtomicUsize,
 }
 
 impl TableLoader {
@@ -61,13 +60,11 @@ impl TableLoader {
         limits: TableMetadataLimits,
     ) -> Self {
         Self {
+            store: store.clone(),
             namespaces: NamespaceRepository::new(store.clone()),
-            projections: ProjectionStore::new(store.clone(), blocks.clone()),
             tables: TableRepository::new(store),
             blocks,
             limits,
-            #[cfg(feature = "test-util")]
-            projection_hits: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -92,14 +89,27 @@ impl TableLoader {
         namespace: &NamespaceIdentifier,
         name: &str,
     ) -> Result<Option<TableHead>, TableLoadError> {
-        let Some(parent) = self.namespaces.load(context, namespace).await? else {
+        check_context(self.store.as_ref(), context).await?;
+        let selected = self.head_in_context(context, namespace, name).await?;
+        check_context(self.store.as_ref(), context).await?;
+        Ok(selected)
+    }
+
+    async fn head_in_context(
+        &self,
+        context: CatalogContext,
+        namespace: &NamespaceIdentifier,
+        name: &str,
+    ) -> Result<Option<TableHead>, TableLoadError> {
+        let Some(parent) = self.namespaces.resolve(context, namespace).await? else {
             return Ok(None);
         };
-        let selected = self.tables.select(context, parent.namespace, name).await?;
+        let selected = self.tables.resolve(context, parent.namespace, name).await?;
         if let Some(selected) = &selected {
-            self.tables.ensure_current(context, selected).await?;
+            self.tables.ensure_current_in_context(context, selected).await?;
         }
-        self.check_namespace(context, namespace, parent.namespace, parent.name_epoch)
+        self.namespaces
+            .ensure_current_in_context(context, &parent)
             .await?;
         Ok(selected.map(|value| value.head))
     }
@@ -148,11 +158,29 @@ impl TableLoader {
         if if_none_match.is_some_and(|value| value.len() > 8192) {
             return Err(TableMetadataError::Bounds.into());
         }
-        let Some(parent) = self.namespaces.load(context, namespace).await? else {
+        check_context(self.store.as_ref(), context).await?;
+        let result = self
+            .load_in_context(context, namespace, name, mode, if_none_match, capabilities)
+            .await?;
+        check_context(self.store.as_ref(), context).await?;
+        Ok(result)
+    }
+
+    async fn load_in_context(
+        &self,
+        context: CatalogContext,
+        namespace: &NamespaceIdentifier,
+        name: &str,
+        mode: SnapshotLoadingMode,
+        if_none_match: Option<&str>,
+        capabilities: Option<Capabilities>,
+    ) -> Result<TableLoad, TableLoadError> {
+        let Some(parent) = self.namespaces.resolve(context, namespace).await? else {
             return Ok(TableLoad::Missing);
         };
-        let Some(selected) = self.tables.select(context, parent.namespace, name).await? else {
-            self.check_namespace(context, namespace, parent.namespace, parent.name_epoch)
+        let Some(selected) = self.tables.resolve(context, parent.namespace, name).await? else {
+            self.namespaces
+                .ensure_current_in_context(context, &parent)
                 .await?;
             return Ok(TableLoad::Missing);
         };
@@ -164,12 +192,14 @@ impl TableLoader {
         let canonical =
             super::metadata::read_table_metadata_bytes(self.blocks.clone(), &selected, self.limits).await?;
         let etag = etag(&selected.head, mode);
-        let metadata = self.representation(&selected, canonical, mode).await?;
+        let document = TableMetadataDocument::parse(canonical, &selected.head, self.limits)?;
+        let metadata = representation(document, mode)?;
         if metadata.len() > self.limits.bytes {
             return Err(TableMetadataError::Bounds.into());
         }
-        self.tables.ensure_current(context, &selected).await?;
-        self.check_namespace(context, namespace, parent.namespace, parent.name_epoch)
+        self.tables.ensure_current_in_context(context, &selected).await?;
+        self.namespaces
+            .ensure_current_in_context(context, &parent)
             .await?;
         if if_none_match.is_some_and(|header| {
             header.split(',').any(|tag| {
@@ -184,56 +214,6 @@ impl TableLoader {
             etag,
             metadata,
         })
-    }
-
-    #[cfg(feature = "test-util")]
-    #[must_use]
-    pub fn projection_hits_for_tests(&self) -> usize {
-        self.projection_hits.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    async fn representation(
-        &self,
-        selected: &super::SelectedTable,
-        canonical: Vec<u8>,
-        mode: SnapshotLoadingMode,
-    ) -> Result<Vec<u8>, TableMetadataError> {
-        if mode == SnapshotLoadingMode::Refs {
-            if let Some(fields) = self
-                .projections
-                .document_fields(&selected.metadata, &selected.head, self.limits)
-                .await
-            {
-                if let Ok(metadata) = projected_representation(&fields, &canonical) {
-                    #[cfg(feature = "test-util")]
-                    self.projection_hits
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return Ok(metadata);
-                }
-            }
-        }
-        let document = TableMetadataDocument::parse(canonical, &selected.head, self.limits)?;
-        let metadata = representation(&document, mode)?;
-        if mode == SnapshotLoadingMode::Refs {
-            self.projections
-                .put_document(&selected.metadata, &document, self.limits)
-                .await;
-        }
-        Ok(metadata)
-    }
-
-    async fn check_namespace(
-        &self,
-        context: CatalogContext,
-        identifier: &NamespaceIdentifier,
-        namespace: crate::key::NamespaceId,
-        epoch: u64,
-    ) -> Result<(), CatalogError> {
-        let current = self.namespaces.load(context, identifier).await?;
-        if !current.is_some_and(|current| current.namespace == namespace && current.name_epoch == epoch) {
-            return Err(CatalogError::Conflict);
-        }
-        Ok(())
     }
 }
 
@@ -252,63 +232,50 @@ fn etag(head: &TableHead, mode: SnapshotLoadingMode) -> String {
 }
 
 fn representation(
-    document: &TableMetadataDocument,
+    document: TableMetadataDocument,
     mode: SnapshotLoadingMode,
 ) -> Result<Vec<u8>, TableMetadataError> {
     if mode == SnapshotLoadingMode::All {
-        return Ok(document.canonical().to_vec());
+        return Ok(document.into_canonical());
     }
-    let fields: BTreeMap<&str, &RawValue> = serde_json::from_slice(document.canonical())?;
-    refs_representation(fields, document.canonical())
-}
-
-fn projected_representation(
-    fields: &BTreeMap<String, Vec<u8>>,
-    canonical: &[u8],
-) -> Result<Vec<u8>, TableMetadataError> {
-    let fields = fields
-        .iter()
-        .map(|(name, bytes)| Ok((name.as_str(), serde_json::from_slice::<&RawValue>(bytes)?)))
-        .collect::<Result<BTreeMap<_, _>, serde_json::Error>>()?;
-    refs_representation(fields, canonical)
-}
-
-fn refs_representation(
-    fields: BTreeMap<&str, &RawValue>,
-    canonical: &[u8],
-) -> Result<Vec<u8>, TableMetadataError> {
-    let Some(snapshots) = fields.get("snapshots") else {
-        return Ok(canonical.to_vec());
+    let Some(snapshots) = document
+        .fields()
+        .get("snapshots")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(document.into_canonical());
     };
-    let snapshots: Vec<&RawValue> = serde_json::from_str(snapshots.get())?;
-    let mut referenced = BTreeSet::new();
-    if let Some(current) = fields.get("current-snapshot-id") {
-        if let Some(current) = serde_json::from_str::<Option<i64>>(current.get())?.filter(|id| *id != -1) {
-            referenced.insert(current);
-        }
-    }
-    if let Some(refs) = fields.get("refs") {
-        let refs: BTreeMap<&str, serde_json::Value> = serde_json::from_str(refs.get())?;
+    let mut referenced: BTreeSet<_> = document.current_snapshot().into_iter().collect();
+    if let Some(refs) = document
+        .fields()
+        .get("refs")
+        .and_then(serde_json::Value::as_object)
+    {
         for reference in refs.values() {
             if let Some(id) = reference["snapshot-id"].as_i64() {
                 referenced.insert(id);
             }
         }
     }
-    let mut selected = Vec::new();
-    for snapshot in snapshots {
-        #[derive(serde::Deserialize)]
-        struct Identity {
-            #[serde(rename = "snapshot-id")]
-            snapshot_id: i64,
-        }
-        let identity: Identity = serde_json::from_str(snapshot.get())?;
-        if referenced.contains(&identity.snapshot_id) {
-            selected.push(snapshot);
-        }
-    }
+    let retained: Vec<_> = snapshots
+        .iter()
+        .map(|snapshot| {
+            snapshot["snapshot-id"]
+                .as_i64()
+                .is_some_and(|id| referenced.contains(&id))
+        })
+        .collect();
+    let canonical = document.into_canonical();
+    // Validation already decoded snapshot identities and references. Decode raw
+    // spans only to preserve each retained value's original JSON representation.
+    let mut fields: BTreeMap<&str, &RawValue> = serde_json::from_slice(&canonical)?;
+    let snapshots: Vec<&RawValue> = serde_json::from_str(fields["snapshots"].get())?;
+    let selected: Vec<_> = snapshots
+        .into_iter()
+        .zip(retained)
+        .filter_map(|(snapshot, keep)| keep.then_some(snapshot))
+        .collect();
     let selected = serde_json::value::to_raw_value(&selected)?;
-    let mut fields: BTreeMap<_, _> = fields.into_iter().collect();
     fields.insert("snapshots", &selected);
     Ok(serde_json::to_vec(&fields)?)
 }

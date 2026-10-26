@@ -92,7 +92,9 @@ pub enum KvGroupOperationError {
     #[error("proposal admission is busy")]
     Busy,
     #[error("compare-and-set precondition failed")]
-    CompareFailed { current_revision: u64 },
+    CompareFailed {
+        observation: Box<crate::rpc::KvCompareObservation>,
+    },
     #[error("compare-and-set admission is busy")]
     CompareBusy,
     #[error("proposal outcome is unknown")]
@@ -358,8 +360,8 @@ impl KvGroupOperations {
             }
             ProposeResult::NotLeader { leader_hint } => Err(KvGroupOperationError::NotLeader { leader_hint }),
             ProposeResult::Busy => Err(KvGroupOperationError::Busy),
-            ProposeResult::CasFailed { current_revision } => {
-                Err(KvGroupOperationError::CompareFailed { current_revision })
+            ProposeResult::CasFailed { observation } => {
+                Err(KvGroupOperationError::CompareFailed { observation })
             }
             ProposeResult::CasBusy => Err(KvGroupOperationError::CompareBusy),
             ProposeResult::OutcomeUnknown => Err(KvGroupOperationError::OutcomeUnknown),

@@ -18,10 +18,23 @@ use std::{
 #[derive(Default)]
 pub struct TestStore {
     values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
+    pub reads: AtomicU64,
+    pub bounded_reads: AtomicU64,
+    pub upload_reads: AtomicU64,
+    pub admission_reads: AtomicU64,
+    pub mutations: AtomicU64,
+    pub scans: AtomicU64,
 }
 #[async_trait]
 impl DatasetStore for TestStore {
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        if key.starts_with(b"DS\0L\0") {
+            self.admission_reads.fetch_add(1, Ordering::Relaxed);
+        }
+        if key.starts_with(b"DS\0U\0") {
+            self.upload_reads.fetch_add(1, Ordering::Relaxed);
+        }
         Ok(self.values.load().get(key).cloned())
     }
     async fn get_bounded(
@@ -30,6 +43,10 @@ impl DatasetStore for TestStore {
         budget: crowdb_access_dataset::MetadataScanBudget,
         cancel: &crowdb_access_dataset::ReadCancellation,
     ) -> Result<Option<StoredValue>, crowdb_access_dataset::StoreError> {
+        self.bounded_reads.fetch_add(1, Ordering::Relaxed);
+        if key.starts_with(b"DS\0L\0") {
+            self.admission_reads.fetch_add(1, Ordering::Relaxed);
+        }
         budget.validate()?;
         if key.is_empty() || key.len() >= 64 * 1024 {
             return Err(crowdb_access_dataset::StoreError::Rejected);
@@ -49,6 +66,7 @@ impl DatasetStore for TestStore {
         request: &crowdb_access_dataset::MetadataScan,
         cancel: &crowdb_access_dataset::ReadCancellation,
     ) -> Result<crowdb_access_dataset::MetadataPage, crowdb_access_dataset::StoreError> {
+        self.scans.fetch_add(1, Ordering::Relaxed);
         request.validate()?;
         if cancel.is_cancelled() {
             return Err(crowdb_access_dataset::DatasetError::ReadCancelled.into());
@@ -92,6 +110,7 @@ impl DatasetStore for TestStore {
         expected: Option<&[u8]>,
         value: &[u8],
     ) -> Result<CasOutcome, StoreError> {
+        self.mutations.fetch_add(1, Ordering::Relaxed);
         loop {
             let old = self.values.load_full();
             let current = old.get(key).cloned();
@@ -113,6 +132,7 @@ impl DatasetStore for TestStore {
         }
     }
     async fn delete(&self, key: &[u8]) -> Result<(), StoreError> {
+        self.mutations.fetch_add(1, Ordering::Relaxed);
         loop {
             let old = self.values.load_full();
             let mut next = (*old).clone();
@@ -131,6 +151,7 @@ pub struct TestPayload {
     pub defer_reclaim: AtomicBool,
     pub unconfirmed: AtomicBool,
     pub abandoned: AtomicBool,
+    pub corrupt_read: AtomicBool,
 }
 #[async_trait]
 impl PayloadStorage for TestPayload {
@@ -171,11 +192,19 @@ impl PayloadStorage for TestPayload {
             .and_then(|l| l.chunk_id)
             .ok_or(UploadError::Integrity)?
             .low;
-        self.data
+        let bytes = self
+            .data
             .load()
             .get(&index)
             .cloned()
-            .ok_or(UploadError::Storage("missing bytes".into()))
+            .ok_or(UploadError::Storage("missing bytes".into()))?;
+        if self.corrupt_read.load(Ordering::Relaxed) {
+            let mut bytes = bytes.to_vec();
+            bytes[0] ^= 1;
+            Ok(Bytes::from(bytes))
+        } else {
+            Ok(bytes)
+        }
     }
     async fn durability(
         &self,

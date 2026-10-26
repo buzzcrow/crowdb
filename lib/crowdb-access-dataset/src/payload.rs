@@ -3,12 +3,16 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_chunk_client::{ChunkIoClient, ChunkIoWriter, ReclaimOutcome, SmallWriteIntent};
+use crowdb_chunk_client::{
+    ChunkIoClient, ChunkIoWriter, FramedWriteBuffer, ReclaimOutcome, SmallWriteIntent,
+};
 use crowdb_protocol::chunkdb::rpc::Location;
 use std::sync::Arc;
 
 mod reader;
+mod stream;
 pub use reader::UploadedChunkReader;
+pub use stream::PayloadStream;
 
 use crate::{UploadError, MAX_UPLOAD_PART_BYTES};
 
@@ -29,6 +33,21 @@ pub trait PayloadStorage: Send + Sync {
         intent: Arc<dyn SmallWriteIntent>,
     ) -> Result<Vec<Location>, UploadError>;
     async fn read(&self, locations: &[Location]) -> Result<Bytes, UploadError>;
+    /// Submits caller-prepared immutable storage frames, retaining their owner.
+    /// Implementations without this path reject it instead of staging a copy.
+    async fn write_framed(
+        &self,
+        _key: &[u8],
+        _data: Box<dyn FramedWriteBuffer>,
+        _intent: Arc<dyn SmallWriteIntent>,
+    ) -> Result<Vec<Location>, UploadError> {
+        Err(UploadError::Invalid)
+    }
+    /// Retains physical allocation owners for bounded native delivery.
+    /// The compatibility default preserves the existing byte reader.
+    async fn read_stream(&self, locations: &[Location]) -> Result<Box<dyn PayloadStream>, UploadError> {
+        Ok(Box::new(stream::ByteStream(Some(self.read(locations).await?))))
+    }
     async fn durability(&self, locations: &[Location]) -> Result<PayloadDurability, UploadError>;
     async fn discard(&self, locations: &[Location]) -> Result<bool, UploadError>;
 }
@@ -47,6 +66,39 @@ impl ChunkPayloadStorage {
 
 #[async_trait]
 impl PayloadStorage for ChunkPayloadStorage {
+    async fn write_framed(
+        &self,
+        key: &[u8],
+        data: Box<dyn FramedWriteBuffer>,
+        intent: Arc<dyn SmallWriteIntent>,
+    ) -> Result<Vec<Location>, UploadError> {
+        let length = usize::try_from(data.logical_len()).map_err(|_| UploadError::Invalid)?;
+        if length == 0 || length > MAX_UPLOAD_PART_BYTES {
+            return Err(UploadError::Invalid);
+        }
+        let mut writer = self
+            .chunks
+            .prepare_shared_object_write_for_key(length, key)
+            .await
+            .map_err(|error| UploadError::Storage(error.to_string()))?;
+        if let Err(error) = writer.on_framed_data(data).await {
+            let _ = writer.on_error().await;
+            return Err(UploadError::Storage(error.to_string()));
+        }
+        writer
+            .finish_durable_with_intent(intent)
+            .await
+            .map_err(|error| UploadError::Storage(error.to_string()))
+    }
+
+    async fn read_stream(&self, locations: &[Location]) -> Result<Box<dyn PayloadStream>, UploadError> {
+        let stream = self
+            .chunks
+            .read_stream(locations)
+            .map_err(|error| UploadError::Storage(error.to_string()))?;
+        Ok(Box::new(stream::ChunkStream(stream)))
+    }
+
     async fn write(
         &self,
         key: &[u8],
@@ -72,19 +124,19 @@ impl PayloadStorage for ChunkPayloadStorage {
     }
 
     async fn read(&self, locations: &[Location]) -> Result<Bytes, UploadError> {
-        let mut stream = self
+        let length = locations
+            .iter()
+            .filter(|location| location.length != 0)
+            .try_fold(0usize, |total, location| {
+                total.checked_add(usize::try_from(location.logical_length).ok()?)
+            })
+            .filter(|length| *length > 0 && *length <= MAX_UPLOAD_PART_BYTES)
+            .ok_or(UploadError::Integrity)?;
+        let stream = self
             .chunks
             .read_stream(locations)
             .map_err(|error| UploadError::Storage(error.to_string()))?;
-        let mut output = bytes::BytesMut::new();
-        while let Some(data) = stream.next_chunk().await {
-            let data = data.map_err(|error| UploadError::Storage(error.to_string()))?;
-            if output.len().saturating_add(data.len()) > MAX_UPLOAD_PART_BYTES {
-                return Err(UploadError::Integrity);
-            }
-            output.extend_from_slice(&data);
-        }
-        Ok(output.freeze())
+        stream::collect(&mut stream::ChunkStream(stream), length).await
     }
 
     async fn durability(&self, locations: &[Location]) -> Result<PayloadDurability, UploadError> {
@@ -142,8 +194,19 @@ impl PayloadStorage for ChunkPayloadStorage {
             complete &= crowdb_chunk_client::reclaim_location(allocator.as_ref(), location)
                 .await
                 .map_err(|error| UploadError::Storage(error.to_string()))?
-                == ReclaimOutcome::Reclaimed;
+                == ReclaimOutcome::Accepted;
         }
         Ok(complete)
     }
+}
+
+/// Exercises the compatibility collector with bounded storage streams.
+/// # Errors
+/// Returns invalid lengths, incomplete/oversized streams and storage failures.
+#[cfg(feature = "test-util")]
+pub async fn collect_payload_for_tests(
+    stream: &mut dyn PayloadStream,
+    length: usize,
+) -> Result<Bytes, UploadError> {
+    stream::collect(stream, length).await
 }

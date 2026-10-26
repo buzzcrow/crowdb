@@ -3,7 +3,6 @@
 
 //! CAS-backed multipart authority in the S3 Chunk-KV namespace.
 
-use crowdb_access_multipart::next_revision;
 use std::sync::Arc;
 
 use super::{
@@ -12,14 +11,17 @@ use super::{
 };
 
 mod completion;
+mod exchange;
 mod listing;
 mod parts;
 mod publication;
 mod terminal;
 
 pub use completion::CompletionPart;
+use exchange::MultipartExchange;
 pub use listing::{MultipartPartPage, MultipartUploadPage};
-pub use terminal::MultipartExpiryPage;
+pub use publication::MultipartCompletion;
+pub use terminal::{MultipartExpiryError, MultipartExpiryPage, MultipartExpiryStep, MultipartExpirySweep};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MultipartRepositoryError {
@@ -52,7 +54,7 @@ impl MultipartRepository {
         Self { store, tenant }
     }
 
-    /// Creates one upload or confirms the exact record after a lost reply.
+    /// Creates one upload or reuses the exact record on an explicit retry.
     ///
     /// # Errors
     /// Rejects a different record at the same upload key or unavailable store.
@@ -71,34 +73,15 @@ impl MultipartRepository {
             &session.object_key,
             &session.upload_id,
         )?;
-        let indexed = self.store.put_if_absent(index.clone(), key.clone()).await;
-        match indexed {
-            Ok(PutIfAbsentOutcome::Inserted { .. }) => {}
-            Ok(PutIfAbsentOutcome::Existing(existing)) if existing.value == key => {}
-            Ok(PutIfAbsentOutcome::Existing(_)) => return Err(MultipartRepositoryError::Conflict),
-            Err(error) => {
-                if !self
-                    .store
-                    .get(index)
-                    .await?
-                    .is_some_and(|entry| entry.value == key)
-                {
-                    return Err(error.into());
-                }
-            }
+        match self.store.put_if_absent(index, key.clone()).await? {
+            PutIfAbsentOutcome::Inserted { .. } => {}
+            PutIfAbsentOutcome::Existing(existing) if existing.value == key => {}
+            PutIfAbsentOutcome::Existing(_) => return Err(MultipartRepositoryError::Conflict),
         }
-        let result = self.store.put_if_absent(key, value.clone()).await;
-        match result {
-            Ok(PutIfAbsentOutcome::Inserted { .. }) => Ok(session.clone()),
-            Ok(PutIfAbsentOutcome::Existing(existing)) if existing.value == value => Ok(session.clone()),
-            Ok(PutIfAbsentOutcome::Existing(_)) => Err(MultipartRepositoryError::Conflict),
-            Err(error) => {
-                if self.load(session).await?.as_ref() == Some(session) {
-                    Ok(session.clone())
-                } else {
-                    Err(error.into())
-                }
-            }
+        match self.store.put_if_absent(key, value.clone()).await? {
+            PutIfAbsentOutcome::Inserted { .. } => Ok(session.clone()),
+            PutIfAbsentOutcome::Existing(existing) if existing.value == value => Ok(session.clone()),
+            PutIfAbsentOutcome::Existing(_) => Err(MultipartRepositoryError::Conflict),
         }
     }
 
@@ -110,11 +93,22 @@ impl MultipartRepository {
         &self,
         identity: &MultipartSessionRecord,
     ) -> Result<Option<MultipartSessionRecord>, MultipartRepositoryError> {
-        self.load_identity(identity.bucket_id, &identity.object_key, &identity.upload_id)
-            .await
+        self.store
+            .get(self.session_key(identity))
+            .await?
+            .map(|value| {
+                MultipartSessionRecord::decode(
+                    &value.value,
+                    identity.bucket_id,
+                    &identity.object_key,
+                    &identity.upload_id,
+                )
+                .map_err(Into::into)
+            })
+            .transpose()
     }
 
-    /// Reads one session through its bucket, object and upload identity.
+    /// Reads the authority bound to the bucket, object and upload identity.
     ///
     /// # Errors
     /// Rejects corrupt or foreign values and storage failures.
@@ -124,54 +118,15 @@ impl MultipartRepository {
         object: &[u8],
         upload_id: &[u8; 16],
     ) -> Result<Option<MultipartSessionRecord>, MultipartRepositoryError> {
-        let key = MetadataKey::multipart_upload_index(&self.tenant, bucket, object, upload_id)?;
-        let Some(index) = self.store.get(key).await? else {
-            return Ok(None);
-        };
-        let expected = MetadataKey::multipart_session(&self.tenant, bucket, upload_id);
-        if index.value != expected {
-            return Err(MultipartRepositoryError::Conflict);
-        }
-        self.store
-            .get(expected)
-            .await?
-            .map(|value| {
-                MultipartSessionRecord::decode(&value.value, bucket, object, upload_id).map_err(Into::into)
-            })
-            .transpose()
-    }
-
-    /// Moves one session phase under an exact-value CAS fence.
-    ///
-    /// # Errors
-    /// Rejects invalid revisions, changed identity and uncertain storage
-    /// writes that cannot be confirmed by a matching read.
-    pub async fn exchange(
-        &self,
-        previous: &MultipartSessionRecord,
-        next: &MultipartSessionRecord,
-    ) -> Result<bool, MultipartRepositoryError> {
-        if previous.bucket_id != next.bucket_id
-            || previous.object_key != next.object_key
-            || previous.upload_id != next.upload_id
-            || next_revision(previous.revision) != Some(next.revision)
-        {
-            return Err(MultipartRepositoryError::Conflict);
-        }
-        let key = self.session_key(previous);
-        let expected = previous.encode()?;
-        let value = next.encode()?;
-        match self.store.compare_exchange(key, expected, value).await {
-            Ok(true) => Ok(true),
-            Ok(false) => Ok(self.load(next).await?.as_ref() == Some(next)),
-            Err(error) => {
-                if self.load(next).await?.as_ref() == Some(next) {
-                    Ok(true)
-                } else {
-                    Err(error.into())
-                }
+        MetadataKey::object(&self.tenant, bucket, object)?;
+        let key = MetadataKey::multipart_session(&self.tenant, bucket, upload_id);
+        self.store.get(key).await?.map_or(Ok(None), |value| {
+            match MultipartSessionRecord::decode(&value.value, bucket, object, upload_id) {
+                Ok(session) => Ok(Some(session)),
+                Err(MultipartRecordError::Identity) => Ok(None),
+                Err(error) => Err(error.into()),
             }
-        }
+        })
     }
 
     /// Reads one current part generation.

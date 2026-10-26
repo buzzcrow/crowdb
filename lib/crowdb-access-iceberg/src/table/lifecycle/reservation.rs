@@ -78,10 +78,11 @@ impl TableLifecycles {
         mapping: &TableMapping,
         budget: &mut usize,
     ) -> Result<(), CatalogError> {
-        let operation = self
-            .load(context, mapping.operation)
-            .await?
-            .ok_or(ValidationError::Record)?;
+        let Some(operation) = self.load(context, mapping.operation).await? else {
+            return super::super::TableRenames::from_parts(self.store.clone(), self.names.clone())
+                .help_reserved(context, mapping)
+                .await;
+        };
         if !operation.is_rename() || operation.destination(TableMappingState::Reserved) != *mapping {
             return Err(ValidationError::IdentityMismatch.into());
         }

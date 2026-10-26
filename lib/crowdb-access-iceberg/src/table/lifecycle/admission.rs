@@ -17,9 +17,27 @@ impl TableLifecycles {
         let Some(value) = self.store.get(&key.encode()?).await? else {
             return self.abort(operation, 404, "NoSuchNamespaceException").await;
         };
-        let StorageRecord::NamespaceAuthority(mut parent) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
+        let mut parent = match StorageRecord::decode(&key, &value.bytes)? {
+            StorageRecord::NamespaceAuthority(parent) => parent,
+            StorageRecord::RetiredNamespace { .. } => {
+                return self.abort(operation, 404, "NoSuchNamespaceException").await;
+            }
+            _ => return Err(ValidationError::Record.into()),
         };
+        if parent.rename.is_some() {
+            return Err(CatalogError::Busy);
+        }
+        if parent.creating_child.is_some() {
+            NamespaceCreator::help_creating_child(
+                self.store.clone(),
+                self.names.clone(),
+                operation.context,
+                *parent,
+                budget,
+            )
+            .await?;
+            return Ok(());
+        }
         if parent.lifecycle != NamespaceLifecycle::Ready
             || Some(&parent.identifier) != operation.destination_namespace.as_ref()
         {
@@ -80,6 +98,7 @@ impl TableLifecycles {
         };
         if parent.lifecycle != NamespaceLifecycle::Ready
             || parent.pending_operation.is_some()
+            || parent.creating_child.is_some()
             || Some(&parent.identifier) != operation.destination_namespace.as_ref()
             || mutation.key != key.encode()?
         {
@@ -118,8 +137,12 @@ impl TableLifecycles {
             return Err(CatalogError::Busy);
         };
         let key = authority_key(operation.context.catalog, operation.candidate.namespace);
-        let StorageRecord::NamespaceAuthority(current) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
+        let current = match StorageRecord::decode(&key, &value.bytes)? {
+            StorageRecord::NamespaceAuthority(current) => current,
+            StorageRecord::RetiredNamespace { .. } => {
+                return self.abort(operation, 404, "NoSuchNamespaceException").await;
+            }
+            _ => return Err(ValidationError::Record.into()),
         };
         let StorageRecord::NamespaceAuthority(previous) = StorageRecord::decode(&key, &before)? else {
             return Err(ValidationError::Record.into());

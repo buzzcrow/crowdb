@@ -9,6 +9,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub(super) const CANDIDATE_PREFIX: &[u8] = b"DS\0CB\0";
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CandidateBinding {
@@ -18,10 +20,23 @@ pub(crate) struct CandidateBinding {
     pub operation: OperationId,
     pub manifest_sha256: [u8; 32],
     pub initial_split: Option<SplitRevisionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+}
+
+impl CandidateBinding {
+    pub(super) fn same_content(&self, other: &Self) -> bool {
+        self.snapshot == other.snapshot
+            && self.parent == other.parent
+            && self.operation == other.operation
+            && self.manifest_sha256 == other.manifest_sha256
+            && self.initial_split == other.initial_split
+    }
 }
 
 impl DatasetAuthority {
-    /// Prepares immutable content from an arbitrary committed parent or a new root.
+    /// Prepares complete immutable content from an available parent or a new root.
+    /// Callers supplying external chunk locators must acquire their payload owners first.
     /// The expected Dataset head belongs to a later commit attempt.
     /// # Errors
     /// Rejects invalid content, unavailable parents and divergent operation retries.
@@ -39,51 +54,60 @@ impl DatasetAuthority {
         if let Some(parent) = parent {
             self.require_committed_snapshot(identity, parent).await?;
         }
-        self.write_publication(
-            identity,
-            parent,
-            manifest,
-            operation,
-            PublicationMode::Candidate(None),
-        )
-        .await
+        let snapshot = self
+            .write_publication(
+                identity,
+                parent,
+                manifest,
+                operation,
+                PublicationMode::Candidate(None),
+            )
+            .await?;
+        self.complete_snapshot_candidate(identity, snapshot).await?;
+        Ok(snapshot)
     }
 
-    pub(crate) async fn prepare_candidate_with_split(
+    pub(crate) async fn prepare_composition_content(
         &self,
         identity: &DatasetIdentity,
         parent: Option<SnapshotId>,
         manifest: Vec<u8>,
-        operation: OperationId,
-        initial: SplitRevisionId,
-    ) -> Result<SnapshotId, AuthorityError> {
-        if manifest.len() > 8 * 1024 * 1024 {
-            return Err(DatasetError::ReadLimitExceeded.into());
-        }
-        decode_manifest(&manifest)?.validate()?;
-        if let Some(parent) = parent {
-            self.require_committed_snapshot(identity, parent).await?;
-        }
+        snapshot: SnapshotId,
+        initial: Option<SplitRevisionId>,
+    ) -> Result<(), AuthorityError> {
+        let operation = OperationId::from_bytes(snapshot.as_bytes())?;
         self.write_publication(
             identity,
             parent,
             manifest,
             operation,
-            PublicationMode::Candidate(Some(initial)),
+            PublicationMode::Resource(initial),
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     pub(in crate::authority) async fn bind_snapshot_candidate(
         &self,
         identity: &DatasetIdentity,
         binding: &CandidateBinding,
+        gc_after: Option<u64>,
     ) -> Result<(), AuthorityError> {
-        let bytes = serde_json::to_vec(binding).map_err(|_| AuthorityError::Corrupt)?;
+        let mut binding = binding.clone();
+        binding.expires_at = gc_after;
+        let bytes = serde_json::to_vec(&binding).map_err(|_| AuthorityError::Corrupt)?;
         let key = candidate_key(identity, binding.snapshot)?;
         match self.store.compare_exchange(&key, None, &bytes).await? {
             CasOutcome::Applied(_) => Ok(()),
             CasOutcome::Conflict(Some(value)) if value.bytes == bytes => Ok(()),
+            CasOutcome::Conflict(Some(value)) => {
+                let existing = decode_candidate(&value.bytes, binding.snapshot)?;
+                if existing.same_content(&binding) {
+                    Ok(())
+                } else {
+                    Err(AuthorityError::AlreadyExists)
+                }
+            }
             CasOutcome::Conflict(_) => Err(AuthorityError::AlreadyExists),
         }
     }
@@ -96,24 +120,33 @@ impl DatasetAuthority {
         let Some(value) = self.store.get(&candidate_key(identity, snapshot)?).await? else {
             return Ok(None);
         };
-        if value.bytes.len() > 4096 {
-            return Err(AuthorityError::Corrupt);
-        }
-        let binding: CandidateBinding =
-            serde_json::from_slice(&value.bytes).map_err(|_| AuthorityError::Corrupt)?;
-        if binding.version != 1 || binding.snapshot != snapshot || binding.parent == Some(snapshot) {
-            return Err(AuthorityError::Corrupt);
-        }
-        SnapshotId::from_bytes(binding.snapshot.as_bytes())?;
-        OperationId::from_bytes(binding.operation.as_bytes())?;
-        if let Some(parent) = binding.parent {
-            SnapshotId::from_bytes(parent.as_bytes())?;
-        }
-        if let Some(revision) = binding.initial_split {
-            SplitRevisionId::from_bytes(revision.as_bytes())?;
-        }
-        Ok(Some(binding))
+        decode_candidate(&value.bytes, snapshot).map(Some)
     }
+}
+
+pub(crate) fn decode_candidate(
+    bytes: &[u8],
+    snapshot: SnapshotId,
+) -> Result<CandidateBinding, AuthorityError> {
+    if bytes == super::complete::RETIRED {
+        return Err(AuthorityError::SnapshotProtected);
+    }
+    if bytes.len() > 4096 {
+        return Err(AuthorityError::Corrupt);
+    }
+    let binding: CandidateBinding = serde_json::from_slice(bytes).map_err(|_| AuthorityError::Corrupt)?;
+    if !matches!(binding.version, 1..=3) || binding.snapshot != snapshot || binding.parent == Some(snapshot) {
+        return Err(AuthorityError::Corrupt);
+    }
+    SnapshotId::from_bytes(binding.snapshot.as_bytes())?;
+    OperationId::from_bytes(binding.operation.as_bytes())?;
+    if let Some(parent) = binding.parent {
+        SnapshotId::from_bytes(parent.as_bytes())?;
+    }
+    if let Some(revision) = binding.initial_split {
+        SplitRevisionId::from_bytes(revision.as_bytes())?;
+    }
+    Ok(binding)
 }
 
 pub(in crate::authority) fn binding(
@@ -124,19 +157,20 @@ pub(in crate::authority) fn binding(
     initial_split: Option<SplitRevisionId>,
 ) -> CandidateBinding {
     CandidateBinding {
-        version: 1,
+        version: 3,
         snapshot,
         parent,
         operation,
         manifest_sha256: Sha256::digest(manifest).into(),
         initial_split,
+        expires_at: None,
     }
 }
 pub(crate) fn candidate_key(
     identity: &DatasetIdentity,
     snapshot: SnapshotId,
 ) -> Result<Vec<u8>, DatasetError> {
-    let mut key = b"DS\0CB\0".to_vec();
+    let mut key = CANDIDATE_PREFIX.to_vec();
     key.extend_from_slice(&identity.key()?);
     key.extend_from_slice(snapshot.as_bytes());
     Ok(key)
@@ -146,14 +180,15 @@ impl DatasetAuthority {
     pub(in crate::authority) async fn bind_completed_manifest(
         &self,
         identity: &DatasetIdentity,
-        snapshot_record: &crate::SnapshotRecord,
+        resource: &crate::authority::snapshot_resource::SnapshotResource,
         manifest: &crate::ManifestRecord,
     ) -> Result<(), AuthorityError> {
         use super::super::encode;
         use crate::{key, PublicationState};
+        let snapshot_record = &resource.record;
         let snapshot = snapshot_record.publication.snapshot;
         if let Some(head) = self.store.get(&key::head(identity)?).await? {
-            self.help_head_commit(identity, &head).await?;
+            self.preserve_legacy_head(identity, &head).await?;
         }
         if snapshot_record.publication.state == PublicationState::Published
             && self.snapshot_candidate(identity, snapshot).await?.is_none()
@@ -177,6 +212,7 @@ impl DatasetAuthority {
                 &candidate_manifest,
                 None,
             ),
+            resource.gc_after,
         )
         .await?;
         Ok(())

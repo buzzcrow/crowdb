@@ -387,9 +387,6 @@ impl IcebergHttpService {
         let warehouse = warehouse(query)?;
         let mut config = CatalogConfig::for_capabilities(warehouse.as_deref(), capabilities)?;
         config.endpoints = Route::endpoints(&self.installed_routes(), capabilities);
-        if self.namespaces.is_some() {
-            config.idempotency_key_lifetime = Some("PT24H".into());
-        }
         Ok(response(
             200,
             serde_json::to_vec(&config).map_err(|_| service_unavailable())?,

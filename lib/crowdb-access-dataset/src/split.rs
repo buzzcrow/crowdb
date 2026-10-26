@@ -38,30 +38,37 @@ pub use policy::SplitValidation;
 
 mod lifecycle;
 mod state;
-pub use lifecycle::{SplitDraftEdit, SplitLifecycleError};
+pub use lifecycle::SplitLifecycleError;
 
 mod cleanup;
+mod reclamation;
+pub use reclamation::SplitReclaimSweep;
 mod snapshot_cleanup;
 pub use snapshot_cleanup::SnapshotSplitCleanup;
 mod evaluation;
 mod work;
-pub use cleanup::SplitScratchCleanup;
 pub(crate) use cleanup::SEALED as RETIRED_RECORD;
+pub use cleanup::{SplitReclaimCursor, SplitScratchCleanup};
 pub use evaluation::SplitPreview;
 
-mod prepare;
+mod preparation;
+pub use preparation::SplitPreparation;
 
 mod head;
-pub use head::SplitReference;
+pub use head::{SplitHeadUpdate, SplitReference};
 
 mod publication;
 
 mod recovery;
+
+mod retirement;
+pub use retirement::{SplitRevisionDeletion, SplitRevisionReclaimCursor, SplitRevisionReclaimSweep};
 
 mod read;
 pub use read::SplitRevisionSummary;
 
 mod inheritance;
 
+mod identity;
 mod initial;
-pub(crate) use evaluation::candidate_revision;
+pub(crate) use identity::candidate_revision;

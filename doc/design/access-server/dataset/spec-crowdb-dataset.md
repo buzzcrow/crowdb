@@ -54,8 +54,8 @@ The following terms have one meaning throughout this specification:
   shuffle to one immutable Snapshot.
 - **Cursor** records progress for one Read Plan and is acknowledged only after
   the corresponding batch is accepted by the caller.
-- **Active-read lease** protects data reachable from one Dataset/Snapshot while
-  a read is admitted or executing.
+- **Deletion grace period** separates a durable Snapshot or Split revision deletion
+  mark from destructive cleanup; it does not guarantee completion of every admitted read.
 
 Dataset does not infer semantics from a locator, a Snapshot ID's numeric
 ordering, a sample ID's encoding, or an external source URI.
@@ -67,13 +67,13 @@ the configured `dataset-ns` root namespace for every Dataset. Names are unique
 within that namespace and are compared as opaque UTF-8 names after validation.
 
 `SnapshotId` is immutable and opaque. `latest` and `stable` are mutable names
-whose values are Snapshot IDs. A Read Plan, Cursor, Manifest, or lease stores
+whose values are Snapshot IDs. A Read Plan, Cursor, or Manifest stores
 the resolved Snapshot ID and never stores a mutable name in its place.
 
 A Snapshot has zero or one declared parent. Parentage is explicit; ID ordering
 never implies ancestry. A child may add, replace, or tombstone samples and
 fields while inheriting all values not overridden by its visible parent chain.
-Any committed same-Dataset Snapshot may be the parent, independently of latest.
+Any complete available same-Dataset Snapshot may be the parent, independently of latest.
 Multiple parentless roots are permitted. Sample IDs are opaque bytes, represented
 as canonical padded base64 in JSON; they MUST NOT be normalized as text or paths.
 
@@ -103,7 +103,7 @@ The Dataset authority provides these operations. Each operation is scoped by a
 Dataset identity; operations that take a Snapshot ID MUST use the immutable ID,
 not `latest` or `stable` as an implicit mutable reference.
 The table summarizes the legacy publication/read surface. Control v2 adds bounded
-catalog/tree inspection, composition drafts and independent Split revisions as
+catalog/tree inspection, immutable composition resources and independent Split revisions as
 specified below and in its versioned OpenAPI contract.
 
 | Operation | Input | Successful result |
@@ -121,14 +121,14 @@ specified below and in its versioned OpenAPI contract.
 | `ReclaimSnapshot` / `GetReclaimStatus` | Snapshot ID | Reclaims eligible state or returns durable reclaim progress. |
 | `GetSample` / `GetBatch` | Snapshot ID, sample IDs, projection | Returns ordered samples and verified field values. |
 | `Scan` | Read Plan, optional Cursor | Returns one bounded batch and the next Cursor. |
-| `SaveProgress` / `Resume` | Read Plan, Cursor | Persists or loads plan-bound progress. |
-| `Cancel` | Bound read or service | Stops admission and releases the active-read lease. |
+| `BindRead` / `NextBatch` | Query or continuation | Pins immutable versions or replays a caller-owned position without read-side writes. |
+| `Cancel` | Bound read or service | Stops local admission and production without a remote reader release. |
 
 `PrepareSnapshot` and `PublishSnapshot` share the same operation token and
 validation rules. A complete publication may be implemented as one call that
 performs preparation and completion internally; it MUST have the same durable
-state transitions. Read operations are side-effect free except for lease and
-cursor state required by their documented lifecycle.
+state transitions. Data reads MUST NOT persist activity, selected-ID copies, progress, TTL or
+reader registration. Checkpoints are owned by the client.
 
 ## 5. Manifest and field values
 
@@ -169,32 +169,109 @@ The authority MUST perform publication in this order:
 2. Allocate or recover one candidate Snapshot ID for the operation.
 3. Persist the prepared Snapshot record.
 4. Persist every Manifest partition and the Snapshot binding.
-5. Persist the published Snapshot record.
-6. Advance `latest` atomically to the complete Snapshot.
+5. Finish inspection metadata, initial Split membership and required payload owners.
+6. Persist the published Snapshot record and install the final complete resource root.
+7. Advance `latest` atomically to the complete Snapshot.
 
 Prepare completes the durable candidate without advancing latest. A failure
-before step 5 leaves the candidate invisible and recoverable by the same
-operation token. The Published record may exist before step 6 succeeds; an
+before step 6 leaves the candidate invisible and recoverable by the same
+operation token. The Published flag alone does not authorize reads. A complete root
+allows ID reads and references before step 7 succeeds; an
 operation status alone is not proof that the head advanced. A successful Publish
 completes the head transition. Retry identical content to finish an ambiguous
 outcome; retries of historical publication MUST NOT rewind a newer head. A reader of `latest` MUST see either the previous
 complete Snapshot or the new complete Snapshot, never a prepared or partial
 Manifest.
 
-`stable` may be set only to an existing published Snapshot. Publishing a new
+`stable` may be set only to an existing complete available Snapshot. Publishing a new
 Snapshot never changes `stable` implicitly. A published Snapshot remains
 addressable by ID until reclamation removes its metadata under Section 9.
+Complete results that never won latest, including head-CAS losers, MUST also be
+readable by ID, enumerable and usable as parents or stable targets. Preparation
+records alone MUST NOT authorize these operations. Draft abandonment or supersession
+MUST preserve the complete result and its payload owners. Incomplete cleanup MUST
+seal the same final resource key that completion conditionally installs, preventing
+late finalization from exposing reclaimed data.
 
 Control v2 separates candidate creation from publication attempts. An attempt MUST
 bind the exact candidate and expected opaque head generation. Initial Split
 membership and candidate upload ownership MUST be ready before the head transition.
-A successful attempt MUST have a durable recoverable receipt. Retry of a historical
-success MUST NOT rewind latest. A head conflict preserves the candidate and parent;
-a reviewed retry uses a new attempt with a newly observed generation.
+New Snapshot publication MUST NOT persist attempt/response ledgers, success proofs
+or draft publication progress. A response may echo the compatibility attempt ID;
+it does not establish historical response replay. Retrying the same current target
+can confirm its effect; a stale request after a later publication MUST NOT rewind
+latest. A head conflict MUST return the observed latest/stable/generation without
+a confirmation query. A reviewed retry uses that observation with caller-chosen
+content; the server MUST NOT rebase. Unknown storage outcomes MUST propagate.
+Existing legacy receipts remain readable without backfill.
+Native Composition resource preparation MUST accept complete caller-owned inputs
+and a fixed Snapshot ID without persisting editing or evaluation progress. Its
+fixed source/Split revisions MUST survive retries unchanged. It MUST install the
+complete resource root only after final Manifest/index, initial Split membership
+and managed payload owners are ready; it MUST NOT move latest/stable. Input and
+final Manifest are bounded to 8 MiB and computation to 30 seconds. Incomplete
+computation is redone; identical complete content is reusable with zero writes.
+Different resource content, including its initial Split binding, MUST conflict.
+Unknown completion outcomes MUST NOT cause a confirmation query. REST exposes
+this operation through `PUT snapshots/{snapshot}` with the
+`composition-preparation` capability when uploads are configured. The JSON body
+is also bounded to 8 MiB. Parent/schema are explicit nullable fields. Upload input
+MUST include completed id/length/md5; DTO conversion MUST NOT add metadata queries.
+The authority validates unique upload descriptors and returns conflict on mismatch.
+Rust/Python SDKs MUST retain the same ID/full input without status queries or a
+workflow fallback. Legacy Composition begin/edit/evaluate/prepare/publish and
+cleanup routes return 501 before storage; only observation and abandonment remain
+for old records. Background cleanup MUST rediscover old draft, work-page and edit
+registration facts without storing candidate, scratch, edit or upload-retirement
+progress. A lost local cursor repeats idempotent retirement and preserves complete
+resource ownership and permanent fences against delayed writes.
+
+Composition and Split status reads MUST NOT reconstruct a publication request,
+help edit receipts or persist recovery state. Legacy Committing drafts are
+presented as Prepared without rewriting the stored draft or querying attempt,
+receipt or head records. A caller may select a complete resource with the direct head API; this does not
+prove that the historical request changed a head.
+Direct Snapshot head updates MUST accept the complete Snapshot ID and explicit
+nullable expected generation without an operation or draft identity. They MUST
+preserve stable and require the `snapshot-head-update` capability in portable SDKs.
+Their response and conflict observation use the latest/stable/generation head
+shape. Unsupported direct updates MUST NOT fall back to composition or v1 writes.
 
 Publishing an independent Split revision MUST update only its Snapshot's currentSplit
 pointer with an expected revision/head CAS. It MUST NOT create a data Snapshot or
-change latest/stable. Old revisions remain addressable until owner reclamation.
+change latest/stable. Old revisions remain addressable until explicit deletion
+or owner reclamation.
+Every complete immutable Split revision MUST also be readable by ID, enumerable
+and usable as a frozen source before publication or after a publication conflict.
+Abandoning a draft MUST NOT remove its complete result. A missing or cleanup-sealed
+final revision record is unavailable; incomplete membership pages alone do not
+constitute a result. Snapshot deletion admission still applies to each new request.
+Independent Split publication MUST NOT persist an attempt, response receipt or
+draft publication progress. A retry that observes the same current revision can
+confirm the current effect; if a later revision has replaced it, the stale expected
+base MUST fail without rewinding currentSplit. It does not promise historical
+response replay. Unknown storage outcomes MUST propagate without a confirmation
+query. Existing legacy receipts remain readable; new Split attempts are absent
+from commit-status history.
+Independent Split preparation MUST accept caller-owned revision ID, policy and
+complete definitions through `PUT snapshots/{snapshot}/split-revisions/{revision}`
+with the `split-preparation` capability. It MUST NOT persist editing/evaluation
+progress or invoke draft APIs. Input and final bindings are bounded to 1 MiB and
+computation to 30 seconds. An identical complete result MUST be reusable without
+recomputation; different input at that ID MUST conflict. Incomplete work is retried
+from client inputs. SDKs MUST retain the same ID/input and never downgrade to a
+workflow mutation. Standalone begin/edit/evaluate/prepare/publish and cleanup
+routes return 501; legacy draft observation and abandonment remain available.
+Background cleanup MUST use local revision/page/item cursors and retain permanent
+final-root and member fences. Reader-visible Snapshot owners wait for their
+persisted deletion grace; incomplete content sealed at its final root has no
+admitted readers and MUST NOT wait for a missing deadline.
+Direct Split head updates MUST accept the complete resource ID and explicit
+nullable expected revision and head generation without an operation/attempt ID or
+draft lookup. A failed head condition MUST return the observed revision/generation,
+including absence, without a confirmation query. The caller decides whether the
+observed base is suitable for another update; the SDK MUST NOT rebase automatically
+or fall back to a draft write when the direct-update capability is unavailable.
 
 ## 7. Selection, plans, and cursors
 
@@ -212,7 +289,7 @@ precedes shuffle and worker partitioning, which precede payload reads. A current
 change MUST NOT alter an admitted plan or composition source.
 
 A Cursor is either at the start or contains a plan-bound group and offset. The
-caller acknowledges a batch by persisting the next Cursor. A failed or
+caller acknowledges a batch by saving the next Cursor in its own checkpoint. A failed or
 unacknowledged batch may be replayed; a successful acknowledgement may not be
 skipped or applied to another plan.
 
@@ -228,12 +305,11 @@ Requested sample and projection order is preserved unless the plan explicitly
 requests another ordering. Unknown samples, invalid projections, checksum
 mismatches, and malformed cursors are errors.
 
-Each admitted transfer owns a unique scoped active-read lease for its Dataset
-and Snapshot. Normal completion, cancellation, and explicit close release that
-lease without releasing another reader's lease. Streaming renews its lease
-while bytes are in flight. Transport-owned buffers retain protection and
-admission through delivery or drop. A bounded inactivity TTL expires a disconnected lease; the expiry is a
-GC safety policy, not a publication or cursor transition.
+Each request checks authoritative snapshot availability at admission and MUST NOT
+register, renew or release persistent reader activity. A durable deletion mark
+rejects new requests. Previously admitted transfers may continue; neither EOF nor
+cancellation waits for a remote cleanup operation. Local byte/request credits and
+caller-owned buffers retain their existing lifetime guarantees.
 
 HTTP and native reads use the same authority semantics. Transport framing,
 serialization, and topology discovery may differ, but the resolved Snapshot,
@@ -243,8 +319,31 @@ equivalent.
 ## 9. Retention and reclamation
 
 `retain` and `release` apply to an immutable Snapshot ID. The latest Snapshot,
-stable Snapshot, retained Snapshots, parents of live committed Snapshots on any
-branch, and Snapshots with active-read leases are protected from reclamation.
+stable Snapshot, retained Snapshots, parents of live complete Snapshots on any
+branch are protected from reclamation. Active reads do not prevent deletion.
+The parent/child index MUST precede final child completion, which MUST recheck parent
+availability. An indexed child protects its parent until terminal retirement even
+while its own completion is pending; cleanup removes this conservative protection.
+
+A new Snapshot resource MUST persist its fixed twenty-four-hour `gc_after`
+retirement eligibility deadline in its first write; content bindings inherit it.
+Identical retries and publication-state changes MUST NOT renew it. Bounded
+background scanning includes resources without a content binding and MAY mark
+an expired complete or interrupted result only through the same authoritative
+reference checks and publication fencing as explicit reclamation. Protected
+results remain available; expiry eligibility alone is not a read-admission TTL.
+Legacy resources inherit an existing binding deadline; otherwise their first
+background observation assigns a fixed twenty-four-hour deadline. Unsupported
+legacy opaque Manifest formats remain excluded from automatic retirement.
+
+Snapshot deletion first persists a terminal mark and a twenty-minute
+`reclaim_after` deadline.
+Cleanup MUST NOT remove snapshot-owned metadata or payload references before
+that deadline. The default applies to new marks; existing persisted absolute
+deadlines remain unchanged. Restart and retry MUST preserve it. No Access Server or client
+acknowledgements are required. Reads that exceed the grace period may return
+an error after partial delivery; they MUST NOT report successful completion or
+switch snapshots. Deletion completion does not revoke bytes already delivered.
 
 Reclamation is idempotent. It removes only unreachable Dataset-owned metadata
 and payload references. A payload shared by two retained or readable
@@ -255,6 +354,23 @@ reclamation.
 A reclaim status record reports the Snapshot, pending or completed state, and
 reclaimed-count progress. Repeated requests and authority restarts preserve
 that status and do not double-delete a payload.
+
+Complete Split revisions MUST default to reclamation with their owning Snapshot;
+they MUST NOT acquire an independent automatic TTL. Explicit revision deletion
+MUST name both Snapshot and revision IDs. The current Split head and the Snapshot's
+initial Split revision MUST be protected, even when the initial revision is no
+longer current. Deletion MUST close new revision reads and source admission,
+preserve its fixed twenty-minute grace across retries and restart, and fence
+publishers admitted against an older head generation. Deletion state and exact
+page bindings MUST reside on the existing revision resource. Deletion MUST NOT
+create a reader session, request ledger or separate deletion task.
+
+Background cleanup MUST discover marked and terminal revision resources in bounded
+pages with local cursors and preserve permanent fences against delayed member
+writes. If the owning Snapshot has closed all read admission and completed its
+own twenty-minute grace, cleanup MAY use that owner fence before the revision's
+later deadline. Revision deletion removes only Split membership and revision
+metadata; it MUST NOT delete Samples, payload ownership or chunk data.
 
 ## 10. HTTP and native surfaces
 
@@ -269,24 +385,49 @@ Split-aware inputs to v1. Required nullable preconditions MUST be supplied expli
 Unsigned 64-bit control values use canonical decimal strings. Legacy routes and
 read-plan interpretations remain compatible; binary framing is unchanged.
 
-Composition is durable and revision-CAS edited. Parent data defaults to all Samples;
+`DELETE snapshots/{snapshot}/split-revisions/{revision}` MUST accept an empty body
+and require `split-revision-delete` in portable SDKs. A protected current or initial
+revision returns 409; an absent resource or a new read of a closed revision returns
+404. Existing bounded-work errors may take precedence over the closed-revision
+404 response. Successful deletion and repeated deletion of a terminal resource return 200
+with `snapshot`, `revision`, `complete` and required nullable `reclaim_after`.
+Pending status MUST carry the original absolute Unix-seconds deadline as a
+canonical decimal string and `complete=false`; terminal status MUST carry null
+and `complete=true`. Clients MUST NOT substitute legacy draft abandonment when
+the capability or route is unavailable. Retrying after an unknown outcome uses
+the same two IDs without a status or head query. The native adapter MUST add no
+metadata lookup or implicit mutation retry to the shared authority operation.
+
+Composition takes retained complete caller inputs and creates an immutable
+resource without edit/evaluation progress. Parent data defaults to all Samples;
 Selection, frozen named Split and their intersection can restrict it. Source
 S1/r2/train creates a child with parent S1 and frozen source membership. Inherited
 Splits intersect surviving IDs; new IDs are unassigned until explicit assignment or
-reevaluation. Defaults are disjoint/allow-unassigned/frozen inheritance. Weighted
+reevaluation. Defaults are disjoint/allow-unassigned; inheritance is explicit and
+frozen to the supplied revision. Weighted
 partition follows the versioned SHA-256 algorithm in the
 [control lifecycle](design-dataset-control.md#3-split-evaluation-and-publication).
 
 Inspection MUST bound underlying metadata work, not merely paginate a fully loaded
 Manifest. Committed inventory/children, Schema, Samples and projected field metadata
-are separate bounded reads. Legacy inspection preparation is explicit and resumable;
-unsupported state MUST NOT appear as an empty result. Preview is opt-in, capped at
-64 KiB and MUST NOT acknowledge read consumption.
+are separate bounded reads. Legacy inspection preparation MUST rebuild complete
+metadata in one request without durable preparation progress. The source record
+limit is 9 MiB, the embedded Manifest limit is 8 MiB and the request deadline is
+thirty seconds. Final index writes MUST remain bounded at sixteen pending rows and
+2 MiB of encoded keys and values. The immutable summary root MUST become visible
+only after all rows and discovery entries are complete; cleanup MUST prevent a
+delayed finalizer from replacing a retired root. Failures propagate without
+confirmation reads, and retries rebuild from the source or reuse an existing root
+without writes. Historical progress MAY be observed when the root is absent, but
+MUST NOT drive or override a complete rebuild. Successful rebuilds return zero
+revision and row-count compatibility fields. Unsupported or oversized sources MUST
+return errors rather than empty results. Preview is opt-in, capped at 64 KiB and
+MUST NOT acknowledge read consumption.
 
 The HTTP surface is the portable wire contract. It exposes Dataset creation and
 opening, latest and Snapshot inspection, publication and preparation, Manifest
 retrieval, retention, stable selection, reclamation status, bounded reads, read
-plans, progress, resume, and cancellation.
+queries and client-owned continuations. Cancellation is request-local.
 
 The native surface exposes the same operations through typed calls. Every
 operation identifies the Dataset explicitly or through a bound service and
@@ -301,14 +442,20 @@ Preparation rejects incomplete, aborted or foreign references. Claimed payloads
 remain protected until every candidate/Snapshot owner is released. Unowned
 sessions expire; physical cleanup may remain pending and MUST report that state.
 
-Public read handles bind the resolved immutable Snapshot, selection, projection,
-shuffle and worker partition. Fetch MUST NOT acknowledge consumption. The caller
-explicitly acknowledges an issued next cursor; repeating that acknowledgement
-is idempotent. Progress inspection MUST NOT fetch another batch. Resume restores
-acknowledged progress. Closing one handle MUST NOT cancel another. Worker
-partitioning executes before payload fetching. A v1 plan selects at most 100000
-IDs; JSON metadata and binary headers are capped at 8 MiB. Large fields stream
-rather than being materialized as a whole batch.
+Public reads bind the resolved immutable Snapshot, optional Split revision,
+selection, projection, shuffle and worker partition in a caller-owned continuation.
+Bind and next requests MUST NOT create persistent or required in-memory sessions.
+The same continuation MUST replay its batch across independent server instances.
+A successful consumer saves the next continuation; fetching, EOF and releasing
+buffers MUST NOT advance shared progress. There is no remote ack, resume or close.
+Missing next continuation means end of selection. Cancellation affects only the
+current request. Each request authenticates and checks deletion admission.
+
+Selection windows, shuffle memory and request deadlines MUST remain bounded.
+Groups admit at most 100000 selected IDs and 8 MiB of ID bytes; token JSON is capped
+at 256 KiB before base64 encoding. Selected IDs are not copied into persistent
+read records or the token. JSON metadata and binary headers are capped at 8 MiB.
+Large fields stream rather than being materialized as a whole batch.
 
 Binary frame integrity is established at each frame, field integrity at field
 end, and successful batch completion requires the batch terminator followed by
@@ -358,8 +505,9 @@ extensions.
 - **DATA-S6 — Plan binding:** a Cursor is valid only for its exact Read Plan.
 - **DATA-S7 — Bounded delivery:** configured memory, batch, and in-flight
   limits are enforced before payload admission.
-- **DATA-S8 — Lease protection:** active reads protect all reachable metadata
-  and payloads until release or expiry.
+- **DATA-S8 — Delayed reclamation:** deletion rejects new reads and defers
+  cleanup to its durable grace deadline; overdue reads may fail without
+  successful truncation or snapshot substitution.
 - **DATA-S9 — Ownership-safe GC:** reclamation deletes only unowned Dataset
   data and never external source objects.
 - **DATA-S10 — Surface parity:** HTTP and native surfaces preserve the same

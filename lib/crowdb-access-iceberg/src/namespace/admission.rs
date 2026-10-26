@@ -28,6 +28,20 @@ impl NamespaceCreator {
         };
         let after = match StorageRecord::decode(&key, &value.bytes)? {
             StorageRecord::NamespaceAuthority(mut parent) => {
+                if parent.creating_child.is_some() {
+                    Self::help_creating_child(
+                        self.repository.store.clone(),
+                        self.names.clone(),
+                        operation.context,
+                        *parent,
+                        budget,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                if parent.rename.is_some() {
+                    return Err(CatalogError::Busy);
+                }
                 if parent.lifecycle != NamespaceLifecycle::Ready
                     || Some(parent.identifier.clone()) != operation.identifier.parent()
                 {
@@ -46,6 +60,7 @@ impl NamespaceCreator {
                 parent.pending_operation = Some(operation.identity.operation);
                 StorageRecord::NamespaceAuthority(parent).encode()?
             }
+            StorageRecord::RetiredNamespace { .. } => return self.abort(operation, 400).await,
             StorageRecord::Active(root)
                 if root.context == operation.context && root.state == RootState::Ready =>
             {
@@ -122,6 +137,7 @@ impl NamespaceCreator {
                     return self.abort(operation, 400).await;
                 }
             }
+            StorageRecord::RetiredNamespace { .. } => return self.abort(operation, 400).await,
             StorageRecord::Active(root)
                 if root.context == operation.context && root.state == RootState::Ready => {}
             StorageRecord::Active(_) => return Err(CatalogError::Conflict),
@@ -155,6 +171,7 @@ impl NamespaceCreator {
             StorageRecord::NamespaceAuthority(mut parent) => {
                 if parent.lifecycle != NamespaceLifecycle::Ready
                     || parent.pending_operation.is_some()
+                    || parent.creating_child.is_some()
                     || Some(parent.identifier.clone()) != operation.identifier.parent()
                 {
                     return Err(ValidationError::Record.into());

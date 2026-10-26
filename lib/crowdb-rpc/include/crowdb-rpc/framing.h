@@ -9,10 +9,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <vector>
 
 namespace crowdb::rpc
 {
+class Connection;
 
 // ── Wire format (14-byte header) ──────────────────────────────────
 //
@@ -48,19 +50,28 @@ struct Header
 struct Frame
 {
     Header   header;
-    uint64_t request_id           = 0;       // extracted from control during parse
-    uint64_t rpc_create_nano      = 0;       // extracted from control during parse
-    uint64_t response_create_nano = 0;       // extracted from control during parse (responses only)
-    Buffer  *data_buf             = nullptr; // pool-allocated; nullptr if control-only
+    uint64_t request_id                        = 0;       // extracted from control during parse
+    uint64_t rpc_create_nano                   = 0;       // extracted from control during parse
+    uint64_t response_create_nano              = 0;       // extracted from control during parse (responses only)
+    Buffer  *data_buf                          = nullptr; // pool-allocated; nullptr if control-only
+    void (*release_callback)(void *, Buffer *) = nullptr;
+    void *release_context                      = nullptr;
 
     // Raw control message bytes (flatbuffer). Populated for all frames with
     // msg_size > 0. Common handlers (ping, unknown) use only request_id +
     // rpc_create_nano and ignore this; service-specific handlers (diskio)
     // parse the full flatbuffer from here.
-    std::vector<uint8_t> control;
+    // Optional logical-control admission retained through the final caller.
+    // Storage is destroyed before admission wakes blocked receivers.
+    std::shared_ptr<void> control_owner;
+    // Asynchronous FFI handlers retain their connection through Frame release.
+    std::shared_ptr<Connection> connection_owner;
+    std::vector<uint8_t>        control;
 
     ~Frame()
     {
+        if (release_callback != nullptr)
+            release_callback(release_context, data_buf);
         if (data_buf != nullptr) {
             data_buf->release();
         }

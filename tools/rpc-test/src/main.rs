@@ -6,17 +6,6 @@
 mod args;
 mod workload;
 
-// The production workload clients and transport tests use identical recording.
-#[allow(dead_code)]
-#[path = "../../../app/crowdb-cli/src/commands/bench/loader.rs"]
-mod loader;
-#[allow(dead_code)]
-#[path = "../../../app/crowdb-cli/src/commands/bench/metrics.rs"]
-mod metrics;
-#[allow(dead_code)]
-#[path = "../../../app/crowdb-cli/src/commands/bench/result.rs"]
-mod result;
-
 use clap::Parser;
 use std::{path::PathBuf, process::ExitCode};
 
@@ -25,6 +14,10 @@ use std::{path::PathBuf, process::ExitCode};
 struct Options {
     #[arg(long)]
     log_dir: PathBuf,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    rdma: bool,
     #[command(flatten)]
     workload: args::RpcArgs,
 }
@@ -46,5 +39,5 @@ async fn main() -> ExitCode {
     )
     .ok();
     crowdb_rpc_ffi::init_logging(options.log_dir.to_str().unwrap_or(""), "warn", 30, 1, "rpc-test");
-    workload::run(&options.log_dir, options.workload).await
+    workload::run(&options.log_dir, options.workload, options.rdma, options.json).await
 }

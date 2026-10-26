@@ -2,8 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    key, state::DraftState, MembershipOrigin, MembershipPage, SplitDraftRecord, SplitLifecycleError,
-    SplitName, SplitRevisionRecord,
+    DraftSplit, MembershipOrigin, SplitDraftRecord, SplitLifecycleError, SplitName, SplitRevisionRecord,
 };
 use crate::{
     inspection::work::InspectionWork, DatasetAuthority, DatasetIdentity, MetadataScanBudget,
@@ -13,6 +12,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     time::Duration,
 };
+
+mod membership;
 
 pub(super) fn source_owners(record: &SplitDraftRecord) -> BTreeSet<SnapshotId> {
     record
@@ -25,12 +26,16 @@ pub(super) fn source_owners(record: &SplitDraftRecord) -> BTreeSet<SnapshotId> {
         .collect()
 }
 impl DatasetAuthority {
-    pub(super) async fn validate_split_sources(
+    pub(super) async fn validate_split_definitions(
         &self,
         identity: &DatasetIdentity,
-        record: &SplitDraftRecord,
+        snapshot: SnapshotId,
+        splits: &[DraftSplit],
     ) -> Result<(), SplitLifecycleError> {
-        if source_owners(record).is_empty() {
+        if !splits
+            .iter()
+            .any(|split| matches!(split.origin, MembershipOrigin::Inherited(_)))
+        {
             return Ok(());
         }
         let budget = MetadataScanBudget {
@@ -40,13 +45,28 @@ impl DatasetAuthority {
         };
         let cancel = ReadCancellation::new();
         let owner = self
-            .snapshot_inspection_summary(identity, record.snapshot, budget, &cancel)
+            .snapshot_inspection_summary(identity, snapshot, budget, &cancel)
             .await?;
+        self.validate_split_parent_sources(identity, owner.parent, splits)
+            .await
+    }
+    pub(crate) async fn validate_split_parent_sources(
+        &self,
+        identity: &DatasetIdentity,
+        parent: Option<SnapshotId>,
+        splits: &[DraftSplit],
+    ) -> Result<(), SplitLifecycleError> {
+        let budget = MetadataScanBudget {
+            items: 1,
+            bytes: 1024 * 1024,
+            timeout: Duration::from_secs(2),
+        };
+        let cancel = ReadCancellation::new();
         let mut work = InspectionWork::new(self.store.as_ref(), &cancel, budget)?;
         let mut revisions = BTreeMap::new();
-        for split in &record.splits {
+        for split in splits {
             if let MembershipOrigin::Inherited(source) = &split.origin {
-                if owner.parent != Some(source.snapshot) {
+                if parent != Some(source.snapshot) {
                     return Err(SplitLifecycleError::Conflict);
                 }
                 let key = (source.snapshot, source.revision);
@@ -64,19 +84,7 @@ impl DatasetAuthority {
         }
         Ok(())
     }
-    pub(super) async fn release_split_draft_leases(
-        &self,
-        identity: &DatasetIdentity,
-        state: &DraftState,
-    ) -> Result<(), SplitLifecycleError> {
-        let mut snapshots: BTreeSet<_> = state.source_leases.iter().copied().collect();
-        snapshots.insert(state.record.snapshot);
-        for snapshot in snapshots {
-            self.release_read_handle(identity, snapshot, state.record.operation)
-                .await?;
-        }
-        Ok(())
-    }
+
     pub(crate) async fn frozen_split_contains(
         &self,
         identity: &DatasetIdentity,
@@ -96,16 +104,9 @@ impl DatasetAuthority {
         while low < high {
             let index = low + (high - low) / 2;
             let binding = &split.pages[index];
-            let stored = work
-                .get(
-                    &key::membership_page(identity, record.snapshot, record.revision, name, binding.page)
-                        .map_err(crate::AuthorityError::from)?,
-                    1024 * 1024,
-                )
-                .await?
-                .ok_or(SplitLifecycleError::Corrupt)?;
-            let page = MembershipPage::decode(&stored.bytes)?;
-            page.verify_binding(record.snapshot, record.revision, name, binding)?;
+            let page = self
+                .read_frozen_split_page(identity, record, name, binding, work)
+                .await?;
             if sample
                 < page
                     .members

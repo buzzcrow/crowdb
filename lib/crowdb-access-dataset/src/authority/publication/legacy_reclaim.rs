@@ -2,14 +2,13 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    super::VersionedRecord,
+    super::snapshot_resource::decode_snapshot,
     legacy::{anchor_key, decode_anchor},
 };
 use crate::{
     inspection::work::InspectionWork, AuthorityError, DatasetAuthority, DatasetError, DatasetIdentity,
-    MetadataScanBudget, PublicationState, ReadCancellation, SnapshotId, SnapshotRecord,
+    MetadataScanBudget, PublicationState, ReadCancellation, SnapshotId,
 };
-use bincode::Options;
 use std::time::Duration;
 
 impl DatasetAuthority {
@@ -52,16 +51,11 @@ impl DatasetAuthority {
                     .await
                     .map_err(map_error)?
                     .ok_or(AuthorityError::Corrupt)?;
-                let record: VersionedRecord<SnapshotRecord> = bincode::DefaultOptions::new()
-                    .with_fixint_encoding()
-                    .with_limit(value.bytes.len() as u64)
-                    .reject_trailing_bytes()
-                    .deserialize(&value.bytes)
-                    .map_err(|_| AuthorityError::Corrupt)?;
-                if record.version != 1 || record.payload.publication.state == PublicationState::Prepared {
+                let record = decode_snapshot(&value.bytes)?;
+                if record.publication.state == PublicationState::Prepared {
                     return Err(AuthorityError::Corrupt);
                 }
-                let publication = record.payload.publication;
+                let publication = record.publication;
                 if publication.parent == Some(target) && publication.state != PublicationState::Aborted {
                     return Ok(true);
                 }

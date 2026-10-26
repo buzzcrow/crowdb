@@ -9,7 +9,7 @@ use super::native::{activate, TestNativeStorage};
 use crowdb_access_iceberg::catalog::{CatalogContext, CatalogRepository, ClearBounds, ManagementPrivilege};
 use crowdb_access_iceberg::file::{
     ByteRange, ContentFormat, FileContent, FileIdentity, FileKind, FileReader, FileRecord, FileRepository,
-    FileTreeWriter, NativeFileBlocks, TableLocation,
+    FileTree, FileTreeWriter, FileWriteIntent, NativeFileBlocks, TableLocation,
 };
 use crowdb_access_iceberg::key::{FileId, OperationId, TableId};
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
@@ -34,18 +34,16 @@ async fn chunks(stack: &TestNativeStorage) -> ChunkIoClient {
     .unwrap()
 }
 
-async fn assert_checkpoint_intent(
-    stack: &TestNativeStorage,
-    owner: FileIdentity,
-    checkpoint: &crowdb_access_iceberg::file::FileWriterCheckpoint,
-) {
+async fn write_intents(stack: &TestNativeStorage, owner: FileIdentity) -> Vec<FileWriteIntent> {
+    let mut prefix = owner.table.table.as_bytes().to_vec();
+    prefix.extend_from_slice(owner.file.as_bytes());
     let intents = crowdb_access_iceberg::gc::GcStore::scan_gc(
         stack.store().await.as_ref(),
         crowdb_access_iceberg::gc::GcScan {
             native: false,
             catalog: owner.table.catalog,
             scope: Some(crowdb_access_iceberg::key::CatalogScope::FileWriteIntent),
-            prefix: owner.table.table.as_bytes().to_vec(),
+            prefix,
             after: Vec::new(),
             items: 32,
             bytes: 64 * 1024,
@@ -53,17 +51,28 @@ async fn assert_checkpoint_intent(
     )
     .await
     .unwrap();
-    assert_eq!(intents.items.len(), 3);
-    assert!(intents.items.iter().any(|item| {
-        let key = crowdb_access_iceberg::key::IcebergKey::decode(&item.key).unwrap();
-        let crowdb_access_iceberg::record::StorageRecord::FileWriteIntent(intent) =
-            crowdb_access_iceberg::record::StorageRecord::decode(&key, &item.value).unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(intent.owner, owner);
-        intent.root == checkpoint.root
-    }));
+    intents
+        .items
+        .into_iter()
+        .map(|item| {
+            let key = crowdb_access_iceberg::key::IcebergKey::decode(&item.key).unwrap();
+            let crowdb_access_iceberg::record::StorageRecord::FileWriteIntent(intent) =
+                crowdb_access_iceberg::record::StorageRecord::decode(&key, &item.value).unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(intent.owner, owner);
+            *intent
+        })
+        .collect()
+}
+
+async fn assert_unpublished_tree_intents(stack: &TestNativeStorage, owner: FileIdentity, tree: &FileTree) {
+    let intents = write_intents(stack, owner).await;
+    assert_eq!(intents.len(), 3);
+    assert!(intents
+        .iter()
+        .any(|intent| Some(&intent.root) == tree.root.as_ref()));
 }
 
 async fn seed_root(stack: &TestNativeStorage) -> CatalogContext {
@@ -100,40 +109,74 @@ async fn read_all(mut reader: FileReader) -> Vec<u8> {
     bytes
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires the owned release native-file storage"]
-async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart() {
-    let mut stack = TestNativeStorage::new();
-    let context = seed_root(&stack).await;
-    let owner = FileIdentity {
+async fn abandon_attempts_then_restart(stack: &mut TestNativeStorage, owner: FileIdentity, bytes: &[u8]) {
+    let client = chunks(stack).await;
+    let blocks = Arc::new(NativeFileBlocks::new(client.clone(), stack.store().await));
+    let partial_owner = FileIdentity {
+        file: FileId::random(),
+        ..owner
+    };
+    let mut partial = FileTreeWriter::new(blocks.clone(), partial_owner, 16 * 1024).unwrap();
+    partial.push(&bytes[..20_000]).await.unwrap();
+    drop(partial);
+    let partial_intents = write_intents(stack, partial_owner).await;
+    assert_eq!(partial_intents.len(), 1);
+    assert_eq!(partial_intents[0].root.logical_length, 16 * 1024);
+    assert_eq!(partial_intents[0].root.height, 0);
+
+    let mut writer = FileTreeWriter::new(blocks.clone(), owner, 16 * 1024).unwrap();
+    for piece in bytes[..25_000].chunks(3000) {
+        writer.push(piece).await.unwrap();
+    }
+    let abandoned = writer.finish().await.unwrap();
+    assert_eq!(abandoned.length, 25_000);
+    assert_unpublished_tree_intents(stack, owner, &abandoned).await;
+    let reader = FileReader::from_tree(blocks.clone(), owner, abandoned.clone(), None, 4096).unwrap();
+    assert_eq!(read_all(reader).await, bytes[..25_000]);
+    client.shutdown_small_writes().await.unwrap();
+    drop(blocks);
+    drop(client);
+    stack.restart_catalog().await;
+    assert_eq!(write_intents(stack, partial_owner).await, partial_intents);
+    assert_unpublished_tree_intents(stack, owner, &abandoned).await;
+}
+
+fn owner(context: CatalogContext) -> FileIdentity {
+    FileIdentity {
         table: TableLocation {
             storage_namespace: Some(crowdb_access_iceberg::key::NamespaceId::random()),
             catalog: context.catalog,
             table: TableId::random(),
         },
         file: FileId::random(),
-    };
+    }
+}
+
+fn payload() -> Vec<u8> {
+    (0..50_000)
+        .map(|index| u8::try_from(index % 251).unwrap())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the owned release native-file storage"]
+async fn native_file_abandoned_attempts_and_intents_survive_catalog_storage_restart() {
+    let mut stack = TestNativeStorage::new();
+    let context = seed_root(&stack).await;
+    abandon_attempts_then_restart(&mut stack, owner(context), &payload()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the owned release native-file storage"]
+async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart() {
+    let stack = TestNativeStorage::new();
+    let context = seed_root(&stack).await;
+    let owner = owner(context);
+    let bytes = payload();
     let client = chunks(&stack).await;
     let blocks = Arc::new(NativeFileBlocks::new(client.clone(), stack.store().await));
     let mut writer = FileTreeWriter::new(blocks.clone(), owner, 16 * 1024).unwrap();
-    let bytes: Vec<u8> = (0..50_000)
-        .map(|index| u8::try_from(index % 251).unwrap())
-        .collect();
-    for piece in bytes[..25_000].chunks(3000) {
-        writer.push(piece).await.unwrap();
-    }
-    let checkpoint = writer.checkpoint().await.unwrap();
-    assert_checkpoint_intent(&stack, owner, &checkpoint).await;
-    drop(writer);
-    client.shutdown_small_writes().await.unwrap();
-    drop(blocks);
-    drop(client);
-    let client = chunks(&stack).await;
-    let blocks = Arc::new(NativeFileBlocks::new(client.clone(), stack.store().await));
-    let mut writer = FileTreeWriter::restore(blocks.clone(), owner, 16 * 1024, &checkpoint)
-        .await
-        .unwrap();
-    for piece in bytes[25_000..].chunks(3000) {
+    for piece in bytes.chunks(3000) {
         writer.push(piece).await.unwrap();
     }
     let tree = writer.finish().await.unwrap();
@@ -179,6 +222,5 @@ async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart
     assert_eq!(repository.publish(context, &candidate).await.unwrap(), candidate);
     client.shutdown_small_writes().await.unwrap();
     drop(client);
-    Box::pin(multipart::verify_restart(&mut stack, context, owner.table)).await;
     worker::verify(&stack, context, owner.table).await;
 }

@@ -129,7 +129,15 @@ class SelectionTest(unittest.TestCase):
                                  else 5 if case["scope"].startswith("console.web.")
                                  else 1 if case["scope"] in ("console.managed", "console.browser.shell", "console.browser.registry", "console.browser.lifecycle", "console.browser.kv", "console.browser.canvas", "console.browser.inspector", "console.clients") else 3)
         iceberg = json.loads(self.invoke("--list", "--layer", "iceberg"))
-        self.assertEqual(len(iceberg), 32)
+        self.assertEqual(len(iceberg), 37)
+        gc = [case for case in iceberg if case["scope"] == "iceberg.gc"]
+        self.assertEqual(len(gc), 7)
+        self.assertIn("access_iceberg::gc::convergence::expired_inline_backlog_completes_with_foreground_progress",
+                      [case["case"] for case in gc])
+        self.assertIn("access_iceberg::gc::notifications::mixed_external_and_tree_notifications_complete_without_reclaiming_live_ranges",
+                      [case["case"] for case in gc])
+        self.assertIn("access_iceberg::gc::notifications::matrix::restarted_cleaners_finish_large_and_sparse_backlogs_beside_an_invalid_catalog",
+                      [case["case"] for case in gc])
         self.assertTrue(all(case["scope"].startswith("iceberg.") and case["nodes"] == 14
                             for case in iceberg))
         kv = json.loads(self.invoke("--list", "--layer", "kv"))
@@ -139,6 +147,17 @@ class SelectionTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.invoke("--layer", "diskdb", "--require-isolation")
 
+    def test_native_file_recoveries_keep_independent_default_client_deadlines(self):
+        from scenarios import select_cases
+        cases = [case for case in select_cases("iceberg", "all", None, "iceberg-core")
+                 if case.iceberg_native_files]
+        self.assertEqual({case.name for case in cases}, {
+            "access_iceberg::native_files::native_file_tree_publication_and_ranges_survive_catalog_storage_restart",
+            "access_iceberg::native_files::native_file_abandoned_attempts_and_intents_survive_catalog_storage_restart",
+            "access_iceberg::native_files::multipart::native_file_multipart_progress_and_bytes_survive_catalog_storage_restart",
+        })
+        self.assertTrue(all(case.client_timeout == 120 for case in cases))
+
 
 class CaseResourcesTest(unittest.TestCase):
     def test_full_managed_node_reserves_its_services_and_host_client(self):
@@ -147,3 +166,15 @@ class CaseResourcesTest(unittest.TestCase):
             self.assertEqual(case_nodes(case), 1)
             self.assertEqual(case_resources(case, 0.25), (1.5, 2560))
             self.assertEqual(case_resources(case, 3), (1.5, 2560))
+
+    def test_gc_matrix_alone_enables_the_independent_invalid_catalog(self):
+        from scenarios import ICEBERG_CASES
+        selected = [case for case in ICEBERG_CASES if case.name.endswith("restarted_cleaners_finish_large_and_sparse_backlogs_beside_an_invalid_catalog")]
+        self.assertEqual(len(selected), 1)
+        case = selected[0]
+        self.assertTrue(case.iceberg_gc)
+        self.assertEqual(case.iceberg_gc_page_items, 1)
+        self.assertIsNone(case.iceberg_gc_interval_ms)
+        self.assertEqual(case.iceberg_gc_catalogs, ("01010101010101010101010101010101",))
+        self.assertEqual(case.client_timeout, 900)
+        self.assertTrue(all(not other.iceberg_gc_catalogs for other in ICEBERG_CASES if other != case))

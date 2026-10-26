@@ -11,6 +11,15 @@ const USER: &[u8] = b"console-root";
 const PREPARED: &[u8] = b"crowdb/s3/user-bootstrap/";
 const CREDENTIALS: &[u8] = b"crowdb/s3/credential/";
 
+fn legacy_key() -> Vec<u8> {
+    use sha2::Digest;
+    format!(
+        "crowdb/s3/user-bootstrap/{}",
+        hex::encode(sha2::Sha256::digest(USER))
+    )
+    .into_bytes()
+}
+
 #[tokio::test]
 async fn concurrent_bootstrap_callers_publish_one_encrypted_credential_and_reuse_it() {
     let test = TestCredentials::start().await;
@@ -56,9 +65,8 @@ async fn concurrent_bootstrap_callers_publish_one_encrypted_credential_and_reuse
         )
         .await
         .unwrap();
-    assert_eq!(prepared.items.len(), 1);
-    let state: serde_json::Value = serde_json::from_slice(&prepared.items[0].1).unwrap();
-    let encrypted: Vec<u8> = serde_json::from_value(state["record"].clone()).unwrap();
+    assert!(prepared.items.is_empty());
+    let encrypted = &durable.items[0].1;
     assert!(!encrypted
         .windows(tokens[0].secret_key.len())
         .any(|bytes| bytes == tokens[0].secret_key.as_bytes()));
@@ -71,31 +79,41 @@ async fn concurrent_bootstrap_callers_publish_one_encrypted_credential_and_reuse
 }
 
 #[tokio::test]
-async fn interrupted_projection_resumes_the_original_encrypted_candidate_after_authority_restart() {
+async fn deleted_final_credential_is_recreated_without_resurrecting_a_legacy_preparation() {
     let test = TestCredentials::start().await;
     let original = test.authority().ensure_user(USER).await.unwrap();
     let key = format!("crowdb/s3/credential/{}", original.access_key_id);
-    let before = test
+    let GetOutcome::Found { value: before, .. } = test
         .control
         .get(0, 0, key.as_bytes(), ReadMode::Linearizable, None)
         .await
-        .unwrap();
-    // Reproduce interruption after preparation but before its credential projection.
+        .unwrap()
+    else {
+        panic!()
+    };
+    let legacy_key = legacy_key();
+    let legacy = serde_json::to_vec(&serde_json::json!({"version": 1,
+        "access_key_id": original.access_key_id, "record": before.to_vec()}))
+    .unwrap();
+    test.control.put(0, 0, &legacy_key, &legacy, None).await.unwrap();
     test.control.delete(0, 0, key.as_bytes(), None).await.unwrap();
     assert!(test.authority().lookup_user(USER).await.unwrap().is_none());
-    let resumed = test.authority().ensure_user(USER).await.unwrap();
-    assert_eq!(resumed.access_key_id, original.access_key_id);
-    assert_eq!(resumed.secret_key, original.secret_key);
-    match (
-        before,
-        test.control
-            .get(0, 0, key.as_bytes(), ReadMode::Linearizable, None)
-            .await
-            .unwrap(),
-    ) {
-        (GetOutcome::Found { value: a, .. }, GetOutcome::Found { value: b, .. }) => assert_eq!(a, b),
-        _ => panic!("credential projection is absent"),
-    }
+    let replaced = test.authority().ensure_user(USER).await.unwrap();
+    assert_eq!(replaced.access_key_id, original.access_key_id);
+    assert_ne!(replaced.secret_key, original.secret_key);
+    let GetOutcome::Found { value: after, .. } = test
+        .control
+        .get(0, 0, key.as_bytes(), ReadMode::Linearizable, None)
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_ne!(before, after);
+    assert_eq!(
+        test.authority().load_credentials().await.unwrap()[0].0,
+        replaced.access_key_id
+    );
 }
 
 #[tokio::test]
@@ -151,53 +169,67 @@ async fn legacy_credentials_are_preserved_and_existing_duplicates_are_never_repa
 }
 
 #[tokio::test]
-async fn malformed_preparation_never_creates_or_replaces_a_user_credential() {
+async fn malformed_legacy_process_records_do_not_authorize_or_block_credentials() {
     let test = TestCredentials::start().await;
-    let original = test.authority().ensure_user(USER).await.unwrap();
-    test.control
-        .delete(
-            0,
-            0,
-            format!("crowdb/s3/credential/{}", original.access_key_id).as_bytes(),
-            None,
-        )
-        .await
-        .unwrap();
-    let rows = test
-        .control
-        .scan(
-            0,
-            0,
-            PREPARED,
-            b"",
-            b"",
-            100,
-            ReadMode::Linearizable,
-            None,
-            false,
-            None,
-        )
-        .await
-        .unwrap();
-    let key = &rows.items[0].0;
-    let mut invalid: serde_json::Value = serde_json::from_slice(&rows.items[0].1).unwrap();
-    invalid["version"] = serde_json::json!(2);
-    let bytes = serde_json::to_vec(&invalid).unwrap();
-    test.control.put(0, 0, key, &bytes, None).await.unwrap();
-    assert!(matches!(
-        test.authority().ensure_user(USER).await,
-        Err(CredentialAuthorityError::InvalidUserPreparation)
-    ));
+    let key = legacy_key();
+    let bytes = b"not an encrypted credential";
+    test.control.put(0, 0, &key, bytes, None).await.unwrap();
     assert!(test.authority().lookup_user(USER).await.unwrap().is_none());
+    let issued = test.authority().ensure_user(USER).await.unwrap();
+    assert_eq!(
+        test.authority()
+            .lookup_user(USER)
+            .await
+            .unwrap()
+            .unwrap()
+            .secret_key,
+        issued.secret_key
+    );
+    assert_eq!(test.authority().load_credentials().await.unwrap().len(), 1);
     let GetOutcome::Found { value, .. } = test
         .control
-        .get(0, 0, key, ReadMode::Linearizable, None)
+        .get(0, 0, &key, ReadMode::Linearizable, None)
         .await
         .unwrap()
     else {
-        panic!("preparation disappeared")
+        panic!()
     };
-    assert_eq!(value.as_ref(), bytes.as_slice());
+    assert_eq!(value.as_ref(), bytes);
+}
+
+#[tokio::test]
+async fn disabled_canonical_credentials_are_never_overwritten_by_bootstrap() {
+    let test = TestCredentials::start().await;
+    let issued = test.authority().ensure_user(USER).await.unwrap();
+    let key = format!("crowdb/s3/credential/{}", issued.access_key_id);
+    let GetOutcome::Found { value, .. } = test
+        .control
+        .get(0, 0, key.as_bytes(), ReadMode::Linearizable, None)
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    let mut record = crowdb_access_s3::auth::DurableCredentialRecord::decode(&value).unwrap();
+    record.encrypted.enabled = false;
+    let disabled = record.encode().unwrap();
+    test.control
+        .put(0, 0, key.as_bytes(), &disabled, None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        test.authority().ensure_user(USER).await,
+        Err(CredentialAuthorityError::InvalidUserCredential)
+    ));
+    let GetOutcome::Found { value, .. } = test
+        .control
+        .get(0, 0, key.as_bytes(), ReadMode::Linearizable, None)
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(value.as_ref(), disabled);
 }
 
 #[tokio::test]

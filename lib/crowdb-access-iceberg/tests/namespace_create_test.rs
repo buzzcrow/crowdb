@@ -13,7 +13,7 @@ use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::namespace::{
     NamespaceCreateRequest, NamespaceCreator, NamespaceIdentifier, NamespaceProperties, NamespaceRepository,
 };
-use crowdb_access_iceberg::operation::{PayloadStore, RequestIdentity};
+use crowdb_access_iceberg::operation::RequestIdentity;
 use fixture::TestNamespace;
 
 fn request(fixture: &TestNamespace, names: &[&str]) -> NamespaceCreateRequest {
@@ -30,7 +30,7 @@ fn request(fixture: &TestNamespace, names: &[&str]) -> NamespaceCreateRequest {
 }
 
 #[tokio::test]
-async fn simultaneous_helpers_preserve_the_same_namespace_result() {
+async fn simultaneous_creators_publish_one_complete_namespace() {
     let mut fixture = TestNamespace::new().await;
     fixture.store = std::sync::Arc::new(common::TestStore {
         values: arc_swap::ArcSwap::from(fixture.store.values.load_full()),
@@ -44,10 +44,13 @@ async fn simultaneous_helpers_preserve_the_same_namespace_result() {
         creators[1].create(&request),
         creators[2].create(&request)
     );
-    let first = first.unwrap();
-    assert_eq!(first.status, 200);
-    assert_eq!(second.unwrap(), first);
-    assert_eq!(third.unwrap(), first);
+    let mut statuses = [first, second, third].map(|result| match result {
+        Ok(outcome) => outcome.status,
+        Err(CatalogError::Conflict) => 409,
+        Err(error) => panic!("namespace creation failed: {error:?}"),
+    });
+    statuses.sort_unstable();
+    assert_eq!(statuses, [200, 409, 409]);
     let selected = NamespaceRepository::new(fixture.store.clone())
         .load(fixture.context, &request.identifier)
         .await
@@ -58,7 +61,7 @@ async fn simultaneous_helpers_preserve_the_same_namespace_result() {
 }
 
 #[tokio::test]
-async fn native_create_publishes_top_level_and_nested_names_with_stable_replay() {
+async fn native_create_publishes_complete_resources_and_retries_existing_names_as_conflicts() {
     let fixture = TestNamespace::new().await;
     let creator = NamespaceCreator::new(fixture.store.clone());
     let reader = NamespaceRepository::new(fixture.store.clone());
@@ -66,12 +69,8 @@ async fn native_create_publishes_top_level_and_nested_names_with_stable_replay()
         let request = request(&fixture, names);
         let outcome = creator.create(&request).await.unwrap();
         assert_eq!(outcome.status, 200);
-        let body = PayloadStore::new(fixture.store.clone())
-            .get(&outcome.body)
-            .await
-            .unwrap();
         assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            serde_json::from_slice::<serde_json::Value>(&outcome.body).unwrap(),
             serde_json::json!({
                 "namespace": names, "properties": {"owner": "数据库"},
             })
@@ -83,10 +82,11 @@ async fn native_create_publishes_top_level_and_nested_names_with_stable_replay()
             .unwrap();
         assert_eq!(authority.properties, request.properties);
         assert_eq!(authority.pending_operation, None);
+        assert_eq!(authority.creating_child, None);
         assert_eq!(authority.name_epoch, 1);
         assert_eq!(authority.property_revision, 1);
         assert_eq!(authority.admission_fence, 1);
-        assert_eq!(creator.create(&request).await.unwrap(), outcome);
+        assert_eq!(creator.create(&request).await.unwrap().status, 409);
         assert_eq!(
             reader.load(fixture.context, &request.identifier).await.unwrap(),
             Some(authority)
@@ -103,7 +103,7 @@ async fn native_create_publishes_top_level_and_nested_names_with_stable_replay()
     assert_eq!(parent.pending_operation, None);
     assert_eq!(parent.property_revision, 1);
     assert_eq!(parent.admission_fence, 1);
-    assert_eq!(parent.mutation_revision, 4);
+    assert_eq!(parent.mutation_revision, 3);
 }
 
 #[tokio::test]
@@ -120,7 +120,7 @@ async fn missing_parent_is_rejected_before_payload_or_reservation_writes() {
 }
 
 #[tokio::test]
-async fn same_name_has_one_identity_and_duplicate_request_has_a_durable_conflict() {
+async fn same_name_has_one_identity_and_complete_retries_do_not_replay_responses() {
     let fixture = TestNamespace::new().await;
     let creator = NamespaceCreator::new(fixture.store.clone());
     let first = request(&fixture, &["namespace"]);
@@ -129,17 +129,14 @@ async fn same_name_has_one_identity_and_duplicate_request_has_a_durable_conflict
     let conflict = creator.create(&duplicate).await.unwrap();
     assert_eq!(conflict.status, 409);
     assert_eq!(creator.create(&duplicate).await.unwrap(), conflict);
-    assert_eq!(creator.create(&first).await.unwrap().status, 200);
+    assert_eq!(creator.create(&first).await.unwrap().status, 409);
     let mut changed = first;
     changed.principal = "other-writer".into();
-    assert!(matches!(
-        creator.create(&changed).await,
-        Err(CatalogError::Conflict)
-    ));
+    assert_eq!(creator.create(&changed).await.unwrap().status, 409);
 }
 
 #[tokio::test]
-async fn every_lost_create_write_recovers_on_another_instance_without_new_identity() {
+async fn every_lost_create_write_is_reconciled_from_resources_on_another_instance() {
     for nested in [false, true] {
         let baseline = TestNamespace::new().await;
         if nested {
@@ -156,7 +153,7 @@ async fn every_lost_create_write_recovers_on_another_instance_without_new_identi
             .await
             .unwrap();
         let writes = baseline.store.writes.load(Ordering::SeqCst) - before;
-        assert!(writes > 12);
+        assert_eq!(writes, if nested { 5 } else { 3 });
         for offset in 1..=writes {
             let fixture = TestNamespace::new().await;
             if nested {
@@ -167,6 +164,7 @@ async fn every_lost_create_write_recovers_on_another_instance_without_new_identi
                 fixture.store.writes.load(Ordering::SeqCst) + offset,
                 Ordering::SeqCst,
             );
+            let reads = fixture.store.reads.load(Ordering::SeqCst);
             assert!(
                 NamespaceCreator::new(fixture.store.clone())
                     .create(&request)
@@ -174,9 +172,18 @@ async fn every_lost_create_write_recovers_on_another_instance_without_new_identi
                     .is_err(),
                 "nested {nested} offset {offset}"
             );
+            assert_eq!(
+                fixture.store.reads.load(Ordering::SeqCst) - reads,
+                if nested { 3 } else { 1 },
+                "unknown write must not trigger a confirmation GET"
+            );
             let restarted = NamespaceCreator::new(fixture.store.clone());
             let outcome = restarted.create(&request).await.unwrap();
-            assert_eq!(outcome.status, 200, "nested {nested} offset {offset}");
+            assert_eq!(
+                outcome.status,
+                if offset == 1 { 200 } else { 409 },
+                "nested {nested} offset {offset}"
+            );
             let reader = NamespaceRepository::new(fixture.store.clone());
             let selected = reader
                 .load(fixture.context, &request.identifier)
@@ -184,8 +191,9 @@ async fn every_lost_create_write_recovers_on_another_instance_without_new_identi
                 .unwrap()
                 .unwrap();
             assert_eq!(selected.pending_operation, None);
+            assert_eq!(selected.creating_child, None);
             assert_eq!(selected.property_revision, 1);
-            assert_eq!(restarted.create(&request).await.unwrap(), outcome);
+            assert_eq!(restarted.create(&request).await.unwrap().status, 409);
             assert_eq!(
                 reader.load(fixture.context, &request.identifier).await.unwrap(),
                 Some(selected)

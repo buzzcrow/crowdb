@@ -3,6 +3,7 @@
 
 use crate::common::cluster::start_cluster_classic;
 use bytes::Bytes;
+use crowdb_kv::cluster::group::ProposeResult;
 use crowdb_kv::paxos::roles::{PxBallot, PxLogEntry};
 use crowdb_kv::rpc::KvSetRequest;
 
@@ -15,6 +16,38 @@ fn encode_put_payload(key: &[u8], value: &[u8]) -> Vec<u8> {
     payload.extend_from_slice(&u32::try_from(value.len()).unwrap().to_le_bytes());
     payload.extend_from_slice(value);
     payload
+}
+
+#[tokio::test]
+async fn conditional_foreign_slot_returns_the_value_from_the_renewed_comparison() {
+    let cluster = start_cluster_classic(&[0, 1, 2], 0).await;
+    let key = Bytes::from_static(b"guard");
+    let accepted = encode_put_payload(&key, b"foreign");
+    for follower in cluster.followers() {
+        let group = follower.get_group(1).unwrap();
+        let entry = PxLogEntry {
+            slot: 1,
+            ballot: PxBallot::new(10, 99),
+            term: 0,
+            payload: Bytes::from(accepted.clone()),
+        };
+        assert!(matches!(
+            group.local_replica().on_accept(&entry).await,
+            crowdb_kv::paxos::roles::PxAcceptReply::Accepted { .. }
+        ));
+    }
+    let group = cluster.leader().get_group(1).unwrap();
+    let result = group
+        .propose_cas(encode_put_payload(&key, b"original"), key.clone(), 0, 499, 1)
+        .await;
+    let ProposeResult::CasFailed { observation } = result else {
+        panic!("{result:?}")
+    };
+    assert_eq!(observation.key, key);
+    assert_eq!(observation.revision, 1);
+    assert_eq!(observation.value.as_ref(), b"foreign");
+    assert_eq!(group.local_replica().contiguous_chosen(), 1);
+    cluster.shutdown().await;
 }
 
 #[tokio::test]

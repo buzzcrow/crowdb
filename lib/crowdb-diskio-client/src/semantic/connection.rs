@@ -8,10 +8,23 @@ use super::{
 };
 use arc_swap::ArcSwap;
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
-use crowdb_rpc_ffi::{ConnectionPoolIndex, RpcServer};
+use crowdb_rpc_ffi::{ConnectionPoolIndex, RdmaWireLayout, RpcServer};
 use std::sync::{atomic::AtomicU64, Arc};
 
 impl DiskioClient {
+    pub(super) fn create_rpc_server(config: &DiskioClientConfig) -> DiskioResult<Arc<RpcServer>> {
+        let server = Arc::new(
+            RpcServer::with_rdma_layout(None, 1, config.rpc_workers, RdmaWireLayout::ControlData, 1 << 20)
+                .map_err(|error| DiskioError::TransportUnavailable(format!("create RPC client: {error}")))?,
+        );
+        if let Some(rdma) = &config.rdma {
+            server.configure_rdma(rdma).map_err(|error| {
+                DiskioError::TransportUnavailable(format!("configure DiskIO RPC client: {error}"))
+            })?;
+        }
+        Ok(server)
+    }
+
     #[cfg(feature = "test-util")]
     /// # Errors
     /// Uses production scoped discovery against injected real Group-0 clients.
@@ -83,13 +96,15 @@ impl DiskioClient {
         scope: Option<crowdb_protocol::key::DiskKey>,
     ) -> DiskioResult<Self> {
         config.validate(false)?;
-        let server = Arc::new(RpcServer::with_engines(None, 1, config.rpc_workers));
+        let server = Self::create_rpc_server(&config)?;
         server.set_send_queue_capacity(config.send_queue_capacity);
         server
             .listen("127.0.0.1", 0)
             .map_err(|error| DiskioError::TransportUnavailable(format!("start RPC client: {error}")))?;
         server.start();
         let client = Self {
+            closed: std::sync::atomic::AtomicBool::new(false),
+            closing: tokio::sync::Notify::new(),
             wire: Arc::new(WireClient::with_completion_capacity(config.max_pending_calls)),
             server,
             normal: ConnectionPoolIndex::new(

@@ -171,19 +171,27 @@ impl ReadPlan {
     /// # Errors
     /// Propagates plan or manifest validation failures.
     pub fn scan_ids(&self, manifest: &ManifestRecord) -> Result<Vec<Vec<u8>>, DatasetError> {
+        let mut ids: Vec<_> = self
+            .selected_samples(manifest)?
+            .map(|sample| sample.sample_id.clone())
+            .collect();
+        ids.sort();
+        Ok(ids)
+    }
+
+    pub(crate) fn selected_samples<'a>(
+        &'a self,
+        manifest: &'a ManifestRecord,
+    ) -> Result<impl Iterator<Item = &'a SampleRecord> + 'a, DatasetError> {
         self.validate()?;
         manifest.validate()?;
         if manifest.snapshot != self.snapshot {
             return Err(DatasetError::InvalidManifest);
         }
-        let mut ids: Vec<_> = manifest
+        Ok(manifest
             .samples
             .iter()
-            .filter(|sample| self.selection.matches(sample))
-            .map(|sample| sample.sample_id.clone())
-            .collect();
-        ids.sort();
-        Ok(ids)
+            .filter(move |sample| self.selection.matches(sample)))
     }
 
     /// Splits a deterministic scan into bounded batches without reading field
@@ -193,7 +201,7 @@ impl ReadPlan {
     /// Propagates plan and manifest validation failures.
     pub fn scan_batches(&self, manifest: &ManifestRecord) -> Result<Vec<Vec<Vec<u8>>>, DatasetError> {
         let ids = self.scan_ids(manifest)?;
-        Ok(ids.chunks(self.batch_size).map(<[Vec<u8>]>::to_vec).collect())
+        Ok(into_batches(ids, self.batch_size))
     }
 
     /// Returns a stable identity for retries, cursors, and surface adapters.
@@ -223,36 +231,86 @@ impl ReadPlan {
         limits: ReadLimits,
     ) -> Result<Vec<Vec<Vec<u8>>>, DatasetError> {
         limits.validate()?;
-        let batches = self.scan_batches(manifest)?;
-        if batches.len() > limits.max_batches {
-            return Err(DatasetError::ReadLimitExceeded);
+        let mut ids = Vec::new();
+        let mut metadata_bytes = 0_usize;
+        for sample in self.selected_samples(manifest)? {
+            if ids.len() >= limits.max_samples {
+                return Err(DatasetError::ReadLimitExceeded);
+            }
+            for field in &sample.fields {
+                let size = match &field.value {
+                    crate::FieldLocator::Inline { value, .. } => value.len(),
+                    crate::FieldLocator::Chunk { location, .. } => location.len(),
+                    crate::FieldLocator::Tombstone => 0,
+                };
+                metadata_bytes = metadata_bytes.saturating_add(size);
+                if metadata_bytes > limits.max_metadata_bytes {
+                    return Err(DatasetError::ReadLimitExceeded);
+                }
+            }
+            ids.push(sample.sample_id.clone());
         }
-        let sample_count = batches.iter().map(Vec::len).sum::<usize>();
-        if sample_count > limits.max_samples {
+        if ids.len().div_ceil(self.batch_size) > limits.max_batches {
             return Err(DatasetError::ReadLimitExceeded);
         }
         if self.batch_size > limits.in_flight.saturating_mul(MAX_BATCH_SIZE) {
             return Err(DatasetError::ReadLimitExceeded);
         }
-        let metadata_bytes = manifest
-            .samples
-            .iter()
-            .filter(|sample| batches.iter().flatten().any(|id| id == &sample.sample_id))
-            .map(|sample| {
-                sample
-                    .fields
-                    .iter()
-                    .map(|field| match &field.value {
-                        crate::FieldLocator::Inline { value, .. } => value.len(),
-                        crate::FieldLocator::Chunk { location, .. } => location.len(),
-                        crate::FieldLocator::Tombstone => 0,
-                    })
-                    .sum::<usize>()
-            })
-            .sum::<usize>();
-        if metadata_bytes > limits.max_metadata_bytes {
-            return Err(DatasetError::ReadLimitExceeded);
-        }
-        Ok(batches)
+        ids.sort();
+        Ok(into_batches(ids, self.batch_size))
     }
+}
+
+pub(crate) fn into_batches(ids: Vec<Vec<u8>>, batch_size: usize) -> Vec<Vec<Vec<u8>>> {
+    let mut batches = Vec::with_capacity(ids.len().div_ceil(batch_size));
+    let mut remaining = ids.into_iter();
+    loop {
+        let batch: Vec<_> = remaining.by_ref().take(batch_size).collect();
+        if batch.is_empty() {
+            return batches;
+        }
+        batches.push(batch);
+    }
+}
+
+pub(crate) fn batch_range(
+    total: usize,
+    batch_size: usize,
+    group: u32,
+    offset: u32,
+) -> Result<std::ops::Range<usize>, DatasetError> {
+    let group = usize::try_from(group).map_err(|_| DatasetError::CursorMismatch)?;
+    let offset = usize::try_from(offset).map_err(|_| DatasetError::CursorMismatch)?;
+    let windows = total.div_ceil(batch_size);
+    if group > windows || (group == windows && offset != 0) {
+        return Err(DatasetError::CursorMismatch);
+    }
+    if group == windows {
+        return Ok(total..total);
+    }
+    let start = group
+        .checked_mul(batch_size)
+        .ok_or(DatasetError::CursorMismatch)?;
+    let end = start.saturating_add(batch_size).min(total);
+    if offset > end - start {
+        return Err(DatasetError::CursorMismatch);
+    }
+    Ok(start + offset..end)
+}
+
+/// Select an already-validated ordinal range without sorting discarded IDs.
+pub(crate) fn sorted_window<T: Ord>(mut values: Vec<T>, range: std::ops::Range<usize>) -> Vec<T> {
+    if range.is_empty() {
+        return Vec::new();
+    }
+    if range.end < values.len() {
+        values.select_nth_unstable(range.end);
+        values.truncate(range.end);
+    }
+    if range.start > 0 {
+        values.select_nth_unstable(range.start);
+    }
+    let mut selected: Vec<_> = values.drain(range).collect();
+    selected.sort_unstable();
+    selected
 }

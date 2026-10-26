@@ -40,24 +40,7 @@ impl SplitDraftRecord {
             SplitRevisionId::from_bytes(revision.as_bytes()).map_err(|_| SplitError::InvalidRecord)?;
         }
         self.progress.validate(self.revision)?;
-        if self.splits.len() > 64 {
-            return Err(SplitError::Limit);
-        }
-        let mut names = std::collections::BTreeSet::new();
-        for split in &self.splits {
-            if !names.insert(&split.name) {
-                return Err(SplitError::InvalidRecord);
-            }
-            split.definition.validate()?;
-            if let MembershipOrigin::Inherited(source) = &split.origin {
-                SnapshotId::from_bytes(source.snapshot.as_bytes()).map_err(|_| SplitError::InvalidRecord)?;
-                SplitRevisionId::from_bytes(source.revision.as_bytes())
-                    .map_err(|_| SplitError::InvalidRecord)?;
-                if source.snapshot == self.snapshot {
-                    return Err(SplitError::InvalidRecord);
-                }
-            }
-        }
+        validate_definitions(self.snapshot, &self.splits)?;
         if let DraftProgress::Prepared { target }
         | DraftProgress::Published { target, .. }
         | DraftProgress::Committing { target, .. } = self.progress
@@ -83,6 +66,27 @@ impl SplitDraftRecord {
         record.validate()?;
         Ok(record)
     }
+}
+
+pub(super) fn validate_definitions(snapshot: SnapshotId, splits: &[DraftSplit]) -> Result<(), SplitError> {
+    if splits.len() > 64 {
+        return Err(SplitError::Limit);
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for split in splits {
+        if !names.insert(&split.name) {
+            return Err(SplitError::InvalidRecord);
+        }
+        split.definition.validate()?;
+        if let MembershipOrigin::Inherited(source) = &split.origin {
+            SnapshotId::from_bytes(source.snapshot.as_bytes()).map_err(|_| SplitError::InvalidRecord)?;
+            SplitRevisionId::from_bytes(source.revision.as_bytes()).map_err(|_| SplitError::InvalidRecord)?;
+            if source.snapshot == snapshot {
+                return Err(SplitError::InvalidRecord);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn required_revision<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<SplitRevisionId>, D::Error> {

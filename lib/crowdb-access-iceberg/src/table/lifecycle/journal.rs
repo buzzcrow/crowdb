@@ -1,6 +1,6 @@
-use super::{Phase, TableLifecycleOperation, TableLifecycleRequest, TableLifecycles};
+use super::{Phase, TableLifecycleOperation, TableLifecycles};
 use crate::{
-    catalog::{check_context, CasOutcome, CatalogContext, CatalogError},
+    catalog::{check_context, CatalogContext, CatalogError},
     error::ValidationError,
     key::{CatalogScope, IcebergKey, OperationId},
     operation::mutation_identity,
@@ -33,51 +33,6 @@ impl TableLifecycles {
         }
         check_context(self.store.as_ref(), context).await?;
         Ok(Some(*operation))
-    }
-
-    pub(super) async fn match_request(
-        &self,
-        request: &TableLifecycleRequest,
-        input: &[u8],
-        operation: &TableLifecycleOperation,
-    ) -> Result<(), CatalogError> {
-        if operation.context != request.context
-            || operation.identity != request.identity
-            || operation.principal != request.principal
-            || self.payloads.get(&operation.input).await? != input
-        {
-            return Err(CatalogError::Conflict);
-        }
-        Ok(())
-    }
-
-    pub(super) async fn begin(
-        &self,
-        request: &TableLifecycleRequest,
-        input: &[u8],
-        operation: TableLifecycleOperation,
-    ) -> Result<(), CatalogError> {
-        operation.validate()?;
-        check_context(self.store.as_ref(), operation.context).await?;
-        let key = operation.key().encode()?;
-        let bytes = StorageRecord::TableLifecycleOperation(Box::new(operation.clone())).encode()?;
-        match self
-            .store
-            .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
-            .await?
-        {
-            CasOutcome::Applied(_) => (),
-            CasOutcome::Conflict(Some(value)) => {
-                let StorageRecord::TableLifecycleOperation(existing) =
-                    StorageRecord::decode(&operation.key(), &value.bytes)?
-                else {
-                    return Err(ValidationError::Record.into());
-                };
-                self.match_request(request, input, &existing).await?;
-            }
-            CasOutcome::Conflict(None) => return Err(CatalogError::Busy),
-        }
-        check_context(self.store.as_ref(), operation.context).await
     }
 
     pub(super) async fn current(&self, operation: &TableLifecycleOperation) -> Result<(), CatalogError> {

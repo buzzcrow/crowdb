@@ -30,6 +30,8 @@ members = [
     "lib/crowdb-access-iceberg",
     "lib/crowdb-access-dataset",
     "lib/crowdb-access-multipart",
+    "lib/crowdb-sdk-native",
+    "lib/crowdb-sdk-native-python",
 ]
 exclude = ["third-party/hyper", "sdk"]
 # : crowdb-tree/ffi moved from `exclude` into `members` now that

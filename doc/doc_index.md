@@ -21,7 +21,7 @@ listed document or section needed by the task.
 | `doc/design/console/design-crowdb-console.md`             | Console architecture and service lifecycle.                |
 | `doc/design/config/design-crowdb-config.md`               | Configuration ownership, precedence, validation, reload.   |
 | `doc/design/deploy/design-crowdb-deploy.md`               | Node discovery, Group-0 bootstrap, multi-node deployment.   |
-| `doc/design/access-server/design-crowdb-access-server.md` | S3, Iceberg, native Dataset access, and GPU delivery.      |
+| `doc/design/access-server/design-crowdb-access-server.md` | S3, Iceberg, Dataset and shared native storage access.     |
 
 ## Backlog (`doc/backlog/`)
 
@@ -56,12 +56,12 @@ Temporary plans live under `doc/working/`; flow analyses live under
 
 ## Component Acceptance
 
-| Doc                                                         | When to read                                          |
-| ----------------------------------------------------------- | ----------------------------------------------------- |
-| `app/crowdb-access-server/tests/README.md`                  | Access gates, SDK commands and latency observations.  |
-| `e2e-test/README.md`                                        | Container domains, browser/SDK ownership and timings.   |
-| `container/single-node-container/README.md`                 | Container build, publication and tested client setup. |
-| `e2e-test/clients/ecosystem/README.md`                       | Manual pinned client/engine matrix and exclusions.    |
+| Doc                                         | When to read                                          |
+| ------------------------------------------- | ----------------------------------------------------- |
+| `app/crowdb-access-server/tests/README.md`  | Access gates, SDK commands and Dataset measurements.  |
+| `e2e-test/README.md`                        | Container domains, browser/SDK ownership and timings. |
+| `container/single-node-container/README.md` | Container build, publication and tested client setup. |
+| `e2e-test/clients/ecosystem/README.md`      | Manual pinned client/engine matrix and exclusions.    |
 
 
 ## Project Files (repo root)
@@ -81,7 +81,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | ----------------------------------------------------------------------------- | ------------------------------------------------------- |
 | `doc/design/deploy/design-crowdb-oci-image.md`                                  | Pixi OCI build, Docker/containerd, CI and macOS slot.     |
 | `doc/design/kv/design-crowdb-kv-leader-election.md`                           | Election, lease, ReadIndex, step-down.                  |
-| `doc/design/kv/design-crowdb-kv-slot.md`                                      | Slot pipelining, gap repair, catch-up, coalescing.      |
+| `doc/design/kv/design-crowdb-kv-slot.md`                                      | Slot pipelining, catch-up, coalescing, safe retention. |
 | `doc/design/kv/design-crowdb-kv-rpc.md`                                       | Paxos RPC transport, schema, and errors.                |
 | `doc/design/kv/design-crowdb-kv-rpc-client.md`                                | Client KV RPC, watch push, rollout, topology cache.     |
 | `doc/design/kv/design-crowdb-kv-reconfiguration.md`                           | Membership change, leader transfer, epoch fence.        |
@@ -127,6 +127,8 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/access-server/dataset/spec-crowdb-dataset.md`                     | Normative Dataset behavior and compatibility.           |
 | `doc/design/access-server/dataset/openapi-crowdb-dataset-v1.yaml`             | Dataset REST v1 schemas, framing, bounds and retries.   |
 | `doc/design/access-server/dataset/openapi-crowdb-dataset-v2.yaml`             | Dataset REST v2 capability-gated control operations.    |
+| `doc/design/access-server/design-crowdb-native-sdk.md`                        | Trusted runtime, topology, S3 and host-lease ownership. |
+| `lib/crowdb-sdk-native/README.md`                                             | Native S3/Dataset configuration, streaming and HCA.     |
 | `sdk/README.md`                                                               | Rust/Python SDK installation and resource ownership.    |
 
 Prefer the most specific match. Open a root design only for cross-topic work;

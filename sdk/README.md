@@ -21,6 +21,10 @@ integrity, worker partition and explicit progress replay.
   defines JSON and binary framing. Legacy bincode routes remain internal
   compatibility interfaces. S3/Iceberg standard access uses ecosystem SDKs.
 
+Trusted internal S3 embedding uses the main-workspace
+[native SDK](../lib/crowdb-sdk-native/README.md), with shared topology and host
+buffer leases. This HTTP distribution has no dependency on that native stack.
+
 ## Python
 
 Build a wheel with the interpreter it will be installed into:
@@ -66,7 +70,7 @@ and iterators. Cancellation aborts the Rust operation. Closing a stream waits
 for producer cancellation and releases its admission; completed Python bytes
 remain valid. `refresh_bearer` updates the credential used by subsequent attempts.
 
-For training, send a ReadPlan with `id`, `snapshot` (`latest`, `stable`, or an
+For training, send a ReadPlan with `snapshot` (`latest`, `stable`, or an
 immutable ID), selection, projected fields, batch size, partition and nullable
 shuffle. Selection supports explicit IDs, prefix, range, keyword, field match
 and composition. Predicates evaluate inline manifest metadata; payloads are
@@ -76,7 +80,7 @@ fetched only after server selection/shuffle/partition.
 from crowdb_dataset import DatasetIterable, WorkerPartition
 
 plan = {
-    "id": new_id(), "snapshot": "latest",
+    "snapshot": "latest",
     "selection": {"kind": "prefix", "value": sample_id(b"sample-")},
     "fields": ["label"], "batch_size": 64, "shuffle": None,
 }
@@ -86,21 +90,23 @@ with DatasetClient("http://localhost:9093", "training", "token") as client:
         batch.acknowledge()
 ```
 
-The iterable preserves its import name but now yields acknowledged batches.
-Continuing without acknowledgement fails. It never downloads another worker's
-samples and discards them. Save the read ID for resume; restarting with that
-same plan restores acknowledged progress. Fetch alone never advances progress.
-An expired connection can resume while its snapshot remains available; explicit
-`close_read` permanently closes that handle. At most one batch is issued per
-session; use independent sessions for concurrent workers. `next_batch` streams
-are the interface for fields exceeding the convenience batch limit.
+The iterable acknowledges locally and makes no progress RPC. Continuing without
+acknowledgement fails. Save the cursor returned by `batch.acknowledge()` after
+processing succeeds; pass it as `checkpoint` to a new iterable to resume.
+The iterable skips empty selection or worker windows and advances their local
+continuation. Nonempty samples with zero-length fields are still delivered and
+require acknowledgement. The lower-level `next_batch` retains empty windows.
+`bind_read(plan)` pins immutable versions and returns the initial cursor.
+`next_batch(cursor)` replays that cursor on any server. Drop or cancel stops only
+the current stream; there is no read ID, session TTL or remote close. Use streams
+for fields exceeding the convenience batch limit.
 
 ## Rust
 
 `DatasetClient` is cloneable; clones share the pool and atomic admission. It
 exposes create/open, upload parts/status/complete/abort, file transfer,
 prepare/publish/status, snapshot/manifest/listing, stable, retain/release,
-reclaim/status, batch streams, read plans and explicit progress/resume/close.
+reclaim/status, batch streams and stateless read continuations.
 `UploadOptions` controls part size and concurrency. File convenience defaults
 to 1-MiB parts and four transfers, bounded by the configured request capacity.
 Use 4-MiB parts for uploads up to the v1 limit of 10000 parts (39.0625 GiB).
@@ -142,20 +148,22 @@ It contains no benchmark driver or timing threshold.
 - Only documented idempotent operations retry; bodies/tokens remain unchanged
   within one overall deadline. Authentication, integrity and semantic conflicts
   are not blanket-retried. Rust ambiguous errors and Python exceptions retain
-  recovery identity. Inspect status and retry the identical publication after
-  response loss; the operation's Published record can precede head advancement.
-  A successful publish call establishes publication, rather than part completion
-  or preparation. Later latest changes preserve historical publish retries.
+  resource identity. After response loss, retry the identical publication condition;
+  a status query is optional and does not prove that the head advanced. A successful
+  publish confirms the current effect. If a later publication replaced it, the old
+  condition returns a conflict and its observed head for caller review.
 - Manifests declare the complete current sample membership. Omitted samples
   disappear; surviving samples may inherit omitted optional fields through
   parents. Explicit tombstones hide inherited fields, including required fields
   that are explicitly removed. Required field names remain in the schema.
-- JSON/manifest metadata is bounded to 8 MiB; inline values to 64 KiB. Read plans
-  admit at most 100000 selected IDs and keep immutable 1024-ID pages separately
-  from the small acknowledged cursor. Close/cancel is scoped; leases expire
-  after 60 seconds without activity and renew during active streaming.
-- Prepared candidates persist until publication or explicit reclaim. Reclaim
-  preserves head/stable/retained/ancestor/live-read data. Deferred cleanup reports
+- JSON/manifest metadata is bounded to 8 MiB; inline values to 64 KiB. Stateless
+  reads keep no selected-ID pages or progress on the server. A shuffle group has
+  at most 100000 IDs and 8 MiB of ID bytes; the cursor is bounded to 256 KiB before
+  encoding. Small batches within a shuffle group reconstruct that bounded group.
+- Complete Snapshot results without a live reference become eligible for background
+  retirement twenty-four hours after their first content binding; identical retries
+  do not renew that deadline. Legacy results without a deadline require explicit
+  reclaim. Reclaim preserves head/stable/retained/ancestor data and a deletion grace period. Deferred cleanup reports
   pending; shared ranges do not count as reclaimed whole chunks.
 
 Local disk cache/checkpoint staging, direct chunk access, RDMA, storage-side
@@ -183,37 +191,98 @@ HTTP pools, credentials and admission budgets. Every operation checks its server
 capability before sending a request; unsupported mutations never fall back to v1.
 Existing `DatasetClient` methods retain their v1 contracts.
 
+Successful capability discovery supplies a bounded set of hints shared by client
+clones and control wrappers. Warm calls send the business request directly;
+authentication, deletion admission and conditional updates still run on the server.
+Missing capabilities and failed discoveries are not remembered as denials.
+`capabilities()` always queries the server and replaces the hints on a valid reply;
+an unsupported API version clears them. Refresh discovery or create a new client
+after changing server features. Concurrent cold calls may repeat discovery within
+the existing HTTP admission budget. The hint has no TTL and is not a cached read
+permission or promise that a redeployed endpoint still supports the operation.
+
 - `OpaqueId` preserves operation/Snapshot/revision IDs; `Generation` is an opaque
   head precondition. `Decimal` encodes exact u64 values as JSON strings, and
   `SampleId` preserves binary IDs through canonical base64.
-- `begin_composition`, `edit_composition`, `evaluate_composition` and
-  `prepare_composition` are resumable bounded steps. Keep operation/edit IDs and
-  input revisions. Preparation is ready to publish only when
-  `uploads.publication_ready` is true. Initial Splits publish with the Snapshot.
-- `publish_composition` advances latest; `publish_split` updates only currentSplit
-  on its owning Snapshot. Null expected heads/revisions are explicit. On an
-  unknown outcome, retry the exact request or query `commit_status`; a deliberate
-  retry after a head conflict uses a new attempt and freshly observed generation.
+- `prepare_snapshot(snapshot, request)` submits complete parent/source/schema/
+  Sample patches/Split definitions to an immutable resource PUT. Retain the Snapshot
+  ID and full input for retries. It requires `composition-preparation`; body/input/
+  final Manifest are bounded to 8 MiB and computation to 30 seconds. Parent and
+  schema are explicitly nullable. Upsert patches specified fields and keeps other
+  effective parent fields; each Sample ID appears once. Frozen Split sources and
+  inherited definitions name exact revisions, so retries never resolve currentSplit.
+  Rust uses `PrepareSnapshot`, `SnapshotChange`, `SnapshotField` and `SnapshotValue`.
+  Upload values include the completed result's `id`, `length` and `md5`; conversion
+  adds no descriptor query. Synchronous and async Python expose the same operation.
+  Complete Snapshots and their initial Splits are readable before head publication.
+  Incomplete work is recomputed; matching final content is reused, while conflicting
+  content or initial Split binding is rejected. No workflow progress is saved.
+  Capture the intended Dataset head base before computation and publish separately.
+- Composition workflow methods and standalone Split workflow methods are removed.
+  Their old begin/edit/evaluate/prepare/publish HTTP routes return 501; SDKs never
+  fall back to them. Legacy draft observation/abandonment/cleanup remain HTTP
+  maintenance operations for existing records. `commit_status` reads only legacy
+  receipts; new pointer updates create no request ledger or historical replay.
 - `split_members`, `split_history`, `inventory`, `roots`, `children`, `schema` and
   `samples` return lazy `PageCursor`s. Each `next_page` fetches at most 100 items;
   it never eagerly collects the Dataset. Persist `continuation()` for scoped
   resume. Dropping the cursor stops further requests.
-- Read plans pin Snapshot and optional Split revision once. `prepare_read` advances
-  a bounded window; `next_batch` reuses verified streaming framing. Neither preview
-  nor a successful fetch acknowledges data. Call `acknowledge` only after application
-  processing succeeds. `close_read` releases the plan's source protection.
+- Complete Split revisions can be read or used as frozen sources before updating
+  currentSplit, after a head conflict, or after abandoning their draft. Each new
+  read still checks Snapshot and revision availability; incomplete or closed
+  revisions remain unavailable.
+- `prepare_split_revision(snapshot, revision, request)` submits the complete policy
+  and definitions to an immutable resource PUT. Keep the revision ID and exact
+  input for retries. It requires `split-preparation`; different input at a complete
+  ID conflicts. There is no draft or evaluation cursor, and incomplete work is
+  recomputed. Input and final bindings are bounded to 1 MiB; computation has a
+  30-second deadline. The complete result is readable before head publication.
+  Capture the intended head base before preparation. Rust uses
+  `PrepareSplitRevision`; synchronous and async Python expose the same operation.
+  Standalone Split workflow SDK methods are removed; their old HTTP write routes
+  return 501, with no fallback. Initial Splits are prepared with `prepare_snapshot`.
+- `update_split_head(snapshot, request)` updates a complete revision directly with
+  `revision`, `expected_revision` and `expected_head`; both expected values must be
+  supplied, including null. It requires `split-head-update`, takes no attempt ID
+  and does not read a draft. Rust's `SplitHead::from_conflict` and Python's
+  `ConflictError.observed_head` return the failed condition's observation. Review
+  that base before retrying; the SDK does not rebase automatically.
+- `delete_split_revision(snapshot, revision)` marks a complete historical revision
+  using `split-revision-delete`; revision-read capability alone is insufficient.
+  The current revision and the Snapshot's initial revision return 409. New reads
+  of a marked revision are rejected, normally with 404; existing bounded-read
+  limits may fail first. DELETE returns 200 with both IDs, `complete`
+  and the fixed twenty-minute `reclaim_after` as a decimal string, or null after
+  completion. Retries keep the original deadline and both IDs. Existing transport
+  retry limits apply without head/status queries or legacy draft abandonment.
+  Rust uses `SplitRevisionDeletion`; synchronous and async Python return the same
+  fields. Complete revisions otherwise follow Snapshot cleanup without a separate
+  TTL. Cleanup removes Split metadata, leaving Sample payloads unchanged.
+- `update_snapshot_head(request)` selects an existing complete Snapshot with
+  `snapshot` and explicit nullable `expected_head`; it requires
+  `snapshot-head-update`, preserves stable and reads no draft or attempt ID.
+  Rust uses `UpdateSnapshotHead` and `Head::from_conflict`; synchronous and async
+  Python clients expose `ConflictError.observed_head`. A conflict supplies the
+  observed latest/stable/generation without an extra head GET. The caller reviews
+  the new base and may need to rebuild content from it; the SDK never rebases or
+  falls back to a legacy publication route.
+- `bind_read` pins Snapshot and optional Split revision without writes;
+  `next_batch(cursor)` uses verified streaming framing. Save the next cursor after
+  successful processing. The required capability is `stateless-reads`; old session
+  routes are retired. No remote acknowledgement or cleanup call is necessary.
 - `upload_file` performs bounded digest and transfer passes. `upload_reader` accepts
   caller-owned local/remote readers plus exact length and MD5, checking existing
   parts against replayed bytes. Reopen the same source from the beginning on retry.
   Changed data fails integrity checks; source files and remote objects are untouched.
   This is a reader adapter, not a built-in remote storage/catalog connector.
-- `abandon_composition` and `cleanup_composition` are distinct operations. Run cleanup
-  steps until complete; physical payload deletion remains deferred. Snapshot reclaim
-  similarly reports its current phase and respects latest/stable/retention/leases.
+- Complete Snapshot and Split preparation use caller-owned input; legacy draft cleanup
+  actions return 501. Background workers retire old draft resources without client
+  cleanup calls. Snapshot deletion marks durable retirement and reports completion
+  after background cleanup; latest/stable/retention and deletion grace still apply.
 
 The `split_control` example exercises local file and caller-owned stream ingestion,
 initial Split publication, independent revision publication, historical Split reads,
-frozen child inheritance, paged inspection and explicit acknowledgement. Run it
+frozen child inheritance, paged inspection and continuation replay. Run it
 against a configured Dataset listener with `CROWDB_DATASET_ENDPOINT`,
 `CROWDB_DATASET_NAME` and `CROWDB_DATASET_READ_TOKEN` set.
 
@@ -222,7 +291,7 @@ v2 operations through Rust. `SplitSource` identifies a frozen revision/name and
 `decimal(n)` rejects floats, booleans and out-of-range integers. Request dictionaries
 use the OpenAPI v2 field names; omitted required nullable preconditions fail.
 `pages(kind, ...)` is lazy in both synchronous and asynchronous clients. Use
-`next_batch` as a context manager, then explicitly acknowledge after processing.
+`next_batch` as a context manager, then save the returned continuation after processing.
 Cancellation aborts the Rust operation; clients inherited across fork remain invalid.
 
 `tests/split_consumer.py` is a complete installed-wheel consumer and includes a

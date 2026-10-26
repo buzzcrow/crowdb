@@ -2,25 +2,23 @@ use std::{sync::Arc, time::Duration};
 
 use crate::config::IcebergGcConfig;
 use crowdb_access_iceberg::{
-    catalog::{CatalogContext, CatalogRepository, RootState, RoutedCatalogStore},
+    catalog::{CatalogRepository, RootState, RoutedCatalogStore},
     file::FileBlockStore,
-    gc::{
-        BudgetedGcBlocks, BudgetedGcStore, GcIoBudget, GcLimits, GcPhase, GcRepository, GcScan, GcStore,
-        GcSystemScan, GcTaskKind, GcWorker,
-    },
-    key::{CatalogId, CatalogScope, IcebergKey, SystemScope},
-    operation::{ManagementAction, ManagementPhase},
-    record::StorageRecord,
+    gc::{BudgetedGcBlocks, BudgetedGcStore, GcIoBudget, GcLimits, GcRepository, GcWorker},
+    key::CatalogId,
 };
 use crowdb_chunk_client::ChunkIoClient;
 
-#[derive(Clone, Default)]
-struct ScanPosition {
-    task: Vec<u8>,
-    purge: Vec<u8>,
-    system: Vec<u8>,
-    retired_turn: bool,
-}
+mod schedule;
+mod sweep;
+use schedule::Schedule;
+use sweep::scan_and_advance;
+
+#[cfg(feature = "test-util")]
+mod test_util;
+use sweep::ScanPosition;
+#[cfg(feature = "test-util")]
+pub use test_util::TestGcSweep;
 
 pub(super) struct GcRuntimeConfig {
     pub limits: GcLimits,
@@ -189,37 +187,36 @@ pub(super) async fn run(
             return;
         }
     };
-    let mut interval = tokio::time::interval(Duration::from_millis(config.interval_ms));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut cursors = Vec::<(CatalogId, ScanPosition)>::new();
-    let mut index = 0_usize;
+    let mut schedule = Schedule::default();
+    let mut status_failures = 0_u32;
     loop {
-        interval.tick().await;
+        tokio::time::sleep_until(schedule.next_due()).await;
         let Ok(Ok((root, _))) = tokio::time::timeout(
             Duration::from_millis(config.interval_ms.min(60_000)),
             catalog.status(),
         )
         .await
         else {
+            status_failures = status_failures.saturating_add(1);
             tracing::warn!("GC catalog status unavailable; retrying later");
+            tokio::time::sleep(Duration::from_millis(
+                config.limits.retry_delay_ms(status_failures),
+            ))
+            .await;
             continue;
         };
+        status_failures = 0;
         if root.state != RootState::Ready {
+            tokio::time::sleep(Duration::from_millis(config.interval_ms)).await;
             continue;
         }
-        let mut catalogs = config.catalogs.clone();
-        if !catalogs.contains(&root.context.catalog) {
-            catalogs.push(root.context.catalog);
-        }
-        if catalogs.is_empty() {
+        schedule.retain_scopes(&config.catalogs, root.context.catalog);
+        let Some(slot) = schedule.ready() else {
             continue;
-        }
-        let selected = catalogs[index % catalogs.len()];
-        index = index.wrapping_add(1);
-        let cursor = cursors.iter_mut().find(|(catalog, _)| *catalog == selected);
-        let after = cursor
-            .as_ref()
-            .map_or_else(ScanPosition::default, |(_, after)| after.clone());
+        };
+        let selected = schedule.catalog(slot);
+        let cursor = schedule.position(slot);
+        let before = cursor.progress;
         let result = tokio::time::timeout(
             Duration::from_millis(u64::from(config.limits.step_ms) * 2 + 1000),
             scan_and_advance(
@@ -227,187 +224,21 @@ pub(super) async fn run(
                 &worker,
                 budget.as_ref(),
                 selected,
-                after,
+                cursor,
                 (selected == root.context.catalog).then_some(root.context),
                 config.limits,
             ),
         )
         .await;
-        match result {
-            Ok(Ok(next)) => {
-                if let Some((_, cursor)) = cursor {
-                    *cursor = next;
-                } else {
-                    cursors.push((selected, next));
-                }
-            }
-            Ok(Err(error)) => {
-                tracing::error!(catalog = %selected, %error, "GC scheduler scan failed; retrying catalog");
-            }
-            Err(_) => {
-                tracing::warn!(catalog = %selected, "GC scheduler scan exceeded its budget");
-            }
-        }
-    }
-}
-
-async fn scan_and_advance(
-    store: Arc<BudgetedGcStore>,
-    worker: &GcWorker,
-    budget: &GcIoBudget,
-    catalog: CatalogId,
-    after: ScanPosition,
-    active: Option<CatalogContext>,
-    limits: GcLimits,
-) -> Result<ScanPosition, Box<dyn std::error::Error + Send + Sync>> {
-    budget.reset();
-    let next_purge = if let Some(context) = active {
-        scan_purge(store.clone(), context, after.purge, limits).await?
-    } else {
-        Vec::new()
-    };
-    if let Some(context) = active {
-        GcRepository::new(store.clone())
-            .admit_multipart(context, super::runtime::now_ms()?, limits)
-            .await?;
-    }
-    let (next_system, advanced_retired) = if active.is_some() && after.retired_turn {
-        scan_retired(store.clone(), worker, after.system, limits).await?
-    } else {
-        (after.system, false)
-    };
-    let retired_turn = !after.retired_turn;
-    if advanced_retired {
-        return Ok(ScanPosition {
-            task: after.task,
-            purge: next_purge,
-            system: next_system,
-            retired_turn,
-        });
-    }
-    let scan = GcScan {
-        native: false,
-        catalog,
-        scope: Some(CatalogScope::GcTask),
-        prefix: Vec::new(),
-        after: after.task,
-        items: usize::from(limits.page_items),
-        bytes: limits.page_bytes as usize,
-    };
-    let page = store.scan_gc(scan.clone()).await?;
-    scan.validate_page(&page)?;
-    let mut next = Vec::new();
-    for item in page.items {
-        next = item.key.clone();
-        let key = IcebergKey::decode(&item.key)?;
-        let StorageRecord::GcTask(task) = StorageRecord::decode(&key, &item.value)? else {
-            return Err("GC task scan encountered a non-task record".into());
+        let error = if let Ok(error) = result {
+            error
+        } else {
+            tracing::warn!(catalog = %selected, "GC scheduler window exceeded its budget; observed local positions retained");
+            Some("GC scheduler window timed out".into())
         };
-        if task.kind == GcTaskKind::LiveTable && task.phase != GcPhase::Complete {
-            match GcRepository::new(store.clone()).retire_live(&task).await {
-                Ok(progress) => {
-                    tracing::info!(catalog = %catalog, task = %task.identity, phase = ?progress.phase, "retired legacy live GC task");
-                }
-                Err(error) => {
-                    tracing::error!(catalog = %catalog, task = %task.identity, %error, "legacy live GC task still requires fence recovery");
-                }
-            }
-            break;
-        }
-        if !matches!(task.phase, GcPhase::Complete | GcPhase::Quarantined) && !task.paused {
-            let now_ms = super::runtime::now_ms()?;
-            if now_ms >= task.retry_at_ms {
-                match worker.run(&task, now_ms).await {
-                    Ok(progress) => {
-                        tracing::debug!(catalog = %catalog, task = %task.identity, phase = ?progress.phase, "GC task advanced");
-                    }
-                    Err(error) => {
-                        tracing::error!(catalog = %catalog, task = %task.identity, %error, "GC task retained for retry");
-                    }
-                }
-                break;
-            }
-        }
+        let report = schedule.position(slot).report(before, error.is_some());
+        tracing::debug!(catalog = %selected, busy = report.busy, progressed = report.progressed,
+            failed = report.failed, retry_at_ms = report.retry_at_ms, "GC scheduler window completed");
+        schedule.finish(slot, report, config.interval_ms, config.limits);
     }
-    Ok(ScanPosition {
-        task: next,
-        purge: next_purge,
-        system: next_system,
-        retired_turn,
-    })
-}
-
-async fn scan_retired(
-    store: Arc<BudgetedGcStore>,
-    worker: &GcWorker,
-    after: Vec<u8>,
-    limits: GcLimits,
-) -> Result<(Vec<u8>, bool), Box<dyn std::error::Error + Send + Sync>> {
-    let scan = GcSystemScan {
-        after,
-        items: 1,
-        bytes: limits.page_bytes as usize,
-    };
-    let page = store.scan_gc_system(scan.clone()).await?;
-    scan.validate_page(&page)?;
-    let Some(item) = page.items.first() else {
-        return Ok((Vec::new(), false));
-    };
-    let mut advanced = false;
-    let key = IcebergKey::decode(&item.key)?;
-    if matches!(
-        key,
-        IcebergKey::System {
-            scope: SystemScope::ManagementOperation,
-            ..
-        }
-    ) {
-        let StorageRecord::Management(operation) = StorageRecord::decode(&key, &item.value)? else {
-            return Err("management scan encountered a non-management record".into());
-        };
-        if operation.request.action == ManagementAction::Clear && operation.phase == ManagementPhase::Complete
-        {
-            let task = GcRepository::new(store)
-                .admit_retired(&operation, super::runtime::now_ms()?, limits)
-                .await?;
-            if !matches!(task.phase, GcPhase::Complete | GcPhase::Quarantined) && !task.paused {
-                let now_ms = super::runtime::now_ms()?;
-                if now_ms >= task.retry_at_ms {
-                    worker.run(&task, now_ms).await?;
-                    advanced = true;
-                }
-            }
-        }
-    }
-    Ok((item.key.clone(), advanced))
-}
-
-async fn scan_purge(
-    store: Arc<BudgetedGcStore>,
-    context: CatalogContext,
-    after: Vec<u8>,
-    limits: GcLimits,
-) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    let scan = GcScan {
-        native: false,
-        catalog: context.catalog,
-        scope: Some(CatalogScope::Reclamation),
-        prefix: Vec::new(),
-        after,
-        items: 1,
-        bytes: limits.page_bytes as usize,
-    };
-    let page = store.scan_gc(scan.clone()).await?;
-    scan.validate_page(&page)?;
-    let Some(item) = page.items.first() else {
-        return Ok(Vec::new());
-    };
-    let key = IcebergKey::decode(&item.key)?;
-    let StorageRecord::TablePurgeTask(marker) = StorageRecord::decode(&key, &item.value)? else {
-        return Err("purge scan encountered a non-purge record".into());
-    };
-    GcRepository::new(store)
-        .admit_purge(context, &marker, super::runtime::now_ms()?, limits)
-        .await?;
-    Ok(item.key.clone())
 }

@@ -31,7 +31,8 @@ pub use multipart::{
     PendingPartMutation,
 };
 pub use multipart_repository::{
-    CompletionPart, MultipartExpiryPage, MultipartPartPage, MultipartRepository, MultipartRepositoryError,
+    CompletionPart, MultipartCompletion, MultipartExpiryError, MultipartExpiryPage, MultipartExpiryStep,
+    MultipartExpirySweep, MultipartPartPage, MultipartRepository, MultipartRepositoryError,
     MultipartUploadPage,
 };
 pub use namespace::{BucketDeleteOutcome, BucketNamespace, BucketNamespaceError};

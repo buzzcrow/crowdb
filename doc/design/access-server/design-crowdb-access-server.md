@@ -5,9 +5,10 @@
 
 CROWDB presents three first-class upper access models: S3, Iceberg, and
 Dataset. Each model owns its semantics while sharing the same durable CROWDB
-storage substrate. HTTP is the portable server interface. Dataset additionally
-provides a topology-aware native client for the shortest path from an
-application to CROWDB data and, where supported, GPU memory.
+storage substrate. HTTP is the portable server interface. A trusted internal
+native runtime exposes topology-aware storage and host-buffer delivery, with
+S3 as its first typed frontend. Dataset retains its own semantic authority
+when attaching to this shared runtime.
 
 ## Table of contents
 
@@ -39,13 +40,14 @@ is an implementation choice and is not part of the architecture contract.
 
 | Model   | Semantic authority                         | Portable surface | Performance surface          |
 | ------- | ------------------------------------------ | ---------------- | ---------------------------- |
-| S3      | Buckets, objects, multipart, S3 lifecycle | HTTP             | Optional direct data plane   |
-| Iceberg | Catalogs, namespaces, tables, snapshots   | HTTP             | Delegated immutable FileIO   |
-| Dataset | Namespaces, snapshots, samples, fields  | HTTP             | Topology-aware native client |
+| S3      | Buckets, objects, multipart, S3 lifecycle    | HTTP             | Trusted native storage SDK   |
+| Iceberg | Catalogs, namespaces, tables, snapshots     | HTTP             | Delegated immutable FileIO   |
+| Dataset | Namespaces, snapshots, samples, fields      | HTTP             | Topology-aware native client |
 
 Related designs:
 
 - [S3](s3/design-crowdb-access-s3.md)
+- [Trusted native SDK](design-crowdb-native-sdk.md)
 - [Iceberg](iceberge/design-crowdb-iceberg.md)
 - [Dataset](dataset/design-crowdb-access-dataset.md)
 - [Accelerated transfer](s3/design-crowdb-access-s3-rdma.md)
@@ -75,7 +77,7 @@ Related designs:
                              |
              routed RPC / optional RDMA data plane
                              |
-                    Dataset native client
+                    Shared native runtime
                              ^
                              |
                AI runtime / CPU or GPU memory
@@ -83,11 +85,11 @@ Related designs:
                   topology-aware direct access
 ```
 
-S3 and Iceberg are HTTP protocols. Dataset offers HTTP for interoperability
-and a linked native client for maximum performance. The native client is not an
-HTTP wrapper: it consumes a validated CROWDB routing view and contacts the
-responsible metadata and data services directly, removing the Access Server
-routing and payload hop.
+S3 and Iceberg expose HTTP protocols. The trusted native S3 facade reuses S3
+execution over the shared runtime and contacts metadata/data services directly.
+Dataset's native adapter uses this same runtime while retaining Dataset
+selection and acknowledgement semantics. The native runtime removes the
+Access Server routing and payload hop.
 
 ## 4. Semantic ownership
 
@@ -131,6 +133,12 @@ Iceberg file-record construction also lives in the Iceberg library, including
 the format rule shared by ordinary uploads and multipart completion.
 Iceberg GC uses a separate chunk client with Iceberg's small-write policy.
 The Iceberg library owns its GC storage budget and file-block adapters.
+After proving a payload range unreachable, GC hands its exact byte range to
+ChunkDB. A successful deletion notification completes Access's responsibility;
+Access does not poll physical reclamation or retain progress for DiskDB capacity
+release. `ReclaimOutcome::Accepted` means the notification was accepted (or the
+chunk is already absent), not that disk space is reusable. Physical range
+retirement, layout grace and compaction belong to ChunkDB and DiskDB.
 Each small-write policy also chooses its chunk capacity; each protocol's
 large-write policy chooses its own maximum chunk size. The deployment profile
 sets RPC workers and DiskIO connections independently of these data limits.
@@ -179,8 +187,8 @@ Each access model stores only its own logical authority and opaque references to
 data below this boundary.
 
 Physical segments, disks, replicas, and erasure-coding shards remain storage
-concerns. The native Dataset client may observe the minimum versioned topology
-needed for routing, but cannot publish or alter physical placement.
+concerns. Native clients observe versioned topology for scheduling and routing,
+but cannot publish or alter physical placement.
 
 ## 7. Scale-out and security
 
@@ -188,11 +196,12 @@ Access Server instances keep no authoritative namespace or operation outcome.
 Durable state lives in CROWDB, so any healthy instance can serve a later request
 or retry. Protocol-local caches are discardable hints.
 
-Direct Dataset access also preserves the storage authority boundary. A client
-authenticates before receiving topology, metadata, or payload authority. Direct
-operations use short-lived capabilities bound to the principal, logical object,
-immutable snapshot, operation, ranges, limits, expiry, and topology epoch.
-Topology and memory descriptors alone grant no access.
+Trusted internal native clients share Access Server's trust domain and receive
+explicit tenant and operation context from their embedding system. They do not
+obtain the S3 secret database or verify SigV4. External HTTP authentication
+remains in the HTTP frontend. Dataset HTTP capability contracts remain in the
+Dataset design; native embedding does not depend on external-user capability
+issuance. Topology and memory descriptors alone grant no access.
 
 All paths bound connections, metadata work, stream windows, retained buffers,
 registered memory, retries, and background work independently of total object,
@@ -238,7 +247,7 @@ Frontend query failures do not mutate these backend health observations.
   namespace, publication, authorization, compatibility, and reclamation rules.
 - **AS-I2 — HTTP boundary:** S3 and Iceberg are HTTP server protocols; Dataset
   HTTP is the portable Dataset server surface.
-- **AS-I3 — Native directness:** Dataset native access reaches responsible
+- **AS-I3 — Native directness:** trusted native access reaches responsible
   CROWDB services without an Access Server request or payload hop.
 - **AS-I4 — Semantic equivalence:** Dataset HTTP, native CPU, and accelerated
   GPU paths select the same immutable snapshot and logical data.
@@ -259,6 +268,29 @@ Frontend query failures do not mutate these backend health observations.
   own each S3 or Iceberg PUT or multipart part. Socket readiness and write
   completion can each resume an idle transfer without changing protocol
   publication authority.
+
+Coordination follows the semantic owner, rather than the Access Server process:
+
+- Dataset read admission is read-only. Clients retain continuation progress;
+  fetching, acknowledgements and snapshot activity create no reader records.
+  Existing write-side draft journals recover partial work and fence late writes
+  after cleanup.
+- Dataset upload expiry scans upload authorities; creation does not enter a
+  global registry. Shared payload owner records prevent one snapshot's retirement
+  from reclaiming another snapshot's bytes.
+- Iceberg streamed uploads use independent session bounds and per-part writes.
+  Catalog-wide credit records are retained only for legacy recovery. Ordinary
+  table commits use one head CAS; GC fences protect committed file reachability.
+- Namespace deletion rejects live children. The associated parent admission and
+  recovery state preserves that strict contract and is not a reader lease.
+- S3 multipart coordinates accounting and exact completion selection within one
+  upload. Ordinary object reads do not register persistent activity.
+- A failed CAS observation supplies the compared key, revision and value for an
+  allowed retry. Unknown transport outcomes follow the operation's retry contract;
+  application preconditions must not silently move to a newer base. Credential
+  bootstrap publishes one encrypted final resource through create-if-absent;
+  comparison losers reuse that value, while older peers and busy/unknown replies
+  require a direct resource read. It has no persisted preparation record.
 
 ## 9. Direction and risks
 

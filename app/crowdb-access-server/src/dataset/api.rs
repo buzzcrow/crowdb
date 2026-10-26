@@ -9,7 +9,7 @@ mod conversion;
 mod error;
 mod management;
 mod publication;
-mod session;
+mod query;
 mod upload;
 mod v2;
 
@@ -110,8 +110,8 @@ impl DatasetHttpService {
         let tail: Vec<&str> = parts[7..].iter().map(String::as_str).collect();
         let method = request.method().clone();
         let authority = self.reads.authority();
-        if tail.first() == Some(&"read-plans") {
-            return self.session_route(&identity, &tail, request).await;
+        if tail.first() == Some(&"reads") && tail.len() > 1 {
+            return self.query_route(&identity, &tail, request).await;
         }
         if tail.first() == Some(&"uploads") {
             return self.upload_route(&identity, &tail, request).await;
@@ -141,7 +141,7 @@ impl DatasetHttpService {
                 json(&conversion::snapshot(record, authority.latest(&identity).await?))
             }
             (Method::GET, ["snapshots", id, "manifest"]) => {
-                let manifest = authority.get_manifest(&identity, snapshot(id)?).await?;
+                let manifest = authority.read_manifest(&identity, snapshot(id)?).await?;
                 json(&conversion::public_manifest(manifest, &identity)?)
             }
             (Method::PUT, ["names", "stable"]) => {
@@ -208,6 +208,8 @@ async fn read_body_limit(
         .and_then(|v| v.parse::<u64>().ok())
         .is_some_and(|v| v > limit as u64)
     {
+        // Dropping an unread body can reset HTTP before its client receives the error.
+        admission::drain(request.into_body(), std::time::Duration::from_secs(5)).await;
         return Err(ApiError::too_large());
     }
     Limited::new(request.into_body(), limit)

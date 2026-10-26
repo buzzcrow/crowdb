@@ -67,9 +67,7 @@ impl CrowdbKvClient {
                 continue;
             }
             return Err(match KvErrorCode::try_from(response.error_code) {
-                Ok(KvErrorCode::KvErrorCasFailed) => Error::CasFailed {
-                    current_revision: response.revision,
-                },
+                Ok(KvErrorCode::KvErrorCasFailed) => comparison_error(response, key, expected_revision),
                 Ok(KvErrorCode::KvErrorCasBusy) => Error::CasBusy,
                 Ok(KvErrorCode::KvErrorOutcomeUnknown) => Error::OutcomeUnknown,
                 _ => Error::Server(response.error),
@@ -156,13 +154,25 @@ impl CrowdbKvClient {
                 continue;
             }
             return Err(match KvErrorCode::try_from(response.error_code) {
-                Ok(KvErrorCode::KvErrorCasFailed) => Error::CasFailed {
-                    current_revision: response.revision,
-                },
+                Ok(KvErrorCode::KvErrorCasFailed) => {
+                    comparison_error(response, precondition_key, expected_revision)
+                }
                 Ok(KvErrorCode::KvErrorCasBusy) => Error::CasBusy,
                 Ok(KvErrorCode::KvErrorOutcomeUnknown) => Error::OutcomeUnknown,
                 _ => Error::Server(response.error),
             });
         }
+    }
+}
+
+fn comparison_error(response: crowdb_kv::rpc::KvResponse, key: &[u8], expected_revision: u64) -> Error {
+    if response.compare_observation.as_ref().is_some_and(|observation| {
+        observation.key.as_ref() != key || observation.revision == expected_revision
+    }) {
+        return Error::OutcomeUnknown;
+    }
+    Error::CasFailed {
+        current_revision: response.revision,
+        observation: response.compare_observation,
     }
 }

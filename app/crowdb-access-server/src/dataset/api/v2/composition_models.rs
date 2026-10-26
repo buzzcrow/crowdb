@@ -1,11 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{
-    super::{operation, snapshot, ApiError},
-    predicate::Predicate,
-    split_models::{decimal, required_option, revision, DraftSplit, Policy, Source},
-};
+use super::{super::ApiError, predicate::Predicate, split_models::Source};
 use crowdb_access_dataset::{composition as native, FieldDefinition, SchemaRecord};
 use serde::{Deserialize, Serialize};
 
@@ -67,7 +63,7 @@ pub(super) enum CompositionSource {
     },
 }
 impl CompositionSource {
-    fn native(self) -> Result<native::CompositionSource, ApiError> {
+    pub(super) fn native(self) -> Result<native::CompositionSource, ApiError> {
         Ok(match self {
             Self::All => native::CompositionSource::All,
             Self::Selection { predicate } => native::CompositionSource::Selection(predicate.native()?),
@@ -91,88 +87,4 @@ impl From<native::CompositionSource> for CompositionSource {
             },
         }
     }
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct Begin {
-    pub operation: String,
-    #[serde(deserialize_with = "required_option")]
-    pub parent: Option<String>,
-    pub source: CompositionSource,
-    pub schema: Option<Schema>,
-    pub inherit_parent_splits: bool,
-    pub parent_split_revision: Option<String>,
-    pub splits: Vec<DraftSplit>,
-    pub policy: Option<Policy>,
-}
-impl Begin {
-    pub(super) fn native(
-        self,
-    ) -> Result<(crowdb_access_dataset::OperationId, native::CompositionInput), ApiError> {
-        Ok((
-            operation(&self.operation)?,
-            native::CompositionInput {
-                parent: self.parent.as_deref().map(snapshot).transpose()?,
-                source: self.source.native()?,
-                schema: self.schema.map(Schema::native).transpose()?,
-                inherit_parent_splits: self.inherit_parent_splits,
-                parent_split_revision: self.parent_split_revision.as_deref().map(revision).transpose()?,
-                splits: self
-                    .splits
-                    .into_iter()
-                    .map(DraftSplit::native)
-                    .collect::<Result<_, _>>()?,
-                policy: self.policy.map(Into::into),
-            },
-        ))
-    }
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct CompositionEdit {
-    pub edit: String,
-    pub expected_revision: String,
-    pub schema: Option<Schema>,
-    pub samples: Vec<super::composition_fields::SampleChange>,
-    pub splits: Option<Vec<DraftSplit>>,
-    pub policy: Option<Policy>,
-}
-impl CompositionEdit {
-    pub(super) async fn native(
-        self,
-        identity: &crowdb_access_dataset::DatasetIdentity,
-        uploads: &crowdb_access_dataset::DatasetUploads,
-    ) -> Result<native::CompositionEdit, ApiError> {
-        if self.samples.len() > 20 {
-            return Err(ApiError::too_large());
-        }
-        let mut samples = Vec::new();
-        for sample in self.samples {
-            samples.push(sample.native(identity, uploads).await?);
-        }
-        Ok(native::CompositionEdit {
-            id: operation(&self.edit)?,
-            expected_revision: decimal(&self.expected_revision)?,
-            schema: self.schema.map(Schema::native).transpose()?,
-            samples,
-            splits: self
-                .splits
-                .map(|splits| {
-                    splits
-                        .into_iter()
-                        .map(DraftSplit::native)
-                        .collect::<Result<_, _>>()
-                })
-                .transpose()?,
-            policy: self.policy.map(Into::into),
-        })
-    }
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct Publish {
-    pub attempt: String,
-    pub snapshot: String,
-    #[serde(deserialize_with = "required_option")]
-    pub expected_head: Option<String>,
 }

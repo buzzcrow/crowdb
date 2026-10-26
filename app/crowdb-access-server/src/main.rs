@@ -165,11 +165,7 @@ async fn run_s3(
         .clone()
         .or_else(|| std::env::var("CROWDB_S3_LISTEN").ok())
     {
-        let management_seeds = if access_config.common.management_seeds.is_empty() {
-            management_seeds()?
-        } else {
-            access_config.common.management_seeds.clone()
-        };
+        let management_seeds = configured_management_seeds(access_config)?;
         let tenant_name = match &access_config.s3.tenant {
             Some(name) => name.clone(),
             None => required_env("CROWDB_S3_TENANT")?,
@@ -179,12 +175,13 @@ async fn run_s3(
         let credential_cipher = Arc::new(CredentialCipher::new(&master_key));
         let continuation_key = credential_cipher.continuation_key().to_vec();
         let write_policies = s3_write_policies(access_config)?;
-        let storage = S3StorageClients::connect_with_read_policy(
+        let storage = S3StorageClients::connect_with_chunk_kv_config(
             management_seeds,
             access_config.common.diskio_connections_per_endpoint,
             access_config.common.diskio_rpc_workers,
             write_policies.small,
             access_config.read.policy(),
+            &access_config.common.chunk_kv_rpc,
         )
         .await?;
         let chunks = Arc::clone(&storage.chunks);
@@ -216,7 +213,11 @@ async fn run_s3(
             "CROWDB_S3_NATIVE_BUDGET_BYTES",
         )?
         .unwrap_or(256 * 1024 * 1024);
-        let body_allocator = Arc::new(NativeBodyAllocator::new(native_budget, 1024 * 1024)?);
+        let mut body_allocator = NativeBodyAllocator::new(native_budget, 1024 * 1024)?;
+        if let Some(producer) = chunks.producer_allocator() {
+            body_allocator = body_allocator.with_producer_allocator(producer)?;
+        }
+        let body_allocator = Arc::new(body_allocator);
         let handler = Arc::new(
             S3Dispatcher::new(
                 authenticator,
@@ -255,6 +256,15 @@ async fn run_s3(
 }
 
 #[cfg(feature = "s3")]
+fn configured_management_seeds(config: &AccessConfig) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    if config.common.management_seeds.is_empty() {
+        management_seeds()
+    } else {
+        Ok(config.common.management_seeds.clone())
+    }
+}
+
+#[cfg(feature = "s3")]
 async fn bind_health_listener(access_config: &AccessConfig) -> std::io::Result<TcpListener> {
     let address = access_config
         .health
@@ -286,14 +296,25 @@ async fn wait_for_shutdown(mut shutdown: Option<watch::Receiver<bool>>) {
 #[cfg(feature = "s3")]
 fn start_multipart_expiry(operations: Arc<ProductionS3Operations>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
+        let mut sweep = operations.multipart_expiry_sweep();
         loop {
-            interval.tick().await;
-            match operations.expire_multipart_uploads().await {
-                Ok(0) => {}
-                Ok(count) => tracing::debug!(count, "expired S3 multipart sessions"),
-                Err(error) => tracing::warn!(?error, "S3 multipart expiry sweep deferred"),
-            }
+            let delay = match operations.expire_multipart_uploads(&mut sweep).await {
+                Ok(step) => {
+                    if step.expired > 0 {
+                        tracing::debug!(count = step.expired, "expired S3 multipart sessions");
+                    }
+                    if step.more {
+                        Duration::from_millis(50)
+                    } else {
+                        Duration::from_secs(15)
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "S3 multipart expiry window deferred; durable evidence retained");
+                    Duration::from_millis(500)
+                }
+            };
+            tokio::time::sleep(delay).await;
         }
     })
 }

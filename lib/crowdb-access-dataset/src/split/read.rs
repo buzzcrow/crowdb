@@ -1,14 +1,11 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{
-    head::CommittedSplitHead, key, MembershipPage, SplitHead, SplitLifecycleError, SplitName,
-    SplitRevisionRecord,
-};
+use super::{key, MembershipPage, SplitLifecycleError, SplitName, SplitRevisionRecord};
 use crate::{
     inspection::{cursor::CursorScope, work::InspectionWork, InspectionPage},
-    AuthorityError, CommitTarget, DatasetAuthority, DatasetIdentity, MetadataScanBudget, OperationId,
-    ReadCancellation, SnapshotId, SplitRevisionId, SuccessfulCommit,
+    AuthorityError, DatasetAuthority, DatasetIdentity, MetadataScanBudget, OperationId, ReadCancellation,
+    SnapshotId, SplitRevisionId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +19,7 @@ pub struct SplitRevisionSummary {
     pub split_count: u32,
 }
 impl DatasetAuthority {
-    /// Lists only committed revision summaries; prepared revision indexes remain invisible.
+    /// Lists complete immutable revisions independently of the current Split pointer.
     /// # Errors
     /// Rejects unavailable owners, invalid cursors, corrupt records and bounded-work limits.
     pub async fn split_revision_history(
@@ -45,6 +42,9 @@ impl DatasetAuthority {
             .await?;
         let mut entries = Vec::new();
         for (key, value) in page.entries {
+            if value.bytes == super::RETIRED_RECORD {
+                continue;
+            }
             let summary: SplitRevisionSummary = super::codec::decode(&value.bytes)?;
             if summary.version != 1
                 || summary.snapshot != snapshot
@@ -52,10 +52,15 @@ impl DatasetAuthority {
             {
                 return Err(SplitLifecycleError::Corrupt);
             }
-            if self
-                .split_revision_visible(identity, snapshot, summary.revision, &mut work)
+            if let Some(record) = self
+                .load_admitted_split_revision(identity, snapshot, summary.revision, &mut work)
                 .await?
             {
+                if record.operation != summary.operation
+                    || record.splits.len() != summary.split_count as usize
+                {
+                    return Err(SplitLifecycleError::Corrupt);
+                }
                 entries.push(summary);
             }
         }
@@ -64,9 +69,9 @@ impl DatasetAuthority {
             after: cursor.encode(page.after)?,
         })
     }
-    /// Loads immutable definitions/counts/provenance and page bindings for a committed revision.
+    /// Loads complete immutable definitions/counts/provenance and page bindings by ID.
     /// # Errors
-    /// Rejects uncommitted revisions, unavailable owners, corruption and work limits.
+    /// Rejects incomplete revisions, unavailable owners, corruption and work limits.
     pub async fn get_split_revision(
         &self,
         identity: &DatasetIdentity,
@@ -88,24 +93,47 @@ impl DatasetAuthority {
         work: &mut InspectionWork<'_>,
     ) -> Result<SplitRevisionRecord, SplitLifecycleError> {
         self.require_split_reader(identity, snapshot, work).await?;
-        if !self
-            .split_revision_visible(identity, snapshot, revision, work)
+        self.read_admitted_split_revision(identity, snapshot, revision, work)
+            .await
+    }
+
+    /// The same request must already have admitted this exact Snapshot.
+    pub(crate) async fn read_admitted_split_revision(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        revision: SplitRevisionId,
+        work: &mut InspectionWork<'_>,
+    ) -> Result<SplitRevisionRecord, SplitLifecycleError> {
+        self.load_admitted_split_revision(identity, snapshot, revision, work)
             .await?
-        {
-            return Err(SplitLifecycleError::NotFound);
-        }
-        let value = work
+            .ok_or(SplitLifecycleError::NotFound)
+    }
+
+    async fn load_admitted_split_revision(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        revision: SplitRevisionId,
+        work: &mut InspectionWork<'_>,
+    ) -> Result<Option<SplitRevisionRecord>, SplitLifecycleError> {
+        let Some(value) = work
             .get(
                 &key::revision(identity, snapshot, revision).map_err(AuthorityError::from)?,
                 1024 * 1024,
             )
             .await?
-            .ok_or(SplitLifecycleError::Corrupt)?;
+        else {
+            return Ok(None);
+        };
+        if super::retirement::resource::is_closed(&value.bytes) {
+            return Ok(None);
+        }
         let record = SplitRevisionRecord::decode(&value.bytes)?;
         if record.snapshot != snapshot || record.revision != revision {
             return Err(SplitLifecycleError::Corrupt);
         }
-        Ok(record)
+        Ok(Some(record))
     }
     async fn require_split_reader(
         &self,
@@ -121,48 +149,6 @@ impl DatasetAuthority {
         }
         Ok(())
     }
-    pub(super) async fn split_revision_visible(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-        revision: SplitRevisionId,
-        work: &mut InspectionWork<'_>,
-    ) -> Result<bool, SplitLifecycleError> {
-        if self.inspection_initial_split(identity, snapshot, work).await? == Some(revision) {
-            return self
-                .inspection_snapshot_committed(identity, snapshot, work)
-                .await
-                .map_err(Into::into);
-        }
-        let target = CommitTarget::SplitRevision { snapshot, revision };
-        if let Some(value) = work
-            .get(
-                &key::committed_revision(identity, snapshot, revision).map_err(AuthorityError::from)?,
-                8192,
-            )
-            .await?
-        {
-            if SuccessfulCommit::decode(&value.bytes)?.attempt.target != target {
-                return Err(SplitLifecycleError::Corrupt);
-            }
-            return Ok(true);
-        }
-        let Some(value) = work
-            .get(
-                &key::head(identity, snapshot).map_err(AuthorityError::from)?,
-                8192,
-            )
-            .await?
-        else {
-            return Ok(false);
-        };
-        if SplitHead::decode(&value.bytes).is_ok() {
-            return Ok(false);
-        }
-        let head = CommittedSplitHead::decode(&value.bytes)?;
-        Ok(head.attempt.target == target)
-    }
-
     /// Returns exact ordered member IDs from checksum-bound immutable pages.
     /// # Errors
     /// Rejects wrong revision/name/cursors, missing pages, corrupt bindings and work limits.

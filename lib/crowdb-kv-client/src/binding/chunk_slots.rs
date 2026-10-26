@@ -125,6 +125,7 @@ impl ChunkSlotMapClient {
         if head != after || revision != after_revision {
             return Err(Error::CasFailed {
                 current_revision: after_revision,
+                observation: None,
             });
         }
         ChunkSlotMap::new(head, bindings).map_err(|error| invalid(&key, &error.to_string()))

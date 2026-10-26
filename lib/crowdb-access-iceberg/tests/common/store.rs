@@ -16,12 +16,15 @@ pub struct TestStore {
     pub values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
     pub fail_after: AtomicUsize,
     pub file_record_reply_loss: AtomicBool,
-    pub native_injection_reply_loss: AtomicBool,
+    pub retirement_reply_loss: AtomicBool,
     pub gc_workspace_denied: AtomicBool,
     #[allow(dead_code)]
     pub gc_delete_reply_loss: AtomicBool,
     pub writes: AtomicUsize,
     pub reads: AtomicUsize,
+    pub cas_attempts: AtomicUsize,
+    pub projection_reads: AtomicUsize,
+    pub legacy_admission_calls: AtomicUsize,
     pub file_scans: AtomicUsize,
     pub fencing_delay_ms: AtomicUsize,
     pub fencing_barrier: Option<Arc<tokio::sync::Barrier>>,
@@ -37,8 +40,6 @@ pub struct TestStore {
     pub file_mapping_release: tokio::sync::Notify,
     pub table_reservation_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub table_reservation_visits: AtomicUsize,
-    pub stage_transition_barrier: Option<Arc<tokio::sync::Barrier>>,
-    pub stage_transition_visits: AtomicUsize,
     pub table_head_pause_before: AtomicBool,
     pub table_head_pause_after: AtomicBool,
     pub table_head_entered: tokio::sync::Notify,
@@ -66,17 +67,24 @@ impl TestStore {
         }
     }
 
-    fn lose_file_reply(&self, key: &[u8]) -> bool {
+    async fn pause_file_location(&self, key: &[u8]) {
         if matches!(
-            StorageKey::decode(key),
-            Ok(StorageKey::NativeTable(TableStorageKey {
-                scope: TableStorageScope::Operation,
+            crowdb_access_iceberg::key::IcebergKey::decode(key),
+            Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
+                scope: crowdb_access_iceberg::key::CatalogScope::FileLocation,
                 ..
-            }))
-        ) && self.native_injection_reply_loss.swap(false, Ordering::SeqCst)
-        {
-            return true;
+            })
+        ) {
+            self.pause_file_mapping().await;
+            if let Some(barrier) = &self.file_mapping_barrier {
+                if self.file_mapping_visits.fetch_add(1, Ordering::SeqCst) < 2 {
+                    barrier.wait().await;
+                }
+            }
         }
+    }
+
+    fn lose_file_reply(&self, key: &[u8]) -> bool {
         matches!(
             StorageKey::decode(key),
             Ok(StorageKey::Legacy(IcebergKey::Catalog {
@@ -90,12 +98,8 @@ impl TestStore {
     }
 
     async fn pause_table_head(&self, key: &[u8], expected: Option<&[u8]>, value: &[u8], after: bool) {
-        if expected.is_none() {
-            return;
-        }
-        let Ok(crowdb_access_iceberg::record::StorageRecord::TableHead(head)) =
-            crowdb_access_iceberg::key::IcebergKey::decode(key)
-                .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
+        let Ok(crowdb_access_iceberg::record::StorageRecord::TableHead(head)) = StorageKey::decode(key)
+            .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
         else {
             return;
         };
@@ -104,37 +108,77 @@ impl TestStore {
         } else {
             &self.table_head_pause_before
         };
-        if head.pending_operation.is_some() && enabled.swap(false, Ordering::SeqCst) {
+        if (expected.is_none() || head.pending_operation.is_some() || expected.is_some_and(|bytes| {
+            crowdb_access_iceberg::key::IcebergKey::decode(key).ok()
+                .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, bytes).ok())
+                .is_some_and(|record| matches!(record, crowdb_access_iceberg::record::StorageRecord::TableHead(before) if before.name_epoch < head.name_epoch))
+        })) && enabled.swap(false, Ordering::SeqCst) {
             self.table_head_entered.notify_one();
             self.table_head_release.notified().await;
         }
     }
 
-    async fn pause_namespace_authority(&self, key: &[u8], expected: Option<&[u8]>, value: &[u8]) {
-        if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceAuthority(authority)) =
-            crowdb_access_iceberg::key::IcebergKey::decode(key)
-                .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
-        {
-            if authority.pending_operation.is_some() && expected.is_some() {
-                if let Some(barrier) = &self.namespace_update_barrier {
-                    if self.namespace_update_visits.fetch_add(1, Ordering::SeqCst) < 2 {
-                        barrier.wait().await;
+    async fn pause_reservation(&self, key: &[u8], expected: Option<&[u8]>, value: &[u8]) {
+        if expected.is_none() {
+            if let Ok(crowdb_access_iceberg::record::StorageRecord::TableMapping(mapping)) =
+                crowdb_access_iceberg::key::IcebergKey::decode(key)
+                    .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
+            {
+                if mapping.state == crowdb_access_iceberg::table::TableMappingState::Reserved {
+                    if let Some(barrier) = &self.table_reservation_barrier {
+                        if self.table_reservation_visits.fetch_add(1, Ordering::SeqCst) < 2 {
+                            barrier.wait().await;
+                        }
+                    }
+                }
+            }
+            if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceMapping(mapping)) =
+                crowdb_access_iceberg::key::IcebergKey::decode(key)
+                    .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
+            {
+                if matches!(
+                    mapping.state,
+                    crowdb_access_iceberg::namespace::NamespaceMappingState::Reserved
+                        | crowdb_access_iceberg::namespace::NamespaceMappingState::ReservedResource
+                ) {
+                    if let Some(barrier) = &self.namespace_reservation_barrier {
+                        if self.namespace_reservation_visits.fetch_add(1, Ordering::SeqCst) < 2 {
+                            barrier.wait().await;
+                        }
                     }
                 }
             }
         }
     }
 
-    async fn pause_stage_transition(&self, key: &[u8], expected: Option<&[u8]>) {
-        if let (Some(barrier), Some(expected)) = (&self.stage_transition_barrier, expected) {
-            if let Ok(crowdb_access_iceberg::record::StorageRecord::TableCreateOperation(operation)) =
-                crowdb_access_iceberg::key::IcebergKey::decode(key)
-                    .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, expected))
+    async fn pause_namespace_update(&self, key: &[u8], expected: Option<&[u8]>, value: &[u8]) {
+        if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceAuthority(authority)) =
+            crowdb_access_iceberg::key::IcebergKey::decode(key)
+                .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
+        {
+            if expected.is_some()
+                && (authority.pending_operation.is_some()
+                    || authority.creating_child.is_some()
+                    || authority.rename.is_some()
+                    || expected
+                        .and_then(|bytes| {
+                            crowdb_access_iceberg::key::IcebergKey::decode(key)
+                                .ok()
+                                .and_then(|key| {
+                                    crowdb_access_iceberg::record::StorageRecord::decode(&key, bytes).ok()
+                                })
+                        })
+                        .is_some_and(|record| {
+                            matches!(record,
+                        crowdb_access_iceberg::record::StorageRecord::NamespaceAuthority(before)
+                            if before.property_revision < authority.property_revision
+                                || before.lifecycle != authority.lifecycle)
+                        }))
             {
-                if operation.phase == crowdb_access_iceberg::commit::TableCreatePhase::Staged
-                    && self.stage_transition_visits.fetch_add(1, Ordering::SeqCst) < 2
-                {
-                    barrier.wait().await;
+                if let Some(barrier) = &self.namespace_update_barrier {
+                    if self.namespace_update_visits.fetch_add(1, Ordering::SeqCst) < 2 {
+                        barrier.wait().await;
+                    }
                 }
             }
         }
@@ -189,6 +233,27 @@ impl CatalogStore for TestStore {
             tokio::task::yield_now().await;
         }
         self.reads.fetch_add(1, Ordering::SeqCst);
+        if matches!(
+            IcebergKey::decode(key),
+            Ok(IcebergKey::Catalog {
+                scope: CatalogScope::MultipartAdmission,
+                ..
+            })
+        ) {
+            self.legacy_admission_calls.fetch_add(1, Ordering::SeqCst);
+        }
+        if matches!(
+            StorageKey::decode(key),
+            Ok(StorageKey::Legacy(IcebergKey::Catalog {
+                scope: CatalogScope::MetadataProjection,
+                ..
+            }) | StorageKey::NativeTable(TableStorageKey {
+                scope: TableStorageScope::Projection,
+                ..
+            }))
+        ) {
+            self.projection_reads.fetch_add(1, Ordering::SeqCst);
+        }
         Ok(self.values.load().get(key).cloned())
     }
 
@@ -199,6 +264,16 @@ impl CatalogStore for TestStore {
         value: &[u8],
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
+        self.cas_attempts.fetch_add(1, Ordering::SeqCst);
+        if matches!(
+            IcebergKey::decode(key),
+            Ok(IcebergKey::Catalog {
+                scope: CatalogScope::MultipartAdmission,
+                ..
+            })
+        ) {
+            self.legacy_admission_calls.fetch_add(1, Ordering::SeqCst);
+        }
         identity.validate().unwrap();
         if self.yield_operations {
             tokio::task::yield_now().await;
@@ -207,48 +282,9 @@ impl CatalogStore for TestStore {
             return Err(StoreError::Budget);
         }
         self.pause_table_head(key, expected, value, false).await;
-        self.pause_stage_transition(key, expected).await;
-        if matches!(
-            crowdb_access_iceberg::key::IcebergKey::decode(key),
-            Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
-                scope: crowdb_access_iceberg::key::CatalogScope::FileLocation,
-                ..
-            })
-        ) {
-            self.pause_file_mapping().await;
-            if let Some(barrier) = &self.file_mapping_barrier {
-                if self.file_mapping_visits.fetch_add(1, Ordering::SeqCst) < 2 {
-                    barrier.wait().await;
-                }
-            }
-        }
-        if expected.is_none() {
-            if let Ok(crowdb_access_iceberg::record::StorageRecord::TableMapping(mapping)) =
-                crowdb_access_iceberg::key::IcebergKey::decode(key)
-                    .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
-            {
-                if mapping.state == crowdb_access_iceberg::table::TableMappingState::Reserved {
-                    if let Some(barrier) = &self.table_reservation_barrier {
-                        if self.table_reservation_visits.fetch_add(1, Ordering::SeqCst) < 2 {
-                            barrier.wait().await;
-                        }
-                    }
-                }
-            }
-            if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceMapping(mapping)) =
-                crowdb_access_iceberg::key::IcebergKey::decode(key)
-                    .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
-            {
-                if mapping.state == crowdb_access_iceberg::namespace::NamespaceMappingState::Reserved {
-                    if let Some(barrier) = &self.namespace_reservation_barrier {
-                        if self.namespace_reservation_visits.fetch_add(1, Ordering::SeqCst) < 2 {
-                            barrier.wait().await;
-                        }
-                    }
-                }
-            }
-        }
-        self.pause_namespace_authority(key, expected, value).await;
+        self.pause_file_location(key).await;
+        self.pause_reservation(key, expected, value).await;
+        self.pause_namespace_update(key, expected, value).await;
         if let Ok(crowdb_access_iceberg::record::StorageRecord::Active(root)) =
             crowdb_access_iceberg::key::IcebergKey::decode(key)
                 .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
@@ -285,6 +321,17 @@ impl CatalogStore for TestStore {
                     return Err(StoreError::Response);
                 }
                 if self.lose_file_reply(key) {
+                    return Err(StoreError::Response);
+                }
+                if self.retirement_reply_loss.load(Ordering::SeqCst)
+                    && matches!(
+                        StorageKey::decode(key).and_then(|key| {
+                            crowdb_access_iceberg::record::StorageRecord::decode(&key, value)
+                        }),
+                        Ok(crowdb_access_iceberg::record::StorageRecord::RetiredTable(_))
+                    )
+                    && self.retirement_reply_loss.swap(false, Ordering::SeqCst)
+                {
                     return Err(StoreError::Response);
                 }
                 self.pause_table_head(key, expected, value, true).await;

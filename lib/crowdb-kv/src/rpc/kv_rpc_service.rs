@@ -31,6 +31,7 @@
 //! (`KvClientRpcForwarder`) lives in `crowdb-kv` itself (not
 //! `crowdb-kv-client`) to avoid a crate cycle.
 
+mod comparison;
 mod owner_fence;
 mod response_correlation;
 mod watch;
@@ -1285,6 +1286,14 @@ fn build_kv_response(req_id: u64, create_nano: u64, resp: &crate::rpc::KvRespons
     } else {
         Some(builder.create_vector(&resp.value))
     };
+    let compare_observation = resp.compare_observation.as_ref().map(|observation| {
+        comparison::encode(
+            &mut builder,
+            &observation.key,
+            observation.revision,
+            &observation.value,
+        )
+    });
     let args = FBKvResponseArgs {
         id: req_id,
         rpc_create_nano: create_nano,
@@ -1300,6 +1309,7 @@ fn build_kv_response(req_id: u64, create_nano: u64, resp: &crate::rpc::KvRespons
         value,
         read_slot: resp.read_slot,
         safe_slot: resp.safe_slot,
+        compare_observation,
     };
     let fb = FBKvResponse::create(&mut builder, &args);
     builder.finish(fb, None);
@@ -1587,6 +1597,14 @@ fn patch_not_leader_hint(ctrl: &mut (Vec<u8>, usize), endpoint: &str, req_id: u6
     let error_msg = view.error_msg().map(|s| builder.create_string(s));
     let hint = builder.create_string(endpoint);
     let value = view.value().map(|v| builder.create_vector(v));
+    let compare_observation = view.compare_observation().map(|observation| {
+        comparison::encode(
+            &mut builder,
+            observation.key().map_or(&[], |key| key.bytes()),
+            observation.revision(),
+            observation.value().map_or(&[], |value| value.bytes()),
+        )
+    });
     let args = FBKvResponseArgs {
         id: req_id,
         rpc_create_nano: create_nano,
@@ -1602,6 +1620,7 @@ fn patch_not_leader_hint(ctrl: &mut (Vec<u8>, usize), endpoint: &str, req_id: u6
         value,
         read_slot: view.read_slot(),
         safe_slot: view.safe_slot(),
+        compare_observation,
     };
     let fb = FBKvResponse::create(&mut builder, &args);
     builder.finish(fb, None);
@@ -1802,6 +1821,7 @@ fn submit_kv_error(
         value: None,
         read_slot: 0,
         safe_slot: 0,
+        compare_observation: None,
     };
     let resp = FBKvResponse::create(&mut builder, &args);
     builder.finish(resp, None);

@@ -158,13 +158,15 @@ impl RecordBackend for MemoryRecordBackend {
             self.faults.resume.notified().await;
             state = self.state.lock().await;
         }
-        let current = state
-            .metadata_records
-            .get(&(self.group_id, key.to_vec()))
-            .map_or(0, |record| record.revision);
+        let observed = state.metadata_records.get(&(self.group_id, key.to_vec()));
+        let current = observed.map_or(0, |record| record.revision);
         if current != revision {
             return Err(Error::CasFailed {
                 current_revision: current,
+                observation: Some(Box::new(crowdb_kv_client::KvCompareObservation::from_versioned(
+                    Bytes::copy_from_slice(key),
+                    observed.map(|record| (record.revision, record.value.clone())),
+                ))),
             });
         }
         let next = state
@@ -175,22 +177,7 @@ impl RecordBackend for MemoryRecordBackend {
         if let Some(name) = tail_name {
             state.metadata_groups.insert(name, self.group_id);
         }
-        for op in ops {
-            match op {
-                BatchOp::Put { key, value } => {
-                    state.metadata_records.insert(
-                        (self.group_id, key.to_vec()),
-                        MemoryRecord {
-                            value: value.clone(),
-                            revision: next,
-                        },
-                    );
-                }
-                BatchOp::Delete { key } => {
-                    state.metadata_records.remove(&(self.group_id, key.to_vec()));
-                }
-            }
-        }
+        apply_ops(&mut state, self.group_id, next, ops);
         if renewing {
             self.faults.renewals.fetch_add(1, Ordering::Relaxed);
         }
@@ -223,4 +210,23 @@ fn is_publication(state: &MemoryState, group: u64, ops: &[BatchOp], guarded: &[u
         }
         _ => false,
     })
+}
+
+fn apply_ops(state: &mut MemoryState, group: u64, revision: u64, ops: &[BatchOp]) {
+    for op in ops {
+        match op {
+            BatchOp::Put { key, value } => {
+                state.metadata_records.insert(
+                    (group, key.to_vec()),
+                    MemoryRecord {
+                        value: value.clone(),
+                        revision,
+                    },
+                );
+            }
+            BatchOp::Delete { key } => {
+                state.metadata_records.remove(&(group, key.to_vec()));
+            }
+        }
+    }
 }

@@ -156,6 +156,10 @@ impl TableMetadataDocument {
         &self.canonical
     }
 
+    pub(crate) fn into_canonical(self) -> Vec<u8> {
+        self.canonical
+    }
+
     #[must_use]
     pub fn fields(&self) -> &serde_json::Map<String, Value> {
         &self.root

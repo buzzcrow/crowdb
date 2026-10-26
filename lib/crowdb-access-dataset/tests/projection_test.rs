@@ -27,6 +27,14 @@ impl DatasetStore for TestReadStore {
         }
         self.inner.get(key).await
     }
+    async fn get_bounded(
+        &self,
+        key: &[u8],
+        budget: crowdb_access_dataset::MetadataScanBudget,
+        cancel: &crowdb_access_dataset::ReadCancellation,
+    ) -> Result<Option<StoredValue>, StoreError> {
+        self.inner.get_bounded(key, budget, cancel).await
+    }
     async fn compare_exchange(
         &self,
         key: &[u8],

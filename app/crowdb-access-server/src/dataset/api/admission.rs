@@ -54,20 +54,27 @@ pub(super) async fn reject(
     mut response: hyper::Response<crate::dataset::DatasetBody>,
     timeout: std::time::Duration,
 ) -> hyper::Response<crate::dataset::DatasetBody> {
-    use http_body_util::BodyExt;
-    let mut body = http_body_util::Limited::new(request.into_body(), crate::dataset::MAX_REQUEST_BYTES);
-    let drained = tokio::time::timeout(timeout.min(std::time::Duration::from_secs(5)), async {
-        while let Some(frame) = body.frame().await {
-            frame.map_err(|_| ())?;
-        }
-        Ok::<_, ()>(())
-    })
-    .await;
-    if !matches!(drained, Ok(Ok(()))) {
+    if !drain(request.into_body(), timeout).await {
         response.headers_mut().insert(
             hyper::header::CONNECTION,
             hyper::header::HeaderValue::from_static("close"),
         );
     }
     response
+}
+
+/// Discards at most one admitted request window, without allocating a collected body.
+pub(super) async fn drain(body: hyper::body::Incoming, timeout: std::time::Duration) -> bool {
+    use http_body_util::BodyExt;
+    let mut body = http_body_util::Limited::new(body, crate::dataset::MAX_REQUEST_BYTES);
+    matches!(
+        tokio::time::timeout(timeout.min(std::time::Duration::from_secs(5)), async {
+            while let Some(frame) = body.frame().await {
+                frame.map_err(|_| ())?;
+            }
+            Ok::<_, ()>(())
+        })
+        .await,
+        Ok(Ok(()))
+    )
 }

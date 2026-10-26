@@ -3,6 +3,7 @@
 
 //! Internal `DiskIO` wire transport.
 
+#[cfg(feature = "test-util")]
 use bytes::Bytes;
 use crowdb_common::RequestIdGen;
 use crowdb_protocol::diskio_fb::{
@@ -12,7 +13,8 @@ use crowdb_protocol::diskio_fb::{
 };
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_rpc_ffi::{
-    Buffer, BufferChain, CallFuture, Connection, RpcClient, RpcClientHandle, RpcError, RpcServer,
+    Buffer, BufferChain, CallFuture, Connection, OwnedPayload, RpcClient, RpcClientHandle, RpcError,
+    RpcServer,
 };
 use flatbuffers::FlatBufferBuilder;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -116,6 +118,10 @@ impl std::fmt::Debug for WireClient {
 }
 
 impl WireClient {
+    pub(crate) fn stop_reaper(&self) {
+        self.rpc.stop_reaper();
+    }
+
     /// Create a wire client. Call `attach()` before issuing requests.
     #[must_use]
     pub fn new() -> Self {
@@ -425,10 +431,20 @@ impl WireClient {
     /// # Errors
     ///
     /// Returns `DiskioError::Rpc` if the response is missing or invalid.
+    #[cfg(feature = "test-util")]
     pub async fn await_read_response(fut: CallFuture) -> WireResult<(DiskIoRetCode, Option<Bytes>)> {
+        let (code, data) = Self::await_read_payload(fut).await?;
+        Ok((code, data.map(OwnedPayload::into_bytes)))
+    }
+
+    /// Preserve receive allocation and recycler ownership for native readers.
+    ///
+    /// # Errors
+    /// Returns a wire error for an invalid or unsuccessful response.
+    pub async fn await_read_payload(fut: CallFuture) -> WireResult<(DiskIoRetCode, Option<OwnedPayload>)> {
         let resp = fut.await.map_err(WireError::from)?;
         let code = parse_ret_code(&resp)?;
-        let data = resp.data.map(Bytes::from_owner);
+        let data = resp.data.map(OwnedPayload::from_buffer);
         Ok((code, data))
     }
 

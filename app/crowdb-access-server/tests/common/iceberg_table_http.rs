@@ -1,16 +1,19 @@
 use std::{sync::Arc, time::Duration};
 
 use crowdb_access_iceberg::{
-    catalog::{CatalogContext, CatalogRepository, ClearBounds, ManagementPrivilege, StoredValue},
+    catalog::{
+        CatalogContext, CatalogRepository, CatalogStorageLayout, ClearBounds, ManagementPrivilege,
+        StoredValue,
+    },
     file::{ContentFormat, FileContent, FileKind, FileRecord, FileRepository, TableLocation},
-    key::{FileId, IcebergKey, NamespaceId, OperationId, TableId},
+    key::{FileId, IcebergKey, NamespaceId, OperationId, StorageKey, TableId},
     namespace::{
         NamespaceCreateRequest, NamespaceCreator, NamespaceIdentifier, NamespaceProperties,
         NamespaceRepository,
     },
     operation::{ManagementAction, ManagementRequest, RequestIdentity},
     record::StorageRecord,
-    table::{head_key, name_key, TableHead, TableLifecycle, TableMapping, TableMappingState},
+    table::{name_key, storage_head_key, TableHead, TableLifecycle, TableMapping, TableMappingState},
     wire::BearerAuthenticator,
 };
 use crowdb_access_server::iceberg::{serve, IcebergHttpService};
@@ -157,8 +160,15 @@ impl TestTableHttp {
     }
 
     pub async fn install_with_location(&self, name: &str, trailing_slash: bool) -> (TableHead, Vec<u8>) {
+        let authority = CatalogRepository::new(self.store.clone(), ClearBounds::default())
+            .unwrap()
+            .status()
+            .await
+            .unwrap()
+            .1;
         let location = TableLocation {
-            storage_namespace: None,
+            storage_namespace: (authority.storage_layout == CatalogStorageLayout::Native)
+                .then_some(self.namespace),
             catalog: self.context.catalog,
             table: TableId::random(),
         };
@@ -212,14 +222,14 @@ impl TestTableHttp {
             )
             .await
             .unwrap();
-        self.put(
-            &head_key(head.catalog, head.table),
+        self.put_storage(
+            &storage_head_key(location),
             &StorageRecord::TableHead(Box::new(head.clone())),
         );
         self.put(
             &name_key(head.catalog, head.namespace, name).unwrap(),
             &StorageRecord::TableMapping(TableMapping {
-                storage_namespace: None,
+                storage_namespace: location.storage_namespace,
                 catalog: head.catalog,
                 namespace: head.namespace,
                 name: name.into(),
@@ -233,6 +243,10 @@ impl TestTableHttp {
     }
 
     pub fn put(&self, key: &IcebergKey, record: &StorageRecord) {
+        self.put_storage(&StorageKey::Legacy(key.clone()), record);
+    }
+
+    pub fn put_storage(&self, key: &StorageKey, record: &StorageRecord) {
         let mut values = (**self.store.values.load()).clone();
         values.insert(
             key.encode().unwrap(),

@@ -93,6 +93,7 @@ impl CrowdbKvClient {
             return Err(match KvErrorCode::try_from(response.error_code) {
                 Ok(KvErrorCode::KvErrorCasFailed) => Error::CasFailed {
                     current_revision: response.revision,
+                    observation: response.compare_observation,
                 },
                 Ok(KvErrorCode::KvErrorCasBusy) => Error::CasBusy,
                 Ok(KvErrorCode::KvErrorOutcomeUnknown) => Error::OutcomeUnknown,

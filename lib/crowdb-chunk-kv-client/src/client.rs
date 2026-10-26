@@ -159,7 +159,7 @@ impl ChunkKvClient {
     /// `RequestConflict` remains a typed response rather than a client error.
     pub async fn execute_with_identity(
         &self,
-        operation: PointOperation,
+        mut operation: PointOperation,
         min_journal_position: Option<RpcJournalPosition>,
         request_id: ClientRequestId,
     ) -> Result<ChunkKvResponse> {
@@ -197,7 +197,7 @@ impl ChunkKvClient {
                     min_journal_position,
                     deadline_ms: Some(deadline_ms),
                 },
-                operation: operation.clone(),
+                operation,
             };
             let remaining = deadline
                 .checked_duration_since(Instant::now())
@@ -237,6 +237,7 @@ impl ChunkKvClient {
                     }
                 }
             }
+            operation = request.operation;
             if attempts < self.config.max_attempts {
                 let remaining = deadline
                     .checked_duration_since(Instant::now())

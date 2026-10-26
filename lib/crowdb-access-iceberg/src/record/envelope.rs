@@ -27,12 +27,17 @@ pub enum StorageRecord {
     TableCreateOperation(Box<crate::commit::TableCreateOperation>),
     TableCommitOperation(Box<crate::commit::TableCommitOperation>),
     TableHead(Box<crate::table::TableHead>),
+    RetiredTable(crate::file::TableLocation),
     TableMapping(crate::table::TableMapping),
     Active(ActiveCatalogRecord),
     Authority(CatalogAuthority),
     Management(Box<ManagementOperation>),
     Retry(Box<RetryRecord>),
     NamespaceAuthority(Box<NamespaceAuthority>),
+    RetiredNamespace {
+        catalog: crate::key::CatalogId,
+        namespace: crate::key::NamespaceId,
+    },
     NamespaceMapping(NamespaceMapping),
     PayloadPage(Box<PayloadPage>),
     RetryResult(Box<RetryResult>),
@@ -80,6 +85,12 @@ impl StorageRecord {
         if let Some(value) = self.encode_gc_value(builder)? {
             return Ok(value);
         }
+        if let Some(value) = self.encode_table_value(builder)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.encode_namespace_value(builder)? {
+            return Ok(value);
+        }
         Ok(match self {
             Self::NativeInjection(receipt) => (
                 FBRecordValue::FBNativeInjection,
@@ -89,16 +100,22 @@ impl StorageRecord {
                 FBRecordValue::FBFileWriteIntent,
                 super::write_intent::encode(builder, intent)?.as_union_value(),
             ),
-            Self::GcNode(_) | Self::GcTask(_) | Self::GcCandidate(_) | Self::GcPage(_) => {
+            Self::GcNode(_)
+            | Self::GcTask(_)
+            | Self::GcCandidate(_)
+            | Self::GcPage(_)
+            | Self::TableHead(_)
+            | Self::TableMapping(_)
+            | Self::RetiredTable(_)
+            | Self::NamespaceAuthority(_)
+            | Self::NamespaceMapping(_)
+            | Self::RetiredNamespace { .. }
+            | Self::TablePurgeTask(_) => {
                 return Err(ValidationError::Record);
             }
             Self::TableLifecycleOperation(operation) => (
                 FBRecordValue::FBTableLifecycleOperation,
                 super::table_lifecycle::encode(builder, operation)?.as_union_value(),
-            ),
-            Self::TablePurgeTask(task) => (
-                FBRecordValue::FBTablePurgeTask,
-                super::table_lifecycle::encode_purge(builder, task)?.as_union_value(),
             ),
             Self::TableCreateOperation(operation) => (
                 FBRecordValue::FBTableCreateOperation,
@@ -107,14 +124,6 @@ impl StorageRecord {
             Self::TableCommitOperation(operation) => (
                 FBRecordValue::FBTableCommitOperation,
                 super::table_commit::encode(builder, operation)?.as_union_value(),
-            ),
-            Self::TableHead(head) => (
-                FBRecordValue::FBTableHead,
-                super::table::encode_head(builder, head)?.as_union_value(),
-            ),
-            Self::TableMapping(mapping) => (
-                FBRecordValue::FBTableMapping,
-                super::table::encode_mapping(builder, mapping)?.as_union_value(),
             ),
             Self::MultipartAdmission(record) => (
                 FBRecordValue::FBMultipartAdmission,
@@ -152,14 +161,6 @@ impl StorageRecord {
                 FBRecordValue::FBRetryResult,
                 super::payload::encode_result(builder, result)?.as_union_value(),
             ),
-            Self::NamespaceAuthority(authority) => (
-                FBRecordValue::FBNamespaceAuthority,
-                super::namespace::encode_authority(builder, authority)?.as_union_value(),
-            ),
-            Self::NamespaceMapping(mapping) => (
-                FBRecordValue::FBNamespaceMapping,
-                super::namespace::encode_mapping(builder, mapping)?.as_union_value(),
-            ),
             Self::Retry(record) => (
                 FBRecordValue::FBRetryRecord,
                 super::retry::encode(builder, record)?.as_union_value(),
@@ -177,6 +178,54 @@ impl StorageRecord {
                 super::authority::encode(builder, authority)?.as_union_value(),
             ),
         })
+    }
+
+    fn encode_namespace_value(
+        &self,
+        builder: &mut FlatBufferBuilder<'_>,
+    ) -> Result<Option<(FBRecordValue, flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>)>, ValidationError>
+    {
+        Ok(Some(match self {
+            Self::NamespaceAuthority(authority) => (
+                FBRecordValue::FBNamespaceAuthority,
+                super::namespace::encode_authority(builder, authority)?.as_union_value(),
+            ),
+            Self::NamespaceMapping(mapping) => (
+                FBRecordValue::FBNamespaceMapping,
+                super::namespace::encode_mapping(builder, mapping)?.as_union_value(),
+            ),
+            Self::RetiredNamespace { catalog, namespace } => (
+                FBRecordValue::FBRetiredNamespace,
+                super::namespace::encode_retired(builder, *catalog, *namespace)?.as_union_value(),
+            ),
+            _ => return Ok(None),
+        }))
+    }
+
+    fn encode_table_value(
+        &self,
+        builder: &mut FlatBufferBuilder<'_>,
+    ) -> Result<Option<(FBRecordValue, flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>)>, ValidationError>
+    {
+        Ok(Some(match self {
+            Self::RetiredTable(table) => (
+                FBRecordValue::FBRetiredTable,
+                super::table::encode_retired(builder, *table)?.as_union_value(),
+            ),
+            Self::TableHead(head) => (
+                FBRecordValue::FBTableHead,
+                super::table::encode_head(builder, head)?.as_union_value(),
+            ),
+            Self::TableMapping(mapping) => (
+                FBRecordValue::FBTableMapping,
+                super::table::encode_mapping(builder, mapping)?.as_union_value(),
+            ),
+            Self::TablePurgeTask(task) => (
+                FBRecordValue::FBTablePurgeTask,
+                super::table_lifecycle::encode_purge(builder, task)?.as_union_value(),
+            ),
+            _ => return Ok(None),
+        }))
     }
 
     fn encode_gc_value(
@@ -228,6 +277,7 @@ impl StorageRecord {
             Self::File(file) => crate::file::canonical_file_key(&file.location),
             Self::DeletedFile(file) => crate::file::canonical_file_key(&file.file.location),
             Self::TableHead(head) => crate::table::storage_head_key(head.storage_location()),
+            Self::RetiredTable(table) => crate::table::storage_head_key(*table),
             _ => return Err(ValidationError::Record),
         };
         if expected != *key {
@@ -260,6 +310,13 @@ impl StorageRecord {
 
     fn decode_value(envelope: FBIcebergRecord<'_>) -> Result<Self, ValidationError> {
         match envelope.value_type() {
+            FBRecordValue::FBRetiredNamespace => {
+                return super::namespace::decode_retired(
+                    envelope
+                        .value_as_fbretired_namespace()
+                        .ok_or(ValidationError::Record)?,
+                );
+            }
             FBRecordValue::FBNativeInjection => {
                 return Ok(Self::NativeInjection(Box::new(super::injection::decode(
                     envelope
@@ -305,6 +362,7 @@ impl StorageRecord {
                 | FBRecordValue::FBTablePurgeTask
                 | FBRecordValue::FBTableCommitOperation
                 | FBRecordValue::FBTableHead
+                | FBRecordValue::FBRetiredTable
                 | FBRecordValue::FBTableMapping
         ) {
             return Self::decode_table(envelope);
@@ -314,6 +372,11 @@ impl StorageRecord {
 
     fn decode_table(envelope: FBIcebergRecord<'_>) -> Result<Self, ValidationError> {
         let record = match envelope.value_type() {
+            FBRecordValue::FBRetiredTable => Self::RetiredTable(super::table::decode_retired(
+                envelope
+                    .value_as_fbretired_table()
+                    .ok_or(ValidationError::Record)?,
+            )?),
             FBRecordValue::FBTableLifecycleOperation => {
                 Self::TableLifecycleOperation(Box::new(super::table_lifecycle::decode(
                     envelope
@@ -447,7 +510,16 @@ impl StorageRecord {
         if let Some(result) = self.validate_gc_key(key) {
             return result;
         }
+        if let Some(result) = self.validate_namespace_key(key) {
+            return result;
+        }
         match (self, key) {
+            (Self::RetiredTable(table), key)
+                if table.storage_namespace.is_none()
+                    && *key == crate::table::head_key(table.catalog, table.table) =>
+            {
+                Ok(())
+            }
             (Self::TableLifecycleOperation(operation), key) if *key == operation.key() => Ok(()),
             (Self::TablePurgeTask(task), key) if *key == task.key() => Ok(()),
             (Self::TableCreateOperation(operation), key) if *key == operation.key() => Ok(()),
@@ -474,16 +546,6 @@ impl StorageRecord {
             (Self::NamespaceOperation(operation), key) if *key == operation.key() => Ok(()),
             (Self::PayloadPage(page), key) if *key == page.reference.page_key(page.index)? => Ok(()),
             (Self::RetryResult(result), key) if *key == result.binding.result_key() => Ok(()),
-            (Self::NamespaceAuthority(authority), key)
-                if *key == authority_key(authority.catalog, authority.namespace) =>
-            {
-                Ok(())
-            }
-            (Self::NamespaceMapping(mapping), key)
-                if *key == name_key(mapping.catalog, mapping.parent, &mapping.name)? =>
-            {
-                Ok(())
-            }
             (
                 Self::Retry(record),
                 IcebergKey::System {
@@ -537,5 +599,21 @@ impl StorageRecord {
             ) if *catalog == authority.catalog && suffix.is_empty() => Ok(()),
             _ => Err(ValidationError::IdentityMismatch),
         }
+    }
+
+    fn validate_namespace_key(&self, key: &IcebergKey) -> Option<Result<(), ValidationError>> {
+        let expected = match self {
+            Self::RetiredNamespace { catalog, namespace } => Ok(authority_key(*catalog, *namespace)),
+            Self::NamespaceAuthority(authority) => Ok(authority_key(authority.catalog, authority.namespace)),
+            Self::NamespaceMapping(mapping) => name_key(mapping.catalog, mapping.parent, &mapping.name),
+            _ => return None,
+        };
+        Some(expected.and_then(|expected| {
+            if *key == expected {
+                Ok(())
+            } else {
+                Err(ValidationError::IdentityMismatch)
+            }
+        }))
     }
 }

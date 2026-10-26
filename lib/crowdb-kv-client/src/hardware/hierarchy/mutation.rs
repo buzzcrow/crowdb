@@ -76,14 +76,7 @@ where
                 uncertain |= matches!(error, Error::OutcomeUnknown);
                 last_error = error;
                 if attempt < 9 {
-                    // Give the in-flight rack mutation time to settle before
-                    // re-reading its revision. Spread competing records across
-                    // the next window instead of synchronizing their retries.
-                    let mut hash = DefaultHasher::new();
-                    (path, attempt).hash(&mut hash);
-                    let window = 1 << attempt.min(6);
-                    let delay = window + hash.finish() % window;
-                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    wait_for_rack_conflict(path, attempt).await;
                 }
             }
             Err(error) => return Err(error),
@@ -94,4 +87,14 @@ where
     } else {
         last_error
     })
+}
+
+pub(super) async fn wait_for_rack_conflict(path: &str, attempt: u32) {
+    // Let the in-flight rack mutation settle before re-reading its revision.
+    // Spread competing records across the next window.
+    let mut hash = DefaultHasher::new();
+    (path, attempt).hash(&mut hash);
+    let window = 1 << attempt.min(6);
+    let delay = window + hash.finish() % window;
+    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
 }

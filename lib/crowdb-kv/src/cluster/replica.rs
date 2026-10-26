@@ -65,6 +65,9 @@ pub struct HeartbeatRequestPayload {
     pub committed_safe_slot: SlotIndex,
     pub lease_grant_until_ms_mono: u64,
     pub t_send_ms_mono: u64,
+    /// Reclamation certificate; never inferred from the chosen commit frontier.
+    pub gc_before_slot: SlotIndex,
+    pub gc_membership_epoch: u64,
 }
 
 /// `Heartbeat` reply from a follower.

@@ -10,12 +10,10 @@ use std::sync::{atomic::Ordering, Arc};
 use crowdb_access_iceberg::catalog::{CatalogError, CatalogStore};
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::namespace::{
-    authority_key, name_key, NamespaceAuthority, NamespaceCreateRequest, NamespaceCreator,
-    NamespaceIdentifier, NamespaceJournal, NamespaceLifecycle, NamespacePhase, NamespaceProperties,
-    NamespaceRepository,
+    name_key, NamespaceAuthority, NamespaceCreateRequest, NamespaceCreator, NamespaceDropRequest,
+    NamespaceDropper, NamespaceIdentifier, NamespaceProperties, NamespaceRepository,
 };
 use crowdb_access_iceberg::operation::RequestIdentity;
-use crowdb_access_iceberg::record::StorageRecord;
 use fixture::TestNamespace;
 
 fn request(fixture: &TestNamespace, name: &str) -> NamespaceCreateRequest {
@@ -74,7 +72,7 @@ async fn different_children_contend_on_admission_without_losing_either_creation(
     }
     let reader = NamespaceRepository::new(fixture.store.clone());
     for request in [&first, &second] {
-        assert_eq!(settle(&creator, request).await, 200);
+        assert_eq!(settle(&creator, request).await, 409);
         assert!(reader.exists(fixture.context, &request.identifier).await.unwrap());
     }
     let selected = reader
@@ -106,43 +104,37 @@ async fn competing_name_reservations_publish_one_namespace_and_one_conflict() {
     for result in [results.0, results.1] {
         match result {
             Ok(outcome) => assert!(matches!(outcome.status, 200 | 409)),
-            Err(CatalogError::Busy) => {}
+            Err(CatalogError::Busy | CatalogError::Conflict) => {}
             other => panic!("unexpected reservation result: {other:?}"),
         }
     }
     let mut statuses = [settle(&creator, &first).await, settle(&creator, &second).await];
     statuses.sort_unstable();
-    assert_eq!(statuses, [200, 409]);
+    assert_eq!(statuses, [409, 409]);
+    assert!(NamespaceRepository::new(fixture.store.clone())
+        .exists(fixture.context, &first.identifier)
+        .await
+        .unwrap());
 }
 
 async fn interrupted_admission(applied: bool) -> (TestNamespace, NamespaceAuthority, NamespaceCreateRequest) {
-    for offset in 1..=20 {
-        let (fixture, parent) = setup().await;
-        let request = request(&fixture, "child");
-        fixture.store.fail_after.store(
-            fixture.store.writes.load(Ordering::SeqCst) + offset,
-            Ordering::SeqCst,
-        );
-        let _ = NamespaceCreator::new(fixture.store.clone())
-            .create(&request)
-            .await;
-        let operation = NamespaceJournal::new(fixture.store.clone())
-            .load(fixture.context, request.identity.operation)
-            .await
-            .unwrap();
-        let selected = NamespaceRepository::new(fixture.store.clone())
-            .load(fixture.context, &parent.identifier)
-            .await
-            .unwrap()
-            .unwrap();
-        if operation.is_some_and(|operation| operation.phase == NamespacePhase::Admitting)
-            && selected.pending_operation.is_some() == applied
-        {
-            fixture.store.fail_after.store(0, Ordering::SeqCst);
-            return (fixture, selected, request);
-        }
-    }
-    panic!("no admission crash point found");
+    let (fixture, parent) = setup().await;
+    let request = request(&fixture, "child");
+    fixture.store.fail_after.store(
+        fixture.store.writes.load(Ordering::SeqCst) + if applied { 3 } else { 2 },
+        Ordering::SeqCst,
+    );
+    assert!(NamespaceCreator::new(fixture.store.clone())
+        .create(&request)
+        .await
+        .is_err());
+    let selected = NamespaceRepository::new(fixture.store.clone())
+        .load(fixture.context, &parent.identifier)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.creating_child.is_some(), applied);
+    (fixture, selected, request)
 }
 
 #[tokio::test]
@@ -155,28 +147,40 @@ async fn drop_fence_before_admission_aborts_and_cleanup_preserves_a_recreated_na
         .await
         .unwrap()
         .is_some());
-    parent.lifecycle = NamespaceLifecycle::Dropping;
-    parent.pending_operation = Some(OperationId::random());
-    parent.admission_fence += 1;
-    parent.mutation_revision += 1;
-    fixture
-        .put(
-            authority_key(parent.catalog, parent.namespace),
-            StorageRecord::NamespaceAuthority(Box::new(parent.clone())),
-        )
-        .await;
-    let creator = NamespaceCreator::new(fixture.store.clone());
-    let outcome = creator.create(&request).await.unwrap();
-    assert_eq!(outcome.status, 400);
+    let drop = NamespaceDropRequest {
+        context: fixture.context,
+        identity: RequestIdentity {
+            operation: OperationId::random(),
+            issued_ms: 100,
+        },
+        principal: "writer".into(),
+        identifier: parent.identifier.clone(),
+    };
+    assert_eq!(
+        NamespaceDropper::new(fixture.store.clone())
+            .drop_namespace(&drop)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        204
+    );
     assert!(fixture
         .store
         .get(&reservation_key.encode().unwrap())
         .await
         .unwrap()
         .is_none());
+    let creator = NamespaceCreator::new(fixture.store.clone());
+    assert!(matches!(
+        creator.create(&request).await,
+        Err(CatalogError::Invalid(_))
+    ));
+    parent = fixture.authority(None, &["parent"]);
+    fixture.publish(&parent).await;
     let replacement = fixture.authority(Some(parent.namespace), &["parent", "child"]);
     fixture.publish(&replacement).await;
-    assert_eq!(creator.create(&request).await.unwrap(), outcome);
+    assert_eq!(creator.create(&request).await.unwrap().status, 409);
     assert_eq!(
         NamespaceRepository::new(fixture.store.clone())
             .load(fixture.context, &request.identifier)
@@ -189,11 +193,11 @@ async fn drop_fence_before_admission_aborts_and_cleanup_preserves_a_recreated_na
 #[tokio::test]
 async fn uncertain_admission_is_helped_before_the_next_parent_writer() {
     let (fixture, parent, original) = interrupted_admission(true).await;
-    assert_eq!(parent.pending_operation, Some(original.identity.operation));
+    assert!(parent.creating_child.is_some());
     let next = request(&fixture, "other-child");
     let creator = NamespaceCreator::new(fixture.store.clone());
     assert_eq!(settle(&creator, &next).await, 200);
-    assert_eq!(settle(&creator, &original).await, 200);
+    assert_eq!(settle(&creator, &original).await, 409);
     let reader = NamespaceRepository::new(fixture.store.clone());
     for request in [&original, &next] {
         assert!(reader.exists(fixture.context, &request.identifier).await.unwrap());

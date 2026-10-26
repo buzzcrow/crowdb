@@ -197,6 +197,8 @@ pub struct PxGroup {
     /// local WAL to report its own snapshot progress). Recomputed at the
     /// end of each quorum heartbeat round.
     pub(crate) group_snapshot_slot: AtomicU64,
+    /// Membership-fenced certificate received from the accepted leader.
+    pub(super) leader_gc_certificate: arc_swap::ArcSwapOption<super::group_retention::ReclamationCertificate>,
     /// In-flight proposal admission gate. Holds N semaphores (one per
     /// queue), each sized to `ceil(max_inflight / N)` permits. Each
     /// in-flight `propose` call holds one permit for its duration.
@@ -406,6 +408,7 @@ impl PxGroup {
             group_safe_slot: AtomicU64::new(0),
             peer_durable: parking_lot::Mutex::new(HashMap::new()),
             group_snapshot_slot: AtomicU64::new(0),
+            leader_gc_certificate: arc_swap::ArcSwapOption::empty(),
             inflight: InflightAdmission::new(
                 PaxosConfig::DEFAULT.max_inflight_proposals,
                 PaxosConfig::DEFAULT.reject_on_inflight_window_full,
@@ -1033,7 +1036,7 @@ pub enum ProposeResult {
     /// Distinct from `Err` so the KV layer can surface a retryable signal.
     Busy,
     CasFailed {
-        current_revision: u64,
+        observation: Box<crate::rpc::KvCompareObservation>,
     },
     CasBusy,
     OutcomeUnknown,

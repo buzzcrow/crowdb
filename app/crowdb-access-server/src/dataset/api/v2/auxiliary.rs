@@ -54,19 +54,18 @@ impl DatasetHttpService {
                     .await?;
                 return json(&serde_json::json!({"snapshot": value.snapshot.to_string(),
                     "operation": value.operation.map(|id| id.to_string()), "latest": value.latest,
-                    "stable": value.stable, "retained": value.retained, "active_read_lease": value.active_read_lease,
+                    "stable": value.stable, "retained": value.retained, "active_read_lease": value.active_read_lease, "reclaim_after":value.reclaim_after,
                     "state": if value.completed { "completed" } else if value.retiring { "pending" } else { "not_started" },
                     "physical_cleanup_deferred": value.retiring || value.completed,
                     "parent_protection": "not_evaluated"}));
             }
             (Method::POST, ["snapshots", id, "reclaim"]) => {
-                read_body(request, false).await?;
-                let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
-                let progress = authority
-                    .reclaim_snapshot_step(identity, snapshot(id)?, uploads, &ReadCancellation::new())
-                    .await?;
+                if !read_body(request, false).await?.is_empty() {
+                    return Err(ApiError::invalid());
+                }
+                let progress = authority.mark_snapshot_reclaim(identity, snapshot(id)?).await?;
                 return json(
-                    &serde_json::json!({"snapshot":progress.snapshot.to_string(),"phase":progress.phase,"complete":progress.complete,"physical_cleanup_deferred":progress.physical_cleanup_deferred}),
+                    &serde_json::json!({"snapshot":progress.snapshot.to_string(),"phase":progress.phase,"complete":progress.complete,"physical_cleanup_deferred":progress.physical_cleanup_deferred,"reclaim_after":authority.snapshot_reclaim_after(identity, progress.snapshot).await?}),
                 );
             }
             (Method::GET, ["commits", id]) => {
@@ -76,13 +75,8 @@ impl DatasetHttpService {
                 );
             }
             (Method::POST, ["split-drafts", id, "cleanup"]) => {
-                read_body(request, false).await?;
-                let progress = authority
-                    .cleanup_split_scratch_step(identity, operation(id)?, &ReadCancellation::new())
-                    .await?;
-                return json(
-                    &serde_json::json!({"input_revision":progress.input_revision.to_string(),"next_page":progress.next_page.to_string(),"complete":progress.complete}),
-                );
+                operation(id)?;
+                return Err(ApiError::unsupported());
             }
             _ => return Err(ApiError::not_found()),
         }

@@ -44,4 +44,29 @@ OutFrame *handle_unknown(Frame *request, Connection *conn)
     return build_out_frame(req_id, msg_type, resp_ctrl, nullptr);
 }
 
+OutFrame *handle_echo(Frame *request, Connection *conn)
+{
+    const auto request_id = request->request_id;
+    const auto msg_type   = request->header.msg_type;
+    const auto now        = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+    auto      *control    = build_ping_response(conn->pool(), request_id, request->rpc_create_nano, now);
+    Buffer    *data       = nullptr;
+    const auto length     = request->data_buf == nullptr ? 0 : request->data_buf->len;
+    if (length != 0) {
+        data = conn->pool()->alloc(length);
+        if (data != nullptr)
+            data->write(request->data_buf->payload_data(), length);
+    }
+    delete request;
+    if (control == nullptr || (length != 0 && data == nullptr)) {
+        if (control != nullptr)
+            control->release();
+        if (data != nullptr)
+            data->release();
+        conn->close();
+        return nullptr;
+    }
+    return build_out_frame(request_id, msg_type, control, data);
+}
+
 } // namespace crowdb::rpc

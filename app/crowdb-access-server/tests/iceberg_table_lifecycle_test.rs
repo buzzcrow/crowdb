@@ -59,7 +59,7 @@ async fn delete(test: &TestTableHttp, path: &str, role: &str, identity: &str) ->
 }
 
 #[tokio::test]
-async fn drop_enforces_writer_and_replays_without_deleting_recreated_table() {
+async fn drop_enforces_writer_and_retries_against_the_recreated_table() {
     for purge in [false, true] {
         let test = TestTableHttp::writable().await;
         let before = value(test.post(TABLES, "w", None, &create()).await, 200).await;
@@ -73,10 +73,7 @@ async fn drop_enforces_writer_and_replays_without_deleting_recreated_table() {
         let after = value(test.post(TABLES, "w", None, &create()).await, 200).await;
         assert_ne!(before["metadata"]["table-uuid"], after["metadata"]["table-uuid"]);
         empty(delete(&test, &path, "w", &identity).await).await;
-        assert_eq!(
-            value(test.request(Method::GET, TABLE, "r", None).await, 200).await,
-            after
-        );
+        value(test.request(Method::GET, TABLE, "r", None).await, 404).await;
         value(
             delete(
                 &test,
@@ -85,7 +82,7 @@ async fn drop_enforces_writer_and_replays_without_deleting_recreated_table() {
                 &identity,
             )
             .await,
-            409,
+            404,
         )
         .await;
         test.finish().await;
@@ -117,7 +114,7 @@ async fn rename_preserves_metadata_supports_cross_namespace_and_never_aliases_ol
     )
     .await;
     value(test.post(TABLES, "w", None, &create()).await, 200).await;
-    empty(test.post(RENAME, "w", Some(&identity), &rename).await).await;
+    value(test.post(RENAME, "w", Some(&identity), &rename).await, 409).await;
     value(
         test.post("/v1/namespaces", "w", None, &json!({"namespace":["destination"]}))
             .await,

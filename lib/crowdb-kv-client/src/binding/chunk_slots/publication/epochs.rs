@@ -114,6 +114,7 @@ impl ChunkSlotMapClient {
         if self.read_head::<u64>().await? != Some(before.clone()) || service.head() != &before.0 {
             return Err(Error::CasFailed {
                 current_revision: before.1,
+                observation: None,
             });
         }
         if next.head().generation
@@ -137,6 +138,7 @@ impl ChunkSlotMapClient {
             if next.head().generation <= before.0.generation {
                 return Err(Error::CasFailed {
                     current_revision: before.1,
+                    observation: None,
                 });
             }
             return Err(invalid(

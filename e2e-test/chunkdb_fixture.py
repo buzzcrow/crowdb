@@ -137,6 +137,7 @@ memory_bytes = {o["repair_memory_bytes"]}
         for offset in range(6):
             index = self.chunkdb_index + len(self.service_instances) + offset
             address = str(base + index)
+            rpc_port = self.diskio_port(index) if hasattr(self, "diskio_port") else 7200
             data = node_data(self, index)
             disks = []
             if self.storage_backend == "file":
@@ -148,7 +149,7 @@ memory_bytes = {o["repair_memory_bytes"]}
                     path.chmod(0o666)
                     disks.extend(("--disk", f"{disk_id:x}:/opt/crowdb/data/{path.name}:134217728"))
             self.addresses.append(start_node(self, index, data, (
-                "server", "diskio", "--port", "7200", "--bind", address,
+                "server", "diskio", "--port", str(rpc_port), "--bind", address,
                 *(("--dummy-disk", self.storage_backend) if not disks else ("--no-o-direct", *disks)),
                 "--fault-error-rate", str(self.fault_rate), "--kv-seeds", self.origins[0],
                 "--instance-id", str(8000 + offset), "--rack-id", str(100 + offset),
@@ -156,7 +157,7 @@ memory_bytes = {o["repair_memory_bytes"]}
                 "--sync-interval-ms", "200", "--auto-discover-disks",
                 "--log-dir", "/opt/crowdb/data/log/diskio"), address,
                 preserve_network=self.diskio_process_exit))
-            endpoints.append({"node": index, "ip": address, "rpc_port": 7200,
+            endpoints.append({"node": index, "ip": address, "rpc_port": rpc_port,
                 "instance_id": 8000 + offset, "disk_group_id": 1000 + offset,
                 "data": str(data), "backend": self.storage_backend, "fault_rate": self.fault_rate})
         for endpoint in endpoints:
@@ -164,7 +165,7 @@ memory_bytes = {o["repair_memory_bytes"]}
                 state = json.loads(self.command("inspect", self.servers[endpoint["node"]]))[0]["State"]
                 if not state["Running"]:
                     raise AssertionError("Diskio exited: " + self.command("logs", self.servers[endpoint["node"]]))
-                with socket.create_connection((endpoint["ip"], 7200), timeout=1):
+                with socket.create_connection((endpoint["ip"], endpoint["rpc_port"]), timeout=1):
                     return True
             wait(reachable, bool, "packaged storage Diskio RPC listener")
         (self.artifacts / "storage-endpoints.json").write_text(json.dumps(endpoints, indent=2))

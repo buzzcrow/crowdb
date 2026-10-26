@@ -10,6 +10,7 @@ pub(super) struct ApiError {
     status: StatusCode,
     code: &'static str,
     retryable: bool,
+    observed_head: Option<Box<serde_json::Value>>,
 }
 impl ApiError {
     pub(super) fn conflict() -> Self {
@@ -20,6 +21,7 @@ impl ApiError {
             status: StatusCode::TOO_MANY_REQUESTS,
             code: "capacity",
             retryable: true,
+            observed_head: None,
         }
     }
     pub(super) fn invalid() -> Self {
@@ -48,16 +50,24 @@ impl ApiError {
             status,
             code,
             retryable: status == StatusCode::SERVICE_UNAVAILABLE,
+            observed_head: None,
         }
     }
     pub(super) fn code(&self) -> &'static str {
         self.code
     }
+    pub(super) fn with_observed_head(mut self, head: serde_json::Value) -> Self {
+        self.observed_head = Some(Box::new(head));
+        self
+    }
     pub(super) fn retryable(&self) -> bool {
         self.retryable
     }
     pub(super) fn response(&self, request_id: &str) -> Response<DatasetBody> {
-        let body = serde_json::json!({"code":self.code,"message":self.code,"request_id":request_id,"retryable":self.retryable});
+        let mut body = serde_json::json!({"code":self.code,"message":self.code,"request_id":request_id,"retryable":self.retryable});
+        if let Some(head) = &self.observed_head {
+            body["observed_head"] = head.as_ref().clone();
+        }
         Response::builder()
             .status(self.status)
             .header("content-type", "application/json")
@@ -86,6 +96,13 @@ impl From<crowdb_access_dataset::UploadError> for ApiError {
 }
 impl From<AuthorityError> for ApiError {
     fn from(error: AuthorityError) -> Self {
+        if let AuthorityError::SnapshotHeadConflict { observed } = error {
+            return Self::conflict().with_observed_head(serde_json::json!({
+                "latest":observed.latest.map(|id|id.to_string()),
+                "stable":observed.stable.map(|id|id.to_string()),
+                "generation":observed.generation.map(|generation|hex::encode(generation.as_bytes())),
+            }));
+        }
         if matches!(
             &error,
             AuthorityError::Invalid(crowdb_access_dataset::DatasetError::ReadCancelled)

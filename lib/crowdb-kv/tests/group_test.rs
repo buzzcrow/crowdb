@@ -34,6 +34,9 @@ mod group_config;
 #[path = "group_test/group_propose_test.rs"]
 mod group_propose;
 
+#[path = "group_test/quorum_drain_test.rs"]
+mod quorum_drain;
+
 #[path = "group_test/cas_test.rs"]
 mod cas;
 
@@ -118,6 +121,10 @@ mod safe_slot;
 #[cfg(feature = "test-util")]
 #[path = "group_test/snapshot_slot_test.rs"]
 mod snapshot_slot;
+
+#[cfg(feature = "test-util")]
+#[path = "group_test/retention_test.rs"]
+mod retention;
 
 #[cfg(feature = "test-util")]
 #[path = "group_test/maintenance_test.rs"]

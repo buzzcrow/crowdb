@@ -1,25 +1,19 @@
 use std::sync::Arc;
 
-use super::{
-    evaluate_table_creation, CreateTableRequest, TableCreateJournal, TableCreateOperation,
-    TableCreatePhase as Phase,
-};
+use super::TableCreateJournal;
 use crate::{
     catalog::{check_context, CatalogContext, CatalogError, CatalogStore},
-    commit::{CommitPublicationError as Error, TableCommitOutcome},
-    error::ValidationError,
-    file::{FileBlockStore, TableLocation},
-    key::{FileId, OperationId, TableId},
-    namespace::{NamespaceIdentifier, NamespaceRepository, NamespaceStore},
-    operation::{PayloadStore, RequestIdentity, MAX_PAYLOAD_BYTES},
-    table::{TableHead, TableLifecycle, TableMetadataDocument, TableMetadataLimits},
+    commit::CommitPublicationError as Error,
+    file::FileBlockStore,
+    key::{OperationId, TableId},
+    namespace::{NamespaceIdentifier, NamespaceStore},
+    operation::{RequestIdentity, MAX_PAYLOAD_BYTES},
+    table::TableMetadataLimits,
 };
 
-mod admission;
-mod completion;
+mod direct;
 mod helping;
-mod preparation;
-mod reservation;
+mod legacy;
 mod staged;
 pub use staged::{StagedCommitLimits, StagedCommitRequest};
 
@@ -31,6 +25,12 @@ pub struct TableCreationRequest {
     pub namespace: NamespaceIdentifier,
     pub body: Vec<u8>,
     pub timestamp_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TableCreationOutcome {
+    pub status: u16,
+    pub body: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -71,134 +71,49 @@ impl TableCreator {
         Ok(())
     }
 
+    /// Reconciles an existing legacy record from final resource facts only.
     /// # Errors
-    /// Rejects invalid requests before durable mutation and preserves uncertain creation for recovery.
-    pub async fn create(&self, request: &TableCreationRequest) -> Result<TableCommitOutcome, Error> {
-        if request.principal.is_empty() || request.principal.len() > 256 || request.principal.contains('\0') {
-            return Err(ValidationError::Text.into());
-        }
-        let journal = self.journal();
-        if let Some(existing) = journal.load(request.context, request.identity.operation).await? {
-            if existing.identity != request.identity
-                || existing.principal != request.principal
-                || existing.namespace != request.namespace
-                || self.payloads().get(&existing.input).await? != request.body
-            {
-                return Err(CatalogError::Conflict.into());
-            }
-        } else {
-            let operation = self.prepare(request, None).await?;
-            journal.begin(operation).await?;
-        }
-        self.resume(request.context, request.identity.operation).await
-    }
-
-    /// # Errors
-    /// Recovery retains the original identity; exhausted helping work remains retryable.
-    pub async fn resume(
-        &self,
-        context: CatalogContext,
-        identity: OperationId,
-    ) -> Result<TableCommitOutcome, Error> {
-        self.resume_with_budget(context, identity, &mut 32).await
-    }
-
-    async fn resume_with_budget(
-        &self,
-        context: CatalogContext,
-        identity: OperationId,
-        budget: &mut usize,
-    ) -> Result<TableCommitOutcome, Error> {
-        while *budget > 0 {
-            *budget -= 1;
-            let operation = self
-                .journal()
-                .load(context, identity)
-                .await?
-                .ok_or(ValidationError::Record)?;
-            match operation.phase {
-                Phase::Staged => return Err(Error::Unsupported("unbound staged table")),
-                Phase::Prepared => self.reserve(&operation, budget).await?,
-                Phase::Reserved => self.write_metadata(&operation).await?,
-                Phase::FilesReady => {
-                    if self.parent_ready(&operation).await? {
-                        self.journal()
-                            .advance(&operation, &operation.next(Phase::Publishing)?)
-                            .await?;
-                    } else {
-                        self.abort(&operation, 404).await?;
-                    }
-                }
-                Phase::Admitting => self.admit(&operation).await?,
-                Phase::Admitted => {
-                    self.check_admission(&operation).await?;
-                    self.journal()
-                        .advance(&operation, &operation.next(Phase::Publishing)?)
-                        .await?;
-                }
-                Phase::Publishing => self.publish_head(&operation).await?,
-                Phase::Published => self.publish_name(&operation).await?,
-                Phase::Aborting => {
-                    self.cleanup(&operation).await?;
-                    self.journal()
-                        .advance(&operation, &operation.next(Phase::Aborted)?)
-                        .await?;
-                }
-                Phase::Complete | Phase::Aborted => {
-                    self.cleanup(&operation).await?;
-                    let outcome = operation.outcome.ok_or(ValidationError::Record)?;
-                    self.payloads().get(&outcome.body).await?;
-                    check_context(self.store.as_ref(), context).await?;
-                    return Ok(outcome);
-                }
-            }
-        }
-        Err(CatalogError::Busy.into())
-    }
-
-    async fn write_metadata(&self, operation: &TableCreateOperation) -> Result<(), Error> {
-        let blocks = self.blocks.clone().ok_or(CatalogError::Busy)?;
-        let bytes = self.payloads().get(&operation.document).await?;
-        let document = Arc::new(TableMetadataDocument::parse(
-            bytes,
-            &operation.candidate,
-            limits(),
-        )?);
-        if operation.stage.is_none() && !document.snapshots().is_empty() {
-            return Err(ValidationError::Record.into());
-        }
-        self.current(operation).await?;
-        crate::commit::publication::write_metadata_file(
-            self.store.clone(),
-            blocks,
-            operation.context,
-            &document,
-        )
-        .await?;
-        self.journal()
-            .advance(operation, &operation.next(Phase::FilesReady)?)
-            .await?;
-        Ok(())
-    }
-
-    fn journal(&self) -> TableCreateJournal {
-        TableCreateJournal::new(self.store.clone())
-    }
-
-    fn payloads(&self) -> PayloadStore {
-        PayloadStore::new(self.store.clone())
-    }
-
-    async fn current(&self, operation: &TableCreateOperation) -> Result<(), Error> {
-        if self
-            .journal()
-            .load(operation.context, operation.identity.operation)
+    /// Unknown writes stop cleanup; missing metadata and initial heads are never published.
+    pub async fn resume(&self, context: CatalogContext, identity: OperationId) -> Result<(), Error> {
+        let operation = TableCreateJournal::new(self.store.clone())
+            .load(context, identity)
             .await?
-            .as_ref()
-            != Some(operation)
-        {
-            return Err(CatalogError::Busy.into());
+            .ok_or(CatalogError::Conflict)?;
+        self.reconcile_legacy(&operation).await
+    }
+
+    /// Cleans an expired legacy draft without resuming its byte or publication work.
+    /// # Errors
+    /// Rejects missing, foreign or malformed legacy records and uncertain resource writes.
+    pub async fn expire_stage(
+        &self,
+        context: CatalogContext,
+        table: TableId,
+        now_ms: i64,
+    ) -> Result<bool, Error> {
+        let identity = OperationId::from_bytes(table.as_bytes())?;
+        let operation = TableCreateJournal::new(self.store.clone())
+            .load(context, identity)
+            .await?
+            .ok_or(CatalogError::Conflict)?;
+        let stage = operation.stage.as_ref().ok_or(CatalogError::Conflict)?;
+        if now_ms < 0 || operation.candidate.table != table {
+            return Err(crate::error::ValidationError::IdentityMismatch.into());
         }
+        if operation.phase != super::TableCreatePhase::Staged || stage.expires_ms > now_ms {
+            return Ok(false);
+        }
+        legacy::reconcile(self.store.clone(), self.names.clone(), &operation).await?;
+        check_context(self.store.as_ref(), context).await?;
+        Ok(true)
+    }
+
+    pub(crate) async fn reconcile_legacy(
+        &self,
+        operation: &super::TableCreateOperation,
+    ) -> Result<(), Error> {
+        legacy::reconcile(self.store.clone(), self.names.clone(), operation).await?;
+        check_context(self.store.as_ref(), operation.context).await?;
         Ok(())
     }
 }

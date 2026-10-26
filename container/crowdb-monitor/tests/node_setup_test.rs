@@ -10,6 +10,8 @@ mod node_setup;
 mod node_setup_control;
 #[path = "common/node_setup_groups.rs"]
 mod node_setup_groups;
+#[path = "common/run_root.rs"]
+mod run_root;
 
 fn request(root: &Path) -> NodeSetupRequest {
     NodeSetupRequest {
@@ -288,8 +290,7 @@ async fn explicit_cleanup_retires_only_the_matching_setup_and_never_replays_it()
 async fn default_file_waits_for_metadata_then_reuses_one_durable_request_and_group() {
     use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
     use crowdb_protocol::common::{NodeValue, RackValue};
-    // Keep the socket pathname short enough for CI checkout prefixes.
-    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("setup");
+    let directory = run_root::TestRunRoot::new("setup");
     let root = directory.path();
     let mut intent = request(root);
     for service in &mut intent.choices.services {
@@ -457,7 +458,7 @@ async fn recreated_setup_never_replaces_later_stop_delete_restart_or_reconfigura
         NodeServiceAction::Restart,
         NodeServiceAction::Start,
     ] {
-        let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("intent");
+        let directory = run_root::TestRunRoot::new("intent");
         let root = directory.path();
         let mut request = request(root);
         request.choices.storage = SetupStorage::Diskless;
@@ -525,8 +526,7 @@ async fn observe_file_requests(
 async fn service_failure_budget_survives_restart_and_yields_to_a_new_operator_command() {
     use crowdb_monitor::NodeServiceForTests;
     use crowdb_protocol::mgmt::node::{NodeServiceAction, NodeServiceIntent};
-    // Keep the socket pathname short enough for CI checkout prefixes.
-    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("budget");
+    let directory = run_root::TestRunRoot::new("budget");
     let root = directory.path();
     let mut request = request(root);
     request.choices.storage = SetupStorage::Diskless;

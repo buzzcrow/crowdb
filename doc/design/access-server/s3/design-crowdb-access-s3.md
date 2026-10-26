@@ -42,6 +42,12 @@ to stable identities, while object keys form an ordered namespace within a
 bucket identity. Object records select complete immutable data generations and
 carry the logical information needed for S3 reads and integrity checks.
 
+Bucket creation first attempts create-if-absent. A returned active mapping is
+the result; a tombstone is replaced with a fresh bucket identity through CAS.
+Definite conflicts reuse the returned mapping directly, with bounded attempts
+and no confirmation GET. Missing observations permit create-if-absent again.
+Transport errors propagate without treating an unknown result as a conflict.
+
 S3 is authoritative for bucket and object visibility, overwrite behavior,
 listing position, multipart publication, deletion, and S3 credentials. It
 stores opaque data references rather than physical storage topology.
@@ -54,6 +60,26 @@ Namespace isolation currently means the configured tenant/bucket identity
 boundaries, not isolation between multiple accepted users on one listener.
 Presigned request expiry is enforced independently of the allowed future-clock
 skew; clock tolerance cannot extend an issued URL's lifetime.
+
+User bootstrap reads the bounded final credential inventory to preserve existing
+keys and reject already ambiguous or disabled users. If absent, it derives a
+stable public access-key identifier from the user and conditionally creates one
+final encrypted credential. The secret and encryption nonce remain random;
+the public identifier is not an authentication secret. A collision cannot replace
+another user: the losing caller reads the exact target and validates its user,
+ciphertext and enabled state. Successful creation returns its known token without
+another inventory scan. There is no persistent bootstrap preparation or response.
+Group-0 CAS currently supplies only a conflicting revision, so that exceptional
+path needs one authoritative GET. An absent value after an uncertain write remains
+an error for the caller to retry.
+
+Explicit token issuance can still create multiple credentials for a user;
+bootstrap does not provide an atomic uniqueness guarantee against that independent
+administrative operation. Existing duplicates fail the inventory check. Unused
+legacy preparation records are neither authentication data nor a source for
+restoring a deleted or disabled final credential. Deleting the final credential
+and invoking bootstrap creates a fresh random secret; ordinary lookup never
+creates data. Credential snapshots continue to load only final encrypted records.
 
 ## 3. HTTP data path
 
@@ -148,6 +174,11 @@ consume and validate the whole response. The body owns the copy future, cancels
 it on disconnect, and caps execution at 300 seconds. A retry after response loss
 can select a newer source generation; copy is not an exactly-once operation.
 
+Destination mutation conditions (`If-Match`, `If-None-Match` and date conditions)
+are rejected before dispatch. Object GET/HEAD and copy-source conditions remain
+supported. Ordinary object publication and deletion do not acquire a preliminary
+object read or conditional mutation.
+
 DeleteObjects validates its entire request before issuing a mutation: at most
 1,000 nonempty UTF-8/XML keys of 1,024 bytes each, a 2 MiB body, and no versions
 or conditional object selectors. Content-MD5 is supported; verified CRC32 may
@@ -167,35 +198,119 @@ not a transaction or an exactly-once operation: retries converge for keys with
 no intervening writes, but can delete a new unversioned PUT after response loss.
 Physical reclamation remains independent of this request.
 
-Multipart uploads keep a durable session, current part pointers, and immutable
-part generations under one upload prefix. Replacing a part number advances its
-generation while retaining the previous generation as reference evidence for
-the chunk reclamation scan. The upload session records admission bounds, part
-accounting, expiration, and completion state. Its pending part mutation is a
-durable reservation: a writer stores the immutable generation, reserves the
-pointer update with a session compare-and-swap, publishes the pointer, then
-clears the reservation. A later request can finish an interrupted reservation.
-Completion cannot freeze while one is pending.
+Multipart uploads keep a durable `MultipartSessionRecord`, current part pointers,
+and immutable `MultipartPartRecord` generations under one upload prefix. The
+upload resource binds admission bounds, expiration and the completion selection.
+Replacing a part number retains its previous generation as reference evidence;
+expiry does not remove that evidence.
 
-Different part numbers can publish concurrently. A writer helps a pending
-reservation and re-evaluates its own publication when the durable session
-revision advances, retaining its already-written bytes. An immutable candidate
-left by a failed reservation does not block that part number: matching length
-and raw MD5 reuse the retained candidate under the same idempotency rule as a
-published part; different contents select the next unused generation. Generation
-numbers therefore increase monotonically and can have gaps. Retained candidates
-remain immutable, and accounting changes only through the session fence.
+Independent-part uploads use the `S3MS\x05` resource format. They require the
+checked product of `max_parts` and `max_part_bytes` to fit within
+`max_staged_bytes`, so every valid set of current parts fits the staged-byte
+bound without a shared accounting update. The ordinary bounds are 10,000 parts,
+5 GiB per part, a 5 TiB completed object and a staged bound of 10,000 times
+5 GiB. Completion separately enforces the object-size bound. These bounds do not
+count retained superseded generations as current parts. Format 5 rejects pending
+reservations and tighter or overflowing bounds. Codecs that do not support this
+format reject it; resource CAS cannot change between independent and strict modes.
 
-Completion validates the ordered selected part numbers, raw MD5 values,
-minimum nonfinal size, and current generations. It freezes the selection under
-the session compare-and-swap, composes chunk locations with adjusted logical
-offsets, and publishes one object record through a predecessor-fenced
-object-key mutation. Publication checks the current pointers and immutable
-generation digests again. It never reads or concatenates part bytes. The
-multipart ETag is the hexadecimal MD5 of the selected raw part MD5 values in
-order, followed by the part count suffix. Abort and expiry mark the session
-terminal; physical chunk reclamation follows the ordinary reference and age
-checks.
+`MultipartRepository::put_stream_part` admits an open upload, loads its current
+part pointer, persists an immutable generation, then conditionally replaces that
+part's pointer. It does not reserve or clear a shared upload mutation, and distinct
+part numbers share no accounting CAS. An initially matching length and raw MD5
+return the retained part directly after admission. Once a writer enters the
+mutation path, successful acknowledgement also observes the upload authority:
+an observed abort or invalid open admission rejects it. This check reuses the
+request's supplied admission timestamp and does not fence a later abort. Failed
+acknowledgement does not remove persisted part evidence.
+
+An admitted part writer may acknowledge B after Complete freezes A for the same
+part number. The frozen selection still references A's exact
+generation and digest; publication and retries use A even when the current pointer
+selects B or is absent. A request first admitted after the freeze is rejected.
+Completing B requires a new upload identity.
+
+Strict uploads retain the reservation protocol and exact staged-byte accounting.
+They include decoded `S3MS\x03` and `S3MS\x04` resources and uploads whose bounds
+require a tighter quota or cannot establish the checked product bound. Their writer stores the immutable generation,
+reserves the pointer update with an upload CAS, publishes the pointer, then clears
+the reservation. A later request can finish an interrupted reservation; Complete
+settles it before freezing. Publication also rechecks the selected current pointers.
+Ordinary bounds do not upgrade a decoded strict resource to independent mode.
+
+In both modes, an unused immutable candidate does not block a part number:
+matching length and raw MD5 reuse its retained generation and locations;
+different contents select the next unused generation. Generation numbers increase
+monotonically and can have gaps. Definite pointer and upload CAS conflicts consume
+the returned observation rather than issuing a confirmation GET. Part progress
+carries that observation into the next iteration, retaining already-written bytes.
+Its five-second local work deadline returns a retryable busy result under sustained
+contention. An uncertain mutation returns without a confirmation GET after the
+routed client's retry budget; a later request retries the full input against the
+retained resource facts.
+
+A bound upload is loaded through its authoritative key and validated against
+bucket, object and upload identity; direct lookup does not read the listing index.
+ListUploads and expiry scanning validate that index when enumerating resources.
+Exact observed strict-format bytes are retained only in memory for conditional
+updates; they do not add a response or recovery record.
+
+Completion validates ordered part numbers, raw MD5 values, minimum nonfinal size,
+current generations and aggregate object length. `freeze_completion` binds the
+selected numbers, revisions and digests under the upload-resource CAS.
+`publish_completion` validates those immutable generation identities and digests,
+composes chunk locations with adjusted logical offsets, and publishes one object
+record through an unconditional object-key PUT. Independent publication does not
+reload current part pointers. It never reads or concatenates part payload bytes.
+The multipart ETag is the hexadecimal MD5 of the selected raw part MD5 values in
+order, followed by the part count suffix.
+
+Every accepted Complete execution performs the object PUT, including retries after
+an earlier success; it may overwrite a later ordinary PUT to the same name. The frozen selection is
+the reference authority, not a recorded response. No predecessor, request digest,
+cached response or publication-success transition is persisted. Abort and expiry
+mark open uploads terminal while retaining their listing entries, pointers and
+immutable generations. Publishing uploads remain bound, retaining the selected
+generation references. Expiry reuses the authority loaded through the validated
+listing entry and consumes the abort CAS observation without another confirmation
+read. An uncertain mutation remains an error; later scanning rechecks the durable
+resource state.
+
+The background expiry worker owns discardable tenant and upload key positions
+for one configured tenant. Each two-second step scans one raw tenant metadata
+key or at most 20 upload-index entries, with a four-MiB aggregate result budget. The legacy
+scan transport materializes values before applying that aggregation limit; it
+does not enforce the budget on wire responses or native value materialization.
+The first sixteen bytes after the tenant prefix supply a BucketId hint; the
+name mapping and its payload are not discovery authority. An old bucket remains
+discoverable after deletion or same-name recreation. The worker then scans that
+identity's existing listing index, validating each canonical index and upload
+authority before expiry. Upload creation persists the index before its authority.
+Long name keys may supply harmless extra hints; short keys advance by their
+observed raw position. There is no bucket-count cutoff.
+
+Selecting a hint also saves the inclusive successor of the entire bucket
+prefix. Finishing, failing or cancelling its index scan can therefore move to
+later identities without scanning retained object, part and generation rows
+one by one. A later complete round retries discarded hints. Successful partial
+index progress advances before its point operation, so a corrupt row or
+uncertain abort cannot pin subsequent uploads. A process restart scans the
+configured tenant again without loading a persistent progress record.
+
+Bucket discovery requests one raw row at a time. If a materialized first row
+exceeds the aggregate budget, the client returns only its validated key. The
+worker retains its identity hint for the next window and reports an oversized-row
+error, preserving the original metadata for later rounds. A short key instead
+advances its raw position. A transport failure that
+provides no validated key cannot be skipped safely and remains retryable.
+Obtaining discovery keys without materializing their values requires a separate
+key-only or native bounded-scan capability.
+
+Workers continue after 50 milliseconds while a round has more work, wait
+15 seconds between complete rounds, and defer failures for 500 milliseconds.
+These local cursors authorize no physical deletion. Physical range discovery,
+reference checks and retirement fences remain separate reclamation duties;
+marking an upload terminal does not report its physical storage reclaimed.
 
 ## 5. Relationship to other access models
 

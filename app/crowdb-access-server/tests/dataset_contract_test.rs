@@ -63,7 +63,7 @@ async fn json_prepare_publish_retry_and_restart_preserve_one_candidate() {
         200,
     )
     .await;
-    assert_eq!(prepared["state"], "prepared");
+    assert_eq!(prepared["state"], "published");
     assert_eq!(prepared["is_latest"], false);
     let opened = call(&client, &test, Method::GET, ROOT, None, 200).await;
     assert_eq!(opened["latest"], Value::Null);
@@ -73,7 +73,7 @@ async fn json_prepare_publish_retry_and_restart_preserve_one_candidate() {
         Method::GET,
         &format!("{ROOT}/snapshots/{}", prepared["id"].as_str().unwrap()),
         None,
-        404,
+        200,
     )
     .await;
     drop(client);

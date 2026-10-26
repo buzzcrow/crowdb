@@ -56,6 +56,10 @@ pub(super) fn revision(r: split::SplitRevisionRecord) -> Value {
     }).collect();
     json!({"snapshot":r.snapshot.to_string(), "revision":r.revision.to_string(), "operation":r.operation.to_string(), "evaluator_version":r.evaluator_version, "policy":Policy::from(r.policy), "splits":splits})
 }
+pub(super) fn deletion(value: &split::SplitRevisionDeletion) -> Value {
+    json!({"snapshot":value.snapshot.to_string(), "revision":value.revision.to_string(),
+        "reclaim_after":value.reclaim_after.map(|deadline|deadline.to_string()), "complete":value.complete})
+}
 pub(super) fn preview(p: split::SplitPreview) -> Value {
     let v = p.validation;
     json!({"input_revision":p.input_revision.to_string(), "next_page":p.next_page.to_string(), "complete":p.complete, "member_counts":p.member_counts.iter().map(ToString::to_string).collect::<Vec<_>>(), "validation":{
@@ -64,6 +68,9 @@ pub(super) fn preview(p: split::SplitPreview) -> Value {
 }
 pub(super) fn receipt(r: &SuccessfulCommit) -> Value {
     json!({"attempt":r.attempt.id.to_string(), "target":target(r.attempt.target), "expected_head":r.attempt.expected_head.map(|h|hex::encode(h.as_bytes())), "committed_head":hex::encode(r.committed_head.as_bytes())})
+}
+pub(super) fn head(snapshot: crowdb_access_dataset::SnapshotId, head: &split::SplitReference) -> Value {
+    json!({"snapshot":snapshot.to_string(),"revision":head.revision.map(|id|id.to_string()),"generation":head.generation.map(|g|hex::encode(g.as_bytes()))})
 }
 impl From<SplitLifecycleError> for ApiError {
     fn from(error: SplitLifecycleError) -> Self {
@@ -74,6 +81,9 @@ impl From<SplitLifecycleError> for ApiError {
             SplitLifecycleError::Inspection(error) => error.into(),
             SplitLifecycleError::NotFound => Self::not_found(),
             SplitLifecycleError::Conflict => Self::conflict(),
+            SplitLifecycleError::HeadConflict { snapshot, observed } => {
+                Self::conflict().with_observed_head(head(snapshot, &observed))
+            }
             SplitLifecycleError::Corrupt => Self::integrity(),
             SplitLifecycleError::Limit | SplitLifecycleError::Split(split::SplitError::Limit) => {
                 Self::new(StatusCode::PAYLOAD_TOO_LARGE, "read_limit")

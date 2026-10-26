@@ -177,9 +177,11 @@ fn creation_is_deterministic_and_bound_to_initial_target_and_location() {
     let mut wrong = head.clone();
     wrong.generation = 2;
     assert!(evaluate_table_creation(&request, wrong, 1000, fixture::limits()).is_err());
-    let mut wrong = head;
-    wrong.pending_operation = None;
-    assert!(evaluate_table_creation(&request, wrong, 1000, fixture::limits()).is_err());
+    let mut request_local = head;
+    request_local.pending_operation = None;
+    let evaluated = evaluate_table_creation(&request, request_local, 1000, fixture::limits()).unwrap();
+    assert_eq!(evaluated.document.canonical(), first.document.canonical());
+    assert_eq!(evaluated.head.pending_operation, None);
     input["location"] = json!("s3://external/table");
     assert!(evaluate(&input).is_err());
 }

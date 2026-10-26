@@ -29,7 +29,11 @@ pub enum Error {
     JournalScanGcGap,
 
     #[error("compare-and-set failed; current revision is {current_revision}")]
-    CasFailed { current_revision: u64 },
+    CasFailed {
+        current_revision: u64,
+        /// Exact failed comparison, absent for old servers or local validation.
+        observation: Option<Box<crate::KvCompareObservation>>,
+    },
 
     #[error("compare-and-set key is busy")]
     CasBusy,

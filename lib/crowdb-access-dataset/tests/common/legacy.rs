@@ -4,22 +4,16 @@
 use crowdb_access_dataset::*;
 pub(super) async fn emulate_legacy(
     store: &dyn DatasetStore,
-    authority: &DatasetAuthority,
+    _authority: &DatasetAuthority,
     identity: &DatasetIdentity,
     snapshots: &[SnapshotId],
     latest: SnapshotId,
 ) {
     for snapshot in snapshots {
-        let receipt = authority
-            .snapshot_commit(identity, *snapshot)
-            .await
-            .unwrap()
-            .unwrap();
         for (prefix, suffix) in [
             (b"DS\0CB\0".as_slice(), snapshot.as_bytes()),
             (b"DS\0SC\0", snapshot.as_bytes()),
             (b"DS\0LC\0", snapshot.as_bytes()),
-            (b"DS\0CR\0", receipt.attempt.id.as_bytes()),
         ] {
             store
                 .delete(&[prefix, identity.key().unwrap().as_slice(), suffix].concat())

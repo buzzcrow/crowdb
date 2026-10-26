@@ -42,7 +42,7 @@ impl FileBlockStore for TestReclaimBlocks {
         if self.reply_loss.swap(false, Ordering::Relaxed) {
             return Err(crowdb_chunk_client::IoError::Internal("lost deletion response".into()).into());
         }
-        Ok(ReclaimOutcome::Reclaimed)
+        Ok(ReclaimOutcome::Accepted)
     }
 
     async fn reclaim_location(&self, location: &Location) -> Result<ReclaimOutcome, FileIoError> {
@@ -57,6 +57,6 @@ impl FileBlockStore for TestReclaimBlocks {
         });
         self.deletes.fetch_add(1, Ordering::Relaxed);
         self.location_deletes.fetch_add(1, Ordering::Relaxed);
-        Ok(ReclaimOutcome::Reclaimed)
+        Ok(ReclaimOutcome::Accepted)
     }
 }

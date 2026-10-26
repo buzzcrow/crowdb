@@ -3,7 +3,8 @@
 
 use super::{decode, AuthorityError, VersionedRecord};
 use crate::{
-    key, CommitAttempt, CommitGeneration, DatasetAuthority, DatasetIdentity, HeadRecord, OperationId,
+    key, CommitAttempt, CommitGeneration, DatasetAuthority, DatasetIdentity, DatasetRecord, HeadRecord,
+    OperationId, SnapshotId, StoredValue,
 };
 use serde::{Deserialize, Serialize};
 
@@ -28,24 +29,39 @@ pub struct DatasetHead {
     pub generation: Option<CommitGeneration>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnapshotHeadUpdate {
+    pub snapshot: SnapshotId,
+    pub expected_head: Option<CommitGeneration>,
+}
+
+pub(crate) fn reference(stored: Option<&StoredValue>) -> Result<DatasetHead, AuthorityError> {
+    let head = stored
+        .map(|value| decode_head(&value.bytes))
+        .transpose()?
+        .unwrap_or(HeadRecord {
+            latest: None,
+            stable: None,
+        });
+    Ok(DatasetHead {
+        latest: head.latest,
+        stable: head.stable,
+        generation: stored.map(|value| CommitGeneration::from_head(&value.bytes)),
+    })
+}
+
 impl DatasetAuthority {
     /// # Errors
     /// Rejects missing Datasets and malformed or unavailable head records.
     pub async fn inspect_head(&self, identity: &DatasetIdentity) -> Result<DatasetHead, AuthorityError> {
-        self.get_dataset(identity).await?;
-        let Some(stored) = self.store.get(&key::head(identity)?).await? else {
-            return Ok(DatasetHead {
-                latest: None,
-                stable: None,
-                generation: None,
-            });
-        };
-        let head = decode_head(&stored.bytes)?;
-        Ok(DatasetHead {
-            latest: head.latest,
-            stable: head.stable,
-            generation: Some(CommitGeneration::from_head(&stored.bytes)),
-        })
+        let dataset = self
+            .store
+            .get(&key::dataset(identity)?)
+            .await?
+            .ok_or(AuthorityError::NotFound)?;
+        let _: DatasetRecord = decode(&dataset.bytes)?;
+        let stored = self.store.get(&key::head(identity)?).await?;
+        reference(stored.as_ref())
     }
 }
 pub(super) fn decode_head(bytes: &[u8]) -> Result<HeadRecord, AuthorityError> {
@@ -61,14 +77,14 @@ pub(super) fn decode_head(bytes: &[u8]) -> Result<HeadRecord, AuthorityError> {
     }
     let record: VersionedRecord<HeadEnvelope> =
         bincode::deserialize(bytes).map_err(|_| AuthorityError::Corrupt)?;
-    if record.version != 2 {
+    if !matches!(record.version, 2 | 4) {
         return Err(AuthorityError::Corrupt);
     }
     Ok(record.payload.head)
 }
 pub(super) fn encode_head(head: HeadRecord) -> Result<Vec<u8>, AuthorityError> {
     bincode::serialize(&VersionedRecord {
-        version: 2,
+        version: 4,
         payload: HeadEnvelope {
             head,
             fence: OperationId::random(),
@@ -87,22 +103,6 @@ pub(super) fn head_attempt(bytes: &[u8]) -> Result<Option<CommitAttempt>, Author
     validate_commit_head(&record.payload)?;
     Ok(Some(record.payload.attempt))
 }
-pub(super) fn encode_commit_head(
-    head: HeadRecord,
-    attempt: CommitAttempt,
-) -> Result<Vec<u8>, AuthorityError> {
-    attempt.validate()?;
-    bincode::serialize(&VersionedRecord {
-        version: 3,
-        payload: CommitHeadEnvelope {
-            head,
-            fence: OperationId::random(),
-            attempt,
-        },
-    })
-    .map_err(|_| AuthorityError::Corrupt)
-}
-
 fn validate_commit_head(head: &CommitHeadEnvelope) -> Result<(), AuthorityError> {
     head.attempt.validate()?;
     match head.attempt.target {

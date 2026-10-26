@@ -12,7 +12,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from allocation import LABEL, create_network, node_data, start_node
+from allocation import observed_address, LABEL, create_network, node_data, start_node
 from client import run_client
 from kv_node import arguments as kv_arguments
 from control import Control
@@ -152,7 +152,7 @@ class Cluster:
         origins = []
         for index, name in enumerate(self.servers):
             info = json.loads(self.command("inspect", name))[0]
-            address = info["NetworkSettings"]["Networks"][self.run_id]["IPAddress"]
+            address = observed_address(self, info, self.addresses[index])
             if address != self.addresses[index]:
                 raise AssertionError("persisted peer RPC address changed during restart")
             origins.append(f"http://{address}:7000")

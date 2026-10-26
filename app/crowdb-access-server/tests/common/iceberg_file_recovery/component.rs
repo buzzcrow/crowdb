@@ -3,14 +3,10 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::time::Duration;
 
 use crowdb_access_iceberg::{
-    catalog::ClearBounds,
-    file::{
-        FileKind, FileRepository, MultipartAdmission, MultipartPhase, MultipartRepository, MultipartSession,
-        TableLocation,
-    },
+    catalog::{CatalogStore, ClearBounds},
+    file::{FileKind, FileRepository, MultipartPhase, MultipartRepository, MultipartSession, TableLocation},
 };
 use reqwest::Method;
 use serde_json::Value;
@@ -127,42 +123,20 @@ async fn interrupt(
             .unwrap();
         assert_eq!(session.phase, MultipartPhase::Published);
         assert_eq!(session.published, Some(record.file));
-        released_by_recovery(stack, &session).await;
+        no_global_admission(stack, &session).await;
     }
     label
 }
 
-async fn released_by_recovery(stack: &TestCommitFixture, published: &MultipartSession) {
-    let store = stack.store();
-    let sessions = MultipartRepository::new(store.clone());
-    let admission = MultipartAdmission::new(store);
-    if published.credit.is_none() {
-        // Current sessions have per-session limits and no catalog-wide credits.
-        // Recovery must not recreate the legacy admission journal.
-        assert!(admission.load(published.context).await.unwrap().is_none());
-        return;
-    }
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let current = sessions
-                .load(published.context, published.upload)
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(current.phase, MultipartPhase::Published);
-            assert_eq!(current.published, published.published);
-            let policy = admission.load(published.context).await.unwrap().unwrap();
-            assert!(policy.sessions <= 1);
-            assert!(policy.reserved_bytes <= published.limits.max_staged_bytes);
-            if current.credit.unwrap().released && policy.pending.is_none() {
-                assert_eq!((policy.sessions, policy.reserved_bytes), (0, 0));
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("background recovery must settle terminal credits without another Complete request");
+async fn no_global_admission(stack: &TestCommitFixture, published: &MultipartSession) {
+    use crowdb_access_iceberg::key::{CatalogScope, IcebergKey};
+    assert!(published.credit.is_none());
+    let key = IcebergKey::Catalog {
+        catalog: published.context.catalog,
+        scope: CatalogScope::MultipartAdmission,
+        suffix: Vec::new(),
+    };
+    assert!(stack.store().get(&key.encode().unwrap()).await.unwrap().is_none());
 }
 
 struct TestFileCase {

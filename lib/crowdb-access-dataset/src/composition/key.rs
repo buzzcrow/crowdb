@@ -25,12 +25,3 @@ pub(super) fn page(
     key.extend_from_slice(&page.to_be_bytes());
     Ok(key)
 }
-pub(super) fn edit_receipt(
-    identity: &DatasetIdentity,
-    operation: OperationId,
-    edit: OperationId,
-) -> Result<Vec<u8>, CompositionError> {
-    let mut key = scope(b"DS\0CX\0", identity, operation)?;
-    key.extend_from_slice(edit.as_bytes());
-    Ok(key)
-}

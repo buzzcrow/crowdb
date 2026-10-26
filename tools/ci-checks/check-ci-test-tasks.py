@@ -22,6 +22,7 @@ COMPONENT_PACKAGES = {
     "test-access": {
         "crowdb-access-multipart", "crowdb-access-s3", "crowdb-access-iceberg",
         "crowdb-access-server", "crowdb-access-dataset", "crowdb-monitor",
+        "crowdb-sdk-native", "crowdb-sdk-native-python",
     },
     "test-console": {"crowdb-console-shared", "crowdb-cli", "crowdb-web"},
 }

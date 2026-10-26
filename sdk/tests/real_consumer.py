@@ -38,17 +38,16 @@ def write():
         assert client.open()["latest"] == info["latest"]
         published = client.publish(publication)
         assert published["id"] == prepared["id"]
-        plan = {"id": new_id(), "snapshot": "latest",
+        plan = {"snapshot": "latest",
                 "selection": {"kind": "prefix", "value": sample_id(b"python-")},
                 "fields": ["label"], "batch_size": 1, "shuffle": None,
                 "partition": WorkerPartition().as_dict()}
-        session = client.start_read(plan)
-        with client.next_batch(plan["id"]) as stream:
+        binding = client.bind_read(plan)
+        with client.next_batch(binding["cursor"]) as stream:
             issued = stream.batch().header
-        assert client.progress(plan["id"])["cursor"] == session["acknowledged"]
         state_file.write_text(json.dumps({"publication": publication,
             "snapshot": published["id"], "upload": upload_id,
-            "read": plan["id"], "acknowledged": session["acknowledged"], "issued": issued}))
+            "cursor": binding["cursor"], "issued": issued}))
         print("installed Python SDK uploaded and published real Dataset bytes", flush=True)
 
 
@@ -70,15 +69,11 @@ def verify():
         assert client.publish(state["publication"])["id"] == snapshot
         assert client.operation(state["publication"]["operation"])["id"] == snapshot
         assert client.upload_status(state["upload"])["state"] == "claimed"
-        resumed = client.resume_read(state["read"])
-        assert resumed["snapshot"] == snapshot and resumed["acknowledged"] == state["acknowledged"]
-        with client.next_batch(state["read"]) as stream:
+        with client.next_batch(state["cursor"]) as stream:
             replay = stream.batch().header
+        assert replay["snapshot"] == snapshot
         assert replay["sample_ids"] == state["issued"]["sample_ids"]
         assert replay["next"] == state["issued"]["next"]
-        progress = client.acknowledge(state["read"], state["acknowledged"], replay["next"])
-        assert client.resume_read(state["read"])["acknowledged"] == progress["cursor"]
-        client.close_read(state["read"])
         destination = root / "python-output.bin"
         client.download_to_path(snapshot, sample_id(b"python-0"), "value", destination)
         with destination.open("rb") as stream: actual = hashlib.file_digest(stream, "md5").digest()
@@ -86,12 +81,11 @@ def verify():
         assert actual == expected
         owned = []
         for worker in range(2):
-            plan = {"id": new_id(), "snapshot": "latest", "selection": {"kind": "prefix", "value": sample_id(b"python-")}, "fields": ["label"], "batch_size": 1, "shuffle": None}
+            plan = {"snapshot": "latest", "selection": {"kind": "prefix", "value": sample_id(b"python-")}, "fields": ["label"], "batch_size": 1, "shuffle": None}
             for batch in DatasetIterable(client, plan, partition=WorkerPartition(worker=worker, workers=2)):
                 owned.extend(batch.header["sample_ids"])
                 assert batch.fields[0] in (b"\0", b"\1", b"\2", b"\3")
                 batch.acknowledge()
-            client.close_read(plan["id"])
         assert len(owned) == len(set(owned)) == 4
         client.retain(snapshot)
         client.release(snapshot)

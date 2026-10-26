@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
+use crowdb_rpc_ffi::OwnedPayload;
 use tokio::sync::Notify;
 
 use crate::metrics::ReadFlowMetrics;
@@ -124,6 +125,6 @@ impl AsRef<[u8]> for LeasedView {
     }
 }
 
-pub(super) fn retain(data: Bytes, lease: Arc<ReadLease>) -> Bytes {
-    Bytes::from_owner(LeasedView { data, _lease: lease })
+pub(super) fn retain(data: OwnedPayload, lease: Arc<ReadLease>) -> OwnedPayload {
+    data.with_owner(|data| Bytes::from_owner(LeasedView { data, _lease: lease }))
 }

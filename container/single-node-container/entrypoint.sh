@@ -51,6 +51,27 @@ if test "$#" -gt 0; then
 fi
 
 profile=${CROWDB_PROFILE_PATH:-/opt/crowdb/etc/profile.toml}
+port_offset=${CROWDB_PORT_OFFSET:-0}
+case "$port_offset" in
+    ''|*[!0-9]*) echo 'CROWDB_PORT_OFFSET must be a non-negative integer' >&2; exit 1 ;;
+esac
+if test "$port_offset" -gt 0; then
+    offset_root=/opt/crowdb/run/port-offset
+    offset_templates=$offset_root/templates
+    mkdir -p "$offset_templates"
+    cp "$profile" "$offset_root/profile.toml"
+    cp /opt/crowdb/etc/templates/*.toml "$offset_templates/"
+    # The preview profile is intentionally self-contained. Shift every
+    # declared listener and endpoint together so host-network containers can
+    # coexist while retaining the same relative service layout.
+    for base in 9090 9091 9092 10000 10100 10101 11000 11100 11200 12100 12200 13000 15100 15200; do
+        next=$((base + port_offset))
+        sed -i -E "s/(^|[^0-9])${base}([^0-9]|$)/\\1${next}\\2/g" \
+            "$offset_root/profile.toml" "$offset_templates"/*.toml
+    done
+    sed -i "s#/opt/crowdb/etc/templates#$offset_templates#g" "$offset_root/profile.toml"
+    profile="$offset_root/profile.toml"
+fi
 /opt/crowdb/bin/crowdb-monitor validate "$profile"
 
 if test -n "${CROWDB_STARTUP_MODE:-}"; then

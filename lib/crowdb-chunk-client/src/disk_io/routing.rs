@@ -21,6 +21,21 @@ pub struct RoutedDiskWriter {
 }
 
 impl RoutedDiskWriter {
+    #[must_use]
+    pub fn topology(&self) -> crowdb_diskio_client::DiskTopologyView {
+        self.client.topology()
+    }
+
+    pub fn transport_status_json(&self) -> Result<Vec<u8>> {
+        self.client.transport_status_json().map_err(map_topology_error)
+    }
+
+    /// Reuse an already connected semantic client in an embedded storage stack.
+    #[must_use]
+    pub fn from_client(client: Arc<DiskioClient>) -> Self {
+        Self { client }
+    }
+
     /// Discover live DiskIO owners and connect to their endpoints.
     pub async fn connect(service: &ServiceRegistryClient, hardware: &HardwareClient) -> Result<Self> {
         Self::connect_with_connections(service, hardware, 1).await
@@ -47,6 +62,15 @@ impl RoutedDiskWriter {
             rpc_workers,
             ..DiskioClientConfig::default()
         };
+        Self::connect_with_config(service, hardware, config).await
+    }
+
+    /// Discover owners with typed transport, admission and connection settings.
+    pub async fn connect_with_config(
+        service: &ServiceRegistryClient,
+        hardware: &HardwareClient,
+        config: DiskioClientConfig,
+    ) -> Result<Self> {
         let client = DiskioClient::connect_with_clients(service.clone(), hardware.clone(), config)
             .await
             .map_err(map_topology_error)?;
@@ -104,6 +128,22 @@ impl RoutedDiskWriter {
 
 #[async_trait]
 impl DiskWriter for RoutedDiskWriter {
+    fn shutdown(&self) {
+        self.client.shutdown();
+    }
+
+    fn disk_topology(&self) -> Option<crowdb_diskio_client::DiskTopologyView> {
+        Some(self.topology())
+    }
+
+    fn transport_observation(&self) -> Result<Option<Vec<u8>>> {
+        self.transport_status_json().map(Some)
+    }
+
+    fn producer_allocator(&self) -> Option<crowdb_rpc_ffi::ProducerBufferAllocator> {
+        Some(self.client.producer_allocator())
+    }
+
     async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()> {
         let target = Self::target(seg, unit_bytes)?;
         self.client
@@ -318,10 +358,22 @@ impl DiskWriter for RoutedDiskWriter {
     }
 
     async fn read(&self, seg: &Segment, unit_bytes: u64, segment_offset: u64, length: u32) -> Result<Bytes> {
+        self.read_payload(seg, unit_bytes, segment_offset, length)
+            .await
+            .map(crowdb_rpc_ffi::OwnedPayload::into_bytes)
+    }
+
+    async fn read_payload(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        segment_offset: u64,
+        length: u32,
+    ) -> Result<crowdb_rpc_ffi::OwnedPayload> {
         let target = Self::target(seg, unit_bytes).map_err(|error| IoError::ReadFailed(error.to_string()))?;
         let result = self
             .client
-            .read(target, segment_offset, length, self.client.normal_options())
+            .read_payload(target, segment_offset, length, self.client.normal_options())
             .await;
         match result {
             Err(DiskioError::TransportUnavailable(_) | DiskioError::TopologyUnavailable(_)) => {
@@ -330,7 +382,7 @@ impl DiskWriter for RoutedDiskWriter {
                 // Reads are safe to retry once after an authoritative refresh.
                 self.client.refresh().await.map_err(map_read_error)?;
                 self.client
-                    .read(target, segment_offset, length, self.client.normal_options())
+                    .read_payload(target, segment_offset, length, self.client.normal_options())
                     .await
                     .map_err(map_read_error)
             }
@@ -359,6 +411,7 @@ fn map_write_error(error: DiskioError) -> IoError {
 #[allow(clippy::needless_pass_by_value, reason = "used directly as a map_err adapter")]
 fn map_read_error(error: DiskioError) -> IoError {
     match error {
+        DiskioError::AcceptedReadInterrupted(detail) => IoError::ReadInterrupted(detail),
         DiskioError::TopologyUnavailable(_)
         | DiskioError::TransportUnavailable(_)
         | DiskioError::Backpressure(_)

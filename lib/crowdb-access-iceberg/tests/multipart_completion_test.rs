@@ -7,6 +7,7 @@ mod file;
 #[path = "common/multipart.rs"]
 mod fixtures;
 
+use sha2::Digest;
 use std::sync::{atomic::Ordering, Arc};
 
 use crowdb_access_iceberg::file::{
@@ -136,7 +137,7 @@ fn streamed_selection_rejects_oversized_snapshot_before_copying_part_locations()
 }
 
 #[tokio::test]
-async fn lost_selection_and_progress_replies_resume_exact_bytes_on_new_instances() {
+async fn selection_reply_loss_allows_full_input_retry_without_byte_progress_writes() {
     for lost in 1..=2 {
         let (fixture, blocks, initial, selection) = setup().await;
         let repository = MultipartRepository::new(fixture.store.clone());
@@ -153,56 +154,102 @@ async fn lost_selection_and_progress_replies_resume_exact_bytes_on_new_instances
             assert!(repository
                 .freeze_completion(&session, &selection, 102)
                 .await
-                .unwrap());
+                .unwrap()
+                .is_applied());
             session = load(&repository, &session).await;
         }
         assert_eq!(session.phase, MultipartPhase::Completing);
-        assert!(!repository
-            .freeze_completion(&initial, &selection, 102)
-            .await
-            .unwrap());
-        let mut steps = 0;
-        while session.completion.as_ref().unwrap().progress.next_part < 3 {
-            let recovery = MultipartRepository::new(fixture.store.clone());
-            let before = session.completion.as_ref().unwrap().progress.completed_bytes;
-            fixture
-                .store
-                .fail_after
-                .store(fixture.store.writes.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
-            assert!(recovery
-                .advance_completion(&session, blocks.clone(), 4, 8)
-                .await
-                .is_err());
-            let old = session;
-            session = load(&recovery, &old).await;
-            assert!(session.completion.as_ref().unwrap().progress.completed_bytes - before <= 4);
-            assert!(!recovery
-                .advance_completion(&old, blocks.clone(), 4, 8)
-                .await
-                .unwrap());
-            steps += 1;
-            assert!(steps <= 6);
-        }
-        assert_eq!(steps, 6);
+        let mutations = fixture.store.writes.load(Ordering::SeqCst);
+        let reads = fixture.store.reads.load(Ordering::SeqCst);
         let tree = repository
-            .assembled_tree(&session, blocks.clone(), 8)
+            .assemble(&session, &selection, blocks.clone(), 1000, 8)
             .await
             .unwrap();
-        assert_eq!(tree.length, 17);
-        let mut reader = FileReader::from_tree(blocks, session.owner, tree, None, 3).unwrap();
+        assert_eq!(fixture.store.writes.load(Ordering::SeqCst), mutations);
+        // Two request-local session/root guards and one authority read per selected part.
+        assert_eq!(fixture.store.reads.load(Ordering::SeqCst) - reads, 7);
+        assert_eq!(load(&repository, &session).await, session);
+        let mut reader = FileReader::from_tree(blocks.clone(), session.owner, tree.clone(), None, 3).unwrap();
         let mut bytes = Vec::new();
         while let Some(frame) = reader.next().await.unwrap() {
             bytes.extend_from_slice(&frame);
         }
         assert_eq!(bytes, b"abcdefghij0123456");
-        assert_eq!(session.phase, MultipartPhase::Completing);
-        assert!(session.published.is_none());
+        assert!(!blocks
+            .values
+            .load()
+            .values()
+            .any(|bytes| bytes.starts_with(b"ICFW")));
+        let retry = MultipartRepository::new(fixture.store.clone())
+            .assemble(&session, &selection, blocks, 1000, 8)
+            .await
+            .unwrap();
+        assert_eq!((retry.length, retry.digest), (tree.length, tree.digest));
     }
 }
 
 #[tokio::test]
-async fn selection_mismatch_and_abort_never_publish_or_advance_partial_bytes() {
-    for changed in [0, 1, 2] {
+async fn uncertain_copy_has_no_resumable_state_and_full_request_retry_is_exact() {
+    let (fixture, blocks, initial, selection) = setup().await;
+    let repository = MultipartRepository::new(fixture.store.clone());
+    assert!(repository
+        .freeze_completion(&initial, &selection, 102)
+        .await
+        .unwrap()
+        .is_applied());
+    let session = load(&repository, &initial).await;
+    let mutations = fixture.store.writes.load(Ordering::SeqCst);
+    blocks
+        .fail_after
+        .store(blocks.writes.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
+    assert!(repository
+        .assemble(&session, &selection, blocks.clone(), 1000, 8)
+        .await
+        .is_err());
+    assert_eq!(load(&repository, &session).await, session);
+    assert_eq!(fixture.store.writes.load(Ordering::SeqCst), mutations);
+    let tree = MultipartRepository::new(fixture.store.clone())
+        .assemble(&session, &selection, blocks.clone(), 1000, 8)
+        .await
+        .unwrap();
+    assert_eq!(tree.length, 17);
+    assert_eq!(
+        tree.digest,
+        <[u8; 32]>::from(sha2::Sha256::digest(b"abcdefghij0123456"))
+    );
+    assert_eq!(load(&repository, &session).await, session);
+}
+
+#[tokio::test]
+async fn abort_during_copy_rejects_the_result_without_publishing_or_resuming_work() {
+    let (fixture, blocks, initial, selection) = setup().await;
+    let repository = MultipartRepository::new(fixture.store.clone());
+    assert!(repository
+        .freeze_completion(&initial, &selection, 102)
+        .await
+        .unwrap()
+        .is_applied());
+    let session = load(&repository, &initial).await;
+    blocks.pause_reads.store(true, Ordering::SeqCst);
+    let copy = repository.assemble(&session, &selection, blocks.clone(), 1000, 8);
+    tokio::pin!(copy);
+    tokio::select! {
+        result = &mut copy => panic!("copy finished before its blocked read: {result:?}"),
+        () = blocks.read_entered.notified() => {}
+    }
+    assert!(repository.abort(&session).await.unwrap());
+    blocks.pause_reads.store(false, Ordering::SeqCst);
+    blocks.read_release.notify_one();
+    assert!(copy.await.is_err());
+    let current = load(&repository, &session).await;
+    assert_eq!(current.phase, MultipartPhase::Aborted);
+    assert_eq!(current.completion, session.completion);
+    assert!(current.published.is_none());
+}
+
+#[tokio::test]
+async fn selection_mismatch_and_abort_never_publish_or_copy_partial_bytes() {
+    for changed in 0..3 {
         let (fixture, blocks, initial, selection) = setup().await;
         let repository = MultipartRepository::new(fixture.store.clone());
         let mut parts = selection.parts().to_vec();
@@ -215,24 +262,21 @@ async fn selection_mismatch_and_abort_never_publish_or_advance_partial_bytes() {
         assert!(repository
             .freeze_completion(&initial, &selection, 102)
             .await
-            .unwrap());
+            .unwrap()
+            .is_applied());
         let session = load(&repository, &initial).await;
         let writes = blocks.writes.load(Ordering::SeqCst);
         assert!(repository
-            .advance_completion(&session, blocks.clone(), 4, 8)
+            .assemble(&session, &selection, blocks.clone(), 1000, 8)
             .await
             .is_err());
         assert_eq!(blocks.writes.load(Ordering::SeqCst), writes);
         assert_eq!(load(&repository, &session).await, session);
+        assert!(repository.abort(&session).await.unwrap());
         assert!(repository
-            .assembled_tree(&session, blocks.clone(), 8)
+            .assemble(&session, &selection, blocks.clone(), 1000, 8)
             .await
             .is_err());
-        assert!(repository.abort(&session).await.unwrap());
-        assert!(!repository
-            .advance_completion(&session, blocks.clone(), 4, 8)
-            .await
-            .unwrap());
         assert_eq!(blocks.writes.load(Ordering::SeqCst), writes);
         let aborted = load(&repository, &session).await;
         assert_eq!(aborted.completion, session.completion);
@@ -241,7 +285,7 @@ async fn selection_mismatch_and_abort_never_publish_or_advance_partial_bytes() {
 }
 
 #[tokio::test]
-async fn completion_rejects_invalid_work_limits_and_unpersisted_progress() {
+async fn complete_byte_admission_checks_the_entire_selection_before_any_physical_copy() {
     let (fixture, blocks, initial, selection) = setup().await;
     let repository = MultipartRepository::new(fixture.store.clone());
     assert!(repository
@@ -251,20 +295,25 @@ async fn completion_rejects_invalid_work_limits_and_unpersisted_progress() {
     assert!(repository
         .freeze_completion(&initial, &selection, 102)
         .await
-        .unwrap());
+        .unwrap()
+        .is_applied());
     let session = load(&repository, &initial).await;
-    for (step, block) in [(0, 8), (1_048_577, 8), (4, 0), (4, 262_145)] {
+    let writes = blocks.writes.load(Ordering::SeqCst);
+    let reads = blocks.reads.load(Ordering::SeqCst);
+    for (limit, block) in [(0, 8), (16, 8), (1000, 0), (1000, 262_145)] {
         assert!(repository
-            .advance_completion(&session, blocks.clone(), step, block)
+            .assemble(&session, &selection, blocks.clone(), limit, block)
             .await
             .is_err());
     }
+    assert_eq!(blocks.writes.load(Ordering::SeqCst), writes);
+    assert_eq!(blocks.reads.load(Ordering::SeqCst), reads);
     let mut forged = session.clone();
     forged.completion = Some(fixtures::completion(&session));
-    assert!(!repository
-        .advance_completion(&forged, blocks, 4, 8)
+    assert!(repository
+        .assemble(&forged, &selection, blocks, 1000, 8)
         .await
-        .unwrap());
+        .is_err());
     fixture
         .root(
             fixture.context,

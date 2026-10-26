@@ -18,10 +18,18 @@ mod connection_pool;
 mod cpp_global_metrics;
 pub mod logging;
 mod owned_route;
+mod payload;
+mod producer_buffer;
 mod server;
 pub mod sys;
+#[cfg(feature = "test-util")]
+mod test_support;
+mod transport;
 
-pub use buffer::{Buffer, BufferChain, BufferChainError, BufferPool};
+pub use buffer::{
+    Buffer, BufferAllocationMetadata, BufferChain, BufferChainError, BufferLeaseMetadata, BufferOwnership,
+    BufferPool,
+};
 pub use client::{noop_completion, CallFuture, ClientRequest, Response, RpcClient};
 pub use connection_pool::{ConnectionPoolError, ConnectionPoolIndex, SelectedConnection};
 pub use cpp_global_metrics::{cpp_global_metrics_max_name_len, flush_cpp_global_metrics};
@@ -30,7 +38,10 @@ pub use logging::{
     shutdown_logging,
 };
 pub use owned_route::{OwnedClientRoute, RpcClientHandle};
+pub use payload::{OwnedPayload, PayloadAllocation};
+pub use producer_buffer::{ProducerBufferAllocator, WritableBuffer};
 pub use server::{Connection, RpcError, RpcServer, ServerRequest};
+pub use transport::{RdmaConfig, RdmaWireLayout};
 
 pub use sys::{CrowdbRpcLatencyStats, CrowdbRpcTransportStats};
 

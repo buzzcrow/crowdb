@@ -108,7 +108,7 @@ pub(in crate::node::runtime) async fn ready(
             response.result,
             Ok(crowdb_protocol::chunk_kv::OperationResult::Value(_))
         ) {
-            return Err("routed ChunkKV catalog is not ready".into());
+            return Err(format!("routed ChunkKV catalog is not ready: {:?}", response.result).into());
         }
     }
     Ok(())

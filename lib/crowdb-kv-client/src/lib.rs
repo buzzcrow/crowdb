@@ -57,6 +57,7 @@ pub use service::{
 };
 pub use transport::{KVClusterAdmin, KVClusterMetaClient, KvRpcTransport};
 
+pub use crowdb_kv::rpc::KvCompareObservation;
 /// Re-exported so callers don't need a direct `crowdb_kv` dependency just to
 /// pick a read mode or use snapshot DTOs.
 pub use crowdb_kv::rpc::ReadMode;

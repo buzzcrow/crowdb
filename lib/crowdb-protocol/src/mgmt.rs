@@ -422,11 +422,21 @@ pub struct ReplicaStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<String>,
     pub kv_store: KvStoreStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptor: Option<AcceptorStateView>,
     /// Election/lease state (term, election count, step-downs, heartbeat
     /// age, lease remaining). `None` for replicas without election state
     /// (e.g. a remote placeholder).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub election: Option<ElectionStateView>,
+}
+
+/// In-memory consensus history retained for repair and journal readers.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct AcceptorStateView {
+    pub trim_before_slot: u64,
+    pub retained_slots: usize,
 }
 
 /// KV store state within a `ReplicaStatus`.

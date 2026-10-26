@@ -5,52 +5,72 @@ use crate::{
     AuthorityError, CasOutcome, DatasetAuthority, DatasetError, DatasetIdentity, MetadataScan,
     MetadataScanBudget, ReadCancellation, ReclaimState, SnapshotId,
 };
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetadataCleanupProgress {
     pub version: u16,
     pub snapshot: SnapshotId,
     pub phase: usize,
     pub after: Option<Vec<u8>>,
     pub complete: bool,
+    identity: Option<DatasetIdentity>,
+}
+impl MetadataCleanupProgress {
+    #[must_use]
+    pub fn new(snapshot: SnapshotId) -> Self {
+        Self {
+            version: 1,
+            snapshot,
+            phase: 0,
+            after: None,
+            complete: false,
+            identity: None,
+        }
+    }
 }
 impl DatasetAuthority {
-    /// Deletes one bounded window after terminal retirement; retries resume durable progress.
-    /// Published receipts and tombstones remain so old retries cannot resurrect the owner.
+    #[cfg(feature = "test-util")]
+    /// Advances an isolated metadata fixture without the background owner pipeline.
     /// # Errors
-    /// Rejects protected owners, invalid progress, cancellation and storage limits.
-    pub async fn reclaim_snapshot_metadata_step(
+    /// Rejects live owners, malformed progress, cancellation and storage failures.
+    pub async fn reclaim_snapshot_metadata_step_for_tests(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
+        progress: &mut MetadataCleanupProgress,
+        cancel: &ReadCancellation,
+    ) -> Result<MetadataCleanupProgress, AuthorityError> {
+        self.reclaim_snapshot_metadata_step(identity, snapshot, progress, cancel)
+            .await
+    }
+
+    /// Deletes one bounded window after terminal retirement using caller-owned progress.
+    /// Published receipts and tombstones remain so old retries cannot resurrect the owner.
+    /// # Errors
+    /// Rejects protected owners, invalid progress, cancellation and storage limits.
+    pub(crate) async fn reclaim_snapshot_metadata_step(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        progress: &mut MetadataCleanupProgress,
         cancel: &ReadCancellation,
     ) -> Result<MetadataCleanupProgress, AuthorityError> {
         if cancel.is_cancelled() {
             return Err(DatasetError::ReadCancelled.into());
         }
         let record = self.begin_reclaim(identity, snapshot).await?;
+        self.require_reclaim_ready(identity, snapshot).await?;
         let scopes = cleanup_scopes(identity, snapshot, record.publication.parent)?;
-        let key = scoped(b"DS\0GMC\0", identity, snapshot)?;
         let budget = MetadataScanBudget {
             items: 20,
             bytes: 16 * 1024 * 1024,
             timeout: Duration::from_secs(2),
         };
-        let old = self.store.get_bounded(&key, budget, cancel).await?;
-        let mut progress = match &old {
-            Some(old) => serde_json::from_slice::<MetadataCleanupProgress>(&old.bytes)
-                .map_err(|_| AuthorityError::Corrupt)?,
-            None => MetadataCleanupProgress {
-                version: 1,
-                snapshot,
-                phase: 0,
-                after: None,
-                complete: false,
-            },
-        };
+        if progress.identity.as_ref().is_some_and(|bound| bound != identity) {
+            return Err(AuthorityError::Corrupt);
+        }
+        progress.identity = Some(identity.clone());
         if progress.version != 1
             || progress.snapshot != snapshot
             || progress.phase > scopes.len()
@@ -60,7 +80,7 @@ impl DatasetAuthority {
         }
         if progress.complete {
             self.finish_snapshot_metadata_cleanup(identity, snapshot).await?;
-            return Ok(progress);
+            return Ok(progress.clone());
         }
         let page = self
             .store
@@ -80,6 +100,9 @@ impl DatasetAuthority {
                 return Err(DatasetError::ReadCancelled.into());
             }
             if key.starts_with(b"DS\0SR\0") || key.starts_with(b"DS\0SM\0") {
+                if value.bytes == crate::split::RETIRED_RECORD {
+                    continue;
+                }
                 match tokio::time::timeout(
                     Duration::from_secs(2),
                     self.store
@@ -111,20 +134,10 @@ impl DatasetAuthority {
             progress.phase += 1;
         }
         progress.complete = progress.phase == scopes.len();
-        let bytes = serde_json::to_vec(&progress).map_err(|_| AuthorityError::Corrupt)?;
-        match self
-            .store
-            .compare_exchange(&key, old.as_ref().map(|v| v.bytes.as_slice()), &bytes)
-            .await?
-        {
-            CasOutcome::Applied(_) => {}
-            CasOutcome::Conflict(Some(value)) if value.bytes == bytes => {}
-            CasOutcome::Conflict(_) => return Err(AuthorityError::HeadConflict),
-        }
         if progress.complete {
             self.finish_snapshot_metadata_cleanup(identity, snapshot).await?;
         }
-        Ok(progress)
+        Ok(progress.clone())
     }
     async fn finish_snapshot_metadata_cleanup(
         &self,

@@ -6,12 +6,15 @@ mod list;
 mod load;
 mod metadata;
 mod record;
+mod retirement;
+pub(crate) use retirement::{retire_absent_table, TableSlot};
+mod rename;
 mod repository;
 
 pub use key::{head_key, name_key, storage_head_key};
 pub use lifecycle::{
-    TableLifecycleAction, TableLifecycleOperation, TableLifecyclePhase, TableLifecycleRequest,
-    TableLifecycles, TablePurgeTask,
+    TableLifecycleAction, TableLifecycleOperation, TableLifecycleOutcome, TableLifecyclePhase,
+    TableLifecycleRequest, TableLifecycles, TablePurgeTask,
 };
 pub use list::{TableListLimits, TableListPage, TableLister};
 pub use load::{SnapshotLoadingMode, TableLoad, TableLoadError, TableLoader};
@@ -24,4 +27,5 @@ pub use metadata::{
 };
 pub(crate) use metadata::{schema_default_identity, validate_layout_definitions, validate_schema_definition};
 pub use record::{TableHead, TableLifecycle, TableMapping, TableMappingState};
+pub(crate) use rename::TableRenames;
 pub use repository::{SelectedTable, TableRepository};

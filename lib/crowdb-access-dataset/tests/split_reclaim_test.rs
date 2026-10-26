@@ -1,8 +1,5 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-#[path = "common/composition.rs"]
-#[allow(dead_code)]
-mod common;
 #[path = "common/publication.rs"]
 mod publication;
 #[path = "common/split_store.rs"]
@@ -12,12 +9,11 @@ use crowdb_access_dataset::*;
 #[tokio::test]
 async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owners() {
     let (store, authority, identity, snapshot) = split_store::fixture().await;
+    let clock = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1000));
+    let authority = authority.with_reclaim_clock_for_tests(clock.clone());
     let first = split_store::prepared(&authority, &identity, snapshot, None).await;
     let first_attempt = split_store::attempt(&authority, &identity, &first).await;
-    authority
-        .publish_split_draft(&identity, first.operation, &first_attempt)
-        .await
-        .unwrap();
+    split_store::publish_revision(&authority, &identity, &first).await;
     let second = split_store::prepared(&authority, &identity, snapshot, Some(first.revision)).await;
     split_store::publish_revision(&authority, &identity, &second).await;
     let root = authority
@@ -29,30 +25,24 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
         )
         .await
         .unwrap();
-    authority
-        .publish_snapshot_candidate(&identity, &common::attempt(&authority, &identity, root).await)
-        .await
-        .unwrap();
+    split_store::publish_snapshot_head(&authority, &identity, root).await;
     let foreign = split_store::prepared(&authority, &identity, root, None).await;
-    authority
-        .publish_split_draft(
-            &identity,
-            foreign.operation,
-            &split_store::attempt(&authority, &identity, &foreign).await,
-        )
-        .await
-        .unwrap();
+    split_store::publish_revision(&authority, &identity, &foreign).await;
+    authority.begin_reclaim(&identity, snapshot).await.unwrap();
+    clock.store(2200, std::sync::atomic::Ordering::Release);
     let cancel = ReadCancellation::new();
+    let mut metadata_cursor = MetadataCleanupProgress::new(snapshot);
     let partial = authority
-        .reclaim_snapshot_metadata_step(&identity, snapshot, &cancel)
+        .reclaim_snapshot_metadata_step_for_tests(&identity, snapshot, &mut metadata_cursor, &cancel)
         .await
         .unwrap();
     assert!(!partial.complete);
-    let restarted = DatasetAuthority::new(store.clone());
+    clock.store(2200, std::sync::atomic::Ordering::Release);
+    let restarted = DatasetAuthority::new(store.clone()).with_reclaim_clock_for_tests(clock);
     let mut completed = false;
     for _ in 0..100 {
         if restarted
-            .reclaim_snapshot_metadata_step(&identity, snapshot, &cancel)
+            .reclaim_snapshot_metadata_step_for_tests(&identity, snapshot, &mut metadata_cursor, &cancel)
             .await
             .unwrap()
             .complete
@@ -95,14 +85,14 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
         }
     }
     assert!(restarted
-        .get_split_revision(&identity, root, foreign.revision, common::budget(), &cancel)
+        .get_split_revision(&identity, root, foreign.revision, split_store::budget(), &cancel)
         .await
         .is_ok());
     assert!(restarted
         .commit_status(&identity, first_attempt.id)
         .await
         .unwrap()
-        .is_some());
+        .is_none());
     assert!(restarted.inspect_split_head(&identity, snapshot).await.is_err());
     assert!(restarted.get_manifest(&identity, snapshot).await.is_err());
 }
@@ -110,6 +100,8 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
 #[tokio::test]
 async fn cleanup_completion_is_helped_after_final_status_write_failure() {
     let (store, authority, identity, snapshot) = split_store::fixture().await;
+    let clock = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1000));
+    let authority = authority.with_reclaim_clock_for_tests(clock.clone());
     let root = authority
         .prepare_snapshot_candidate(
             &identity,
@@ -119,17 +111,22 @@ async fn cleanup_completion_is_helped_after_final_status_write_failure() {
         )
         .await
         .unwrap();
-    authority
-        .publish_snapshot_candidate(&identity, &common::attempt(&authority, &identity, root).await)
-        .await
-        .unwrap();
+    split_store::publish_snapshot_head(&authority, &identity, root).await;
+    authority.begin_reclaim(&identity, snapshot).await.unwrap();
+    clock.store(2200, std::sync::atomic::Ordering::Release);
     store
         .reject_cleanup_finish
         .store(true, std::sync::atomic::Ordering::Relaxed);
     let mut failed = false;
+    let mut metadata_cursor = MetadataCleanupProgress::new(snapshot);
     for _ in 0..20 {
         if authority
-            .reclaim_snapshot_metadata_step(&identity, snapshot, &ReadCancellation::new())
+            .reclaim_snapshot_metadata_step_for_tests(
+                &identity,
+                snapshot,
+                &mut metadata_cursor,
+                &ReadCancellation::new(),
+            )
             .await
             .is_err()
         {
@@ -146,10 +143,15 @@ async fn cleanup_completion_is_helped_after_final_status_write_failure() {
             .state,
         ReclaimState::Pending
     );
-    let restarted = DatasetAuthority::new(store);
+    let restarted = DatasetAuthority::new(store).with_reclaim_clock_for_tests(clock);
     assert!(
         restarted
-            .reclaim_snapshot_metadata_step(&identity, snapshot, &ReadCancellation::new())
+            .reclaim_snapshot_metadata_step_for_tests(
+                &identity,
+                snapshot,
+                &mut metadata_cursor,
+                &ReadCancellation::new()
+            )
             .await
             .unwrap()
             .complete

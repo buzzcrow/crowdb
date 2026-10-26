@@ -3,11 +3,19 @@
 
 //! Durable Dataset uploads with independent immutable part records.
 
-mod index;
+mod expiry;
+pub use expiry::{UploadExpiryCursor, UploadExpiryStep};
+mod listing;
 mod ownership;
 mod parts;
-mod registry;
+mod read;
+pub use read::UploadReadDescriptor;
+mod record;
 mod retirement;
+use record::{decode_session, encode_session};
+mod stream;
+mod verification;
+pub use stream::VerifiedUploadPart;
 
 use bytes::Bytes;
 use md5::{Digest, Md5};
@@ -18,6 +26,8 @@ use crate::{CasOutcome, DatasetIdentity, DatasetStore, OperationId, PayloadStora
 
 pub const MAX_UPLOAD_PART_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PARTS: u64 = 10_000;
+const MAX_OWNERS: usize = 256;
+const MAX_RETIRED_OWNERS: usize = 4096;
 const WRITE_LEASE_SECONDS: u64 = 60;
 
 #[derive(Debug, thiserror::Error)]
@@ -32,7 +42,7 @@ pub enum UploadError {
     Integrity,
     #[error("upload is awaiting durable storage recovery")]
     Pending,
-    #[error("upload registry capacity exhausted")]
+    #[error("upload ownership capacity exhausted")]
     Capacity,
     #[error("upload storage unavailable: {0}")]
     Storage(String),
@@ -70,11 +80,6 @@ pub struct UploadRecord {
     owners: Vec<OperationId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     retired_owners: Vec<OperationId>,
-    registry_page: Option<u64>,
-    #[serde(default)]
-    registry_generation: Option<OperationId>,
-    #[serde(default)]
-    registry_fence: Option<OperationId>,
     pub cleanup_complete: bool,
 }
 
@@ -133,7 +138,7 @@ impl DatasetUploads {
             return Err(UploadError::Invalid);
         }
         let record = UploadRecord {
-            version: 2,
+            version: 4,
             length,
             part_size,
             md5,
@@ -142,31 +147,24 @@ impl DatasetUploads {
             parts: Vec::new(),
             owners: Vec::new(),
             retired_owners: Vec::new(),
-            registry_page: None,
-            registry_generation: None,
-            registry_fence: None,
             cleanup_complete: false,
         };
-        let created = match self
+        match self
             .store
-            .compare_exchange(location, None, &encode(&record)?)
+            .compare_exchange(location, None, &encode_session(&record)?)
             .await?
         {
-            CasOutcome::Applied(_) => true,
+            CasOutcome::Applied(_) => Ok(record),
             CasOutcome::Conflict(Some(value)) => {
                 let existing = decode_session(&value.bytes)?;
                 if existing.length != length || existing.part_size != part_size || existing.md5 != md5 {
                     return Err(UploadError::Conflict);
                 }
-                false
+                let mut existing = existing;
+                existing.parts = self.accepted_parts(location, &existing).await?;
+                Ok(existing)
             }
-            CasOutcome::Conflict(None) => return Err(UploadError::Conflict),
-        };
-        self.register(location).await?;
-        if created {
-            self.session(location).await
-        } else {
-            self.get(location).await
+            CasOutcome::Conflict(None) => Err(UploadError::Conflict),
         }
     }
 
@@ -239,21 +237,9 @@ impl DatasetUploads {
         location: &[u8],
         index: u32,
     ) -> Result<(Bytes, [u8; 16]), UploadError> {
-        let session = self.session(location).await?;
-        if !matches!(session.state, UploadState::Complete | UploadState::Claimed) {
-            return Err(UploadError::Conflict);
-        }
-        let entry = self
-            .store
-            .get(&part_key(location, index))
-            .await?
-            .ok_or(UploadError::NotFound)?;
-        let entry = decode_part(&entry.bytes)?;
-        if entry.state != PartState::Accepted {
-            return Err(UploadError::Conflict);
-        }
-        Ok((self.verified_part(&entry.part).await?, entry.part.md5))
+        self.open_read(location).await?.read_part_verified(index).await
     }
+
     async fn verified_part(&self, part: &UploadPart) -> Result<Bytes, UploadError> {
         let bytes = self.payloads.read(&part.locations).await?;
         if bytes.len() as u64 != part.length || digest(&bytes) != part.md5 {
@@ -279,26 +265,6 @@ fn encode<T: Serialize>(record: &T) -> Result<Vec<u8>, UploadError> {
 }
 fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, UploadError> {
     serde_json::from_slice(bytes).map_err(|_| UploadError::Integrity)
-}
-fn decode_session(bytes: &[u8]) -> Result<UploadRecord, UploadError> {
-    let record: UploadRecord = decode(bytes)?;
-    if !matches!(record.version, 2 | 3)
-        || (record.version == 2 && !record.retired_owners.is_empty())
-        || record.retired_owners.len() > 4096
-        || record.retired_owners.windows(2).any(|pair| pair[0] >= pair[1])
-        || record
-            .owners
-            .iter()
-            .any(|owner| record.retired_owners.binary_search(owner).is_ok())
-        || record.length == 0
-        || record.part_size == 0
-        || record.part_size as usize > MAX_UPLOAD_PART_BYTES
-        || record.length.div_ceil(u64::from(record.part_size)) > MAX_PARTS
-        || record.owners.len() > 256
-    {
-        return Err(UploadError::Integrity);
-    }
-    Ok(record)
 }
 fn decode_part(bytes: &[u8]) -> Result<PartEntry, UploadError> {
     let record: PartEntry = decode(bytes)?;

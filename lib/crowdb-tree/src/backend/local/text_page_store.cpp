@@ -253,7 +253,7 @@ Status TextPageStore::read_at(uint64_t off, uint8_t *buf, size_t len) const
 
     auto it = addr_index_.find(off);
     if (it == addr_index_.end()) {
-        return Status::io_error("TextPageStore: no file at addr " + std::to_string(off));
+        return Status::not_found("TextPageStore: no file at addr " + std::to_string(off));
     }
 
     const auto          &entry = entries_[it->second];

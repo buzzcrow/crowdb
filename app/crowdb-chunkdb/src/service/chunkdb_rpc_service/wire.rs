@@ -599,6 +599,7 @@ pub(super) fn build_delete_range_response(
     error_msg: Option<&str>,
     range_start: u32,
     range_end: u32,
+    reclaimed: bool,
 ) -> (Vec<u8>, usize) {
     let mut fbb = FlatBufferBuilder::new();
     let err_off = error_msg.map(|m| fbb.create_string(m));
@@ -611,6 +612,7 @@ pub(super) fn build_delete_range_response(
             error_msg: err_off,
             range_start,
             range_end,
+            reclaimed,
         },
     );
     fbb.finish(off, None);

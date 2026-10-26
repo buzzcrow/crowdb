@@ -3,9 +3,7 @@
 
 use super::{conversion, error::ApiError, json, read_body, snapshot, ApiResult};
 use crate::dataset::DatasetHttpService;
-use crowdb_access_dataset::{
-    DatasetIdentity, DatasetUploads, FieldLocator, ManifestRecord, ReclaimState, UploadState,
-};
+use crowdb_access_dataset::{DatasetIdentity, ReclaimState};
 use hyper::{body::Incoming, Method, Request};
 use std::collections::BTreeSet;
 
@@ -71,47 +69,15 @@ impl DatasetHttpService {
                 )
             }
             (Method::POST, ["snapshots", id, "reclaim"]) => {
-                read_body(request, false).await?;
+                if !read_body(request, false).await?.is_empty() {
+                    return Err(ApiError::invalid());
+                }
                 let id = snapshot(id)?;
-                let record = authority.begin_reclaim(identity, id).await?;
-                let manifest: ManifestRecord =
-                    bincode::deserialize(&record.publication.manifest).map_err(|_| ApiError::integrity())?;
-                let locations: BTreeSet<_> = manifest
-                    .samples
-                    .iter()
-                    .flat_map(|s| &s.fields)
-                    .filter_map(|f| {
-                        if let FieldLocator::Chunk { location, .. } = &f.value {
-                            Some(location.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                let mut pending = false;
-                for location in locations {
-                    // External legacy references never transfer physical ownership.
-                    if DatasetUploads::upload_id(identity, &location).is_err() {
-                        continue;
-                    }
-                    let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;
-                    uploads.release(&location, record.publication.operation).await?;
-                    let metadata = uploads.metadata(&location).await?;
-                    if metadata.state == UploadState::Claimed {
-                        continue;
-                    }
-                    match uploads.abort(&location).await {
-                        Ok(result) => pending |= !result.cleanup_complete,
-                        Err(crowdb_access_dataset::UploadError::Conflict) => {} // Another durable owner now protects it.
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-                if !pending {
-                    authority.reclaim_snapshot_metadata(identity, id).await?;
-                }
-                json(
-                    &serde_json::json!({"snapshot":id.to_string(),"state":if pending{"pending"}else{"completed"},"chunks_reclaimed":0}),
-                )
+                let progress = authority.mark_snapshot_reclaim(identity, id).await?;
+                json(&serde_json::json!({"snapshot":id.to_string(),
+                    "state":if progress.complete {"completed"}else{"pending"},
+                    "reclaim_after":authority.snapshot_reclaim_after(identity, id).await?,
+                    "chunks_reclaimed":0}))
             }
             _ => Err(ApiError::not_found()),
         }

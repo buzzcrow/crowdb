@@ -8,9 +8,10 @@ import { defaultPolicy, type DraftSplit } from './types';
 import { DomainProvider } from '../contexts/DomainContext';
 import { DatasetView } from '../views/DatasetView';
 import * as api from './api';
+vi.mock('./operation/storage', () => ({ readRequest: vi.fn(async () => undefined), writeRequest: vi.fn(async () => {}), removeRequest: vi.fn(async () => {}) }));
 vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(),
   listDatasets: vi.fn(async () => ({ entries: [], after: null })),
-  capabilities: vi.fn(async () => ['dataset-management', 'composition']),
+  capabilities: vi.fn(async () => ['dataset-management', 'composition-preparation', 'snapshot-head-update']),
   mutate: vi.fn(async () => ({})),
   page: vi.fn(async () => ({ entries: [], after: null })),
   splitHead: vi.fn(async () => ({ revision: null, generation: null })),
@@ -66,17 +67,33 @@ it('readonly exposes inspection without creation, import or lifecycle mutations'
   expect(api.mutate).not.toHaveBeenCalled();
   expect(screen.queryByText('Session activity')).toBeNull();
 });
-it('a conflict discovered by identical retry retains candidate and enables explicit head review', async () => {
-  const { request, retryIdentical, newAttempt } = await import('./operation');
-  const operation: import('./operation').Operation = { dataset: 'retry', kind: 'composition', operation: '1'.repeat(32), expectedHead: null, attempt: '2'.repeat(32) };
-  const body = { attempt: operation.attempt, snapshot: '3'.repeat(32), expected_head: null };
-  vi.mocked(api.mutate).mockRejectedValueOnce(new api.DatasetError(502, 'outcome unknown', true)).mockRejectedValueOnce(new api.DatasetError(409, 'head conflict'));
-  await expect(request(operation, '/compositions/publish', 'POST', body)).rejects.toThrow('outcome unknown');
+it('identical retry preserves the candidate and uses the returned head without status queries', async () => {
+  const { publish, retryIdentical, useObservedHead } = await import('./operation');
+  const operation: import('./operation').Operation = { version: 2, dataset: 'retry', kind: 'snapshot', resource: '3'.repeat(32), expectedHead: null,
+    prepared: { snapshot: '3'.repeat(32), initial_split: null, sample_count: '1' } };
+  const observed = { latest: '5'.repeat(32), stable: null, generation: '4'.repeat(64) };
+  vi.mocked(api.mutate).mockRejectedValueOnce(new api.DatasetError(502, 'outcome unknown', true))
+    .mockRejectedValueOnce(new api.DatasetError(409, 'head conflict', false, observed))
+    .mockResolvedValueOnce({ ...observed, latest: operation.resource });
+  await expect(publish(operation)).rejects.toThrow('outcome unknown');
+  expect(operation.pending).toEqual({ kind: 'publish', expectedHead: null, expectedRevision: undefined });
   await expect(retryIdentical(operation)).rejects.toThrow('head conflict');
-  expect(operation.pending?.body).toEqual(body); expect(operation.conflict).toBe(true);
-  newAttempt(operation, '4'.repeat(32));
-  expect(operation.expectedHead).toBe('4'.repeat(32)); expect(operation.attempt).not.toBe(body.attempt);
-  expect(operation.pending).toBeUndefined();
+  expect(operation.conflict).toEqual(observed); expect(operation.pending).toBeUndefined();
+  await useObservedHead(operation);
+  expect(operation.expectedHead).toBe(observed.generation); expect(operation.resource).toBe('3'.repeat(32));
+  expect((await publish(operation)).target).toEqual({ kind: 'snapshot', snapshot: operation.resource });
+  const first = vi.mocked(api.mutate).mock.calls;
+  expect(first[0].slice(0, 4)).toEqual(first[1].slice(0, 4));
+  expect(first[2][3]).toEqual({ snapshot: operation.resource, expected_head: observed.generation });
+  expect(api.control).not.toHaveBeenCalled(); expect(api.head).not.toHaveBeenCalled();
+});
+it('storage failure stops a preparation before its network mutation', async () => {
+  const { prepare } = await import('./operation'); const { writeRequest } = await import('./operation/storage');
+  vi.mocked(writeRequest).mockRejectedValueOnce(new Error('browser storage full'));
+  const operation: import('./operation').Operation = { version: 2, dataset: 'bounded', kind: 'split', resource: '3'.repeat(32), snapshot: '2'.repeat(32), expectedHead: null, expectedRevision: null,
+    input: { splits: [], policy: defaultPolicy } };
+  await expect(prepare(operation)).rejects.toThrow('browser storage full');
+  expect(api.mutate).not.toHaveBeenCalled();
 });
 it('reclamation confirmation keeps its exact Snapshot target across navigation', async () => {
   const { Actions } = await import('./Actions');
@@ -96,7 +113,7 @@ it('waits for the selected Split base before enabling edits so loading cannot er
   vi.mocked(api.splitHead).mockReturnValueOnce(new Promise(resolve => { loaded = resolve; }));
   render(<SplitEditor dataset="demo" snapshot={'1'.repeat(32)} close={vi.fn()} complete={vi.fn()} />);
   expect(screen.getByRole('button', { name: 'Add selection Split' })).toBeDisabled();
-  expect(screen.getByRole('button', { name: 'Save Split draft' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Prepare Split revision' })).toBeDisabled();
   expect(screen.queryByLabelText('Split 1 name')).toBeNull();
   await act(async () => loaded({ revision: null, generation: null }));
   fireEvent.click(screen.getByRole('button', { name: 'Add selection Split' }));

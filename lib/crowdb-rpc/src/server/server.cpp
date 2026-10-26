@@ -7,6 +7,7 @@
 #include "crowdb-rpc/client/client.h" // RpcClient, RpcError (for request_client_ + fail_all)
 #include "crowdb-rpc/rpc_metrics.h"
 #include "crowdb-rpc/server/handler.h"
+#include "crowdb-rpc/transport/rdma/rdma_capability.h"
 #include "msg_type_generated.h"
 
 #include <arpa/inet.h>
@@ -18,6 +19,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -37,14 +39,10 @@ std::string listener_key(const std::string &addr, int port)
 }
 } // namespace
 
-RpcServer::RpcServer(BufferPool *pool, uint32_t io_engines, uint32_t io_workers)
-    : pool_(pool),
-      owns_pool_(pool == nullptr)
+RpcServer::RpcServer(BufferPool *pool, uint32_t io_engines, uint32_t io_workers, RdmaConfig rdma_config) : pool_(pool)
 {
-    if (pool_ == nullptr) {
-        pool_ = new SystemBufferPool();
-    }
-    transport_ = std::make_unique<SocketTransport>(io_engines, io_workers, pool_);
+    transport_ = std::make_shared<SocketTransport>(io_engines, io_workers, pool_, std::move(rdma_config));
+    pool_      = transport_->pool();
 }
 
 RpcServer::~RpcServer()
@@ -54,14 +52,13 @@ RpcServer::~RpcServer()
     // callback gauge (e.g. conn_count_gauge) that captures a raw
     // transport pointer returns 0 instead of accessing freed memory.
     alive_->store(false, std::memory_order_release);
-    if (owns_pool_) {
-        delete pool_;
-    }
+    transport_.reset();
 }
 
 bool RpcServer::listen(const std::string &addr, int port)
 {
-    listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+    listen_addr_ = addr.empty() ? "0.0.0.0" : addr;
+    listen_fd_   = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd_ < 0) {
         const int error = errno;
         CRB_LOG_ERROR("rpc server socket failed: addr={} port={} errno={} ({})", addr, port, error,
@@ -176,6 +173,19 @@ void RpcServer::start()
         return;
     }
     CRB_LOG_INFO("rpc server: starting");
+    if (transport_->rdma_listener_enabled()) {
+        transport_->set_rdma_accept_handler([this](const std::shared_ptr<Connection> &conn) {
+            transport_->attach_rdma_connection(
+                conn, [this](Frame *frame, Connection *c) { dispatch(frame, c); },
+                [this](Connection *c) {
+                    if (request_client_ != nullptr)
+                        request_client_->fail_all(c, RpcError::ConnectionClosed);
+                });
+            transport_->send_rdma_handshake(conn);
+        });
+        if (!transport_->listen_rdma_service(listen_addr_, listen_port_))
+            CRB_LOG_WARN("rpc server: RDMA listener unavailable; TCP remains active");
+    }
     transport_->start();
     // Register the listen fd with the I/O worker's epoll loop instead of
     // a dedicated acceptor thread. The worker's epoll loop is already
@@ -267,6 +277,7 @@ void RpcServer::handle_accept(int listen_fd)
                     request_client_->fail_all(c, RpcError::ConnectionClosed);
                 }
             });
+        transport_->send_rdma_handshake(conn);
         CRB_LOG_INFO("rpc server: connection accepted {}:{} -> conn_id={}", peer_ip, peer_port,
                      static_cast<long long>(conn->id()));
     }

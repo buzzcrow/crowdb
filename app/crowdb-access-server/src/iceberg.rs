@@ -52,3 +52,9 @@ pub use runtime::{run, run_with_shutdown, IcebergRuntimeConfig};
 
 #[cfg(feature = "test-util")]
 pub use connection::active_io_for_tests;
+#[cfg(feature = "test-util")]
+pub use file_http::mark_unreferenced_file_for_tests;
+#[cfg(feature = "test-util")]
+pub use file_http::write_iceberg_fallback_body_for_tests;
+#[cfg(feature = "test-util")]
+pub use gc_runtime::TestGcSweep;

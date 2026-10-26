@@ -806,25 +806,35 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   missing/tombstoned values, oversized data, integrity failures and cancelled reads
   never appear as a successful truncated value. Browsing starts no Read Plan.
 - **DS-06 — Local import:** create Dataset, then Import / New Snapshot or Create
-  child. Any published parent may be selected. Preserve all parent data is the
+  child. Any complete parent may be selected. Preserve all parent data is the
   default; Replace membership and authority-evaluated Selection are explicit.
   A Split source freezes Snapshot/revision/name. Schema/member edits, local file
   mappings and Split policies are reviewed before publication. External sources
   are SDK-owned and require no connector UI.
-- **DS-07 — Durable publication:** uploads use immutable parts of at most 4 MiB,
-  at most 10000 parts, incremental MD5 and two concurrent requests. Review, Evaluate,
-  Prepare and Publish are distinct stages. Partial evaluation or incomplete import
-  cannot publish. A prepared candidate is immutable; edits require a new operation
-  and explicit abandonment/cleanup of the old one. Only a successful receipt moves
-  latest; stable is independent. Unknown outcomes reconcile operation/attempt IDs.
-  Confirmed head conflicts require explicit review and a new attempt on the same
-  candidate and parent. Closing does not abandon a draft. Reload restores control
-  identities; local File handles must be reselected and match their declared digest.
+- **DS-07 — Client-owned publication:** uploads use immutable parts of at most
+  4 MiB, at most 10000 parts, incremental MD5 and two concurrent requests. A new
+  upload is created directly; a saved upload is observed for whole-part retries.
+  Definitively aborted uploads use a new identity. Completed fields carry their
+  existing id/length/md5 descriptor without a lookup to reconstruct it.
+  Review precedes one complete Snapshot preparation, followed by an explicit head
+  update. A complete result is immutable and readable by ID before publication;
+  preparing it writes no editing or evaluation progress. The browser freezes
+  parent/source/Split identities and the intended head base before uploading.
+  IndexedDB saves one complete input and pending request per Dataset/API origin
+  before mutation, with a 10 MiB record bound and no duplicated preparation body.
+  Concurrent tabs cannot overwrite another saved resource. Closing and reload
+  preserve these client inputs; unfinished local Files must be reselected and
+  match their digest. Unknown replies retry the same resource, complete input and
+  original head conditions, without draft/status/commit queries. Head conflicts
+  retain the returned observation for explicit review and a deliberate conditional
+  retry; the client never silently rebases. Discarding local input does not delete
+  a complete result or its payload owners. Snapshot preparation accepts at most
+  8 MiB through the proxy; upload parts retain their 4 MiB bound.
 - **DS-08 — Split revisions:** author the complete set, including an empty set,
   with named Selection or deterministic weighted partitions and independent overlap
   and coverage policies. Inherited membership is frozen and intersected with child
   membership; new Samples remain unassigned. Explicit reevaluation is separate.
-  Independent Split publication compares the expected revision, preserves historical
+  Independent Split publication compares the expected revision and head generation, preserves historical
   members, and does not move Dataset latest or create a data Snapshot. History and
   named membership pages stay pinned to the selected immutable revision.
 - **DS-09 — Lifecycle:** stable, retain, release and reclaim name the exact

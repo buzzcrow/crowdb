@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 import { createHash } from 'node:crypto';
 import { test, expect } from '../fixtures/realBackend';
-import { call, datasetPath, openDataset, prepareDraft, publishDraft } from '../fixtures/dataset';
+import { call, datasetPath, openDataset, preparedResult, publishResult } from '../fixtures/dataset';
 import { consoleProxy } from '../fixtures/consoleProxy';
 import { step } from '../fixtures/stepTimer';
 
@@ -18,7 +18,7 @@ async function create(page: import('@playwright/test').Page, name: string, url =
   await page.getByRole('textbox', { name: 'Inline text', exact: true }).fill('native import payload');
   await page.getByRole('button', { name: 'Use single Sample mapping' }).click();
 }
-// Baseline: 6.5s (2026-10-16), before multipart and inherited-child coverage.
+// Baseline: 3.585s (2026-10-24), failed at the retired capability before resource migration.
 test('Dataset native: import', async ({ page, request }) => {
   const name = `import-${Date.now()}`;
   await step('setup', () => create(page, name));
@@ -38,10 +38,10 @@ test('Dataset native: import', async ({ page, request }) => {
     const observe = (response: import('@playwright/test').Response) => { if (response.url().includes(`${datasetPath(name)}/`) && response.request().method() !== 'GET') responses.push(response); };
     page.on('response', observe);
     try {
-      await page.getByRole('button', { name: 'Save draft and upload local data' }).click();
+      await page.getByRole('button', { name: 'Prepare Snapshot and upload local data' }).click();
       // Assert each actual transfer boundary, rather than timing the entire
-      // digest/create/two-part/complete/edit pipeline as a single response.
-      for (const suffix of ['/compositions', '/uploads', '/parts/0', '/parts/1', '/complete']) {
+      // digest/create/two-part/complete/prepare pipeline as a single response.
+      for (const suffix of ['/uploads', '/parts/0', '/parts/1', '/complete']) {
         await expect.poll(() => responses.some(response => response.url().endsWith(suffix)), { intervals: [100], timeout: 3000 }).toBe(true);
         const response = responses.find(response => response.url().endsWith(suffix))!;
         expect(response.ok(), await response.text()).toBe(true);
@@ -49,10 +49,12 @@ test('Dataset native: import', async ({ page, request }) => {
       const upload = await responses.find(response => response.url().endsWith('/complete'))!.json();
       expect(upload.md5).toBe(createHash('md5').update(payload).digest('hex'));
       expect(upload.parts).toHaveLength(2); expect(upload.length).toBe(String(payload.length));
-      await expect(page.getByRole('button', { name: 'Evaluate complete membership' })).toBeEnabled();
+      await expect(page.getByRole('button', { name: 'Publish Snapshot', exact: true })).toBeEnabled();
+      expect(responses.some(response => /\/snapshots\/[0-9a-f]{32}$/.test(response.url()) && response.request().method() === 'PUT')).toBe(true);
+      expect(responses.some(response => /\/(compositions|split-drafts)(\/|$)/.test(response.url()))).toBe(false);
     } finally { page.off('response', observe); }
   });
-  await step('lifecycle poll', () => publishDraft(page, 'Snapshot'));
+  await step('lifecycle poll', () => publishResult(page, 'Snapshot'));
   const head = await call(request, `${datasetPath(name)}/head`);
   expect(head.latest).toMatch(/^[0-9a-f]{32}$/); expect(head.stable).toBeNull();
   const preview = await call(request, `${datasetPath(name)}/snapshots/${head.latest}/preview?sample=${encodeURIComponent(Buffer.from('sample-1').toString('base64'))}&field=text`);
@@ -68,9 +70,9 @@ test('Dataset native: import', async ({ page, request }) => {
   await page.getByRole('textbox', { name: 'Sample mapping JSON' }).fill(JSON.stringify({ version: 1, schema: null,
     samples: [{ kind: 'remove', id: '/wA=' }, { kind: 'upsert', id: Buffer.from('new').toString('base64'), fields: [{ name: 'text', value: { kind: 'tombstone' } }] }] }));
   await page.getByRole('button', { name: 'Review mapping' }).click();
-  await page.getByRole('button', { name: 'Save draft and upload local data' }).click();
-  await expect(page.getByRole('button', { name: 'Evaluate complete membership' })).toBeEnabled();
-  await publishDraft(page, 'Snapshot');
+  await page.getByRole('button', { name: 'Prepare Snapshot and upload local data' }).click();
+  await expect(page.getByRole('button', { name: 'Publish Snapshot', exact: true })).toBeEnabled();
+  await publishResult(page, 'Snapshot');
   const child = (await call(request, `${datasetPath(name)}/head`)).latest;
   expect((await call(request, `${datasetPath(name)}/snapshots/${child}/summary`)).parent).toBe(head.latest);
   const values = await call(request, `${datasetPath(name)}/snapshots/${child}/matrix`, 'POST', { sample_ids: [Buffer.from('sample-1').toString('base64'), Buffer.from('new').toString('base64')], fields: ['text'] });
@@ -86,35 +88,35 @@ test('Dataset native: import', async ({ page, request }) => {
 
 });
 
-// Baseline: 5.9s (2026-10-16).
+// Baseline: 3.578s (2026-10-24), failed at the retired capability before resource migration.
 test('Dataset native: recovery', async ({ page, request, baseURL }) => {
   const proxy = await consoleProxy(baseURL!);
   const name = `recovery-${Date.now()}`;
   try {
     await create(page, name, `${proxy.url}/?domain=Dataset`);
     await page.getByRole('button', { name: 'Review mapping' }).click();
-    await page.getByRole('button', { name: 'Save draft and upload local data' }).click();
-    await expect(page.getByRole('button', { name: 'Evaluate complete membership' })).toBeEnabled();
-    await page.reload();
-    await page.getByRole('navigation', { name: 'Dataset tree' }).getByRole('button', { name, exact: true }).click();
-    await page.getByRole('button', { name: 'Resume saved draft' }).click();
-    await expect(page.getByRole('button', { name: 'Evaluate complete membership' })).toBeEnabled();
-    await prepareDraft(page, 'Snapshot');
-    const publication = page.getByRole('region', { name: 'Draft publication' });
-    const operation = (await publication.innerText()).match(/Operation ([0-9a-f]{32})/)![1];
-    const candidate = (await call(request, `${datasetPath(name)}/compositions/${operation}`)).preparation.snapshot;
-    await page.reload();
-    await page.getByRole('navigation', { name: 'Dataset tree' }).getByRole('button', { name, exact: true }).click();
-    await page.getByRole('button', { name: 'Resume saved draft' }).click();
+    await page.getByRole('button', { name: 'Prepare Snapshot and upload local data' }).click();
     await expect(page.getByRole('button', { name: 'Publish Snapshot', exact: true })).toBeEnabled();
-    proxy.dropNextSuccessfulResponse('/publish');
+    await page.reload();
+    await page.getByRole('navigation', { name: 'Dataset tree' }).getByRole('button', { name, exact: true }).click();
+    await page.getByRole('button', { name: 'Resume saved request' }).click();
+    await expect(page.getByRole('button', { name: 'Publish Snapshot', exact: true })).toBeEnabled();
+    await preparedResult(page, 'Snapshot');
+    const publication = page.getByRole('region', { name: 'Resource publication' });
+    const candidate = await publication.getByTestId('prepared-resource-id').innerText();
+    expect((await call(request, `${datasetPath(name)}/snapshots/${candidate}/summary`)).sample_count).toBe('1');
+    await page.reload();
+    await page.getByRole('navigation', { name: 'Dataset tree' }).getByRole('button', { name, exact: true }).click();
+    await page.getByRole('button', { name: 'Resume saved request' }).click();
+    await expect(page.getByRole('button', { name: 'Publish Snapshot', exact: true })).toBeEnabled();
+    proxy.dropNextSuccessfulResponse('/head');
     await page.getByRole('button', { name: 'Publish Snapshot', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Reconcile outcome' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Retry identical request' })).toBeEnabled();
     expect(proxy.droppedResponses()).toBe(1);
     await page.reload();
     await page.getByRole('navigation', { name: 'Dataset tree' }).getByRole('button', { name, exact: true }).click();
-    await page.getByRole('button', { name: 'Resume saved draft' }).click();
-    await page.getByRole('button', { name: 'Reconcile outcome' }).click();
+    await page.getByRole('button', { name: 'Resume saved request' }).click();
+    await page.getByRole('button', { name: 'Retry identical request' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     const inventory = await call(request, `${datasetPath(name)}/snapshot-inventory`);
     expect(inventory.entries).toHaveLength(1); expect(inventory.entries[0].id).toBe(candidate);

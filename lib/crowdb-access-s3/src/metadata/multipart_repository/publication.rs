@@ -3,33 +3,49 @@
 
 //! Publish the frozen multipart object through one object-key mutation.
 
-use crowdb_access_multipart::{next_revision, MultipartComposer};
-use sha2::{Digest as _, Sha256};
+use crowdb_access_multipart::MultipartComposer;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
-    MetadataKey, MultipartPhase, MultipartRepository, MultipartRepositoryError, MultipartSessionRecord,
-    PutIfAbsentOutcome,
+    CompletionPart, MetadataKey, MultipartPhase, MultipartRepository, MultipartRepositoryError,
+    MultipartSessionRecord,
 };
 use crate::integrity::multipart_checksum_marker;
 use crate::metadata::ObjectRecord;
+
+/// Request-local result of an acknowledged object publication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultipartCompletion {
+    pub upload_id: [u8; 16],
+    pub object_key: Vec<u8>,
+    pub logical_length: u64,
+    pub etag: String,
+}
 
 impl MultipartRepository {
     /// Publishes selected durable part locations without rereading part bytes.
     ///
     /// # Errors
-    /// Rejects changed part generations or object predecessors and unconfirmed
-    /// storage failures. A retry confirms only an exact published generation.
+    /// Rejects changed part generations and unconfirmed storage failures.
+    /// Every explicit retry performs the same unconditional object overwrite.
     pub async fn publish_completion(
         &self,
         session: &MultipartSessionRecord,
-    ) -> Result<MultipartSessionRecord, MultipartRepositoryError> {
+    ) -> Result<MultipartCompletion, MultipartRepositoryError> {
         let current = self
             .load(session)
             .await?
             .ok_or(MultipartRepositoryError::Conflict)?;
-        if current.phase == MultipartPhase::Published {
-            return Ok(current);
-        }
+        self.publish_frozen(current, None).await
+    }
+
+    // The caller just selected this bound authority. Independent uploads use
+    // frozen immutable generations; strict uploads also recheck current pointers.
+    pub(crate) async fn publish_frozen(
+        &self,
+        current: MultipartSessionRecord,
+        requested: Option<&[CompletionPart]>,
+    ) -> Result<MultipartCompletion, MultipartRepositoryError> {
         if current.phase != MultipartPhase::Publishing {
             return Err(MultipartRepositoryError::Conflict);
         }
@@ -38,13 +54,14 @@ impl MultipartRepository {
             .as_ref()
             .ok_or(MultipartRepositoryError::Conflict)?;
         let mut composer = MultipartComposer::new(current.max_object_bytes);
-        for selected in selection {
-            if self
-                .part(&current, selected.number)
-                .await?
-                .as_ref()
-                .map(|part| part.revision)
-                != Some(selected.revision)
+        for (index, selected) in selection.iter().enumerate() {
+            if !current.uses_independent_parts()
+                && self
+                    .part(&current, selected.number)
+                    .await?
+                    .as_ref()
+                    .map(|part| part.revision)
+                    != Some(selected.revision)
             {
                 return Err(MultipartRepositoryError::InvalidPart);
             }
@@ -55,6 +72,14 @@ impl MultipartRepository {
             if part.revision != selected.revision || part.selection_digest()? != selected.digest {
                 return Err(MultipartRepositoryError::InvalidPart);
             }
+            if requested.is_some_and(|parts| {
+                parts.get(index).map_or(true, |request| {
+                    request.number != selected.number
+                        || !super::completion::etag_matches(&request.etag, &part.raw_md5)
+                })
+            }) {
+                return Err(MultipartRepositoryError::Conflict);
+            }
             composer
                 .push(part.length, part.raw_md5, &part.locations)
                 .map_err(|_| MultipartRepositoryError::InvalidPart)?;
@@ -62,17 +87,23 @@ impl MultipartRepository {
         let assembled = composer
             .finish()
             .map_err(|_| MultipartRepositoryError::InvalidPart)?;
-        if assembled.length != current.staged_bytes || Some(&assembled.etag) != current.etag.as_ref() {
+        if assembled.length != current.staged_bytes {
             return Err(MultipartRepositoryError::InvalidPart);
         }
-        let published_at = current.publication_ms.ok_or(MultipartRepositoryError::Conflict)?;
+        let published_at = u64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+        )
+        .unwrap_or(u64::MAX);
         let marker = multipart_checksum_marker(&assembled.etag).ok_or(MultipartRepositoryError::Conflict)?;
         let object = ObjectRecord {
             bucket_id: current.bucket_id,
             key: current.object_key.clone(),
             logical_length: assembled.length,
             checksum: marker.to_vec(),
-            etag: assembled.etag,
+            etag: assembled.etag.clone(),
             created_at_ms: published_at,
             modified_at_ms: published_at,
             content_type: current.content_type.clone(),
@@ -83,56 +114,12 @@ impl MultipartRepository {
         };
         let value = object.encode().map_err(|_| MultipartRepositoryError::Conflict)?;
         let key = MetadataKey::object(&self.tenant, current.bucket_id, &current.object_key)?;
-        let observed = self.store.get(key.clone()).await?;
-        if observed.as_ref().is_some_and(|entry| entry.value == value) {
-            return self.finish_publication(&current).await;
-        }
-        let expected_digest = current
-            .object_predecessor
-            .ok_or(MultipartRepositoryError::Conflict)?;
-        if observed.as_ref().map(|entry| Sha256::digest(&entry.value).into()) != expected_digest {
-            return Err(MultipartRepositoryError::Conflict);
-        }
-        let mutation = if let Some(before) = observed {
-            self.store
-                .compare_exchange(key.clone(), before.value, value.clone())
-                .await
-        } else {
-            self.store
-                .put_if_absent(key.clone(), value.clone())
-                .await
-                .map(|outcome| matches!(outcome, PutIfAbsentOutcome::Inserted { .. }))
-        };
-        match mutation {
-            Ok(true) => {}
-            Ok(false) => {
-                if self.store.get(key).await?.as_ref().map(|entry| &entry.value) != Some(&value) {
-                    return Err(MultipartRepositoryError::Conflict);
-                }
-            }
-            Err(error) => {
-                if self.store.get(key).await?.as_ref().map(|entry| &entry.value) != Some(&value) {
-                    return Err(error.into());
-                }
-            }
-        }
-        self.finish_publication(&current).await
-    }
-
-    async fn finish_publication(
-        &self,
-        current: &MultipartSessionRecord,
-    ) -> Result<MultipartSessionRecord, MultipartRepositoryError> {
-        let mut next = current.clone();
-        next.revision = next_revision(current.revision).ok_or(MultipartRepositoryError::Conflict)?;
-        next.phase = MultipartPhase::Published;
-        if self.exchange(current, &next).await? {
-            Ok(next)
-        } else {
-            self.load(current)
-                .await?
-                .filter(|record| record.phase == MultipartPhase::Published)
-                .ok_or(MultipartRepositoryError::Conflict)
-        }
+        self.store.put(key, value).await?;
+        Ok(MultipartCompletion {
+            upload_id: current.upload_id,
+            object_key: current.object_key,
+            logical_length: assembled.length,
+            etag: assembled.etag,
+        })
     }
 }

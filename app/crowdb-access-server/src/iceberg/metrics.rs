@@ -47,9 +47,6 @@ pub struct MetricCounts {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct IcebergMetricsSnapshot {
     pub routes: [[MetricCounts; OUTCOME_COUNT]; ROUTE_COUNT],
-    pub retry_new: u64,
-    pub retry_resume: u64,
-    pub retry_replay: u64,
     pub selected_versions: [u64; 3],
     pub chunk_read: Option<crowdb_chunk_client::ReadFlowMetricsSnapshot>,
     pub chunk_small_write: Option<crowdb_chunk_client::SmallWriteMetricsSnapshot>,
@@ -104,7 +101,6 @@ impl Counters {
 
 pub(super) struct IcebergMetrics {
     routes: [[Counters; OUTCOME_COUNT]; ROUTE_COUNT],
-    retry: [AtomicU64; 3],
     selected_versions: [AtomicU64; 3],
 }
 
@@ -112,7 +108,6 @@ impl Default for IcebergMetrics {
     fn default() -> Self {
         Self {
             routes: array::from_fn(|_| array::from_fn(|_| Counters::new())),
-            retry: array::from_fn(|_| AtomicU64::new(0)),
             selected_versions: array::from_fn(|_| AtomicU64::new(0)),
         }
     }
@@ -122,9 +117,6 @@ impl IcebergMetrics {
     pub(super) fn snapshot(&self) -> IcebergMetricsSnapshot {
         IcebergMetricsSnapshot {
             routes: array::from_fn(|route| array::from_fn(|outcome| self.routes[route][outcome].snapshot())),
-            retry_new: self.retry[0].load(Ordering::Relaxed),
-            retry_resume: self.retry[1].load(Ordering::Relaxed),
-            retry_replay: self.retry[2].load(Ordering::Relaxed),
             selected_versions: array::from_fn(|index| self.selected_versions[index].load(Ordering::Relaxed)),
             chunk_read: None,
             chunk_small_write: None,
@@ -143,7 +135,6 @@ pub(super) struct RequestObservation {
     response_bytes: AtomicU64,
     dispatch_ns: AtomicU64,
     status: AtomicU16,
-    retry: AtomicU8,
     version: AtomicU8,
     catalog: CatalogStoreOperationMeter,
 }
@@ -158,7 +149,6 @@ impl RequestObservation {
             response_bytes: AtomicU64::new(0),
             dispatch_ns: AtomicU64::new(0),
             status: AtomicU16::new(0),
-            retry: AtomicU8::new(0),
             version: AtomicU8::new(0),
             catalog: CatalogStoreOperationMeter::default(),
         })
@@ -214,10 +204,6 @@ impl Drop for RequestObservation {
         counters
             .catalog_conditional_delete
             .fetch_add(catalog.conditional_delete, Ordering::Relaxed);
-        let retry = self.retry.load(Ordering::Relaxed);
-        if retry != 0 {
-            self.metrics.retry[usize::from(retry - 1)].fetch_add(1, Ordering::Relaxed);
-        }
         let version = self.version.load(Ordering::Relaxed);
         if (1..=3).contains(&version) {
             self.metrics.selected_versions[usize::from(version - 1)].fetch_add(1, Ordering::Relaxed);
@@ -242,10 +228,6 @@ pub(super) fn record_request_bytes(length: usize) {
     let _ = REQUEST_OBSERVATION.try_with(|span| {
         span.request_bytes.fetch_add(length as u64, Ordering::Relaxed);
     });
-}
-
-pub(super) fn record_retry(kind: u8) {
-    let _ = REQUEST_OBSERVATION.try_with(|span| span.retry.store(kind, Ordering::Relaxed));
 }
 
 pub(super) fn record_selected_version(version: u8) {

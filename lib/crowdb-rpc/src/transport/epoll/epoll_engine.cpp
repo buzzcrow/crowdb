@@ -69,6 +69,7 @@ void EpollEngine::set_oneshot(bool on)
 // Bit 0 of data.ptr marks write fds (buzz-cpp pattern). Connection*
 // is at least 2-byte aligned, so bit 0 is always 0 for read fds.
 static constexpr uint64_t CONNECTION_EVENT = uint64_t{1} << 63;
+static constexpr uint64_t EXTERNAL_EVENT   = uint64_t{1} << 62;
 
 static uint64_t event_token(Connection *conn, bool write_side)
 {
@@ -113,6 +114,38 @@ void EpollEngine::remove_listen_fd(int fd)
         listen_fd_ = -1;
     }
     ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
+}
+
+void EpollEngine::add_external_fd(int fd, uint64_t tag)
+{
+    if (fd < 0 || epoll_fd_ < 0 || (static_cast<uint64_t>(fd) & EXTERNAL_EVENT) != 0) {
+        return;
+    }
+    {
+        std::scoped_lock lock(conn_mu_);
+        external_fds_[fd] = tag;
+    }
+    struct epoll_event ev;
+    std::memset(&ev, 0, sizeof(ev));
+    ev.events   = EPOLLIN;
+    ev.data.u64 = EXTERNAL_EVENT | static_cast<uint64_t>(fd);
+    int result  = ::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev);
+    if (result < 0 && errno == EEXIST)
+        result = ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+    if (result < 0) {
+        std::scoped_lock lock(conn_mu_);
+        external_fds_.erase(fd);
+    }
+}
+
+void EpollEngine::remove_external_fd(int fd)
+{
+    if (fd < 0) {
+        return;
+    }
+    ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
+    std::scoped_lock lock(conn_mu_);
+    external_fds_.erase(fd);
 }
 
 void EpollEngine::add_connection(int read_fd, int write_fd, Connection *conn)
@@ -233,6 +266,20 @@ int EpollEngine::wait(EngineEvent *out_events, int max_events, int timeout_ms)
     for (int i = 0; i < n && out < max_events; i++) {
         const struct epoll_event &ev = events[i];
 
+        if ((ev.data.u64 & EXTERNAL_EVENT) != 0) {
+            const int fd  = static_cast<int>(ev.data.u64 & (EXTERNAL_EVENT - 1));
+            uint64_t  tag = 0;
+            {
+                std::scoped_lock lock(conn_mu_);
+                auto             it = external_fds_.find(fd);
+                if (it != external_fds_.end()) {
+                    tag = it->second;
+                }
+            }
+            out_events[out++] = {.type = SocketEvent::External, .fd = fd, .conn = nullptr, .external_tag = tag};
+            continue;
+        }
+
         if ((ev.data.u64 & CONNECTION_EVENT) != 0) {
             const auto id         = static_cast<int64_t>((ev.data.u64 & ~CONNECTION_EVENT) >> 1);
             const bool write_side = (ev.data.u64 & 1) != 0;
@@ -274,6 +321,10 @@ int EpollEngine::wait(EngineEvent *out_events, int max_events, int timeout_ms)
 
 void EpollEngine::shutdown()
 {
+    {
+        std::scoped_lock lock(conn_mu_);
+        external_fds_.clear();
+    }
     if (notify_fd_ >= 0) {
         ::close(notify_fd_);
         notify_fd_ = -1;

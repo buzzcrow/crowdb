@@ -26,7 +26,7 @@ impl ControlClient {
         path
     }
     pub(crate) async fn require(&self, capability: &str) -> Result<(), Error> {
-        self.inner.capabilities().await?.require(&[capability])
+        self.inner.require_capability(capability).await
     }
     pub(crate) async fn call<T: Serialize + ?Sized, R: DeserializeOwned>(
         &self,
@@ -116,7 +116,7 @@ impl ControlClient {
         )
         .await
     }
-    /// Resolves an unknown publication outcome without issuing a new attempt.
+    /// Reads legacy publication receipts. Current pointer updates create no receipt history.
     /// # Errors
     /// Returns capability, transport, invalid response or service errors.
     pub async fn commit_status(&self, attempt: &OpaqueId) -> Result<Option<CommitReceipt>, Error> {

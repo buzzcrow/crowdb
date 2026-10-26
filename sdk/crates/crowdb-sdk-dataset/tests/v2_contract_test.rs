@@ -1,13 +1,30 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 use crowdb_sdk_dataset::{
-    v2::{Decimal, OpaqueId, PublishComposition, SampleId},
+    v2::{Decimal, OpaqueId, SampleId},
     DatasetClient,
 };
 use serde_json::json;
 #[allow(dead_code)]
 #[path = "../../crowdb-sdk-core/tests/common/peer.rs"]
 mod peer;
+
+#[test]
+fn reclaim_accepts_grace_deadlines_and_older_responses() {
+    use crowdb_sdk_dataset::v2::{ReclaimPhase, SnapshotReclaim};
+    let mut value = json!({
+        "snapshot": "01".repeat(16), "phase": "grace_period", "complete": false,
+        "physical_cleanup_deferred": true, "reclaim_after": 1300
+    });
+    let status: SnapshotReclaim = serde_json::from_value(value.clone()).unwrap();
+    assert!(matches!(status.phase, ReclaimPhase::GracePeriod));
+    assert_eq!(status.reclaim_after, Some(1300));
+    value["phase"] = json!("upload_owners");
+    value.as_object_mut().unwrap().remove("reclaim_after");
+    let status: SnapshotReclaim = serde_json::from_value(value).unwrap();
+    assert!(matches!(status.phase, ReclaimPhase::UploadOwners));
+    assert_eq!(status.reclaim_after, None);
+}
 
 #[test]
 fn v2_stream_accepts_long_binary_ids_without_changing_v1_bounds() {
@@ -48,37 +65,6 @@ fn exact_id_and_integer_contracts_reject_lossy_or_ambiguous_input() {
     for value in ["", "YQ", "YR==", "YQ==\n"] {
         assert!(serde_json::from_value::<SampleId>(json!(value)).is_err());
     }
-    let mut publish = json!({"attempt":"01".repeat(16),"snapshot":"02".repeat(16),"expected_head":null});
-    serde_json::from_value::<PublishComposition>(publish.clone()).unwrap();
-    publish.as_object_mut().unwrap().remove("expected_head");
-    assert!(serde_json::from_value::<PublishComposition>(publish).is_err());
-}
-
-#[tokio::test]
-async fn unsupported_composition_cannot_issue_a_write() {
-    let mut peer = peer::TestPeer::start(r#"{"api_version":2,"capabilities":[]}"#, false).await;
-    let client = DatasetClient::new(&peer.endpoint, "test", None)
-        .unwrap()
-        .control();
-    let id = OpaqueId::random();
-    assert!(client
-        .publish_composition(
-            &id,
-            &PublishComposition {
-                attempt: OpaqueId::random(),
-                snapshot: OpaqueId::random(),
-                expected_head: None
-            }
-        )
-        .await
-        .is_err());
-    assert!(peer
-        .requests
-        .recv()
-        .await
-        .unwrap()
-        .starts_with("GET /api/dataset/v2/capabilities "));
-    assert!(peer.requests.try_recv().is_err());
 }
 
 #[tokio::test]
@@ -101,29 +87,5 @@ async fn pages_are_lazy_bounded_and_reject_a_repeated_continuation() {
     assert!(peer.requests.try_recv().is_err());
     assert!(pages.next_page().await.is_err());
     assert_eq!(pages.continuation(), Some("YQ=="));
-    peer.requests.recv().await.unwrap();
     assert!(peer.requests.recv().await.unwrap().contains("after=YQ%3D%3D"));
-}
-
-#[tokio::test]
-async fn publication_transport_retry_preserves_exact_attempt_and_body() {
-    let mut peer = peer::TestPeer::start_statuses(r#"{"api_version":2,"capabilities":["composition"],"code":"busy","message":"busy","request_id":"retry","retryable":true,"attempt":"01010101010101010101010101010101","target":{"kind":"snapshot","snapshot":"02020202020202020202020202020202"},"expected_head":null,"committed_head":"0303030303030303030303030303030303030303030303030303030303030303"}"#,false,vec![200,503,200]).await;
-    let client = DatasetClient::new(&peer.endpoint, "test", None)
-        .unwrap()
-        .control();
-    let request = PublishComposition {
-        attempt: "01".repeat(16).parse().unwrap(),
-        snapshot: "02".repeat(16).parse().unwrap(),
-        expected_head: None,
-    };
-    let receipt = client
-        .publish_composition(&OpaqueId::random(), &request)
-        .await
-        .unwrap();
-    assert_eq!(receipt.attempt, request.attempt);
-    peer.requests.recv().await.unwrap();
-    let first = peer.requests.recv().await.unwrap();
-    let retry = peer.requests.recv().await.unwrap();
-    assert_eq!(first, retry);
-    assert!(first.contains("\"expected_head\":null"));
 }

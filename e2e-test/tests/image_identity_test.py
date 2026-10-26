@@ -293,7 +293,7 @@ class ImageIdentityTest(unittest.TestCase):
         (oci / "README.md").write_text("operator instructions\n")
         (oci / "runtime.py").write_text("host runtime commands\n")
         (oci / "run-node.py").write_text("host launcher\n")
-        host_modules = ("host_inputs.py", "host_runtime.py", "host_lifecycle.py", "host_cleanup.py", "host-clean.py")
+        host_modules = ("host_inputs.py", "host_runtime.py", "host_lifecycle.py", "host_cleanup.py", "host-clean.py", "transfer.py")
         for name in host_modules:
             (oci / name).write_text("host CLI/cleanup only\n")
         (oci / "Dockerfile").write_text("release image recipe\n")

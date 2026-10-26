@@ -1,3 +1,6 @@
+mod operation;
+pub(crate) use operation::decode_scoped_operation;
+
 use crate::{DatasetError, DatasetIdentity, OperationId, SnapshotId};
 
 pub const DATASET_PREFIX: &[u8] = b"DS\0D\0";
@@ -6,7 +9,6 @@ pub const HEAD_PREFIX: &[u8] = b"DS\0H\0";
 pub const OPERATION_PREFIX: &[u8] = b"DS\0O\0";
 pub const MANIFEST_PREFIX: &[u8] = b"DS\0M\0";
 pub const MANIFEST_HEAD_PREFIX: &[u8] = b"DS\0MH\0";
-pub const CURSOR_PREFIX: &[u8] = b"DS\0C\0";
 pub const RETENTION_PREFIX: &[u8] = b"DS\0R\0";
 pub const LEASE_PREFIX: &[u8] = b"DS\0L\0";
 pub const RECLAIM_PREFIX: &[u8] = b"DS\0G\0";
@@ -58,13 +60,6 @@ pub fn manifest_binding(identity: &DatasetIdentity, snapshot: SnapshotId) -> Res
     let mut key = MANIFEST_HEAD_PREFIX.to_vec();
     key.extend_from_slice(&identity.key()?);
     key.extend_from_slice(snapshot.as_bytes());
-    Ok(key)
-}
-
-pub fn cursor(identity: &DatasetIdentity, plan_identity: [u8; 16]) -> Result<Vec<u8>, DatasetError> {
-    let mut key = CURSOR_PREFIX.to_vec();
-    key.extend_from_slice(&identity.key()?);
-    key.extend_from_slice(&plan_identity);
     Ok(key)
 }
 

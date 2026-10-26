@@ -183,3 +183,105 @@ async fn accepted_log_tip_returns_highest_accepted_slot() {
     let tip = acc.accepted_log_tip();
     assert_eq!(tip, Some((5, 1)));
 }
+
+#[tokio::test]
+async fn reclaimed_prefix_rejects_late_requests_and_preserves_owned_payloads() {
+    let acc = PxAcceptor::new();
+    for slot in 1..=2049 {
+        acc.accept(&entry(slot, PxBallot::new(1, 1), b"retained")).await;
+    }
+    let held = acc.accepted_at(1).unwrap();
+    acc.trim(2048);
+    acc.reclaim();
+    assert_eq!(acc.retained_slots(), 2);
+    assert!(acc.accepted_at(1).is_none());
+    assert!(acc.accepted_at(2048).is_some());
+    assert_eq!(acc.accepted_log_tip(), Some((2049, 1)));
+    assert_eq!(held.payload.as_ref(), b"retained");
+    assert!(matches!(
+        acc.prepare(1, PxBallot::new(9, 9)).await,
+        PxPrepareReply::Rejected { .. }
+    ));
+    assert!(matches!(
+        acc.accept(&entry(1, PxBallot::new(9, 9), b"late")).await,
+        PxAcceptReply::Rejected { .. }
+    ));
+    assert!(acc.accepted_at(1).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_readers_and_reclaimers_keep_live_slots_and_owned_payloads() {
+    let acc = std::sync::Arc::new(PxAcceptor::new());
+    for slot in 1..=2049 {
+        acc.accept(&entry(slot, PxBallot::new(1, 1), b"retained")).await;
+    }
+    let held = acc.accepted_at(1).unwrap();
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(5));
+    let mut workers = tokio::task::JoinSet::new();
+    for worker in 0..4 {
+        let acc = acc.clone();
+        let barrier = barrier.clone();
+        workers.spawn(async move {
+            barrier.wait().await;
+            for slot in 1..2049 {
+                if worker < 2 {
+                    acc.trim(slot);
+                    acc.reclaim();
+                } else {
+                    if let Some(value) = acc.accepted_at(slot) {
+                        assert_eq!(value.payload.as_ref(), b"retained");
+                    }
+                    acc.prepare(slot, PxBallot::new(2, worker)).await;
+                    acc.accept(&entry(slot, PxBallot::new(2, worker), b"retained"))
+                        .await;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+    }
+    barrier.wait().await;
+    while let Some(result) = workers.join_next().await {
+        result.unwrap();
+    }
+    acc.reclaim();
+    assert_eq!(acc.trim_slot(), 2048);
+    assert_eq!(acc.retained_slots(), 2);
+    assert_eq!(acc.accepted_log_tip(), Some((2049, 1)));
+    assert_eq!(held.payload.as_ref(), b"retained");
+}
+
+#[tokio::test]
+async fn reclaimed_slots_release_payload_owners_while_acceptor_stays_live() {
+    use crate::payload_owner::TestPayload;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let acc = PxAcceptor::new();
+    for slot in 1..=8192 {
+        acc.accept(&PxLogEntry {
+            slot,
+            ballot: PxBallot::new(1, 1),
+            term: 1,
+            payload: bytes::Bytes::from_owner(TestPayload {
+                bytes: vec![42; 1024],
+                dropped: dropped.clone(),
+            }),
+        })
+        .await;
+        if slot % 128 == 0 {
+            let scanned = acc.accepted_iter_range(slot - 127, slot + 1);
+            assert_eq!(scanned.len(), 128);
+            drop(scanned);
+            acc.trim(slot);
+            acc.reclaim();
+        }
+    }
+    assert_eq!(acc.retained_slots(), 1);
+    assert!(
+        dropped.load(Ordering::Relaxed) >= 8192 - 1024,
+        "reclaimed payload owners remain live: {} released",
+        dropped.load(Ordering::Relaxed)
+    );
+}

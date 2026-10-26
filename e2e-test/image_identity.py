@@ -29,6 +29,8 @@ SERVER_PATHS = (
     # Host launch resource flags do not enter the release artifact (stage.sh).
     ":(exclude)container/oci-image/runtime.py",
     ":(exclude)container/oci-image/run-node.py",
+    # Image transfer runs on the host and never enters the staged runtime.
+    ":(exclude)container/oci-image/transfer.py",
     # These host CLI/cleanup modules are embedded only in crowdb-cli. stage.sh
     # builds the node services and never reads or packages these Python files.
     ":(exclude)container/oci-image/host_inputs.py",
@@ -78,6 +80,9 @@ SERVER_PATHS = (
     # Independent SDK packaging builds host test consumers only; release staging
     # neither reads this helper nor packages its output.
     ":(exclude)tools/sdk/package.py",
+    ":(exclude)tools/sdk/native_package.py",
+    # The pinned Dataset consumer/fixture runner never enters server staging.
+    ":(exclude)tools/sdk/dataset_workload.py",
     # This host-only RPC benchmark is not a dependency or staged server binary.
     ":(exclude)app/crowdb-cli/src/commands/bench/rpc.rs",
     ":(exclude)app/crowdb-cli/src/commands/bench/result.rs",

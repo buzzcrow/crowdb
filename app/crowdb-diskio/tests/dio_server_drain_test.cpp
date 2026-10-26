@@ -51,7 +51,7 @@ TEST_F(DiskioWriteDrain, MissingStaleAndUnboundedFutureTimesAreRejectedBeforeIo)
 
 TEST_F(DiskioWriteDrain, AQueuedExpiredWriteCannotRunBeforeTheFreshDrain)
 {
-    crowdb::diskio::DiskioServer guarded(disks, &transport, 50, 1);
+    crowdb::diskio::DiskioServer guarded(disks, transport_owner, 50, 1);
     guarded.handle_write(request(false, 0, 41), connection.get());
     guarded.handle_write(request(false, 32, 42), connection.get());
     EXPECT_EQ(engine.writes.size(), 1);

@@ -7,7 +7,7 @@ use crate::{
     StoredValue,
 };
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,13 +29,6 @@ pub(super) struct DraftState {
     #[serde(default)]
     pub source_leases: Vec<crate::SnapshotId>,
 }
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct EditReceipt {
-    pub marker: EditMarker,
-    pub record: SplitDraftRecord,
-}
-
 impl DraftState {
     pub(super) fn encode(&self) -> Result<Vec<u8>, SplitLifecycleError> {
         self.record.validate()?;
@@ -98,7 +91,7 @@ impl DatasetAuthority {
                 key,
                 MetadataScanBudget {
                     items: 1,
-                    bytes: 1024 * 1024 + 64 * 1024,
+                    bytes: super::retirement::resource::RESOURCE_CAP + 64 * 1024,
                     timeout: Duration::from_secs(2),
                 },
                 &ReadCancellation::new(),
@@ -114,24 +107,6 @@ impl DatasetAuthority {
             CasOutcome::Conflict(_) => Err(SplitLifecycleError::Conflict),
         }
     }
-    pub(super) async fn help_split_edit(
-        &self,
-        identity: &DatasetIdentity,
-        state: &DraftState,
-    ) -> Result<(), SplitLifecycleError> {
-        if let Some(marker) = &state.edit {
-            let receipt = EditReceipt {
-                marker: marker.clone(),
-                record: state.record.clone(),
-            };
-            self.put_split_state(
-                &state_key(b"DS\0SX\0", identity, state.record.operation, Some(marker.id))?,
-                &codec::encode(&receipt)?,
-            )
-            .await?;
-        }
-        Ok(())
-    }
     pub(super) async fn replace_split_draft(
         &self,
         identity: &DatasetIdentity,
@@ -139,15 +114,7 @@ impl DatasetAuthority {
         state: &DraftState,
         next: &DraftState,
     ) -> Result<(), SplitLifecycleError> {
-        self.help_split_edit(identity, state).await?;
         let bytes = next.encode()?;
-        // Validate receipt serialization before making the edit observable.
-        if let Some(marker) = &next.edit {
-            codec::encode(&EditReceipt {
-                marker: marker.clone(),
-                record: next.record.clone(),
-            })?;
-        }
         match self
             .store
             .compare_exchange(
@@ -157,33 +124,10 @@ impl DatasetAuthority {
             )
             .await?
         {
-            CasOutcome::Applied(_) => self.help_split_edit(identity, next).await,
-            CasOutcome::Conflict(Some(value)) if value.bytes == bytes => {
-                self.help_split_edit(identity, next).await
-            }
+            CasOutcome::Applied(_) => Ok(()),
+            CasOutcome::Conflict(Some(value)) if value.bytes == bytes => Ok(()),
             CasOutcome::Conflict(_) => Err(SplitLifecycleError::Conflict),
         }
-    }
-    pub(super) async fn renew_split_draft_lease(
-        &self,
-        identity: &DatasetIdentity,
-        state: &DraftState,
-    ) -> Result<(), SplitLifecycleError> {
-        let record = &state.record;
-        if state.initial {
-            self.require_initial_split_owner(identity, record.snapshot, record.operation)
-                .await?;
-        } else {
-            self.require_committed_snapshot(identity, record.snapshot).await?;
-            self.validate_split_sources(identity, record).await?;
-        }
-        for source in super::inheritance::source_owners(record) {
-            self.touch_read_handle(identity, source, record.operation, now(), 3600)
-                .await?;
-        }
-        self.touch_read_handle(identity, record.snapshot, record.operation, now(), 3600)
-            .await?;
-        Ok(())
     }
 }
 pub(super) fn state_key(
@@ -199,10 +143,4 @@ pub(super) fn state_key(
         key.extend_from_slice(edit.as_bytes());
     }
     Ok(key)
-}
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }

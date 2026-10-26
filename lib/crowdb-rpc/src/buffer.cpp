@@ -9,6 +9,31 @@
 namespace crowdb::rpc
 {
 
+bool classify_rdma_capacity(uint32_t requested, BufferCapacityClass *out, uint32_t *capacity)
+{
+    if (requested == 0 || out == nullptr || capacity == nullptr)
+        return false;
+    if (requested <= RDMA_CONTROL_CAPACITY) {
+        *out      = BufferCapacityClass::Control;
+        *capacity = RDMA_CONTROL_CAPACITY;
+    }
+    else if (requested <= RDMA_METADATA_CAPACITY) {
+        *out      = BufferCapacityClass::Metadata;
+        *capacity = RDMA_METADATA_CAPACITY;
+    }
+    else if (requested <= RDMA_AGGREGATE_CAPACITY) {
+        *out      = BufferCapacityClass::Aggregate;
+        *capacity = RDMA_AGGREGATE_CAPACITY;
+    }
+    else if (requested <= RDMA_DATAPATH_CAPACITY) {
+        *out      = BufferCapacityClass::Datapath;
+        *capacity = RDMA_DATAPATH_CAPACITY;
+    }
+    else
+        return false;
+    return true;
+}
+
 // ── Buffer ───────────────────────────────────────────────────────
 
 void Buffer::write(const void *src, uint32_t n)
@@ -24,13 +49,37 @@ void Buffer::write(const void *src, uint32_t n)
 Buffer *Buffer::ref_clone()
 {
     assert(ref != nullptr && "Buffer::ref_clone on released buffer");
-    ref->fetch_add(1, std::memory_order_relaxed);
+    int32_t count = ref->load(std::memory_order_acquire);
+    while (count > 0 &&
+           !ref->compare_exchange_weak(count, count + 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    }
+    if (count <= 0)
+        return nullptr;
     return this;
 }
 
 void Buffer::release()
 {
-    if (ref->fetch_sub(1, std::memory_order_acq_rel) == 1) {
+    if (ref == nullptr)
+        return;
+    int32_t count = ref->load(std::memory_order_acquire);
+    while (count > 0 &&
+           !ref->compare_exchange_weak(count, count - 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    }
+    if (count == 0 || count < 0)
+        return;
+    if (count == 1) {
+        if (last_release_cb != nullptr) {
+            auto  callback   = last_release_cb;
+            void *context    = last_release_ctx;
+            last_release_cb  = nullptr;
+            last_release_ctx = nullptr;
+            // No other owner remains. Give the recycler one reference so it
+            // can repost or release using the ordinary ownership contract.
+            ref->store(1, std::memory_order_release);
+            callback(context, this);
+            return;
+        }
         // Last reference — recycle to pool, call external free, or free
         // standalone.
         if (free_cb != nullptr) {
@@ -56,59 +105,53 @@ void Buffer::release()
     }
 }
 
-// ── SystemBufferPool ──────────────────────────────────────────────
-//
-// Direct heap allocation — no free-list, no mutex. Each alloc does
-// posix_memalign + new (Buffer + refcount); each recycle does free +
-// delete. glibc per-thread arenas handle small-allocation recycling
-// efficiently without a userspace pool.
-
-SystemBufferPool::SystemBufferPool(uint32_t max_buffers) : max_buffers_(max_buffers)
+Buffer *Buffer::slice(uint32_t offset, uint32_t size)
 {
-}
-
-Buffer *SystemBufferPool::alloc(uint32_t capacity)
-{
-    if (outstanding_.load(std::memory_order_relaxed) >= max_buffers_) {
-        return nullptr; // bound exceeded
-    }
-    outstanding_.fetch_add(1, std::memory_order_relaxed);
-
-    auto *buf     = new Buffer;
-    buf->capacity = capacity;
-    buf->type     = BufferType::System;
-    buf->pool     = this;
-    buf->ref      = new std::atomic<int32_t>(1);
-
-    // posix_memalign for cache-line alignment (64 bytes).
-    void *ptr = nullptr;
-    if (posix_memalign(&ptr, 64, capacity) != 0) {
-        delete buf->ref;
-        delete buf;
-        outstanding_.fetch_sub(1, std::memory_order_relaxed);
+    if (offset > capacity || size > capacity - offset || data == nullptr || ref_clone() == nullptr)
         return nullptr;
-    }
-    buf->data = static_cast<uint8_t *>(ptr);
-    buf->len  = 0;
-    return buf;
+    auto *view     = new Buffer;
+    view->data     = payload_data() + offset;
+    view->len      = size;
+    view->capacity = size;
+    view->type     = type;
+    view->ref      = new std::atomic<int32_t>(1);
+    view->ownership.store(BufferOwnership::CallerOwned, std::memory_order_relaxed);
+    view->capacity_class      = capacity_class;
+    view->registration_id     = registration_id;
+    view->registration_key    = registration_key;
+    view->registration_handle = registration_handle;
+    view->allocation_owner    = allocation_owner == nullptr ? this : allocation_owner;
+    view->set_metadata(request_id, stream_id, sequence, logical_offset, registration_id);
+    view->free_cb  = [](void *parent) { static_cast<Buffer *>(parent)->release(); };
+    view->free_ctx = this;
+    return view;
 }
 
-void SystemBufferPool::recycle(Buffer *buf)
+bool Buffer::transition(BufferOwnership from, BufferOwnership to)
 {
-    std::free(buf->data);
-    delete buf->ref;
-    delete buf;
-    outstanding_.fetch_sub(1, std::memory_order_relaxed);
+    return ownership.compare_exchange_strong(from, to, std::memory_order_acq_rel, std::memory_order_acquire);
 }
 
-bool SystemBufferPool::detach(Buffer *buf)
+bool Buffer::quarantine()
 {
-    if (buf == nullptr || buf->pool != this || buf->ref->load(std::memory_order_acquire) != 1) {
-        return false;
+    if (allocation_owner != nullptr)
+        (void)allocation_owner->quarantine();
+    BufferOwnership state = ownership.load(std::memory_order_acquire);
+    while (state != BufferOwnership::Quarantined) {
+        if (ownership.compare_exchange_weak(state, BufferOwnership::Quarantined, std::memory_order_acq_rel,
+                                            std::memory_order_acquire))
+            return true;
     }
-    buf->pool = nullptr;
-    outstanding_.fetch_sub(1, std::memory_order_relaxed);
-    return true;
+    return false;
+}
+
+void Buffer::set_metadata(uint64_t request, uint64_t stream, uint64_t seq, uint64_t offset, uint32_t registration)
+{
+    request_id      = request;
+    stream_id       = stream;
+    sequence        = seq;
+    logical_offset  = offset;
+    registration_id = registration;
 }
 
 } // namespace crowdb::rpc

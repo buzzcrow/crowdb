@@ -26,7 +26,7 @@ class SplitSource:
 
 def _identity(arguments):
     request = arguments.get("request") or {}
-    return request.get("attempt", request.get("edit", request.get("operation", request.get("id", arguments.get("id")))))
+    return request.get("attempt", request.get("edit", request.get("operation", request.get("id", request.get("snapshot", arguments.get("revision", arguments.get("id")))))))
 
 
 class ControlClient:
@@ -44,6 +44,7 @@ class ControlClient:
     def create(self): return self._call("create", {})
     def open(self): return self._call("open", {})
     def head(self): return self._call("head", {})
+    def update_snapshot_head(self, request): return self._call("update_snapshot_head", {"request": request})
     def commit_status(self, attempt): return self._call("commit_status", {"id": attempt})
     def summary(self, snapshot): return self._call("summary", {"id": snapshot})
     def retain(self, snapshot): return self._call("retain", {"id": snapshot})
@@ -59,31 +60,14 @@ class ControlClient:
     def preview(self, snapshot, sample, field, max_bytes=65536):
         return self._call("preview", {"id": snapshot, "sample": sample, "field": field, "max_bytes": max_bytes})
 
-    def begin_composition(self, request): return self._call("begin_composition", {"request": request})
-    def composition(self, operation): return self._call("composition", {"id": operation})
-    def edit_composition(self, operation, request): return self._call("edit_composition", {"id": operation, "request": request})
-    def evaluate_composition(self, operation, expected_revision, expected_page):
-        return self._call("evaluate_composition", {"id": operation, "request": {"expected_revision": expected_revision, "expected_page": expected_page}})
-    def prepare_composition(self, operation, expected_revision):
-        return self._call("prepare_composition", {"id": operation, "request": {"expected_revision": expected_revision}})
-    def publish_composition(self, operation, request): return self._call("publish_composition", {"id": operation, "request": request})
-    def abandon_composition(self, operation, expected_revision):
-        return self._call("abandon_composition", {"id": operation, "request": {"expected_revision": expected_revision}})
-    def cleanup_composition(self, operation): return self._call("cleanup_composition", {"id": operation})
-
-    def begin_split(self, snapshot, request): return self._call("begin_split", {"id": snapshot, "request": request})
-    def split_draft(self, operation): return self._call("split_draft", {"id": operation})
-    def edit_split(self, operation, request): return self._call("edit_split", {"id": operation, "request": request})
-    def evaluate_split(self, operation, expected_revision, expected_page):
-        return self._call("evaluate_split", {"id": operation, "request": {"expected_revision": expected_revision, "expected_page": expected_page}})
-    def prepare_split(self, operation, expected_revision):
-        return self._call("prepare_split", {"id": operation, "request": {"expected_revision": expected_revision}})
-    def publish_split(self, operation, request): return self._call("publish_split", {"id": operation, "request": request})
-    def abandon_split(self, operation, expected_revision):
-        return self._call("abandon_split", {"id": operation, "request": {"expected_revision": expected_revision}})
-    def cleanup_split(self, operation): return self._call("cleanup_split", {"id": operation})
+    def prepare_snapshot(self, snapshot, request): return self._call("prepare_snapshot", {"id": snapshot, "request": request})
+    def prepare_split_revision(self, snapshot, revision, request):
+        return self._call("prepare_split_revision", {"id": snapshot, "revision": revision, "request": request})
+    def update_split_head(self, snapshot, request): return self._call("update_split_head", {"id": snapshot, "request": request})
     def split_head(self, snapshot): return self._call("split_head", {"id": snapshot})
     def split_revision(self, snapshot, revision): return self._call("split_revision", {"id": snapshot, "revision": revision})
+    def delete_split_revision(self, snapshot, revision):
+        return self._call("delete_split_revision", {"id": snapshot, "revision": revision})
 
     def create_upload(self, request): return self._call("create_upload", {"request": request})
     def upload_status(self, id): return self._call("upload_status", {"id": id})
@@ -93,14 +77,10 @@ class ControlClient:
     def upload_part(self, id, index, data):
         self._owner._check()
         return _result(self._owner._native.part_v2(id, index, data), id)
-    def prepare_read(self, request): return self._call("prepare_read", {"request": request})
-    def read_status(self, id): return self._call("read_status", {"id": id})
-    def close_read(self, id): return self._call("close_read", {"id": id})
-    def progress(self, id): return self._call("progress", {"id": id})
-    def acknowledge(self, id, expected, next): return self._call("acknowledge", {"id": id, "request": {"expected": expected, "next": next}})
-    def next_batch(self, id):
+    def bind_read(self, request): return self._call("bind_read", {"request": request})
+    def next_batch(self, cursor):
         self._owner._check()
-        return BatchStream(self._owner._native.stream("v2-next", id))
+        return BatchStream(self._owner._native.stream("v2-next", cursor))
 
     def page(self, kind, *, snapshot=None, source=None, after=None, limit=20):
         """One bounded page; source is a SplitSource or its exact wire dictionary."""
@@ -147,7 +127,7 @@ class AsyncControlClient:
             await asyncio.to_thread(pending.result)
             raise
 
-    def next_batch(self, id): return AsyncBatchStream(ControlClient(self._owner).next_batch(id))
+    def next_batch(self, cursor): return AsyncBatchStream(ControlClient(self._owner).next_batch(cursor))
 
     async def pages(self, kind, **scope):
         while True:

@@ -69,7 +69,8 @@ async fn exact_matrix_and_inline_preview_do_not_create_read_sessions() {
 
 #[tokio::test]
 async fn payload_preview_caps_bytes_across_parts_and_distinguishes_missing_tombstone() {
-    let test = TestDatasetHttp::start_payload(Arc::new(TestStore::default())).await;
+    let store = Arc::new(TestStore::default());
+    let test = TestDatasetHttp::start_payload(store.clone()).await;
     let client = Client::new();
     let root = format!(
         "{}/api/dataset/v1/namespaces/dataset-ns/datasets/preview",
@@ -91,6 +92,8 @@ async fn payload_preview_caps_bytes_across_parts_and_distinguishes_missing_tombs
         root.replace("/v1/", "/v2/"),
         published["id"].as_str().unwrap()
     );
+    let upload_reads = store.upload_reads.load(std::sync::atomic::Ordering::Relaxed);
+    let admissions = store.admission_reads.load(std::sync::atomic::Ordering::Relaxed);
     let preview = response(
         client
             .get(&url)
@@ -105,6 +108,14 @@ async fn payload_preview_caps_bytes_across_parts_and_distinguishes_missing_tombs
     assert_eq!(preview["length"], "100000");
     assert_eq!(preview["truncated"], true);
     assert_eq!(preview["md5"], hex::encode(Md5::digest(&data)));
+    assert_eq!(
+        store.admission_reads.load(std::sync::atomic::Ordering::Relaxed) - admissions,
+        1
+    );
+    assert_eq!(
+        store.upload_reads.load(std::sync::atomic::Ordering::Relaxed) - upload_reads,
+        3
+    );
     for (field, state) in [("missing", "missing"), ("deleted", "tombstone")] {
         let p = response(
             client

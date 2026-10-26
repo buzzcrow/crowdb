@@ -184,6 +184,15 @@ block channel. The `ChunkWriter` drive loop is identical in both modes.
 
 The flow, step by step:
 
+- **Canonical framing.** Ordinary `LargeAsyncObjectWriter::on_data` input is
+  copied into its logical frame tail, then each payload is copied once into
+  its final encoded batch. Header and CRC footer preparation uses stack
+  regions; full frames have no temporary encoded payload allocation. A partial
+  final frame is emitted at EOF. The payload-copy counters include these
+  explicit copies and repeated encoding before a rotation accepts the batch;
+  they exclude framing bytes, allocator growth, source reception, EC, and
+  transport staging. Owner-backed `on_framed_data` retains its final frame
+  allocation and contributes no payload-copy bytes to those counters.
 - **Fetch.** Reads from the `AsyncRead` stream directly into the owned
   `BytesMut` block. A socket read may return less than 1 MiB; the fetch stage
   accumulates in that same allocation, freezes it without copying, then sends it to

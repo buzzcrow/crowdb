@@ -34,11 +34,15 @@ async fn capabilities_use_existing_auth_and_match_configured_operations() {
         value["capabilities"],
         serde_json::json!([
             "head-inspection",
+            "snapshot-head-update",
             "bounded-inspection",
             "inspection-preparation",
             "dataset-management",
             "split-revisions",
-            "split-reads"
+            "split-revision-delete",
+            "split-preparation",
+            "split-head-update",
+            "stateless-reads"
         ])
     );
     let response = client.post(&endpoint).bearer_auth("secret").send().await.unwrap();

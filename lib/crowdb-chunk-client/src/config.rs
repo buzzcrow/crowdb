@@ -16,7 +16,7 @@ use crowdb_protocol::chunkdb::rpc::ChunkType;
 use crate::IoError;
 
 /// Bounded aggregation and elasticity policy for shared small writes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SmallWritePolicy {
     /// Type assigned to every chunk owned by this pool.
     pub chunk_type: ChunkType,

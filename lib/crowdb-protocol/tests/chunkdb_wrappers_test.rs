@@ -341,6 +341,7 @@ fn delete_chunk_range_response_success() {
             error_msg: None,
             range_start: 0,
             range_end: 0,
+            reclaimed: true,
         },
     );
     fbb.finish(resp, None);
@@ -350,7 +351,24 @@ fn delete_chunk_range_response_success() {
     assert!(view.valid());
     assert_eq!(view.request_id(), Some(42));
     assert!(view.ok());
+    assert!(view.reclaimed());
     assert_eq!(view.ret_code(), FBChunkdbRetCode::Success);
+}
+
+#[test]
+fn range_response_without_physical_completion_is_not_reclaimed() {
+    let mut builder = FlatBufferBuilder::new();
+    let response = FBDeleteChunkRangeResponse::create(
+        &mut builder,
+        &FBDeleteChunkRangeResponseArgs {
+            ret_code: FBChunkdbRetCode::Success,
+            ..Default::default()
+        },
+    );
+    builder.finish(response, None);
+    let view = FBDeleteChunkRangeResponseRef::new(builder.finished_data());
+    assert!(view.ok());
+    assert!(!view.reclaimed());
 }
 
 #[test]

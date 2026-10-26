@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "description": "Synthetic mixed-size controls; no claim of a production trace. Same-QP sizes vary per request.",
+  "defaults": {
+    "wire_layout": "control-data",
+    "wire_slot_capacity": 1049600,
+    "sq_depth": 256,
+    "rq_depth": 64,
+    "posted_receive_target": 64,
+    "warmup_secs": 5,
+    "duration_secs": 10,
+    "payload_seed": 93,
+    "payload_mix": "0:5,128:45,513:15,4096:20,65535:10,262144:4,1048576:1",
+    "registered_payload": true,
+    "send_batch_size": 16,
+    "receive_batch_size": 1,
+    "aggregation_enabled": true
+  },
+  "cases": [
+    {
+      "case_id": "mixed-single",
+      "loader_count": 1
+    },
+    {
+      "case_id": "mixed-one-owner",
+      "loader_count": 64
+    },
+    {
+      "case_id": "mixed-shared-owner",
+      "loader_count": 128,
+      "connection_count": 4
+    },
+    {
+      "case_id": "mixed-four-owners",
+      "loader_count": 128,
+      "connection_count": 4,
+      "cq_count": 4
+    },
+    {
+      "case_id": "mixed-tokio-producers",
+      "mode": "tokio",
+      "loader_count": 128,
+      "connection_count": 1,
+      "io_workers": 4
+    }
+  ]
+}

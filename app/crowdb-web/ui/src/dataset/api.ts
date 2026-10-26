@@ -17,7 +17,7 @@ export function decimal(value: string): bigint {
   return BigInt(value);
 }
 export class DatasetError extends Error {
-  constructor(readonly status: number, message: string, readonly unknownOutcome = false) { super(message); }
+  constructor(readonly status: number, message: string, readonly unknownOutcome = false, readonly observedHead?: unknown) { super(message); }
 }
 async function readBounded(response: Response): Promise<unknown> {
   const reader = response.body?.getReader();
@@ -35,10 +35,10 @@ async function readBounded(response: Response): Promise<unknown> {
   let result: unknown;
   try { result = JSON.parse(text); } catch { throw new DatasetError(response.status || 502, 'Dataset returned an invalid response.'); }
   if (!response.ok) {
-    const error = result as { message?: string; code?: string; error?: string | { message?: string; code?: string } };
+    const error = result as { message?: string; code?: string; observed_head?: unknown; error?: string | { message?: string; code?: string } };
     const message = error.message ?? (typeof error.error === 'string' ? error.error : error.error?.message);
     const detail = error.code && message !== error.code ? `${error.code}: ${message}` : message;
-    throw new DatasetError(response.status, detail ?? `Dataset HTTP ${response.status}`, response.status >= 500);
+    throw new DatasetError(response.status, detail ?? `Dataset HTTP ${response.status}`, response.status >= 500, error.observed_head);
   }
   return result;
 }
@@ -52,7 +52,7 @@ export async function control<T>(path: string, method = 'GET', body?: unknown, s
     });
   } catch (reason) {
     if (signal?.aborted) throw reason;
-    throw new DatasetError(0, 'Dataset service is unavailable. Reconcile any pending operation before retrying.', method !== 'GET');
+    throw new DatasetError(0, 'Dataset service is unavailable. Retry the saved complete request after reconnecting.', method !== 'GET');
   }
   return await readBounded(response) as T;
 }

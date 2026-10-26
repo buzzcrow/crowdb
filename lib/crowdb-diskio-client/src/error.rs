@@ -16,6 +16,10 @@ pub enum DiskioError {
     TopologyInconsistent(String),
     #[error("DiskIO transport unavailable: {0}")]
     TransportUnavailable(String),
+    /// An RDMA read was accepted before its transport or response failed.
+    /// Higher layers must terminate this read rather than reconnect or replay it.
+    #[error("accepted RDMA read interrupted: {0}")]
+    AcceptedReadInterrupted(String),
     #[error("DiskIO queue rejected the operation: {0}")]
     Backpressure(String),
     #[error("DiskIO has not opened the requested disk")]

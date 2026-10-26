@@ -1,5 +1,8 @@
 use crate::{catalog::CasOutcome, operation::mutation_identity};
-use crate::{file::canonical_file_key, record::StorageRecordKey};
+use crate::{
+    file::{canonical_file_key, FileContent},
+    record::StorageRecordKey,
+};
 use crowdb_protocol::chunkdb::rpc::Location;
 
 use super::{
@@ -42,7 +45,7 @@ impl GcWorker {
         }
         if candidate.task == task.identity {
             if now_ms < candidate.not_before_ms {
-                if task.kind == GcTaskKind::LiveTable {
+                if matches!(task.kind, GcTaskKind::LiveTable | GcTaskKind::MultipartCleanup) {
                     next.scan_after.clone_from(&item.key);
                     next.stalled = GcStalledReason::Retention;
                     self.repository.update(task, &next).await?;
@@ -68,7 +71,9 @@ impl GcWorker {
             };
             match progress {
                 DeleteProgress::Advanced => {}
-                DeleteProgress::Accounted => next.scan_after.clone_from(&item.key),
+                DeleteProgress::Accounted | DeleteProgress::Protected => {
+                    next.scan_after.clone_from(&item.key);
+                }
                 DeleteProgress::Complete => {
                     next.scan_after.clone_from(&item.key);
                     next.deleted = next
@@ -153,7 +158,9 @@ impl GcWorker {
             return Err(CatalogError::Busy.into());
         }
         self.verify_assembly(task, candidate, now_ms).await?;
-        self.verify_deleted_authority(task, candidate).await?;
+        if !self.verify_deleted_authority(task, candidate).await? {
+            return Ok(DeleteProgress::Protected);
+        }
         if let Some(part) = &candidate.part {
             let key = part.key();
             let stored = self
@@ -183,7 +190,11 @@ impl GcWorker {
             .checked_add(1)
             .ok_or(ValidationError::GenerationExhausted)?;
         next.phase = CandidatePhase::Deleting;
-        if candidate.phase == CandidatePhase::Retained {
+        let inline_purge = task.kind == GcTaskKind::PurgeTable
+            && candidate.part.is_none()
+            && candidate.assembly.is_none()
+            && matches!(candidate.file.content, FileContent::Inline { .. });
+        if candidate.phase == CandidatePhase::Retained && !inline_purge {
             self.repository.candidate(Some(candidate), &next).await?;
             return Ok(DeleteProgress::Advanced);
         }
@@ -242,12 +253,12 @@ impl GcWorker {
         &self,
         task: &GcTask,
         candidate: &GcCandidate,
-    ) -> Result<(), GcWorkError> {
+    ) -> Result<bool, GcWorkError> {
         if task.kind != GcTaskKind::MultipartCleanup
             || candidate.part.is_some()
             || candidate.assembly.is_some()
         {
-            return Ok(());
+            return Ok(true);
         }
         let key = canonical_file_key(&candidate.file.location);
         let value = self
@@ -261,10 +272,22 @@ impl GcWorker {
                 StorageRecord::DeletedFile(deleted) if deleted.file == candidate.file => {}
                 StorageRecord::File(current) if current.file != candidate.file.file => {}
                 StorageRecord::FileMapping(current) if current.file != candidate.file.file => {}
+                StorageRecord::File(current)
+                    if *current == candidate.file && GcCandidate::is_initial_metadata(&current) =>
+                {
+                    return Ok(matches!(
+                        crate::table::retire_absent_table(
+                            self.repository.store.as_ref(),
+                            current.location.table()
+                        )
+                        .await?,
+                        crate::table::TableSlot::Retired
+                    ));
+                }
                 _ => return Err(CatalogError::Busy.into()),
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     async fn delete_location_candidate(
@@ -372,4 +395,5 @@ enum DeleteProgress {
     Accounted,
     Complete,
     Deferred,
+    Protected,
 }

@@ -138,5 +138,5 @@ async fn mapping_repair_finishes_a_durable_reservation_instead_of_deleting_it() 
         .exists(fixture.context, &request.identifier)
         .await
         .unwrap());
-    assert_eq!(creator.create(&request).await.unwrap().status, 200);
+    assert_eq!(creator.create(&request).await.unwrap().status, 409);
 }

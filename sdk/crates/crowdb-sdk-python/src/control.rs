@@ -5,7 +5,12 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
 pub(super) async fn dispatch(client: DatasetClient, name: &str, args: &str) -> Result<String, Error> {
-    if args.len() > 1024 * 1024 {
+    let max_bytes = if name == "prepare_snapshot" {
+        8 * 1024 * 1024 + 64 * 1024
+    } else {
+        1024 * 1024
+    };
+    if args.len() > max_bytes {
         return Err(Error::Limit);
     }
     if name == "capabilities" {
@@ -24,6 +29,7 @@ pub(super) async fn dispatch(client: DatasetClient, name: &str, args: &str) -> R
         "create" => encode(&client.create().await?),
         "open" => encode(&client.open().await?),
         "head" => encode(&client.head().await?),
+        "update_snapshot_head" => encode(&client.update_snapshot_head(&request(&value)?).await?),
         "commit_status" => encode(&client.commit_status(&id()?).await?),
         "summary" => encode(&client.summary(&id()?).await?),
         "retain" => encode(&client.retain(&id()?).await?),
@@ -54,37 +60,29 @@ pub(super) async fn dispatch(client: DatasetClient, name: &str, args: &str) -> R
         "complete_upload" => encode(&client.complete_upload(&id()?).await?),
         "abort_upload" => encode(&client.abort_upload(&id()?).await?),
         "upload_file" => encode(&client.upload_file(text(&value, "path")?, &id()?).await?),
-        "prepare_read" => encode(&client.prepare_read(&request(&value)?).await?),
-        "read_status" => encode(&client.read_status(&id()?).await?),
-        "close_read" => encode(&client.close_read(&id()?).await?),
-        "acknowledge" => encode(&client.acknowledge(&id()?, &request(&value)?).await?),
-        "progress" => encode(&client.progress(&id()?).await?),
+        "bind_read" => encode(&client.bind_read(&request(&value)?).await?),
         _ => Err(Error::Invalid("unknown v2 SDK operation".into())),
     }
 }
 async fn lifecycle(client: &v2::ControlClient, name: &str, value: &Value) -> Result<Option<String>, Error> {
     let id = || id(value, "id");
     let result = match name {
-        "begin_composition" => encode(&client.begin_composition(&request(value)?).await?),
-        "composition" => encode(&client.composition(&id()?).await?),
-        "edit_composition" => encode(&client.edit_composition(&id()?, &request(value)?).await?),
-        "evaluate_composition" => encode(&client.evaluate_composition(&id()?, &request(value)?).await?),
-        "prepare_composition" => encode(&client.prepare_composition(&id()?, &request(value)?).await?),
-        "publish_composition" => encode(&client.publish_composition(&id()?, &request(value)?).await?),
-        "abandon_composition" => encode(&client.abandon_composition(&id()?, &request(value)?).await?),
-        "cleanup_composition" => encode(&client.cleanup_composition(&id()?).await?),
-        "begin_split" => encode(&client.begin_split(&id()?, &request(value)?).await?),
-        "split_draft" => encode(&client.split_draft(&id()?).await?),
-        "edit_split" => encode(&client.edit_split(&id()?, &request(value)?).await?),
-        "evaluate_split" => encode(&client.evaluate_split(&id()?, &request(value)?).await?),
-        "prepare_split" => encode(&client.prepare_split(&id()?, &request(value)?).await?),
-        "publish_split" => encode(&client.publish_split(&id()?, &request(value)?).await?),
-        "abandon_split" => encode(&client.abandon_split(&id()?, &request(value)?).await?),
-        "cleanup_split" => encode(&client.cleanup_split(&id()?).await?),
+        "prepare_snapshot" => encode(&client.prepare_snapshot(&id()?, &request(value)?).await?),
+        "prepare_split_revision" => encode(
+            &client
+                .prepare_split_revision(&id()?, &self::id(value, "revision")?, &request(value)?)
+                .await?,
+        ),
+        "update_split_head" => encode(&client.update_split_head(&id()?, &request(value)?).await?),
         "split_head" => encode(&client.split_head(&id()?).await?),
         "split_revision" => encode(
             &client
                 .split_revision(&id()?, &self::id(value, "revision")?)
+                .await?,
+        ),
+        "delete_split_revision" => encode(
+            &client
+                .delete_split_revision(&id()?, &self::id(value, "revision")?)
                 .await?,
         ),
         _ => return Ok(None),

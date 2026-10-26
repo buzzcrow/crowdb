@@ -29,57 +29,42 @@ mod staging;
 use common::TestStore;
 use crowdb_access_iceberg::{
     catalog::CatalogError,
-    commit::{CommitPublicationError, TableCreatePhase},
-    table::TableRepository,
+    commit::CommitPublicationError,
+    key::OperationId,
+    namespace::NamespaceDropper,
+    table::{storage_head_key, TableRepository},
 };
 use staging::TestStaged;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 #[tokio::test]
-async fn expiry_and_commit_binding_have_one_phase_cas_winner() {
+async fn identical_complete_inputs_share_only_the_resource_reservation() {
     let store = Arc::new(TestStore {
-        stage_transition_barrier: Some(Arc::new(tokio::sync::Barrier::new(2))),
+        table_reservation_barrier: Some(Arc::new(tokio::sync::Barrier::new(2))),
         ..TestStore::default()
     });
     let test = TestStaged::with_store(store).await;
     let request = test.commit_request().await;
-    let operation = test.operation().await;
+    let mut retry = request.clone();
+    retry.identity.operation = OperationId::random();
+    retry.timestamp_ms += 1;
     let creator = test.creator();
-    let (commit, expiry) = tokio::join!(
-        creator.commit_staged(&request),
-        creator.expire_stage(test.namespace.context, operation.candidate.table, 2000)
-    );
-    let final_operation = test.operation().await;
-    if final_operation.stage.unwrap().binding.is_some() {
-        assert_eq!(commit.unwrap().status, 200);
-        assert!(matches!(
-            expiry,
-            Err(CommitPublicationError::Catalog(CatalogError::Busy))
-        ));
-        assert!(!creator
-            .expire_stage(test.namespace.context, operation.candidate.table, 9999)
-            .await
-            .unwrap());
-    } else {
-        assert!(expiry.unwrap());
-        assert!(matches!(
-            commit,
-            Err(CommitPublicationError::Catalog(CatalogError::Busy))
-        ));
-        assert_eq!(final_operation.phase, TableCreatePhase::Aborted);
-        assert!(creator.commit_staged(&request).await.is_err());
-        assert!(TableRepository::new(test.namespace.store.clone())
-            .select(test.namespace.context, test.parent.namespace, "events")
-            .await
-            .unwrap()
-            .is_none());
-    }
+    let (commit, retry) = tokio::join!(creator.commit_staged(&request), creator.commit_staged(&retry));
+    assert_eq!(usize::from(commit.is_ok()) + usize::from(retry.is_ok()), 1);
+    let loser = if commit.is_err() { commit } else { retry };
+    assert!(matches!(loser, Err(CommitPublicationError::TableExists)));
+    let selected = TableRepository::new(test.namespace.store.clone())
+        .select(test.namespace.context, test.parent.namespace, "events")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.head.generation, 1);
+    assert_eq!(selected.head.pending_operation, None);
 }
 
 #[tokio::test]
 async fn namespace_drop_at_every_interrupted_final_commit_boundary_recovers() {
-    use crowdb_access_iceberg::namespace::NamespaceDropper;
     let baseline = TestStaged::new().await;
     let request = baseline.commit_request().await;
     let before = baseline.namespace.store.writes.load(Ordering::SeqCst);
@@ -95,56 +80,151 @@ async fn namespace_drop_at_every_interrupted_final_commit_boundary_recovers() {
         assert!(test.creator().commit_staged(&request).await.is_err());
         store.fail_after.store(0, Ordering::SeqCst);
         let dropper = NamespaceDropper::new(store.clone());
-        let drop_result = match dropper.drop_namespace(&test.drop_request()).await {
-            Ok(outcome) => outcome.unwrap(),
-            Err(CatalogError::Busy) => {
-                test.creator().commit_staged(&request).await.unwrap();
-                dropper
-                    .drop_namespace(&test.drop_request())
-                    .await
-                    .unwrap()
-                    .unwrap()
-            }
-            Err(error) => panic!("offset {offset}: {error:?}"),
-        };
-        let committed = test.creator().commit_staged(&request).await.unwrap();
-        assert!(
-            matches!(drop_result.status, 204 | 404 | 409) && matches!(committed.status, 200 | 404),
+        let drop_result = dropper
+            .drop_namespace(&test.drop_request())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            drop_result.status,
+            if offset < 3 { 204 } else { 409 },
             "offset {offset}"
         );
+        let committed = test.creator().commit_staged(&request).await;
+        if offset < 3 {
+            assert!(matches!(committed, Err(CommitPublicationError::NamespaceMissing)));
+        } else {
+            assert!(matches!(committed, Err(CommitPublicationError::TableExists)));
+        }
         let selected = TableRepository::new(store.clone())
             .select(test.namespace.context, test.parent.namespace, "events")
             .await
             .unwrap();
-        assert_eq!(selected.is_some(), committed.status == 200, "offset {offset}");
+        assert_eq!(selected.is_some(), offset >= 3, "offset {offset}");
     }
 }
 
 #[tokio::test]
-async fn competing_final_identities_cannot_rebind_the_same_draft() {
-    let store = Arc::new(TestStore {
-        stage_transition_barrier: Some(Arc::new(tokio::sync::Barrier::new(2))),
-        ..TestStore::default()
-    });
-    let test = TestStaged::with_store(store).await;
+async fn different_complete_material_cannot_adopt_an_interrupted_reservation() {
+    let test = TestStaged::new().await;
     let first = test.commit_request().await;
     let mut second = first.clone();
-    second.identity.operation = crowdb_access_iceberg::key::OperationId::random();
-    let creator = test.creator();
-    let (left, right) = tokio::join!(creator.commit_staged(&first), creator.commit_staged(&second));
-    assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
-    let (winner, loser) = if left.is_ok() {
-        (&first, &second)
-    } else {
-        (&second, &first)
-    };
-    assert_eq!(creator.commit_staged(winner).await.unwrap().status, 200);
+    second.body.push(b' ');
+    let store = &test.namespace.store;
+    store
+        .fail_after
+        .store(store.writes.load(Ordering::SeqCst) + 2, Ordering::SeqCst);
+    assert!(test.creator().commit_staged(&first).await.is_err());
+    store.fail_after.store(0, Ordering::SeqCst);
     assert!(matches!(
-        creator.commit_staged(loser).await,
+        test.creator().commit_staged(&second).await,
+        Err(CommitPublicationError::Catalog(CatalogError::Busy))
+    ));
+    assert!(matches!(
+        test.creator().commit_staged(&first).await,
         Err(CommitPublicationError::Catalog(CatalogError::Conflict))
     ));
+    assert!(TableRepository::new(store.clone())
+        .select(test.namespace.context, test.parent.namespace, "events")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn unknown_resource_replies_stop_then_complete_input_retries_use_resource_facts() {
+    for boundary in 1..=4 {
+        let test = TestStaged::new().await;
+        let request = test.commit_request().await;
+        let store = &test.namespace.store;
+        store
+            .fail_after
+            .store(store.writes.load(Ordering::SeqCst) + boundary, Ordering::SeqCst);
+        assert!(
+            test.creator().commit_staged(&request).await.is_err(),
+            "boundary {boundary}"
+        );
+        store.fail_after.store(0, Ordering::SeqCst);
+        let mut retry = request.clone();
+        retry.identity.operation = OperationId::random();
+        retry.identity.issued_ms += 1;
+        retry.timestamp_ms += 10;
+        let result = test.creator().commit_staged(&retry).await;
+        if boundary <= 2 {
+            assert_eq!(result.unwrap().status, 200, "boundary {boundary}");
+        } else {
+            assert!(
+                matches!(result, Err(CommitPublicationError::TableExists)),
+                "boundary {boundary}: {result:?}"
+            );
+        }
+        let selected = TableRepository::new(store.clone())
+            .select(test.namespace.context, test.parent.namespace, "events")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.head.generation, 1);
+        assert_eq!(selected.head.pending_operation, None);
+    }
+}
+
+#[tokio::test]
+async fn namespace_drop_retires_the_table_id_before_a_delayed_first_head() {
+    let test = TestStaged::new().await;
+    let request = test.commit_request().await;
+    let store = test.namespace.store.clone();
+    store.table_head_pause_before.store(true, Ordering::SeqCst);
+    let creator = test.creator();
+    let create = tokio::spawn(async move { creator.commit_staged(&request).await });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        store.table_head_entered.notified(),
+    )
+    .await
+    .unwrap();
     assert_eq!(
-        test.operation().await.stage.unwrap().binding.unwrap().identity,
-        winner.identity
+        NamespaceDropper::new(store.clone())
+            .drop_namespace(&test.drop_request())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        204
+    );
+    let retired: Vec<_> = store
+        .values
+        .load()
+        .iter()
+        .filter_map(|(key, value)| {
+            let key = crowdb_access_iceberg::key::StorageKey::decode(key).ok()?;
+            match crowdb_access_iceberg::record::StorageRecord::decode(&key, &value.bytes).ok()? {
+                crowdb_access_iceberg::record::StorageRecord::RetiredTable(table) => Some(table),
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(retired.len(), 1);
+    let bytes = store
+        .values
+        .load()
+        .get(&storage_head_key(retired[0]).encode().unwrap())
+        .unwrap()
+        .bytes
+        .clone();
+    let reads = store.reads.load(Ordering::SeqCst);
+    store.table_head_release.notify_one();
+    assert!(matches!(
+        create.await.unwrap(),
+        Err(CommitPublicationError::Catalog(CatalogError::Conflict))
+    ));
+    assert_eq!(store.reads.load(Ordering::SeqCst), reads);
+    assert_eq!(
+        store
+            .values
+            .load()
+            .get(&storage_head_key(retired[0]).encode().unwrap())
+            .unwrap()
+            .bytes,
+        bytes
     );
 }

@@ -228,6 +228,22 @@ impl RoutedCatalogStore {
         }
         Ok(page)
     }
+
+    pub(crate) async fn scan_local_gc(
+        &self,
+        scan: crate::gc::GcLocalScan,
+    ) -> Result<MultiScanPage, StoreError> {
+        let catalog = match self.client.cached_catalog() {
+            Some(catalog) => catalog,
+            None => self.client.refresh_catalog().await?,
+        };
+        let request = scan.request(catalog.generation())?;
+        self.counters.scan.fetch_add(1, Ordering::Relaxed);
+        count_request(|counters| &counters.scan);
+        let page = self.client.scan(request).await?;
+        scan.validate_page(&page)?;
+        Ok(page)
+    }
 }
 
 #[async_trait]

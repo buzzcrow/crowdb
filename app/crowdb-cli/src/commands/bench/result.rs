@@ -83,6 +83,7 @@ impl BenchOps {
 #[derive(Debug, Serialize)]
 pub struct OpStats {
     pub latency_us: LatencyUs,
+    pub latency_ns: LatencyNs,
 }
 
 impl From<HistogramSnapshot> for OpStats {
@@ -94,7 +95,54 @@ impl From<HistogramSnapshot> for OpStats {
                 p50: s.p50 / 1000,
                 p99: s.p99 / 1000,
             },
+            latency_ns: LatencyNs {
+                count: s.count,
+                avg: s.avg,
+                min: s.min,
+                max: s.max,
+                p50: s.p50,
+                p90: s.p90,
+                p95: s.p95,
+                p99: s.p99,
+                p999: s.p999,
+                zero_count: s.zero_count,
+                overflow_count: s.overflow_count,
+            },
         }
+    }
+}
+
+/// Nanosecond values preserve sub-microsecond precision in machine reports.
+#[derive(Debug, Serialize)]
+pub struct LatencyNs {
+    pub count: u64,
+    pub avg: f64,
+    pub min: u64,
+    pub max: u64,
+    pub p50: u64,
+    pub p90: u64,
+    pub p95: u64,
+    pub p99: u64,
+    pub p999: u64,
+    pub zero_count: u64,
+    pub overflow_count: u64,
+}
+
+impl fmt::Display for LatencyNs {
+    #[allow(clippy::cast_precision_loss)]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "avg={:.3}us p50={:.3}us p90={:.3}us p95={:.3}us p99={:.3}us p99.9={:.3}us max={:.3}us overflow={}",
+            self.avg / 1000.0,
+            self.p50 as f64 / 1000.0,
+            self.p90 as f64 / 1000.0,
+            self.p95 as f64 / 1000.0,
+            self.p99 as f64 / 1000.0,
+            self.p999 as f64 / 1000.0,
+            self.max as f64 / 1000.0,
+            self.overflow_count,
+        )
     }
 }
 
@@ -208,25 +256,13 @@ impl fmt::Display for BenchResult {
             writeln!(f, "  correctness_errors: {ce}")?;
         }
         if let Some(s) = &self.by_op.read {
-            writeln!(
-                f,
-                "  read:  avg={}us  p50={}us  p99={}us",
-                s.latency_us.avg, s.latency_us.p50, s.latency_us.p99,
-            )?;
+            writeln!(f, "  read:  {}", s.latency_ns)?;
         }
         if let Some(s) = &self.by_op.write {
-            writeln!(
-                f,
-                "  write: avg={}us  p50={}us  p99={}us",
-                s.latency_us.avg, s.latency_us.p50, s.latency_us.p99,
-            )?;
+            writeln!(f, "  write: {}", s.latency_ns)?;
         }
         if let Some(s) = &self.by_op.list {
-            writeln!(
-                f,
-                "  list:  avg={}us  p50={}us  p99={}us",
-                s.latency_us.avg, s.latency_us.p50, s.latency_us.p99,
-            )?;
+            writeln!(f, "  list:  {}", s.latency_ns)?;
         }
         if let Some(cts) = &self.client_transport_stats {
             writeln!(

@@ -25,6 +25,7 @@ crowdb-access-multipart = { path = "../crowdb-access-multipart" }
 crowdb-chunk-kv-client = { path = "../crowdb-chunk-kv-client" }
 crowdb-kv-client = { path = "../crowdb-kv-client" }
 crowdb-protocol = { path = "../crowdb-protocol" }
+crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi" }
 flatbuffers = { workspace = true }
 futures = "0.3"
 hyper = { workspace = true, features = ["http1", "server"] }
@@ -41,6 +42,7 @@ sha2 = "0.10"
 subtle = "2"
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
 uuid = { version = "1", features = ["v4"] }
 zeroize = { version = "1", features = ["derive"] }
 

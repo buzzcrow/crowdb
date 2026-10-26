@@ -18,7 +18,9 @@ mod schema;
 
 pub use journal::TableCreateJournal;
 pub use operation::{TableCreateOperation, TableCreatePhase, TableCreateStage, TableStageBinding};
-pub use publisher::{StagedCommitLimits, StagedCommitRequest, TableCreationRequest, TableCreator};
+pub use publisher::{
+    StagedCommitLimits, StagedCommitRequest, TableCreationOutcome, TableCreationRequest, TableCreator,
+};
 
 #[derive(Debug)]
 pub struct CreateTableRequest {
@@ -86,7 +88,7 @@ pub struct InitialTableMetadata {
 }
 
 /// Constructs initial metadata using fresh SDK-compatible schema, partition and order IDs.
-/// The caller retains the target identity and timestamp in its durable creation intent.
+/// The caller retains the target identity and timestamp for this request.
 /// # Errors
 /// Rejects invalid input, foreign locations, unsupported versions and resource exhaustion.
 pub fn evaluate_table_creation(
@@ -143,7 +145,6 @@ fn validate_target(request: &CreateTableRequest, target: &TableHead, timestamp_m
         || target.operation_fence != 1
         || target.name_epoch != 1
         || target.lifecycle != TableLifecycle::Ready
-        || target.pending_operation.is_none()
         || target.table_uuid.is_none()
         || timestamp_ms < 0
     {

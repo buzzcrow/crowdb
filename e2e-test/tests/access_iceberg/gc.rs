@@ -1,7 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+mod convergence;
 mod foreground;
+mod notifications;
 mod seed;
 use super::{frontend, native::TestNativeStorage, now_ms};
 use crowdb_access_iceberg::{

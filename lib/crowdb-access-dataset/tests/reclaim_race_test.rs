@@ -25,7 +25,7 @@ async fn old_reclaimer_cannot_unfence_a_new_reclaimers_terminal_decision() {
     store.resume.notify_one();
     assert!(matches!(task.await.unwrap(), Err(AuthorityError::HeadConflict)));
     assert!(authority
-        .touch_read_handle(&identity, snapshot, OperationId::random(), 1, 3600)
+        .check_snapshot_readable(&identity, snapshot)
         .await
         .is_err());
     assert_eq!(

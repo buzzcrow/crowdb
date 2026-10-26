@@ -121,6 +121,8 @@ impl PxGroup {
             committed_safe_slot: replica.contiguous_chosen(),
             lease_grant_until_ms_mono: t_send_ms_mono.saturating_add(cfg.lease_duration_ms),
             t_send_ms_mono,
+            gc_before_slot: self.reclamation_certificate(),
+            gc_membership_epoch: self.membership_epoch(),
         };
 
         let mut acks: usize = 1;
@@ -146,10 +148,7 @@ impl PxGroup {
         // A singleton still sends the commit frontier to joining learners.
         if acks >= quorum {
             replica.renew_lease(t_send, cfg);
-            tokio::spawn(
-                async move { while joinset.join_next().await.is_some() {} }
-                    .instrument(tracing::Span::current()),
-            );
+            self.drain_heartbeat_progress(joinset, leader_term);
             return HeartbeatOutcome::Continued { quorum_acked: true };
         }
 
@@ -179,11 +178,7 @@ impl PxGroup {
                         // renew lease, note peer applied. No catch-up.
                         // Refresh this peer's applied watermark and recompute
                         // the group safe-slot used by bounded/safe-slot reads.
-                        self.note_peer_applied(peer_id, hb.contiguous_applied);
-                        // Refresh this peer's durable-snapshot watermark and
-                        // recompute the group's real "durable on leader +
-                        // >=1 peer" snapshot-slot.
-                        self.note_peer_durable(peer_id, hb.durable_snapshot_slot);
+                        self.record_heartbeat_progress(peer_id, leader_term, hb);
                         if acks >= quorum {
                             replica.renew_lease(t_send, cfg);
                             // Quorum reached — renew lease and return
@@ -195,12 +190,8 @@ impl PxGroup {
                             // peer, leaving it in Unknown state
                             // indefinitely. Spawn a background drain so
                             // the remaining tasks complete and deliver
-                            // the heartbeat; their results are ignored
-                            // (a higher-term self-heals next round).
-                            tokio::spawn(
-                                async move { while joinset.join_next().await.is_some() {} }
-                                    .instrument(tracing::Span::current()),
-                            );
+                            // the heartbeat and update retention progress.
+                            self.drain_heartbeat_progress(joinset, leader_term);
                             return HeartbeatOutcome::Continued { quorum_acked: true };
                         }
                     }

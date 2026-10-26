@@ -24,6 +24,15 @@ async fn fixture(readonly: bool) -> (axum::Router, tokio::task::JoinHandle<()>) 
             async move {
                 assert_eq!(request.headers()["authorization"], expected);
                 assert!(request.uri().path().starts_with("/api/dataset/v2/"));
+                if request.uri().query() == Some("body_size=1") {
+                    let bytes = axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024)
+                        .await
+                        .unwrap();
+                    return (
+                        StatusCode::OK,
+                        serde_json::json!({"length":bytes.len()}).to_string(),
+                    );
+                }
                 if request.uri().query() == Some("large=1") {
                     return (StatusCode::OK, "x".repeat(1024 * 1024 + 1));
                 }
@@ -93,6 +102,12 @@ async fn readonly_allows_exact_matrix_but_rejects_all_mutations() {
         ("POST", format!("/snapshots/{snapshot}/matrix"), 200),
         ("GET", format!("/snapshots/{snapshot}/contains"), 200),
         ("POST", "/compositions".into(), 403),
+        ("PUT", format!("/snapshots/{snapshot}"), 403),
+        (
+            "PUT",
+            format!("/snapshots/{snapshot}/split-revisions/{snapshot}"),
+            403,
+        ),
         ("POST", format!("/snapshots/{snapshot}/reclaim"), 403),
         ("PUT", String::new(), 403),
         ("DELETE", "/uploads/123".into(), 403),
@@ -110,6 +125,37 @@ async fn readonly_allows_exact_matrix_but_rejects_all_mutations() {
             .await
             .unwrap();
         assert_eq!(response.status().as_u16(), status, "{method} {suffix}");
+    }
+    task.abort();
+}
+
+#[tokio::test]
+async fn complete_snapshot_inputs_get_eight_mib_without_expanding_upload_part_limits() {
+    let (app, task) = fixture(false).await;
+    let root = "/api/access/dataset/api/dataset/v2/namespaces/dataset-ns/datasets/example";
+    let snapshot = "11111111111111111111111111111111";
+    for (suffix, bytes, expected) in [
+        (format!("/snapshots/{snapshot}"), 6 * 1024 * 1024, 200),
+        (format!("/snapshots/{snapshot}"), 8 * 1024 * 1024 + 1, 400),
+        (format!("/uploads/{snapshot}/parts/0"), 4 * 1024 * 1024 + 1, 400),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("{root}{suffix}?body_size=1"))
+                    .body(Body::from(vec![b'x'; bytes]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), expected);
+        if expected == 200 {
+            let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(value["length"], bytes);
+        }
     }
     task.abort();
 }

@@ -18,6 +18,32 @@ fn location(name: &str) -> Vec<u8> {
     )
     .unwrap()
 }
+
+#[tokio::test]
+async fn single_part_completion_still_verifies_actual_stored_bytes() {
+    let payloads = Arc::new(TestPayload::default());
+    let uploads = DatasetUploads::new(Arc::new(TestStore::default()), payloads.clone());
+    let key = location("single-corruption");
+    uploads
+        .create(&key, 4, 4, Md5::digest(b"data").into(), 100)
+        .await
+        .unwrap();
+    uploads
+        .put_part(&key, 0, Bytes::from_static(b"data"), 1)
+        .await
+        .unwrap();
+    payloads.corrupt_read.store(true, Ordering::Relaxed);
+    assert!(matches!(
+        uploads.complete(&key, 2).await,
+        Err(UploadError::Integrity)
+    ));
+    assert_eq!(uploads.metadata(&key).await.unwrap().state, UploadState::Open);
+    payloads.corrupt_read.store(false, Ordering::Relaxed);
+    assert_eq!(
+        uploads.complete(&key, 3).await.unwrap().state,
+        UploadState::Complete
+    );
+}
 #[tokio::test]
 async fn lost_storage_reply_recovers_exact_intent_without_another_allocation() {
     let store = Arc::new(TestStore::default());
@@ -73,7 +99,6 @@ async fn independent_owners_and_deferred_cleanup_survive_restart() {
     let second = OperationId::random();
     uploads.claim(&key, first, 3).await.unwrap();
     uploads.claim(&key, second, 3).await.unwrap();
-    uploads.untrack(&key).await.unwrap();
     assert!(matches!(uploads.abort(&key).await, Err(UploadError::Conflict)));
     uploads.release(&key, first).await.unwrap();
     assert_eq!(uploads.read_part(&key, 0).await.unwrap(), b"data".as_slice());
@@ -84,7 +109,10 @@ async fn independent_owners_and_deferred_cleanup_survive_restart() {
     assert!(!aborted.cleanup_complete);
     let restarted = DatasetUploads::new(store, payloads.clone());
     payloads.defer_reclaim.store(false, Ordering::Release);
-    restarted.expire(20).await.unwrap();
+    restarted
+        .expire_step(20, &mut crowdb_access_dataset::UploadExpiryCursor::default())
+        .await
+        .unwrap();
     assert!(restarted.get(&key).await.unwrap().cleanup_complete);
 }
 #[tokio::test]
@@ -104,7 +132,10 @@ async fn invalid_length_digest_and_expiry_do_not_publish() {
         uploads.complete(&key, 2).await,
         Err(UploadError::Integrity)
     ));
-    uploads.expire(11).await.unwrap();
+    uploads
+        .expire_step(11, &mut crowdb_access_dataset::UploadExpiryCursor::default())
+        .await
+        .unwrap();
     assert_eq!(uploads.get(&key).await.unwrap().state, UploadState::Aborted);
 }
 
@@ -189,7 +220,7 @@ async fn retired_owner_cannot_reclaim_shared_upload_after_restart() {
         .put_part(&key, 0, Bytes::from_static(b"data"), 1)
         .await
         .unwrap();
-    assert_eq!(uploads.complete(&key, 2).await.unwrap().version, 2);
+    assert_eq!(uploads.complete(&key, 2).await.unwrap().version, 4);
     let first = OperationId::random();
     let second = OperationId::random();
     uploads.claim(&key, first, 3).await.unwrap();
@@ -202,7 +233,7 @@ async fn retired_owner_cannot_reclaim_shared_upload_after_restart() {
         Err(UploadError::Conflict)
     ));
     let restarted = DatasetUploads::new(store, payloads);
-    assert_eq!(restarted.metadata(&key).await.unwrap().version, 3);
+    assert_eq!(restarted.metadata(&key).await.unwrap().version, 4);
     assert!(matches!(
         restarted.claim(&key, first, 4).await,
         Err(UploadError::Conflict)

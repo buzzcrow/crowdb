@@ -170,7 +170,7 @@ TEST(PageStore, BlockDeviceReadPastEndFails)
     std::unique_ptr<BlockPageStore> s;
     ASSERT_TRUE(BlockPageStore::open(path, 4096, &s).ok());
     std::vector<uint8_t> out(16, 0);
-    EXPECT_FALSE(s->read_at(0, out.data(), out.size()).ok());
+    EXPECT_EQ(s->read_at(0, out.data(), out.size()).code(), Code::kNotFound);
     std::remove(path.c_str());
 }
 
@@ -293,7 +293,7 @@ TEST(BlockPageStoreMem, ReadPastEndFails)
     std::unique_ptr<BlockPageStore> s;
     ASSERT_TRUE(BlockPageStore::open_mem(1, &s).ok());
     std::array<uint8_t, 4> b{};
-    EXPECT_FALSE(s->read_at(0, b.data(), b.size()).ok());
+    EXPECT_EQ(s->read_at(0, b.data(), b.size()).code(), Code::kNotFound);
 }
 
 TEST(BlockPageStoreMem, SyncIsNoOp)

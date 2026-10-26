@@ -5,6 +5,10 @@
 
 #include "crowdb-rpc/connection.h"
 #include "crowdb-rpc/transport.h"
+#include "crowdb-rpc/transport/rdma/rdma_config.h"
+#ifdef CROWDB_RPC_HAVE_RDMA
+#    include "crowdb-rpc/transport/rdma/rdma_transport.h"
+#endif
 
 #include <folly/concurrency/ConcurrentHashMap.h>
 
@@ -23,6 +27,7 @@ namespace crowdb::rpc
 // references Worker for the owner-worker back-pointer.
 class SocketTransport;
 class Worker;
+class Frame;
 
 // ── TransportStats: aggregation + latency counters ────────────────
 //
@@ -82,6 +87,10 @@ struct TransportStats
     LatencyHistogram submit_to_writev;
     // Total enqueue_send rejections (queue full or connection closed).
     std::atomic<uint64_t> send_queue_rejects{0};
+    std::atomic<uint64_t> writev_calls{0};
+    std::atomic<uint64_t> writev_progress_calls{0};
+    std::atomic<uint64_t> wire_bytes_sent{0};
+    std::atomic<uint64_t> rpc_frames_sent{0};
 };
 
 // ── SocketEngine: platform-specific event loop primitives ─────────
@@ -97,9 +106,10 @@ enum class SocketEvent {
     Readable,
     Writable,
     Error,
-    Notify, // cross-thread submit wakeup
-    Timer,  // scheduled task deadline
-    Accept, // listen socket ready (acceptor only)
+    Notify,   // cross-thread submit wakeup
+    Timer,    // scheduled task deadline
+    Accept,   // listen socket ready (acceptor only)
+    External, // transport-owned event descriptor (for example RDMA CM/CQ)
 };
 
 struct EngineEvent
@@ -109,6 +119,7 @@ struct EngineEvent
     Connection *conn;              // resolved and retained by the worker before dispatch
     int64_t     connection_id = 0; // kernel events carry identity, never an owning pointer
     bool        write_side    = false;
+    uint64_t    external_tag  = 0;
 };
 
 class SocketEngine
@@ -152,6 +163,19 @@ class SocketEngine
 
     // Remove a listen socket from the event loop.
     virtual void remove_listen_fd(int fd)
+    {
+        (void)fd;
+    }
+
+    // Register transport-owned descriptors such as an RDMA completion or CM
+    // channel. The engine only reports readiness; the owner drains it.
+    virtual void add_external_fd(int fd, uint64_t tag)
+    {
+        (void)fd;
+        (void)tag;
+    }
+
+    virtual void remove_external_fd(int fd)
     {
         (void)fd;
     }
@@ -307,7 +331,7 @@ class SocketTransport : public Transport
   public:
     // Multi-engine ctor: io_engines independent epoll/kqueue instances,
     // with io_workers total workers (per-engine = io_workers / io_engines).
-    SocketTransport(uint32_t io_engines, uint32_t io_workers, BufferPool *pool = nullptr);
+    SocketTransport(uint32_t io_engines, uint32_t io_workers, BufferPool *pool = nullptr, RdmaConfig rdma_config = {});
     // Deprecated alias: maps to (1, num_workers). Kept for backward compat.
     SocketTransport(uint32_t num_workers, BufferPool *pool);
     ~SocketTransport() override;
@@ -319,6 +343,10 @@ class SocketTransport : public Transport
     {
         return buf;
     } // noop for TCP
+
+    // Producer storage is bounded by the selected transport's arena/pool.
+    // A required registration never substitutes an ordinary allocation.
+    Buffer *allocate_producer_buffer(uint32_t capacity, bool require_registered);
 
     void shutdown() override;
 
@@ -355,6 +383,13 @@ class SocketTransport : public Transport
     // peer, register the connection with a worker. Returns the connection
     // (nullptr on failure). The connection can both send and receive.
     std::shared_ptr<Connection> connect(const std::string &addr, int port);
+
+    // Attach an RDMA connection to the common callback/registry lifecycle.
+    void attach_rdma_connection(const std::shared_ptr<Connection> &conn, Connection::OnFrameCallback on_frame = {},
+                                Connection::OnCloseCallback on_close = {});
+
+    using RdmaAcceptHandler = std::function<void(const std::shared_ptr<Connection> &)>;
+    void set_rdma_accept_handler(RdmaAcceptHandler handler);
 
     // Register a connection in the live-connection registry. Called
     // when a connection is created. The registry holds a weak_ptr so
@@ -465,8 +500,70 @@ class SocketTransport : public Transport
     // registered accept handler with the listen fd.
     void on_accept(int listen_fd);
 
+    void set_external_handler(std::function<void(uint64_t)> handler)
+    {
+        external_handler_ = std::move(handler);
+    }
+
+    void on_external(uint64_t tag)
+    {
+        if (external_handler_)
+            external_handler_(tag);
+    }
+
+    bool                                 send_rdma_handshake(const std::shared_ptr<Connection> &conn);
+    [[nodiscard]] RdmaEndpointCapability local_rdma_capability() const;
+    bool                                 listen_rdma(const std::string &addr, int port);
+    bool                                 listen_rdma_service(const std::string &address, int tcp_port);
+    // Cold configuration, before any listener, worker or connection exists.
+    bool               configure_rdma(RdmaConfig config, bool enabled, bool allow_tcp_fallback, bool listen_enabled);
+    [[nodiscard]] bool rdma_listener_enabled() const;
+
+    [[nodiscard]] bool explicit_rdma_configuration() const
+    {
+        return rdma_explicit_configuration_;
+    }
+
+    [[nodiscard]] const RdmaConfig &rdma_config() const
+    {
+        return rdma_config_;
+    }
+
+    [[nodiscard]] std::string status_json() const;
+
+#if defined(CROWDB_RPC_HAVE_RDMA) && defined(CROWDB_RPC_TEST_UTIL)
+    friend struct TestSocketTransport;
+
+    const RdmaTransport::Stats *rdma_stats_for_tests() const
+    {
+        return rdma_transport_ == nullptr ? nullptr : &rdma_transport_->stats();
+    }
+
+    bool limit_control_fragments_for_tests(uint64_t limit)
+    {
+        if (rdma_transport_ == nullptr) {
+            return false;
+        }
+        rdma_transport_->limit_control_fragments_for_tests(limit);
+        return true;
+    }
+
+#endif
+
   private:
-    BufferPool                                *pool_;
+    std::shared_ptr<Connection>       connect_tcp(const std::string &addr, int port);
+    void                              prepare_tcp_socket(int fd) const;
+    BufferPool                       *pool_;
+    std::unique_ptr<SystemBufferPool> owned_pool_;
+    bool                              allow_tcp_fallback_{true};
+    RdmaConfig                        rdma_config_;
+    bool                              rdma_explicit_configuration_ = false;
+    bool                              rdma_enabled_                = false;
+    bool                              rdma_listen_enabled_         = false;
+    std::atomic<bool>                 started_{false};
+#ifdef CROWDB_RPC_HAVE_RDMA
+    std::unique_ptr<class RdmaTransport> rdma_transport_;
+#endif
     std::vector<std::unique_ptr<Worker>>       workers_;
     std::vector<std::unique_ptr<SocketEngine>> engines_; // transport owns all engines
     std::atomic<size_t>                        next_worker_{0};
@@ -491,7 +588,9 @@ class SocketTransport : public Transport
 
     // Accept handler — called by a worker thread when the listen fd
     // is readable. Set by the server via set_accept_handler.
-    std::function<void(int)> accept_handler_;
+    std::function<void(int)>      accept_handler_;
+    std::function<void(uint64_t)> external_handler_;
+    RdmaAcceptHandler             rdma_accept_handler_;
 
     // Connection registry: maps raw Connection* to shared_ptr, so
     // submit() can safely access connections from arbitrary threads

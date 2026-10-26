@@ -1,12 +1,12 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::super::{head::decode_head, VersionedRecord};
+use super::super::{head::decode_head, snapshot_resource::decode_snapshot};
+use crate::inspection::{work::InspectionWork, InspectionError};
 use crate::{
     key, AuthorityError, CasOutcome, DatasetAuthority, DatasetError, DatasetIdentity, HeadRecord,
-    MetadataScanBudget, PublicationState, ReadCancellation, SnapshotId, SnapshotRecord, StoredValue,
+    MetadataScanBudget, PublicationState, ReadCancellation, SnapshotId, StoredValue,
 };
-use bincode::Options;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -28,10 +28,11 @@ impl DatasetAuthority {
         stored: &StoredValue,
     ) -> Result<(), AuthorityError> {
         let head = decode_head(&stored.bytes)?;
-        let Some(snapshot) = head.latest else {
-            return Ok(());
-        };
-        if self.snapshot_candidate(identity, snapshot).await?.is_some() {
+        let mut legacy = false;
+        for snapshot in [head.latest, head.stable].into_iter().flatten() {
+            legacy |= self.snapshot_candidate(identity, snapshot).await?.is_none();
+        }
+        if !legacy {
             return Ok(());
         }
         let key = anchor_key(identity)?;
@@ -59,7 +60,7 @@ impl DatasetAuthority {
         Ok(true)
     }
 
-    /// Checks live publication proof, resolving bounded legacy ancestry when needed.
+    /// Checks a live complete result, resolving bounded legacy publication evidence when needed.
     /// # Errors
     /// Returns unavailable or retired snapshots, corrupt proof or storage limits.
     pub async fn require_committed_snapshot(
@@ -68,82 +69,95 @@ impl DatasetAuthority {
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
         self.ensure_snapshot_live(identity, snapshot).await?;
+        let candidate = self.snapshot_candidate(identity, snapshot).await?;
+        if candidate.as_ref().is_some_and(|c| c.version == 2) {
+            return Ok(());
+        }
+        if candidate.as_ref().is_some_and(|c| c.version == 3) {
+            return Err(AuthorityError::SnapshotNotFound);
+        }
         if self.snapshot_commit(identity, snapshot).await?.is_some()
             || self.legacy_commit_exists(identity, snapshot).await?
         {
             return Ok(());
         }
-        if self.snapshot_candidate(identity, snapshot).await?.is_some() {
+        if let Some(candidate) = candidate {
+            if self.legacy_candidate_ready(identity, &candidate).await? {
+                return Ok(());
+            }
             return Err(AuthorityError::SnapshotNotFound);
         }
-        if self.legacy_snapshot_visible(identity, snapshot).await? {
-            let bytes = serde_json::to_vec(&LegacyVisibility { version: 1, snapshot })
-                .map_err(|_| AuthorityError::Corrupt)?;
-            return self
-                .put_commit_record(&visibility_key(identity, snapshot)?, &bytes)
-                .await;
+        let cancel = ReadCancellation::new();
+        let mut work = InspectionWork::new(
+            self.store.as_ref(),
+            &cancel,
+            MetadataScanBudget {
+                items: 64,
+                bytes: 16 * 1024 * 1024,
+                timeout: Duration::from_secs(2),
+            },
+        )
+        .map_err(legacy_read_error)?;
+        let head = work
+            .get(&key::head(identity)?, 8192)
+            .await
+            .map_err(legacy_read_error)?;
+        if self
+            .legacy_snapshot_visible(identity, snapshot, head.as_ref(), &mut work)
+            .await?
+        {
+            return Ok(());
         }
         Err(AuthorityError::SnapshotNotFound)
     }
 
-    async fn legacy_snapshot_visible(
+    pub(super) async fn legacy_snapshot_visible(
         &self,
         identity: &DatasetIdentity,
         target: SnapshotId,
+        head: Option<&StoredValue>,
+        work: &mut InspectionWork<'_>,
     ) -> Result<bool, AuthorityError> {
         let mut roots = Vec::new();
-        if let Some(head) = self.store.get(&key::head(identity)?).await? {
+        if let Some(head) = head {
             let head = decode_head(&head.bytes)?;
             roots.extend([head.latest, head.stable].into_iter().flatten());
         }
-        if let Some(anchor) = self.store.get(&anchor_key(identity)?).await? {
+        if let Some(anchor) = work
+            .get(&anchor_key(identity)?, 2048)
+            .await
+            .map_err(legacy_read_error)?
+        {
             let anchor = decode_anchor(&anchor.bytes)?;
             roots.extend([anchor.head.latest, anchor.head.stable].into_iter().flatten());
         }
-        let mut remaining = 16 * 1024 * 1024usize;
         let mut seen = std::collections::HashSet::new();
         for root in roots {
             let mut current = Some(root);
             let mut chain = std::collections::HashSet::new();
             while let Some(snapshot) = current {
-                if snapshot == target {
-                    return Ok(true);
-                }
                 if !chain.insert(snapshot) {
                     return Err(AuthorityError::AncestryCycle);
                 }
                 if !seen.insert(snapshot) {
                     break;
                 }
-                if seen.len() > 64 || remaining == 0 {
+                if seen.len() > 64 {
                     return Err(DatasetError::ReadLimitExceeded.into());
                 }
-                let stored = self
-                    .store
-                    .get_bounded(
-                        &key::snapshot(identity, snapshot)?,
-                        MetadataScanBudget {
-                            items: 1,
-                            bytes: remaining,
-                            timeout: Duration::from_secs(2),
-                        },
-                        &ReadCancellation::new(),
-                    )
-                    .await?
+                let stored = work
+                    .get(&key::snapshot(identity, snapshot)?, 16 * 1024 * 1024)
+                    .await
+                    .map_err(legacy_read_error)?
                     .ok_or(AuthorityError::Corrupt)?;
-                remaining = remaining.saturating_sub(stored.bytes.len());
-                let record: VersionedRecord<SnapshotRecord> = bincode::DefaultOptions::new()
-                    .with_fixint_encoding()
-                    .with_limit(stored.bytes.len() as u64)
-                    .reject_trailing_bytes()
-                    .deserialize(&stored.bytes)
-                    .map_err(|_| AuthorityError::Corrupt)?;
-                if record.version != 1 {
+                let record = decode_snapshot(&stored.bytes)?;
+                if record.publication.snapshot != snapshot
+                    || record.publication.state == PublicationState::Prepared
+                {
                     return Err(AuthorityError::Corrupt);
                 }
-                let record = record.payload;
-                if record.publication.state == PublicationState::Prepared {
-                    return Err(AuthorityError::Corrupt);
+                if snapshot == target {
+                    return Ok(record.publication.state == PublicationState::Published);
                 }
                 current = record.publication.parent;
             }
@@ -185,4 +199,14 @@ pub(super) fn validate_visibility(bytes: &[u8], snapshot: SnapshotId) -> Result<
         return Err(AuthorityError::Corrupt);
     }
     Ok(())
+}
+
+pub(super) fn legacy_read_error(error: InspectionError) -> AuthorityError {
+    match error {
+        InspectionError::Authority(error) => error,
+        InspectionError::Store(error) => error.into(),
+        InspectionError::Limit => DatasetError::ReadLimitExceeded.into(),
+        InspectionError::Cancelled => DatasetError::ReadCancelled.into(),
+        _ => AuthorityError::Corrupt,
+    }
 }

@@ -23,15 +23,17 @@ arc-swap = "1.9"
 crowdb-common = { path = "../../crowdb-common/rust" }
 tokio = { version = "1.40", features = ["rt", "rt-multi-thread", "macros", "sync"] }
 bytes = "1"
+serde = { version = "1", features = ["derive"] }
 ctor = { version = "1.0.13", optional = true }
 
 [dev-dependencies]
 crowdb-common = { path = "../../crowdb-common/rust" }
 crowdb-protocol = { path = "../../crowdb-protocol" }
 flatbuffers = { workspace = true }
+serde_json = "1"
 # Self dev-dependency: turns on `test-util` so integration tests auto-init
 # C++ logging to a temp dir on first RpcServer::new.
 crowdb-rpc-ffi = { path = ".", features = ["test-util"] }
 
 [build-dependencies]
-cc = "1"
+cc = { version = "1", features = ["parallel"] }

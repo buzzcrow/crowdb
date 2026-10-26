@@ -132,6 +132,10 @@ fn malformed_pages_timestamps_and_escape_input_fail_before_success() {
     let body = String::from_utf8(response.into_body()).unwrap();
     assert!(body.contains("<Code>InvalidPart</Code>"));
     assert!(body.contains("<Resource>/x&amp;&lt;y&gt;</Resource>"));
+    let restart = MultipartResponses::error(FileS3ErrorCode::RestartMultipart, "/file", "req").unwrap();
+    let restart = String::from_utf8(restart.into_body()).unwrap();
+    assert!(restart.contains("<Code>InvalidRequest</Code>"));
+    assert!(restart.contains("abort and create a new multipart upload"));
     assert!(MultipartResponses::error(FileS3ErrorCode::InternalError, &"x".repeat(2049), "req").is_err());
     for (code, status) in [
         (FileS3ErrorCode::AccessDenied, StatusCode::FORBIDDEN),
@@ -139,6 +143,7 @@ fn malformed_pages_timestamps_and_escape_input_fail_before_success() {
         (FileS3ErrorCode::InvalidPart, StatusCode::BAD_REQUEST),
         (FileS3ErrorCode::EntityTooLarge, StatusCode::PAYLOAD_TOO_LARGE),
         (FileS3ErrorCode::InvalidRequest, StatusCode::BAD_REQUEST),
+        (FileS3ErrorCode::RestartMultipart, StatusCode::BAD_REQUEST),
         (FileS3ErrorCode::InternalError, StatusCode::INTERNAL_SERVER_ERROR),
     ] {
         assert_eq!(

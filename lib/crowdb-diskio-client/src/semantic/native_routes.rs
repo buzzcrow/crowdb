@@ -59,11 +59,21 @@ impl DiskioClient {
             let mut tick = tokio::time::interval(Duration::from_secs(5));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
+                let closing = client.closing.notified();
+                tokio::pin!(closing);
+                closing.as_mut().enable();
+                if client.closed.load(std::sync::atomic::Ordering::Acquire) {
+                    return;
+                }
                 tokio::select! {
+                    () = &mut closing => return,
                     _ = tick.tick() => {},
                     () = worker_refresh.notified() => {},
                 }
-                client.refresh_topology_if_due().await;
+                tokio::select! {
+                    () = &mut closing => return,
+                    () = client.refresh_topology_if_due() => {},
+                }
                 let current = client.routes.load_full();
                 if observed.routes == current.routes
                     && worker_routes

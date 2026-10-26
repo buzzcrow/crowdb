@@ -5,7 +5,7 @@
 import ipaddress
 import json
 import time
-from allocation import node_data, start_node
+from allocation import observed_address, node_data, start_node
 from fixture import Cluster, request, wait
 
 
@@ -78,7 +78,7 @@ interval_secs = 2
         self.command("start", self.servers[self.diskdb_index])
         for index, name in enumerate(self.servers[:self.diskdb_index + 1]):
             inspected = json.loads(self.command("inspect", name))[0]
-            if inspected["NetworkSettings"]["Networks"][self.run_id]["IPAddress"] != self.addresses[index]:
+            if observed_address(self, inspected, self.addresses[index]) != self.addresses[index]:
                 raise AssertionError("Diskdb dependency IP changed during persisted restart")
         wait(lambda: request(f"http://{self.addresses[self.diskdb_index]}:7101", "/ready"), lambda _: True,
              "recovered Diskdb readiness")

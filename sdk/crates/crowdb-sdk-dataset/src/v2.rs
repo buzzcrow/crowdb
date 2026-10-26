@@ -5,24 +5,34 @@
 
 mod client;
 mod composition;
+mod composition_preparation;
 mod identity;
 mod inspection;
 mod lifecycle;
 mod paging;
 mod read;
 mod requests;
+mod snapshot_head;
 mod split;
+mod split_head;
+mod split_preparation;
 mod state;
 mod transfer;
 mod upload;
 
 pub use client::ControlClient;
 pub use composition::*;
+pub use composition_preparation::{
+    PrepareSnapshot, PreparedSnapshot, SnapshotChange, SnapshotField, SnapshotValue,
+};
 pub use identity::{Decimal, Generation, OpaqueId, SampleId};
 pub use inspection::*;
 pub use paging::{PageCursor, PageKind};
 pub use read::*;
+pub use snapshot_head::UpdateSnapshotHead;
 pub use split::*;
+pub use split_head::UpdateSplitHead;
+pub use split_preparation::PrepareSplitRevision;
 pub use state::*;
 pub use upload::*;
 

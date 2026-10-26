@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{key, CompositionDraft, CompositionError, CompositionSource};
+use super::{key, CompositionDraft, CompositionError};
 use crate::{
     split::{DraftSplit, MembershipOrigin},
     AuthorityError, CasOutcome, DatasetAuthority, DatasetIdentity, MetadataScanBudget, OperationId,
@@ -25,11 +25,6 @@ pub(super) struct CompositionState {
     pub evaluation: Option<super::evaluation::Evaluation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uploads: Option<super::uploads::UploadOwnership>,
-}
-#[derive(Serialize, Deserialize)]
-pub(super) struct EditReceipt {
-    pub marker: EditMarker,
-    pub draft: CompositionDraft,
 }
 impl CompositionState {
     pub(super) fn encode(&self) -> Result<Vec<u8>, CompositionError> {
@@ -108,31 +103,6 @@ impl DatasetAuthority {
         let state = CompositionState::decode(&stored.bytes, operation)?;
         Ok((stored, state))
     }
-    pub(super) async fn put_composition(&self, key: &[u8], bytes: &[u8]) -> Result<(), CompositionError> {
-        match self.store.compare_exchange(key, None, bytes).await? {
-            CasOutcome::Applied(_) => Ok(()),
-            CasOutcome::Conflict(Some(value)) if value.bytes == bytes => Ok(()),
-            CasOutcome::Conflict(_) => Err(CompositionError::Conflict),
-        }
-    }
-    pub(super) async fn help_composition_edit(
-        &self,
-        identity: &DatasetIdentity,
-        state: &CompositionState,
-    ) -> Result<(), CompositionError> {
-        if let Some(marker) = &state.edit {
-            let receipt = EditReceipt {
-                marker: marker.clone(),
-                draft: state.draft.clone(),
-            };
-            self.put_composition(
-                &key::edit_receipt(identity, state.draft.record.operation, marker.id)?,
-                &crate::split::codec::encode(&receipt)?,
-            )
-            .await?;
-        }
-        Ok(())
-    }
     pub(super) async fn replace_composition(
         &self,
         identity: &DatasetIdentity,
@@ -140,14 +110,7 @@ impl DatasetAuthority {
         state: &CompositionState,
         next: &CompositionState,
     ) -> Result<(), CompositionError> {
-        self.help_composition_edit(identity, state).await?;
         let bytes = next.encode()?;
-        if let Some(marker) = &next.edit {
-            crate::split::codec::encode(&EditReceipt {
-                marker: marker.clone(),
-                draft: next.draft.clone(),
-            })?;
-        }
         match self
             .store
             .compare_exchange(
@@ -157,40 +120,13 @@ impl DatasetAuthority {
             )
             .await?
         {
-            CasOutcome::Applied(_) => self.help_composition_edit(identity, next).await,
-            CasOutcome::Conflict(Some(value)) if value.bytes == bytes => {
-                self.help_composition_edit(identity, next).await
-            }
+            CasOutcome::Applied(_) => Ok(()),
+            CasOutcome::Conflict(Some(value)) if value.bytes == bytes => Ok(()),
             CasOutcome::Conflict(_) => Err(CompositionError::Conflict),
         }
     }
-    pub(super) async fn renew_composition_source(
-        &self,
-        identity: &DatasetIdentity,
-        draft: &CompositionDraft,
-    ) -> Result<(), CompositionError> {
-        if let Some(parent) = draft.record.parent {
-            self.require_committed_snapshot(identity, parent).await?;
-            self.touch_read_handle(identity, parent, draft.record.operation, now(), 3600)
-                .await?;
-            if let CompositionSource::Split { source, .. } = &draft.record.source {
-                let revision = self
-                    .get_split_revision(
-                        identity,
-                        parent,
-                        source.revision,
-                        budget(),
-                        &ReadCancellation::new(),
-                    )
-                    .await?;
-                if !revision.splits.iter().any(|s| s.name == source.name) {
-                    return Err(CompositionError::NotFound);
-                }
-            }
-        }
-        Ok(())
-    }
 }
+
 pub(super) fn budget() -> MetadataScanBudget {
     MetadataScanBudget {
         items: 20,

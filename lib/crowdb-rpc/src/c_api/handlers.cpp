@@ -17,49 +17,6 @@ static std::shared_ptr<void> own_handler_context(void *user_data, crowdb_rpc_han
 
 // ── Custom handler dispatch ──────────
 
-// Shared handler trampoline: extracts request fields from the frame,
-// invokes the C dispatch callback, and transfers frame ownership to the
-// callback. Used by both server-side (c_handler_trampoline) and client-side
-// (RpcClient::dispatch_request) handler dispatch. The callback submits the
-// response later via crowdb_rpc_server_submit_response (async pattern).
-//
-// The callback OWNS the frame via frame_handle — it must call
-// crowdb_rpc_frame_release(frame_handle) when done. The dispatch layer does
-// NOT delete the frame.
-void crowdb::rpc::invoke_c_handler(crowdb_rpc_handler_fn callback, void *user_data, Frame *request, Connection *conn)
-{
-    if (callback == nullptr || request == nullptr) {
-        delete request;
-        return;
-    }
-    uint64_t       req_id      = request->request_id;
-    uint64_t       create_nano = request->rpc_create_nano;
-    uint16_t       msg_type    = request->header.msg_type;
-    const uint8_t *ctrl_ptr    = request->control.empty() ? nullptr : request->control.data();
-    auto           ctrl_len    = static_cast<uint32_t>(request->control.size());
-    const uint8_t *data_ptr    = nullptr;
-    uint32_t       data_len    = 0;
-    if (request->data_buf != nullptr && request->data_buf->len > 0) {
-        data_ptr = request->data_buf->data;
-        data_len = request->data_buf->len;
-    }
-    void *conn_handle  = static_cast<void *>(conn);
-    void *frame_handle = static_cast<void *>(request);
-
-    // Transfer frame ownership to the callback. The callback must call
-    // crowdb_rpc_frame_release(frame_handle) when done.
-    callback(req_id, create_nano, msg_type, ctrl_ptr, ctrl_len, data_ptr, data_len, conn_handle, frame_handle,
-             user_data);
-}
-
-// Release a frame_handle passed to a crowdb_rpc_handler_fn callback.
-void crowdb_rpc_frame_release(void *frame_handle)
-{
-    if (frame_handle != nullptr) {
-        delete static_cast<crowdb::rpc::Frame *>(frame_handle);
-    }
-}
-
 void crowdb_rpc_server_register_handler(crowdb_rpc_server_t server, uint16_t msg_type, crowdb_rpc_handler_fn callback,
                                         void *user_data, crowdb_rpc_handler_release_fn release)
 {

@@ -37,6 +37,9 @@ impl DatasetAuthority {
         snapshot: SnapshotId,
         cancel: &ReadCancellation,
     ) -> Result<InspectionPreparation, InspectionError> {
+        if let Some(summary) = self.read_inspection_summary(identity, snapshot, cancel).await? {
+            return Ok(summary_progress(&summary));
+        }
         let stored = self
             .store
             .get_bounded(
@@ -44,24 +47,13 @@ impl DatasetAuthority {
                 budget(16 * 1024),
                 cancel,
             )
-            .await?;
-        if let Some(stored) = stored {
-            let record = decode_preparation(&stored.bytes, snapshot)?;
-            if record.progress.state == PreparationState::Ready
-                && self
-                    .read_inspection_summary(identity, snapshot, cancel)
-                    .await?
-                    .is_none()
-            {
-                return Err(InspectionError::Corrupt);
-            }
-            return Ok(record.progress);
-        }
-        self.read_inspection_summary(identity, snapshot, cancel)
             .await?
-            .as_ref()
-            .map(summary_progress)
-            .ok_or(InspectionError::NotPrepared)
+            .ok_or(InspectionError::NotPrepared)?;
+        let record = decode_preparation(&stored.bytes, snapshot)?;
+        if record.progress.state == PreparationState::Ready {
+            return Err(InspectionError::Corrupt);
+        }
+        Ok(record.progress)
     }
 
     pub(super) async fn read_inspection_summary(

@@ -111,6 +111,33 @@ impl TestWrites {
 }
 
 #[tokio::test]
+async fn permanent_table_retirement_rejects_a_new_write_before_registering_any_intent() {
+    let fixture = TestWrites::new().await;
+    let key = crowdb_access_iceberg::table::storage_head_key(fixture.intent.owner.table)
+        .encode()
+        .unwrap();
+    let bytes = StorageRecord::RetiredTable(fixture.intent.owner.table)
+        .encode()
+        .unwrap();
+    fixture
+        .file
+        .store
+        .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
+        .await
+        .unwrap();
+    let mutations = fixture.file.store.cas_attempts.load(Ordering::SeqCst);
+    assert!(fixture.intent.register(fixture.file.store.clone()).await.is_err());
+    assert_eq!(fixture.file.store.cas_attempts.load(Ordering::SeqCst), mutations);
+    assert!(fixture
+        .file
+        .store
+        .get(&fixture.intent.key().encode().unwrap())
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn write_intent_roundtrips_and_binds_its_exact_owner_and_identity() {
     let fixture = TestWrites::new().await;
     let record = StorageRecord::FileWriteIntent(Box::new(fixture.intent.clone()));
@@ -129,13 +156,20 @@ async fn write_intent_roundtrips_and_binds_its_exact_owner_and_identity() {
 }
 
 #[tokio::test]
-async fn uncertain_intent_reply_is_confirmed_before_authorizing_the_write() {
+async fn uncertain_intent_reply_stops_before_authorizing_the_write_without_a_confirmation_get() {
     let fixture = TestWrites::new().await;
     fixture.file.store.fail_after.store(
         fixture.file.store.writes.load(Ordering::Relaxed) + 1,
         Ordering::Relaxed,
     );
-    fixture.intent.register(fixture.file.store.clone()).await.unwrap();
+    let reads = fixture.file.store.reads.load(Ordering::Relaxed);
+    let mutations = fixture.file.store.cas_attempts.load(Ordering::Relaxed);
+    assert!(fixture.intent.register(fixture.file.store.clone()).await.is_err());
+    assert_eq!(fixture.file.store.reads.load(Ordering::Relaxed) - reads, 3);
+    assert_eq!(
+        fixture.file.store.cas_attempts.load(Ordering::Relaxed) - mutations,
+        1
+    );
     fixture.intent.register(fixture.file.store.clone()).await.unwrap();
     assert!(fixture
         .file

@@ -143,6 +143,6 @@ async fn conditional_write_uses_the_same_apply_fence_and_revision() {
         .unwrap_err();
     assert!(matches!(
         error,
-        KvGroupOperationError::CompareFailed { current_revision } if current_revision == write.chosen_slot
+        KvGroupOperationError::CompareFailed { observation } if observation.revision == write.chosen_slot
     ));
 }

@@ -5,6 +5,7 @@ import { call, datasetPath, openDataset, seed } from '../fixtures/dataset';
 import { consoleProxy } from '../fixtures/consoleProxy';
 import { step } from '../fixtures/stepTimer';
 
+// Baseline: 0.218s (2026-10-24), failed at the retired fixture API before resource migration.
 test('Dataset native: browse', async ({ page, request }, testInfo) => {
   const name = `browse-${Date.now()}`;
   const root = await step('setup', () => seed(request, name));
@@ -37,7 +38,7 @@ test('Dataset native: browse', async ({ page, request }, testInfo) => {
   });
 });
 
-// Baseline: 2.4s (2026-10-16), before readonly/prefix/lifecycle coverage.
+// Baseline: 0.203s (2026-10-24), failed at the retired fixture API before resource migration.
 test('Dataset native: capabilities', async ({ page, request, baseURL }) => {
   const name = `capabilities-${Date.now()}`; const snapshot = await seed(request, name, null, 1, 1);
   await openDataset(page, name); await page.getByRole('button', { name: snapshot, exact: true }).click();

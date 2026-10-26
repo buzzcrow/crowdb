@@ -48,7 +48,7 @@ fn session(fixture: &file::TestFile, identity: u8, ttl_ms: u64) -> MultipartSess
 }
 
 #[tokio::test]
-async fn slow_first_session_does_not_starve_later_expiry_or_advance_unfinished_bytes() {
+async fn background_recovery_never_opens_payload_and_does_not_starve_later_expiry() {
     let fixture = file::TestFile::new(common::TestStore::default()).await;
     let blocks = Arc::new(blocks::TestBlocks::default());
     let repository = MultipartRepository::new(fixture.store.clone());
@@ -99,8 +99,7 @@ async fn slow_first_session_does_not_starve_later_expiry_or_advance_unfinished_b
         .unwrap()
         .unwrap();
     blocks.pause_reads.store(true, Ordering::SeqCst);
-    let recovery = MultipartRecovery::new(fixture.store.clone(), blocks.clone(), 8, 8)
-        .unwrap()
+    let recovery = MultipartRecovery::new(fixture.store.clone())
         .with_session_timeout(Duration::from_millis(20))
         .unwrap();
     let report = tokio::time::timeout(
@@ -110,7 +109,7 @@ async fn slow_first_session_does_not_starve_later_expiry_or_advance_unfinished_b
     .await
     .unwrap()
     .unwrap();
-    assert_eq!((report.deferred, report.progressed), (1, 1));
+    assert_eq!((report.retained, report.progressed), (1, 1));
     assert!(report.failures.is_empty());
     assert_eq!(
         repository
@@ -131,7 +130,7 @@ async fn slow_first_session_does_not_starve_later_expiry_or_advance_unfinished_b
     );
     blocks.pause_reads.store(false, Ordering::SeqCst);
     let report = recovery.recover_page(first.context, None, 200).await.unwrap();
-    assert_eq!((report.deferred, report.progressed, report.retained), (0, 1, 1));
+    assert_eq!((report.deferred, report.progressed, report.retained), (0, 0, 2));
     assert!(report.failures.is_empty());
     assert_eq!(
         repository
@@ -143,20 +142,14 @@ async fn slow_first_session_does_not_starve_later_expiry_or_advance_unfinished_b
             .unwrap()
             .progress
             .completed_bytes,
-        2
+        0
     );
 }
 
 #[test]
 fn recovery_session_timeout_rejects_missing_and_unbounded_deadlines() {
     for timeout in [Duration::ZERO, Duration::from_secs(61)] {
-        let recovery = MultipartRecovery::new(
-            Arc::new(common::TestStore::default()),
-            Arc::new(blocks::TestBlocks::default()),
-            8,
-            8,
-        )
-        .unwrap();
+        let recovery = MultipartRecovery::new(Arc::new(common::TestStore::default()));
         assert!(recovery.with_session_timeout(timeout).is_err());
     }
 }

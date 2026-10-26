@@ -1,5 +1,3 @@
-#[path = "common/file_blocks.rs"]
-mod blocks;
 #[path = "common/store.rs"]
 mod common;
 #[path = "common/file.rs"]
@@ -9,260 +7,227 @@ mod fixtures;
 #[path = "common/multipart_recovery_store.rs"]
 mod scan;
 
-use crowdb_access_iceberg::catalog::CatalogError;
+use crowdb_access_iceberg::catalog::StoredValue;
 use crowdb_access_iceberg::file::{
-    MultipartAdmission, MultipartAdmissionLimits, MultipartAdmissionRecord, MultipartPhase,
-    MultipartRecovery, MultipartRepository, MultipartSession,
+    MultipartCredit, MultipartPhase, MultipartRecovery, MultipartRepository, MultipartSession,
 };
-use crowdb_access_iceberg::key::OperationId;
+use crowdb_access_iceberg::key::{CatalogScope, IcebergKey, OperationId};
+use crowdb_access_iceberg::record::StorageRecord;
 use std::sync::{atomic::Ordering, Arc};
 
-async fn setup() -> (file::TestFile, MultipartSession, MultipartAdmissionRecord) {
+async fn setup() -> (file::TestFile, MultipartSession) {
     let fixture = file::TestFile::new(common::TestStore::default()).await;
-    let mut initial = fixtures::session();
-    initial.context = fixture.context;
-    initial.owner.table = fixture.table;
-    initial.owner.file = fixture.record("file", b"{}").file;
-    initial.location = fixture.table.file("file").unwrap();
-    let record = MultipartAdmission::new(fixture.store.clone())
-        .initialize(
-            fixture.context,
-            MultipartAdmissionLimits {
-                max_sessions: 2,
-                max_reserved_bytes: 3000,
-            },
+    let mut session = fixtures::session();
+    session.context = fixture.context;
+    session.owner.table = fixture.table;
+    session.owner.file = fixture.record("file", b"{}").file;
+    session.location = fixture.table.file("file").unwrap();
+    (fixture, session)
+}
+fn legacy_credit() -> MultipartCredit {
+    MultipartCredit {
+        policy: OperationId::random(),
+        sequence: 2,
+        released: false,
+    }
+}
+fn poison_policy(fixture: &file::TestFile) -> Vec<u8> {
+    let key = IcebergKey::Catalog {
+        catalog: fixture.context.catalog,
+        scope: CatalogScope::MultipartAdmission,
+        suffix: Vec::new(),
+    }
+    .encode()
+    .unwrap();
+    let mut values = (**fixture.store.values.load()).clone();
+    values.insert(
+        key.clone(),
+        StoredValue {
+            bytes: b"retired policy must never be decoded".to_vec(),
+            revision: 1,
+        },
+    );
+    fixture.store.values.store(Arc::new(values));
+    key
+}
+fn install_session(fixture: &file::TestFile, session: &MultipartSession) {
+    let mut values = (**fixture.store.values.load()).clone();
+    values.insert(
+        session.key().encode().unwrap(),
+        StoredValue {
+            bytes: StorageRecord::MultipartSession(Box::new(session.clone()))
+                .encode()
+                .unwrap(),
+            revision: session.revision,
+        },
+    );
+    fixture.store.values.store(Arc::new(values));
+}
+fn recovery(fixture: &file::TestFile) -> MultipartRecovery {
+    MultipartRecovery::new(fixture.store.clone())
+}
+
+#[tokio::test]
+async fn empty_sweeps_only_check_context_and_never_read_or_recreate_a_legacy_policy() {
+    let (fixture, session) = setup().await;
+    poison_policy(&fixture);
+    let before = fixture.store.values.load_full();
+    let reads = fixture.store.reads.load(Ordering::SeqCst);
+    let writes = fixture.store.writes.load(Ordering::SeqCst);
+    let report = recovery(&fixture)
+        .recover_page(fixture.context, None, session.expires_ms)
+        .await
+        .unwrap();
+    assert_eq!((report.progressed, report.retained, report.deferred), (0, 0, 0));
+    assert!(report.failures.is_empty());
+    assert_eq!(fixture.store.reads.load(Ordering::SeqCst) - reads, 2);
+    assert_eq!(fixture.store.writes.load(Ordering::SeqCst), writes);
+    assert_eq!(*fixture.store.values.load_full(), *before);
+    assert_eq!(fixture.store.legacy_admission_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_pending_legacy_reservation_cannot_recreate_an_upload_from_its_journal() {
+    use crowdb_access_iceberg::file::{
+        MultipartAdmissionLimits, MultipartAdmissionRecord, MultipartCreditAction, MultipartCreditMutation,
+    };
+    use crowdb_access_iceberg::operation::PayloadStore;
+    let (fixture, mut session) = setup().await;
+    let credit = legacy_credit();
+    session.credit = Some(credit);
+    let after = PayloadStore::new(fixture.store.clone())
+        .put(
+            fixture.context.catalog,
+            session.upload,
+            &StorageRecord::MultipartSession(Box::new(session.clone()))
+                .encode()
+                .unwrap(),
         )
         .await
         .unwrap();
-    (fixture, initial, record)
-}
-
-async fn policy(admission: &MultipartAdmission, initial: &MultipartSession) -> MultipartAdmissionRecord {
-    admission.load(initial.context).await.unwrap().unwrap()
-}
-
-async fn session(repository: &MultipartRepository, initial: &MultipartSession) -> MultipartSession {
-    repository
-        .load(initial.context, initial.upload)
-        .await
-        .unwrap()
-        .unwrap()
-}
-
-#[tokio::test]
-async fn reservation_reply_loss_recovers_once_across_instances_at_every_write() {
-    for lost in 1..=4 {
-        let (fixture, initial, record) = setup().await;
-        let admission = MultipartAdmission::new(fixture.store.clone());
-        fixture.store.fail_after.store(
-            fixture.store.writes.load(Ordering::SeqCst) + lost,
-            Ordering::SeqCst,
-        );
-        assert!(admission.reserve(&record, &initial, 100).await.is_err());
-        fixture.store.fail_after.store(0, Ordering::SeqCst);
-        let admission = MultipartAdmission::new(fixture.store.clone());
-        let record = policy(&admission, &initial).await;
-        if record.pending.is_some() {
-            assert!(admission.settle(&record).await.unwrap());
-        }
-        let record = policy(&admission, &initial).await;
-        assert!(admission.reserve(&record, &initial, 100).await.unwrap());
-        let record = policy(&admission, &initial).await;
-        assert_eq!((record.sessions, record.reserved_bytes), (1, 1500));
-        assert!(record.pending.is_none());
-        let repository = MultipartRepository::new(fixture.store.clone());
-        let admitted = session(&repository, &initial).await;
-        assert_eq!(admitted.credit.unwrap().policy, record.policy);
-        assert!(!admitted.credit.unwrap().released);
-        let writes = fixture.store.writes.load(Ordering::SeqCst);
-        assert!(admission.reserve(&record, &initial, 5000).await.unwrap());
-        assert_eq!(fixture.store.writes.load(Ordering::SeqCst), writes);
-    }
-}
-
-#[tokio::test]
-async fn terminal_release_reply_loss_never_returns_credits_twice() {
-    for lost in 1..=5 {
-        let (fixture, initial, record) = setup().await;
-        let admission = MultipartAdmission::new(fixture.store.clone());
-        let repository = MultipartRepository::new(fixture.store.clone());
-        assert!(admission.reserve(&record, &initial, 100).await.unwrap());
-        let active = session(&repository, &initial).await;
-        let record = policy(&admission, &initial).await;
-        assert!(matches!(
-            admission.release(&record, &active).await,
-            Err(CatalogError::Conflict)
-        ));
-        assert!(repository.abort(&active).await.unwrap());
-        let terminal = session(&repository, &initial).await;
-        fixture.store.fail_after.store(
-            fixture.store.writes.load(Ordering::SeqCst) + lost,
-            Ordering::SeqCst,
-        );
-        assert!(admission.release(&record, &terminal).await.is_err());
-        fixture.store.fail_after.store(0, Ordering::SeqCst);
-        let admission = MultipartAdmission::new(fixture.store.clone());
-        let current = policy(&admission, &initial).await;
-        if current.pending.is_some() {
-            assert!(admission.settle(&current).await.unwrap());
-        }
-        let current = policy(&admission, &initial).await;
-        assert!(admission.release(&current, &terminal).await.unwrap());
-        let current = policy(&admission, &initial).await;
-        assert_eq!((current.sessions, current.reserved_bytes), (0, 0));
-        let retained = session(&repository, &initial).await;
-        assert!(retained.credit.unwrap().released);
-        let writes = fixture.store.writes.load(Ordering::SeqCst);
-        assert!(admission.release(&current, &terminal).await.unwrap());
-        assert!(admission.release(&current, &retained).await.unwrap());
-        assert_eq!(fixture.store.writes.load(Ordering::SeqCst), writes);
-    }
-}
-
-#[tokio::test]
-async fn admission_fences_competing_reservations_and_persisted_policy_changes() {
-    let (fixture, initial, record) = setup().await;
-    let first = MultipartAdmission::new(fixture.store.clone());
-    let second = MultipartAdmission::new(fixture.store.clone());
-    let mut other = initial.clone();
-    other.upload = OperationId::random();
-    let (left, right) = tokio::join!(
-        first.reserve(&record, &initial, 100),
-        second.reserve(&record, &other, 100)
-    );
-    assert_ne!(left.unwrap(), right.unwrap());
-    let current = policy(&first, &initial).await;
-    assert_eq!(current.sessions, 1);
-    assert_eq!(
-        first.initialize(initial.context, record.limits).await.unwrap(),
-        current
-    );
-    assert!(matches!(
-        first
-            .initialize(
-                initial.context,
-                MultipartAdmissionLimits {
-                    max_sessions: 3,
-                    ..record.limits
-                }
-            )
-            .await,
-        Err(CatalogError::Conflict)
-    ));
-    let repository = MultipartRepository::new(fixture.store.clone());
-    let missing = if repository
-        .load(initial.context, initial.upload)
-        .await
-        .unwrap()
-        .is_none()
-    {
-        &initial
-    } else {
-        &other
+    let record = MultipartAdmissionRecord {
+        context: fixture.context,
+        policy: credit.policy,
+        revision: credit.sequence,
+        limits: MultipartAdmissionLimits {
+            max_sessions: 2,
+            max_reserved_bytes: 3000,
+        },
+        sessions: 1,
+        reserved_bytes: session.limits.max_staged_bytes,
+        pending: Some(MultipartCreditMutation {
+            action: MultipartCreditAction::Reserve,
+            upload: session.upload,
+            reservation_bytes: session.limits.max_staged_bytes,
+            before: None,
+            after,
+        }),
     };
-    assert!(first.reserve(&current, missing, 100).await.unwrap());
-    let mut overflow = initial.clone();
-    overflow.upload = OperationId::random();
-    assert!(first
-        .reserve(&policy(&first, &initial).await, &overflow, 100)
+    let mut values = (**fixture.store.values.load()).clone();
+    values.insert(
+        record.key().encode().unwrap(),
+        StoredValue {
+            bytes: StorageRecord::MultipartAdmission(Box::new(record))
+                .encode()
+                .unwrap(),
+            revision: 2,
+        },
+    );
+    fixture.store.values.store(Arc::new(values));
+    let before = fixture.store.values.load_full();
+    let report = recovery(&fixture)
+        .recover_page(fixture.context, None, session.expires_ms)
+        .await
+        .unwrap();
+    assert_eq!((report.progressed, report.retained, report.deferred), (0, 0, 0));
+    assert!(report.failures.is_empty());
+    assert_eq!(*fixture.store.values.load_full(), *before);
+    assert_eq!(fixture.store.legacy_admission_calls.load(Ordering::SeqCst), 0);
+    assert!(!fixture
+        .store
+        .values
+        .load()
+        .contains_key(&session.key().encode().unwrap()));
+}
+
+#[tokio::test]
+async fn legacy_open_upload_expires_without_global_credits_and_terminal_sweeps_do_not_write() {
+    let (fixture, mut session) = setup().await;
+    session.credit = Some(legacy_credit());
+    install_session(&fixture, &session);
+    let policy = poison_policy(&fixture);
+    let before = fixture.store.values.load().get(&policy).unwrap().clone();
+    let report = recovery(&fixture)
+        .recover_page(fixture.context, None, session.expires_ms)
+        .await
+        .unwrap();
+    assert_eq!(report.progressed, 1);
+    assert!(report.failures.is_empty());
+    let terminal = MultipartRepository::new(fixture.store.clone())
+        .load(fixture.context, session.upload)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(terminal.phase, MultipartPhase::Aborted);
+    assert_eq!(terminal.credit, session.credit);
+    assert_eq!(terminal.owner, session.owner);
+    let writes = fixture.store.writes.load(Ordering::SeqCst);
+    let reads = fixture.store.reads.load(Ordering::SeqCst);
+    let report = recovery(&fixture)
+        .recover_page(fixture.context, None, session.expires_ms)
+        .await
+        .unwrap();
+    assert_eq!((report.progressed, report.retained, report.deferred), (0, 1, 0));
+    assert!(report.failures.is_empty());
+    assert_eq!(fixture.store.writes.load(Ordering::SeqCst), writes);
+    assert_eq!(fixture.store.reads.load(Ordering::SeqCst) - reads, 2);
+    assert_eq!(fixture.store.legacy_admission_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.store.values.load().get(&policy), Some(&before));
+}
+
+#[tokio::test]
+async fn published_legacy_resources_remain_unchanged_even_when_the_credit_policy_is_missing() {
+    let (fixture, mut session) = setup().await;
+    let files = crowdb_access_iceberg::file::FileRepository::new(fixture.store.clone());
+    let record = files
+        .publish(fixture.context, &fixture.record("file", b"{}"))
+        .await
+        .unwrap();
+    session.owner.file = record.file;
+    session.credit = Some(legacy_credit());
+    session.phase = MultipartPhase::Published;
+    session.part_count = 1;
+    session.completion = Some(fixtures::completion(&session));
+    let completion = session.completion.as_mut().unwrap();
+    completion.progress.next_part = 1;
+    completion.progress.completed_bytes = record.length;
+    completion.publication = Some(completion.selection.clone());
+    session.published = Some(session.owner.file);
+    install_session(&fixture, &session);
+    let before = fixture.store.values.load_full();
+    let report = recovery(&fixture)
+        .recover_page(fixture.context, None, session.expires_ms)
+        .await
+        .unwrap();
+    assert_eq!((report.progressed, report.retained, report.deferred), (0, 1, 0));
+    assert!(report.failures.is_empty());
+    assert_eq!(*fixture.store.values.load_full(), *before);
+    assert_eq!(fixture.store.legacy_admission_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        files.load(fixture.context, &record.location).await.unwrap(),
+        Some(record)
+    );
+}
+
+#[tokio::test]
+async fn new_uploads_cannot_request_legacy_global_credit_state() {
+    let (fixture, mut session) = setup().await;
+    session.credit = Some(legacy_credit());
+    let writes = fixture.store.writes.load(Ordering::SeqCst);
+    assert!(MultipartRepository::new(fixture.store.clone())
+        .begin(&session, 100)
         .await
         .is_err());
-    assert!(repository
-        .load(initial.context, overflow.upload)
-        .await
-        .unwrap()
-        .is_none());
-}
-
-#[tokio::test]
-async fn sweep_recovers_precreation_credit_then_expires_and_releases_without_deletion() {
-    let (fixture, initial, record) = setup().await;
-    let admission = MultipartAdmission::new(fixture.store.clone());
-    fixture
-        .store
-        .fail_after
-        .store(fixture.store.writes.load(Ordering::SeqCst) + 2, Ordering::SeqCst);
-    assert!(admission.reserve(&record, &initial, 100).await.is_err());
-    fixture.store.fail_after.store(0, Ordering::SeqCst);
-    let repository = MultipartRepository::new(fixture.store.clone());
-    assert!(repository
-        .load(initial.context, initial.upload)
-        .await
-        .unwrap()
-        .is_none());
-    let recovery = MultipartRecovery::new(
-        fixture.store.clone(),
-        Arc::new(blocks::TestBlocks::default()),
-        8,
-        32,
-    )
-    .unwrap();
-    let first = recovery
-        .recover_page(initial.context, None, initial.expires_ms)
-        .await
-        .unwrap();
-    assert_eq!(first.progressed, 2);
-    assert!(first.failures.is_empty());
-    assert_eq!(
-        session(&repository, &initial).await.phase,
-        MultipartPhase::Aborted
-    );
-    let second = recovery
-        .recover_page(initial.context, None, initial.expires_ms)
-        .await
-        .unwrap();
-    assert_eq!(second.progressed, 1);
-    assert!(second.failures.is_empty());
-    assert!(session(&repository, &initial).await.credit.unwrap().released);
-    let current = policy(&admission, &initial).await;
-    assert_eq!((current.sessions, current.reserved_bytes), (0, 0));
-    assert_eq!(
-        recovery
-            .recover_page(initial.context, None, initial.expires_ms)
-            .await
-            .unwrap()
-            .retained,
-        1
-    );
-}
-
-#[tokio::test]
-async fn superseded_helpers_cannot_recreate_released_sessions_or_change_new_credits() {
-    let (fixture, initial, record) = setup().await;
-    let admission = MultipartAdmission::new(fixture.store.clone());
-    fixture
-        .store
-        .fail_after
-        .store(fixture.store.writes.load(Ordering::SeqCst) + 2, Ordering::SeqCst);
-    assert!(admission.reserve(&record, &initial, 100).await.is_err());
-    fixture.store.fail_after.store(0, Ordering::SeqCst);
-    let reserved = policy(&admission, &initial).await;
-    assert!(admission.settle(&reserved).await.unwrap());
-    let repository = MultipartRepository::new(fixture.store.clone());
-    assert!(repository
-        .abort(&session(&repository, &initial).await)
-        .await
-        .unwrap());
-    let terminal = session(&repository, &initial).await;
-    let current = policy(&admission, &initial).await;
-    fixture
-        .store
-        .fail_after
-        .store(fixture.store.writes.load(Ordering::SeqCst) + 3, Ordering::SeqCst);
-    assert!(admission.release(&current, &terminal).await.is_err());
-    fixture.store.fail_after.store(0, Ordering::SeqCst);
-    let releasing = policy(&admission, &initial).await;
-    assert!(admission.settle(&releasing).await.unwrap());
-    let mut other = initial.clone();
-    other.upload = OperationId::random();
-    let current = policy(&admission, &initial).await;
-    assert!(admission.reserve(&current, &other, 100).await.unwrap());
-    let current = policy(&admission, &initial).await;
-    let writes = fixture.store.writes.load(Ordering::SeqCst);
-    assert!(!admission.settle(&reserved).await.unwrap());
-    assert!(!admission.settle(&releasing).await.unwrap());
-    assert!(admission.release(&current, &terminal).await.unwrap());
-    assert_eq!(policy(&admission, &initial).await, current);
     assert_eq!(fixture.store.writes.load(Ordering::SeqCst), writes);
 }
 

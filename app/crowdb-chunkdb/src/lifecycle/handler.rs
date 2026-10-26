@@ -90,6 +90,7 @@ impl From<StoreError> for LifecycleError {
     fn from(error: StoreError) -> Self {
         match error {
             StoreError::Conflict => Self::StateConflict,
+            StoreError::InvalidRange(message) => Self::InvalidRequest(message),
             other => Self::Storage(other),
         }
     }
@@ -131,6 +132,7 @@ mod admission;
 mod append;
 #[path = "lock_map.rs"]
 mod lock_map;
+mod range_retirement;
 mod recovery;
 mod reservation;
 mod seal;

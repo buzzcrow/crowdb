@@ -1,6 +1,6 @@
 use crate::catalog::{check_context, CasOutcome, CatalogError};
 use crate::error::ValidationError;
-use crate::file::{MultipartPart, MultipartPartMutation, MultipartPhase, MultipartSession};
+use crate::file::{MultipartPart, MultipartPartMutation, MultipartPhase, MultipartSession, SelectedPart};
 use crate::key::{CatalogScope, IcebergKey};
 use crate::operation::mutation_identity;
 use crate::record::StorageRecord;
@@ -9,6 +9,26 @@ use crowdb_access_multipart::{next_part_revision, reserve_part_accounting, PartA
 use super::{check_live, increment, MultipartRepository};
 
 impl MultipartRepository {
+    pub(super) async fn selected_part(
+        &self,
+        session: &MultipartSession,
+        selected: &SelectedPart,
+    ) -> Result<MultipartPart, CatalogError> {
+        let mut suffix = session.upload.as_bytes().to_vec();
+        suffix.extend_from_slice(&selected.number.to_be_bytes());
+        let key = IcebergKey::Catalog {
+            catalog: session.context.catalog,
+            scope: CatalogScope::MultipartPart,
+            suffix,
+        };
+        let part = self.read_part(&key).await?.ok_or(ValidationError::Record)?;
+        part.validate_for(session)?;
+        if part.revision != selected.revision || part.selection_digest() != selected.digest {
+            return Err(ValidationError::Record.into());
+        }
+        Ok(part)
+    }
+
     /// Publishes a streamed part with one CAS on that part number. The caller's
     /// admitted session snapshot bounds the part; later aborts leave an orphan
     /// for multipart cleanup instead of changing a different part's result.
@@ -54,18 +74,11 @@ impl MultipartRepository {
                 &value,
                 mutation_identity(&key, expected.as_deref(), &value),
             )
-            .await;
+            .await?;
         let written = match outcome {
-            Ok(CasOutcome::Applied(_)) => Some(after),
-            Ok(CasOutcome::Conflict(Some(existing))) if existing.bytes == value => Some(after),
-            Ok(CasOutcome::Conflict(_)) => None,
-            Err(error) => {
-                if self.read_part(&after.key()).await?.as_ref() == Some(&after) {
-                    Some(after)
-                } else {
-                    return Err(error.into());
-                }
-            }
+            CasOutcome::Applied(_) => Some(after),
+            CasOutcome::Conflict(Some(existing)) if existing.bytes == value => Some(after),
+            CasOutcome::Conflict(_) => None,
         };
         Ok(written)
     }
