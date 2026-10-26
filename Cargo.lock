@@ -960,7 +960,6 @@ dependencies = [
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
- "crowdb-web",
  "flatbuffers",
  "futures",
  "hex",

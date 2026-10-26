@@ -178,11 +178,16 @@ test('KV binding recommends the least loaded group and initialization creates Gr
     data: { group_id: 2, replica_id: 1, nodes: [1, 2, 3] },
   });
   expect(added.status(), await added.text()).toBe(201);
-  await expect.poll(async () => {
-    const response = await request.get('/api/stores/0/groups/2');
-    expect(response.ok(), await response.text()).toBe(true);
-    return (await response.json()).replicas.filter((row: { role: string }) => row.role === 'leader').length;
-  }, { intervals: [100] }).toBe(1);
+  await step('observe Group 2 leader election before binding', async () => {
+    await expect.poll(async () => {
+      const response = await request.get('/api/stores/0/groups/2');
+      expect(response.ok(), await response.text()).toBe(true);
+      return (await response.json()).replicas.filter((row: { role: string }) => row.role === 'leader').length;
+    }, {
+      message: 'Created Group 2 must elect exactly one leader before binding recommendations',
+      timeout: 10_000, intervals: [100],
+    }).toBe(1);
+  });
   const remote = await request.post('/api/nodes/2/disk-groups', {
     data: { id: 592, store_id: 0, group_id: 1 },
   });

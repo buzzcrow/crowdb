@@ -17,8 +17,8 @@ Run commands through `pixi run`. Read only the directory relevant to the task.
   policy and package-to-Pixi-to-CI coverage. `task_graph.py` follows task calls
   through shell scripts; it is shared with timing collection.
 - **`ci-build/`** — release runtime and host client artifacts for CI consumers.
-  `build.py runtime` packages the already staged production runtime;
-  `build.py clients` compiles the shared acceptance clients. `unpack.py`
+  `build.py clients` compiles the shared acceptance clients. Optional
+  `build.py runtime` packages an already staged production runtime. `unpack.py`
   verifies the source identity and file digests before restoring either
   artifact. Consumers run the supplied binaries with `CROWDB_COMPILED_TESTS`
   pointing at `target/compiled-tests`.
@@ -87,22 +87,28 @@ SDK artifacts use release builds. Cargo uses its default CPU parallelism, and
 CMake selects the available system CPU count. Local jobs sharing a build
 directory still run their compilation stages sequentially.
 
-OCI construction waits only for the staged production runtime. Container jobs
-wait for both the OCI artifact and the host client artifact, then reuse those
-exact inputs without Cargo compilation. Production runtime staging has its own
-job, separate from test code and test features. Cache entries contain debug and
-release compilation outputs under separate job keys; immutable workflow
-artifacts carry runtime/client inputs.
+Production runtime compilation, staging and OCI construction share one runner,
+separate from test code and test features. Host client compilation runs in
+parallel. Container jobs wait for both the OCI artifact and the host client
+artifact, then reuse those exact inputs without Cargo compilation. The staged
+runtime passes directly to the OCI builder without an intermediate archive
+upload or a second runner's setup. Cache entries contain debug and release
+compilation outputs under separate owner keys; the OCI producer retains the
+`BuildRuntime` cache key. Immutable workflow artifacts carry OCI/client inputs.
 Producers and consumers use Ubuntu 24.04 with the locked Pixi toolchain.
 Consumers take artifact names from producer outputs, so rerunning a failed
 consumer can reuse a successful compilation from an earlier workflow attempt.
 
 KV, S3, Iceberg and Console have independent container jobs; the storage matrix
-groups disk (DiskDB/DiskIO), chunk (ChunkDB/Chunk-KV/Chunk stream/Chunk client),
-Dataset and Deployment. Every complete domain has exactly one owner. The
-Iceberg matrix runs core, GC, SDK and grace partitions independently, so GC
-convergence tests do not delay the ordinary core cases. The
-preview and release workflows use the same compilation split and preserve
+groups disk (DiskDB/DiskIO), chunk (ChunkDB/Chunk-KV/Chunk stream/Chunk client)
+and Dataset. Deployment separates its six reference deployment flows from
+service validation and recovery. Console separates native dataset/topology/
+hardware flows from service operations, preserving stable browser batches on
+each runner. Iceberg runs core, GC convergence, GC cleanup, SDK and grace
+partitions independently. The full grace case retains its own runner and its
+complete request/delegation deadline chain. Every domain is covered completely;
+partition tests and the CI ownership check reject missing or repeated cases.
+The preview and release workflows use the same producer split and preserve
 their explicit Docker/containerd runtime gates. The manual ecosystem workflow
 consumes the shared OCI artifact and prepares its external client tools in the
 acceptance job. Special runtime profiles remain explicit.

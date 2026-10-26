@@ -36,6 +36,41 @@ class ReleasePolicyTest(unittest.TestCase):
         self.assertIn("--profile containerd-cluster --concurrency 1", str(jobs["verify"]))
         self.assertIn("--profile containerd-host --concurrency 1", str(jobs["containerd"]))
 
+    def test_runtime_staging_and_oci_construction_share_the_production_runner(self):
+        for workflow_name, producer in (
+                ('ci.yml', 'ContainerImage'), ('docker-preview.yml', 'construct'),
+                ('release-container.yml', 'construct'),
+                ('iceberg-container-ecosystem.yml', 'construct')):
+            with self.subTest(workflow=workflow_name):
+                source = (ROOT / '.github/workflows' / workflow_name).read_text()
+                workflow = yaml.load(source, Loader=yaml.BaseLoader)
+                jobs = workflow['jobs']
+                self.assertNotIn('BuildRuntime', jobs)
+                job = jobs[producer]
+                self.assertNotIn('needs', job)
+                self.assertEqual(job['runs-on'], 'ubuntu-24.04')
+                self.assertEqual(job['env']['CROWDB_KEEP_DEBUG_INFO'],
+                                 "${{ vars.CROWDB_KEEP_DEBUG_INFO || '0' }}")
+                steps = job['steps']
+                runs = [step.get('run', '') for step in steps]
+                stage = next(i for i, run in enumerate(runs) if 'stage.sh' in run)
+                build = next(i for i, run in enumerate(runs) if 'build --privileged' in run)
+                receipt = next(i for i, run in enumerate(runs) if 'ci-receipt.py' in run)
+                self.assertLess(stage, build)
+                self.assertLess(build, receipt)
+                self.assertIn('test-oci-image', runs[build])
+                self.assertNotIn('compiled-runtime-', source)
+                self.assertNotIn('kind: runtime', source)
+                cache = next(step for step in steps
+                             if step.get('uses') == './.github/actions/compilation-cache')
+                self.assertEqual(cache['with']['key'], 'BuildRuntime')
+                self.assertEqual(job['outputs']['revision'], '${{ steps.source.outputs.revision }}')
+                self.assertEqual(job['outputs']['digest'], '${{ steps.artifact.outputs.digest }}')
+                self.assertIn('[[ "$revision" == "$GITHUB_SHA" ]]', '\n'.join(runs))
+                if 'BuildClients' in jobs:
+                    self.assertNotIn('needs', jobs['BuildClients'])
+                    self.assertNotIn('stage.sh', str(jobs['BuildClients']))
+
     def test_missing_failed_or_stale_gate_rejects_publication(self):
         verified = {"version": "0.3.0", "revision": "revision", "image_digest": "sha256:digest"}
         env = {"GITHUB_SHA": "revision", "GITHUB_REF_NAME": "release/0.3.0",

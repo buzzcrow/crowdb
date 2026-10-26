@@ -35,11 +35,6 @@ rand = { version = "0.8", features = ["small_rng"] }
 tracing = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 thiserror = "1"
-# R10 benchmark framework: `bench benchmark` embeds a console-web
-# instance in-process to provision the fixture's 3-node cluster (also
-# used by the A12 kv_cli integration test to spawn a real crowdb-web
-# in front of crowdb-kv-server, previously a dev-dependency-only use).
-crowdb-web = { path = "../crowdb-web" }
 axum = "0.7"
 libc = "0.2.189"
 crossbeam-channel = "0.5.16"

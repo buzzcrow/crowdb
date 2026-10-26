@@ -15,11 +15,11 @@ DOMAINS = {"kv", "diskdb", "diskio", "chunkdb", "chunk-stream", "chunk-client",
 
 
 def check_partitions(block, domain):
+    expected = PARTITIONS.get(domain)
     if "--partition" not in block:
-        if re.search(r"^\s+partition:", block, re.M):
+        if expected or re.search(r"^\s+partition:", block, re.M):
             raise ValueError("partition matrix must dispatch its selected partition")
         return
-    expected = PARTITIONS.get(domain)
     matrix = re.search(r"^\s+partition: \[([^\]]+)\]$", block, re.M)
     actual = tuple(item.strip() for item in matrix[1].split(",")) if matrix else ()
     if not expected or len(actual) != len(expected) or set(actual) != set(expected):

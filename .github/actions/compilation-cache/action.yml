@@ -1,12 +1,17 @@
 name: Cache compilation
 description: Cache compiled test and release inputs with the locked Pixi toolchain
+inputs:
+  key:
+    description: Compilation owner whose cache should be reused
+    required: false
+    default: ${{ github.job }}
 runs:
   using: composite
   steps:
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: release-ci-v1-${{ hashFiles('pixi.lock') }}
-        key: ${{ github.job }}
+        key: ${{ inputs.key }}
         cache-targets: false
         cache-directories: |
           target/debug

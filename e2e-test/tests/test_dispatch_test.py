@@ -48,7 +48,8 @@ class TestDispatchTest(unittest.TestCase):
     def test_compilation_cache_excludes_rootful_oci_state_and_runtime_artifacts(self):
         cache = (ROOT / '.github/actions/compilation-cache/action.yml').read_text()
         self.assertIn('cache-targets: false', cache)
-        self.assertIn('key: ${{ github.job }}', cache)
+        self.assertIn('default: ${{ github.job }}', cache)
+        self.assertIn('key: ${{ inputs.key }}', cache)
         self.assertIn('cmd-format: "pixi run {0}"', cache)
         self.assertIn('cache-workspace-crates: true', cache)
         directories = cache.split('cache-directories: |', 1)[1].split('cmd-format:', 1)[0].split()
@@ -58,20 +59,20 @@ class TestDispatchTest(unittest.TestCase):
         for workflow in (ROOT / '.github/workflows').glob('*.yml'):
             self.assertNotIn('uses: Swatinem/rust-cache', workflow.read_text())
         for job in ('Lint', 'CppTests', 'UnitTests', 'StorageTests', 'AccessTests',
-                    'ConsoleTests', 'BuildRuntime', 'BuildClients'):
+                    'ConsoleTests', 'ContainerImage', 'BuildClients'):
             self.assertIn('uses: ./.github/actions/compilation-cache', self.job(job), job)
-        for job in ('UITests', 'ContainerImage', 'S3E2E', 'IcebergE2E',
-                    'ContainerKV', 'ContainerConsole', 'ContainerStorage'):
+        for job in ('UITests', 'S3E2E', 'IcebergE2E', 'ContainerKV',
+                    'ContainerConsole', 'ContainerStorage', 'ContainerDeployment'):
             self.assertNotIn('uses: ./.github/actions/compilation-cache', self.job(job), job)
 
     def test_only_binary_consumers_wait_for_shared_builds(self):
         for name in ('Lint', 'UITests', 'CppTests', 'UnitTests', 'StorageTests',
-                     'AccessTests', 'ConsoleTests', 'BuildRuntime', 'BuildClients'):
+                     'AccessTests', 'ConsoleTests', 'ContainerImage', 'BuildClients'):
             with self.subTest(job=name):
                 self.assertNotRegex(self.job(name), re.compile(r'^\s+needs:', re.M), name)
-        self.assertRegex(self.job('ContainerImage'), r'needs: (?:\[\s*)?BuildRuntime')
         self.assertNotIn('BuildClients', self.job('ContainerImage'))
-        for name in ('S3E2E', 'IcebergE2E', 'ContainerKV', 'ContainerConsole', 'ContainerStorage'):
+        for name in ('S3E2E', 'IcebergE2E', 'ContainerKV', 'ContainerConsole',
+                     'ContainerStorage', 'ContainerDeployment'):
             with self.subTest(job=name):
                 job = self.job(name)
                 self.assertIn('needs: [ContainerImage, BuildClients]', job)
@@ -85,9 +86,12 @@ class TestDispatchTest(unittest.TestCase):
         block = self.workflow.split('  ContainerStorage:', 1)[1]
         self.assertIn('max-parallel: 4', block)
         self.assertIn('- group: dataset\n          domains: dataset\n', block)
-        self.assertIn('- group: deployment\n          domains: deployment\n', block)
+        self.assertNotIn('domains: deployment', block)
         self.assertNotIn('domains: dataset deployment', block)
         self.assertIn('uses: ./.github/actions/restore-compiled', block)
+        deployment = self.job('ContainerDeployment')
+        self.assertIn('partition: [deployment-reference, deployment-services]', deployment)
+        self.assertIn('pixi run test-e2e-deployment --partition "$E2E_PARTITION"', deployment)
 
     def test_missing_and_duplicate_domains_are_rejected(self):
         for workflow in (
@@ -98,10 +102,13 @@ class TestDispatchTest(unittest.TestCase):
 
     def test_incomplete_duplicate_or_undispatched_partition_is_rejected(self):
         for workflow in (
-            self.workflow.replace("iceberg-core, iceberg-gc, iceberg-sdk, iceberg-grace",
+            self.workflow.replace("iceberg-core, iceberg-gc-convergence, iceberg-gc-cleanup, iceberg-sdk, iceberg-grace",
                                   "iceberg-core, iceberg-sdk, iceberg-grace"),
-            self.workflow.replace("iceberg-core, iceberg-gc, iceberg-sdk, iceberg-grace",
-                                  "iceberg-core, iceberg-gc, iceberg-sdk, iceberg-sdk"),
+            self.workflow.replace("iceberg-core, iceberg-gc-convergence, iceberg-gc-cleanup, iceberg-sdk, iceberg-grace",
+                                  "iceberg-core, iceberg-gc-convergence, iceberg-gc-cleanup, iceberg-sdk, iceberg-sdk"),
+            self.workflow.replace('partition: [deployment-reference, deployment-services]',
+                                  'partition: [deployment-reference, deployment-reference]'),
+            self.workflow.replace('console-native-data, console-native-operations', 'console-native-data'),
             self.workflow.replace(' --partition "$E2E_PARTITION"', ''),
             self.workflow.replace(' --partition "$E2E_PARTITION"', ' --partition iceberg-core'),
         ):
