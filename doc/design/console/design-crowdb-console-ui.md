@@ -50,9 +50,11 @@ does not establish that a native service operation succeeds.
 - **UI-01:** One Console serves one configured cluster. Opening the UI enters
   that cluster directly; no Connect dialog, endpoint input, or access-key form
   precedes ordinary browsing.
-- **UI-02:** The seven top-level tabs are Cluster, KV, Chunk, Chunk-KV, Iceberg,
-  Dataset and S3. Each has an independent selected resource and query window. Cluster
-  contains Topology and Capacity views sharing selection and tree expansion.
+- **UI-02:** The seven top-level tab labels are Cluster, PaxosKV, Chunk, ChunkKV,
+  Iceberg, Dataset and S3. KV and Chunk-KV remain their internal domain identities.
+  Each domain has an independent selected resource and query window. Cluster
+  shares topology/capacity selection and tree expansion without a view switch;
+  topology visibility follows CLU-05.
 - **UI-03:** Assume an administrator/root session until UI authentication is
   introduced. Available backend operations remain authoritative; capability
   restrictions are not inferred from a missing login screen.
@@ -85,11 +87,16 @@ provide observable capacity and bitmap fixtures.
 - **NAV-01:** The header keeps the seven domains in a stable order. Domain
   changes preserve that domain's bounded query state and selected identity.
 - **NAV-02:** The left panel selects hierarchy/scope; the center presents the
-  selected resource or overview; the right panel presents selected properties.
+  selected resource or a paged child list; the right panel presents selected
+  properties. Resource operations follow the context-menu contract in §23.
 - **NAV-03:** Cluster row/card selection updates properties without replacing the center
   scope. Names enter that resource; closing properties retains the work area.
   Cluster breadcrumbs identify the current physical scope; they are navigation, not duplicate
   Back links for inline details.
+  This graph inspection distinction does not apply to ordinary resource tree/list
+  rows: activating their label, icon or row selects the same resource. Expansion
+  controls are separate. At DiskGroup scope, both Disk icon and Disk ID enter
+  the same Disk workspace, including from a DiskDB ownership reference.
 - **NAV-04:** Cross-links identify the exact destination resource. Returning
   restores the originating selection and page. A stale/deleted destination has
   an explicit state rather than silently selecting a different item. The header
@@ -114,16 +121,16 @@ provide observable capacity and bitmap fixtures.
   diagrams scroll within their work area; action bars and pagination remain
   reachable. Resizing does not reset selection or trigger unbounded refetches.
   Capacity observations retain the last successful inventory, usage and scan
-  independently after a failed refresh. The shared header exposes each source's
-  observation time, cached state and error. Runtime usage is keyed by group/disk
+  independently after a failed refresh. Unknown values and refresh errors appear
+  with the affected capacity data; raw observation metadata is not a global strip. Runtime usage is keyed by group/disk
   scope; an unobserved scope remains unknown instead of borrowing other totals.
 - **NAV-07:** Every domain uses the shared Tree appearance and draggable
-  panel dividers. Left default width is 240 px; properties default is 320 px.
+  panel dividers. Cluster/KV left default width is 240 px; data workbenches use
+  280 px. Properties default is 320 px.
   Cluster navigation resizes between 200 and 360 px, properties between 280
   and 480 px, preserving 480 px for the center when space permits. Below
-  1100 px, properties overlays the work area as a dismissible drawer; Escape
-  closes it and restores focus. Navigation can collapse and overlays the work
-  area below 720 px. Other domain dividers retain their 220–600 px bounds.
+  1100 px in Cluster, properties overlays the work area as a dismissible drawer; Escape
+  closes it and restores focus. Navigation remains visible without a hide/show control. Other domain dividers retain their 220–600 px bounds.
   Switching domains introduces no panel replacement/slide animation.
 - **NAV-08:** Parent cards in center topology diagrams have separate named controls for
   opening the resource and collapsing or expanding children. Card bodies inspect
@@ -133,8 +140,31 @@ provide observable capacity and bitmap fixtures.
   Hiding a topology panel interrupts viewport motion before zero-size geometry
   is observed. Rapid domain switches retain finite coordinates; centering runs
   only in a visible, measured canvas.
-  The optional Diagram initially expands Datacenter/Rack and stops at visible Node cards;
+  The default diagram initially expands Datacenter/Rack and stops at visible Node cards;
   service descendants appear when a Node is explicitly expanded.
+
+The header shows the CrowDB brand, domain navigation, then Back/Forward and
+Refresh in the right action area. Access instance `access-1` displays as `AS-1`
+while API operations retain the original identifier.
+
+Shell layout (NAV-01/02/04/07):
+
+```text
++------------------------------------------------------------------------------------------------------+
+| CrowDB  Health | Cluster PaxosKV Chunk ChunkKV Iceberg Dataset S3 | [Back] [Forward] [Refresh]           |
++------------------------+------------------------------------------------------+----------------------+
+| Resource tree          | Current scope                                        | Properties           |
+| v Parent               | Query / filter                            [Refresh]  | Selected identity    |
+|   Child                | Primary content or paged child list                  | Structured values    |
+|                        |                                  [Previous] [Next]   |                      |
++------------------------+------------------------------------------------------+----------------------+
+          draggable divider                               draggable divider
+```
+
+All wireframes show layout contracts, not runtime evidence. Names, IDs, counts
+and statuses are illustrative. `>`/`v` denote collapsed/expanded branches, `*`
+marks selection, and `[Auto]` denotes the accessible Auto icon. Menu entries
+remain subject to the resource capabilities and lifecycle rules in the text.
 
 ## 4. Visual language and service identity
 
@@ -165,8 +195,16 @@ provide observable capacity and bitmap fixtures.
   The left tree separates each Node into Services and Storage. Physical groups
   and disks belong under Storage regardless of their DiskDB owner; service
   instances remain under Services. Logical Paxos groups are managed in KV.
-  Capacity is a Cluster view; legacy Capacity links resolve to Cluster with the
-  Capacity view selected. History retains the view alongside the resource.
+  A DiskDB instance also expands to references to the DiskGroups it currently
+  owns. These use authoritative instance ownership, not physical Node membership.
+  They open the same resource as Storage references and update on ownership changes;
+  unknown ownership never assigns a group to an arbitrary instance.
+  Candidate nodes forms another Datacenter branch, alongside Racks, consistent
+  with disk candidates under Storage. Only unjoined candidates for this cluster
+  appear there; confirmed members appear only in their Rack. Raw discovery logs
+  are not rendered in the tree. Legacy Capacity links resolve to Cluster.
+  Add Rack and Add Store belong to the respective Datacenter context menu;
+  uninitialized KV exposes Initialize Cluster there.
 - **CLU-02:** Rack actions include Add Node. A Node context menu independently
   manages each service type and each existing instance, using the same lifecycle
   pattern as KV/DiskDB. It must not route other service types through KV APIs.
@@ -215,15 +253,19 @@ provide observable capacity and bitmap fixtures.
 - Cluster selections never display or request Chunk ownership.
 - **CLU-04:** Cluster readiness is reported by capability: KV quorum, storage,
   Chunk-KV, and Access protocols. A PID or registry entry alone is not Ready.
-  Missing prerequisites link to the domain where they can be resolved.
+  Missing prerequisites link to the domain where they can be resolved. Remote
+  Access readiness uses the committed dedicated health listener on the owning
+  node; missing configuration remains Unknown and failed probes are Down.
 
-- **CLU-05:** Cluster/Rack Topology defaults to node cards grouped by Rack;
-  Diagram remains available explicitly. Cards show observed health, service
-  readiness, registered capacity, cached candidate/setup summaries and disk
-  alerts. Card bodies inspect properties; names open the Node workspace. Add
-  Node is scoped to its Rack. Capacity uses sortable/filterable node rows with
-  unknown values last in either numeric sort direction. Search, health and
-  observed-candidate filters retain their bounded history state.
+- **CLU-05:** The cluster overview and Datacenter/Rack/Node scopes show topology.
+  Datacenter/Rack/Node capacity appears below it. Storage, DiskGroup, Disk and
+  Zone scopes hide topology and release its space for storage content/capacity,
+  including when entered through a DiskDB ownership reference. Returning to a
+  higher scope restores topology. Service selections and an unselected cluster
+  do not show capacity. Node details and
+  configuration editing belong in the properties panel. Storage selection exposes
+  its disk operations without a second node summary. There are no Topology/Capacity
+  tabs, diagram toggle, or node-card toggle.
 - **CLU-06:** Auto join starts enabled for a new standard workspace and retains
   an explicit target. Three authenticated eligible nodes are ordered by UUID;
   the smallest UUID initiates Store 0 / Group 0 with those fixed three voters.
@@ -231,6 +273,76 @@ provide observable capacity and bitmap fixtures.
   Group-0 voters. Explicit single mode auto-starts the same initialization
   lifecycle with one local voter. Turning Auto join off stops new triggers;
   accepted initialization continues and conflicting intents require recovery.
+  Eligible unjoined candidates default to Auto join, including later admissions
+  into a bound cluster. Each candidate can retain a durable explicit override.
+  Enabled candidates join the default Rack; later node editing can change its
+  Rack. Disabling one candidate stops its new admission triggers without changing
+  another candidate's policy or cancelling accepted work. Initialization
+  progress and failure recovery appear in Datacenter properties; completed
+  initialization is not a persistent banner.
+- **CLU-07:** Each candidate is one ordinary selectable tree row labelled
+  `node-<short-id>`. An Auto icon, accessible label and tooltip express the effective
+  policy; unloaded policy is Unknown, never an unchecked/disabled substitute.
+  Full identity, addresses, discovery/admission state, errors and policy appear in
+  properties. Enable/Disable Auto join is available in its context menu and
+  properties, backed by the same state. Manual admission, cancellation and
+  discarding a prepared review appear only when applicable, in that node's menu.
+  There are no row checkboxes, inline action stacks, raw discovery logs or
+  general-purpose Update node / Clean up Group 0 controls in the candidate tree.
+
+Cluster: Datacenter/Rack/Node scope (CLU-01/05):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v datacenter *             | datacenter                                                   | Properties                   |
+|   v R-1                    | Topology                                                     | Datacenter                   |
+|     > N-1                  |                  [datacenter]                                | Name          datacenter     |
+|     > N-2                  |                       :                                      | Health        observed       |
+|     > N-3                  |                     [R-1]                                    | ...                          |
+|   > Candidate nodes        |                  /    :    \                                 |                              |
+|                            |               [N-1] [N-2] [N-3]                              | Initialization progress      |
+|                            | ----------------------------------------------------         | (only when relevant)         |
+|                            | Capacity                                  [Refresh]          |                              |
+|                            | Capacity / Allocated / Free / Unknown coverage               |                              |
+|                            | Resource             Capacity       Usage                    |                              |
+|                            | R-1                  ...            ...                      |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+Cluster: candidate selection and effective Auto policy (CLU-06/07):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v datacenter               | Cluster overview                                             | Properties                   |
+|   > R-1                    | Topology remains the primary overview.                       | node-a1b2                    |
+|   v Candidate nodes        |                                                              | Discovery ID  <full UUID>    |
+|     node-a1b2 [Auto] *     | Candidate details are in Properties.                         | Addresses     <endpoints>    |
+|     node-c3d4              | No inline candidate cards or operation log.                  | State         Eligible       |
+|                            |                                                              | Auto join     Enabled [v]    |
+|                            |                                                              | Target Rack   Default Rack   |
+|                            |                                                              | Admission     Waiting        |
+|                            |                                                              | Error         None           |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+Candidate menu and DiskDB ownership references:
+
+```text
+Right click node-a1b2          Ownership reference       Physical reference
++---------------------------+ N-1                       N-2
+| Disable Auto join         |   Services                  Storage
+| Join node...              |     DDB-1                     DG-7
+| Cancel admission          |       DG-7                      Disk-a
+| Discard access review     |         Disk-a
++---------------------------+            \                /
+                                   same DG / Disk identity
+Joined candidate -> default Rack -> normal Node tree item
+Explicitly disabled candidate -> no new automatic admission
+```
+
+Candidate menu entries depend on admission state. A DiskDB ownership reference
+can point to disks on another physical Node. Selecting its DG hides topology
+just like selecting that DG below Storage.
 
 ## 6. Properties and cross-links
 
@@ -315,6 +427,29 @@ provide observable capacity and bitmap fixtures.
   removing configuration, and deleting stored data are distinct operations.
   Reset lists its affected scope and stops queued deployment work before teardown.
 
+Shared dialogs and operation feedback (FORM-01–05, ACT-05):
+
+```text
+Parent menu: Create table...           Resource menu: Drop table...
++----------------------------------+ +---------------------------------------+
+| Create table                 [X] | | Drop table                        [X] |
+| Namespace: analytics             | | Target: analytics.events              |
+| Name [.........................] | | Remove this Catalog reference.        |
+| Schema [field editor...........] | | Physical reclamation follows GC.      |
+|                                  | |                                       |
+| Validation / request error       | | Exact scope and blockers appear here. |
+|                [Cancel] [Create] | |                 [Cancel] [Drop table] |
++----------------------------------+ +---------------------------------------+
+
+Dataset publication: Review -> Evaluate -> Prepare -> Publish -> Receipt
+Operation feedback:  exact target / operation ID / waiting / progress / error
+Unknown outcome:     reconcile the same operation before retrying
+```
+
+Forms open only after a menu action. Progress follows the actual operation;
+simple creation need not acquire publication stages. Closing a dialog does not
+cancel accepted work.
+
 ## 10. Accessibility
 
 - All controls have semantic roles and unambiguous labels. Keyboard operation,
@@ -344,8 +479,9 @@ provide observable capacity and bitmap fixtures.
 
 ## 12. KV
 
-- **KV-01:** Left tree is Store → Group → Replica. Center overview lists groups
-  with exact Store/Group IDs, observed health, leader, and replica count.
+- **KV-01:** Left tree is Datacenter → Store → Group → Replica. Store creation
+  belongs to the Datacenter context menu. The center is the bounded data browser;
+  exact Store/Group IDs, health, leader and replica membership remain in properties.
 - Before initialization, explain the dependency on deployed KV servers and offer
   Initialize Group 0. The three-node fixture selects all three eligible nodes.
 - **KV-02:** Store/group/replica creation, membership operations, and deletion
@@ -355,7 +491,7 @@ provide observable capacity and bitmap fixtures.
   Overview/Data toggle. Membership and node placement remain in properties.
   Unknown leader is not rendered as zero. The right inspector does not poll or
   render generic internal metrics.
-- **KV-04:** Data operations target an explicit Store/Group. Get/put/delete/scan
+- **KV-04:** Read operations target an explicit Store/Group. Query and Scan
   show encoding and exact key/value interpretation. Scan is bounded and paged;
   empty values, missing keys, and request failures are distinguishable.
 - A selected replica or group may expose supported diagnostics; a generic
@@ -366,9 +502,30 @@ provide observable capacity and bitmap fixtures.
   undisplayable characters and malformed bytes become uppercase hexadecimal
   runs without `0x`, distinguished by warm gold text, a dark background and border.
   Display conversion cannot change bytes sent in a mutation or continuation.
-- **KV-06:** Get/Put/Delete occupy the shared collapsed Actions strip below
-  the heading/path. Its expanded content names Store and Group. System Store 0 /
-  Group 0 is read-only for ordinary KV mutations; management APIs own its state.
+- **KV-06:** The KV data browser is read-only: Query performs an exact Get and
+  Scan reads a bounded window. There are no Put/Delete/demo injection controls.
+  Topology and membership operations remain in resource context menus and use
+  management APIs. A uniform menu style does not add data mutation capabilities.
+
+PaxosKV: Group data inspection (KV-01–06):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v datacenter               | PaxosKV                                                      | Properties                   |
+|   v S-0                    | Store [S-0 v]  Group [G-1 v]                                 | Group G-1 / selected Key     |
+|     > G-0                  | Prefix [........................] [Scan]                     | Store         S-0            |
+|     v G-1 *                | Exact key [.....................] [Query]                    | Leader        LR-2           |
+|       LR-1  Follower       | ----------------------------------------------------         | Members       LR-1,2,3       |
+|       LR-2  Leader         | Key                         Value                            | Key           <exact bytes>  |
+|       LR-3  Follower       | key-a                       <bounded byte display>           | Value         <exact bytes>  |
+|                            | key-b                       <bounded byte display>           | Encoding      UTF-8 / hex    |
+|                            | ...                                                          |                              |
+|                            |                          [First] [Previous] [Next]           |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+Create Store belongs to Datacenter; Group/Replica management belongs to its
+resource menu. Data browsing is read-only; Query/Scan remain center query tools.
 
 ## 13. Service lifecycle
 
@@ -380,7 +537,9 @@ provide observable capacity and bitmap fixtures.
   Lifecycle acceptance first checks the submitted Start/Restart response, then
   observes the new PID and process. An in-flight startup is not a completed
   operation and must not trigger a duplicate cleanup restart.
-- Page unload stops its deployment runner. Cancellation of an old page's
+- In the legacy session-owned deployment flow, page unload stops its runner.
+  Standard accepted node setup runs on the target monitor independently of the
+  browser, as defined in CLU-03. Cancellation of an old page's
   observation or progress request cannot publish a service failure. The next
   page reloads the persisted plan and reconciles interrupted deployments;
   restoring a cached history page also reloads before resuming its runner.
@@ -454,10 +613,49 @@ provide observable capacity and bitmap fixtures.
   requires no retained media, owner or metadata binding; empty membership alone
   does not permit a cascade. Confirmation explains the blocking prerequisites.
 
+Storage scope: inventory without topology (DISK-01/02, CLU-05):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v datacenter               | Storage - N-1                              [Refresh]         | Properties                   |
+|   v R-1                    | Capacity / Allocated / Free / Unknown coverage               | Storage / selected DG        |
+|     v N-1                  | ----------------------------------------------------         | Physical Node N-1            |
+|       > Services           | DiskGroup       Owner        Binding       Status            | DiskDB owner  DDB-1          |
+|       v Storage *          | DG-7            DDB-1        S-0 / G-1      Online           | Binding       S-0 / G-1      |
+|         > DG-7             | ...                                                          | Observed      <timestamp>    |
+|         > Disk candidates  |                                   [Previous] [Next]          |                              |
+|                            |                                                              |                              |
+|                            | No topology canvas or reserved canvas space.                 |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+DiskGroup: Disk icon and ID enter the same Disk (NAV-03, DISK-03):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v N-1                      | DG-7                                      [Refresh]          | Properties                   |
+|   v Storage                | Capacity / Allocated / Free                                  | DiskGroup DG-7               |
+|     v DG-7 *               | ----------------------------------------------------         | Owner         DDB-1          |
+|       Disk-a               | Disks                                                        | Binding       S-0 / G-1      |
+|       Disk-b               |    +------------+       +------------+                       | Physical Node N-1            |
+|                            |    : Disk icon  :       : Disk icon  :                       | Status        Online         |
+|                            |    : usage      :       : usage      :                       |                              |
+|                            |    +------------+       +------------+                       |                              |
+|                            |        Disk-a               Disk-b                           |                              |
+|                            |        Online               Offline                          |                              |
+|                            |                                                              |                              |
+|                            | Click icon or ID -> that Disk workspace                      |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+The same view opens through DDB-1 or Storage. Supported storage lifecycle
+operations remain in resource menus with the mode restrictions in §14.
+
 ## 15. Capacity
 
-- **CAP-01:** Cluster/Rack/Node/DiskGroup/Disk selections show relevant capacity,
-  used/free allocation, disks, and observation time. Missing statistics are not
+- **CAP-01:** Datacenter/Rack/Node/Storage/DiskGroup/Disk selections show relevant
+  capacity, used/free allocation and disks. Observation time belongs with the
+  affected detail, not in a global strip. Missing statistics are not
   zero and must not produce an all-free disk map.
 - **CAP-02:** Disk detail retains its summary and paged zones. Default 32 zones,
   Prev/Next, current visible range, and optional cheap indexed zone lookup.
@@ -468,6 +666,12 @@ provide observable capacity and bitmap fixtures.
 - **CAP-04:** Zone bitmap uses muted blue for used and muted green for free,
   with a legend, used/free counts, allocation unit, and zone geometry. Bit index
   maps to the correct block offset according to the protocol's decode order.
+  Bitmap counts and usage identify their scope, observation and denominator.
+  Partial windows or aggregation cannot imply that the whole Zone is full.
+  Comparable allocation counts reconcile with usage; differing scopes or times
+  are explicit. Allocation, reserved/preallocated space, logical data bytes and
+  backing-file usage are distinct measurements. Initial system allocations are
+  attributable to their actual sources, not described as user data by inference.
 - Hover/selection provides exact block index and offset. Large bitmaps use
   bounded drawing/tiling or labelled aggregation; an aggregate is not one block.
 - **CAP-05:** Refresh bitmap, scan/recalc, compact/rebuild, and status operations
@@ -492,6 +696,31 @@ provide observable capacity and bitmap fixtures.
   Services remain visible.
   Default-service prerequisite inspection is explicit for its selected Node.
 
+Disk and inline Zone bitmap (CAP-02–05):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v N-1                      | Disk-a                                    [Refresh]          | Properties                   |
+|   v Storage                | Capacity / Allocated / Free                                  | Selected allocation block    |
+|     v DG-7                 | Zones: current bounded window                                | Disk          Disk-a         |
+|       Disk-a *             | Zone        Allocated      Free         Usage                | Zone          zone-1         |
+|       Disk-b               | zone-0      ...            ...          ...                  | Index         17             |
+|                            | zone-1 *    ...            ...          ...                  | State         Free           |
+| Tree stops at Disk.        |                             [Previous zones] [Next]          | Unit          <observed>     |
+|                            | ----------------------------------------------------         | Zone offset   <exact bytes>  |
+|                            | zone-1: block window, not the entire Zone                    | Disk offset   <exact bytes>  |
+|                            | BBBBGGGGGG??  B=used/blue G=free/green ?=unknown             | Observed      <timestamp>    |
+|                            | BBBBGGGGGG??  Selected block: 17                             |                              |
+|                            | Window counts / Zone totals / unit / geometry                |                              |
+|                            |           [Previous blocks] [Next] [Go to block]             |                              |
+|                            |                                                              |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+Letters represent the bitmap colors. Rendering uses actual protocol bit order
+and allocation geometry. Unknown/reserved data never becomes free. Free blocks
+in another window are not visible in this one.
+
 ## 16. Loading, failures, and recovery
 
 - **ERR-01:** Distinguish initial loading, refreshing existing data, empty,
@@ -508,19 +737,37 @@ provide observable capacity and bitmap fixtures.
 - Polling and automatic dependency checks have bounded cadence and fan-out.
   Identical failures do not flood notifications; explicit retry remains usable.
 
+Collection and refresh states (ERR-01–04):
+
+```text
+Initial loading              Confirmed empty collection
++--------------------------+ +--------------------------------------------+
+| Loading namespaces...    | | No namespaces.                             |
+| No invented zero totals. | | Right-click Catalog to create a namespace. |
++--------------------------+ +--------------------------------------------+
+
+Refresh failed               Mutation outcome unknown
++--------------------------+ +--------------------------------------------+
+| Last observed rows       | | Target: exact resource                     |
+| Stale - refresh failed   | | Operation: accepted ID                     |
+| Cause / dependency       | | Outcome unknown - reconcile before retry   |
+| [Retry]                  | | Inputs / last confirmed progress retained  |
++--------------------------+ +--------------------------------------------+
+```
+
 ## 17. Fixed-cluster operator flow
 
 1. Open Cluster directly. Inspect/create Rack and Nodes; add each Node through
    one dialog with six default services and explicit waiting dependencies.
 2. In KV, initialize three-replica Group 0 and create ordinary data groups.
-3. In Cluster’s Capacity view, register DiskGroups/disks with owners and bindings; DiskIO becomes
-   ready. Observe capacity and inspect a zone bitmap.
-4. Select Cluster’s Topology view to verify each service's deployment/readiness and resolve
-   dependencies. Inspect logical groups in KV and physical storage in Capacity.
+3. In Cluster, select Storage to register DiskGroups/disks with owners and bindings;
+   DiskIO becomes ready. Enter Disk/Zone to inspect capacity and its bitmap.
+4. Select a Datacenter/Rack/Node in Cluster to inspect topology and service readiness.
+   Resolve logical group dependencies in PaxosKV and physical storage in Cluster.
 
 This is a dependency guide, not a blocking wizard. A working capability remains
 usable while another is unavailable. No domain asks the operator to reconnect.
-Data-browser flows for the four deferred domains are outside this specification.
+Data-browser flows are covered by their domain sections below.
 
 ## 18. Acceptance scenarios and scope
 
@@ -531,7 +778,8 @@ plan, never edited out of this specification to make a run pass.
   or access-key form; restoring a domain does not change cluster identity.
 - **A02 / create:** with one Rack, create three Nodes using valid defaults;
   verify one instance of every requested type per Node, conflict-free ports,
-  same-dialog progress, and safe retry after one injected service failure.
+  accepted operation progress, and safe retry after one injected service failure.
+  Closing a standard setup dialog does not stop accepted monitor work.
 - **A03 / lifecycle:** independently stop/start/restart an auxiliary instance
   from its Node menu; verify exact target, preserved data/configuration, updated
   PID, and readiness. All instance labels follow §4.
@@ -559,6 +807,13 @@ plan, never edited out of this specification to make a run pass.
   nested schema, snapshots, paged manifests/files and zero data-page reads.
 - **A09 / S3:** bucket/object replacement pages, HEAD, bounded preview,
   upload/download/multipart, locations and return from Chunk to the source object.
+- **A13 / resource interaction:** parent context menu creates a supported child;
+  selecting it reads details; its own context menu exposes supported lifecycle
+  operations. Verify tree/list/property refresh, keyboard access, readonly and
+  unknown capability/outcome states across Iceberg, Dataset and S3.
+- **A14 / Dataset:** create/import, parent-linked Snapshots, paged Samples/Fields,
+  explicit verified preview, Split revisions and supported lifecycle operations.
+  No browser Session activity or default raw-JSON properties replace this content.
 
 Out of scope: UI login/role design and new data-plane protocols.
 Unsupported features are explicit rather than represented as working controls.
@@ -569,8 +824,10 @@ Unsupported features are explicit rather than represented as working controls.
   KV branches expand Store → Group without Replicas. Chunk ownership has two
   independent maps over slots 0–1023: Serving assigns a ChunkDB instance;
   Storage assigns the metadata Store/Group. Chunk-KV ordered splits and payload
-  disk placement are separate concepts. Ownership hints appear on the relevant
-  tree rows; details are requested only when a real ChunkDB or replica target
+  disk placement are separate concepts. The left tree has no Serving ownership /
+  Storage ownership wrapper or repeated footer. Ownership meaning belongs in
+  selected-resource properties and the scoped center inspection. Details are
+  requested only when a real ChunkDB or replica target
   exists. Unprovisioned selections do not send ownership probes.
 - Selecting a CDB or Group displays its full 32×32 bitmap; parent selections
   display one combined bitmap per layer. Each cell is exactly one slot, ordered
@@ -591,6 +848,15 @@ Unsupported features are explicit rather than represented as working controls.
   replace the page. Type is a protocol-defined selector; exact Chunk ID lookup
   sits above the list in the center. Arbitrary ID-prefix/global filtering is not
   required. Source failures identify partial coverage rather than an empty list.
+  Datacenter and narrower lists expose Type, Status, Strips, Size and Sealed.
+  Status uses the observed lifecycle state; Size reports Chunk capacity and Sealed
+  reports sealed length, both with explicit units matching the detailed metadata.
+  Sealed length is not a boolean, nor is Chunk capacity physical used space.
+  Unknown fields are explicit; valid zero lengths/counts remain visible.
+  List and detail refer to the same Chunk identity.
+  Aggregation deduplicates authoritative Chunk identities rather than counting
+  replicas as separate chunks. Window counts are not global totals. System and
+  user-data types remain distinct; a large initial count alone proves no leak.
 - **CHK-03:** Selected Chunk summary and layout appear below the list. Each Strip
   has a compact two-line identity: `Strip <id> Mirror` or `Strip <id> EC k+m`,
   followed by logical interval such as `[8M, 16M)`. Stable protocol identities
@@ -604,6 +870,43 @@ Unsupported features are explicit rather than represented as working controls.
   retain the originating chunk, page/cursor, Strip window, block and scroll.
   Repair status reflects actual protection deficit, not lack of rack diversity
   alone. Missing placement retains known Disk IDs rather than invented targets.
+
+Chunk: scope, ownership inspection and list fields (CHK-01/02):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v datacenter *             | Chunk ownership - datacenter                                 | Properties                   |
+|   v R-1                    | Serving slots [32x32 map]           [Refresh slots]          | Selected resource / slot     |
+|     v N-1                  | Storage slots [32x32 map]           [Refresh slots]          | Full identity                |
+|       CDB-1                | ----------------------------------------------------         | Owner / binding              |
+|       v PKV-1              | Chunks   Type [All v]               [Refresh chunks]         | Generation                   |
+|         v S-0              | Exact Chunk ID [...................] [Lookup]                | Observation / coverage       |
+|           G-1              | ID    Type    Status  Strips  Size(KiB)  Sealed(KiB)         | ...                          |
+|                            |                                                              |                              |
+| No ownership footers.      | ...    WAL      Active  ...     ...       ...                |                              |
+|                            | ...    S3       Sealed  ...     ...       ...                |                              |
+|                            | Coverage / scanned count          [Previous] [Next]          |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+Chunk: selected Strip and block placement (CHK-03–05):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v datacenter               | Chunk list stays above its selected detail.                  | Properties                   |
+|   v R-1                    | ----------------------------------------------------         | Mirror 1                     |
+|     v N-1                  | Chunk <full ID> / type / state / capacity                    | Node          N-1            |
+|       CDB-1                | Strip 4 Mirror                                               | DiskGroup     DG-7           |
+|                            | [0 MiB, 16 MiB)                                              | Disk          Disk-a [link]  |
+|                            |   [Mirror 1 *] [Mirror 2] [Mirror 3]                         | Zone          zone-1         |
+|                            | Strip 5 EC 4+2                                               | Offset        <exact bytes>  |
+|                            | [16 MiB, 32 MiB)                                             | Length        <exact bytes>  |
+|                            |   [Data 1] [Data 2] [Data 3] [Data 4] [P1] [P2]              | Protection    <observed>     |
+|                            |                                                              |                              |
+|                            | Select block -> Properties                                   |                              |
+|                            | Disk link -> Cluster/Disk; Back restores this page           |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
 
 ## 20. Chunk-KV
 
@@ -651,6 +954,29 @@ Unsupported features are explicit rather than represented as working controls.
   data weights. Browser assertions verify that Weight and weighted explanations
   are absent while tree/page inspection and range navigation remain functional.
 
+ChunkKV: distribution graph and selected Split (CKV-01–08):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v datacenter               | ChunkKV range distribution         [Refresh catalog]         | Properties                   |
+|   v R-1                    | Catalog generation / page / loaded scope                     | Split <full ID>              |
+|     v N-1                  |                  [ChunkKV]                                   | Range         [start,end)    |
+|       v CKV-1              |                   /     \                                    | Owner         CKV-1          |
+|         split-a *          |              [CKV-1]   [CKV-2]                               | Epoch         <observed>     |
+|     v N-2                  |                 :         :                                  | Tree ID       <exact ID>     |
+|       CKV-2                |             [split-a] [split-b]                              | Checkpoint    <observed>     |
+|                            |                 :         :                                  | Selected extent / page       |
+|                            |             [Tree ID] [Tree ID]                              | No Weight field              |
+|                            | Graph window controls                      [Fit All]         |                              |
+|                            | ----------------------------------------------------         |                              |
+|                            | Selected split-a: [Tree] [Journal]                           |                              |
+|                            | Bounded page / journal extent content                        |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+Graph windows and catalog pages have separate continuation. Selecting a Tree
+uses real bounded base-page inspection; the graph does not scan records for weights.
+
 ## 21. Iceberg
 
 - **ICE-01:** The configured cluster Catalog loads automatically. Left shared
@@ -662,6 +988,9 @@ Unsupported features are explicit rather than represented as working controls.
   a compact overview followed directly by a Snapshot table: time, operation,
   records and files. Overview/Schema/Files controls belong only to selected
   Table, disappear for other resources, and have no independent Snapshots tab.
+  Catalog root uses one Namespaces heading; Namespace uses its actual name.
+  No Catalog breadcrumb/type/title stack duplicates the left tree. Namespace
+  and Table lists page in the center with visible continuation controls.
 - **ICE-03:** Schema is an expanded tree table with field ID/name/type/required
   and hierarchy for structs, lists and maps. Element/key/value identities stay
   visible. Large schemas use bounded row windows; collapse is optional, not a
@@ -675,9 +1004,14 @@ Unsupported features are explicit rather than represented as working controls.
   footer information and sized Row Group/column blocks. Selecting a column
   shows complete metadata in properties. Inspection reads footer/metadata only,
   not data pages. Unsupported file types show an explicit capability state.
-- **ICE-06:** Actions follow selected Catalog, Namespace or Table. Catalog
-  actions disappear when a Table is selected. Paths, titles and summaries name
-  the focused item once; properties must not merge unrelated parent identities.
+- **ICE-06:** Catalog context menu creates Namespace; Namespace context menu
+  creates Table and, when supported, child Namespace. A Namespace's own menu
+  edits its supported properties or drops that empty Namespace. A Table's menu
+  exposes supported Rename, Commit metadata and Drop table operations. Drop
+  removes the catalog reference; physical reclamation follows service GC.
+  Snapshots, Manifests and Files are inspected through table-managed metadata,
+  not given arbitrary Create/Delete actions. Demo operations are not primary
+  browsing controls. Properties describe only the selected identity.
 - **ICE-07:** Reference windows contain at most 100 entries; Parquet windows
   contain 20 Row Groups and 12 columns. Paging replaces the visible window.
   Column widths represent compressed sizes and file spans retain exact byte
@@ -685,6 +1019,58 @@ Unsupported features are explicit rather than represented as working controls.
   column selection, then revalidates the table head, snapshot and file identity.
   Cached branches do not bypass revalidation. A failed or stale inspection
   preserves selection context but removes data and continuation actions.
+
+Iceberg: Catalog and Namespace collections (ICE-01/02/06):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v Catalog                  | analytics                                                    | Properties                   |
+|   v analytics *            | Filter loaded tables [................]   [Refresh]          | Namespace analytics          |
+|     > events               | ----------------------------------------------------         | Full name                    |
+|     > users                | Name                  Type           Summary                 | Properties                   |
+|   > sandbox                | events                Table          ...                     | ...                          |
+|                            | users                 Table          ...                     |                              |
+|                            | ...                                                          | No duplicate Catalog         |
+|                            |                                   [Previous] [Next]          | path/type/title stack.       |
+|                            |                                                              |                              |
+|                            | Catalog selected -> title: Namespaces                        |                              |
+|                            | Namespace selected -> title: actual name                     |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+Iceberg context-menu targets:
+
+```text
+Catalog                    Namespace                  Table
++----------------------+  +------------------------+ +------------------------+
+| Create namespace...  |  | Create table...        | | Rename...              |
++----------------------+  | Create namespace... (*)| | Commit metadata...     |
+                          | Edit properties...     | | Drop table...          |
+                          | Drop namespace...      | +------------------------+
+                          +------------------------+
+(*) Nested Namespace creation requires backend support.
+```
+
+Iceberg: Table, Snapshot and File inspection (ICE-02–05):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v Catalog                  | events                                    [Refresh]          | Properties                   |
+|   v analytics              | [Overview] [Schema] [Files]                                  | Selected Table / reference   |
+|     v events *             | Compact table summary                                        | Full identifier              |
+|       v snapshot-42        | Snapshot     Time       Operation    Records   Files         | Schema / Snapshot identity   |
+|         v manifest-a       | 42           ...        append       ...       ...           | Manifest List path           |
+|           file.parquet     | ...                                                          | File format / size           |
+|                            |                                   [Previous] [Next]          | Selected column metadata     |
+|                            | ----------------------------------------------------         |                              |
+|                            | Select Snapshot -> paged Manifests                           |                              |
+|                            | Expand Manifest -> paged Files                               |                              |
+|                            | Select Parquet -> footer, Row Groups, columns                |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+Schema uses a structured field tree table. File inspection decodes metadata
+and footer structure; it does not imply reading data pages or SQL querying.
 
 ## 22. S3
 
@@ -694,12 +1080,17 @@ Unsupported features are explicit rather than represented as working controls.
 - **S3-02:** Selecting a Bucket displays an API page of at most 20 objects.
   Prefix changes reset cursor history; Previous/Next replace rows. Any bucket
   filter over already loaded metadata explicitly names that local scope.
-- **S3-03:** Selecting an Object replaces the list with HEAD fields: key, size,
+- **S3-03:** Selecting an Object reads HEAD fields into properties: key, size,
   ETag, last modified, content type, supplied version and user metadata. Missing
-  fields show `—`. Breadcrumbs restore the Bucket list and its cursor/prefix.
+  fields show `—`. The center presents the selected object's content inspection.
+  Tree selection and Back/Forward restore the Bucket list and its cursor/prefix.
   Preview is a separate bounded operation, not an automatic payload GET.
-- **S3-04:** Root Actions create buckets/demo; Bucket Actions upload/delete and
-  multipart; Object Actions preview/download/delete. Exact bucket/key is visible.
+- **S3-04:** S3 root context menu creates Bucket; a Bucket's menu uploads a child
+  Object, opens multipart uploads or deletes that empty Bucket. An Object's own
+  menu exposes Preview, Download, Replace and Delete. Object rows in the center
+  use the same menu contract without adding every Object to the left tree.
+  Prefix is a key filter, not a physical folder; Bucket deletion does not silently
+  cascade. Demo controls are not primary browsing actions. Exact bucket/key is visible.
   Multipart state distinguishes uploaded parts, completion, abort, failure and
   unknown outcome. Downloads stream; previews read at most the advertised cap.
 - **S3-05:** Object details include Storage locations below HEAD, 20 extents per
@@ -735,20 +1126,140 @@ Unsupported features are explicit rather than represented as working controls.
   Selection is captured before following a Chunk link; return refetches metadata
   against the saved generation and restores the exact selected extent.
 
+S3: Bucket object list (S3-01/02/04):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v S3                       | photos                                                       | Properties                   |
+|   photos *                 | Prefix [...................] [Apply]       [Refresh]         | Bucket photos                |
+|   exports                  | ----------------------------------------------------         | Name                         |
+|   logs                     | Key                   Size             Modified              | ...                          |
+|                            | cat.jpg               ...              ...                   |                              |
+|                            | dog.jpg               ...              ...                   | Selecting an Object reads    |
+|                            | ...                                                          | its HEAD and properties.     |
+|                            |                                   [Previous] [Next]          |                              |
+|                            |                                                              |                              |
+|                            | Objects stay in this bounded list.                           |                              |
+|                            | Right-click Object -> its own resource menu.                 |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+S3 context-menu targets:
+
+```text
+S3 root                Bucket                     Object list row / detail
++-------------------+ +-------------------------+ +------------------------+
+| Create bucket...  | | Upload object...        | | Preview                |
++-------------------+ | Multipart uploads       | | Download               |
+                      | Delete empty bucket...  | | Replace...             |
+                      +-------------------------+ | Delete object...       |
+                                                  +------------------------+
+```
+
+S3: Object inspection and multipart view (S3-03–08):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v S3                       | cat.jpg                                   [Refresh]          | Properties                   |
+|   photos                   | Content inspection                                           | Object                       |
+|   exports                  | Preview is read only after an explicit request.              | Bucket        photos         |
+|                            | ----------------------------------------------------         | Key           cat.jpg        |
+|                            | Storage locations                                            | Size          <bytes>        |
+|                            | Extent    Object interval    Chunk ID (link)                 | ETag          <exact>        |
+|                            | ...       [start,end)        ...                             | Content type  <observed>     |
+|                            |                                   [Previous] [Next]          | Modified      <observed>     |
+|                            |                                                              | User metadata                |
+|                            | Bucket menu -> Multipart uploads view                        | Selected extent identity     |
+|                            | Upload key / ID / state; select -> paged parts               |                              |
+|                            | Upload menu -> Abort (when supported)                        |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+Preview and Download are explicit reads from the resource menu. Selecting an
+Object does not download its payload. Multipart inspection is a separate center
+view; its state is not piled beneath the ordinary Object list.
+
 ## 23. Actions and properties
 
-- **ACT-01:** Resource title/path appear first, then one compact Actions strip,
-  collapsed by default, then primary content. Expanded Actions name their exact
-  operation target. Changing resource closes obsolete action forms.
-- **ACT-02:** KV, Iceberg, Dataset and S3 use this shared structure and button style.
-  Ordinary buttons have a visible border; destructive buttons use muted red.
-  Refresh, Previous and Next belong with the query/list and do not hide inside
-  mutation forms. Readonly/container capabilities apply to every action.
+- **ACT-01:** The left tree owns resource navigation and context menus. Create
+  child belongs to the parent menu; Delete belongs to the resource's own menu.
+  Selection is Read; child collections are automatic paged lists in the center.
+  There is no generic Update requirement. Additional operations use precise
+  resource-specific names and exist only where that node's capabilities allow.
+  A lifecycle operation such as Reclaim is not relabelled Delete.
+- **ACT-02:** All domains share menu, dialog, button and property styles. The
+  center has one scope heading, query/filter controls, Refresh and content, with
+  pagination below its list. It has no duplicate CRUD toolbar, collapsed Actions
+  strip, inline creation forms or repeated path/type/title stack. Query controls
+  and bounded Preview/Download are distinct from resource mutations.
+  Ordinary buttons have visible borders; destructive menu items use muted red.
+  Readonly, deployment mode, backend capability and lifecycle restrictions apply
+  to every entry point. Unknown capability does not enable writes.
 - **ACT-03:** Right properties show complete information for the clicked item,
   including graph blocks/columns/extents. Optional diagnostics never replace
   primary details. Metrics panels, entries and polling are excluded from the UI. Future metrics
   publishing targets customer-managed time-series systems; it is outside this
   UI contract.
+- **ACT-04:** Tree labels, icons and ordinary resource rows activate the same
+  identity. Expansion chevrons only expand. List-only resources use the same
+  context menu on their center row; a focused detail retains access to that exact
+  resource menu. Right-click targets the clicked resource, independent of prior
+  selection. Menu key / Shift+F10 opens the same menu; Escape restores focus.
+  Matrix cells and diagram blocks retain their documented inspection semantics.
+- **ACT-05:** Menus open shared dialogs; long imports use step dialogs with the
+  same controls. The target stays explicit and cannot change under an open form.
+  Switching resources closes obsolete forms without claiming to cancel accepted
+  work. Successful operations refresh affected lists, tree references and properties;
+  failures retain input and unknown outcomes require reconciliation.
+- **ACT-06:** Empty collections explain how to create a supported child from
+  the parent menu. Empty, loading, unavailable and denied states are distinct.
+  Browser Session activity is absent from domain workspaces. Operation feedback
+  stays with its flow; resource history such as Snapshots and publication receipts
+  remains available. Default properties are labelled structured fields, not JSON.
+
+The common layout and menu targets are:
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| Resource tree              | Current scope                                                | Properties                   |
+| v Parent                   | Filter [.............]    [Refresh]                          | Selected identity            |
+|   Child                    | -------------------------------------                        | Full path / ID               |
+|                            | Child name       Type / summary                              | Structured fields            |
+|                            | ...                                                          | ...                          |
+|                            |                  [Previous] [Next]                           |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
++----------------------------+--------------------------------------------------------------+------------------------------+
++----------------------------+--------------------------------------------------------------+------------------------------+
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+Domain-specific scope and menu mappings:
+
+```text
+Iceberg                         Center on selection       Context menu
+Catalog                         Namespaces (paged)        Create namespace
+  Namespace                     Tables/children (paged)   Create table; Drop namespace
+    Table                       Overview/Schema/Files     Rename; Commit metadata; Drop
+      Snapshot -> Manifest      Paged metadata/files      Inspection only
+        File                    Decoded metadata          Supported inspection
+
+Dataset                         Center on selection       Context menu
+Datasets                        Datasets (paged)          Create dataset
+  Dataset                       Snapshots (paged)         Import / New Snapshot
+    Snapshot                    Samples x Fields          Create child; Publish Splits;
+                                                          Stable/Retain/Release/Reclaim
+      Splits                    Revision/member windows   Supported revision operations
+  Sample/Field/Cell in center    Selected scope/value      Supported authoring/preview
+
+S3                              Center on selection       Context menu
+S3                              Buckets (paged)           Create bucket
+  Bucket                        Objects (paged)           Upload; Multipart; Delete empty
+  Object in center              Content inspection        Preview; Download; Replace; Delete
+```
+
+These mappings do not imply every listed action is available for every state.
+Immutable references and backend-owned internal structures do not acquire generic
+CRUD merely to match another domain. Dataset lifecycle support is defined in §25.
 
 ## 24. E2E organization and timing
 
@@ -783,12 +1294,17 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   comes from the configured authority, including SDK-created identities. Empty,
   missing configuration, unavailable service and denied access remain distinct.
   Credentials stay on the Console server; no browser endpoint or bearer editor.
+  The root center automatically lists Datasets. Root context menu creates a
+  Dataset; a Dataset's menu starts Import / New Snapshot. All use §23; there is
+  no Session activity region. Properties render named fields rather than JSON.
 - **DS-02 — Relationships:** left navigation follows declared parent links as a
   forest. Roots and each parent's children page independently; no ancestry scan
   or Snapshot-ID sorting reconstructs the tree. Latest and Stable are reference
   badges. A Snapshot's Splits group is a peer of its children. Samples and Fields
   remain in the center. Direct Snapshot navigation preserves the exact identity;
   bounded ancestor discovery reports incomplete paths explicitly.
+  Dataset and Snapshot inventory pagination is reachable in the center, independent
+  of left-tree continuation. Tree appearance and selection use shared conventions.
 - **DS-03 — Combined inspection:** one Samples matrix uses Schema definitions as
   columns, defaulting to twenty rows and twelve fields. Required/optional is the
   actual field definition; no inferred type, MIME or nested schema. Header, Sample
@@ -841,10 +1357,70 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   Snapshot. Backend protection wins over an observed eligibility hint. Reclaim
   distinguishes unknown, pending logical cleanup and completed retirement; physical
   cleanup may remain deferred. No Dataset delete or Split-history purge action.
+  Uniform creation/reading/menu placement does not imply unsupported deletion:
+  whole-Dataset deletion requires its own authoritative lifecycle capability.
+  Published Sample/Field changes produce a new Snapshot rather than modifying
+  the immutable selected one in place.
 - **DS-10 — Modes:** `modules.dataset=false` hides the domain and prevents Dataset
   observation. API prefixes apply to every request. Readonly disables editing and
   the Console API rejects direct writes; exact matrix POST remains an observation.
   Managed mode permits supported data operations without enabling topology changes.
+
+Dataset: catalog and Snapshot inventory (DS-01/02/06):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v Datasets                 | images                                    [Refresh]          | Properties                   |
+|   v images *               | Published Snapshots                                          | Dataset images               |
+|     v snapshot-a           | Snapshot      Parent        Samples       References         | Dataset ID    <exact ID>     |
+|       > Splits             | snapshot-a    -             ...           Stable             | Namespace     dataset-ns     |
+|       > snapshot-b         | snapshot-b    snapshot-a    ...           Latest             | Latest        snapshot-b     |
+|   > audio                  | ...                                                          | Stable        snapshot-a     |
+|                            |                                   [Previous] [Next]          | ...                          |
+|                            |                                                              |                              |
+|                            | Select Datasets root -> paged Dataset list                   |                              |
+|                            | Select Snapshot -> Samples x Fields                          |                              |
+|                            | No Session activity region.                                  |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+Dataset context-menu targets and immutable editing:
+
+```text
+Datasets root            Dataset images                Snapshot
++--------------------+  +---------------------------+ +-------------------------+
+| Create dataset...  |  | Import / New Snapshot...  | | Create child...         |
++--------------------+  +---------------------------+ | Publish Splits...       |
+                                                     | Set stable              |
+Whole-Dataset Delete is unavailable without its       | Retain / Release        |
+authoritative lifecycle capability (DS-09).           | Reclaim...              |
+                                                     +-------------------------+
+Sample/Field edits -> reviewed candidate -> new published Snapshot
+Published Snapshot data are never edited in place.
+```
+
+Dataset: Samples matrix and selected cell (DS-03–05/08):
+
+```text
++----------------------------+--------------------------------------------------------------+------------------------------+
+| v Datasets                 | snapshot-b                                [Refresh]          | Properties                   |
+|   v images                 | Parent / Latest / Stable / inspection state                  | Selected Sample/Field cell   |
+|     v snapshot-a           | ----------------------------------------------------         | Sample ID     <base64>       |
+|       > Splits             | Sample           image          label        ...             | Field         image          |
+|       v snapshot-b *       | sample-001       <payload>      cat                          | Required      <definition>   |
+|         v Splits           | sample-002       <payload> *    dog                          | Storage       Payload        |
+|           train            | ...                                                          | Length        <observed>     |
+|           validation       |                    [Previous rows] [Next rows]               | Checksum      <declared>     |
+|                            |                    [Previous fields] [Next fields]           | [Preview field]              |
+|                            |                                                              | Verified complete value      |
+|                            | Select Split -> pinned revision member window                | or explicit unavailable      |
+|                            | Select column / row / cell -> matching properties            |                              |
++----------------------------+--------------------------------------------------------------+------------------------------+
+```
+
+Preview is explicit and bounded to a complete verified value of at most 64 KiB.
+Snapshot/revision/member history remains business data, independently of the
+removed browser Session activity.
 
 Local batch mapping uses version 1 JSON aligned with Sample/Field edit models,
 bounded at 8 MiB and 10000 Sample edits. `schema: null` inherits the parent Schema.
