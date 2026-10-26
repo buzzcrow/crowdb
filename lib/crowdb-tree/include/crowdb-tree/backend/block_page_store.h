@@ -41,7 +41,7 @@ class BlockPageStoreMedium
     // were actually read (may be less than `len` on EOF / growing file).
     virtual Status pread_partial(uint64_t off, uint8_t *buf, size_t len, size_t *out_read) const = 0;
 
-    // Read exactly `len` bytes at `off`. Returns io_error if fewer bytes
+    // Read exactly `len` bytes at `off`. Returns not_found if fewer bytes
     // available.
     Status pread_at(uint64_t off, uint8_t *buf, size_t len) const
     {
@@ -51,7 +51,7 @@ class BlockPageStoreMedium
             return s;
         }
         if (got < len) {
-            return Status::io_error("BlockPageStoreMedium: read past end");
+            return Status::not_found("BlockPageStoreMedium: read past end");
         }
         return Status::Ok();
     }

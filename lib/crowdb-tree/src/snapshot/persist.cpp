@@ -43,6 +43,7 @@
 #include "crowdb-tree/crowdb-tree.h"
 #include "crowdb-tree/maptable/compressor.h"
 #include "crowdb-tree/maptable/mapping_persist.h"
+#include "snapshot/commit_anchor.h"
 
 #include <algorithm>
 #include <chrono>
@@ -63,171 +64,18 @@ namespace crowdb::tree
 namespace
 {
 
-constexpr uint32_t kAnchorMagic   = 0x41435443; // 'CTCA' little-endian
-constexpr uint32_t kFormatVersion = 3;          // clean-break format (v3: +leaf/inner_count)
-// Minimum on-disk anchor slot size. The actual slot is rounded up to the
-// store IU so larger-IU devices (16K/64K SSD) get IU-aligned, IU-sized slots
-// (PT9 geometry); for iu <= 4096 (dividing 4096) it stays 4096.
-constexpr uint64_t kAnchorBytes = 4096;
-// magic,format_version,snapshot_seq,root_page_id,last_applied_slot,
-// next_page_id,segment_slots,segdir_addr,segdir_len,segdir_crc,
-// leaf_count,inner_count,anchor_crc.
-constexpr size_t kAnchorFixedFields = 4 + 4 + (8 * 4) + 4 + 8 + 4 + 4 + 4 + 8 + 8 + 4;
-
 std::string make_metrics_prefix(const Config &opt)
 {
     return "s." + std::to_string(opt.store_id) + ".g." + std::to_string(opt.group_id) + ".tree";
 }
 
-// Per-store anchor slot size and the byte offset where the page/segment
-// region begins (two A/B anchor slots precede it).
-inline uint64_t superblock_slot_bytes(uint32_t iu)
-{
-    return round_up_to_iu(kAnchorBytes, iu);
-}
-
-inline uint64_t region_base_for(uint32_t iu)
-{
-    return superblock_slot_bytes(iu) * 2;
-}
-
-// The commit anchor: a tiny fixed A/B
-// record that is the snapshot's commit point. Ties a snapshot_seq to the
-// segment directory that (transitively, via segment images) locates every
-// live page. Deviation from the design spec's exact field list (documented
-// in #14 Open Issues): omits leftmost_leaf_pid and
-// page_alloc_root, neither of which this engine currently has a concrete
-// counterpart for (no leftmost-leaf fast path; SpaceAllocator is rebuilt
-// from live extents each open(), not itself a persistent structure with a
-// root to save/restore).
-struct CommitAnchor
-{
-    uint32_t magic             = 0;
-    uint32_t format_version    = 0;
-    uint64_t snapshot_seq      = 0;
-    uint64_t root_page_id      = 0;
-    uint64_t last_applied_slot = 0;
-    uint64_t next_page_id      = 0;
-    uint32_t segment_slots     = 0; // MappingTable::kSegmentSize at persist time (format guard)
-    uint64_t segdir_addr       = 0;
-    uint32_t segdir_len        = 0;
-    uint32_t segdir_crc        = 0;
-    uint64_t leaf_count        = 0; // live leaf pages (O(1) gauge, restored on open)
-    uint64_t inner_count       = 0; // live inner pages (O(1) gauge, restored on open)
-};
-
-void put_u32(std::vector<uint8_t> *out, uint32_t v)
-{
-    for (int i = 0; i < 4; ++i) {
-        out->push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xff));
-    }
-}
-
-void put_u64(std::vector<uint8_t> *out, uint64_t v)
-{
-    for (int i = 0; i < 8; ++i) {
-        out->push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xff));
-    }
-}
-
-uint32_t get_u32(const uint8_t *p)
-{
-    uint32_t v = 0;
-    for (int i = 0; i < 4; ++i) {
-        v |= static_cast<uint32_t>(p[i]) << (8 * i);
-    }
-    return v;
-}
-
-uint64_t get_u64(const uint8_t *p)
-{
-    uint64_t v = 0;
-    for (int i = 0; i < 8; ++i) {
-        v |= static_cast<uint64_t>(p[i]) << (8 * i);
-    }
-    return v;
-}
-
-void encode_anchor(const CommitAnchor &a, uint64_t slot_bytes, std::vector<uint8_t> *buf)
-{
-    put_u32(buf, a.magic);
-    put_u32(buf, a.format_version);
-    put_u64(buf, a.snapshot_seq);
-    put_u64(buf, a.root_page_id);
-    put_u64(buf, a.last_applied_slot);
-    put_u64(buf, a.next_page_id);
-    put_u32(buf, a.segment_slots);
-    put_u64(buf, a.segdir_addr);
-    put_u32(buf, a.segdir_len);
-    put_u32(buf, a.segdir_crc);
-    put_u64(buf, a.leaf_count);
-    put_u64(buf, a.inner_count);
-    uint32_t crc = crowdb::common::crc32c(buf->data(), buf->size());
-    put_u32(buf, crc);
-    buf->resize(slot_bytes, 0); // zero pad to the IU-aligned slot size
-}
-
-bool decode_anchor(const uint8_t *buf, CommitAnchor *a)
-{
-    if (get_u32(buf) != kAnchorMagic) {
-        return false;
-    }
-    uint32_t stored_crc = get_u32(buf + (kAnchorFixedFields - 4));
-    if (crowdb::common::crc32c(buf, kAnchorFixedFields - 4) != stored_crc) {
-        return false;
-    }
-    a->magic          = get_u32(buf);
-    a->format_version = get_u32(buf + 4);
-    if (a->format_version != kFormatVersion) {
-        // Clean-break format: no older format to accept.
-        return false;
-    }
-    a->snapshot_seq      = get_u64(buf + 8);
-    a->root_page_id      = get_u64(buf + 16);
-    a->last_applied_slot = get_u64(buf + 24);
-    a->next_page_id      = get_u64(buf + 32);
-    a->segment_slots     = get_u32(buf + 40);
-    a->segdir_addr       = get_u64(buf + 44);
-    a->segdir_len        = get_u32(buf + 52);
-    a->segdir_crc        = get_u32(buf + 56);
-    a->leaf_count        = get_u64(buf + 60);
-    a->inner_count       = get_u64(buf + 68);
-    return true;
-}
-
-// Returns true and fills *best with the highest-seq valid anchor. Reads the
-// two IU-sized A/B slots at offsets 0 and superblock_slot_bytes(iu).
-std::vector<CommitAnchor> read_valid_anchors(const PageStore &store, uint32_t iu)
-{
-    const uint64_t            slot_bytes = superblock_slot_bytes(iu);
-    std::vector<CommitAnchor> anchors;
-    for (uint64_t slot : {static_cast<uint64_t>(0), slot_bytes}) {
-        if (slot + slot_bytes > store.size()) {
-            continue;
-        }
-        std::vector<uint8_t> buf(slot_bytes);
-        if (!store.read_at(slot, buf.data(), buf.size()).ok()) {
-            continue;
-        }
-        CommitAnchor a;
-        if (!decode_anchor(buf.data(), &a)) {
-            continue;
-        }
-        anchors.push_back(a);
-    }
-    std::ranges::sort(anchors, {}, &CommitAnchor::snapshot_seq);
-    return anchors;
-}
-
-bool read_best_anchor(const PageStore &store, uint32_t iu, CommitAnchor *best)
-{
-    auto anchors = read_valid_anchors(store, iu);
-    if (anchors.empty()) {
-        return false;
-    }
-    *best = anchors.back();
-    return true;
-}
+using snapshot::CommitAnchor;
+using snapshot::encode_anchor;
+using snapshot::kAnchorMagic;
+using snapshot::kFormatVersion;
+using snapshot::read_valid_anchors;
+using snapshot::region_base_for;
+using snapshot::superblock_slot_bytes;
 
 // Crash-safe append/reuse allocator. `gaps` are byte ranges that are dead w.r.t.
 // the committed snapshot (safe to overwrite); `append` is the grow cursor at
@@ -506,7 +354,11 @@ Status Crowdbtree::prepare_snapshot_locked(PreparedSnapshot *out, std::vector<Pr
     // fallback); every other byte in the file is dead and reusable. The
     // first snapshot (no committed anchor) just appends. Reusing only
     // committed-dead space gives two-generation safety.
-    std::vector<CommitAnchor>                  anchors   = read_valid_anchors(*store, iu);
+    std::vector<CommitAnchor> anchors;
+    Status                    anchor_status = read_valid_anchors(*store, iu, &anchors);
+    if (!anchor_status.ok()) {
+        return anchor_status;
+    }
     bool                                       have_prev = !anchors.empty();
     CommitAnchor                               prev;
     std::vector<std::pair<uint64_t, uint64_t>> live;
@@ -556,12 +408,12 @@ Status Crowdbtree::prepare_snapshot_locked(PreparedSnapshot *out, std::vector<Pr
         }
         for (uint32_t slot = 0; slot < segment->slot_count; ++slot) {
             const uint64_t page_id = seg_idx * MappingTable::kSegmentSize + slot;
-            uint64_t word = segment->slots[slot].load(std::memory_order_relaxed);
+            uint64_t       word    = segment->slots[slot].load(std::memory_order_relaxed);
             if (!slot_word::is_resident(word)) {
                 continue;
             }
             PageBase *page = slot_word::resident_ptr(word);
-            Status fold = fold_snapshot_page_locked(page_id, gc, &page);
+            Status    fold = fold_snapshot_page_locked(page_id, gc, &page);
             if (!fold.ok()) {
                 return fold;
             }
@@ -991,7 +843,14 @@ void Crowdbtree::finalize_prepared_snapshot(PreparedSnapshot &prepared)
         return;
     }
     std::vector<std::pair<uint64_t, uint64_t>> live;
-    for (const CommitAnchor &anchor : read_valid_anchors(*opt_.page_store, opt_.page_store->iu_size())) {
+    std::vector<CommitAnchor>                  anchors;
+    Status anchor_status = read_valid_anchors(*opt_.page_store, opt_.page_store->iu_size(), &anchors);
+    if (!anchor_status.ok()) {
+        CRB_LOG_WARN("[{}] block compaction: anchor read failed; skipping deletion: {}", name_,
+                     anchor_status.to_string());
+        return;
+    }
+    for (const CommitAnchor &anchor : anchors) {
         if (!collect_live_extents_from_directory(*opt_.page_store, anchor, opt_.page_store->iu_size(), &live)) {
             CRB_LOG_WARN("[{}] block compaction: retained anchor unreadable; skipping deletion", name_);
             return;
@@ -1172,7 +1031,12 @@ Status Crowdbtree::materialize_ownership(uint64_t *bytes_written, bool *complete
         std::vector<std::pair<uint64_t, uint64_t>> live{
             {0, region_base_for(opt_.page_store->iu_size())},
         };
-        const auto anchors = read_valid_anchors(*opt_.page_store, opt_.page_store->iu_size());
+        std::vector<CommitAnchor> anchors;
+        Status anchor_status = read_valid_anchors(*opt_.page_store, opt_.page_store->iu_size(), &anchors);
+        if (!anchor_status.ok()) {
+            release_snapshot_slot();
+            return anchor_status;
+        }
         if (anchors.empty()) {
             release_snapshot_slot();
             return Status::corruption("materialize_ownership: current snapshot is unreadable");
@@ -1466,7 +1330,11 @@ Status Crowdbtree::prefetch_sparse_pages(std::vector<PrefetchedPage> *out, std::
     selected_blocks->clear();
     const uint32_t            iu         = opt_.page_store->iu_size();
     const uint64_t            block_size = opt_.page_store->block_size();
-    std::vector<CommitAnchor> anchors    = read_valid_anchors(*opt_.page_store, iu);
+    std::vector<CommitAnchor> anchors;
+    Status                    anchor_status = read_valid_anchors(*opt_.page_store, iu, &anchors);
+    if (!anchor_status.ok()) {
+        return anchor_status;
+    }
     if (anchors.empty()) {
         return Status::Ok();
     }
@@ -1662,14 +1530,19 @@ Status Crowdbtree::open(const Config &opt, std::unique_ptr<Crowdbtree> *out)
 
     auto tree = std::make_unique<Crowdbtree>(opt);
 
-    CommitAnchor anchor;
-    if (!read_best_anchor(*store, iu, &anchor)) {
+    std::vector<CommitAnchor> anchors;
+    Status                    anchor_status = read_valid_anchors(*store, iu, &anchors);
+    if (!anchor_status.ok()) {
+        return anchor_status;
+    }
+    if (anchors.empty()) {
         // No valid snapshot: fresh empty tree (already constructed).
         CRB_LOG_INFO("[{}] open: no committed anchor; starting empty", opt.name);
         tree->init_metrics(make_metrics_prefix(opt), opt.backend_label);
         *out = std::move(tree);
         return Status::Ok();
     }
+    const CommitAnchor &anchor = anchors.back();
     if (anchor.segment_slots != MappingTable::kSegmentSize) {
         return Status::corruption("open: anchor segment_slots does not match this build's MappingTable::kSegmentSize");
     }

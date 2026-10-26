@@ -495,7 +495,7 @@ Status BlockPageStore::read_at_extents(uint64_t off, uint8_t *buf, size_t len) c
     while (done < len) {
         uint64_t extent_idx = cur / block_size_;
         if (extent_idx >= extents_.size()) {
-            return Status::io_error("BlockPageStore: read past end (no extent)");
+            return Status::not_found("BlockPageStore: read past end (no extent)");
         }
         const auto &ext = extents_[extent_idx];
         if (ext.deleted) {
@@ -527,7 +527,7 @@ Status BlockPageStore::read_at_extents(uint64_t off, uint8_t *buf, size_t len) c
                 s          = ext.medium->pread_partial(start, scratch.data(), span, &got);
                 if (s.ok()) {
                     if (got < (local - start) + chunk) {
-                        return Status::io_error("BlockPageStore: read past end");
+                        return Status::not_found("BlockPageStore: read past end");
                     }
                     std::memcpy(buf + done, scratch.data() + (local - start), chunk);
                 }
@@ -625,7 +625,7 @@ Status BlockPageStore::read_at(uint64_t off, uint8_t *buf, size_t len) const
         return rs;
     }
     if (got < (off - start) + len) {
-        return Status::io_error("BlockPageStore: read past end");
+        return Status::not_found("BlockPageStore: read past end");
     }
     std::memcpy(buf, scratch.data() + (off - start), len);
     return Status::Ok();

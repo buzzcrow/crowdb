@@ -68,6 +68,7 @@ impl KeepAliveLoop {
 
             // Initial registration.
             let (stores, groups) = hosted_summary(&registry);
+            let registration_started = tokio::time::Instant::now();
             let mut registered = if !discovery_ready {
                 false
             } else if let Err(e) = svc
@@ -83,8 +84,10 @@ impl KeepAliveLoop {
 
             let retry_interval = tokio::time::Duration::from_secs(1);
             let regular_interval = tokio::time::Duration::from_secs(interval_secs);
+            // The value is stamped before discovery and RPC retries. Starting
+            // its interval after completion would add that latency to its age.
             let mut ticker = tokio::time::interval_at(
-                tokio::time::Instant::now() + if registered { regular_interval } else { retry_interval },
+                registration_started + if registered { regular_interval } else { retry_interval },
                 if registered { regular_interval } else { retry_interval },
             );
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -99,6 +102,7 @@ impl KeepAliveLoop {
                             continue;
                         }
                         let (stores, groups) = hosted_summary(&registry);
+                        let heartbeat_started = tokio::time::Instant::now();
                         if let Err(e) = svc
                             .heartbeat_kv_server(identity, &rpc_endpoint, &stores, &groups, "ok", &data_root)
                             .await
@@ -112,7 +116,7 @@ impl KeepAliveLoop {
                             registered = true;
                             info!(instance_id, "keep-alive: registered");
                             ticker = tokio::time::interval_at(
-                                tokio::time::Instant::now() + regular_interval,
+                                heartbeat_started + regular_interval,
                                 regular_interval,
                             );
                             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

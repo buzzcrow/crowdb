@@ -50,6 +50,8 @@ class PageStore
 
     // Write/read `len` bytes at byte offset `off`. The store grows on write as
     // needed (up to capacity for fixed-size backends).
+    // Unwritten ranges may return not_found. Other read failures must remain
+    // distinguishable from absence during snapshot recovery and reclamation.
     virtual Status write_at(uint64_t off, const uint8_t *buf, size_t len) = 0;
     virtual Status read_at(uint64_t off, uint8_t *buf, size_t len) const  = 0;
 

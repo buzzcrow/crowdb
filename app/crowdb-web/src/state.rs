@@ -513,7 +513,16 @@ impl AppState {
         // necessarily the leader — so it is NOT used to seed the leader
         // hint (see below). Only a live endpoint from the monitor cache
         // (the actual leader) overwrites the hint.
-        let (_, mgmt_seeds) = resolve_group0_endpoint(&config_snapshot);
+        let (_, mut mgmt_seeds) = resolve_group0_endpoint(&config_snapshot);
+        if self.node_monitor_url.is_some() {
+            if let Some(binding) =
+                crate::node::cluster_binding(self).map_err(|(_, body)| Error::Config(body.0.error))?
+            {
+                // A bound node can serve the first request before its console
+                // projection or monitor cache has observed the cluster.
+                mgmt_seeds = binding.management_seeds;
+            }
+        }
         let live_endpoint = self.monitor_cache.group0_leader_endpoint().await;
 
         // Only overwrite the leader hint with a live endpoint from the

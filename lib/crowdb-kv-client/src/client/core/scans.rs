@@ -580,7 +580,7 @@ impl CrowdbKvClient {
     /// # Errors
     /// See [`Error`]. A server `KV_ERROR_JOURNAL_SCAN_GC_GAP` (asked
     /// for slots already GC'd below the WAL trim point) is surfaced as
-    /// [`Error::Server`] — the caller (diskdb recovery) falls back to
+    /// [`Error::JournalScanGcGap`] — the caller (diskdb recovery) falls back to
     /// a full-scan rebuild.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub async fn journal_scan(
@@ -615,7 +615,7 @@ impl CrowdbKvClient {
             let request_create_ms = now_ms();
             let t0 = Instant::now();
             let _in_flight = self.incr_in_flight(store_id, group_id, &endpoint);
-            let send_result: std::result::Result<crowdb_kv::rpc::KvJournalScanResponse, String> = t
+            let send_result = t
                 .send_journal_scan(
                     &endpoint,
                     page_min_slot,
@@ -627,8 +627,7 @@ impl CrowdbKvClient {
                     group_id,
                     read_mode,
                 )
-                .await
-                .map_err(|e| e.to_string());
+                .await;
             match send_result {
                 Ok(resp) => {
                     self.record_endpoint_rtt(store_id, group_id, &endpoint, t0.elapsed().as_micros() as u64);
@@ -703,7 +702,11 @@ impl CrowdbKvClient {
                             .on_leader_resolved(store_id, group_id, &endpoint, "unknown_leader");
                     }
                 }
-                Err(msg) => {
+                Err(Error::JournalScanGcGap) => {
+                    self.metrics.record_scan_error();
+                    return Err(Error::JournalScanGcGap);
+                }
+                Err(error) => {
                     self.metrics.record_scan_error();
                     self.metrics.record_transport_error();
                     self.metrics.on_leader_error(store_id, group_id, &endpoint);
@@ -712,7 +715,7 @@ impl CrowdbKvClient {
                         .await;
                     self.metrics
                         .on_leader_resolved(store_id, group_id, &endpoint, "transport_error");
-                    attempts = self.count_other(attempts, &msg)?;
+                    attempts = self.count_other(attempts, &error.to_string())?;
                 }
             }
         }
