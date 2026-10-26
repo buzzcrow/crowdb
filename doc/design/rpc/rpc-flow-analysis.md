@@ -616,10 +616,9 @@ transport-level regression: results are within noise (−1% to −5% vs
 The mixed-size continuation uses registered producer allocation, optional bounded
 small-frame packing, linked WR posting, selective tail completion and per-QP WR
 and wire-byte windows. Its formal ownership and scheduling contract is in
-[RDMA RPC](design-crowdb-rpc-rdma.md#5-shared-cq-and-completion-model), and the persistent
-[RDMA execution record](../../working/plan-rdma.md#accepted-mixed-size-send-optimization)
-retains binary identities, failed experiments, final per-size latency gates and
-native/OCI service results. The checked profile is
+[RDMA RPC](design-crowdb-rpc-rdma.md#5-shared-cq-and-completion-model).
+The acceptance records below retain binary identities, failed experiments,
+final per-size latency gates and native/OCI service results. The checked profile is
 `tools/benchmark/profiles/rdma-mixed-size.json`.
 
 A producer thread, closed-loop loader, outstanding RPC, posted SEND WR, packed
@@ -630,13 +629,118 @@ are included in the paired CPU measurements. Large registered messages reuse
 source owners; small eligible messages may copy into one aggregate. No future
 arrival is required to flush a singleton or partial WR list.
 
-The 2026-10-23 repeated two-core mixed comparison improves median one-owner
-throughput from 43,437.6 to 48,842.7 requests/s and total CPU cost from 26,743 to
-19,224 ns/callback. Four QPs sharing an owner improve CPU cost from 30,944 to
-23,153 ns/callback with similar throughput (50,180.5 to 51,657.7). Every size's
-P99 passes the previously declared baseline plus 10%, with zero errors. This
-synthetic mix and shared-HCA local-loop establish a bounded mixed-size benefit;
-physical-network and intended-arrival latency need their own measurements.
+### Accepted mixed-size local-HCA evidence
+
+These are the 2026-10-23 mixed-size measurements and their original service
+revalidations. They retain their original binary/source boundary; they are not
+measurements of the later main integration.
+
+- Accepted final binary hashes: CLI
+  `0df668817118cfab7dfc12966690afad9cd05ab4504741284ec9ceef3c1104c9`;
+  native server
+  `92794c08a31250f57ecbffb3755b1eeaf7e2e83b45011d27fd4f7b03f8ee1197`.
+  Binaries, tracked diff and new sources are retained under
+  `.crowdb-runtime/rdma-check/binaries/mixed-send-final/`.
+- Final correctness gates: 209 native RPC cases pass with three explicit
+  environment/process-pair skips; 128 no-verbs cases pass with one hardware
+  skip; all FFI tests, five CLI cases, seventeen runner cases, Rust fmt/clippy,
+  C++ formatting and scoped tree-lint pass. Scoped tree-lint still reports
+  existing style warnings and exits zero.
+- Actual multi-producer progress passes with four producers sharing one QP
+  and with four QPs / 128 outstanding requests. Mixed coroutine, Tokio and
+  four-CQ cases all validate every payload with no errors.
+- Final repeated fixed-CPU mixed evidence is in
+  `.crowdb-runtime/rdma-check/artifacts/bench/mixed-steady-final/`, with the
+  declared original thresholds in `mixed-pinned-baseline/acceptance-limits.json`.
+  Each peer is pinned to one distinct physical core (client 2, server 4), on a
+  Ryzen 5950X and one shared 100G HCA. The deterministic synthetic mix includes
+  0, 128, 513, 4096, 65535, 262144 and 1048576 bytes; seed 93; warmup 5 s,
+  measurement 10 s, three repeats. No production-frequency claim is made.
+- Against `mixed-steady-baseline`, median completed requests/s are singleton
+  16,655.9 -> 16,919.2, 64 loaders / one QP 43,437.6 -> 48,842.7, and 128
+  loaders / four QPs 50,180.5 -> 51,657.7. Total client+server CPU ns/callback
+  over warmup/measurement/drain are 62,097 -> 60,587, 26,743 -> 19,224, and
+  30,944 -> 23,153. Every size's P99 passes the declared baseline plus 10%;
+  all rows have zero allocation, validation, timeout or transport errors.
+  Copy echo is unchanged in both versions and included in CPU cost. P999 is
+  recorded, without inferring open-arrival latency from closed-loop loaders.
+- The fixed 128-byte regression control uses the same two-core pinning,
+  512 loaders / four QPs, unchanged copy echo and packing in both versions.
+  Its two repeats are 702,145 / 696,953 requests/s before and 877,811 / 879,331
+  after, retained in `mixed-fixed-baseline/` and `mixed-fixed-final/`.
+  These CPU-constrained controls are distinct from the earlier unrestricted
+  3M headline; both final rows validate all requests with zero errors.
+- Failed experiments remain retained: shared-owner baseline staging exhaustion,
+  scalar and double-fill registered initializers, shared producer/staging
+  descriptor exhaustion, and a fast-only borrow check that missed external
+  HTTP/FFI owners. No failed row is counted as accepted performance.
+- Service revalidation with TX/RX 16 and packing enabled preserves HTTP bytes,
+  aligned DiskIO and zero copied payload bytes in native/OCI HCA profiles
+  `rdma-datapath/c562dc95cc9841d6921b2dce5334a57f` and
+  `rdma-datapath/f6a02c215e8d4f39ac695d4b98f1c4a6`. Native partial-download
+  disconnect `670211f0f3d345269342eebd3d045717` terminates without a TCP suffix;
+  no-device OCI TCP `926068fccb004ed9981e0e82cdf3af22` preserves exact bytes.
+  Native uses io_uring; the container's existing EPERM fallback uses blocking
+  disk I/O and is functional evidence only.
+- Real Chunk-KV/tree/WAL passes native RDMA
+  `rdma-chunk-kv/36d69f7a97764016950e28753b54340a`, final OCI RDMA
+  `778a5ee288b543f38433f696afd148fa`, OCI TCP
+  `b6333c5e1ddd4a859ed53720052de6fc`, native setup-only fallback
+  `372dd806ab434dc28b917f841cfb1613`, and OCI partial-response disconnect
+  `7f4dc5c2c0e54678b9d0a523a8b0bbed`. Corpus values cross the 64/256 KiB
+  classes and 1 MiB control-fragment boundary. These are service-path tests
+  with injected catalog/storage seams, not physical cross-host measurements.
+
+Further tuning remains separate from this accepted mechanism: intended-arrival
+open-load latency, sampled queue-age/peer-pressure telemetry and a retained-echo
+benchmark mode. Transport counters already distinguish direct payload,
+aggregation, compatibility staging and framing/control copies; application echo
+copy remains explicitly identified.
+
+### Earlier native runtime and S3 acceptance
+
+The final endpoint-policy closure passes 31 native capability/configuration/
+preflight cases, including a real-HCA TCP-only peer with strict and allowed
+fallback, plus nine Rust FFI configuration cases. No production behavior changed
+during that closure. The associated native runtime/S3 delivery records are:
+
+- Native and no-device OCI TCP acceptance passes before and after full storage
+  restart in `container-e2e/run-0ae636d32f1c4b228918a4bf1099708c`. The native-only
+  fixture has twelve real services; the separate thirteen-service parity
+  fixture compares HTTP/native bytes, ETags, metadata, errors, copy and multipart.
+- Final shared-HCA acceptance passes in
+  `native-s3-hca/3522f5c97f7c46e880e09ff8ed158605`, using image
+  `sha256:685c3632b0b27fdb8a684fda65914f509a34972bc2a9b1b8c6959ea5f92fe28b`.
+  Native and non-root OCI consumers each write a corpus, then verify after all
+  storage services restart. Sizes include 0, 7, 513, 65502, 65503, 1048589,
+  2097152 and 4194335 bytes, plus framed producer and multipart cases.
+- Each HCA reader reports twelve data connections, 38 receives, zero
+  fallback/CQ/protocol/post errors, zero SDK compatibility-copy bytes,
+  8 MiB held high water and 436404224 registered bytes within a 512 MiB budget.
+  A registered pressure-test lease survives owned shutdown while a simulated
+  asynchronous host-to-GPU copy holds it; release returns its final charge.
+- Each producer records 1114112 producer bytes high water and 5374424 held
+  bytes high water. Registered framed input directly sends 2099385 bytes;
+  ordinary input and EC construction still stage 21247554 bytes. The small
+  framed-input transport copy delta is zero. Open-strip repair retains small
+  writer inputs until drain; producer and held charges then return to zero.
+- This is shared-HCA local-loop functional evidence. Container io_uring can
+  select its existing blocking fallback; these checks make no cross-host or
+  storage-throughput claim.
+- Final full S3 acceptance passes all 45 fixtures in
+  `container-e2e/run-c3ded34f0ac84d70aae9f0ff913d63d1`, including native/HTTP
+  parity, recovery and Java/JavaScript/Go SDK clients. All 163 fixture tests,
+  affected Rust suites, workspace all-feature clippy, `rs-lint`, formatting and
+  independent HTTP SDK boundary/twenty functional tests pass. The additional
+  serial protocol recheck passes all 23 fixtures in
+  `container-e2e/run-6dd0488a66be4fd5bd480fdf157f06cc`. The final C++ source
+  previously passed tree-lint and the native transport gates above.
+
+The [native SDK guide](../../../lib/crowdb-sdk-native/README.md) defines the
+supported API. Later same-source service and HCA revalidation is recorded in
+[Access acceptance](../../../app/crowdb-access-server/tests/README.md#main-integration-acceptance).
+[Physical multi-node validation](../../working/plan-rdma-multi-node.md) remains
+an independent unexecuted plan.
 
 Primary comparison references inspected on 2026-10-23:
 
