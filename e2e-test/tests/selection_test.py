@@ -178,3 +178,15 @@ class CaseResourcesTest(unittest.TestCase):
         self.assertEqual(case.iceberg_gc_catalogs, ("01010101010101010101010101010101",))
         self.assertEqual(case.client_timeout, 900)
         self.assertTrue(all(not other.iceberg_gc_catalogs for other in ICEBERG_CASES if other != case))
+
+    def test_gc_convergence_uses_production_pagination_and_keeps_single_item_cases(self):
+        from scenarios import ICEBERG_CASES
+        convergence = next(case for case in ICEBERG_CASES if "::gc::convergence::" in case.name)
+        self.assertTrue(convergence.iceberg_gc)
+        self.assertIsNone(convergence.iceberg_gc_page_items)
+        self.assertIsNone(convergence.iceberg_gc_interval_ms)
+        self.assertEqual(convergence.client_timeout, 3600)
+        one_item = [case for case in ICEBERG_CASES
+                    if "::gc::foreground::" in case.name or "::gc::notifications::" in case.name]
+        self.assertEqual(len(one_item), 3)
+        self.assertTrue(all(case.iceberg_gc_page_items == 1 for case in one_item))

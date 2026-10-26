@@ -15,10 +15,11 @@ env:
   RUST_LIB_BACKTRACE: 1
   CROWDB_E2E_PRINT_SERVICE_ERRORS: "1"
 
-# Component gates and independent container domains share one release image.
+# Lint, component tests and release compilation start independently.
+# Container domains consume one image and one set of host clients.
 jobs:
   Lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
       with:
@@ -32,9 +33,9 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
-        pixi-version: latest
-    - name: Cache cargo + target
-      uses: Swatinem/rust-cache@v2
+        pixi-version: v0.77.0
+    - name: Cache compilation
+      uses: ./.github/actions/compilation-cache
     - name: Check formatting
       run: pixi run cargo fmt --all -- --check
     - name: Check CI test tasks
@@ -43,7 +44,7 @@ jobs:
       run: pixi run cargo clippy --all-targets -- -D warnings
 
   CppTests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
       with:
@@ -57,9 +58,9 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
-        pixi-version: latest
-    - name: Cache cargo + target
-      uses: Swatinem/rust-cache@v2
+        pixi-version: v0.77.0
+    - name: Cache compilation
+      uses: ./.github/actions/compilation-cache
     - name: Clean env
       run: pixi run clean-env
     - name: Build C++ libs
@@ -98,7 +99,7 @@ jobs:
         retention-days: 7
 
   UnitTests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
       with:
@@ -112,9 +113,9 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
-        pixi-version: latest
-    - name: Cache cargo + target
-      uses: Swatinem/rust-cache@v2
+        pixi-version: v0.77.0
+    - name: Cache compilation
+      uses: ./.github/actions/compilation-cache
     - name: Clean env
       run: pixi run clean-env
     - name: Run core component tests
@@ -151,7 +152,7 @@ jobs:
         retention-days: 7
 
   StorageTests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
       with:
@@ -165,9 +166,9 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
-        pixi-version: latest
-    - name: Cache cargo + target
-      uses: Swatinem/rust-cache@v2
+        pixi-version: v0.77.0
+    - name: Cache compilation
+      uses: ./.github/actions/compilation-cache
     - name: Clean env
       run: pixi run clean-env
     - name: Build C++ libs (crowdb-diskio subprocess)
@@ -210,7 +211,7 @@ jobs:
 
   AccessTests:
     timeout-minutes: 90
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
       with:
@@ -224,8 +225,8 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
-        pixi-version: latest
-    - uses: Swatinem/rust-cache@v2
+        pixi-version: v0.77.0
+    - uses: ./.github/actions/compilation-cache
     - name: Clean env
       run: pixi run clean-env
     - name: Run access component tests
@@ -275,10 +276,11 @@ jobs:
 
   S3E2E:
     env:
+      CROWDB_COMPILED_TESTS: ${{ github.workspace }}/target/compiled-tests
       CROWDB_E2E_NODE_CPUS: "1"
       CROWDB_E2E_CPUS: "4"
       CROWDB_E2E_MEMORY_MIB: "8192"
-    needs: ContainerImage
+    needs: [ContainerImage, BuildClients]
     timeout-minutes: 90
     runs-on: ubuntu-24.04
     steps:
@@ -291,18 +293,18 @@ jobs:
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
         sudo apt-get clean
         df -h /
-    - name: Install system dependencies
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
-        pixi-version: latest
-    - name: Cache cargo + target
-      uses: Swatinem/rust-cache@v2
+        pixi-version: v0.77.0
+    - uses: ./.github/actions/restore-compiled
+      with:
+        artifact: ${{ needs.BuildClients.outputs.artifact }}
+        kind: clients
     - name: Clean env
       run: pixi run clean-env
     - uses: actions/download-artifact@v4
       with:
-        name: verified-oci-image
+        name: ${{ needs.ContainerImage.outputs.artifact }}
         path: target
     - name: Import shared release image
       run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
@@ -339,12 +341,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: [iceberg-core, iceberg-sdk, iceberg-grace]
+        partition: [iceberg-core, iceberg-gc-convergence, iceberg-gc-cleanup, iceberg-sdk, iceberg-grace]
     env:
+      CROWDB_COMPILED_TESTS: ${{ github.workspace }}/target/compiled-tests
       CROWDB_E2E_NODE_CPUS: "1"
       CROWDB_E2E_CPUS: "4"
       CROWDB_E2E_MEMORY_MIB: "12288"
-    needs: ContainerImage
+    needs: [ContainerImage, BuildClients]
     timeout-minutes: 90
     runs-on: ubuntu-24.04
     steps:
@@ -359,19 +362,14 @@ jobs:
         df -h /
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
-        pixi-version: latest
-    - uses: Swatinem/rust-cache@v2
+        pixi-version: v0.77.0
+    - uses: ./.github/actions/restore-compiled
       with:
-        shared-key: container-e2e-client-v2-${{ hashFiles('pixi.lock') }}
-        cache-targets: false
-        cache-directories: target/debug
-        cmd-format: "pixi run {0}"
-        cache-workspace-crates: true
-        cache-on-failure: true
-        save-if: ${{ matrix.partition == 'iceberg-core' }}
+        artifact: ${{ needs.BuildClients.outputs.artifact }}
+        kind: clients
     - uses: actions/download-artifact@v4
       with:
-        name: verified-oci-image
+        name: ${{ needs.ContainerImage.outputs.artifact }}
         path: target
     - name: Import shared release image
       run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
@@ -396,7 +394,7 @@ jobs:
       run: pixi run clean-env
 
   ConsoleTests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
       with:
@@ -410,9 +408,9 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
-        pixi-version: latest
-    - name: Cache cargo + target
-      uses: Swatinem/rust-cache@v2
+        pixi-version: v0.77.0
+    - name: Cache compilation
+      uses: ./.github/actions/compilation-cache
     - name: Clean env
       run: pixi run clean-env
     - name: Run console tests
@@ -452,7 +450,7 @@ jobs:
       run: pixi run clean-env
 
   UITests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
       with:
@@ -462,13 +460,9 @@ jobs:
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
         sudo apt-get clean
         df -h /
-    - name: Install system dependencies
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
-        pixi-version: latest
-    - name: Cache cargo + target
-      uses: Swatinem/rust-cache@v2
+        pixi-version: v0.77.0
     - name: Run UI component tests and types
       run: pixi run test-console-ui
     - name: Capture runner state on failure
@@ -505,6 +499,40 @@ jobs:
       if: always()
       run: pixi run clean-env
 
+  BuildClients:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      artifact: compiled-clients-${{ github.run_attempt }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        submodules: true
+    - uses: prefix-dev/setup-pixi@v0.8.1
+      with:
+        pixi-version: v0.77.0
+    - name: Free disk space
+      run: |
+        pixi run sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
+        pixi run sudo apt-get clean
+        pixi run df -h /
+    - name: Install compilation prerequisites
+      run: |
+        pixi run sudo apt-get update
+        pixi run sudo apt-get install -y protobuf-compiler
+    - name: Cache compilation
+      uses: ./.github/actions/compilation-cache
+    - name: Compile shared host clients
+      run: pixi run python tools/ci-build/build.py clients
+    - uses: actions/upload-artifact@v4
+      with:
+        name: compiled-clients-${{ github.run_attempt }}
+        path: target/ci-build/clients.tar.gz
+        compression-level: 0
+        retention-days: 7
+
   ContainerImage:
     env:
       CROWDB_KEEP_DEBUG_INFO: ${{ vars.CROWDB_KEEP_DEBUG_INFO || '0' }}
@@ -512,6 +540,7 @@ jobs:
     permissions:
       contents: read
     outputs:
+      artifact: verified-oci-image-${{ github.run_attempt }}
       version: ${{ steps.source.outputs.version }}
       revision: ${{ steps.source.outputs.revision }}
       digest: ${{ steps.artifact.outputs.digest }}
@@ -541,18 +570,11 @@ jobs:
         pixi run sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
         pixi run sudo apt-get clean
         pixi run df -h /
-    - name: Cache release compilation
-      uses: Swatinem/rust-cache@v2
+    - name: Cache production compilation
+      uses: ./.github/actions/compilation-cache
       with:
-        shared-key: container-release-v2-${{ hashFiles('pixi.lock', 'container/oci-image/stage.sh') }}
-        cache-targets: false
-        cache-directories: |
-          target/release
-          app/crowdb-diskio/build
-        cmd-format: "pixi run {0}"
-        cache-workspace-crates: true
-        env-vars: "CARGO CC CXX CFLAGS CXXFLAGS CMAKE RUST CROWDB_KEEP_DEBUG_INFO"
-    - name: Stage runtime without a container daemon
+        key: BuildRuntime
+    - name: Compile and stage production runtime
       run: pixi run bash container/oci-image/stage.sh
     - name: Install locked standalone builder
       run: pixi install --locked --manifest-path container/oci-image/pixi.toml
@@ -565,7 +587,7 @@ jobs:
       run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
     - uses: actions/upload-artifact@v4
       with:
-        name: verified-oci-image
+        name: verified-oci-image-${{ github.run_attempt }}
         path: |
           target/crowdb.oci.tar
           target/crowdb.oci.tar.json
@@ -573,7 +595,9 @@ jobs:
         retention-days: 7
 
   ContainerKV:
-    needs: ContainerImage
+    env:
+      CROWDB_COMPILED_TESTS: ${{ github.workspace }}/target/compiled-tests
+    needs: [ContainerImage, BuildClients]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -588,14 +612,14 @@ jobs:
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
         pixi-version: v0.77.0
+    - uses: ./.github/actions/restore-compiled
+      with:
+        artifact: ${{ needs.BuildClients.outputs.artifact }}
+        kind: clients
     - uses: actions/download-artifact@v4
       with:
-        name: verified-oci-image
+        name: ${{ needs.ContainerImage.outputs.artifact }}
         path: target
-    - name: Install client compilation prerequisites
-      run: |
-        pixi run sudo apt-get update
-        pixi run sudo apt-get install -y protobuf-compiler
     - name: Import the shared verified image
       run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
     - name: Verify centralized KV fixtures and protocol layer
@@ -620,8 +644,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: [console-api, console-browser, console-native, console-transition, console-inspection]
-    needs: ContainerImage
+        partition: [console-api, console-browser, console-native-data, console-native-operations, console-transition, console-inspection]
+    env:
+      CROWDB_COMPILED_TESTS: ${{ github.workspace }}/target/compiled-tests
+    needs: [ContainerImage, BuildClients]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -632,22 +658,13 @@ jobs:
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
         pixi-version: v0.77.0
-    - name: Install client compilation prerequisites
-      run: |
-        pixi run sudo apt-get update
-        pixi run sudo apt-get install -y protobuf-compiler
-    - uses: Swatinem/rust-cache@v2
+    - uses: ./.github/actions/restore-compiled
       with:
-        shared-key: container-e2e-client-v2-${{ hashFiles('pixi.lock') }}
-        cache-targets: false
-        cache-directories: target/debug
-        cmd-format: "pixi run {0}"
-        cache-workspace-crates: true
-        cache-on-failure: true
-        save-if: ${{ matrix.partition == 'console-api' }}
+        artifact: ${{ needs.BuildClients.outputs.artifact }}
+        kind: clients
     - uses: actions/download-artifact@v4
       with:
-        name: verified-oci-image
+        name: ${{ needs.ContainerImage.outputs.artifact }}
         path: target
     - name: Import formal release image
       run: pixi run --manifest-path container/oci-image/pixi.toml import target/crowdb.oci.tar --image crowdb-node:dev
@@ -676,7 +693,9 @@ jobs:
         retention-days: 7
 
   ContainerStorage:
-    needs: ContainerImage
+    env:
+      CROWDB_COMPILED_TESTS: ${{ github.workspace }}/target/compiled-tests
+    needs: [ContainerImage, BuildClients]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -690,8 +709,6 @@ jobs:
           domains: chunkdb chunk-kv chunk-stream chunk-client
         - group: dataset
           domains: dataset
-        - group: deployment
-          domains: deployment
     permissions:
       contents: read
     steps:
@@ -702,26 +719,16 @@ jobs:
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
         pixi-version: v0.77.0
+    - uses: ./.github/actions/restore-compiled
+      with:
+        artifact: ${{ needs.BuildClients.outputs.artifact }}
+        kind: clients
     - uses: actions/download-artifact@v4
       with:
-        name: verified-oci-image
+        name: ${{ needs.ContainerImage.outputs.artifact }}
         path: target
-    - name: Install client compilation prerequisites
-      run: |
-        pixi run sudo apt-get update
-        pixi run sudo apt-get install -y protobuf-compiler
     - name: Import shared release image
       run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
-    - uses: Swatinem/rust-cache@v2
-      with:
-        shared-key: container-storage-${{ matrix.group }}-${{ hashFiles('pixi.lock') }}
-        cache-targets: false
-        cache-directories: |
-          target/debug
-          sdk/target
-        cmd-format: "pixi run {0}"
-        cache-workspace-crates: true
-        cache-on-failure: true
     - name: Verify container domain
       env:
         E2E_DOMAINS: ${{ matrix.domains }}
@@ -739,6 +746,54 @@ jobs:
       if: always()
       with:
         name: container-${{ matrix.group }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}/
+        include-hidden-files: true
+        if-no-files-found: error
+        retention-days: 7
+
+  ContainerDeployment:
+    env:
+      CROWDB_COMPILED_TESTS: ${{ github.workspace }}/target/compiled-tests
+    needs: [ContainerImage, BuildClients]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [deployment-reference, deployment-services]
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.ContainerImage.outputs.revision }}
+        submodules: true
+    - uses: prefix-dev/setup-pixi@v0.8.1
+      with:
+        pixi-version: v0.77.0
+    - uses: ./.github/actions/restore-compiled
+      with:
+        artifact: ${{ needs.BuildClients.outputs.artifact }}
+        kind: clients
+    - uses: actions/download-artifact@v4
+      with:
+        name: ${{ needs.ContainerImage.outputs.artifact }}
+        path: target
+    - name: Import shared release image
+      run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
+    - name: Verify deployment acceptance
+      env:
+        E2E_PARTITION: ${{ matrix.partition }}
+        CROWDB_E2E_CPUS: "4"
+        CROWDB_E2E_MEMORY_MIB: "8192"
+      run: pixi run test-e2e-deployment --partition "$E2E_PARTITION"
+    - name: Export bounded failure diagnostics
+      if: always()
+      run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output "${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}"
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: container-${{ matrix.partition }}-${{ github.run_attempt }}
         path: ${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}/
         include-hidden-files: true
         if-no-files-found: error

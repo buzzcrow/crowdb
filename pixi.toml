@@ -153,7 +153,7 @@ test-access = { cmd = "python tools/pixi-tasks/test.py unit access" }
 test-console = { cmd = "python tools/pixi-tasks/test.py unit console" }
 test-console-ui = { cmd = "python tools/pixi-tasks/test.py unit ui", depends-on = ["install-ui-deps"] }
 test-access-sdk = "python tools/pixi-tasks/test.py unit sdk"
-test-dataset-sdk = "cargo test --manifest-path sdk/Cargo.toml --workspace --locked"
+test-dataset-sdk = "cargo test --release --manifest-path sdk/Cargo.toml --workspace --locked"
 test-dataset-sdk-python = "python tools/sdk/package.py"
 test-tree-link-isolation = "bash tools/cpp-checks/tree-link-isolation.sh"
 test-e2e-kv = "python tools/pixi-tasks/test.py e2e kv"
@@ -185,7 +185,7 @@ sdk-fmt-check = "cargo fmt --manifest-path sdk/Cargo.toml --all -- --check"
 # CPATH supplies conda headers omitted from GCC compile_commands.json.
 tree-lint = "CPATH=$CONDA_PREFIX/include python3 tools/cpp-checks/clang-tidy.py"
 rs-lint = { cmd = "cargo clippy --all-targets -- -D warnings", depends-on = ["check-production-dashmap", "check-version"] }
-sdk-lint = "cargo clippy --manifest-path sdk/Cargo.toml --workspace --all-targets --locked -- -D warnings"
+sdk-lint = "cargo clippy --release --manifest-path sdk/Cargo.toml --workspace --all-targets --locked -- -D warnings"
 ts-lint = { cmd = "python tools/pixi-tasks/check-console-types.py", depends-on = ["install-ui-deps"] }
 check-production-dashmap = "python3 tools/ci-checks/check-production-dashmap.py"
 check-version = "python3 tools/ci-checks/check-version.py"

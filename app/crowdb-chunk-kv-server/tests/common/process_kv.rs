@@ -9,7 +9,7 @@ use crowdb_protocol::chunk_kv::{DomainFailurePolicy, DomainMonitorDescriptor};
 use std::sync::Arc;
 
 pub struct TestProcessKv {
-    store: Arc<PxKvStore>,
+    pub store: Arc<PxKvStore>,
     pub kv: Arc<CrowdbKvClient>,
 }
 

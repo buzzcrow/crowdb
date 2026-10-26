@@ -96,6 +96,11 @@ and atomically preserves its sequence and greatest expiry alongside the grant.
 Replacement, renewal and grant publication therefore serialize on one record;
 replacement cannot miss a concurrent extension. An observation for another
 process epoch cannot receive a grant, and a boot rejects grants for other epochs.
+One bounded control-plane task submits a boot's renewal and discovery writes
+sequentially so their periodic ticks cannot exhaust each other's conditional
+admission budget. Recovery, data IO and load sampling remain outside that task.
+Queueing and publication retain the captured process-lease deadline; neither
+can extend a boot's authority while metadata is unavailable.
 
 On receipt, an owner subtracts maximum clock skew and its self-fence margin
 from the wall-clock remaining duration, then projects that duration onto its

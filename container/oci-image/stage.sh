@@ -16,7 +16,7 @@ esac
 # Build on the host, reusing the existing Cargo, CMake and npm artifacts.
 cargo build --locked --release -p crowdb-kv-client --features ffi
 cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release "${cmake_debug_args[@]}"
-cmake --build app/crowdb-diskio/build -j 4 --target crowdb-diskio
+cmake --build app/crowdb-diskio/build --parallel "$(getconf _NPROCESSORS_ONLN)" --target crowdb-diskio
 cargo build --locked --release --features crowdb-kv-client/ffi \
     -p crowdb-kv-client -p crowdb-monitor -p crowdb-kv-server -p crowdb-diskdb \
     -p crowdb-chunkdb -p crowdb-chunk-kv-server \

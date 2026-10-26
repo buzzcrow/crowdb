@@ -16,17 +16,79 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only
-  CARGO_PROFILE_TEST_DEBUG: line-tables-only
   RUST_BACKTRACE: 1
+  CROWDB_E2E_PRINT_SERVICE_ERRORS: "1"
 
 jobs:
+  construct:
+    env:
+      CROWDB_KEEP_DEBUG_INFO: ${{ vars.CROWDB_KEEP_DEBUG_INFO || '0' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      artifact: verified-oci-image-${{ github.run_attempt }}
+      version: ${{ steps.source.outputs.version }}
+      revision: ${{ steps.source.outputs.revision }}
+      digest: ${{ steps.artifact.outputs.digest }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        fetch-depth: 0
+        submodules: true
+    - uses: prefix-dev/setup-pixi@v0.8.1
+      with:
+        pixi-version: v0.77.0
+    - name: Validate release source
+      id: source
+      run: |
+        pixi run bash -euc '
+          [[ "$GITHUB_REPOSITORY" == buzzcrow/crowdb ]]
+          version=$(cat VERSION)
+          revision=$(git rev-parse HEAD)
+          [[ "$revision" == "$GITHUB_SHA" ]]
+          printf "version=%s\nrevision=%s\n" "$version" "$revision" >> "$GITHUB_OUTPUT"
+        '
+    - name: Install compilation prerequisites and remove Docker
+      run: pixi run python container/oci-image/prepare-ci-host.py
+    - name: Free disk space
+      run: |
+        pixi run sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
+        pixi run sudo apt-get clean
+        pixi run df -h /
+    - name: Cache production compilation
+      uses: ./.github/actions/compilation-cache
+      with:
+        key: BuildRuntime
+    - name: Compile and stage production runtime
+      run: pixi run bash container/oci-image/stage.sh
+    - name: Install locked standalone builder
+      run: pixi install --locked --manifest-path container/oci-image/pixi.toml
+    - name: Build OCI without Docker
+      run: |
+        pixi run sudo "$(command -v pixi)" run --as-is --manifest-path container/oci-image/pixi.toml build --privileged --context "$PWD/target/container-runtime" --output "$PWD/target/crowdb.oci.tar"
+        pixi run test-oci-image
+    - name: Record constructed digest
+      id: artifact
+      run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
+    - uses: actions/upload-artifact@v4
+      with:
+        name: verified-oci-image-${{ github.run_attempt }}
+        path: |
+          target/crowdb.oci.tar
+          target/crowdb.oci.tar.json
+        compression-level: 0
+        retention-days: 7
+
   ecosystem:
+    needs: construct
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.construct.outputs.revision }}
           submodules: true
       - name: Free build space
         run: |
@@ -35,10 +97,13 @@ jobs:
           df -h /
       - uses: prefix-dev/setup-pixi@v0.8.1
         with:
-          pixi-version: latest
-      - uses: Swatinem/rust-cache@v2
-      - name: Build formal release image
-        run: pixi run oci-build --load
+          pixi-version: v0.77.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.construct.outputs.artifact }}
+          path: target
+      - name: Import shared release image
+        run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
       - name: Prepare locked clients
         run: |
           pixi install --locked -e iceberg-ecosystem

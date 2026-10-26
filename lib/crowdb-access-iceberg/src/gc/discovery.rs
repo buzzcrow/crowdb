@@ -1,11 +1,12 @@
 use crate::{
-    catalog::{CatalogContext, CatalogError, CatalogStorageLayout},
+    catalog::{CatalogContext, CatalogError, CatalogStorageLayout, StoreError},
     error::ValidationError,
     file::MultipartPhase,
     key::{CatalogScope, IcebergKey, OperationId, StorageKey, TableStorageScope},
     record::StorageRecord,
     table::{TableHead, TableLifecycle},
 };
+use crowdb_protocol::chunk_kv::RpcValue;
 
 use super::{
     CandidatePhase, GcCandidate, GcLimits, GcPhase, GcRepository, GcScan, GcStalledReason, GcTask,
@@ -65,6 +66,32 @@ impl GcTask {
         };
         task.validate()?;
         Ok(task)
+    }
+
+    fn advance_discovery_scope(&mut self) -> Result<(), ValidationError> {
+        self.scan_after.clear();
+        if self.discovery_scope < self.last_discovery_scope() {
+            self.discovery_scope += 1;
+        } else {
+            self.discovery_scope = 0;
+            self.phase = if self.phase == GcPhase::Rescan {
+                self.deferred_ranges = false;
+                self.sweep_round = self
+                    .sweep_round
+                    .checked_add(1)
+                    .ok_or(ValidationError::GenerationExhausted)?;
+                if self.kind == GcTaskKind::RetiredCatalog {
+                    GcPhase::PreSweepSystem
+                } else {
+                    GcPhase::Sweep
+                }
+            } else if self.kind == GcTaskKind::RetiredCatalog {
+                GcPhase::RootsSystem
+            } else {
+                GcPhase::Roots
+            };
+        }
+        Ok(())
     }
 }
 
@@ -128,45 +155,40 @@ impl GcRepository {
             }
         };
         scan.validate_page(&page)?;
+        let mut next = task.progress()?;
         for item in &page.items {
-            let key = StorageKey::decode(&item.key)?;
-            if let Some(candidate) = self
-                .discovery_candidate(task, &key, &item.value, limits, now_ms)
-                .await?
-            {
-                self.claim_candidate(&candidate).await?;
+            match self.discover_item(task, item, limits, now_ms).await {
+                Ok(()) => next.scan_after.clone_from(&item.key),
+                Err(CatalogError::Store(StoreError::Budget)) if next.scan_after != task.scan_after => {
+                    // The unfinished item may have a durable claim; revisit it next window.
+                    self.update(task, &next).await?;
+                    return Ok(next);
+                }
+                Err(error) => return Err(error),
             }
         }
-        let mut next = task.progress()?;
-        if let Some(last) = page.items.last() {
-            next.scan_after.clone_from(&last.key);
-        } else {
-            next.scan_after.clear();
-            if task.discovery_scope < task.last_discovery_scope() {
-                next.discovery_scope += 1;
-            } else if task.phase == GcPhase::Rescan {
-                next.discovery_scope = 0;
-                next.phase = if task.kind == GcTaskKind::RetiredCatalog {
-                    GcPhase::PreSweepSystem
-                } else {
-                    GcPhase::Sweep
-                };
-                next.deferred_ranges = false;
-                next.sweep_round = task
-                    .sweep_round
-                    .checked_add(1)
-                    .ok_or(ValidationError::GenerationExhausted)?;
-            } else {
-                next.discovery_scope = 0;
-                next.phase = if task.kind == GcTaskKind::RetiredCatalog {
-                    GcPhase::RootsSystem
-                } else {
-                    GcPhase::Roots
-                };
-            }
+        if page.items.is_empty() {
+            next.advance_discovery_scope()?;
         }
         self.update(task, &next).await?;
         Ok(next)
+    }
+
+    async fn discover_item(
+        &self,
+        task: &GcTask,
+        item: &RpcValue,
+        limits: GcLimits,
+        now_ms: u64,
+    ) -> Result<(), CatalogError> {
+        let key = StorageKey::decode(&item.key)?;
+        if let Some(candidate) = self
+            .discovery_candidate(task, &key, &item.value, limits, now_ms)
+            .await?
+        {
+            self.claim_candidate(&candidate).await?;
+        }
+        Ok(())
     }
 
     async fn discovery_layout_allows(&self, task: &GcTask, native: bool) -> Result<bool, CatalogError> {

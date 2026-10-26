@@ -14,7 +14,15 @@ async fn standalone_rust_consumer_uses_production_http_control_routes() {
     let origin = test.origin.clone();
     let output = tokio::task::spawn_blocking(move || {
         Command::new("pixi")
-            .args(["run", "--", "cargo", "run", "--locked", "--manifest-path"])
+            .args([
+                "run",
+                "--",
+                "cargo",
+                "run",
+                "--release",
+                "--locked",
+                "--manifest-path",
+            ])
             .arg(manifest)
             .args(["--example", "control"])
             .env("CROWDB_DATASET_ENDPOINT", origin)

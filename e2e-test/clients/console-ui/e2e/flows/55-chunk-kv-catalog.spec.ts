@@ -196,6 +196,14 @@ async function selectActiveJournal(page: Page, request: APIRequestContext, initi
   await expect.poll(async () => {
     for (const entry of catalog.entries) {
       if (partitionId && entry.id !== partitionId) continue;
+      // A normal owner transfer keeps this range while its target catches up.
+      // Observe that lifecycle on a fresh map instead of treating the same
+      // partition's temporary admission fence as an absent journal.
+      if (partitionId && entry.state === 'TargetCatchingUp') {
+        expect(entry.transition_id, 'catching-up assignment retains its transition').not.toBeNull();
+        await refresh(() => page.getByRole('button', { name: 'Refresh catalog', exact: true }).click());
+        return false;
+      }
       if (entry.state !== 'Serving') continue;
       const query = new URLSearchParams({ id: entry.id, epoch: entry.epoch, generation: catalog.generation, page: String(catalog.page), offset: String(catalog.offset) });
       const response = await request.get(`/api/chunk-kv/runtime?${query}`);

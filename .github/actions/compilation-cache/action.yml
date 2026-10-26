@@ -1,0 +1,27 @@
+name: Cache compilation
+description: Cache compiled test and release inputs with the locked Pixi toolchain
+inputs:
+  key:
+    description: Compilation owner whose cache should be reused
+    required: false
+    default: ${{ github.job }}
+runs:
+  using: composite
+  steps:
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: release-ci-v1-${{ hashFiles('pixi.lock') }}
+        key: ${{ inputs.key }}
+        cache-targets: false
+        cache-directories: |
+          target/debug
+          target/release
+          sdk/target/release
+          sdk/target/sdist/release
+          target/iceberg-sdk/release
+          app/crowdb-diskio/build
+          lib/crowdb-tree/build
+          lib/crowdb-rpc/build
+        cmd-format: "pixi run {0}"
+        cache-workspace-crates: true
+        env-vars: "CARGO CC CXX CFLAGS CXXFLAGS CMAKE RUST CROWDB_KEEP_DEBUG_INFO"

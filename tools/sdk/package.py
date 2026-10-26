@@ -2,6 +2,7 @@
 # Licensed under the Apache License, Version 2.0.
 """Build the sdist outside the repo and install its wheel without a compiler."""
 import argparse
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -21,6 +22,8 @@ def run(command, **kwargs):
 def package(destination):
     destination = Path(destination).resolve()
     destination.mkdir(parents=True, exist_ok=True)
+    build_env = dict(os.environ, PYO3_PYTHON=sys.executable)
+    build_env.setdefault("CARGO_TARGET_DIR", str(ROOT / "sdk/target/sdist"))
     with tempfile.TemporaryDirectory(prefix="crowdb-sdk-source-") as directory:
         source = Path(directory)
         run(["maturin", "sdist", "--manifest-path", str(ROOT / "sdk/crates/crowdb-sdk-python/Cargo.toml"), "--out", str(source)])
@@ -30,9 +33,10 @@ def package(destination):
             stream.extractall(source / "unpacked", filter="data")
         project, = (source / "unpacked").iterdir()
         run(["cargo", "metadata", "--manifest-path", str(project / "Cargo.toml"), "--locked", "--no-deps", "--format-version", "1"], stdout=subprocess.DEVNULL)
-        run(["cargo", "test", "--manifest-path", str(project / "Cargo.toml"), "--workspace", "--locked"],
-            cwd=project, env=dict(os.environ, PYO3_PYTHON=sys.executable))
-        run(["maturin", "build", "--locked", "--interpreter", sys.executable, "--out", str(destination)], cwd=project)
+        run(["cargo", "test", "--release", "--manifest-path", str(project / "Cargo.toml"), "--workspace", "--locked"],
+            cwd=project, env=build_env)
+        run(["maturin", "build", "--release", "--locked", "--interpreter", sys.executable, "--out", str(destination)],
+            cwd=project, env=build_env)
     wheel, = destination.glob("*.whl")
     environment = destination / "consumer"
     run([sys.executable, "-m", "venv", "--without-pip", str(environment)])
@@ -57,9 +61,13 @@ def main():
             shutil.copytree(ROOT / "sdk/tests", tests)
             shutil.copy2(ROOT / "sdk/test_iterable.py", tests)
             run([str(python), "-m", "unittest", "discover", "-s", str(tests), "-v"], cwd=directory)
-            run(["cargo", "test", "-p", "crowdb-access-server", "--test", "dataset_sdk_python_split_test",
+            spec = importlib.util.spec_from_file_location("component_tests", ROOT / "tools/pixi-tasks/test.py")
+            components = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(components)
+            run([*components.rust_test_command("access"), "--test", "dataset_sdk_python_split_test",
                  "--", "--include-ignored", "--nocapture"],
-                cwd=ROOT, env=dict(os.environ, CROWDB_DATASET_PYTHON=str(python)))
+                cwd=ROOT, env=components.rust_test_environment(
+                    dict(os.environ, CROWDB_DATASET_PYTHON=str(python))))
 
 
 if __name__ == "__main__":

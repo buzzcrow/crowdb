@@ -8,14 +8,53 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
   CROWDB_E2E_PRINT_SERVICE_ERRORS: "1"
 
 jobs:
-  construct:
+  BuildClients:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
+      artifact: compiled-clients-${{ github.run_attempt }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        submodules: true
+    - uses: prefix-dev/setup-pixi@v0.8.1
+      with:
+        pixi-version: v0.77.0
+    - name: Free disk space
+      run: |
+        pixi run sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
+        pixi run sudo apt-get clean
+        pixi run df -h /
+    - name: Install compilation prerequisites
+      run: |
+        pixi run sudo apt-get update
+        pixi run sudo apt-get install -y protobuf-compiler
+    - name: Cache compilation
+      uses: ./.github/actions/compilation-cache
+    - name: Compile shared host clients
+      run: pixi run python tools/ci-build/build.py clients
+    - uses: actions/upload-artifact@v4
+      with:
+        name: compiled-clients-${{ github.run_attempt }}
+        path: target/ci-build/clients.tar.gz
+        compression-level: 0
+        retention-days: 7
+
+  construct:
+    env:
+      CROWDB_KEEP_DEBUG_INFO: ${{ vars.CROWDB_KEEP_DEBUG_INFO || '0' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      artifact: verified-oci-image-${{ github.run_attempt }}
       version: ${{ steps.source.outputs.version }}
       revision: ${{ steps.source.outputs.revision }}
       digest: ${{ steps.artifact.outputs.digest }}
@@ -46,13 +85,18 @@ jobs:
         pixi run sudo apt-get install -y protobuf-compiler
         pixi run sudo systemctl stop docker.service docker.socket containerd.service
         pixi run sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        pixi run sudo "$(command -v pixi)" run --as-is python container/oci-image/prepare-ci-host.py --remove-stale-socket
         pixi run bash -euc '! command -v docker; test ! -S /var/run/docker.sock'
     - name: Free disk space
       run: |
         pixi run sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
         pixi run sudo apt-get clean
         pixi run df -h /
-    - name: Stage runtime without a container daemon
+    - name: Cache production compilation
+      uses: ./.github/actions/compilation-cache
+      with:
+        key: BuildRuntime
+    - name: Compile and stage production runtime
       run: pixi run bash container/oci-image/stage.sh
     - name: Install locked standalone builder
       run: pixi install --locked --manifest-path container/oci-image/pixi.toml
@@ -65,7 +109,7 @@ jobs:
       run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
     - uses: actions/upload-artifact@v4
       with:
-        name: verified-oci-image
+        name: verified-oci-image-${{ github.run_attempt }}
         path: |
           target/crowdb.oci.tar
           target/crowdb.oci.tar.json
@@ -73,7 +117,9 @@ jobs:
         retention-days: 7
 
   verify:
-    needs: construct
+    needs: [construct, BuildClients]
+    env:
+      CROWDB_COMPILED_TESTS: ${{ github.workspace }}/target/compiled-tests
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -87,9 +133,13 @@ jobs:
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
         pixi-version: v0.77.0
+    - uses: ./.github/actions/restore-compiled
+      with:
+        artifact: ${{ needs.BuildClients.outputs.artifact }}
+        kind: clients
     - uses: actions/download-artifact@v4
       with:
-        name: verified-oci-image
+        name: ${{ needs.construct.outputs.artifact }}
         path: target
     - name: Import exact OCI artifact into Docker
       run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
@@ -97,14 +147,12 @@ jobs:
       env:
         CROWDB_PREVIEW_TEST_ARTIFACTS: ${{ runner.temp }}/crowdb-preview-artifacts
       run: |
-        pixi run sudo apt-get update
-        pixi run sudo apt-get install -y protobuf-compiler
         pixi run install-ui-deps
         pixi run bash -c 'cd e2e-test/clients/console-ui && npm ci --ignore-scripts'
         pixi run clean-env
         pixi run --skip-deps test-single-node-container
         pixi run test-container-e2e --profile bridge-admission --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 6144
-        pixi run sudo --preserve-env=CROWDB_E2E_PRINT_SERVICE_ERRORS "$(command -v pixi)" run --as-is test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
+        pixi run sudo --preserve-env=CROWDB_E2E_PRINT_SERVICE_ERRORS,CROWDB_COMPILED_TESTS "$(command -v pixi)" run --as-is test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
         pixi install --locked --manifest-path container/oci-image/pixi.toml -e runtime
         pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 8192
     - name: Record verified digest
@@ -125,7 +173,9 @@ jobs:
         if-no-files-found: ignore
 
   containerd:
-    needs: construct
+    needs: [construct, BuildClients]
+    env:
+      CROWDB_COMPILED_TESTS: ${{ github.workspace }}/target/compiled-tests
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -139,20 +189,25 @@ jobs:
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
         pixi-version: v0.77.0
+    - uses: ./.github/actions/restore-compiled
+      with:
+        artifact: ${{ needs.BuildClients.outputs.artifact }}
+        kind: clients
     - uses: actions/download-artifact@v4
       with:
-        name: verified-oci-image
+        name: ${{ needs.construct.outputs.artifact }}
         path: target
     - name: Remove Docker and install locked runtime tools
       run: |
         pixi run sudo systemctl stop docker.service docker.socket containerd.service
         pixi run sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        pixi run sudo "$(command -v pixi)" run --as-is python container/oci-image/prepare-ci-host.py --remove-stale-socket
         pixi run bash -euc '! command -v docker; test ! -S /var/run/docker.sock'
         pixi install --locked --manifest-path container/oci-image/pixi.toml -e runtime
     - name: Verify containerd host-network startup and recovery
       run: |
         set -o pipefail
-        pixi run sudo --preserve-env=CROWDB_E2E_PRINT_SERVICE_ERRORS "$(command -v pixi)" run --as-is test-container-e2e --profile containerd-host --concurrency 1 --cpus 3 --memory-mib 3072 --archive "$PWD/target/crowdb.oci.tar" 2>&1 | pixi run tee target/containerd-acceptance.log
+        pixi run sudo --preserve-env=CROWDB_E2E_PRINT_SERVICE_ERRORS,CROWDB_COMPILED_TESTS "$(command -v pixi)" run --as-is test-container-e2e --profile containerd-host --concurrency 1 --cpus 3 --memory-mib 3072 --archive "$PWD/target/crowdb.oci.tar" 2>&1 | pixi run tee target/containerd-acceptance.log
     - uses: actions/upload-artifact@v4
       if: failure()
       with:
@@ -165,7 +220,9 @@ jobs:
 
 
   kv:
-    needs: construct
+    needs: [construct, BuildClients]
+    env:
+      CROWDB_COMPILED_TESTS: ${{ github.workspace }}/target/compiled-tests
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -180,14 +237,14 @@ jobs:
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
         pixi-version: v0.77.0
+    - uses: ./.github/actions/restore-compiled
+      with:
+        artifact: ${{ needs.BuildClients.outputs.artifact }}
+        kind: clients
     - uses: actions/download-artifact@v4
       with:
-        name: verified-oci-image
+        name: ${{ needs.construct.outputs.artifact }}
         path: target
-    - name: Install client compilation prerequisites
-      run: |
-        pixi run sudo apt-get update
-        pixi run sudo apt-get install -y protobuf-compiler
     - name: Import the shared verified image
       run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
     - name: Verify centralized KV fixtures and protocol layer
@@ -225,7 +282,7 @@ jobs:
         pixi-version: v0.77.0
     - uses: actions/download-artifact@v4
       with:
-        name: verified-oci-image
+        name: ${{ needs.construct.outputs.artifact }}
         path: target
     - name: Publish verified graph, sign and attest before moving tags
       env:

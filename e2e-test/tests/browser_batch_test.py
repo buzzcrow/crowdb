@@ -72,3 +72,17 @@ class BrowserBatchTest(unittest.TestCase):
         self.assertEqual([str(error) for error in errors], ['browser failed'])
         self.assertEqual(self.events, [('start', 0), ('close', 0)])
         self.assertEqual(self.active, set())
+
+    def test_large_fixture_does_not_serialize_later_small_browser_batches(self):
+        def execute(case, fixture):
+            self.assertEqual(self.active, {0} if case == 0 else {1, 2})
+            self.events.append(('client', case))
+
+        errors = run_browser_batches([0, 1, 2], 2, self.fixture, execute,
+                                     resources=lambda case: (1.5, 12800 if case == 0 else 6656),
+                                     budget=(4, 15989))
+        self.assertEqual(errors, [])
+        self.assertLess(self.events.index(('close', 0)), self.events.index(('start', 1)))
+        self.assertLess(self.events.index(('start', 2)), self.events.index(('client', 1)))
+        self.assertLess(self.events.index(('client', 2)), self.events.index(('close', 1)))
+        self.assertEqual(self.active, set())

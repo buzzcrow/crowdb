@@ -4,6 +4,7 @@
 
 import concurrent.futures
 from contextlib import ExitStack
+from resource_dispatch import resource_batches
 
 
 class BatchFixture:
@@ -22,10 +23,10 @@ class BatchFixture:
         return self.cluster.__exit__(kind, error, traceback)
 
 
-def run_browser_batches(cases, slots, prepare, execute, fail_fast=False):
+def run_browser_batches(cases, slots, prepare, execute, fail_fast=False,
+                        resources=lambda _: (0, 0), budget=(float("inf"), float("inf"))):
     errors = []
-    for offset in range(0, len(cases), slots):
-        batch = cases[offset:offset + slots]
+    for batch in resource_batches(cases, slots, resources, budget):
         # Docker bridge creation/removal must finish before browser requests.
         # Keep all fixtures in this bounded batch until every client has ended.
         try:

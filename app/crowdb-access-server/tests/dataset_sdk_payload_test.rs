@@ -14,7 +14,15 @@ async fn standalone_payload_consumer_streams_above_window_and_restores_progress(
     tokio::task::spawn_blocking(move || {
         for phase in ["write", "verify"] {
             let output = Command::new("pixi")
-                .args(["run", "--", "cargo", "run", "--locked", "--manifest-path"])
+                .args([
+                    "run",
+                    "--",
+                    "cargo",
+                    "run",
+                    "--release",
+                    "--locked",
+                    "--manifest-path",
+                ])
                 .arg(&manifest)
                 .args(["--example", "payload"])
                 .env("CROWDB_DATASET_ENDPOINT", &origin)

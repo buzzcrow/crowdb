@@ -16,6 +16,12 @@ Run commands through `pixi run`. Read only the directory relevant to the task.
 - **`ci-checks/`** — version consistency, production concurrency-container
   policy and package-to-Pixi-to-CI coverage. `task_graph.py` follows task calls
   through shell scripts; it is shared with timing collection.
+- **`ci-build/`** — release runtime and host client artifacts for CI consumers.
+  `build.py clients` compiles the shared acceptance clients. Optional
+  `build.py runtime` packages an already staged production runtime. `unpack.py`
+  verifies the source identity and file digests before restoring either
+  artifact. Consumers run the supplied binaries with `CROWDB_COMPILED_TESTS`
+  pointing at `target/compiled-tests`.
 - **`test-metrics/`** — sequential suite timing and test counts. Logs and JSON
   results are archived by UTC run timestamp under
   `.crowdb-runtime/artifacts/measure-tests/`; `latest.json` contains the newest
@@ -72,12 +78,40 @@ Container packaging and its acceptance scripts live under
 [`container/single-node-container/`](../container/single-node-container/README.md).
 Generated artifacts belong under `target/` or `.crowdb-runtime/`, not here.
 
-Regular CI groups component tests into C++, Core, Storage, Access (including
-SDK protocol peers), Console and UI. Container gates share one release image:
-KV, S3, Iceberg and Console are independent jobs; the storage matrix groups
-disk (DiskDB/DiskIO), chunk (ChunkDB/Chunk-KV/Chunk stream/Chunk client) and
-platform (Dataset/Deployment). Every complete domain has exactly one owner.
-Special runtime profiles remain explicit.
+Regular CI starts lint, UI, C++, Core, Storage, Access (including SDK protocol
+peers), Console, runtime compilation and host client compilation independently.
+Rust component jobs compile and execute their own tests with Cargo's default
+test profile and line-table debug information in CI; UI tests need no Rust
+runtime build. Runtime services, shared container clients and shipped Dataset
+SDK artifacts use release builds. Cargo uses its default CPU parallelism, and
+CMake selects the available system CPU count. Local jobs sharing a build
+directory still run their compilation stages sequentially.
+
+Production runtime compilation, staging and OCI construction share one runner,
+separate from test code and test features. Host client compilation runs in
+parallel. Container jobs wait for both the OCI artifact and the host client
+artifact, then reuse those exact inputs without Cargo compilation. The staged
+runtime passes directly to the OCI builder without an intermediate archive
+upload or a second runner's setup. Cache entries contain debug and release
+compilation outputs under separate owner keys; the OCI producer retains the
+`BuildRuntime` cache key. Immutable workflow artifacts carry OCI/client inputs.
+Producers and consumers use Ubuntu 24.04 with the locked Pixi toolchain.
+Consumers take artifact names from producer outputs, so rerunning a failed
+consumer can reuse a successful compilation from an earlier workflow attempt.
+
+KV, S3, Iceberg and Console have independent container jobs; the storage matrix
+groups disk (DiskDB/DiskIO), chunk (ChunkDB/Chunk-KV/Chunk stream/Chunk client)
+and Dataset. Deployment separates its six reference deployment flows from
+service validation and recovery. Console separates native dataset/topology/
+hardware flows from service operations, preserving stable browser batches on
+each runner. Iceberg runs core, GC convergence, GC cleanup, SDK and grace
+partitions independently. The full grace case retains its own runner and its
+complete request/delegation deadline chain. Every domain is covered completely;
+partition tests and the CI ownership check reject missing or repeated cases.
+The preview and release workflows use the same producer split and preserve
+their explicit Docker/containerd runtime gates. The manual ecosystem workflow
+consumes the shared OCI artifact and prepares its external client tools in the
+acceptance job. Special runtime profiles remain explicit.
 
 ```sh
 pixi run test unit core

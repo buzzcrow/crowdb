@@ -7,7 +7,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -29,19 +28,20 @@ PROFILES = ("bridge-admission", "host", "containerd-host", "containerd-cluster",
             "ecosystem", "ecosystem-python")
 
 
-def package_domain(package):
-    if package == "chunk-client":
-        return "chunk-client"
-    if package.startswith("access-"):
-        return {"access-s3": "s3", "access-iceberg": "iceberg",
-                "access-dataset": "dataset"}.get(package, "access")
-    if package in ("cli", "web", "console-shared"):
-        return "console"
-    if package == "monitor":
-        return "deployment"
-    if package == "test-harness":
-        return "test-infrastructure"
-    return package.removesuffix("-client").removesuffix("-server").removesuffix("-ffi")
+def rust_test_command(group):
+    command = ["cargo", "test", "--locked"]
+    for package in RUST_GROUPS[group]:
+        command += ["-p", f"crowdb-{package}"]
+    if group == "access":
+        command += ["--features", "crowdb-access-server/iceberg-e2e"]
+    return command
+
+
+def rust_test_environment(environment=None):
+    environment = dict(os.environ if environment is None else environment)
+    environment.setdefault("CARGO_PROFILE_DEV_DEBUG", "line-tables-only")
+    environment.setdefault("CARGO_PROFILE_TEST_DEBUG", "line-tables-only")
+    return environment
 
 
 class Measurement:
@@ -107,38 +107,40 @@ def unit(group):
             measurement.run(domain, ctest_command(directory))
         measurement.run("common", ["lib/crowdb-tree/build/crowdb-common-build/crowdbcommon_tests"])
     if group in RUST_GROUPS:
-        for package in RUST_GROUPS[group]:
-            measurement.run(package_domain(package), ["cargo", "test", "-p", f"crowdb-{package}", "--tests"])
+        measurement.run(group, rust_test_command(group) + ["--tests"], env=rust_test_environment())
     if group == "console":
         # Test-only native measurement ownership is separate from product OCI acceptance.
-        measurement.run("console", ["cargo", "build", "-p", "crowdb-cli", "-p", "crowdb-kv-server"])
-        measurement.run("console", ["cargo", "build", "-p", "crowdb-console-shared", "--features", "test-util",
-                                    "--example", "regression-fixture"])
+        measurement.run("console", ["cargo", "build", "--locked", "-p", "crowdb-cli",
+                                    "-p", "crowdb-kv-server", "-p", "crowdb-console-shared",
+                                    "--features", "crowdb-console-shared/test-util", "--bins",
+                                    "--example", "regression-fixture"], env=rust_test_environment())
         measurement.run("console", ["python", "tools/benchmark/fixture-smoke.py", "--worker",
                                     "target/debug/examples/regression-fixture", "--client", "target/debug/crowdb-cli"])
     if group == "access":
         # Explicitly run the otherwise ignored SDK case with pinned dependencies.
         measurement.run("access", ["pixi", "run", "-e", "s3-e2e", "test-boto3-copy-error"])
     elif group == "boto3":
-        env = dict(os.environ, CROWDB_S3_E2E_PYTHON=str(Path(os.environ["CONDA_PREFIX"]) / "bin/python"))
-        measurement.run("access", ["pixi", "run", "-e", "default", "--", "cargo", "test",
-                                  "-p", "crowdb-access-server", "--test", "s3_copy_body_test",
+        env = rust_test_environment(dict(os.environ,
+            CROWDB_S3_E2E_PYTHON=str(Path(os.environ["CONDA_PREFIX"]) / "bin/python")))
+        measurement.run("access", ["pixi", "run", "-e", "default", "--", *rust_test_command("access"),
+                                  "--test", "s3_copy_body_test",
                                   "official_boto3_recognizes_a_copy_error_after_http_200_and_keepalives",
                                   "--", "--ignored", "--exact"], env=env)
     elif group == "sdk":
         prefix = Path(os.environ["CONDA_PREFIX"])
-        env = dict(os.environ, CROWDB_ICEBERG_E2E_PYTHON=str(prefix / "bin/python"),
-                   CROWDB_ICEBERG_E2E_MVN=str(prefix / "bin/mvn"))
+        env = rust_test_environment(dict(os.environ,
+            CROWDB_ICEBERG_E2E_PYTHON=str(prefix / "bin/python"),
+            CROWDB_ICEBERG_E2E_MVN=str(prefix / "bin/mvn")))
         if not env.get("JAVA_HOME"):
             raise ValueError("run unit sdk in the iceberg-e2e environment")
         measurement.run("iceberg", ["mvn", "--batch-mode", "--no-transfer-progress", "-f",
                                    "e2e-test/clients/iceberg-java/pom.xml",
                                    "dependency:go-offline", "compile", "exec:help"], env=env)
-        command = ["pixi", "run", "-e", "default", "--", "cargo", "test", "--release",
-                   "-p", "crowdb-access-server", "--features", "iceberg-e2e"]
-        for binary in ("iceberg_namespace_sdk_test", "iceberg_table_sdk_test",
-                       "iceberg_commit_sdk_test", "iceberg_java_response_loss_test"):
-            command += ["--test", binary]
+        binaries = ['iceberg_namespace_sdk_test', 'iceberg_table_sdk_test',
+                    'iceberg_commit_sdk_test', 'iceberg_java_response_loss_test']
+        command = ["pixi", "run", "-e", "default", "--", *rust_test_command("access")]
+        for binary in binaries:
+            command += ['--test', binary]
         measurement.run("iceberg", command + ["--", "--ignored", "--test-threads=1"], env=env)
     elif group == "ui":
         for command in (["npm", "test"], ["npm", "run", "lint"]):

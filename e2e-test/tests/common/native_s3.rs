@@ -43,9 +43,7 @@ pub struct TestNativeS3 {
 
 impl TestNativeS3 {
     pub async fn connect(addresses: &[String], tenant: &[u8]) -> Self {
-        let artifacts = std::env::var("CROWDB_E2E_ARTIFACTS").unwrap();
-        crowdb_rpc_ffi::init_logging(&artifacts, "debug", 30, 5, "native-client");
-        crowdb_rpc_ffi::add_log_stderr("error");
+        super::logging::init();
         let policies = S3WriteSettings {
             small: SmallWritePolicy {
                 mirror_copies: 2,
