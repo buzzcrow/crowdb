@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::time::{Duration, Instant};
 
 pub(crate) fn addresses(count: usize) -> Vec<String> {
+    super::logging::init();
     let addresses: Vec<String> =
         serde_json::from_str(&std::env::var("CROWDB_E2E_RPC").expect("fixture IPs")).unwrap();
     assert_eq!(addresses.len(), count, "case needs its declared node profile");

@@ -6,7 +6,7 @@ use crate::access_iceberg::{frontend::TestFrontend, native::TestNativeStorage, n
 use crowdb_access_iceberg::{
     catalog::{CatalogContext, CatalogStore, RoutedCatalogStore},
     file::{canonical_file_key, FileRecord},
-    gc::{CandidatePhase, GcPhase, GcRepository, GcStalledReason, GcTask, GcTaskKind},
+    gc::{CandidatePhase, GcLimits, GcPhase, GcRepository, GcStalledReason, GcTask, GcTaskKind},
     key::{CatalogScope, IcebergKey, OperationId, TableId},
     record::StorageRecord,
 };
@@ -38,6 +38,7 @@ async fn expired_inline_backlog_completes_with_foreground_progress() {
     let (store, context, table) = seed_table(&stack).await;
     let backlog = seed_expired_backlog(store.as_ref(), context, table, 128).await;
     assert_eq!(backlog.files.len(), 128);
+    assert!(backlog.files.len() > usize::from(GcLimits::default().page_items));
     assert!(backlog.dropped_ms + GcTask::PURGE_DELAY_MS < now_ms());
     let server = TestFrontend::start(12).await;
     let mut check = TestGcConvergence {
@@ -251,7 +252,8 @@ impl TestGcConvergence {
                 "not_before_ms":self.backlog.dropped_ms+GcTask::PURGE_DELAY_MS,
                 "elapsed_ms":self.started.elapsed().as_millis(),"observer_task_gets":self.task_gets,
                 "verification_gets":self.verification_gets,"observations":self.observations,
-                "last_task":format!("{:?}",self.last),"page_items":1,"idle_interval_ms":1_800_000,
+                "last_task":format!("{:?}",self.last),
+                "page_items":GcLimits::default().page_items,"idle_interval_ms":1_800_000,
                 "scope":"exact inline metadata cleanup and bounded foreground overlap; no chunk range notification or physical capacity claim; no isolated latency baseline",
             })
         );

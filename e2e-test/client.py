@@ -10,6 +10,7 @@ import subprocess
 import tarfile
 import time
 from pathlib import Path
+from client_process import run_client_process
 
 CLIENT_BUILD_DIRS = ("target", "node_modules", "dist", "__pycache__", "sdk-check", ".pixi")
 
@@ -43,9 +44,10 @@ def run_client(bundle, addresses, token, phase, artifacts,
     env["LD_LIBRARY_PATH"] = str(Path(bundle) / "lib") + ":" + env.get("LD_LIBRARY_PATH", "")
     started = time.monotonic()
     try:
-        result = subprocess.run([str(Path(bundle) / "domain-test"), "--ignored", "--exact",
-            test_name, "--nocapture"],
-            env=env, capture_output=True, text=True, check=False, timeout=timeout)
+        result = run_client_process(
+            [str(Path(bundle) / "domain-test"), "--ignored", "--exact", test_name, "--nocapture"],
+            env=env, log=Path(artifacts, f"client-{phase}.log"), timeout=timeout,
+            label=f"case={test_name} phase={phase}")
     except subprocess.TimeoutExpired as error:
         stdout, stderr = error.stdout or b"", error.stderr or b""
         output = (stdout.decode(errors="replace") if isinstance(stdout, bytes) else stdout)

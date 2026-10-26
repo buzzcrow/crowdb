@@ -5,7 +5,7 @@ import concurrent.futures
 import threading
 import unittest
 
-from resource_dispatch import batch_slots, run_with_resources
+from resource_dispatch import resource_batches, run_with_resources
 
 
 class ResourceDispatchTest(unittest.TestCase):
@@ -92,5 +92,11 @@ class ResourceDispatchTest(unittest.TestCase):
 
     def test_browser_batch_stays_within_both_budgets(self):
         costs = {"small": (1.5, 2560), "large": (3.5, 5120)}
-        self.assertEqual(batch_slots(["small", "large"], 2, costs.__getitem__, (4, 8192)), 1)
-        self.assertEqual(batch_slots(["small"] * 2, 2, costs.__getitem__, (4, 8192)), 2)
+        cases = ["small", "small", "large", "small", "small"]
+        self.assertEqual(list(resource_batches(cases, 2, costs.__getitem__, (4, 8192))),
+                         [["small", "small"], ["large"], ["small", "small"]])
+
+    def test_browser_batches_validate_every_cost_before_starting(self):
+        with self.assertRaisesRegex(ValueError, "budget"):
+            next(resource_batches([0, 1], 2, lambda case: (1, 9000 if case else 1024),
+                                  (4, 8192)))

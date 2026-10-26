@@ -42,10 +42,19 @@ def run_with_resources(cases, slots, execute, resources, budget, stopped):
     return errors
 
 
-def batch_slots(cases, slots, resources, budget):
-    """Stable browser batches reserve every peer until the whole batch ends."""
-    if not cases:
-        return slots
-    costs = [resources(case) for case in cases]
-    return min(slots, *(int(limit // max(cost[index] for cost in costs))
-                        for index, limit in enumerate(budget)))
+def resource_batches(cases, slots, resources, budget):
+    """Pack ordered, stable batches against their actual combined costs."""
+    costs = [(case, resources(case)) for case in cases]
+    if slots < 1 or any(any(cost > limit for cost, limit in zip(values, budget))
+                        for _, values in costs):
+        raise ValueError("fixture exceeds the dispatch resource budget")
+    batch, used = [], [0, 0]
+    for case, values in costs:
+        if batch and (len(batch) == slots or any(
+                value + cost > limit for value, cost, limit in zip(used, values, budget))):
+            yield batch
+            batch, used = [], [0, 0]
+        batch.append(case)
+        used = [value + cost for value, cost in zip(used, values)]
+    if batch:
+        yield batch

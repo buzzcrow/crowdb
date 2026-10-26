@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from contextlib import nullcontext
 
 from browser_batch import run_browser_batches
-from resource_dispatch import batch_slots, run_with_resources
+from resource_dispatch import run_with_resources
 
 from fixture import Cluster
 from diskdb_fixture import DiskdbCluster
@@ -374,7 +374,7 @@ ICEBERG_CASES = (
 
     Case("iceberg.sdk.rust", "access_iceberg::rust_sdk::official_rust_client_namespace_and_table_lifecycle", iceberg_deferred_access=True, client_timeout=600),
     Case("iceberg.gc", "access_iceberg::gc::foreground::official_sdk_foreground_progresses_under_gc_backlog", iceberg_gc=True, iceberg_gc_page_items=1, iceberg_gc_interval_ms=None, client_timeout=180),
-    Case("iceberg.gc", "access_iceberg::gc::convergence::expired_inline_backlog_completes_with_foreground_progress", iceberg_gc=True, iceberg_gc_page_items=1, iceberg_gc_interval_ms=None, client_timeout=3600),
+    Case("iceberg.gc", "access_iceberg::gc::convergence::expired_inline_backlog_completes_with_foreground_progress", iceberg_gc=True, iceberg_gc_interval_ms=None, client_timeout=3600),
     Case("iceberg.gc", "access_iceberg::gc::notifications::mixed_external_and_tree_notifications_complete_without_reclaiming_live_ranges", iceberg_gc=True, iceberg_gc_page_items=1, iceberg_gc_interval_ms=None, client_timeout=600),
     Case("iceberg.gc", "access_iceberg::gc::notifications::matrix::restarted_cleaners_finish_large_and_sparse_backlogs_beside_an_invalid_catalog", iceberg_gc=True, iceberg_gc_page_items=1, iceberg_gc_interval_ms=None, iceberg_gc_catalogs=("01010101010101010101010101010101",), client_timeout=900),
     Case("iceberg.sdk.rust", "access_iceberg::rust_sdk::official_rust_client_lost_reply_survives_native_storage_restart", iceberg_deferred_access=True, client_timeout=1200),
@@ -786,6 +786,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
             "scope": case.scope, "case": case.name,
             "scheduled_at_unix_ms": time.time_ns() // 1_000_000,
             "resources": dict(zip(("cpus", "memory_mib"), case_resources(case, node_cpus)))}, indent=2))
+        print(f"[CASE START] scope={case.scope} case={case.name} fixture={cluster.artifacts.name}", flush=True)
         return cluster
 
     stopped = threading.Event()
@@ -858,8 +859,8 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                                 slots, run, resources, budget, stopped)
     if not stopped.is_set():
         browsers = [case for case in selected if stable_network(case)]
-        browser_slots = batch_slots(browsers, slots, resources, budget) if resource_budget else slots
-        errors.extend(run_browser_batches(browsers, browser_slots, prepare, run, fail_fast=fail_fast))
+        errors.extend(run_browser_batches(browsers, slots, prepare, run, fail_fast=fail_fast,
+                                          resources=resources, budget=budget))
     if errors:
         for error in errors[1:]:
             errors[0].add_note(f"another independent fixture failed: {error}")

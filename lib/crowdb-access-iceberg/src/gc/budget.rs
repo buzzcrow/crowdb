@@ -66,7 +66,7 @@ impl GcIoBudget {
     fn reserve_kv_key(&self, key: &[u8], bytes: usize) -> Result<(), StoreError> {
         match self.reserve_kv(bytes) {
             Ok(()) => Ok(()),
-            Err(error) if is_task_key(key) => {
+            Err(error) if is_progress_key(key) => {
                 reserve(&self.recovery_requests, 1, 16).map_err(|()| error)?;
                 reserve(&self.recovery_bytes, bytes as u64, 2 * 1024 * 1024).map_err(|()| StoreError::Budget)
             }
@@ -80,11 +80,12 @@ impl GcIoBudget {
     }
 }
 
-fn is_task_key(key: &[u8]) -> bool {
+fn is_progress_key(key: &[u8]) -> bool {
     matches!(
         IcebergKey::decode(key),
         Ok(IcebergKey::Catalog {
-            scope: CatalogScope::GcTask,
+            // Progress writes must still read and validate the retirement fence.
+            scope: CatalogScope::GcTask | CatalogScope::GcRetirement,
             ..
         })
     )

@@ -56,7 +56,7 @@ class ClientTest(unittest.TestCase):
 
     def test_zero_matching_cases_cannot_pass(self):
         result = subprocess.CompletedProcess([], 0, "test result: ok. 0 passed; 0 failed;", "")
-        with tempfile.TemporaryDirectory() as root, patch("client.subprocess.run", return_value=result):
+        with tempfile.TemporaryDirectory() as root, patch("client.run_client_process", return_value=result):
             with self.assertRaisesRegex(RuntimeError, "exactly one"):
                 run_client(root, ["172.18.0.2"], "owned", "write", root)
             self.assertTrue(Path(root, "client-write.log").is_file())
@@ -64,14 +64,14 @@ class ClientTest(unittest.TestCase):
     def test_failed_case_retains_original_assertion_in_final_summary(self):
         failure = "panic: group creation returned HTTP 405"
         result = subprocess.CompletedProcess([], 101, "", failure)
-        with tempfile.TemporaryDirectory() as root, patch("client.subprocess.run", return_value=result):
+        with tempfile.TemporaryDirectory() as root, patch("client.run_client_process", return_value=result):
             with self.assertRaisesRegex(RuntimeError, failure):
                 run_client(root, ["172.18.0.2"], "owned", "create-group", root)
 
     def test_endpoints_are_per_invocation_without_mutating_host_environment(self):
         result = subprocess.CompletedProcess([], 0, "test result: ok. 1 passed; 0 failed;", "")
         original = os.environ.copy()
-        with tempfile.TemporaryDirectory() as root, patch("client.subprocess.run", return_value=result) as run:
+        with tempfile.TemporaryDirectory() as root, patch("client.run_client_process", return_value=result) as run:
             run_client(root, ["172.18.0.2"], "first", "write", root)
             run_client(root, ["172.19.0.2"], "second", "verify", root)
             first, second = [call.kwargs["env"] for call in run.call_args_list]
@@ -86,7 +86,7 @@ class ClientTest(unittest.TestCase):
 
     def test_timeout_keeps_partial_output_and_failure(self):
         timeout = subprocess.TimeoutExpired("client", 120, output=b"last checkpoint", stderr=b"RPC stalled")
-        with tempfile.TemporaryDirectory() as root, patch("client.subprocess.run", side_effect=timeout):
+        with tempfile.TemporaryDirectory() as root, patch("client.run_client_process", side_effect=timeout):
             with self.assertRaises(subprocess.TimeoutExpired):
                 run_client(root, [], "owned", "verify", root)
             self.assertIn("last checkpoint", Path(root, "client-verify.log").read_text())

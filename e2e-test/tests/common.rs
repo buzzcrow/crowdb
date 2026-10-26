@@ -3,6 +3,7 @@
 
 pub(crate) mod control;
 pub(crate) mod hardware;
+mod logging;
 pub(crate) mod management;
 pub(crate) mod native_s3;
 mod test_client;
@@ -26,6 +27,7 @@ impl ServerNode {
 }
 
 pub fn nodes() -> Vec<ServerNode> {
+    logging::init();
     let addresses: Vec<String> =
         serde_json::from_str(&std::env::var("CROWDB_E2E_RPC").expect("fixture endpoints"))
             .expect("fixture addresses");

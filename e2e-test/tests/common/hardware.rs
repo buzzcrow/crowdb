@@ -114,6 +114,7 @@ pub fn standard_disk_ids_4() -> Vec<DiskId> {
 }
 
 pub(crate) fn kv_client() -> crowdb_kv_client::CrowdbKvClient {
+    super::logging::init();
     let addresses: Vec<String> = serde_json::from_str(&std::env::var("CROWDB_E2E_RPC").unwrap()).unwrap();
     crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(vec![format!(
         "http://{}:7000",
