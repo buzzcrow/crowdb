@@ -71,7 +71,7 @@ def inspect(path):
             blob(layer)
         return {"image_digest": descriptor["digest"], "platform": "linux/amd64",
                 "config_digest": manifest["config"]["digest"], "archive_sha256": checksum(path), "labels": config.get("config", {}).get("Labels", {}),
-                "config": config.get("config", {})}
+                "config": config.get("config", {}), "rootfs": config["rootfs"]}
 
 
 def receipt(path):

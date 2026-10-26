@@ -2,6 +2,8 @@
 set -euo pipefail
 
 build_root=$(git rev-parse --show-toplevel)
+pixi_lib_root=$(readlink -f "$build_root/.pixi/envs/default/lib")
+release_root=$(readlink -f "$build_root/target/release")
 output=${1:?runtime staging directory is required}
 case "${CROWDB_KEEP_DEBUG_INFO:-0}" in
     0) debug_info=stripped ;;
@@ -17,7 +19,7 @@ provider_root="$build_root/.pixi/envs/default/lib/libibverbs"
 provider_config="$build_root/.pixi/envs/default/etc/libibverbs.d"
 if [[ -d "$provider_root" && -d "$provider_config" ]]; then
     mkdir -p "$output/lib/libibverbs" "$output/etc/libibverbs.d"
-    cp -a "$provider_root"/*.so "$output/lib/libibverbs/"
+    cp -L "$provider_root"/*.so "$output/lib/libibverbs/"
     cp -a "$provider_config"/*.driver "$output/etc/libibverbs.d/"
 fi
 
@@ -38,7 +40,8 @@ for binary in \
     cp "$source" "$output/bin/$binary"
 done
 
-for binary in "$output"/bin/*; do
+for binary in "$output"/bin/* "$output"/lib/libibverbs/*.so; do
+    [[ -f "$binary" ]] || continue
     if ! LD_LIBRARY_PATH="$build_root/.pixi/envs/default/lib:$build_root/target/release" ldd -r "$binary" > "$output/dependencies.txt"; then
         cat "$output/dependencies.txt" >&2
         exit 1
@@ -52,14 +55,8 @@ for binary in "$output"/bin/*; do
             continue
         fi
         resolved_path=$(readlink -f "$path")
-        # Use Ubuntu's libibverbs/librdmacm in the image so the apt-provided
-        # providers and config directory remain ABI-matched. The pixi copies
-        # are build-time dependencies and would otherwise shadow them.
-        if [[ "$name" == libibverbs.so* || "$name" == librdmacm.so* ]]; then
-            continue
-        fi
         case "$resolved_path" in
-            "$build_root/.pixi/envs/default/lib/"*|"$build_root/target/release/"*)
+            "$pixi_lib_root/"*|"$release_root/"*)
                 if ! cp -L "$resolved_path" "$output/lib/$name"; then
                     echo "cannot package dependency $name from $resolved_path" >&2
                     exit 1
@@ -84,15 +81,19 @@ done
 rm "$output/dependencies.txt"
 
 if [[ "$debug_info" == stripped ]]; then
-    for artifact in "$output"/bin/* "$output"/lib/*; do
+    for artifact in "$output"/bin/* "$output"/lib/* "$output"/lib/libibverbs/*.so; do
         [[ -f "$artifact" ]] || continue
         strip --strip-debug "$artifact"
     done
 fi
 printf '%s\n' "$debug_info" > "$output/DEBUG_INFO"
 
-for binary in "$output"/bin/*; do
-    LD_LIBRARY_PATH="$output/lib" ldd -r "$binary" > "$output/dependencies.txt"
+for binary in "$output"/bin/* "$output"/lib/* "$output"/lib/libibverbs/*.so; do
+    [[ -f "$binary" ]] || continue
+    if ! LD_LIBRARY_PATH="$output/lib" ldd -r "$binary" > "$output/dependencies.txt"; then
+        cat "$output/dependencies.txt" >&2
+        exit 1
+    fi
     if grep -Eq 'not found|undefined symbol' "$output/dependencies.txt"; then
         cat "$output/dependencies.txt" >&2
         exit 1

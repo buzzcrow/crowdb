@@ -21,7 +21,8 @@ RUN --mount=type=bind,source=.,target=/staged,ro \
     && cp /staged/entrypoint.sh /opt/crowdb/bin/entrypoint \
     && chown -R crowdb:crowdb /opt/crowdb/data /opt/crowdb/run \
     && chmod 0755 /opt/crowdb/bin/entrypoint \
-    && for binary in /opt/crowdb/bin/crowdb-*; do \
+    && for binary in /opt/crowdb/bin/crowdb-* /opt/crowdb/lib/* /opt/crowdb/lib/libibverbs/*.so; do \
+        test -f "$binary" || continue; \
         LD_LIBRARY_PATH=/opt/crowdb/lib ldd -r "$binary" > /tmp/dependencies.txt 2>&1 || { cat /tmp/dependencies.txt; exit 1; }; \
         if grep -Eq 'not found|undefined symbol' /tmp/dependencies.txt; then cat /tmp/dependencies.txt; exit 1; fi; \
     done && rm /tmp/dependencies.txt

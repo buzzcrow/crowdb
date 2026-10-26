@@ -11,6 +11,40 @@ from scenarios import Case, run_cases
 
 
 class RunnerProgressionTest(unittest.TestCase):
+    def test_ready_cli_executes_before_a_peer_finishes_starting(self):
+        executed = threading.Event()
+        events = []
+        with tempfile.TemporaryDirectory() as temporary:
+            cases = [Case('console.cli.container', name, cli_replay='observation')
+                     for name in ('ready', 'starting')]
+
+            class Fixture:
+                def __init__(self, case):
+                    self.name = case.name
+                    self.artifacts = Path(temporary) / self.name
+                    self.artifacts.mkdir()
+
+                def __enter__(self):
+                    if self.name == 'starting':
+                        self_owner.assertTrue(executed.wait(3), 'ready CLI was held for peer startup')
+                    return self
+
+                def __exit__(self, *_):
+                    events.append(('close', self.name))
+
+                def replay(self, *_):
+                    events.append(('client', self.name))
+                    if self.name == 'ready':
+                        executed.set()
+
+            self_owner = self
+            with patch('scenarios.select_cases', return_value=cases), \
+                 patch('scenarios.allocate_cluster', side_effect=lambda case, *_: Fixture(case)):
+                run_cases('image', temporary, 'bundle', 2)
+        self.assertLess(events.index(('client', 'ready')), events.index(('client', 'starting')))
+        self.assertCountEqual(events, [('client', name) for name in ('ready', 'starting')]
+                              + [('close', name) for name in ('ready', 'starting')])
+
     def run_selection(self, fail_fast, stable=False, slots=1):
         started = []
         with tempfile.TemporaryDirectory() as temporary:

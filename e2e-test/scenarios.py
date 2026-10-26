@@ -845,7 +845,9 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.client(bundle, case.name.rsplit("::", 1)[-1], case.name)
 
     def stable_network(case):
-        return (case.cli_replay or case.native_client or case.native_browser or case.shell_browser
+        # CLI fixtures run immediately after startup in the earlier resource
+        # phase, then finish before any browser batch creates its networks.
+        return (case.native_client or case.native_browser or case.shell_browser
                 or case.console_browser or case.oci_editable_ui or case.scope == "deployment.browser")
 
     budget = resource_budget or (float("inf"), float("inf"))

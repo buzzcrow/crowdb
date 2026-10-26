@@ -15,6 +15,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[path = "common/member_trust.rs"]
 #[allow(dead_code)]
 mod member_trust;
+#[path = "common/run_root.rs"]
+mod run_root;
 
 fn fixture(root: &Path) -> (DeploymentProfile, PreparedBootstrap, NodeServiceCredentials) {
     let mut profile =
@@ -52,8 +54,7 @@ fn fixture(root: &Path) -> (DeploymentProfile, PreparedBootstrap, NodeServiceCre
 
 #[tokio::test]
 async fn accepted_initialization_survives_connection_lifetime_and_resumes_fixed_intent() {
-    // Leave room for the CI checkout prefix within the Unix socket path limit.
-    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("init");
+    let directory = run_root::TestRunRoot::new("init");
     let root = directory.path();
     let (profile, operation, credentials) = fixture(root);
     let listener = tokio::net::UnixListener::bind(profile.paths.run_root.join("node-control.sock")).unwrap();
@@ -139,7 +140,7 @@ async fn altered_manifest_is_rejected_before_accepting_an_initialization() {
 
 #[tokio::test]
 async fn bootstrap_waits_for_member_trust_before_starting_a_replica() {
-    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("init-pins");
+    let directory = run_root::TestRunRoot::new("init-pins");
     let root = directory.path();
     let (profile, operation, credentials) = fixture(root);
     std::fs::create_dir(root.join("ssh")).unwrap();

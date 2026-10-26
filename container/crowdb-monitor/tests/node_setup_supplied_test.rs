@@ -21,9 +21,11 @@ use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 mod node_setup;
 #[path = "common/node_setup_groups.rs"]
 mod node_setup_groups;
+#[path = "common/run_root.rs"]
+mod run_root;
 
 struct TestSetup {
-    root: crowdb_test_harness::test_dirs::TestDir,
+    root: run_root::TestRunRoot,
     request: NodeSetupRequest,
     inputs: Vec<DiskInput>,
     profile: DeploymentProfile,
@@ -31,8 +33,7 @@ struct TestSetup {
 
 impl TestSetup {
     fn new() -> Self {
-        // Keep the socket pathname short enough for CI checkout prefixes.
-        let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("supplied");
+        let root = run_root::TestRunRoot::new("supplied");
         fs::create_dir(root.path().join("disks")).unwrap();
         for name in ["first", "second", "third"] {
             fs::File::create(root.path().join("disks").join(name))

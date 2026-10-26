@@ -23,3 +23,4 @@ crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client" }
 
 [dev-dependencies]
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }
+crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }

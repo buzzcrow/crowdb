@@ -1,6 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[cfg(target_os = "linux")]
+#[path = "common/run_root.rs"]
+mod run_root;
+
 #[test]
 fn rejected_profile_reports_the_operator_error_and_exits_unsuccessfully() {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("monitor-cli-validation");
@@ -24,8 +28,7 @@ async fn control_client_does_not_create_a_service_worker_pool() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut observations = Vec::new();
     for workers in ["1", "64"] {
-        // Keep the socket pathname short enough for CI checkout prefixes.
-        let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("control");
+        let root = run_root::TestRunRoot::new("control");
         let socket = root.path().join("control.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_crowdb-monitor"))

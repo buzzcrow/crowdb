@@ -145,3 +145,40 @@ async fn compatible_unknown_media_admitted_between_receipt_and_membership_reads_
     .expect("a concurrently committed backing receipt must not become a legacy HDD");
     assert_eq!(hw.list_disks_in_group(1, 2, 3).await.unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn concurrent_compatibility_deletions_reobserve_the_shared_rack_fence() {
+    let fixture = TestStorage::start().await;
+    let hardware = std::sync::Arc::new(fixture.hardware.clone());
+    for group in 1..=8 {
+        hardware
+            .add_disk_group(
+                1,
+                2,
+                group,
+                &crowdb_protocol::diskdb::rpc::DiskGroupValue::default(),
+            )
+            .await
+            .unwrap();
+        hardware.set_bind(1, 2, group, 0, 1).await.unwrap();
+        hardware.set_owner(1, 2, group, 7, u64::MAX).await.unwrap();
+    }
+    let ready = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+    let mut tasks = tokio::task::JoinSet::new();
+    for group in 1..=8 {
+        let hardware = hardware.clone();
+        let ready = ready.clone();
+        tasks.spawn(async move {
+            ready.wait().await;
+            hardware.remove_bind(1, 2, group).await?;
+            hardware.remove_owner(1, 2, group).await
+        });
+    }
+    while let Some(result) = tasks.join_next().await {
+        result.unwrap().unwrap();
+    }
+    for group in 1..=8 {
+        assert!(hardware.get_bind(1, 2, group).await.unwrap().is_none());
+        assert!(hardware.get_owner(1, 2, group).await.unwrap().is_none());
+    }
+}

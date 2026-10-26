@@ -34,6 +34,18 @@ def publish(archive, image, authfile):
     return observed
 
 
+def verify_import(image, artifact):
+    # Local image stores may rewrite the config envelope and its image ID.
+    # Verify the execution config and ordered filesystem content directly.
+    if image.get("Config") != artifact["config"]:
+        raise RuntimeError("imported Docker image config differs from the OCI artifact")
+    rootfs = image.get("RootFS", {})
+    if rootfs.get("Type") != artifact["rootfs"]["type"] or rootfs.get("Layers") != artifact["rootfs"]["diff_ids"]:
+        raise RuntimeError("imported Docker image filesystem differs from the OCI artifact")
+    if f"{image.get('Os')}/{image.get('Architecture')}" != artifact["platform"]:
+        raise RuntimeError("imported Docker image platform differs from the OCI artifact")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=["import", "publish"])
@@ -56,12 +68,7 @@ def main():
                         f"docker-archive:{converted}:{args.image}"], check=True)
         subprocess.run(["docker", "load", "--input", str(converted)], check=True)
         image = json.loads(subprocess.check_output(["docker", "image", "inspect", args.image], text=True))[0]
-        # Docker's local image store rebuilds the manifest and therefore gives
-        # the imported image a new image ID.  The config itself is the stable
-        # part of the OCI artifact that must survive conversion.
-        expected_config = inspect(archive)["config"]
-        if image.get("Config") != expected_config:
-            raise RuntimeError("imported Docker image config differs from the OCI artifact")
+        verify_import(image, inspect(archive))
 
 
 if __name__ == "__main__":
