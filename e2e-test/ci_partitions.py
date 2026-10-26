@@ -5,7 +5,7 @@
 PARTITIONS = {
     "console": ("console-api", "console-browser", "console-native",
                 "console-transition", "console-inspection"),
-    "iceberg": ("iceberg-core", "iceberg-sdk", "iceberg-grace"),
+    "iceberg": ("iceberg-core", "iceberg-gc", "iceberg-sdk", "iceberg-grace"),
 }
 
 
@@ -25,5 +25,7 @@ def partition_for(case):
             return "iceberg-grace"
         if case.scope.startswith("iceberg.sdk."):
             return "iceberg-sdk"
+        if case.scope == "iceberg.gc" or case.scope.startswith("iceberg.gc."):
+            return "iceberg-gc"
         return "iceberg-core"
     return None

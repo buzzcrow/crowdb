@@ -5,6 +5,7 @@
 import importlib.util
 import json
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -25,6 +26,10 @@ class TestDispatchTest(unittest.TestCase):
         self.workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         self.graph = TaskGraph(ROOT)
 
+    def job(self, name):
+        block = self.workflow.split(f'  {name}:', 1)[1]
+        return re.split(r'\n  [A-Za-z][A-Za-z0-9_-]*:', block, maxsplit=1)[0]
+
     def test_regular_ci_has_one_owner_per_complete_domain(self):
         self.assertEqual(set(dispatch.DOMAINS), set(check_coverage(self.workflow, self.graph)))
 
@@ -41,15 +46,40 @@ class TestDispatchTest(unittest.TestCase):
         self.assertEqual(set(uploads), {export + '/'})
 
     def test_compilation_cache_excludes_rootful_oci_state_and_runtime_artifacts(self):
-        image = self.workflow.split('  ContainerImage:', 1)[1].split('  ContainerKV:', 1)[0]
-        self.assertIn('cache-targets: false', image)
-        self.assertIn('cache-directories: |\n          target/release\n          app/crowdb-diskio/build', image)
-        self.assertIn("shared-key: container-release-v2-${{ hashFiles('pixi.lock', 'container/oci-image/stage.sh') }}", image)
-        for job, following in (('IcebergE2E', 'ConsoleTests'), ('ContainerConsole', 'ContainerStorage')):
-            block = self.workflow.split(f'  {job}:', 1)[1].split(f'  {following}:', 1)[0]
-            self.assertIn('cache-targets: false', block)
-            self.assertIn('cache-directories: target/debug', block)
-            self.assertIn("shared-key: container-e2e-client-v2-${{ hashFiles('pixi.lock') }}", block)
+        cache = (ROOT / '.github/actions/compilation-cache/action.yml').read_text()
+        self.assertIn('cache-targets: false', cache)
+        self.assertIn('key: ${{ github.job }}', cache)
+        self.assertIn('cmd-format: "pixi run {0}"', cache)
+        self.assertIn('cache-workspace-crates: true', cache)
+        directories = cache.split('cache-directories: |', 1)[1].split('cmd-format:', 1)[0].split()
+        self.assertEqual(set(directories), {
+            'target/debug', 'target/release', 'sdk/target/release', 'sdk/target/sdist/release', 'target/iceberg-sdk/release',
+            'app/crowdb-diskio/build', 'lib/crowdb-tree/build', 'lib/crowdb-rpc/build'})
+        for workflow in (ROOT / '.github/workflows').glob('*.yml'):
+            self.assertNotIn('uses: Swatinem/rust-cache', workflow.read_text())
+        for job in ('Lint', 'CppTests', 'UnitTests', 'StorageTests', 'AccessTests',
+                    'ConsoleTests', 'BuildRuntime', 'BuildClients'):
+            self.assertIn('uses: ./.github/actions/compilation-cache', self.job(job), job)
+        for job in ('UITests', 'ContainerImage', 'S3E2E', 'IcebergE2E',
+                    'ContainerKV', 'ContainerConsole', 'ContainerStorage'):
+            self.assertNotIn('uses: ./.github/actions/compilation-cache', self.job(job), job)
+
+    def test_only_binary_consumers_wait_for_shared_builds(self):
+        for name in ('Lint', 'UITests', 'CppTests', 'UnitTests', 'StorageTests',
+                     'AccessTests', 'ConsoleTests', 'BuildRuntime', 'BuildClients'):
+            with self.subTest(job=name):
+                self.assertNotRegex(self.job(name), re.compile(r'^\s+needs:', re.M), name)
+        self.assertRegex(self.job('ContainerImage'), r'needs: (?:\[\s*)?BuildRuntime')
+        self.assertNotIn('BuildClients', self.job('ContainerImage'))
+        for name in ('S3E2E', 'IcebergE2E', 'ContainerKV', 'ContainerConsole', 'ContainerStorage'):
+            with self.subTest(job=name):
+                job = self.job(name)
+                self.assertIn('needs: [ContainerImage, BuildClients]', job)
+                self.assertIn('uses: ./.github/actions/restore-compiled', job)
+                self.assertIn('kind: clients', job)
+                self.assertIn('CROWDB_COMPILED_TESTS:', job)
+                self.assertNotIn('cargo ', job)
+                self.assertNotIn('pixi run build-cpp', job)
 
     def test_platform_domains_have_separate_runners_and_compilation_only_cache(self):
         block = self.workflow.split('  ContainerStorage:', 1)[1]
@@ -57,8 +87,7 @@ class TestDispatchTest(unittest.TestCase):
         self.assertIn('- group: dataset\n          domains: dataset\n', block)
         self.assertIn('- group: deployment\n          domains: deployment\n', block)
         self.assertNotIn('domains: dataset deployment', block)
-        self.assertIn('cache-targets: false', block)
-        self.assertIn('cache-directories: |\n          target/debug\n          sdk/target\n', block)
+        self.assertIn('uses: ./.github/actions/restore-compiled', block)
 
     def test_missing_and_duplicate_domains_are_rejected(self):
         for workflow in (
@@ -69,8 +98,10 @@ class TestDispatchTest(unittest.TestCase):
 
     def test_incomplete_duplicate_or_undispatched_partition_is_rejected(self):
         for workflow in (
-            self.workflow.replace("iceberg-core, iceberg-sdk, iceberg-grace", "iceberg-core, iceberg-sdk"),
-            self.workflow.replace("iceberg-core, iceberg-sdk, iceberg-grace", "iceberg-core, iceberg-sdk, iceberg-sdk"),
+            self.workflow.replace("iceberg-core, iceberg-gc, iceberg-sdk, iceberg-grace",
+                                  "iceberg-core, iceberg-sdk, iceberg-grace"),
+            self.workflow.replace("iceberg-core, iceberg-gc, iceberg-sdk, iceberg-grace",
+                                  "iceberg-core, iceberg-gc, iceberg-sdk, iceberg-sdk"),
             self.workflow.replace(' --partition "$E2E_PARTITION"', ''),
             self.workflow.replace(' --partition "$E2E_PARTITION"', ' --partition iceberg-core'),
         ):
@@ -99,6 +130,37 @@ class TestDispatchTest(unittest.TestCase):
             f"test-{group}": {f"crowdb-{package}" for package in packages}
             for group, packages in dispatch.RUST_GROUPS.items()})
 
+    def test_each_rust_group_uses_one_test_build_with_all_assigned_packages(self):
+        for group, packages in dispatch.RUST_GROUPS.items():
+            with self.subTest(group=group), patch.object(dispatch, 'Measurement') as measurement, \
+                    patch.object(dispatch, 'ctest_command', return_value=['ctest']):
+                dispatch.unit(group)
+                commands = [call.args[1] for call in measurement.return_value.run.call_args_list]
+                tests = [command for command in commands if command[:2] == ['cargo', 'test']]
+                self.assertEqual(len(tests), 1)
+                command = tests[0]
+                self.assertNotIn('--release', command)
+                self.assertIn('--tests', command)
+                self.assertEqual([command[i + 1] for i, value in enumerate(command) if value == '-p'],
+                                 [f'crowdb-{package}' for package in packages])
+                self.assertNotIn('--jobs', command)
+                self.assertNotIn('-j', command)
+                cargo = next(call for call in measurement.return_value.run.call_args_list
+                             if call.args[1] is command)
+                self.assertEqual(cargo.kwargs['env']['CARGO_PROFILE_TEST_DEBUG'], 'line-tables-only')
+
+    def test_sdk_protocol_peers_keep_the_access_feature_graph_and_exact_targets(self):
+        environment = dict(PIXI_ENVIRONMENT_NAME='iceberg-e2e', CONDA_PREFIX='/locked', JAVA_HOME='/java')
+        with patch.dict(os.environ, environment), patch.object(dispatch, 'Measurement') as measurement:
+            dispatch.unit('sdk')
+            command = measurement.return_value.run.call_args_list[-1].args[1]
+        self.assertEqual(command[5:5 + len(dispatch.rust_test_command('access'))],
+                         dispatch.rust_test_command('access'))
+        targets = [command[i + 1] for i, value in enumerate(command) if value == '--test']
+        self.assertEqual(targets, ['iceberg_namespace_sdk_test', 'iceberg_table_sdk_test',
+                                  'iceberg_commit_sdk_test', 'iceberg_java_response_loss_test'])
+        self.assertEqual(command[-3:], ['--', '--ignored', '--test-threads=1'])
+
     def test_kv_keeps_isolation_and_resources_can_be_overridden(self):
         with patch.dict(os.environ, {}, clear=True):
             command = dispatch.container_command("e2e", "kv", ["--memory-mib", "8192"])
@@ -114,7 +176,6 @@ class TestDispatchTest(unittest.TestCase):
                 f"TEST_EXECUTABLE={directory / 'crowdb-rpc-build/crowdb_rpc_tests'}"]}]}
         with patch.object(dispatch.subprocess, "check_output", return_value=json.dumps(listing)):
             command = dispatch.ctest_command("lib/crowdb-tree/build")
-        import re
         self.assertIsNone(re.search(command[-1], "Tree.ExactBytes"))
         self.assertIsNotNone(re.search(command[-1], "Rpc.Retry[1]"))
         self.assertIsNone(re.search(command[-1], "Rpc.Retry1"))

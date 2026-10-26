@@ -1324,6 +1324,7 @@ name = "crowdb-test-harness"
 version = "0.3.0"
 dependencies = [
  "crowdb-protocol",
+ "fs2",
  "serde_json",
 ]
 

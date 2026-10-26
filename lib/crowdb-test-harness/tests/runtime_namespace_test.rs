@@ -15,8 +15,11 @@ fn disposable_data_cleanup_preserves_process_ownership_for_cleanup() {
     let port = namespace
         .assign_port(crowdb_protocol::ServicePort::ChunkKvRpc, 0)
         .expect("assign disposable CLI port");
-    let claims: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(runtime_root().join("ports/claims.json")).unwrap()).unwrap();
+    let claims: serde_json::Value = {
+        let registry = std::fs::File::open(runtime_root().join("ports/claims.json")).unwrap();
+        fs2::FileExt::lock_shared(&registry).unwrap();
+        serde_json::from_reader(registry).unwrap()
+    };
     let claim = claims
         .as_array()
         .unwrap()

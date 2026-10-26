@@ -38,7 +38,7 @@ tracing = { workspace = true }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }
 crowdb-chunk-kv-client = { path = "../../lib/crowdb-chunk-kv-client" }
 sha2 = "0.10"
-crowdb-kv = { path = "../../lib/crowdb-kv" }
+crowdb-kv = { path = "../../lib/crowdb-kv", features = ["test-util"] }
 crowdb-chunk-kv-server = { path = ".", features = ["test-util"] }
 crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv", features = ["test-util"] }
 crowdb-chunk-stream = { path = "../../lib/crowdb-chunk-stream", features = ["test-util"] }

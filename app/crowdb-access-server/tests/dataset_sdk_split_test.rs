@@ -12,7 +12,15 @@ async fn standalone_split_sdk_uses_composition_revision_and_read_contracts() {
     let origin = test.origin.clone();
     let output = tokio::task::spawn_blocking(move || {
         Command::new("pixi")
-            .args(["run", "--", "cargo", "run", "--locked", "--manifest-path"])
+            .args([
+                "run",
+                "--",
+                "cargo",
+                "run",
+                "--release",
+                "--locked",
+                "--manifest-path",
+            ])
             .arg(manifest)
             .args(["--example", "split_control"])
             .env("CROWDB_DATASET_ENDPOINT", origin)

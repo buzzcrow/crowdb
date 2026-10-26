@@ -32,3 +32,25 @@ class CiPartitionsTest(unittest.TestCase):
             ("iceberg-grace", "iceberg", "access_iceberg::rust_retired::official_rust_client_rejects_retired_native_catalog_after_full_grace"),
         ):
             self.assertEqual([case.name for case in select_cases(layer=domain, partition=partition)], [name])
+
+    def test_iceberg_gc_runs_separately_from_ordinary_and_sdk_cases(self):
+        expected = select_cases(layer="iceberg", scope="iceberg.gc")
+        self.assertTrue(expected)
+        self.assertEqual(select_cases(layer="iceberg", partition="iceberg-gc"), expected)
+        self.assertEqual(
+            tuple(case for case in select_cases(layer="iceberg") if case.iceberg_gc),
+            expected,
+        )
+        core = select_cases(layer="iceberg", partition="iceberg-core")
+        self.assertTrue(core)
+        self.assertTrue(all(not case.iceberg_gc for case in core))
+        self.assertTrue(all(not case.scope.startswith("iceberg.sdk.") for case in core))
+
+    def test_iceberg_sdk_selection_preserves_the_full_grace_owner(self):
+        grace = select_cases(layer="iceberg", partition="iceberg-grace")
+        self.assertEqual(len(grace), 1)
+        expected = tuple(
+            case for case in select_cases(layer="iceberg")
+            if case.scope.startswith("iceberg.sdk.") and case not in grace
+        )
+        self.assertEqual(select_cases(layer="iceberg", partition="iceberg-sdk"), expected)

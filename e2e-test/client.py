@@ -6,11 +6,22 @@ import json
 import io
 import os
 import shutil
+import sys
 import subprocess
 import tarfile
 import time
 from pathlib import Path
 from client_process import run_client_process
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools/ci-build'))
+from compiled_artifacts import CompiledArtifacts
+
+
+def compiled_target(package, name, test=False, variant='root'):
+    compiled = CompiledArtifacts.from_environment(ROOT)
+    return compiled.target(package, name, test, variant) if compiled else None
+
 
 CLIENT_BUILD_DIRS = ("target", "node_modules", "dist", "__pycache__", "sdk-check", ".pixi")
 
@@ -74,16 +85,20 @@ def run_client(bundle, addresses, token, phase, artifacts,
 
 
 def bundle_client(output):
-    result = subprocess.run(["cargo", "test", "--locked", "-p", "e2e-test", "--test", "domain_test",
-                             "--no-run", "--message-format=json"], capture_output=True, text=True,
-                            check=False, timeout=600)
-    print(result.stderr, end="", flush=True)
-    if result.returncode:
-        print(result.stdout, end="", flush=True)
-        raise RuntimeError("container RPC client compilation failed")
-    binaries = [item["executable"] for line in result.stdout.splitlines() if line.startswith("{")
-                and (item := json.loads(line)).get("target", {}).get("name") == "domain_test"
-                and item.get("executable")]
+    supplied = compiled_target('e2e-test', 'domain_test', True, 'root')
+    if supplied:
+        binaries = [supplied]
+    else:
+        result = subprocess.run(["cargo", "test", "--release", "--locked", "-p", "e2e-test", "--test", "domain_test",
+                                 "--no-run", "--message-format=json"], capture_output=True, text=True,
+                                check=False, timeout=600)
+        print(result.stderr, end="", flush=True)
+        if result.returncode:
+            print(result.stdout, end="", flush=True)
+            raise RuntimeError("container RPC client compilation failed")
+        binaries = [item["executable"] for line in result.stdout.splitlines() if line.startswith("{")
+                    and (item := json.loads(line)).get("target", {}).get("name") == "domain_test"
+                    and item.get("executable")]
     if len(binaries) != 1:
         raise RuntimeError("missing or ambiguous domain test executable")
     output = Path(output).resolve()
@@ -116,16 +131,20 @@ def bundle_iceberg_rust(output):
     """Stage the unchanged pinned Apache client separately from server artifacts."""
     root = Path(__file__).resolve().parents[1]
     manifest = Path(output) / "clients/iceberg-rust/Cargo.toml"
-    result = subprocess.run(["cargo", "build", "--locked", "--manifest-path", str(manifest),
-        "--target-dir", str(root / "target/iceberg-sdk"), "--message-format=json"],
-        capture_output=True, text=True, check=False, timeout=600)
-    print(result.stderr, end="", flush=True)
-    if result.returncode:
-        print(result.stdout, end="", flush=True)
-        raise RuntimeError("pinned Apache Iceberg Rust client compilation failed")
-    binaries = [item["executable"] for line in result.stdout.splitlines() if line.startswith("{")
-        and (item := json.loads(line)).get("target", {}).get("name") == "crowdb-iceberg-rust-client-fixture"
-        and item.get("executable")]
+    supplied = compiled_target('crowdb-iceberg-rust-client-fixture', 'crowdb-iceberg-rust-client-fixture', False, 'apache')
+    if supplied:
+        binaries = [supplied]
+    else:
+        result = subprocess.run(["cargo", "build", "--release", "--locked", "--manifest-path", str(manifest),
+            "--target-dir", str(root / "target/iceberg-sdk"), "--message-format=json"],
+            capture_output=True, text=True, check=False, timeout=600)
+        print(result.stderr, end="", flush=True)
+        if result.returncode:
+            print(result.stdout, end="", flush=True)
+            raise RuntimeError("pinned Apache Iceberg Rust client compilation failed")
+        binaries = [item["executable"] for line in result.stdout.splitlines() if line.startswith("{")
+            and (item := json.loads(line)).get("target", {}).get("name") == "crowdb-iceberg-rust-client-fixture"
+            and item.get("executable")]
     if len(binaries) != 1:
         raise RuntimeError("missing or ambiguous pinned Rust SDK executable")
     shutil.copy2(binaries[0], Path(output) / "iceberg-rust-client")
@@ -145,15 +164,19 @@ def bundle_iceberg_java(output):
 
 def bundle_cli(output):
     """Build the host CLI once and pin its executable alongside the test client."""
-    result = subprocess.run(["cargo", "build", "--locked", "-p", "crowdb-cli", "--bin", "crowdb-cli",
-                             "--message-format=json"], capture_output=True, text=True, check=False, timeout=600)
-    print(result.stderr, end="", flush=True)
-    if result.returncode:
-        print(result.stdout, end="", flush=True)
-        raise RuntimeError("host CLI compilation failed")
-    binaries = [item["executable"] for line in result.stdout.splitlines() if line.startswith("{")
-                and (item := json.loads(line)).get("target", {}).get("name") == "crowdb-cli"
-                and item.get("executable")]
+    supplied = compiled_target('crowdb-cli', 'crowdb-cli', False, 'root')
+    if supplied:
+        binaries = [supplied]
+    else:
+        result = subprocess.run(["cargo", "build", "--release", "--locked", "-p", "crowdb-cli", "--bin", "crowdb-cli",
+                                 "--message-format=json"], capture_output=True, text=True, check=False, timeout=600)
+        print(result.stderr, end="", flush=True)
+        if result.returncode:
+            print(result.stdout, end="", flush=True)
+            raise RuntimeError("host CLI compilation failed")
+        binaries = [item["executable"] for line in result.stdout.splitlines() if line.startswith("{")
+                    and (item := json.loads(line)).get("target", {}).get("name") == "crowdb-cli"
+                    and item.get("executable")]
     if len(binaries) != 1:
         raise RuntimeError("missing or ambiguous host CLI executable")
     shutil.copy2(binaries[0], Path(output) / "crowdb-cli")
@@ -161,16 +184,20 @@ def bundle_cli(output):
 
 def bundle_cli_workload(output):
     """Compile the opt-in regression for explicit execution against an owned node."""
-    result = subprocess.run(["cargo", "test", "--locked", "-p", "crowdb-cli", "--test",
-        "cluster_workloads_test", "--no-run", "--message-format=json"],
-        capture_output=True, text=True, check=False, timeout=600)
-    print(result.stderr, end="", flush=True)
-    if result.returncode:
-        print(result.stdout, end="", flush=True)
-        raise RuntimeError("CLI workload test compilation failed")
-    binaries = [item["executable"] for line in result.stdout.splitlines() if line.startswith("{")
-        and (item := json.loads(line)).get("target", {}).get("name") == "cluster_workloads_test"
-        and item.get("executable")]
+    supplied = compiled_target('crowdb-cli', 'cluster_workloads_test', True, 'root')
+    if supplied:
+        binaries = [supplied]
+    else:
+        result = subprocess.run(["cargo", "test", "--release", "--locked", "-p", "crowdb-cli", "--test",
+            "cluster_workloads_test", "--no-run", "--message-format=json"],
+            capture_output=True, text=True, check=False, timeout=600)
+        print(result.stderr, end="", flush=True)
+        if result.returncode:
+            print(result.stdout, end="", flush=True)
+            raise RuntimeError("CLI workload test compilation failed")
+        binaries = [item["executable"] for line in result.stdout.splitlines() if line.startswith("{")
+            and (item := json.loads(line)).get("target", {}).get("name") == "cluster_workloads_test"
+            and item.get("executable")]
     if len(binaries) != 1:
         raise RuntimeError("missing or ambiguous CLI workload test executable")
     shutil.copy2(binaries[0], Path(output) / "cli-workload-test")
@@ -218,12 +245,23 @@ def bundle_iceberg_rck(output):
 
 
 def bundle_dataset_sdk(output):
-    """Independent Rust consumer plus externally built and installed Python wheel."""
-    root=Path(__file__).resolve().parents[1]
-    subprocess.run(["cargo","build","--locked","--manifest-path",str(root/"sdk/Cargo.toml"),"-p","crowdb-sdk-dataset","--example","payload"],check=True,timeout=600)
-    shutil.copy2(root/"sdk/target/debug/examples/payload",Path(output)/"dataset-rust-client")
-    subprocess.run(["cargo","build","--locked","--manifest-path",str(root/"sdk/Cargo.toml"),"-p","crowdb-sdk-dataset","--example","split_control"],check=True,timeout=600)
-    shutil.copy2(root/"sdk/target/debug/examples/split_control",Path(output)/"dataset-rust-split-client")
-    subprocess.run(["python",str(root/"tools/sdk/package.py"),"--destination",str(Path(output)/"dataset-sdk")],check=True,timeout=600)
-    shutil.copy2(root/"sdk/tests/real_consumer.py",Path(output)/"dataset-sdk/real_consumer.py")
-    shutil.copy2(root/"sdk/tests/split_consumer.py",Path(output)/"dataset-sdk/split_consumer.py")
+    """Stage independent Rust consumers and install a shipped Python wheel."""
+    output = Path(output)
+    compiled = CompiledArtifacts.from_environment(ROOT)
+    if compiled:
+        payload = compiled.target('crowdb-sdk-dataset', 'payload', variant='sdk')
+        split = compiled.target('crowdb-sdk-dataset', 'split_control', variant='sdk')
+        compiled.install_sdk(output / 'dataset-sdk')
+    else:
+        subprocess.run(['cargo', 'build', '--release', '--locked', '--manifest-path',
+                        str(ROOT / 'sdk/Cargo.toml'), '-p', 'crowdb-sdk-dataset',
+                        '--example', 'payload', '--example', 'split_control'],
+                       check=True, timeout=600)
+        payload = ROOT / 'sdk/target/release/examples/payload'
+        split = ROOT / 'sdk/target/release/examples/split_control'
+        subprocess.run([sys.executable, str(ROOT / 'tools/sdk/package.py'),
+                        '--destination', str(output / 'dataset-sdk')], check=True, timeout=600)
+    shutil.copy2(payload, output / 'dataset-rust-client')
+    shutil.copy2(split, output / 'dataset-rust-split-client')
+    for name in ('real_consumer.py', 'split_consumer.py'):
+        shutil.copy2(ROOT / 'sdk/tests' / name, output / 'dataset-sdk' / name)

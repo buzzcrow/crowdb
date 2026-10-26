@@ -1,0 +1,21 @@
+name: Restore compiled release artifact
+description: Download and verify the successful producer's release inputs
+inputs:
+  artifact:
+    description: Artifact name emitted by the compilation job
+    required: true
+  kind:
+    description: Compiled artifact kind (runtime or clients)
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact }}
+        path: target/ci-build
+    - name: Verify and extract compiled inputs
+      shell: bash
+      env:
+        COMPILED_KIND: ${{ inputs.kind }}
+      run: pixi run python tools/ci-build/unpack.py "target/ci-build/$COMPILED_KIND.tar.gz"
