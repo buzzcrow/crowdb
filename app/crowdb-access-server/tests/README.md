@@ -22,6 +22,94 @@ Client recipes: [container development](../../../container/single-node-container
   Provisioned allocation capacity bounds storage; cumulative orphan storage
   is not bounded by active request limits.
 
+## Main integration acceptance
+
+The 2026-10-26 integration rebases all 252 local commits onto main
+`94135bfeca2a04e59b5b3c7339d6300dc17f2042`. The range comparison retains
+210 identical patches, 41 adapted patches and the corresponding standalone RPC
+benchmark move. Integration commit `c550f4c5` preserves ordinary V2 frames,
+owner-backed payload views, the reader layout cache, single-request synchronized
+DiskIO writes and ordered Stream chunk records. Serving metadata maintenance
+keeps progressing after one-record deletions and revisits unchanged generations.
+Nonzero WAL trimming still requires durable expired-request floors and fails
+closed while those floors are unavailable.
+
+The frozen service image is `crowdb-node:access-cleanup-v11-20261026`:
+
+- Build revision: `c550f4c5bd977c1287778fa17add9fb6fd79328f`.
+- Source tree: `3483a0c16d1ad44e27626be1e2262ee4ddf1659b`.
+- Imported Docker ID:
+  `sha256:10c1042b734b9af43223db3d3a71817839d0327e644b6588abb2bfed1599b255`.
+- Runtime SHA-256:
+  `1f3f5444b801d5099dc6b1d6aeb9880c76db8803e09a8606edc61d23c1439443`.
+- OCI receipt/config/layer digests, the imported Docker runtime configuration
+  and uncompressed layer identities, staged runtime hash and source archive
+  are independently verified. Docker conversion changes the local image ID;
+  it is recorded separately from the OCI manifest and config digests.
+
+The completed component inventories contain 129 storage/transport targets
+(716 passing tests, one configured ignore) and 411 Access/KV targets
+(2,438 passing tests, 13 configured ignores). Monitor preview adds four passes;
+the independent HTTP SDK has 43 passing tests and all-target clippy success.
+Workspace all-feature/all-target clippy, normal `rs-lint` with version/DashMap
+checks, formatting and C++ tree-lint pass. C++ Tree, RPC, DiskIO and common
+inventories complete, retaining their configured hardware skips. Python fixture
+tests pass 252 cases and the benchmark runner passes 17.
+
+The first five-node KV group run missed its initial three-second leader wait.
+The unchanged exact case passes alone; the complete group subsequently passes
+131 cases under both default concurrency and serial execution. The failed log
+and both full regressions are retained. High filesystem I/O pressure was present
+on the first run; its causal role is unproven. Election timers and caller retry
+behavior were unchanged. Other integration test repairs replace V1 geometry
+literals with V2 protocol sizes and retain exact buffer-address, feed-count,
+ownership and error assertions.
+
+Current-source real-service checks pass all five Dataset cases, including
+installed portable SDKs and restart publication semantics. The Split case
+performs five storage/Access restarts in 219.99 seconds within its unchanged
+600-second bound. The extended two-cleaner GC matrix passes in 122.12 seconds
+with three simultaneous cleaner restart rounds, nine dead files and successful
+foreground work during deletion. It records the exact accepted large range
+`[0,16786211)`, sealed boundary `16786432`, unchanged layout/epoch and
+115,288 ms of final continuous drain. The external/tree/live-gap case passes
+in 161.14 seconds. These establish notification acceptance and retained live
+ranges; they make no physical-space-release or production latency claim.
+
+Strict local-HCA checks pass HTTP/ChunkIO to the separate O_DIRECT DiskIO
+process, its interrupted-download case, and Chunk-KV large logical controls.
+The normal DiskIO RDMA payload-copy, fallback and CQ error counters remain zero.
+Chunk-KV uses the production RPC/service/native tree/WAL with injected catalog,
+authority and memory ChunkStream backing. The separately activated native
+Dataset accepted-read failure test also passes: exactly two accepted reads and
+one reply, no replay or metadata re-selection, a valid held first buffer through
+shutdown and returned credits after its final release. This is same-host HCA
+functional evidence rather than cross-host or throughput measurement.
+
+The installed native Python SDK also passes the separate semantics-only workload:
+mixed-size publication, continuation replay, cancellation and buffer lifetime,
+65 seconds idle, and storage/Access restart. Both complete native S3 and Dataset
+HCA corpora pass write and post-storage-restart verification. S3 covers host and
+non-root container clients; Dataset uses the installed native Python client.
+Strict RDMA remains required, and Dataset receive credits return after the last
+held buffer is released.
+
+All ten ordered jobs, including image creation, finish successfully. Independent
+verification preserves 1,432 raw evidence files with byte counts and SHA-256
+digests under
+`.crowdb-runtime/persistent/task-checkpoints/access-simplification-20261026/evidence-current/`.
+Its `verified-summary.json` maps cases to their original run identities; OCI,
+source and provenance records are retained alongside them. The additional SDK
+HCA terminal-read test is recorded separately in
+`current-dataset-hca-terminal.json` and its complete log. Installed SDK, S3 HCA
+and Dataset HCA run identities are respectively
+`dataset-workload/65c5124702d840bcb825d8d42a6a42f2`,
+`native-s3-hca/56ee513daa424136bcda3c580e8ab4fe` and
+`native-dataset-hca/9465ca2f4c754fd096b519b0691cb214`.
+
+The preceding v10 throughput trials retain their original source boundary;
+they are not measurements of this rebased service image.
+
 ## Expanded cleanup and read observations
 
 The 2026-10-25 cleanup batch passes 1,842 tests across 407 targets in six
