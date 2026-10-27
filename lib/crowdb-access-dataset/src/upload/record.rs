@@ -40,6 +40,9 @@ pub(super) fn encode_session(record: &UploadRecord) -> Result<Vec<u8>, UploadErr
 }
 
 pub(super) fn decode_session(bytes: &[u8]) -> Result<UploadRecord, UploadError> {
+    if bytes == crate::authority::dataset_lifecycle::RETIRED_RESOURCE {
+        return Err(UploadError::Conflict);
+    }
     let mut record = if bytes.starts_with(MAGIC) {
         decode_binary(bytes)?
     } else {

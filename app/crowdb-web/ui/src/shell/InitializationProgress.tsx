@@ -2,7 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { useEffect, useState } from 'react';
-import { clusterInitialization, initCluster, type InitializationStatus } from '../api';
+import { clusterInitialization, initCluster, type NodeDeploymentStatus, type InitializationStatus } from '../api';
+import { NodeRecoveryDialog } from './NodeRecoveryDialog';
 import { Button } from '../components/ui/Button';
 
 const phases: Record<InitializationStatus['phase'], string> = {
@@ -13,11 +14,14 @@ const phases: Record<InitializationStatus['phase'], string> = {
 };
 
 /** The browser observes the durable operation; unmounting never cancels it. */
-export function InitializationProgress({ readonly = false }: { readonly?: boolean }) {
+export function InitializationProgress({ readonly = false, deployment }: { readonly?: boolean; deployment?: NodeDeploymentStatus }) {
   const [status, setStatus] = useState<InitializationStatus>();
   const [unavailable, setUnavailable] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState('');
+  const [resuming, setResuming] = useState(false);
+  const recoverable = !!deployment?.operation_id && !!deployment.members?.length
+    && ['bootstrap_in_progress', 'recovery_required'].includes(deployment.phase);
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
@@ -47,15 +51,17 @@ export function InitializationProgress({ readonly = false }: { readonly?: boolea
     } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
     finally { setRetrying(false); }
   };
-  if (status?.phase === 'idle' && !unavailable) return null;
+  if ((status?.phase === 'idle' || status?.phase === 'active') && !unavailable && !recoverable) return null;
   return <section aria-label="Cluster initialization" className="tw-border-b tw-border-border tw-px-4 tw-py-3 tw-text-sm">
-    <p role="status">{status ? phases[status.phase] : unavailable ? 'Initialization status unavailable' : 'Loading initialization status…'}</p>
+    <p role="status">{recoverable && status?.phase === 'idle' ? 'Bootstrap recovery required' : status ? phases[status.phase] : unavailable ? 'Initialization status unavailable' : 'Loading initialization status…'}</p>
     {status?.members && <p className="tw-text-xs tw-text-muted">Selected voters: {status.members.join(', ')}</p>}
     {status?.operation_id && <p className="tw-text-xs tw-text-muted tw-break-all">Operation {status.operation_id}</p>}
     {status && !['idle', 'active', 'failed'].includes(status.phase) && <p className="tw-text-xs tw-text-muted">The node monitor continues if you close this page.</p>}
     {unavailable && status && <p className="tw-text-xs tw-text-muted">Status unavailable · last observation shown</p>}
     {status?.error && <p role="alert" className="tw-text-failed">{status.error}</p>}
     {error && <p role="alert" className="tw-text-failed">{error}</p>}
-    {status?.phase === 'failed' && <Button size="sm" disabled={readonly || unavailable || retrying || !status.members?.length} onClick={() => void retry()}>Retry accepted initialization</Button>}
+    {recoverable && <Button size="sm" disabled={readonly} onClick={() => setResuming(true)}>Resume bootstrap</Button>}
+    {resuming && deployment && <NodeRecoveryDialog status={deployment} cleanup={false} onClose={() => setResuming(false)} />}
+    {!recoverable && status?.phase === 'failed' && <Button size="sm" disabled={readonly || unavailable || retrying || !status.members?.length} onClick={() => void retry()}>Retry accepted initialization</Button>}
   </section>;
 }

@@ -153,9 +153,8 @@ test.describe('inspector · activity log', () => {
       await expect(inspector).toHaveCount(0);
       await expect(navigationWidth).toBeFocused();
       await expect(page.getByRole('navigation', { name: 'Cluster scope' })).toContainText('N-48');
-      await page.getByRole('button', { name: 'Hide navigation' }).click();
-      await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeHidden();
-      await page.getByRole('button', { name: 'Show navigation' }).click();
+      await expect(page.getByRole('button', { name: /^(Hide|Show) navigation$/ })).toHaveCount(0);
+      await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible();
       await page.getByRole('treeitem').filter({ hasText: 'N-48' }).getByRole('button', { name: 'N-48' }).click();
       await expect(inspector).toHaveAttribute('data-layout', 'drawer');
       await page.setViewportSize({ width: 1280, height: 800 });

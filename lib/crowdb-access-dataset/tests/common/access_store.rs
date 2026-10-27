@@ -20,6 +20,7 @@ pub struct TestAccessStore {
     pub schema_scans: AtomicU64,
     pub member_scans: AtomicU64,
     pub upload_conflicts: AtomicU64,
+    pub failed_dataset_writes: AtomicU64,
 }
 impl TestAccessStore {
     pub fn shared() -> Arc<Self> {
@@ -72,6 +73,14 @@ impl DatasetStore for TestAccessStore {
         expected: Option<&[u8]>,
         value: &[u8],
     ) -> Result<CasOutcome, StoreError> {
+        if key.starts_with(b"DS\0D\0")
+            && self
+                .failed_dataset_writes
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+                .is_ok()
+        {
+            return Err(StoreError::Failure("injected Dataset root failure".into()));
+        }
         self.writes.fetch_add(1, Ordering::Relaxed);
         if self
             .upload_conflicts

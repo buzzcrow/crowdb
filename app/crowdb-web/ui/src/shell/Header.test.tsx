@@ -36,7 +36,15 @@ function renderHeader(overrides: Partial<{
 describe('Header', () => {
   it('renders the brand title', () => {
     const { getByLabelText } = renderHeader();
-    expect(getByLabelText('CrowDB Console')).toHaveTextContent('CrowDBConsole');
+    expect(getByLabelText('CrowDB Console')).toHaveTextContent(/^CrowDB$/);
+  });
+
+  it('places history after domain navigation and before refresh', () => {
+    const { getByRole } = renderHeader();
+    const domains = getByRole('navigation', { name: 'Console domains' });
+    const history = getByRole('navigation', { name: 'Navigation history' });
+    expect(domains.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(history.compareDocumentPosition(getByRole('button', { name: 'Refresh' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('renders the cluster health pill', () => {

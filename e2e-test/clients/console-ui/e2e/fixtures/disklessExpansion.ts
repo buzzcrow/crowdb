@@ -27,7 +27,7 @@ export async function disklessExpansion(context: UIContext) {
     expect(candidates.map(candidate => candidate.node_id)).toEqual(disklessNodes);
     const region = page.getByRole('region', { name: 'Candidate nodes' });
     for (const candidate of candidates) {
-      await region.getByTestId(`candidate-${candidate.discovery_id}`).getByRole('button', { name: 'Move to cluster', exact: true }).click();
+      await region.getByTestId(`candidate-${candidate.discovery_id}`).getByRole('button', { name: 'Join node…', exact: true }).click();
       const dialog = page.getByRole('dialog', { name: 'Move candidate to cluster' });
       await expect(dialog.getByLabel('SSH user', { exact: true })).toHaveValue('crowdb');
       await expect(dialog.getByLabel('Initial SSH password', { exact: true })).toHaveValue('crowdb');

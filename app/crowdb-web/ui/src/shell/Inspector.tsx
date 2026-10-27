@@ -15,6 +15,10 @@ import { ElectionStateRegion, ReadStateRegion } from '../components/ConsensusSta
 import type { ServerSummary } from '../api';
 import { isAuxiliaryKind, serviceDisplayNames } from '../services/client';
 import { ServiceProperties } from '../services/ServiceProperties';
+import { Fields } from '../iceberg/Fields';
+import { CandidateProperties } from './CandidateProperties';
+import { NodeAdmissionProperties } from './NodeAdmissionProperties';
+import { InitializationProgress } from './InitializationProgress';
 import { DiskBackingProperties } from '../storage/DiskBackingProperties';
 
 
@@ -49,6 +53,8 @@ function displayEntityId(entity: SelectedEntity): string {
 }
 
 interface InspectorProps {
+  recoveryReadonly?: boolean;
+  nodeAuthority?: import('../api').NodeDeploymentStatus;
   nodeManagement?: boolean;
   allServers?: ServerSummary[];
   readonly?: boolean;
@@ -69,7 +75,7 @@ interface InspectorProps {
  * Right-side inspector. Reacts to SelectionContext: Details + Activity for any
  * selection.
  */
-export function Inspector({ allServers = [], readonly, modules: _modules, nodes = [], racks = [], servers = [], stores = [], capacityUsage = null, hardwareCapacity = null, diskdbInstances = [], width = 320, drawer = false, pendingSelectionRef, nodeManagement = false }: InspectorProps) {
+export function Inspector({ recoveryReadonly, nodeAuthority, allServers = [], readonly, modules: _modules, nodes = [], racks = [], servers = [], stores = [], capacityUsage = null, hardwareCapacity = null, diskdbInstances = [], width = 320, drawer = false, pendingSelectionRef, nodeManagement = false }: InspectorProps) {
   const { selectedEntity, clearSelection, selectEntity } = useSelection();
   const { setDomain } = useDomain();
   const [activeTab, setActiveTab] = useState<TabId>('details');
@@ -115,11 +121,15 @@ export function Inspector({ allServers = [], readonly, modules: _modules, nodes 
       </div>
 
       <div className="tw-flex-1 tw-overflow-y-auto">
+        {activeTab === 'details' && nodeManagement && selectedEntity.type === 'Datacenter' && <InitializationProgress readonly={recoveryReadonly ?? readonly} deployment={nodeAuthority} />}
         {activeTab === 'details' && (
-          selectedEntity.type === 'Server' && isAuxiliaryKind(selectedEntity.serviceType)
+          selectedEntity.allocationBlock ? <div className="tw-p-4"><Fields stacked values={{ Disk: selectedEntity.id, Zone: selectedEntity.allocationBlock.zone, 'Block index': selectedEntity.allocationBlock.index, State: selectedEntity.allocationBlock.state, 'Allocation unit (bytes)': selectedEntity.allocationBlock.unitBytes, 'Zone offset (bytes)': selectedEntity.allocationBlock.zoneOffset, 'Disk offset (bytes)': selectedEntity.allocationBlock.diskOffset, Observation: selectedEntity.allocationBlock.stale ? 'Stale' : 'Observed' }} /></div>
+          : selectedEntity.section === 'discovery' ? <CandidateProperties id={selectedEntity.id} readonly={recoveryReadonly ?? readonly} />
+          : selectedEntity.type === 'Server' && isAuxiliaryKind(selectedEntity.serviceType)
             ? <ServiceProperties service={allServers.find(service => service.id === selectedEntity.id)} />
             : <DetailsTab entity={selectedEntity} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} selectEntity={selectEntity} setDomain={setDomain} readonly={readonly} pendingSelectionRef={pendingSelectionRef} nodeManagement={nodeManagement} />
         )}
+        {activeTab === 'details' && nodeManagement && selectedEntity.type === 'Node' && selectedEntity.section !== 'discovery' && <NodeAdmissionProperties node={Number(selectedEntity.id)} racks={racks} readonly={readonly} />}
         {activeTab === 'activity' && <ActivityLog />}
       </div>
     </aside>

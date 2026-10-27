@@ -82,7 +82,6 @@ test('native diagnostics: Iceberg committed references and Parquet footer', asyn
     const changed = await request.post(tablePath, { data: { requirements: [], updates: [{ action: 'set-properties', updates: { inspection: 'new-generation' } }] } });
     expect(changed.ok(), await changed.text()).toBeTruthy();
     const stale = await request.get(`${tablePath}/inspect?${query}`); expect(stale.status()).toBe(409);
-    await page.getByText('Parquet actions', { exact: true }).click();
     await page.getByRole('button', { name: 'Refresh parquet', exact: true }).click();
     await expect(inspection.getByRole('alert')).toContainText('Table metadata changed');
     await expect(inspection.getByRole('button', { name: 'Next row groups', exact: true })).toHaveCount(0);
@@ -106,11 +105,13 @@ test('native diagnostics: Iceberg committed references and Parquet footer', asyn
   }
 });
 
-// Baseline: 4.7s (2026-10-04); native metadata, no intercepted responses.
+// Baseline: 4.5s (2026-10-26), with 8 native tables. Pagination coverage creates
+// and removes 32 tables; stepTimer separates that added native setup/teardown cost.
 test('native diagnostics: Iceberg actual catalog tables and nested schema preserve scope', async ({ page, request }) => {
   const namespace = `console_schema_${process.pid}_${Date.now()}`;
   const path = `/api/access/iceberg/v1/namespaces/${namespace}`;
-  const names = ['region', 'nation', 'supplier', 'customer', 'part', 'partsupp', 'orders', 'lineitem'];
+  const names = ['region', 'nation', 'supplier', 'customer', 'part', 'partsupp', 'orders', 'lineitem',
+    ...Array.from({ length: 24 }, (_, index) => `zz-page-${String(index).padStart(2, '0')}`)];
   const created: string[] = [];
   const response = await request.post('/api/access/iceberg/v1/namespaces', { data: { namespace: [namespace] } });
   expect(response.ok(), await response.text()).toBeTruthy();
@@ -137,8 +138,24 @@ test('native diagnostics: Iceberg actual catalog tables and nested schema preser
     await step('native Iceberg tree and schema', async () => {
       await page.goto('/?domain=Iceberg');
       const tree = page.getByRole('navigation', { name: 'Iceberg tree', exact: true });
+      await tree.getByTitle(`Namespace · ${namespace}`, { exact: true }).locator('..').getByRole('button', { name: 'Expand', exact: true }).click();
+      await expect(tree.getByRole('button', { name: 'lineitem', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText('Namespaces');
       await tree.getByRole('button', { name: namespace, exact: true }).click();
-      for (const name of names) await expect(tree.getByRole('button', { name, exact: true })).toBeVisible();
+      const listing = page.getByRole('table', { name: 'Namespace resources', exact: true });
+      await expect(listing.getByRole('row')).toHaveCount(31);
+      await listing.locator('..').getByRole('button', { name: 'Next tables', exact: true }).click();
+      await expect(listing.getByRole('row')).toHaveCount(3);
+      await expect(tree.getByRole('button', { name: 'lineitem', exact: true })).toBeVisible();
+      const lastPage = await listing.getByRole('button').allTextContents();
+      for (const name of lastPage) await expect(tree.getByRole('button', { name, exact: true })).toHaveCount(0);
+      await listing.getByRole('button', { name: lastPage[0], exact: true }).click();
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText(lastPage[0]);
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
+      await expect(listing.getByRole('button')).toHaveText(lastPage);
+      await listing.locator('..').getByRole('button', { name: 'Previous page', exact: true }).click();
+      await expect(listing.getByRole('row')).toHaveCount(31);
+      for (const name of names.slice(0, 8)) await expect(tree.getByRole('button', { name, exact: true })).toBeVisible();
       await tree.getByRole('button', { name: 'lineitem', exact: true }).click();
       await expect(page.getByRole('heading', { level: 1 })).toHaveText('lineitem');
       await expect(tree.getByRole('button', { name: 'Metadata', exact: true })).toHaveCount(0);
@@ -150,11 +167,11 @@ test('native diagnostics: Iceberg actual catalog tables and nested schema preser
       await expect(schema.getByRole('row')).toHaveCount(3);
       await schema.getByRole('button', { name: 'Expand field details', exact: true }).click();
       await expect(schema.getByRole('row')).toHaveCount(5);
-      const actions = page.getByLabel('Table actions', { exact: true });
-      await expect(actions).not.toHaveAttribute('open', '');
-      await actions.getByText('Table actions', { exact: true }).click();
-      await expect(actions).toContainText(`Target: ${namespace} / lineitem`);
-      await expect(page.getByText('Catalog actions', { exact: true })).toHaveCount(0);
+      await expect(page.getByText('Table actions', { exact: true })).toHaveCount(0);
+      await tree.getByRole('button', { name: 'lineitem', exact: true }).focus();
+      await page.keyboard.press('Shift+F10');
+      await expect(page.getByRole('menuitem', { name: 'Rename table…', exact: true })).toBeEnabled();
+      await page.keyboard.press('Escape');
       await page.getByRole('separator', { name: 'Sidebar width' }).press('ArrowRight');
       await expect(page.getByRole('separator', { name: 'Sidebar width' })).toHaveAttribute('aria-valuenow', '300');
     });
@@ -210,6 +227,6 @@ test('native diagnostics: unavailable catalog retries the actual Access services
   for (const response of await retried) expect(response.ok(), await response.text()).toBe(true);
   await expect(page.getByRole('navigation', { name: 'Iceberg tree', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Retry catalog', exact: true })).toHaveCount(0);
-  await page.getByText('Catalog actions', { exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Create metadata demo', exact: true })).toBeEnabled();
+  await page.getByRole('navigation', { name: 'Iceberg tree' }).getByRole('button', { name: 'Catalog', exact: true }).click({ button: 'right' });
+  await expect(page.getByRole('menuitem', { name: 'Create namespace…', exact: true })).toBeEnabled();
 });

@@ -153,3 +153,39 @@ async fn node_mode_never_interprets_a_cached_pid_in_the_web_host_namespace() {
         Some(std::process::id())
     );
 }
+
+#[tokio::test]
+async fn remote_access_uses_committed_health_listener_without_local_launch_metadata() {
+    use crowdb_console_shared::cluster::NodeHealth;
+    use crowdb_web::remote_access_health_for_tests;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = axum::Router::new().route("/_crowdb/health/ready", axum::routing::get(|| async { "ready" }));
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let config = format!("[health]\nlisten = '{address}'\n[iceberg]\nlisten = '127.0.0.1:1'\n");
+    assert_eq!(
+        remote_access_health_for_tests(&config, "127.0.0.1").await,
+        NodeHealth::Up
+    );
+    assert_eq!(
+        remote_access_health_for_tests(&config, "192.0.2.1").await,
+        NodeHealth::Unknown
+    );
+    let shared = format!("[health]\nlisten = '{address}'\n[s3]\nlisten = '{address}'\n");
+    assert_eq!(
+        remote_access_health_for_tests(&shared, "127.0.0.1").await,
+        NodeHealth::Unknown
+    );
+    assert_eq!(
+        remote_access_health_for_tests("[iceberg]\nlisten = '127.0.0.1:1'", "127.0.0.1").await,
+        NodeHealth::Unknown
+    );
+    task.abort();
+    let _ = task.await;
+    assert_eq!(
+        remote_access_health_for_tests(&config, "127.0.0.1").await,
+        NodeHealth::Down
+    );
+}

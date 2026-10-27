@@ -22,7 +22,7 @@ export async function seed(request: APIRequestContext, name: string, parent: str
 }
 export async function openDataset(page: Page, name: string) {
   await page.goto('/?domain=Dataset');
-  await page.getByRole('navigation', { name: 'Dataset tree' }).getByRole('button', { name, exact: true }).click();
+  await page.getByRole('navigation', { name: 'Dataset tree', exact: true }).getByRole('button', { name, exact: true }).click();
 }
 export async function preparedResult(page: Page, kind: 'Snapshot' | 'Split revision') {
   const region = page.getByRole('region', { name: 'Resource publication' });

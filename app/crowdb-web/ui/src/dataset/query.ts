@@ -19,5 +19,6 @@ export function useQuery<T>(key: string, enabled: boolean, read: (signal: AbortS
     // The key includes every input to the request; callback identity is intentionally irrelevant.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, enabled]);
-  return result.key === key ? result : { key };
+  const current = result.key === key ? result : { key };
+  return { ...current, loading: enabled && current.value === undefined && !current.error };
 }

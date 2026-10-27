@@ -331,3 +331,84 @@ async fn completed_cleanup_retires_console_credentials_before_another_cluster_is
         "observing an acknowledged cleanup must preserve the new cluster's credentials"
     );
 }
+
+#[tokio::test]
+async fn candidate_choices_are_independent_durable_and_do_not_enable_other_nodes() {
+    use axum::{routing::get, Json};
+    use crowdb_protocol::mgmt::node::{
+        CandidateNode, CandidateSnapshot, CandidateState, NodeAdvertisement, NodeHandshake, NodeHardware,
+        NODE_PROTOCOL_VERSION,
+    };
+    let workspace = TestWorkspace::new();
+    let ids = [
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000002",
+    ];
+    let candidates: Vec<_> = ids
+        .iter()
+        .map(|id| CandidateNode {
+            advertisement: NodeAdvertisement {
+                discovery_id: (*id).into(),
+                protocol_version: NODE_PROTOCOL_VERSION,
+                monitor_endpoints: vec![],
+                cluster_id: None,
+                formation: Some(workspace.formation()),
+            },
+            state: CandidateState::Unbound,
+        })
+        .collect();
+    let local = NodeHandshake {
+        advertisement: candidates[0].advertisement.clone(),
+        physical_host_id: "host".into(),
+        rack_hint: None,
+        hardware: NodeHardware::default(),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let monitor = Router::new()
+        .route("/node", get(move || async move { Json(local) }))
+        .route(
+            "/candidates",
+            get(move || async move {
+                Json(CandidateSnapshot {
+                    nodes: candidates,
+                    discovery_diagnostics: vec![],
+                })
+            }),
+        );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, monitor).await.unwrap();
+    });
+    let state = || workspace.state().with_node_monitor(&endpoint).unwrap();
+    assert_eq!(
+        request(router(state()), Some(json!({"enabled":false}))).await.0,
+        StatusCode::OK
+    );
+    let (status, body) = request(
+        router(state()),
+        Some(json!({"enabled":true,"discovery_id":ids[0]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["candidates"][ids[0]], true);
+    assert!(body["candidates"][ids[1]].is_null());
+    let (status, _) = request(
+        router(state()),
+        Some(json!({"enabled":false,"discovery_id":ids[1]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, restarted) = request(router(state()), None).await;
+    assert_eq!(restarted["candidates"][ids[0]], true);
+    assert_eq!(restarted["candidates"][ids[1]], false);
+    let (status, _) = request(
+        router(state()),
+        Some(json!({"enabled":true,"discovery_id":"00000000-0000-4000-8000-000000000003"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(!workspace.0.join("console/prepared-bootstrap.json").exists());
+    server.abort();
+    let _ = server.await;
+}

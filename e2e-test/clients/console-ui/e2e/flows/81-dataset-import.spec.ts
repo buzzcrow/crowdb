@@ -1,5 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+import { datasetAction } from '../fixtures/resourceMenus';
 import { createHash } from 'node:crypto';
 import { test, expect } from '../fixtures/realBackend';
 import { call, datasetPath, openDataset, preparedResult, publishResult } from '../fixtures/dataset';
@@ -8,13 +9,15 @@ import { step } from '../fixtures/stepTimer';
 
 async function create(page: import('@playwright/test').Page, name: string, url = '/?domain=Dataset') {
   await page.goto(url);
+  await page.getByRole('navigation', { name: 'Dataset tree', exact: true }).getByRole('button', { name: 'Datasets', exact: true }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Create Dataset…', exact: true }).click();
   await page.getByRole('textbox', { name: 'New Dataset name' }).fill(name);
   await page.getByRole('button', { name: 'Create Dataset', exact: true }).click();
   await expect(page.getByRole('heading', { name: `Dataset · ${name}`, exact: true })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Dataset actions', exact: true })).toHaveCount(1);
+  await expect(page.getByRole('region', { name: 'Dataset actions', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Refresh Dataset', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Dataset actions', exact: true })).toHaveCount(1);
-  await page.getByRole('button', { name: 'Import / New Snapshot', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Dataset actions', exact: true })).toHaveCount(0);
+  await datasetAction(page, 'Import / New Snapshot…');
   await page.getByRole('textbox', { name: 'Inline text', exact: true }).fill('native import payload');
   await page.getByRole('button', { name: 'Use single Sample mapping' }).click();
 }
@@ -66,7 +69,7 @@ test('Dataset native: import', async ({ page, request }) => {
   const matrix = page.getByRole('table', { name: 'Sample field matrix' });
   await matrix.getByRole('row').filter({ hasText: 'base64: /wA=' }).getByRole('button', { name: `payload · ${payload.length} B` }).click();
   await expect(page.getByRole('button', { name: 'Preview field' })).toBeDisabled();
-  await page.getByRole('button', { name: 'Create child Snapshot' }).click();
+  await datasetAction(page, 'Create child Snapshot…');
   await page.getByRole('textbox', { name: 'Sample mapping JSON' }).fill(JSON.stringify({ version: 1, schema: null,
     samples: [{ kind: 'remove', id: '/wA=' }, { kind: 'upsert', id: Buffer.from('new').toString('base64'), fields: [{ name: 'text', value: { kind: 'tombstone' } }] }] }));
   await page.getByRole('button', { name: 'Review mapping' }).click();
@@ -98,24 +101,24 @@ test('Dataset native: recovery', async ({ page, request, baseURL }) => {
     await page.getByRole('button', { name: 'Prepare Snapshot and upload local data' }).click();
     await expect(page.getByRole('button', { name: 'Publish Snapshot', exact: true })).toBeEnabled();
     await page.reload();
-    await page.getByRole('navigation', { name: 'Dataset tree' }).getByRole('button', { name, exact: true }).click();
-    await page.getByRole('button', { name: 'Resume saved request' }).click();
+    await page.getByRole('navigation', { name: 'Dataset tree', exact: true }).getByRole('button', { name, exact: true }).click();
+    await datasetAction(page, 'Resume saved request…');
     await expect(page.getByRole('button', { name: 'Publish Snapshot', exact: true })).toBeEnabled();
     await preparedResult(page, 'Snapshot');
     const publication = page.getByRole('region', { name: 'Resource publication' });
     const candidate = await publication.getByTestId('prepared-resource-id').innerText();
     expect((await call(request, `${datasetPath(name)}/snapshots/${candidate}/summary`)).sample_count).toBe('1');
     await page.reload();
-    await page.getByRole('navigation', { name: 'Dataset tree' }).getByRole('button', { name, exact: true }).click();
-    await page.getByRole('button', { name: 'Resume saved request' }).click();
+    await page.getByRole('navigation', { name: 'Dataset tree', exact: true }).getByRole('button', { name, exact: true }).click();
+    await datasetAction(page, 'Resume saved request…');
     await expect(page.getByRole('button', { name: 'Publish Snapshot', exact: true })).toBeEnabled();
     proxy.dropNextSuccessfulResponse('/head');
     await page.getByRole('button', { name: 'Publish Snapshot', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Retry identical request' })).toBeEnabled();
     expect(proxy.droppedResponses()).toBe(1);
     await page.reload();
-    await page.getByRole('navigation', { name: 'Dataset tree' }).getByRole('button', { name, exact: true }).click();
-    await page.getByRole('button', { name: 'Resume saved request' }).click();
+    await page.getByRole('navigation', { name: 'Dataset tree', exact: true }).getByRole('button', { name, exact: true }).click();
+    await datasetAction(page, 'Resume saved request…');
     await page.getByRole('button', { name: 'Retry identical request' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     const inventory = await call(request, `${datasetPath(name)}/snapshot-inventory`);

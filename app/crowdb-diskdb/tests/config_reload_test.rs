@@ -100,12 +100,12 @@ fn compaction_engine_trigger_uses_timer_fn_when_config_handle_set() {
     let engine = CompactionEngine::new(Arc::clone(&ddb_kv), cfg).with_config_handle(Arc::clone(&handle));
     match engine.trigger() {
         Trigger::TimerFn(f) => {
-            assert_eq!(f(), Duration::from_secs(30));
+            assert_eq!(f(), Duration::from_secs(5));
             // Simulate a config reload.
             let mut new_config = DdbConfig::default();
-            new_config.persistence.compaction_cadence_secs = 15;
+            new_config.persistence.compaction_cadence_secs = 2;
             handle.store(Arc::new(new_config));
-            assert_eq!(f(), Duration::from_secs(15));
+            assert_eq!(f(), Duration::from_secs(2));
         }
         _other => panic!("expected TimerFn"),
     }
@@ -123,7 +123,7 @@ fn compaction_engine_trigger_uses_fixed_timer_without_config_handle() {
     };
     let engine = CompactionEngine::new(Arc::clone(&ddb_kv), cfg);
     match engine.trigger() {
-        Trigger::Timer(d) => assert_eq!(d, Duration::from_secs(120)),
+        Trigger::Timer(d) => assert_eq!(d, Duration::from_secs(5)),
         _other => panic!("expected Timer"),
     }
 }

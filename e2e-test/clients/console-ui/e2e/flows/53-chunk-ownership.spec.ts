@@ -13,6 +13,7 @@ test('native diagnostics: Chunk ownership matches both durable maps and node sco
   }));
   await page.goto('/?domain=Chunk');
   const tree = page.getByRole('navigation', { name: 'Chunk hierarchy' });
+  for (const name of ['Type', 'Status', 'Strips', 'Size', 'Sealed']) await expect(page.getByRole('table', { name: 'Chunks', exact: true }).getByRole('columnheader', { name, exact: true })).toBeVisible();
   await tree.getByTestId('tree-node-chunk-node-1').getByText('N-1', { exact: true }).click();
   const ownership = page.getByRole('region', { name: 'Chunk ownership', exact: true });
   await expect(ownership).toBeVisible();
@@ -48,7 +49,8 @@ test('native diagnostics: Chunk ownership matches both durable maps and node sco
   await expect(page.getByRole('region', { name: 'Chunk Serving Ownership', exact: true }).getByRole('button', { name: /^CDB-/ })).toHaveCount(3);
   const nodeRow = tree.getByTestId('tree-node-chunk-node-1').getByRole('treeitem').filter({ has: page.getByRole('button', { name: 'N-1', exact: true }) });
   await nodeRow.getByRole('button', { name: 'Expand', exact: true }).click();
-  await expect(tree.getByTestId('tree-node-chunk-server-chunkdb-1').getByText('Serving ownership', { exact: true })).toBeVisible();
+  await expect(tree.getByText('Serving ownership', { exact: true })).toHaveCount(0);
+  await expect(tree.getByText('Storage ownership', { exact: true })).toHaveCount(0);
   const serviceResponse = await request.get('/api/servers');
   expect(serviceResponse.status()).toBe(200);
   const kvId = (await serviceResponse.json()).find((service: { service_type: string; node_id: number }) => service.service_type === 'paxos-kv' && service.node_id === 1).id;

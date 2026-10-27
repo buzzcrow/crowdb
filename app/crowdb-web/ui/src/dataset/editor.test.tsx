@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { Definitions, validateEditor } from './splits/Definitions';
 import { defaultPolicy, type DraftSplit } from './types';
+import { SelectionProvider } from '../contexts/SelectionContext';
 import { DomainProvider } from '../contexts/DomainContext';
 import { DatasetView } from '../views/DatasetView';
 import * as api from './api';
@@ -19,17 +20,25 @@ vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(
   control: vi.fn(async () => ({})),
 }));
 afterEach(() => { vi.clearAllMocks(); localStorage.clear(); });
-it('keeps one action region across creation, capability refresh and inventory reconciliation', async () => {
-  render(<DomainProvider><DatasetView active readonly={false} showActivity={false} /></DomainProvider>);
+it('creates through the parent menu and keeps resource operations out of the center toolbar', async () => {
+  render(<DomainProvider><SelectionProvider><DatasetView active readonly={false} showActivity={false} /></SelectionProvider></DomainProvider>);
   await act(async () => {});
+  fireEvent.contextMenu(screen.getByRole('button', { name: 'Datasets' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Create Dataset…' }));
   fireEvent.change(screen.getByLabelText('New Dataset name'), { target: { value: 'demo' } });
   await act(async () => fireEvent.click(screen.getByRole('button', { name: /^Create Dataset$/ })));
   for (let index = 0; index < 3; index++) {
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh Dataset' })));
-    expect(screen.getAllByRole('region', { name: 'Dataset actions' })).toHaveLength(1);
-    expect(screen.getAllByRole('button', { name: 'Import / New Snapshot' })).toHaveLength(1);
+    expect(screen.queryByRole('region', { name: 'Dataset actions' })).toBeNull();
+    fireEvent.contextMenu(screen.getByTestId('dataset-scope'));
+    expect(screen.getAllByRole('menuitem', { name: 'Import / New Snapshot…' })).toHaveLength(1);
+    expect(screen.getByRole('menuitem', { name: 'Import / New Snapshot…' })).toBeEnabled();
+    fireEvent.keyDown(document, { key: 'Escape' });
   }
   expect(api.mutate).toHaveBeenCalledTimes(1);
+  fireEvent.contextMenu(screen.getByTestId('dataset-scope'));
+  await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: 'Import / New Snapshot…' })));
+  expect(screen.getByRole('dialog', { name: 'Import Snapshot' })).toBeInTheDocument();
 });
 it('invalid rule text blocks saving and invalidates the previously reviewed rule', () => {
   const change = vi.fn();
@@ -57,7 +66,7 @@ it('renaming a weighted member keeps every partition definition on the same weig
 });
 it('readonly exposes inspection without creation, import or lifecycle mutations', async () => {
   vi.mocked(api.listDatasets).mockResolvedValueOnce({ entries: [{ id: '1'.repeat(32), name: 'readonly-demo', namespace: 'dataset-ns', latest: null, stable: null }], after: null });
-  render(<DomainProvider><DatasetView active readonly showActivity={false} /></DomainProvider>);
+  render(<DomainProvider><SelectionProvider><DatasetView active readonly showActivity={false} /></SelectionProvider></DomainProvider>);
   await act(async () => {});
   expect(screen.queryByRole('button', { name: 'Create Dataset' })).toBeNull();
   fireEvent.click(within(screen.getByRole('navigation', { name: 'Dataset tree' })).getByRole('button', { name: 'readonly-demo' }));
@@ -98,9 +107,8 @@ it('storage failure stops a preparation before its network mutation', async () =
 it('reclamation confirmation keeps its exact Snapshot target across navigation', async () => {
   const { Actions } = await import('./Actions');
   const complete = vi.fn();
-  const props = { readonly: false, capabilities: ['snapshot-reclaim'], complete };
+  const props = { action: 'reclaim' as const, readonly: false, capabilities: ['snapshot-reclaim'], complete };
   const { rerender } = render(<Actions {...props} selected={{ kind: 'snapshot', dataset: 'demo', snapshot: '1'.repeat(32) }} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Reclaim Snapshot' }));
   rerender(<Actions {...props} selected={{ kind: 'snapshot', dataset: 'demo', snapshot: '2'.repeat(32) }} />);
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Confirm reclamation' })));
   expect(api.mutate).toHaveBeenCalledWith('snapshot-reclaim', expect.stringContaining(`/snapshots/${'1'.repeat(32)}/reclaim`), 'POST');

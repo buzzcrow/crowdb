@@ -10,8 +10,8 @@ import { prepare, saveOperation, type Operation } from '../operation';
 import { Definitions, validateEditor } from './Definitions';
 import { Publication } from '../Publication';
 
-export function SplitEditor({ dataset, snapshot, initialRevision, recovery, close, complete }: {
-  dataset: string; snapshot: string; initialRevision?: string; recovery?: Operation; close: () => void; complete: (result: PublicationResult) => void;
+export function SplitEditor({ embedded = false, dataset, snapshot, initialRevision, recovery, close, complete }: {
+  embedded?: boolean; dataset: string; snapshot: string; initialRevision?: string; recovery?: Operation; close: () => void; complete: (result: PublicationResult) => void;
 }) {
   const element = useRef<HTMLElement>(null);
   const [op, setOp] = useState<Operation | undefined>(recovery);
@@ -38,7 +38,7 @@ export function SplitEditor({ dataset, snapshot, initialRevision, recovery, clos
     await saveOperation(value); setOp(value);
     try { await prepare(value); } finally { setOp({ ...value }); }
   };
-  return <section ref={element} role="dialog" aria-label="Edit Split revision" className="tw-space-y-3 tw-border tw-border-border tw-p-4">
+  return <section ref={element} role={embedded ? 'region' : 'dialog'} aria-label="Edit Split revision" className="tw-space-y-3 tw-border tw-border-border tw-p-4">
     <h2 className="tw-font-semibold">Edit Split revision · {snapshot}</h2>
     <p className="tw-text-xs">Expected revision: {op?.expectedRevision ?? base?.revision ?? 'none'}. Renaming or removing a Split keeps historical revisions available.</p>
     <Definitions splits={splits} policy={policy} disabled={!ready || busy || !!op} change={(values, rules) => { setSplits(values); setPolicy(rules); }} />

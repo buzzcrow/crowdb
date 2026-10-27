@@ -1,5 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+import { resourceAction } from '../fixtures/resourceMenus';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -12,7 +13,8 @@ test.use({ actionTimeout: 3000 });
 test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware boundaries', async ({ page, request }) => {
   await step('managed node authority and editing capabilities', async () => {
     await page.goto('/');
-    await expect(page.getByTestId('deployment-phase')).toHaveText('Active cluster');
+    await expect.poll(async () => (await (await request.get('/api/node/status')).json()).phase, { intervals: [100] }).toBe('active');
+    await expect(page.getByRole('alert').filter({ hasText: 'Group 0 unavailable' })).toHaveCount(0);
     const capabilities = await request.get('/api/mode');
     expect(capabilities.ok(), await capabilities.text()).toBeTruthy();
     const actual = await capabilities.json();
@@ -35,34 +37,42 @@ test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware bounda
   await step('managed Iceberg schema and owned cleanup', async () => {
     await page.getByTestId('domain-iceberg').click();
     await expect(page.getByLabel('Catalog write token')).toHaveCount(0);
-    await page.getByText('Catalog actions', { exact: true }).click();
-    await page.getByRole('button', { name: 'Create metadata demo', exact: true }).click();
-    await expect(page.getByRole('status').filter({ hasText: 'Demo namespace and table created' })).toBeVisible({ timeout: 3000 });
-    await page.getByRole('navigation', { name: 'Iceberg tree' }).getByRole('button', { name: /^console_demo_/ }).click();
-    await page.getByRole('navigation', { name: 'Iceberg tree' }).getByRole('button', { name: 'example', exact: true }).click();
+    const namespace = `console_demo_${Date.now()}`;
+    const tree = page.getByRole('navigation', { name: 'Iceberg tree' });
+    await resourceAction(page, tree.getByRole('button', { name: 'Catalog', exact: true }), 'Create namespace…');
+    await page.getByLabel('Namespace name', { exact: true }).fill(namespace);
+    await page.getByRole('button', { name: 'Create namespace', exact: true }).click();
+    await tree.getByRole('button', { name: namespace, exact: true }).click();
+    await resourceAction(page, tree.getByRole('button', { name: namespace, exact: true }), 'Create table…');
+    await page.getByLabel('Table name', { exact: true }).fill('example');
+    await page.getByRole('button', { name: 'Create table', exact: true }).click();
+    await tree.getByRole('button', { name: 'example', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Refresh table' })).toBeVisible({ timeout: 3000 });
     await page.getByRole('button', { name: 'Schema', exact: true }).click();
     await expect(page.getByRole('table', { name: 'Table schema', exact: true })).toContainText('long');
-    page.on('dialog', dialog => dialog.accept());
-    await page.getByRole('navigation', { name: 'Iceberg breadcrumbs' }).getByRole('button', { name: 'Catalog', exact: true }).click();
-    await page.getByText('Catalog actions', { exact: true }).click();
-    await page.getByRole('button', { name: 'Clean metadata demo', exact: true }).click();
-    await expect(page.getByRole('navigation', { name: 'Iceberg tree' })).not.toContainText('console_demo_');
+    await resourceAction(page, tree.getByRole('button', { name: 'example', exact: true }), 'Drop table…');
+    await page.getByRole('button', { name: 'Drop table', exact: true }).click();
+    await resourceAction(page, tree.getByRole('button', { name: namespace, exact: true }), 'Drop namespace…');
+    await page.getByRole('button', { name: 'Drop namespace', exact: true }).click();
+    await expect(tree).not.toContainText(namespace);
   });
 
   await step('managed S3 preview and actual block placement', async () => {
     await page.getByTestId('domain-s3').click();
     await expect(page.getByLabel('Access key', { exact: true })).toHaveCount(0);
     await expect(page.getByLabel('Secret key', { exact: true })).toHaveCount(0);
-    await page.getByText('S3 actions', { exact: true }).click();
-    await page.getByRole('button', { name: 'Create object demo', exact: true }).click();
-    await expect(page.getByRole('status').filter({ hasText: 'Demo bucket and object created' })).toBeVisible({ timeout: 3000 });
-    const demoScope = await page.getByText(/^Demo scope: console-demo-/).textContent();
-    const demoBucket = demoScope!.match(/console-demo-[a-f0-9]+/)![0];
-    await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: demoBucket, exact: true }).click();
+    const demoBucket = `console-demo-${Date.now()}`;
+    const tree = page.getByRole('navigation', { name: 'S3 buckets' });
+    await resourceAction(page, tree.getByRole('button', { name: 'S3', exact: true }), 'Create bucket…');
+    await page.getByLabel('New bucket', { exact: true }).fill(demoBucket);
+    await page.getByRole('button', { name: 'Create bucket', exact: true }).click();
+    await tree.getByRole('button', { name: demoBucket, exact: true }).click();
+    await resourceAction(page, tree.getByRole('button', { name: demoBucket, exact: true }), 'Upload object…');
+    await page.getByLabel('Object key', { exact: true }).fill('example.txt');
+    await page.getByLabel('Object file').setInputFiles({ name: 'example.txt', mimeType: 'text/plain', buffer: Buffer.from('CROWDB console demo\n') });
+    await page.getByRole('button', { name: 'Upload object', exact: true }).click();
     await page.getByRole('table', { name: 'S3 objects' }).getByRole('button', { name: 'example.txt', exact: true }).click();
-    await page.getByText('Object actions', { exact: true }).click();
-    await page.getByRole('button', { name: 'Preview first 4 KiB' }).click();
+    await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Preview first 4 KiB');
     await expect(page.getByLabel('Object preview', { exact: true })).toContainText('CROWDB console demo', { timeout: 3000 });
     const locationsResponse = await request.get(`/api/access/s3-inspect/locations?bucket=${demoBucket}&key=example.txt&limit=20`);
     expect(locationsResponse.ok(), await locationsResponse.text()).toBeTruthy();
@@ -90,10 +100,11 @@ test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware bounda
       await expect(properties.locator('dt').filter({ hasText: new RegExp(`^${field}$`) }).locator('..').locator('dd')).toHaveText(String(expected));
     }
     await page.getByTestId('domain-s3').click();
-    await page.getByRole('navigation', { name: 'S3 breadcrumbs' }).getByRole('button', { name: 'S3', exact: true }).click();
-    await page.getByText('S3 actions', { exact: true }).click();
-    await page.getByRole('button', { name: 'Clean object demo', exact: true }).click();
-    await expect(page.getByRole('navigation', { name: 'S3 buckets' })).not.toContainText(demoBucket);
+    await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Delete object…');
+    await page.getByRole('button', { name: 'Delete object', exact: true }).click();
+    await resourceAction(page, tree.getByRole('button', { name: demoBucket, exact: true }), 'Delete empty bucket…');
+    await page.getByRole('button', { name: 'Delete empty bucket', exact: true }).click();
+    await expect(tree).not.toContainText(demoBucket);
   });
 });
 
@@ -101,7 +112,8 @@ test('Node authority outage rejects mutations and marks retained observations st
   const pid = Number(process.env.CROWDB_NATIVE_KV_PID);
   expect(pid, 'Run the owned release-container managed runner').toBeGreaterThan(0);
   await page.goto('/');
-  await expect(page.getByTestId('deployment-phase')).toHaveText('Active cluster');
+  await expect.poll(async () => (await (await request.get('/api/node/status')).json()).phase, { intervals: [100] }).toBe('active');
+  await expect(page.getByRole('alert').filter({ hasText: 'Group 0 unavailable' })).toHaveCount(0);
   await page.clock.install();
   await signalService(pid, 'STOP');
   try {
@@ -109,18 +121,19 @@ test('Node authority outage rejects mutations and marks retained observations st
       && response.status() === 200, { timeout: 10000 });
     await page.clock.runFor(3001);
     expect((await (await observed).json()).phase).toBe('authority_unavailable');
-    await expect(page.getByTestId('deployment-phase')).toHaveText('Group 0 unavailable · confirmed view is stale');
+    await expect(page.getByRole('alert').filter({ hasText: 'Group 0 unavailable' })).toHaveText('Group 0 unavailable · confirmed view is stale');
     // The API fixture covers the server's bounded authority check.
     const mutation = await request.post('/api/racks', { data: { id: 2, name: 'must-not-commit' } });
     expect(mutation.status()).toBe(502);
-    await expect(page.getByRole('region', { name: 'Candidate nodes' })).toBeVisible();
+    await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'Candidate nodes', exact: true })).toBeVisible();
     await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })
       .getByRole('button', { name: 'N-1', exact: true })).toBeVisible();
   } finally {
     await signalService(pid, 'CONT');
     await page.clock.resume();
   }
-  await expect(page.getByTestId('deployment-phase')).toHaveText('Active cluster');
+  await expect.poll(async () => (await (await request.get('/api/node/status')).json()).phase, { intervals: [100] }).toBe('active');
+  await expect(page.getByRole('alert').filter({ hasText: 'Group 0 unavailable' })).toHaveCount(0);
   const racks = await request.get('/api/racks');
   expect(racks.ok(), await racks.text()).toBe(true);
   expect((await racks.json()).some((rack: { id: number }) => rack.id === 2)).toBe(false);

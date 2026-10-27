@@ -247,6 +247,8 @@ impl std::fmt::Debug for IcebergLocatorSigningConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DatasetConfig {
+    /// Delay before reclaiming marked Datasets and Snapshots.
+    pub reclaim_grace_seconds: u64,
     pub listen: Option<String>,
     pub max_in_flight: usize,
     pub max_batch_size: usize,
@@ -256,6 +258,7 @@ pub struct DatasetConfig {
 impl Default for DatasetConfig {
     fn default() -> Self {
         Self {
+            reclaim_grace_seconds: 20 * 60,
             listen: None,
             max_in_flight: 8,
             max_batch_size: 10_000,
@@ -425,6 +428,9 @@ impl BaseConfig for AccessConfig {
 
 impl AccessConfig {
     fn validate_dataset(&self) -> Result<(), String> {
+        if self.dataset.reclaim_grace_seconds == 0 {
+            return Err("dataset.reclaim_grace_seconds must be positive".into());
+        }
         if self.dataset.max_in_flight == 0 || self.dataset.max_in_flight > 64 {
             return Err("dataset.max_in_flight must be between 1 and 64".into());
         }

@@ -43,6 +43,7 @@ test('native diagnostics: Zone canvas colors match every actual allocation bit',
   await step('native zone bitmap DOM and pixels', async () => {
     const bitmap = page.getByTestId('zone-bitmap');
     await expect(bitmap).toBeVisible();
+    await expect(bitmap.getByLabel('Allocation accounting')).toContainText('blocks awaiting compaction');
     const firstWindow = states.slice(0, 4096);
     await expect(bitmap.getByLabel('Displayed block window usage')).toContainText(`${firstWindow.reduce((sum, bit) => sum + bit, 0)} used`);
     const canvas = bitmap.getByLabel('Zone block usage');
@@ -66,6 +67,33 @@ test('native diagnostics: Zone canvas colors match every actual allocation bit',
     await expect(bitmap.getByRole('button', { name: 'Next blocks', exact: true })).toBeDisabled();
     await bitmap.getByRole('button', { name: 'Previous blocks', exact: true }).click();
     await expect(bitmap).toContainText('Blocks 0–4095');
+  });
+  await step('native block selection uses actual allocation geometry', async () => {
+    const canvas = page.getByLabel('Zone block usage', { exact: true });
+    await canvas.click({ position: { x: 8, y: 2 } });
+    const inspector = page.getByRole('complementary', { name: 'Entity inspector' });
+    const field = (name: string) => inspector.getByText(name, { exact: true }).locator('..').locator('dd');
+    await expect(field('Block index')).toHaveText('1');
+    const unit = displayedUsage.disk_groups[0].disks[0].unit_size_bytes;
+    await expect(field('Allocation unit (bytes)')).toHaveText(String(unit));
+    await expect(field('Zone offset (bytes)')).toHaveText(String(unit));
+    await expect(field('Disk offset (bytes)')).toHaveText(String(unit));
+    await canvas.press('ArrowRight');
+    await expect(field('Block index')).toHaveText('2');
+    await expect(field('Zone offset (bytes)')).toHaveText(String(2 * unit));
+  });
+  await step('same-Zone refresh failure retains the observed bitmap', async () => {
+    const stopped = await request.post('/api/nodes/1/diskdb/stop', { data: {} });
+    expect(stopped.ok(), await stopped.text()).toBe(true);
+    try {
+      await page.getByRole('button', { name: 'Refresh bitmap', exact: true }).click();
+      await expect(page.getByRole('region', { name: 'Zone 0 detail', exact: true })).toContainText('Stale observation');
+      await expect(page.getByTestId('zone-bitmap')).toBeVisible();
+      await expect(page.getByTestId('zone-bitmap')).toContainText('Selected block 2');
+    } finally {
+      const restarted = await request.post('/api/nodes/1/diskdb/restart', { data: {} });
+      expect(restarted.ok(), await restarted.text()).toBe(true);
+    }
   });
   await step('native zone replacement pages', async () => {
     const zones = page.getByRole('group', { name: 'Disk zones', exact: true });

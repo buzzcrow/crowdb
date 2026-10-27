@@ -47,8 +47,7 @@ test.describe('cluster · registry browser', () => {
       await expect(aside.getByText('R-60 (Rack Sixty)')).toBeVisible({ timeout: 3_000 });
 
       await step('dc-root: diagram refresh', async () => {
-        await page.getByRole('button', { name: 'Show diagram', exact: true }).click();
-        // The topology canvas also renders the datacenter node at layer 0.
+            // The topology canvas also renders the datacenter node at layer 0.
         await expect(page.locator('.react-flow__node').filter({ hasText: 'datacenter' })).toBeVisible({ timeout: 3_000 });
       });
 
@@ -149,7 +148,8 @@ test.describe('cluster · registry browser', () => {
         const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
 
         // Click Add Rack
-        await aside.getByRole('button', { name: 'Add Rack' }).click();
+        await aside.getByRole('button', { name: 'datacenter', exact: true }).click({ button: 'right' });
+        await page.getByRole('menuitem', { name: 'Add Rack', exact: true }).click();
         const dialog = page.getByRole('dialog', { name: 'Add Rack' });
         await expect(dialog).toBeVisible();
         await dialog.getByLabel('Rack ID').fill('37');

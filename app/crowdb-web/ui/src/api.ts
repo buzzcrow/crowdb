@@ -643,6 +643,7 @@ export async function clusterInitialization(options?: RequestOptions): Promise<I
 }
 
 export interface AutoJoinStatus {
+  candidates?: Record<string, boolean>;
   enabled: boolean;
   target_cluster_id: string | null;
   mode: 'standard';
@@ -660,10 +661,10 @@ export async function nodeAutoJoin(options?: RequestOptions): Promise<AutoJoinSt
   return jsonOrThrow(await fetchWithOptions('/api/node/auto-join', options));
 }
 
-export async function setNodeAutoJoin(enabled: boolean, target?: 'local-draft'): Promise<AutoJoinStatus> {
+export async function setNodeAutoJoin(enabled: boolean, target?: 'local-draft', discoveryId?: string): Promise<AutoJoinStatus> {
   return jsonOrThrow(await fetchWithOptions('/api/node/auto-join', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled, target }), skipDeduplication: true,
+    body: JSON.stringify({ enabled, target, ...(discoveryId ? { discovery_id: discoveryId } : {}) }), skipDeduplication: true,
   }));
 }
 

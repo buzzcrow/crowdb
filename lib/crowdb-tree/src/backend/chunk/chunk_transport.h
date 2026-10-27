@@ -79,8 +79,11 @@ class ChunkTransport
 
     virtual Status allocate_mirror_chunk(uint64_t logical_capacity, uint64_t owner_epoch, ChunkId *chunk_id,
                                          PagePurpose purpose) = 0;
+    // The ordered pack planner prepares capacity before submitting mirror I/O.
+    // Allocation capacity is a ceiling; RPC-backed chunks grow in small strips.
+    virtual Status ensure_capacity(ChunkId chunk_id, uint64_t required_bytes);
     virtual Status write_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, const uint8_t *data,
-                                size_t length)                = 0;
+                                size_t length) = 0;
     virtual void   submit_write_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, const uint8_t *data,
                                        size_t length, ChunkTransportCompletion completion);
     virtual Status advance_write(ChunkId chunk_id, uint64_t expected_bytes, uint64_t acknowledged_bytes) = 0;

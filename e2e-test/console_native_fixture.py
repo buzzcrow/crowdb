@@ -86,6 +86,11 @@ class NativeConsoleCluster(ShellBrowserCluster):
         for index in range(self.node_count):
             data = node_data(self, index, prepare_logs=False)
             environment, mounts = accept_policy(self, index, data, host)
+            # This fixture owns explicit rack/admission setup. Disable the
+            # product's default Auto join before any monitor can discover peers.
+            console = data / "console"
+            console.mkdir(exist_ok=True)
+            (console / "auto-join.json").write_text(json.dumps({"version": 1, "enabled": False}))
             disks = data / "disks"
             disks.mkdir()
             disk = disks / f"disk-{index + 1}.img"
@@ -264,6 +269,11 @@ class NativeConsoleCluster(ShellBrowserCluster):
                     extra_env={"CROWDB_NATIVE_CHUNK_FIXTURE": json.dumps(chunks)})
                 return {"passed": True}
             cases = {
+                "console::native_browser::catalog_resource_navigation": (
+                    "native diagnostics: Iceberg empty Catalog omits the first-success guide",
+                    "native diagnostics: Iceberg committed references and Parquet footer",
+                    "native diagnostics: Iceberg actual catalog tables and nested schema preserve scope",
+                ),
                 "console::browser_dataset::browse": "Dataset native: browse",
                 "console::browser_dataset::import": "Dataset native: import",
                 "console::browser_dataset::split_revisions": "Dataset native: split_revisions",
@@ -281,7 +291,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 "console::native_browser::interrupted_plan_reconciliation":
                     "native diagnostics: interrupted six-service plan reconciles without duplicate deployment",
                 "console::native_browser::scanner_and_scoped_recalc":
-                    "native diagnostics: scanner and scoped recalc show actual completed observations",
+                    ("native diagnostics: Capacity retains hardware and marks interrupted DDB usage unknown",
+                     "native diagnostics: scanner and scoped recalc show actual completed observations"),
                 "console::native_browser::multipart_upload_and_physical_navigation":
                     "S3 native multipart upload, HEAD, bounded preview and full round trip",
                 "console::native_browser::chunk_ownership_scope":
@@ -295,7 +306,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
             if self.case_name == "console::native_browser::hardware_capacity_and_dashed_status":
                 verify_file_admission(self)
             self.browser_timeout = 180
-            self.browser(name, config="native.config.ts")
+            self.browser(name, config="native.config.ts", expected=len(name) if isinstance(name, tuple) else 1)
             if self.supplied_candidates:
                 verify_candidates(self)
             return {"passed": True}

@@ -407,11 +407,14 @@ compaction to finish before allocating from the new zones.
 
 ### Periodic compaction fallback
 
-A background compaction task (`CompactionEngine`, 300s cadence or
-`uncompacted_free_record_count` threshold) handles zones that don't
-rotate (low-churn zones, or all-zones-active scenarios). This ensures
-freed space is eventually reclaimed even without rotation. The periodic
-compaction also skips active zones and uses the zone-level lock.
+A background compaction task (`CompactionEngine`) polls at most every five
+seconds for the configured `uncompacted_free_record_count` threshold. Independently,
+the full sweep cadence (default 300s) admits every nonempty backlog, including
+small zones that can never reach the threshold. Threshold polls do not reset
+the full sweep deadline. Both paths skip active zones and use the zone-level
+lock. A disk whose zones are all active must rotate a zone out before background
+compaction can reclaim its free records; managed files normally provide spare
+zones for this purpose.
 
 ### Compaction algorithm
 

@@ -57,7 +57,8 @@ async fn complete_input_replaces_workflow_writes_and_keeps_the_same_manifest_and
     assert_eq!(store.data_head_reads.load(Ordering::Relaxed), head_reads);
     assert_eq!(result.snapshot, snapshot);
     assert_eq!(result.sample_count, 45);
-    assert_eq!(new_cost, (187, 14, 153));
+    // Dataset deletion admission adds a root read, child-fence read and root CAS.
+    assert_eq!(new_cost, (189, 14, 154));
     assert_eq!(
         authority.get_manifest(&identity, snapshot).await.unwrap().samples,
         expected

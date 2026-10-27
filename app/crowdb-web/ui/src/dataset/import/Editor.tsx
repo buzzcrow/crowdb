@@ -13,8 +13,8 @@ import { parseMapping, type Mapping } from './mapping';
 import { saveImport } from './transfer';
 
 const emptyMapping = JSON.stringify({ version: 1, schema: { version: 1, fields: [] }, samples: [] }, null, 2);
-export function ImportEditor({ dataset, parent: initialParent, source: initialSource, recovery, close, complete }: {
-  dataset: string; parent?: string; source?: SplitSource; recovery?: Operation; close: () => void; complete: (result: PublicationResult) => void;
+export function ImportEditor({ embedded = false, dataset, parent: initialParent, source: initialSource, recovery, close, complete }: {
+  embedded?: boolean; dataset: string; parent?: string; source?: SplitSource; recovery?: Operation; close: () => void; complete: (result: PublicationResult) => void;
 }) {
   const transfer = useRef<AbortController>();
   useEffect(() => () => transfer.current?.abort(), []);
@@ -50,7 +50,7 @@ export function ImportEditor({ dataset, parent: initialParent, source: initialSo
     try { await saveImport({ dataset, parent, inherit, mode, predicate, frozenSource, filterSplit, splits, policy, op, mapping, files, signal, setOp, setProgress }); }
     finally { transfer.current = undefined; }
   };
-  return <section ref={element} role="dialog" aria-label="Import Snapshot" className="tw-space-y-3 tw-border tw-border-border tw-p-4">
+  return <section ref={element} role={embedded ? 'region' : 'dialog'} aria-label="Import Snapshot" className="tw-space-y-3 tw-border tw-border-border tw-p-4">
     <h2 className="tw-font-semibold">Import / New Snapshot</h2>
     <p className="tw-text-xs">Local test/demo import · namespace dataset-ns · {dataset}</p>
     {(!op || !op.input) && <>

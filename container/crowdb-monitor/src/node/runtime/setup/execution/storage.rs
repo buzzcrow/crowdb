@@ -8,7 +8,7 @@ use crate::DeploymentProfile;
 use crowdb_kv_client::{CrowdbKvClient, HardwareClient};
 use crowdb_protocol::mgmt::node::{
     setup::{SetupDiskStatus, SetupStepPhase, SetupStorage},
-    storage::{DiskInput, FileDiskAdmission, FilePreparationPhase, PrepareDiskFile},
+    storage::{managed_file_zone_bytes, DiskInput, FileDiskAdmission, FilePreparationPhase, PrepareDiskFile},
     NodeBinding, NodeControl,
 };
 
@@ -65,7 +65,8 @@ pub(super) async fn advance(
                 rack_id: rack,
                 disk_group_id: id,
                 unit_size_bytes: 1024 * 1024,
-                zone_size_bytes: capacity_bytes.min(32 * 1024 * 1024 * 1024),
+                zone_size_bytes: managed_file_zone_bytes(capacity_bytes)
+                    .ok_or("invalid managed file geometry")?,
                 media_type: None,
             }),
         });

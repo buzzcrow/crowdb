@@ -57,7 +57,7 @@ async fn step(
             node::save(&state.runtime_root.join("auto-join.json"), &policy)?;
         }
     }
-    if !policy.enabled {
+    if !policy.enabled && !policy.candidates.values().any(|enabled| *enabled) {
         return Ok(json!({"phase": "disabled"}));
     }
     let authority = node::status(State(state.clone())).await.0;
@@ -93,9 +93,7 @@ async fn admit_candidates(
     attempts: &mut BTreeMap<String, (Instant, String)>,
     bound: bool,
 ) -> Result<Value, Failure> {
-    if bound {
-        return finish(state, true, Vec::new(), Vec::new()).await;
-    }
+    let policy = super::read(state)?;
     let deployment = super::deployment(state)?;
     let snapshot = node::candidates(State(state.clone()))
         .await
@@ -108,9 +106,37 @@ async fn admit_candidates(
             )
         })?
         .0;
-    let selected = super::formation::candidates(&snapshot, &deployment)?;
-    if let Some(waiting) = super::formation::waiting_for_peers(state, &snapshot, &selected, &deployment)? {
-        return Ok(waiting);
+    let selected: Vec<_> = if bound {
+        snapshot
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.state == crowdb_protocol::mgmt::node::CandidateState::Unbound
+                    && policy
+                        .candidates
+                        .get(&candidate.advertisement.discovery_id)
+                        .copied()
+                        .unwrap_or(policy.enabled)
+                    && candidate.advertisement.formation.as_ref() == Some(&deployment.formation())
+            })
+            .collect()
+    } else {
+        super::formation::candidates(&snapshot, &deployment)?
+            .into_iter()
+            .filter(|candidate| {
+                policy
+                    .candidates
+                    .get(&candidate.advertisement.discovery_id)
+                    .copied()
+                    .unwrap_or(policy.enabled)
+            })
+            .collect()
+    };
+    if !bound {
+        if let Some(waiting) = super::formation::waiting_for_peers(state, &snapshot, &selected, &deployment)?
+        {
+            return Ok(waiting);
+        }
     }
     super::formation::prepare_local_rack(state, &deployment).await?;
     let config = state
@@ -181,11 +207,29 @@ async fn finish(
             json!({"phase": "waiting", "members": eligible, "required_voters": required, "needs_access": needs_access}),
         );
     }
-    if !super::read(state)?.enabled {
-        return Ok(json!({"phase": "disabled"}));
+    let _operation = crate::services::Operation::claim(
+        state,
+        vec![
+            "cluster/init".into(),
+            "node/admission".into(),
+            "node/auto-join".into(),
+        ],
+    )?;
+    let policy = super::read(state)?;
+    let records = node::records(state)?;
+    if eligible.iter().any(|id| {
+        !records.iter().any(|record| {
+            record.node_id == *id
+                && !record.cancelled
+                && policy
+                    .candidates
+                    .get(&record.discovery_id)
+                    .copied()
+                    .unwrap_or(policy.enabled)
+        })
+    }) {
+        return Ok(json!({"phase": "waiting", "reason": "Candidate Auto join selection changed"}));
     }
-    let _operation =
-        crate::services::Operation::claim(state, vec!["cluster/init".into(), "node/admission".into()])?;
     let progress = node::initialization::trigger(state, &eligible, Some(false)).await?;
     Ok(json!({"phase": "initializing", "members": eligible, "operation": progress}))
 }
@@ -222,7 +266,8 @@ async fn admit_candidate(
         setup: None,
         expected_formation: Some(deployment.formation()),
     };
-    if !super::read(state)?.enabled {
+    let policy = super::read(state)?;
+    if !policy.candidates.get(id).copied().unwrap_or(policy.enabled) {
         return Ok(Some(json!({"phase": "disabled"})));
     }
     match node::admit(State(state.clone()), Json(body)).await {

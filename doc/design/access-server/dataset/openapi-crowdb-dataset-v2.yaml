@@ -425,11 +425,11 @@ paths:
         Requires split-revision-delete. Accepts only the two resource IDs, with no
         query parameters or request body. The current Split and the Snapshot's
         initial Split are protected. A successful mark rejects new reads and
-        persists one fixed twenty-minute reclaim_after deadline. Repeating the
+        persists one fixed reclaim_after deadline using dataset.reclaim_grace_seconds (default 1200). Repeating the
         same DELETE preserves that deadline. Background cleanup seals membership
         metadata; it does not delete sample payloads. The owner Snapshot may
         reclaim this metadata after its own read admission closes and its own
-        twenty-minute grace expires. Complete revisions otherwise follow their
+        configured (default twenty-minute) grace expires. Complete revisions otherwise follow their
         owner Snapshot's lifetime, without an independent automatic TTL. No
         request, response or progress session is persisted. Unknown outcomes
         return directly; an explicit client retry repeats the same two-ID DELETE.
@@ -672,7 +672,62 @@ paths:
                   truncated: {type: boolean}
         default:
           $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/deletion/{id}:
+    get:
+      operationId: datasetDeletionStatus
+      summary: Reconcile a deletion for the exact Dataset identity
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, pattern: '^[0-9a-f]{32}$'}
+      responses:
+        '200':
+          description: Null before deletion, otherwise the durable receipt; identity mismatch is 409.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deletion]
+                properties:
+                  deletion:
+                    anyOf:
+                    - $ref: '#/components/schemas/DatasetDeletion'
+                    - type: 'null'
+        default:
+          $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}:
+    delete:
+      operationId: deleteDatasetV2
+      summary: Mark an empty Dataset deleted
+      description: >-
+        Requires dataset-delete capability and exact Dataset ID. Nonempty (including
+        pending creation/cleanup) returns 409 dataset_not_empty. Successful marking
+        immediately hides the Dataset. Cleanup follows dataset.reclaim_grace_seconds
+        (default 1200). The name remains reserved until cleanup completes. Retries
+        preserve the deadline; stale IDs cannot delete a replacement Dataset.
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [id]
+              properties:
+                id: {type: string, pattern: '^[0-9a-f]{32}$'}
+      responses:
+        '200':
+          description: Durable deletion receipt, including idempotent retries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetDeletion'
+        default:
+          $ref: '#/components/responses/InspectionError'
     put:
       operationId: createDatasetV2
       summary: Create a Dataset
@@ -1093,6 +1148,13 @@ components:
           uniqueItems: true
           items: {type: string}
           description: Unknown names may be ignored; required names must be present.
+    DatasetDeletion:
+      type: object
+      required: [id, reclaim_after, complete]
+      properties:
+        id: {type: string, pattern: '^[0-9a-f]{32}$'}
+        reclaim_after: {type: string, pattern: '^[0-9]+$'}
+        complete: {type: boolean}
     DatasetInfo:
       type: object
       required: [id, namespace, name, latest, stable]

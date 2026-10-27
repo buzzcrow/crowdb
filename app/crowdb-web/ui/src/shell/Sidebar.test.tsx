@@ -16,6 +16,8 @@ import {
 } from '../types';
 import type { NodeDiskGroups } from '../data/useCapacityTree';
 
+vi.mock('./CandidateNodes', () => ({ CandidateNodes: () => <div>Candidate children</div> }));
+
 const rack: Rack = {
   id: 1,
   name: 'r1',
@@ -86,6 +88,19 @@ function renderSidebar(domain: Domain, props: Record<string, unknown> = {}) {
 }
 
 describe('Sidebar · Cluster tree projection', () => {
+  it('places candidate nodes beside racks under Datacenter and toggles without selecting a resource', () => {
+    const onNodeClick = vi.fn();
+    const { getByTestId, getByText, queryByText } = renderSidebar(Domain.Cluster, { nodeManagement: true, onNodeClick });
+    const candidates = getByTestId('tree-node-NODE-CANDIDATES');
+    expect(candidates.parentElement).toBe(getByTestId('tree-node-R-1').parentElement);
+    expect(getByTestId('tree-node-DC-datacenter')).toContainElement(candidates);
+    expect(getByText('Candidate children')).toBeVisible();
+    fireEvent.click(within(candidates).getByRole('button', { name: 'Candidate nodes' }));
+    expect(queryByText('Candidate children')).toBeNull();
+    expect(onNodeClick).not.toHaveBeenCalled();
+    fireEvent.click(within(candidates).getByRole('button', { name: 'Expand' }));
+    expect(getByText('Candidate children')).toBeVisible();
+  });
   it('renders rack → node → PKV server under the node', () => {
     const { getByText, queryByText } = renderSidebar(Domain.Cluster);
     expect(getByText(/R-1/)).toBeTruthy();
@@ -124,6 +139,20 @@ describe('Sidebar · Cluster tree projection', () => {
     expect(diskdb.contains(getByText('0123456789ab…'))).toBe(false);
   });
 
+  it('uses actual ownership for DiskDB children including disks on another Node', () => {
+    const onNodeClick = vi.fn();
+    const { getByTestId } = renderSidebar(Domain.Cluster, { onNodeClick,
+      diskdbInstanceIdByNodeId: new Map([[11, 'remote-owner']]), diskdbNodeIds: new Set([10, 11]),
+      diskdbInstances: [{ instance_id: 'remote-owner', rpc_endpoint: 'n11:7100', last_heartbeat_ms: 0, owned_dg_ids: [100], group_usages: [] }],
+      hardwareCapacity: { disk_groups: [{ rack_id: 1, node_id: 10, disk_group_id: 100, status: 1, disks: [] }] },
+    });
+    fireEvent.click(within(getByTestId('tree-node-DDB-11')).getByRole('button', { name: 'Expand' }));
+    const owned = getByTestId('tree-node-OWNER-remote-owner-CH-DG-10-100');
+    fireEvent.click(within(owned).getByRole('button', { name: /Physical Group/ }));
+    expect(onNodeClick.mock.calls[0][0]).toMatchObject({ type: 'DiskGroup', rawId: 100, parentIds: { node_id: 10 } });
+    expect(within(getByTestId('tree-node-DDB-10')).queryByText(/Physical Group/)).toBeNull();
+  });
+
   it('exposes candidate scope with honest unknown and stale observed counts', () => {
     const onNodeClick = vi.fn();
     const { getByTestId, getByText } = renderSidebar(Domain.Cluster, {
@@ -158,10 +187,10 @@ describe('Sidebar · KV logical projection', () => {
     expect(queryByText('N-10')).toBeNull();
   });
 
-  it('offers documentation beside the title and an Add Store action', () => {
-    const { getByRole } = renderSidebar(Domain.KV, { onAdd: vi.fn() });
+  it('offers documentation beside the title without a duplicate Add Store action', () => {
+    const { getByRole, queryByRole } = renderSidebar(Domain.KV, { onAdd: vi.fn() });
     expect(getByRole('link', { name: 'Help' })).toHaveAttribute('href', 'https://crowdb.dev/docs/manual/console/ui/tab/kv/');
-    expect(getByRole('button', { name: 'Add Store' })).toBeTruthy();
+    expect(queryByRole('button', { name: 'Add Store' })).toBeNull();
   });
 });
 

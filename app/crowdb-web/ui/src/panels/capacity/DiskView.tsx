@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { HardDrive, Activity, RotateCw, Loader2 } from 'lucide-react';
 import type {
   CapacityUsageResponse,
@@ -19,6 +19,9 @@ import { useToast } from '../../contexts/ToastContext';
 import { useActivity } from '../../contexts/ActivityContext';
 import { useZoneBitmap } from '../../data/useZoneBitmap';
 import { ZoneGrid } from '../ZoneGrid';
+import { useSelection } from '../../contexts/SelectionContext';
+import { blockState } from './bitmap';
+import { Domain } from '../../types';
 import { ZoneBitmap } from '../ZoneBitmap';
 import { RecalcPanel } from '../RecalcPanel';
 import { observeCapacity, diskKey } from './observation';
@@ -53,10 +56,14 @@ export function DiskView({
   onRefresh,
 }: DiskViewProps) {
   const { success, error } = useToast();
+  const { inspectEntity, selectedEntity } = useSelection();
   const { log } = useActivity();
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const selectedZoneIndex = query.zone;
-  const setSelectedZoneIndex = (zone: number | null, page = query.page) => onQueryChange({ zone, page, blockStart: zone === query.zone ? query.blockStart : 0 });
+  const setSelectedZoneIndex = (zone: number | null, page = query.page) => {
+    if (selectedEntity?.allocationBlock) { const { allocationBlock: _, ...entity } = selectedEntity; inspectEntity(entity); }
+    onQueryChange({ zone, page, blockStart: zone === query.zone ? query.blockStart : 0 });
+  };
 
   const disk = useMemo<DiskInfoDto | null>(() => {
     const usageDg = usage?.disk_groups.find((g) => g.disk_group_id === dgId);
@@ -85,6 +92,13 @@ export function DiskView({
     selectedZoneIndex,
     active,
   );
+
+  useEffect(() => {
+    const block = selectedEntity?.allocationBlock;
+    if (!block || !bitmapZone || selectedEntity.id !== diskId || block.zone !== selectedZoneIndex) return;
+    const state = blockState(bitmapZone.usage_bitmap, block.index);
+    if (block.state !== state || block.stale !== !!bitmapError) inspectEntity({ ...selectedEntity, allocationBlock: { ...block, state, stale: !!bitmapError } });
+  }, [bitmapZone, bitmapError, selectedEntity, inspectEntity, diskId, selectedZoneIndex]);
 
   const runAction = useCallback(async (
     actionId: string,
@@ -234,13 +248,25 @@ export function DiskView({
           <div className="tw-text-xs tw-text-muted tw-mb-2">
             Zone {selectedZoneIndex} bitmap
             {bitmapLoading && ' · loading…'}
-            {bitmapError && ` · error: ${bitmapError.message}`}
+            {bitmapError && ` · ${bitmapZone ? 'Stale observation · ' : ''}error: ${bitmapError.message}`}
+            {bitmapZone && ' · Totals for the entire Zone; bitmap below shows one window'}
             {bitmapZone && ` · ${bitmapZone.busy_block_count} busy / ${bitmapZone.free_block_count} free blocks`}
           </div>
           {bitmapZone && (
             <ZoneBitmap key={selectedZoneIndex}
               start={query.blockStart}
               onStartChange={blockStart => onQueryChange({ ...query, blockStart })}
+              selectedBlock={selectedEntity?.id === diskId && selectedEntity.allocationBlock?.zone === selectedZoneIndex ? selectedEntity.allocationBlock.index : undefined}
+              onSelectBlock={index => {
+                const unitBytes = disk.unit_size_bytes > 0 ? disk.unit_size_bytes : undefined;
+                const zoneOffset = unitBytes === undefined ? undefined : index * unitBytes;
+                const diskOffset = unitBytes && disk.zone_size_units > 0 ? (selectedZoneIndex * disk.zone_size_units + index) * unitBytes : undefined;
+                inspectEntity({ type: 'Disk', id: diskId, name: diskId, domain: Domain.Cluster,
+                  parentIds: { rack_id: disk.rack_id, node_id: disk.node_id, disk_group_id: dgId },
+                  allocationBlock: { index, zone: selectedZoneIndex, state: blockState(bitmapZone.usage_bitmap, index), unitBytes,
+                    zoneOffset: Number.isSafeInteger(zoneOffset) ? zoneOffset : undefined,
+                    diskOffset: Number.isSafeInteger(diskOffset) ? diskOffset : undefined, stale: !!bitmapError } });
+              }}
               usageBitmap={bitmapZone.usage_bitmap}
               totalUnits={bitmapZone.busy_block_count + bitmapZone.free_block_count}
             />

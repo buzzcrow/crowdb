@@ -15,13 +15,16 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
   };
   await page.goto('/?domain=Cluster');
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  await expect(page.locator('header').getByTitle('Cluster health: Healthy', { exact: true })).toBeVisible();
   for (const [kind, label, prefix] of [['chunkdb', 'crowdb-chunk-db', 'CDB'], ['diskio', 'crowdb-disk-io', 'DIO'], ['chunk-kv', 'crowdb-chunk-kv', 'CKV'], ['access-server', 'crowdb-access-server', 'AS']]) {
     const original = (await list()).find((row: { node_id: number; service_type: string }) => row.node_id === 1 && row.service_type === kind);
     expect(original.pid_node_id).toBe(original.node_id);
+    if (kind === 'access-server') expect(original.health).toBe('up');
     expect(original.pid).toBeGreaterThan(0); expect(await alive(original.pid)).toBe(true);
     const node = sidebar.getByRole('button', { name: 'N-1', exact: true });
     const item = sidebar.getByText(`${prefix}-1`, { exact: true });
     await expect(item).toBeVisible();
+    if (kind === 'access-server') await expect(sidebar.getByRole('button', { name: 'AS-access-1', exact: true })).toHaveCount(0);
     await node.click({ button: 'right' });
     await page.getByRole('menuitem', { name: `${prefix}-1 Running`, exact: true }).hover();
     const stopped = page.waitForResponse(response =>
@@ -30,12 +33,12 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
     await page.getByRole('menuitem', { name: `Stop ${label}`, exact: true }).click();
     const stopResponse = await stopped;
     expect(stopResponse.status(), await stopResponse.text()).toBe(200);
-    await expect(page.getByRole('button', { name: 'Refresh', exact: true }).locator('svg')).not.toHaveClass(/tw-animate-spin/);
+    await expect(page.locator('header').getByRole('button', { name: 'Refresh', exact: true }).locator('svg')).not.toHaveClass(/tw-animate-spin/);
     await expect.poll(() => alive(original.pid), { intervals: [100] }).toBe(false);
     await expect.poll(async () => {
       const stopped = (await list()).find((row: { id: string }) => row.id === original.id);
-      return { id: stopped?.id, pid: stopped?.pid ?? null };
-    }, { intervals: [100] }).toEqual({ id: original.id, pid: null });
+      return { id: stopped?.id, pid: stopped?.pid ?? null, ...(kind === 'access-server' ? { health: stopped?.health } : {}) };
+    }, { intervals: [100] }).toEqual({ id: original.id, pid: null, ...(kind === 'access-server' ? { health: 'down' } : {}) });
     let startSubmitted = false;
     try {
       await node.click({ button: 'right' });
@@ -55,7 +58,7 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
       expect(response.status(), await response.text()).toBe(200);
       await step(`native lifecycle: ${original.id} new process`, () => expect.poll(async () => {
         const current = (await list()).find((row: { id: string }) => row.id === original.id);
-        return current?.pid && current.pid !== original.pid && await alive(current.pid);
+        return current?.pid && current.pid !== original.pid && await alive(current.pid) && (kind !== 'access-server' || current.health === 'up');
       }, { intervals: [100] }).toBe(true));
       expect((await list()).filter((row: { id: string }) => row.id === original.id)).toHaveLength(1);
     } finally {

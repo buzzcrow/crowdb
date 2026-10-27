@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from 'react';
 import { buttonClass, inputClass, JsonView } from '../access/Workbench';
+import { Fields } from '../iceberg/Fields';
 import * as api from './api';
 import { useQuery } from './query';
 import type { DatasetSelection, FieldMetadata } from './types';
@@ -24,7 +25,7 @@ export function Properties({ selected, active }: { selected: DatasetSelection; a
     {selected.kind !== 'root' && <p className="tw-text-xs tw-break-all">{selected.dataset}</p>}
     {(selected.kind === 'sample' || selected.kind === 'cell') && <label className="tw-block tw-text-xs">Canonical Sample ID (select to copy)<input aria-label="Canonical Sample ID" className={`${inputClass} tw-w-full tw-font-mono`} readOnly value={selected.sample} onFocus={event => event.target.select()} /></label>}
     {result.error && <p role="alert">{result.error}</p>}
-    {result.value !== undefined && <JsonView value={result.value} />}
+    {result.value !== undefined && <><Fields stacked values={result.value && typeof result.value === 'object' ? result.value as Record<string, unknown> : { State: 'Missing' }} /><details><summary className="tw-text-xs tw-text-muted">Raw JSON</summary><JsonView value={result.value} /></details></>}
     {selected.kind === 'cell' && result.value !== undefined && <FieldPreview key={JSON.stringify(selected)} selected={selected} field={result.value as FieldMetadata | null} active={active} />}
   </section>;
 }
@@ -40,7 +41,7 @@ function FieldPreview({ selected, field, active }: { selected: Extract<DatasetSe
     try { text = new TextDecoder('utf-8', { fatal: true }).decode(decoded); } catch { /* Binary data uses hex. */ }
     return { text, hex: Array.from(decoded, byte => byte.toString(16).padStart(2, '0')).join(' ') };
   });
-  const allowed = field && field.storage !== 'tombstone' && api.decimal(field.length) <= 65536n;
+  const allowed = field && field.storage !== 'tombstone' && field.length != null && api.decimal(field.length) <= 65536n;
   return <div className="tw-space-y-2">
     <p className="tw-text-xs tw-text-muted">Checksum above is declared. Preview verifies the complete value; maximum 64 KiB.</p>
     <button className={buttonClass} disabled={!allowed || requested} onClick={() => setRequested(true)}>Preview field</button>

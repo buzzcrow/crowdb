@@ -26,6 +26,12 @@ async fn chunk_ownership_scope() {
 }
 
 #[tokio::test]
+#[ignore = "requires native Catalog services and an installed host browser"]
+async fn catalog_resource_navigation() {
+    browse_storage().await;
+}
+
+#[tokio::test]
 #[ignore = "requires actual allocated zones and host service recovery"]
 async fn storage_windows_and_access_recovery() {
     let context = TestNativeContext::connect().await;

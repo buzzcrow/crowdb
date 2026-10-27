@@ -6,7 +6,7 @@
 mod formation;
 mod runner;
 
-use std::fs;
+use std::{collections::BTreeMap, fs};
 
 use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,8 @@ struct Policy {
     target_cluster_id: Option<String>,
     #[serde(default)]
     local_draft_selected: bool,
+    #[serde(default)]
+    candidates: BTreeMap<String, bool>,
 }
 
 impl Default for Policy {
@@ -37,6 +39,7 @@ impl Default for Policy {
             enabled: true,
             target_cluster_id: None,
             local_draft_selected: false,
+            candidates: BTreeMap::new(),
         }
     }
 }
@@ -45,16 +48,10 @@ fn read(state: &AppState) -> Result<Policy, Failure> {
     let path = state.runtime_root.join("auto-join.json");
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Policy {
-                enabled: deployment(state)?.mode
-                    == crowdb_protocol::mgmt::node::deployment::DeploymentMode::Local,
-                ..Policy::default()
-            })
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Policy::default()),
         Err(error) => return Err(err_502(error.to_string())),
     };
-    if !metadata.is_file() || metadata.len() > 4096 {
+    if !metadata.is_file() || metadata.len() > 65536 {
         return Err(err_409("Invalid Auto join policy"));
     }
     let policy: Policy = serde_json::from_slice(&fs::read(path).map_err(|error| err_502(error.to_string()))?)
@@ -105,7 +102,7 @@ pub(crate) async fn status(State(state): State<AppState>) -> Result<Json<Value>,
         Err(error) => return Err(err_502(error.to_string())),
     };
     Ok(Json(
-        json!({"enabled": policy.enabled, "target_cluster_id": policy.target_cluster_id,
+        json!({"enabled": policy.enabled, "candidates": policy.candidates, "target_cluster_id": policy.target_cluster_id,
         "mode": "standard", "deployment_mode": deployment.mode, "cluster": deployment.cluster, "required_voters": deployment.initial_voters, "observation": observation}),
     ))
 }
@@ -115,6 +112,7 @@ pub(crate) async fn status(State(state): State<AppState>) -> Result<Json<Value>,
 pub(crate) struct Update {
     enabled: bool,
     target: Option<Target>,
+    discovery_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -132,7 +130,7 @@ pub(crate) async fn update(
         return Err(err_400("Workspace is readonly"));
     }
     let mut resources = vec!["node/auto-join".into()];
-    if body.target.is_some() {
+    if body.target.is_some() || body.discovery_id.is_some() {
         resources.extend(["cluster/init".into(), "node/admission".into()]);
     }
     let _operation = crate::services::Operation::claim(&state, resources)?;
@@ -162,7 +160,38 @@ pub(crate) async fn update(
         policy.target_cluster_id = None;
         policy.local_draft_selected = true;
     }
-    policy.enabled = body.enabled;
+    if let Some(id) = body.discovery_id {
+        if body.target.is_some() || uuid::Uuid::parse_str(&id).is_err() {
+            return Err(err_400(
+                "Candidate Auto join requires a discovery UUID and no target override",
+            ));
+        }
+        let snapshot = super::candidates(State(state.clone()))
+            .await
+            .map_err(|_| err_502("Discovery unavailable"))?
+            .0;
+        let candidate = snapshot
+            .candidates
+            .iter()
+            .find(|node| node.advertisement.discovery_id == id)
+            .ok_or_else(|| err_409("Candidate is no longer discovered"))?;
+        if candidate.state != crowdb_protocol::mgmt::node::CandidateState::Unbound {
+            return Err(err_409("Auto join can only be changed for an unbound candidate"));
+        }
+        if body.enabled
+            && candidate.advertisement.formation.as_ref() != Some(&deployment(&state)?.formation())
+        {
+            return Err(err_409(
+                "Candidate formation differs from this cluster; review admission manually",
+            ));
+        }
+        if policy.candidates.len() >= 256 && !policy.candidates.contains_key(&id) {
+            return Err(err_409("Candidate Auto join policy is full"));
+        }
+        policy.candidates.insert(id, body.enabled);
+    } else {
+        policy.enabled = body.enabled;
+    }
     super::save(&state.runtime_root.join("auto-join.json"), &policy)?;
     status(State(state.clone())).await
 }

@@ -30,14 +30,14 @@ describe('InitializationProgress', () => {
     expect(initCluster).not.toHaveBeenCalled();
   });
 
-  it('shows completed initialization within one second while accepted work is running', async () => {
+  it('removes completed initialization within one second while accepted work is running', async () => {
     observe.mockResolvedValueOnce({ phase: 'data-group', members: [1, 2, 3], operation_id: 'fixed' })
       .mockResolvedValue({ phase: 'active', members: [1, 2, 3], operation_id: 'fixed' });
     render(<InitializationProgress />);
     await act(async () => {});
     expect(screen.getByRole('status')).toHaveTextContent('Creating initial data group');
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    expect(screen.getByRole('status')).toHaveTextContent('Initialization complete');
+    expect(screen.queryByRole('status')).toBeNull();
     expect(initCluster).not.toHaveBeenCalled();
   });
 
@@ -58,5 +58,16 @@ describe('InitializationProgress', () => {
     render(<InitializationProgress readonly />);
     await act(async () => {});
     expect(screen.getByRole('button', { name: 'Retry accepted initialization' })).toBeDisabled();
+  });
+
+  it('offers recovery for a retained bootstrap even without a progress observation', async () => {
+    observe.mockResolvedValue({ phase: 'idle' });
+    vi.mocked(initCluster).mockResolvedValue({ phase: 'preparing' });
+    render(<InitializationProgress deployment={{ available: false, phase: 'bootstrap_in_progress', members: [2, 1, 3], operation_id: 'fixed' }} />);
+    await act(async () => {});
+    expect(screen.getByRole('status')).toHaveTextContent('Bootstrap recovery required');
+    fireEvent.click(screen.getByRole('button', { name: 'Resume bootstrap' }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Resume$/ })); });
+    expect(initCluster).toHaveBeenCalledWith({ nodes: [2, 1, 3] });
   });
 });

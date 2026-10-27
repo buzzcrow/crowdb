@@ -58,7 +58,7 @@ impl DatasetAuthority {
                         phase: DeletionPhase::Closing,
                         reclaim_after: self
                             .reclaim_time()
-                            .checked_add(20 * 60)
+                            .checked_add(self.reclaim_grace_seconds())
                             .ok_or(SplitLifecycleError::Limit)?,
                         record,
                     };

@@ -51,12 +51,7 @@ export function Header({
       <div className="tw-flex tw-shrink-0 tw-items-center tw-gap-2.5 tw-whitespace-nowrap" aria-label="CrowDB Console">
         <img src={new URL('../assets/crowdb-mark.svg', import.meta.url).href} alt="" width={30} height={30} />
         <span className="tw-text-[17px] tw-font-bold tw-tracking-wide">Crow<span className="tw-text-brand">DB</span></span>
-        <span className="tw-border-l tw-border-border tw-pl-3 tw-text-sm tw-text-muted">Console</span>
       </div>
-      <nav aria-label="Navigation history" className="tw-flex tw-gap-1">
-        <button aria-label="Back" title="Back" disabled={!canBack} onClick={back} className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1 disabled:tw-opacity-40">←</button>
-        <button aria-label="Forward" title="Forward" disabled={!canForward} onClick={forward} className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1 disabled:tw-opacity-40">→</button>
-      </nav>
       {/* Health pill */}
       <span
         className={cn(
@@ -93,6 +88,10 @@ export function Header({
         </button>
       )}
 
+      <nav aria-label="Navigation history" className="tw-flex tw-gap-1">
+        <button aria-label="Back" title="Back" disabled={!canBack} onClick={back} className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1 disabled:tw-opacity-40">←</button>
+        <button aria-label="Forward" title="Forward" disabled={!canForward} onClick={forward} className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1 disabled:tw-opacity-40">→</button>
+      </nav>
       <button
         onClick={onRefresh}
         className="tw-p-2 tw-rounded-md tw-text-muted hover:tw-text-text hover:tw-bg-bg tw-transition-colors"

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub use sweep::SnapshotReclaimSweep;
 
 /// Default delay between logical deletion and destructive cleanup.
-const RECLAIM_GRACE_SECONDS: u64 = 20 * 60;
+pub(super) const RECLAIM_GRACE_SECONDS: u64 = 20 * 60;
 
 #[derive(Default, Serialize, Deserialize)]
 struct Access {
@@ -96,6 +96,19 @@ fn now() -> u64 {
         .as_secs()
 }
 impl DatasetAuthority {
+    /// Sets the grace period for future Dataset and Snapshot deletion marks.
+    /// Already persisted deadlines are unchanged. Zero requests immediate cleanup.
+    #[must_use]
+    pub fn with_reclaim_grace_seconds(mut self, seconds: u64) -> Self {
+        self.reclaim_grace_seconds = seconds;
+        self
+    }
+
+    #[must_use]
+    pub fn reclaim_grace_seconds(&self) -> u64 {
+        self.reclaim_grace_seconds
+    }
+
     async fn update_access(
         &self,
         identity: &DatasetIdentity,

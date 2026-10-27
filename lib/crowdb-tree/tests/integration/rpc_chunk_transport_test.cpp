@@ -60,8 +60,8 @@ TEST(RpcChunkTransport, ExplicitStripCapacityIsIndependentOfMirrorCopies)
         EXPECT_EQ(geometry.strip_count, 256U);
     }
     const auto automatic = rpc_chunk_allocation(256U * kMiB, 0, 2);
-    EXPECT_EQ(automatic.granularity_kb, 256U * 1024U);
-    EXPECT_EQ(automatic.strip_count, 1U);
+    EXPECT_EQ(automatic.granularity_kb, 1024U);
+    EXPECT_EQ(automatic.strip_count, 256U);
 }
 
 extern "C" void handle_allocate(uint64_t request_id, uint64_t /*unused*/, uint16_t /*unused*/, const uint8_t *control,
@@ -75,8 +75,8 @@ extern "C" void handle_allocate(uint64_t request_id, uint64_t /*unused*/, uint16
         return;
     }
     const auto *request = flatbuffers::GetRoot<FBAllocateChunkRequest>(control);
-    state->request_valid.store(request->chunk_id() == nullptr && request->write_granularity() == 256U * 1024U &&
-                                   request->strip_count() == 1 && request->strip_type() == FBStripType_Mirror &&
+    state->request_valid.store(request->chunk_id() == nullptr && request->write_granularity() == 1024U &&
+                                   request->strip_count() == 4 && request->strip_type() == FBStripType_Mirror &&
                                    request->copy_count() == 3 &&
                                    (request->chunk_type() == FBChunkType_BtreePage ||
                                     request->chunk_type() == crowdb::chunkdb::proto::FBChunkType_PageIndex) &&
@@ -180,7 +180,7 @@ TEST(RpcChunkTransport, RejectsWriteWithoutLocalLivenessAuthority)
     EXPECT_EQ(status.code(), Code::kUnavailable);
 }
 
-TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
+TEST(RpcChunkTransport, RequestsSmallMirrorAllocationAndPreserves128BitChunkId)
 {
     crowdb_rpc_pool_t   pool   = crowdb_rpc_pool_create(128);
     crowdb_rpc_server_t server = crowdb_rpc_server_create(pool);

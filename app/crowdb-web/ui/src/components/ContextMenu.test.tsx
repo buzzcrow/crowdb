@@ -16,3 +16,13 @@ it('closes the selected menu before asynchronous work so completion cannot close
   expect(close).toHaveBeenCalledTimes(1);
   expect(screen.getByRole('menuitem', { name: 'New action' })).toBeVisible();
 });
+
+it('preserves keyboard selection when live menu items refresh', () => {
+  const items = () => [{ id: 'auto', label: 'Auto' }, { id: 'join', label: 'Join' }];
+  const close = vi.fn();
+  const { rerender } = render(<ContextMenu items={items()} position={{ x: 10, y: 10 }} onClose={close} />);
+  fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' });
+  expect(screen.getByRole('menuitem', { name: 'Join' })).toHaveAttribute('tabindex', '0');
+  rerender(<ContextMenu items={items()} position={{ x: 10, y: 10 }} onClose={close} />);
+  expect(screen.getByRole('menuitem', { name: 'Join' })).toHaveAttribute('tabindex', '0');
+});

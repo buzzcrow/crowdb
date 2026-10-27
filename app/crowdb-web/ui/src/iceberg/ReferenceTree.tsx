@@ -5,7 +5,7 @@ import type { TreeNode } from '../components/Tree';
 import type { Inspector } from './useInspection';
 import type { FileEntry, Inspection, Manifest, Selection, TableLoad } from './types';
 
-export type IcebergNode = TreeNode & { activate?: () => void };
+export type IcebergNode = TreeNode & { activate?: () => void; resource?: import('./ResourceMenu').CatalogTarget };
 export const filename = (path: string) => path.split('/').pop() || path;
 const short = (value: string) => value.length > 24 ? `${value.slice(0, 12)}…${value.slice(-8)}` : value;
 const iconClass = 'tw-h-4 tw-w-4 tw-text-muted';

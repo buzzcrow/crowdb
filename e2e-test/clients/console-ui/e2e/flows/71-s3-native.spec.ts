@@ -1,5 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+import { resourceAction } from '../fixtures/resourceMenus';
 import { test, expect } from '../fixtures/realBackend';
 import { step } from '../fixtures/stepTimer';
 import { bucketFailure, bucketReply } from '../fixtures/bucketDiagnostics';
@@ -41,7 +42,7 @@ test('S3 native multipart upload, HEAD, bounded preview and full round trip', as
       const bucketButton = page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: bucket, exact: true });
       await expect(bucketButton).toBeVisible();
       await bucketButton.click();
-      await page.getByText('Bucket actions', { exact: true }).click();
+      await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Upload object…');
       await page.getByLabel('Object key', { exact: true }).fill(key);
       await page.getByLabel('Object file').setInputFiles({ name: 'multipart.txt', mimeType: 'text/plain', buffer: bytes });
     });
@@ -52,7 +53,7 @@ test('S3 native multipart upload, HEAD, bounded preview and full round trip', as
           return response.request().method() === 'POST'
             && url.pathname === objectPath && url.searchParams.has('uploadId');
         }),
-        page.getByRole('button', { name: 'Upload', exact: true }).click(),
+        page.getByRole('button', { name: 'Upload object', exact: true }).click(),
       ]);
       const completion = await completed.text();
       expect(completed.status(), completion).toBe(200);
@@ -62,8 +63,7 @@ test('S3 native multipart upload, HEAD, bounded preview and full round trip', as
     await step('native object HEAD and bounded preview', async () => {
       await page.getByRole('table', { name: 'S3 objects' }).getByRole('button', { name: key, exact: true }).click();
       await expect(page.getByLabel('Object metadata')).toContainText(String(bytes.length));
-      await page.getByText('Object actions', { exact: true }).click();
-      await page.getByRole('button', { name: 'Preview first 4 KiB' }).click();
+      await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Preview first 4 KiB');
       await expect(page.getByLabel('Object preview', { exact: true })).toHaveText('x'.repeat(4096));
     });
     await step('native storage mapping and Chunk return', async () => {
@@ -140,8 +140,8 @@ test('S3 native multipart upload, HEAD, bounded preview and full round trip', as
       expect((await response.body()).equals(bytes)).toBe(true);
     });
     await step('native object delete and DOM refresh', async () => {
-      page.once('dialog', dialog => dialog.accept());
-      await page.getByRole('button', { name: 'Delete object', exact: true }).click();
+      await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Delete object…');
+      await page.getByRole('dialog', { name: 'Delete object', exact: true }).getByRole('button', { name: 'Delete object', exact: true }).click();
       await expect(page.getByRole('table', { name: 'S3 objects' })).not.toContainText(key);
     });
   } finally {

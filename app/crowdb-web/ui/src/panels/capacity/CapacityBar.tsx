@@ -17,7 +17,7 @@ export function CapacityBar({ capacity, busy, barWidth = 'tw-w-24', showPct = tr
   const known = capacity !== null && busy !== null;
   const pct = known ? busyPct(capacity, busy) : 0;
   return (
-    <div className="tw-flex tw-items-center tw-gap-3">
+    <div className="tw-flex tw-items-center tw-gap-3" title="Physical allocation includes system chunks, reserved chunk capacity and blocks awaiting compaction.">
       <div className={`${barWidth} tw-h-2 tw-bg-bg tw-rounded-full tw-overflow-hidden`}>
         <div
           className="tw-h-full tw-bg-accent tw-transition-all"

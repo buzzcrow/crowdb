@@ -23,9 +23,15 @@ test('shell defaults and tree interactions distinguish live and stopped release 
   }, { timeout: 10_000, intervals: [100] }).toBe(3);
   const store = await request.post('/api/stores', { data: { store_id: 207, nodes: [1, 2] } });
   expect(store.status(), await store.text()).toBe(201);
+  const diskInventoryRequests: number[] = [];
+  page.on('request', request => {
+    const match = new URL(request.url()).pathname.match(/^\/api\/nodes\/(\d+)\/disk-groups$/);
+    if (match) diskInventoryRequests.push(Number(match[1]));
+  });
   await page.goto('/?domain=KV');
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  await sidebar.getByRole('button', { name: 'Add Store', exact: true }).click();
+  await sidebar.getByRole('button', { name: 'datacenter', exact: true }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Add Store', exact: true }).click();
   const addStore = page.getByRole('dialog', { name: 'Add KV Store', exact: true });
   await expect(addStore.getByLabel('KV Store ID (numeric)')).toHaveValue('208');
   for (const node of [1, 2, 3]) await expect(addStore.getByLabel(new RegExp(`^${node}\\b`))).toBeVisible();
@@ -75,7 +81,8 @@ test('shell defaults and tree interactions distinguish live and stopped release 
   expect(await eligible()).toEqual(['4']);
   await replica.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.getByTestId('domain-cluster').click();
-  await sidebar.getByRole('button', { name: 'Add Rack', exact: true }).click();
+  await sidebar.getByRole('button', { name: 'datacenter', exact: true }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Add Rack', exact: true }).click();
   const rackDialog = page.getByRole('dialog', { name: 'Add Rack', exact: true });
   await rackDialog.getByLabel('Rack ID').fill('20');
   await rackDialog.getByLabel('Name (optional)').fill('cancelled');
@@ -88,7 +95,7 @@ test('shell defaults and tree interactions distinguish live and stopped release 
     const added = await request.post('/api/racks', { data: { id, name: `rack ${id}` } });
     expect(added.status(), await added.text()).toBe(201);
   }
-  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.locator('header').getByRole('button', { name: 'Refresh', exact: true }).click();
   for (const id of [1, 2, 3]) await expect(sidebar.getByTestId(`tree-node-R-${id}`)).toBeVisible();
   const rack = sidebar.getByTestId('tree-node-R-1').locator(':scope > [role="treeitem"]');
   await rack.getByRole('button', { name: 'Collapse', exact: true }).click();
@@ -97,20 +104,30 @@ test('shell defaults and tree interactions distinguish live and stopped release 
   await rack.getByRole('button', { name: 'Expand', exact: true }).click();
   await expect(rack).toHaveAttribute('aria-expanded', 'true');
   await expect(rack).not.toHaveAttribute('aria-selected', 'true');
+  expect(diskInventoryRequests).toEqual([]);
   const node = sidebar.getByTestId('tree-node-N-3').locator(':scope > [role="treeitem"]');
   await node.getByRole('button', { name: 'N-3', exact: true }).click();
   await expect(node).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(() => diskInventoryRequests, { intervals: [100] }).toEqual([3]);
   const storage = sidebar.getByTestId('tree-node-STORAGE-3').locator(':scope > [role="treeitem"]');
   await expect(storage).toHaveAttribute('aria-expanded', 'false');
-  await page.getByTestId('domain-capacity').click();
+  await expect(page.getByRole('region', { name: 'Topology', exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Capacity', exact: true })).toBeVisible();
   await expect(node).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByLabel('Node 3 workspace', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Node 3 storage', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('navigation', { name: 'Cluster scope' })
     .getByRole('button', { name: 'N-3', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(sidebar.getByTestId('tree-node-SERVICES-3')).toBeVisible();
   await storage.getByRole('button', { name: 'Expand', exact: true }).click();
   await expect(storage).toHaveAttribute('aria-expanded', 'true');
-  await page.getByTestId('cluster-topology').click();
+  await expect(page.getByTestId('cluster-topology')).toHaveCount(0);
   await expect(node).toHaveAttribute('aria-selected', 'true');
   await expect(storage).toHaveAttribute('aria-expanded', 'true');
+  await sidebar.getByRole('button', { name: 'PKV-3', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Capacity', exact: true })).toBeHidden();
+  await expect(page.getByRole('region', { name: 'Topology', exact: true })).toBeVisible();
+  const candidates = sidebar.getByTestId('tree-node-NODE-CANDIDATES');
+  await expect(candidates).toBeVisible();
+  expect(await candidates.evaluate(el => el.parentElement === document.querySelector('[data-testid="tree-node-R-1"]')?.parentElement)).toBe(true);
+  await expect(candidates.locator('[data-testid^="candidate-"]')).toHaveCount(0);
 });

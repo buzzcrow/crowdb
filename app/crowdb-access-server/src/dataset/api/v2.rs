@@ -48,6 +48,7 @@ impl DatasetHttpService {
                 "bounded-inspection",
                 "inspection-preparation",
                 "dataset-management",
+                "dataset-delete",
                 "split-revisions",
                 "split-revision-delete",
                 "split-preparation",
@@ -76,7 +77,7 @@ impl DatasetHttpService {
             if matches!(
                 tail.as_slice(),
                 [] | ["names", "stable"]
-                    | ["commits", _]
+                    | ["deletion" | "commits", _]
                     | ["snapshots", _, "retain" | "release" | "reclaim"]
                     | ["split-drafts", _, "cleanup"]
             ) {

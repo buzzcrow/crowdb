@@ -253,6 +253,10 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                 }
             }
 
+            Status capacity_status = store->transport_->ensure_capacity(chunk, cursor + chunk_framed_length(length));
+            if (!capacity_status.ok()) {
+                return capacity_status;
+            }
             auto job                 = std::make_unique<PackWrite>();
             job->pack.owner_tree_id  = store->config_.tree_id;
             job->pack.ordinal        = manifest->packs.size();
@@ -515,8 +519,7 @@ std::shared_ptr<ChunkPackPipeline> ChunkPackPipeline::start(ChunkPageStore *stor
                                                             ChunkCancellation cancellation, AsyncCompletion completion,
                                                             Status *start_status)
 {
-    auto pipeline = std::shared_ptr<ChunkPackPipelineImpl>(
-        new ChunkPackPipelineImpl(store, expected_generation, cancellation, completion));
+    auto pipeline = std::make_shared<ChunkPackPipelineImpl>(store, expected_generation, cancellation, completion);
     *start_status = pipeline->prepare();
     if (start_status->ok()) {
         pipeline->launch();

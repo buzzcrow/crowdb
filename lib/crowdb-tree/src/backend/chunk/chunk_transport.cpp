@@ -183,6 +183,18 @@ SharedChunkIoExecutor &shared_chunk_io_executor()
 
 } // namespace
 
+Status ChunkTransport::ensure_capacity(ChunkId chunk_id, uint64_t required_bytes)
+{
+    ChunkLayout layout;
+    Status      status = query_chunk(chunk_id, &layout);
+    if (!status.ok()) {
+        return status;
+    }
+    return !layout.sealed && required_bytes <= layout.logical_capacity
+             ? Status::Ok()
+             : Status::resource_exhausted("chunk write exceeds available capacity");
+}
+
 void ChunkTransport::submit_write_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, const uint8_t *data,
                                          size_t length, ChunkTransportCompletion completion)
 {

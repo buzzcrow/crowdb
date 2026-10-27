@@ -22,6 +22,7 @@ class RpcChunkTransport final : public ChunkTransport
 
     Status allocate_mirror_chunk(uint64_t logical_capacity, uint64_t owner_epoch, ChunkId *chunk_id,
                                  PagePurpose purpose) override;
+    Status ensure_capacity(ChunkId chunk_id, uint64_t required_bytes) override;
     Status write_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, const uint8_t *data,
                         size_t length) override;
     void   submit_write_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, const uint8_t *data,

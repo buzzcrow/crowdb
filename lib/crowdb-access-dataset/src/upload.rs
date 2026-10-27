@@ -30,6 +30,12 @@ const MAX_OWNERS: usize = 256;
 const MAX_RETIRED_OWNERS: usize = 4096;
 const WRITE_LEASE_SECONDS: u64 = 60;
 
+pub(crate) fn reclaimed_session(bytes: &[u8]) -> Result<bool, crate::AuthorityError> {
+    decode_session(bytes)
+        .map(|record| record.cleanup_complete)
+        .map_err(|_| crate::AuthorityError::Corrupt)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum UploadError {
     #[error("invalid upload request")]
@@ -120,6 +126,20 @@ impl DatasetUploads {
         Ok(key)
     }
 
+    /// Validates declarations before a caller reserves creation in its Dataset.
+    /// # Errors
+    /// Rejects empty or oversized upload geometry.
+    pub fn validate_creation(length: u64, part_size: u32) -> Result<(), UploadError> {
+        if length == 0
+            || part_size == 0
+            || part_size as usize > MAX_UPLOAD_PART_BYTES
+            || length.div_ceil(u64::from(part_size)) > MAX_PARTS
+        {
+            return Err(UploadError::Invalid);
+        }
+        Ok(())
+    }
+
     /// # Errors
     /// Rejects invalid declarations, divergent retries and unavailable storage.
     pub async fn create(
@@ -130,13 +150,7 @@ impl DatasetUploads {
         md5: [u8; 16],
         expires_at: u64,
     ) -> Result<UploadRecord, UploadError> {
-        if length == 0
-            || part_size == 0
-            || part_size as usize > MAX_UPLOAD_PART_BYTES
-            || length.div_ceil(u64::from(part_size)) > MAX_PARTS
-        {
-            return Err(UploadError::Invalid);
-        }
+        Self::validate_creation(length, part_size)?;
         let record = UploadRecord {
             version: 4,
             length,

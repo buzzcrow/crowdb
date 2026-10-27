@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import App from './App';
 import { Domain } from './types';
 import * as api from './api';
+vi.mock('./shell/NodeCandidatesContext', () => ({ CandidateProvider: ({ children }: { children: import('react').ReactNode }) => children }));
 
 vi.mock('./api', async importOriginal => ({
   ...await importOriginal<typeof import('./api')>(),
@@ -42,7 +43,8 @@ it('waits for initial node authority before offering store actions', async () =>
   await act(async () => {});
   expect(screen.queryByRole('button', { name: 'Add Store' })).not.toBeInTheDocument();
   await act(async () => resolve({ available: true, phase: 'active' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Add Store' }));
+  fireEvent.contextMenu(screen.getByRole('button', { name: /^datacenter$/ }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Add Store' }));
   expect(screen.getByRole('dialog', { name: 'Add KV Store' })).toBeVisible();
 });
 
@@ -54,4 +56,5 @@ it('shows a read-only console when the initial authority check fails', async () 
   expect(screen.queryByText('Loading cluster authority…')).not.toBeInTheDocument();
   expect(screen.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible();
   expect(screen.queryByRole('button', { name: 'Add Store' })).not.toBeInTheDocument();
+  expect(screen.getByRole('alert')).toHaveTextContent('Group 0 unavailable · confirmed view is stale');
 });

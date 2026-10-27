@@ -43,8 +43,13 @@ impl DatasetHttpService {
         match (request.method().clone(), tail) {
             (Method::POST, ["uploads"]) => {
                 let input: UploadRequest = read_json(request).await?;
-                let location = DatasetUploads::location(identity, operation(&input.id)?)?;
                 let md5 = digest(&input.md5)?;
+                DatasetUploads::validate_creation(input.length, input.part_size)?;
+                let location = DatasetUploads::location(identity, operation(&input.id)?)?;
+                self.reads
+                    .authority()
+                    .reserve_upload_creation(identity, operation(&input.id)?)
+                    .await?;
                 let record = uploads
                     .create(
                         &location,

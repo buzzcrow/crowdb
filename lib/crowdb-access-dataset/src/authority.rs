@@ -3,7 +3,9 @@ pub use access::{
     MetadataCleanupProgress, SnapshotLifecycle, SnapshotReclaimCursor, SnapshotReclaimError,
     SnapshotReclaimPhase, SnapshotReclaimStatus, SnapshotReclaimSweep,
 };
+pub(crate) mod dataset_lifecycle;
 mod discovery;
+pub use dataset_lifecycle::{DatasetDeletion, DatasetDeletionSweep};
 mod head;
 mod projection;
 pub(crate) mod snapshot_resource;
@@ -50,6 +52,8 @@ pub enum AuthorityError {
     Store(#[from] StoreError),
     #[error("dataset already exists")]
     AlreadyExists,
+    #[error("dataset is not empty")]
+    DatasetNotEmpty,
     #[error("dataset was not found")]
     NotFound,
     #[error("snapshot parent does not match the current head")]
@@ -75,6 +79,7 @@ pub enum AuthorityError {
 pub struct DatasetAuthority {
     pub(crate) store: Arc<dyn DatasetStore>,
     chunk_reader: Arc<dyn ChunkReader>,
+    reclaim_grace_seconds: u64,
     #[cfg(feature = "test-util")]
     reclaim_clock: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
@@ -94,6 +99,7 @@ impl DatasetAuthority {
             chunk_reader: unavailable_chunk_reader(),
             #[cfg(feature = "test-util")]
             reclaim_clock: None,
+            reclaim_grace_seconds: access::RECLAIM_GRACE_SECONDS,
         }
     }
 
@@ -104,6 +110,7 @@ impl DatasetAuthority {
             chunk_reader,
             #[cfg(feature = "test-util")]
             reclaim_clock: None,
+            reclaim_grace_seconds: access::RECLAIM_GRACE_SECONDS,
         }
     }
 
@@ -128,7 +135,21 @@ impl DatasetAuthority {
             .await?
         {
             CasOutcome::Applied(_) => Ok(id),
-            CasOutcome::Conflict(_) => Err(AuthorityError::AlreadyExists),
+            CasOutcome::Conflict(Some(existing)) => {
+                let old = dataset_lifecycle::DatasetEnvelope::decode(&existing.bytes)?;
+                if !old.deletion.is_some_and(|deletion| deletion.complete) {
+                    return Err(AuthorityError::AlreadyExists);
+                }
+                match self
+                    .store
+                    .compare_exchange(&key::dataset(&identity)?, Some(&existing.bytes), &bytes)
+                    .await?
+                {
+                    CasOutcome::Applied(_) => Ok(id),
+                    CasOutcome::Conflict(_) => Err(AuthorityError::AlreadyExists),
+                }
+            }
+            CasOutcome::Conflict(None) => Err(AuthorityError::AlreadyExists),
         }
     }
 
@@ -150,7 +171,7 @@ impl DatasetAuthority {
             .get(&key::dataset(identity)?)
             .await?
             .ok_or(AuthorityError::NotFound)?;
-        decode(&value.bytes)
+        dataset_lifecycle::DatasetEnvelope::decode(&value.bytes)?.active()
     }
 
     /// # Errors

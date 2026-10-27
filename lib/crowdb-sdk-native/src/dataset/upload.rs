@@ -21,8 +21,13 @@ impl DatasetClient {
         md5: [u8; 16],
         expires_at: u64,
     ) -> Result<UploadRecord> {
+        DatasetUploads::validate_creation(length, part_size)?;
         let location = DatasetUploads::location(&self.identity, id)?;
         self.control(context, |scope| async move {
+            scope
+                .authority
+                .reserve_upload_creation(&scope.identity, id)
+                .await?;
             Ok(scope
                 .uploads
                 .create(&location, length, part_size, md5, expires_at)

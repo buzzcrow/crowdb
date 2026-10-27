@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+import { Tree, type TreeNode } from '../components/Tree';
+import type { MouseEvent } from 'react';
 import { buttonClass } from '../access/Workbench';
 import * as api from './api';
 import type { DatasetSelection, Head, SnapshotSummary } from './types';
@@ -8,7 +10,7 @@ import { useQuery } from './query';
 
 export interface TreeEntry { expanded?: boolean; splits?: boolean; cursor?: string }
 export type TreeState = Record<string, TreeEntry>;
-type Props = { dataset: string; active: boolean; refresh: number; select: (value: DatasetSelection) => void; tree: TreeState; updateTree: (key: string, value: TreeEntry) => void; head?: Head };
+type Props = { selected: DatasetSelection; onContextMenu: (event: MouseEvent, selected: DatasetSelection) => void; dataset: string; active: boolean; refresh: number; select: (value: DatasetSelection) => void; tree: TreeState; updateTree: (key: string, value: TreeEntry) => void; head?: Head };
 export function SnapshotTree(props: Props) {
   const head = useQuery(`${props.dataset}:${props.refresh}`, props.active, signal => api.head(props.dataset, signal));
   return <Branches {...props} head={head.value} />;
@@ -36,22 +38,16 @@ function SnapshotNode(props: Props & { item: SnapshotSummary; depth: number }) {
   const scope = { dataset: props.dataset, snapshot: props.item.id };
   const current = useQuery(`${props.dataset}:${props.item.id}:${props.refresh}`, props.active && !!splits,
     async signal => { const h = await api.splitHead(props.dataset, props.item.id, signal); return h.revision ? api.revision(props.dataset, props.item.id, h.revision, signal) : null; });
-  return <li>
-    <div className="tw-flex tw-gap-1 tw-items-center">
-      <button aria-label={`Expand Snapshot ${props.item.id}`} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}> {expanded ? '▾' : '▸'} </button>
-      <button title={props.item.id} className="tw-font-mono tw-text-xs tw-break-all" onClick={() => props.select({ kind: 'snapshot', ...scope })}>{props.item.id.slice(0, 10)}</button>
-      {props.head?.latest === props.item.id && <span className="tw-text-xs tw-text-accent">Latest</span>}
-      {props.head?.stable === props.item.id && <span className="tw-text-xs tw-text-healthy">Stable</span>}
-    </div>
-    {expanded && <div className="tw-pl-2">
-      <button aria-expanded={splits} onClick={() => setSplits(!splits)}>{splits ? '▾' : '▸'} Splits</button>
-      {splits && <ul className="tw-pl-3">
-        {current.error && <li role="alert">{current.error}</li>}
-        {current.value === null && <li>No Split revision</li>}
-        {current.value && <li><button onClick={() => props.select({ kind: 'revision', ...scope, revision: current.value!.revision })}>Revision {current.value.revision.slice(0, 8)}</button></li>}
-        {current.value?.splits.map(split => <li key={split.name}><button onClick={() => props.select({ kind: 'split', ...scope, revision: current.value!.revision, split: split.name })}>{split.name} ({split.count})</button></li>)}
-      </ul>}
-      {props.depth < 32 ? <Branches {...props} parent={props.item.id} depth={props.depth + 1} /> : <p>Tree depth limit. Open a Snapshot directly to continue.</p>}
-    </div>}
-  </li>;
+  const selected: DatasetSelection = { kind: 'snapshot', ...scope };
+  const splitsNode: TreeNode = { id: `${key}:splits`, type: 'Dataset', label: 'Splits', expandable: true, navigationOnly: true,
+    onExpand: () => setSplits(true), children: current.value ? [
+      { id: `${key}:revision`, type: 'Dataset', label: `Revision ${current.value.revision.slice(0, 8)}`, activate: () => props.select({ kind: 'revision', ...scope, revision: current.value!.revision }) },
+      ...current.value.splits.map(split => ({ id: `${key}:split:${split.name}`, type: 'Dataset' as const, label: `${split.name} (${split.count})`, activate: () => props.select({ kind: 'split', ...scope, revision: current.value!.revision, split: split.name }) })),
+    ] : [], footer: current.error ? <p role="alert">{current.error}</p> : current.value === null ? <p>No Split revision</p> : undefined };
+  return <li><Tree nodes={[{ id: key, type: 'Dataset', label: props.item.id.slice(0, 10), title: props.item.id,
+    selected: props.selected.kind !== 'root' && props.selected.kind !== 'dataset' && props.selected.snapshot === props.item.id,
+    activate: () => props.select(selected), expandable: true,
+    suffix: <>{props.head?.latest === props.item.id && <span className="tw-text-xs tw-text-accent">Latest</span>}{props.head?.stable === props.item.id && <span className="tw-text-xs tw-text-healthy">Stable</span>}</>,
+    childrenContent: <><Tree nodes={[splitsNode]} expandedIds={splits ? [splitsNode.id] : []} onExpansionChange={ids => setSplits(ids.includes(splitsNode.id))} />{props.depth < 32 ? <Branches {...props} parent={props.item.id} depth={props.depth + 1} /> : <p>Tree depth limit. Open a Snapshot directly to continue.</p>}</>,
+  }]} expandedIds={expanded ? [key] : []} onExpansionChange={ids => setExpanded(ids.includes(key))} onNodeContextMenu={(_, event) => props.onContextMenu(event, selected)} /></li>;
 }

@@ -24,7 +24,7 @@ use crowdb_protocol::diskdb::rpc::{
 };
 
 use crate::error::{err_400, err_404, err_502, ErrorBody};
-use crate::mgmt::{build_hardware_client, rpc_endpoint_for_node};
+use crate::mgmt::build_hardware_client;
 use crate::state::AppState;
 
 // ── lazy DiskdbClient init ───────────────────────────────────────
@@ -33,35 +33,9 @@ use crate::state::AppState;
 /// `build_hardware_client`). Returns `None` when no group-0 endpoint
 /// is known.
 pub(crate) async fn build_diskdb_client(state: &AppState) -> Option<DiskdbClient> {
-    let snap = state.monitor_cache.snapshot().await;
-    if snap.is_empty() && !state.managed_mode {
-        return None;
-    }
-    // Use the shared kv_client so topology discovery seeds are
-    // consistent with the rest of the web server. Creating a standalone
-    // client with empty seeds here caused "no seeds configured" errors
-    // when refresh_endpoints triggered a topology refresh.
-    let kv = state.kv_client().await;
-    // Prefer the live group-0 leader endpoint from the monitor cache
-    // (the actual crowdb-rpc listener for store 0 on the leader node).
-    // Fall back to per-node rpc_endpoint_for_node for any running node.
-    if let Some(ep) = state.monitor_cache.group0_leader_endpoint().await {
-        let bare = crate::mgmt::strip_scheme(crate::mgmt::remap_zero_host(&ep));
-        kv.seed_leader(0, 0, bare);
-    } else {
-        for node_id in snap.keys() {
-            // Skip stopped servers — no runtime pid means the process is
-            // not running. Contacting it only wastes time on
-            // connection-refused.
-            if state.runtime_pid(*node_id).is_none() {
-                continue;
-            }
-            if let Some(ep) = rpc_endpoint_for_node(state, *node_id, 0).await {
-                kv.seed_leader(0, 0, ep);
-                break;
-            }
-        }
-    }
+    // Resolve the same authority as capacity inventory. Admitted services may
+    // be remote and absent from the legacy process monitor cache.
+    build_hardware_client(state).await?;
     // Use the shared ServiceDiscoveryClient's ServiceRegistryClient so
     // the discovery cache + connection pool are shared with the rest
     // of the web server (R128).

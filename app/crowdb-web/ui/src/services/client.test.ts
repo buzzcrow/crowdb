@@ -4,6 +4,10 @@ import { describe, expect, it } from 'vitest';
 import { serviceInstanceLabel } from './client';
 
 describe('service instance labels', () => {
+  it('shortens Access registration IDs without changing instance identity', () => {
+    expect(serviceInstanceLabel('access-server', 'access-17')).toBe('AS-17');
+    expect(serviceInstanceLabel('access-server', 'access-server-17')).toBe('AS-17');
+  });
   it.each([
     ['paxos-kv', 'kv-1', 'PKV-1'],
     ['paxos-kv', 'paxos-kv-1', 'PKV-1'],

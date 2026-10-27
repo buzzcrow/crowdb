@@ -657,6 +657,11 @@ operations remain in resource menus with the mode restrictions in §14.
   capacity, used/free allocation and disks. Observation time belongs with the
   affected detail, not in a global strip. Missing statistics are not
   zero and must not produce an all-free disk map.
+- **CAP-ALLOCATION:** Used/busy capacity denotes allocated physical blocks, including
+  system chunks, reserved Chunk capacity and blocks awaiting compaction. It is not
+  user payload size or host filesystem usage. Capacity tooltips and Zone bitmap
+  accounting explain this distinction; the displayed bitmap window reports its own
+  used/free count separately from the whole Zone.
 - **CAP-02:** Disk detail retains its summary and paged zones. Default 32 zones,
   Prev/Next, current visible range, and optional cheap indexed zone lookup.
   Avoid full-zone scans for filtering or drawing a large disk.
@@ -1356,9 +1361,14 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
 - **DS-09 — Lifecycle:** stable, retain, release and reclaim name the exact
   Snapshot. Backend protection wins over an observed eligibility hint. Reclaim
   distinguishes unknown, pending logical cleanup and completed retirement; physical
-  cleanup may remain deferred. No Dataset delete or Split-history purge action.
-  Uniform creation/reading/menu placement does not imply unsupported deletion:
-  whole-Dataset deletion requires its own authoritative lifecycle capability.
+  cleanup may remain deferred. A Dataset's own menu offers Delete when
+  `dataset-delete` is advertised. The confirmation pins its immutable Dataset ID.
+  Nonempty Datasets (including pending creation or cleanup) are rejected by the
+  backend. An accepted mark hides the Dataset from tree, list and properties;
+  cleanup follows the configured grace period, twenty minutes by default.
+  The name remains reserved until cleanup completes. Retries retain the same ID
+  and deadline; replacement identities are never silently targeted. No Split-history
+  purge action is implied.
   Published Sample/Field changes produce a new Snapshot rather than modifying
   the immutable selected one in place.
 - **DS-10 — Modes:** `modules.dataset=false` hides the domain and prevents Dataset
@@ -1390,10 +1400,11 @@ Dataset context-menu targets and immutable editing:
 Datasets root            Dataset images                Snapshot
 +--------------------+  +---------------------------+ +-------------------------+
 | Create dataset...  |  | Import / New Snapshot...  | | Create child...         |
-+--------------------+  +---------------------------+ | Publish Splits...       |
++--------------------+  | Delete Dataset...         | | Publish Splits...       |
+                        +---------------------------+ |                         |
                                                      | Set stable              |
-Whole-Dataset Delete is unavailable without its       | Retain / Release        |
-authoritative lifecycle capability (DS-09).           | Reclaim...              |
+Delete: empty only; hide immediately.                 | Retain / Release        |
+Cleanup: configured grace (default 20 minutes).       | Reclaim...              |
                                                      +-------------------------+
 Sample/Field edits -> reviewed candidate -> new published Snapshot
 Published Snapshot data are never edited in place.

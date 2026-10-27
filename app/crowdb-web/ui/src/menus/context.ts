@@ -25,8 +25,11 @@ export interface MenuContext {
   readonly: boolean;
   managed: boolean;
   nodeManagement?: boolean;
+  onAddNodeCandidate?: (rackId: number) => void;
   onManageNodeStorage?: (nodeId: number) => void;
   managementAuthorized: boolean;
+  draftEditable?: boolean;
+  clusterInitialized?: boolean;
   domain: Domain;
   physicalActive: boolean;
   modules: CrowdbConsoleProps['modules'];

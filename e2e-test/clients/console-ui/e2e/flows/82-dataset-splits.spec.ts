@@ -1,5 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+import { datasetAction } from '../fixtures/resourceMenus';
 import { test, expect } from '../fixtures/realBackend';
 import { call, datasetPath, openDataset, preparedResult, publishResult, publishSplits, seed } from '../fixtures/dataset';
 import { step } from '../fixtures/stepTimer';
@@ -8,7 +9,7 @@ test('Dataset native: split_revisions', async ({ page, request, browser, baseURL
   const name = `splits-${Date.now()}`;
   const snapshot = await step('setup', () => seed(request, name, null, 3, 1));
   await openDataset(page, name); await page.getByRole('button', { name: snapshot, exact: true }).click();
-  await page.getByRole('button', { name: 'Edit Split revision', exact: true }).click();
+  await datasetAction(page, 'Edit Split revision…');
   await page.getByRole('button', { name: 'Add selection Split' }).click();
   await page.getByLabel('Split 1 name').fill('train');
   await page.getByRole('button', { name: 'Prepare Split revision' }).click();
@@ -21,12 +22,12 @@ test('Dataset native: split_revisions', async ({ page, request, browser, baseURL
   const stale = await staleContext.newPage();
   try {
     await openDataset(stale, name); await stale.getByRole('button', { name: snapshot, exact: true }).click();
-    await stale.getByRole('button', { name: 'Edit Split revision', exact: true }).click();
+    await datasetAction(stale, 'Edit Split revision…');
     await expect(stale.getByLabel('Split 1 name')).toHaveValue('train');
     await stale.getByLabel('Split 1 name').fill('stale');
     await stale.getByRole('button', { name: 'Prepare Split revision' }).click();
     await expect(stale.getByRole('button', { name: 'Publish Split revision', exact: true })).toBeEnabled();
-    await page.getByRole('button', { name: 'Edit Split revision', exact: true }).click();
+    await datasetAction(page, 'Edit Split revision…');
     await expect(page.getByLabel('Split 1 name')).toHaveValue('train');
     await page.getByLabel('Split 1 name').fill('training');
     await page.getByRole('button', { name: 'Prepare Split revision' }).click();
@@ -45,7 +46,7 @@ test('Dataset native: split_revisions', async ({ page, request, browser, baseURL
   await page.getByRole('button', { name: 'Split revision history' }).click();
   await page.getByRole('button', { name: frozen, exact: false }).click();
   await page.getByRole('button', { name: 'training (3)', exact: true }).click();
-  await page.getByRole('button', { name: 'Create child from Split' }).click();
+  await datasetAction(page, 'Create child from Split…');
   await page.getByLabel('Filter frozen Split membership').check();
   await page.getByRole('textbox', { name: 'Selection rule', exact: true }).fill(JSON.stringify({ kind: 'explicit', ids: [Buffer.from('sample-00').toString('base64'), Buffer.from('sample-01').toString('base64')] }));
   // A later revision must not change the already chosen historical source.
@@ -62,11 +63,11 @@ test('Dataset native: split_revisions', async ({ page, request, browser, baseURL
   await openDataset(page, name); await page.getByRole('button', { name: snapshot, exact: true }).click();
   await page.getByRole('button', { name: 'Split revision history' }).click();
   await page.getByRole('button', { name: first.revision, exact: false }).click();
-  await page.getByRole('button', { name: 'Edit Split revision', exact: true }).click();
+  await datasetAction(page, 'Edit Split revision…');
   await expect(page.getByLabel('Split 1 name')).toHaveValue('train');
   await page.getByRole('button', { name: 'Close editor', exact: true }).click();
   await page.getByRole('button', { name: 'Go to current Split revision', exact: true }).click();
-  await page.getByRole('button', { name: 'Edit Split revision', exact: true }).click();
+  await datasetAction(page, 'Edit Split revision…');
   await expect(page.getByLabel('Split 1 name')).toHaveValue('training');
   await page.getByRole('button', { name: 'Remove training', exact: true }).click();
   await page.getByRole('button', { name: 'Prepare Split revision' }).click();
