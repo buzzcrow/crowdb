@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 export type Fields = Record<string, unknown>;
 export interface Snapshot extends Fields { 'snapshot-id': string | number; 'manifest-list'?: string; 'parent-snapshot-id'?: string | number; 'schema-id'?: number; }
-export interface TableLoad { 'metadata-location': string; metadata: Fields & { snapshots?: Snapshot[]; refs?: Record<string, { type: string; 'snapshot-id': string | number }> }; }
+export interface TableLoad { 'metadata-location': string; config?: Record<string, string>; metadata: Fields & { snapshots?: Snapshot[]; refs?: Record<string, { type: string; 'snapshot-id': string | number }> }; }
 export interface Manifest extends Fields { location: string; content: string; size: string; partition_spec_id: string; sequence: string; file_counts: Array<string | null>; }
 export interface FileEntry extends Fields { location: string; size: string; format: string; status: string; content: string; records: string; metrics?: Fields[]; }
 export interface Column { path: string[]; field_id: string | null; physical_type: string; logical_type: string | null; converted_type: string | null; precision: string | null; scale: string | null; offset: string; compressed: string; uncompressed: string; data_offset: string; values: string; codec: string; encodings: string[]; statistics: { nulls: string | null; distinct: string | null; lower: string | null; upper: string | null; lower_exact: boolean | null; upper_exact: boolean | null } | null; }

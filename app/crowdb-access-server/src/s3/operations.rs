@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
+use crowdb_access_s3::bucket::{BucketListRequest, BucketListSigner};
 use crowdb_access_s3::condition::ObjectConditions;
 use crowdb_access_s3::continuation::ContinuationTokenSigner;
 use crowdb_access_s3::error::{S3Error, S3ErrorCode};
@@ -95,6 +96,7 @@ pub struct ProductionS3Operations {
     pub(super) storage: S3StorageClients,
     pub(super) config: S3ServiceConfig,
     signer: ContinuationTokenSigner,
+    bucket_signer: BucketListSigner,
     execution: S3Executor,
     metrics: Option<Arc<crowdb_access_s3::metrics::S3Metrics>>,
 }
@@ -108,11 +110,14 @@ impl ProductionS3Operations {
     pub fn new(storage: S3StorageClients, config: S3ServiceConfig) -> Result<Self, S3ErrorCode> {
         let signer = ContinuationTokenSigner::new(config.continuation_key.clone())
             .map_err(|_| S3ErrorCode::InvalidRequest)?;
+        let bucket_signer = BucketListSigner::new(config.continuation_key.clone())
+            .map_err(|_| S3ErrorCode::InvalidRequest)?;
         Ok(Self {
             execution: S3Executor::new(storage.clone(), config.tenant.clone()),
             storage,
             config,
             signer,
+            bucket_signer,
             metrics: None,
         })
     }
@@ -136,7 +141,7 @@ impl ProductionS3Operations {
         let result = match operation {
             S3Operation::CreateBucket => self.create_bucket(route).await,
             S3Operation::HeadBucket => self.head_bucket(route).await,
-            S3Operation::ListBuckets => self.list_buckets().await,
+            S3Operation::ListBuckets => self.list_buckets(&request).await,
             S3Operation::DeleteBucket => self.delete_bucket(route).await,
             S3Operation::PutObject => self.put_object(route, request).await,
             S3Operation::HeadObject => self.head_object(route, &request).await,
@@ -171,9 +176,34 @@ impl ProductionS3Operations {
         response(StatusCode::OK, Vec::new())
     }
 
-    async fn list_buckets(&self) -> Result<Response<ResponseBody>, S3ErrorCode> {
-        let buckets = self.execution.list_buckets(DEFAULT_LIST_LIMIT).await?;
-        xml_response(wire::list_buckets(self.config.tenant.as_bytes(), &buckets))
+    async fn list_buckets(&self, request: &Request<Incoming>) -> Result<Response<ResponseBody>, S3ErrorCode> {
+        let query = Query::new(request.uri().query());
+        let prefix = query.bytes("prefix").unwrap_or_default();
+        let continuation = query.text("continuation-token");
+        let max_buckets = query
+            .text("max-buckets")
+            .map_or(Ok(DEFAULT_LIST_LIMIT), |value| value.parse::<usize>())
+            .map_err(|_| S3ErrorCode::InvalidRequest)?;
+        let page = self
+            .execution
+            .list_bucket_page(
+                &self.bucket_signer,
+                &BucketListRequest {
+                    prefix: &prefix,
+                    continuation: continuation.as_deref(),
+                    max_buckets,
+                    max_scan_items: self.config.list_scan_items,
+                    max_scan_bytes: self.config.list_scan_bytes,
+                    now: unix_seconds(),
+                    ttl: self.config.continuation_ttl_seconds,
+                },
+            )
+            .await?;
+        xml_response(wire::list_bucket_page(
+            self.config.tenant.as_bytes(),
+            &prefix,
+            &page,
+        ))
     }
 
     async fn delete_bucket(&self, route: S3Route) -> Result<Response<ResponseBody>, S3ErrorCode> {

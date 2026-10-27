@@ -27,7 +27,7 @@ function Workspace() {
 function setup() {
   render(<DomainProvider initialDomain={Domain.Dataset}><SelectionProvider><Workspace /></SelectionProvider></DomainProvider>);
 }
-it('pages the center and tree independently and restores the center page after reading a resource', async () => {
+it('keeps a fixed root, locates the selected resource and restores center pagination without tree paging controls', async () => {
   setup();
   const tree = within(screen.getByRole('navigation', { name: 'Dataset tree' }));
   const list = () => within(screen.getByRole('table', { name: 'Datasets' }));
@@ -35,15 +35,15 @@ it('pages the center and tree independently and restores the center page after r
   fireEvent.click(screen.getByRole('button', { name: 'Next Datasets' }));
   fireEvent.click(await list().findByRole('button', { name: 'other' }));
   await screen.findByRole('table', { name: 'Snapshots' });
+  expect(tree.getByRole('button', { name: 'other' })).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Navigate back' }));
   await screen.findByRole('table', { name: 'Datasets' });
   expect(await list().findByRole('button', { name: 'other' })).toBeVisible();
   expect(tree.getByRole('button', { name: 'demo' })).toBeVisible();
-  fireEvent.click(tree.getByRole('button', { name: 'Next tree page' }));
-  await tree.findByRole('button', { name: 'other' });
+  expect(tree.queryByRole('button', { name: 'Next tree page' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Previous Datasets' }));
   expect(await list().findByRole('button', { name: 'demo' })).toBeVisible();
-  expect(tree.getByRole('button', { name: 'other' })).toBeVisible();
+  expect(tree.getByRole('button', { name: 'Datasets' })).toBeVisible();
 });
 it('restores the Snapshot inventory page after drilling into an immutable Snapshot', async () => {
   setup();

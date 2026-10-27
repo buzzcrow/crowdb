@@ -294,7 +294,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
                     ("native diagnostics: Capacity retains hardware and marks interrupted DDB usage unknown",
                      "native diagnostics: scanner and scoped recalc show actual completed observations"),
                 "console::native_browser::multipart_upload_and_physical_navigation":
-                    "S3 native multipart upload, HEAD, bounded preview and full round trip",
+                    ("native diagnostics: S3 bucket windows and multipart markers replace rows",
+                     "S3 native multipart upload, HEAD, bounded preview and full round trip"),
                 "console::native_browser::chunk_ownership_scope":
                     "native diagnostics: Chunk ownership matches both durable maps and node scopes",
                 "console::native_browser::journal_identity_and_owner_recovery":

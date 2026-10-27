@@ -41,10 +41,12 @@ export async function saveImport({ dataset, parent, inherit, mode, predicate, fr
           const file = files.find(file => (file.webkitRelativePath || file.name) === token);
           if (!file) throw new Error(`Reselect the original local file ${token}.`);
           uploaded.set(token, await upload(dataset, file, setProgress, signal, async (_id, key) => {
+            const check = operation.fileChecks?.[token];
+            if (check && !key.endsWith(`:${check.size}:${check.md5}`)) throw new Error(`Reselected file ${token} has different bytes.`);
             operation.fileKeys ??= {};
             if (operation.fileKeys[token] && operation.fileKeys[token] !== key) throw new Error(`Reselected file ${token} has different bytes.`);
             operation.fileKeys[token] = key; await saveOperation(operation);
-          }));
+          }, operation.datasetId));
         }
       }
       if (!operation.source) throw new Error('Saved input source is unavailable.');
@@ -57,7 +59,7 @@ export async function saveImport({ dataset, parent, inherit, mode, predicate, fr
   } finally { setOp({ ...operation }); }
 }
 
-async function frozenSplits(dataset: string, parent: string, inherit: boolean, source: SplitSource | undefined, explicit: DraftSplit[], signal: AbortSignal): Promise<DraftSplit[]> {
+export async function frozenSplits(dataset: string, parent: string, inherit: boolean, source: SplitSource | undefined, explicit: DraftSplit[], signal: AbortSignal): Promise<DraftSplit[]> {
   if (!parent || !inherit) return explicit;
   const revision = source?.revision ?? (await api.splitHead(dataset, parent, signal)).revision;
   if (!revision) return explicit;

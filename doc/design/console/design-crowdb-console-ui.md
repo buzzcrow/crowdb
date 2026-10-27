@@ -411,7 +411,7 @@ just like selecting that DG below Storage.
   the prerequisite. Do not prefill a plausible value that inevitably fails.
   Real device paths are explicit; never infer a physical device to overwrite.
 - **FORM-03:** Submission prevents duplicates. Field validation and backend
-  errors stay in the dialog with entered values intact. Toasts are supplementary,
+  errors stay in the dialog or center editor with entered values intact. Toasts are supplementary,
   not the only evidence of success or failure.
 - **FORM-04:** Show the current operation and elapsed/waiting state for a slow
   request. A timeout means outcome unknown until reconciled, not automatically
@@ -430,18 +430,18 @@ just like selecting that DG below Storage.
 Shared dialogs and operation feedback (FORM-01–05, ACT-05):
 
 ```text
-Parent menu: Create table...           Resource menu: Drop table...
+Parent menu: Create Dataset...         Resource menu: Drop table...
 +----------------------------------+ +---------------------------------------+
-| Create table                 [X] | | Drop table                        [X] |
-| Namespace: analytics             | | Target: analytics.events              |
+| Create Dataset               [X] | | Drop table                        [X] |
+| Namespace: dataset-ns            | | Target: analytics.events              |
 | Name [.........................] | | Remove this Catalog reference.        |
-| Schema [field editor...........] | | Physical reclamation follows GC.      |
+|                                  | | Physical reclamation follows GC.      |
 |                                  | |                                       |
 | Validation / request error       | | Exact scope and blockers appear here. |
 |                [Cancel] [Create] | |                 [Cancel] [Drop table] |
 +----------------------------------+ +---------------------------------------+
 
-Dataset publication: Review -> Evaluate -> Prepare -> Publish -> Receipt
+Dataset: center edits -> [Submit Snapshot] -> upload / prepare / conditional head
 Operation feedback:  exact target / operation ID / waiting / progress / error
 Unknown outcome:     reconcile the same operation before retrying
 ```
@@ -1011,8 +1011,10 @@ uses real bounded base-page inspection; the graph does not scan records for weig
   not data pages. Unsupported file types show an explicit capability state.
 - **ICE-06:** Catalog context menu creates Namespace; Namespace context menu
   creates Table and, when supported, child Namespace. A Namespace's own menu
-  edits its supported properties or drops that empty Namespace. A Table's menu
-  exposes supported Rename, Commit metadata and Drop table operations. Drop
+  creates one literal child name component; a dot in the entered name does not
+  create another level. Full identity is the ordered namespace component array.
+  Its menu also edits supported properties or drops that empty Namespace. A Table's menu
+  exposes supported Append Parquet, Rename, Commit metadata and Drop table operations. Drop
   removes the catalog reference; physical reclamation follows service GC.
   Snapshots, Manifests and Files are inspected through table-managed metadata,
   not given arbitrary Create/Delete actions. Demo operations are not primary
@@ -1025,12 +1027,64 @@ uses real bounded base-page inspection; the graph does not scan records for weig
   Cached branches do not bypass revalidation. A failed or stale inspection
   preserves selection context but removes data and continuation actions.
 
+- **ICE-08 — Table editing:** Namespace Create Table opens the center editor.
+  Empty Table uses name/type/required field rows; Parquet source accepts a batch,
+  reads bounded footers and checks stable IDs, nested types and nullability.
+  The Console writer supports unpartitioned format-v2 Tables and standard
+  three-level List/Map encodings. Unsupported types or incompatible files fail
+  explicitly before upload. It neither unions schemas nor rewrites Parquet.
+  Stage-create supplies the canonical UUID/Schema/storage identity; one standard
+  assert-create commit publishes the Table and its first data Snapshot. Empty
+  Tables have no data Snapshot. Append freezes the current Schema and main ref,
+  retains existing Manifests and adds one Snapshot for the entire batch.
+  Repeated file selections accumulate in the batch; individual files can be
+  removed before Submit. Same-name different bytes require explicit removal.
+- **ICE-09 — Submission and recovery:** FileIO goes through the configured Catalog
+  origin with a freshly authorized Table grant. The proxy rejects arbitrary
+  credential endpoints, cleanup elevation and foreign file prefixes. Small native
+  Parquet uploads retain the returned immutable location; larger files use 8 MiB
+  multipart requests. Schema, Name Mapping, Manifest and Manifest List are generated
+  automatically. Integral IDs remain exact in JSON and Avro. Complete inputs,
+  checksums, upload locations and commit body/key are saved in the browser before
+  mutation, with a 4 MiB import record bound; file credentials are not persisted.
+  Reselect original files to resume. Unknown commits retain their UUID-v7 key and
+  exact body; staged-create recovery can confirm the same UUID and Snapshot
+  references. A conflict never silently rebases. Table property editing uses
+  name/value/removal rows and submits metadata without creating a data Snapshot.
+  Only changed properties are written. Advanced requirements/updates remain
+  available with a fixed Table UUID assertion and exact integral tokens.
+  Editing input is saved per Namespace creation scope or existing Table before
+  Submit, including the frozen Table base. Reload restores it and requests local
+  files again. Only file grant refresh endpoints and native-upload capability
+  survive persistence; credentials are omitted. Definite conflicts allow local
+  discard; unknown outcomes keep the exact request until resolved.
+
+Iceberg: creation, append and metadata publication (ICE-08/09):
+
+```text
+Namespace -> Create Table                 Table -> Append Parquet
++--------------------------------------+  +--------------------------------------+
+| Name     [events................]    |  | Frozen Table UUID / main ref         |
+| Source   [Empty / Parquet]           |  | Files [choose several...]            |
+| Fields   name | type | required      |  | File | Bytes | Rows | State | Remove |
+| or Files [choose several...]         |  | Schema compatibility preview         |
+| File | Bytes | Rows | State | Remove |  |                                      |
+| Schema compatibility preview         |  |                                      |
+|                      [Create table]  |  |                      [Submit files]  |
++--------------------------------------+  +--------------------------------------+
+Parquet -> footer/schema checks -> stage-create -> upload -> Manifest/List
+        -> one conditional Catalog commit -> Table + first Snapshot
+Empty   -> field form -> stage-create -> conditional commit -> empty Table
+Append  -> upload batch -> retain old Manifests + new Manifest -> new Snapshot
+Properties -> name/value/removal rows -> [Submit metadata] -> metadata only
+```
+
 Iceberg: Catalog and Namespace collections (ICE-01/02/06):
 
 ```text
 +----------------------------+--------------------------------------------------------------+------------------------------+
 | v Catalog                  | analytics                                                    | Properties                   |
-|   v analytics *            | Filter loaded tables [................]   [Refresh]          | Namespace analytics          |
+|   v analytics *            |                                             [Refresh]        | Namespace analytics          |
 |     > events               | ----------------------------------------------------         | Full name                    |
 |     > users                | Name                  Type           Summary                 | Properties                   |
 |   > sandbox                | events                Table          ...                     | ...                          |
@@ -1081,10 +1135,14 @@ and footer structure; it does not imply reading data pages or SQL querying.
 
 - **S3-01:** Left Tree is S3 → Bucket. A single namespace introduces no wrapper;
   the logical S3 root is not named Datacenter. Root center lists buckets with
-  20-row windows; it does not repeat S3 as path, type and heading.
+  20-row server windows. It directly presents the Prefix query and list without
+  repeated path/type/heading or ordinary selection/refresh success messages.
 - **S3-02:** Selecting a Bucket displays an API page of at most 20 objects.
-  Prefix changes reset cursor history; Previous/Next replace rows. Any bucket
-  filter over already loaded metadata explicitly names that local scope.
+  Bucket and Object lists share `Prefix [input] [List]`. Enter/List applies a
+  server-side name/key prefix and resets cursor history; Previous/Next replace
+  rows using the applied prefix, independent of unsubmitted input. Bucket and
+  per-Bucket Object query windows remain separate. Tree selection and history
+  restore the relevant scope; loaded-page substring filtering is not Prefix.
 - **S3-03:** Selecting an Object reads HEAD fields into properties: key, size,
   ETag, last modified, content type, supplied version and user metadata. Missing
   fields show `—`. The center presents the selected object's content inspection.
@@ -1136,7 +1194,7 @@ S3: Bucket object list (S3-01/02/04):
 ```text
 +----------------------------+--------------------------------------------------------------+------------------------------+
 | v S3                       | photos                                                       | Properties                   |
-|   photos *                 | Prefix [...................] [Apply]       [Refresh]         | Bucket photos                |
+|   photos *                 | Prefix [...................] [List]                          | Bucket photos                |
 |   exports                  | ----------------------------------------------------         | Name                         |
 |   logs                     | Key                   Size             Modified              | ...                          |
 |                            | cat.jpg               ...              ...                   |                              |
@@ -1211,8 +1269,9 @@ view; its state is not piled beneath the ordinary Object list.
   resource menu. Right-click targets the clicked resource, independent of prior
   selection. Menu key / Shift+F10 opens the same menu; Escape restores focus.
   Matrix cells and diagram blocks retain their documented inspection semantics.
-- **ACT-05:** Menus open shared dialogs; long imports use step dialogs with the
-  same controls. The target stays explicit and cannot change under an open form.
+- **ACT-05:** Simple mutations use shared dialogs; Dataset and Iceberg authoring
+  opens center editors with one Submit action and local recovery. The target
+  stays explicit and cannot change under an open form.
   Switching resources closes obsolete forms without claiming to cancel accepted
   work. Successful operations refresh affected lists, tree references and properties;
   failures retain input and unknown outcomes require reconciliation.
@@ -1233,9 +1292,6 @@ The common layout and menu targets are:
 |                            | ...                                                          | ...                          |
 |                            |                  [Previous] [Next]                           |                              |
 +----------------------------+--------------------------------------------------------------+------------------------------+
-+----------------------------+--------------------------------------------------------------+------------------------------+
-+----------------------------+--------------------------------------------------------------+------------------------------+
-+----------------------------+--------------------------------------------------------------+------------------------------+
 ```
 
 Domain-specific scope and menu mappings:
@@ -1243,18 +1299,19 @@ Domain-specific scope and menu mappings:
 ```text
 Iceberg                         Center on selection       Context menu
 Catalog                         Namespaces (paged)        Create namespace
-  Namespace                     Tables/children (paged)   Create table; Drop namespace
-    Table                       Overview/Schema/Files     Rename; Commit metadata; Drop
+  Namespace                     Tables/children (paged)   Create table/namespace; Properties; Drop
+    Table                       Overview/Schema/Files     Append Parquet; Rename; Metadata; Drop
       Snapshot -> Manifest      Paged metadata/files      Inspection only
         File                    Decoded metadata          Supported inspection
 
 Dataset                         Center on selection       Context menu
 Datasets                        Datasets (paged)          Create dataset
-  Dataset                       Snapshots (paged)         Import / New Snapshot
-    Snapshot                    Samples x Fields          Create child; Publish Splits;
+  Dataset                       Snapshots (paged)         Import / New Snapshot; Delete empty
+    Snapshot                    Samples x Fields          Create child; Edit Split revision;
                                                           Stable/Retain/Release/Reclaim
-      Splits                    Revision/member windows   Supported revision operations
-  Sample/Field/Cell in center    Selected scope/value      Supported authoring/preview
+      Splits                    Revision/member windows   Create Split; Edit revision
+        Split                   Members (paged)           Edit / Remove in a new revision
+  Sample/Field/Cell in center    Selected scope/value      Edit in child Snapshot; Preview
 
 S3                              Center on selection       Context menu
 S3                              Buckets (paged)           Create bucket
@@ -1278,6 +1335,11 @@ CRUD merely to match another domain. Dataset lifecycle support is defined in §2
   outages use actual service lifecycle. Deployment and container capability
   enforcement require real API acceptance. Share setup per spec and keep
   destructive cases last. Reset only for cases that require empty authority.
+  S3, Iceberg and Dataset basic create/add/list/read/delete flows share one
+  owned cluster and one startup/teardown under the managed resource owner.
+  Distinct resource names and protocol scopes isolate their effects. API reads
+  verify results; they do not replace the UI mutations under test. Dedicated
+  suites retain pagination, large transfers, concurrency and recovery coverage.
 - **TEST-04:** Keep the step timer and slow-test reporter. Measure setup, mutation
   response, lifecycle readiness, DOM refresh and teardown separately. Slow steps
   at 2 s and very slow steps at 5 s remain logged even when a step fails. Tests
@@ -1308,8 +1370,10 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   badges. A Snapshot's Splits group is a peer of its children. Samples and Fields
   remain in the center. Direct Snapshot navigation preserves the exact identity;
   bounded ancestor discovery reports incomplete paths explicitly.
-  Dataset and Snapshot inventory pagination is reachable in the center, independent
-  of left-tree continuation. Tree appearance and selection use shared conventions.
+  Dataset and Snapshot inventory pagination is reachable in the center. The fixed
+  Datasets root retains its first bounded page plus the selected resource; the
+  catalog has no Previous/Next tree-page toolbar. Snapshot branch continuation
+  stays lazy and independent. Tree appearance and selection use shared conventions.
 - **DS-03 — Combined inspection:** one Samples matrix uses Schema definitions as
   columns, defaulting to twenty rows and twelve fields. Required/optional is the
   actual field definition; no inferred type, MIME or nested schema. Header, Sample
@@ -1327,21 +1391,37 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   missing/tombstoned values, oversized data, integrity failures and cancelled reads
   never appear as a successful truncated value. Browsing starts no Read Plan.
 - **DS-06 — Local import:** create Dataset, then Import / New Snapshot or Create
-  child. Any complete parent may be selected. Preserve all parent data is the
+  child opens the center editor. Dataset selection defaults to the Latest resolved
+  at opening; Snapshot/Split selection pins that explicit source. Any complete
+  parent may be selected. Preserve all parent data is the
   default; Replace membership and authority-evaluated Selection are explicit.
   A Split source freezes Snapshot/revision/name. Schema/member edits, local file
-  mappings and Split policies are reviewed before publication. External sources
+  mappings and Split policies accumulate locally before Submit. Field forms and
+  Sample field patches are the normal path; batch mapping is optional advanced
+  input. Applying another field to the same Sample merges pending patches. Clear
+  writes a tombstone; Remove Sample changes membership. Required parent fields
+  cannot be removed or downgraded. Source Split definitions and policy are frozen
+  at opening; new Samples remain unassigned unless definitions are reevaluated.
+  A file mapping preview shows file/bytes/target Sample ID and a target Field.
+  Existing IDs require explicit permission to update. Batch files accumulate;
+  removal clears their pending bindings. Sample/Field/cell context menus open
+  child editing with that identity preselected. Independent-root toggling restores
+  the original frozen Parent and Split source when turned off.
+  External sources
   are SDK-owned and require no connector UI.
 - **DS-07 — Client-owned publication:** uploads use immutable parts of at most
   4 MiB, at most 10000 parts, incremental MD5 and two concurrent requests. A new
   upload is created directly; a saved upload is observed for whole-part retries.
   Definitively aborted uploads use a new identity. Completed fields carry their
   existing id/length/md5 descriptor without a lookup to reconstruct it.
-  Review precedes one complete Snapshot preparation, followed by an explicit head
+  Submit runs upload, one complete Snapshot preparation and a conditional head
   update. A complete result is immutable and readable by ID before publication;
   preparing it writes no editing or evaluation progress. The browser freezes
-  parent/source/Split identities and the intended head base before uploading.
-  IndexedDB saves one complete input and pending request per Dataset/API origin
+  parent/source/Split identities, immutable Dataset ID and intended head base when
+  opening. An advertised dataset-identity-fence is required for the Snapshot editor;
+  mutations carry X-Crowdb-Dataset-Id, checked again by root creation admission so
+  a same-name replacement cannot receive stale uploads or content.
+  IndexedDB saves local edits, complete input and pending request per Dataset/API origin
   before mutation, with a 10 MiB record bound and no duplicated preparation body.
   Concurrent tabs cannot overwrite another saved resource. Closing and reload
   preserve these client inputs; unfinished local Files must be reselected and
@@ -1358,6 +1438,12 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   Independent Split publication compares the expected revision and head generation, preserves historical
   members, and does not move Dataset latest or create a data Snapshot. History and
   named membership pages stay pinned to the selected immutable revision.
+  Submit Split revision prepares and conditionally publishes that complete set.
+  Splits-group Create, and Split Edit/Remove, open the same center editor.
+  Basic Selection rules use forms with UTF-8/base64 byte inputs; nested rules
+  remain under Advanced selection JSON.
+  Closing keeps local edits; Discard removes them. Weighted partition members are
+  renamed together and removal explicitly removes their complete partition group.
 - **DS-09 — Lifecycle:** stable, retain, release and reclaim name the exact
   Snapshot. Backend protection wins over an observed eligibility hint. Reclaim
   distinguishes unknown, pending logical cleanup and completed retirement; physical
@@ -1381,7 +1467,7 @@ Dataset: catalog and Snapshot inventory (DS-01/02/06):
 ```text
 +----------------------------+--------------------------------------------------------------+------------------------------+
 | v Datasets                 | images                                    [Refresh]          | Properties                   |
-|   v images *               | Published Snapshots                                          | Dataset images               |
+|   v images *               | Complete Snapshots                                           | Dataset images               |
 |     v snapshot-a           | Snapshot      Parent        Samples       References         | Dataset ID    <exact ID>     |
 |       > Splits             | snapshot-a    -             ...           Stable             | Namespace     dataset-ns     |
 |       > snapshot-b         | snapshot-b    snapshot-a    ...           Latest             | Latest        snapshot-b     |
@@ -1400,7 +1486,7 @@ Dataset context-menu targets and immutable editing:
 Datasets root            Dataset images                Snapshot
 +--------------------+  +---------------------------+ +-------------------------+
 | Create dataset...  |  | Import / New Snapshot...  | | Create child...         |
-+--------------------+  | Delete Dataset...         | | Publish Splits...       |
++--------------------+  | Delete Dataset...         | | Edit Split revision...  |
                         +---------------------------+ |                         |
                                                      | Set stable              |
 Delete: empty only; hide immediately.                 | Retain / Release        |
@@ -1408,6 +1494,27 @@ Cleanup: configured grace (default 20 minutes).       | Reclaim...              
                                                      +-------------------------+
 Sample/Field edits -> reviewed candidate -> new published Snapshot
 Published Snapshot data are never edited in place.
+```
+
+Dataset: center editing and Submit (DS-06–08):
+
+```text
+Dataset -> Import / New Snapshot              Snapshot -> Edit Split revision
++-----------------------------------------+  +------------------------------------+
+| New Snapshot · images                   |  | Fixed Snapshot / currentSplit base |
+| Parent: fixed Latest, or selected ID    |  | Split name | selection / weights   |
+| Fields: name | required | remove        |  | Overlap  [Disjoint / Allowed]      |
+| Samples: ID | field | text/file/clear   |  | Coverage [Allow / Complete]        |
+| Files: bytes | Sample ID | target Field |  | Selection form (UTF-8 / base64)    |
+| Pending changes: upserts / removals     |  | Advanced: nested selection JSON    |
+| Splits: names / definitions / policy    |  |                                    |
+| Advanced: batch mapping / selection     |  |                                    |
+|             [Discard] [Submit Snapshot] |  |                 [Submit revision]  |
++-----------------------------------------+  +------------------------------------+
+Local edits -> upload files -> prepare complete Snapshot -> conditional head CAS
+                   fail/unknown -> saved exact input -> explicit resume
+Snapshot Submit moves Dataset Latest; Split Submit moves only currentSplit.
+Close keeps local edits. Published data and historical revisions stay immutable.
 ```
 
 Dataset: Samples matrix and selected cell (DS-03–05/08):

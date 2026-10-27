@@ -175,6 +175,64 @@ fn configured(origin: &str) -> axum::Router {
 }
 
 #[tokio::test]
+async fn iceberg_proxy_preserves_client_retry_identity_and_duplicate_header_validation() {
+    const KEY: &str = "019a2f6c-0000-7000-8000-000000000001";
+    let upstream = axum::Router::new().route(
+        "/*path",
+        any(|request: Request<Body>| async move {
+            let keys: Vec<_> = request
+                .headers()
+                .get_all("idempotency-key")
+                .iter()
+                .map(|value| value.to_str().unwrap().to_owned())
+                .collect();
+            if keys.len() != 1 {
+                return (StatusCode::BAD_REQUEST, "duplicate retry identity".to_owned());
+            }
+            (StatusCode::OK, keys[0].clone())
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        axum::serve(listener, upstream).await.unwrap();
+    });
+    let app = configured(&origin);
+    for duplicate in [false, true] {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/access/iceberg/v1/namespaces/example/tables/events")
+            .header("idempotency-key", KEY);
+        if duplicate {
+            builder = builder.header("idempotency-key", KEY);
+        }
+        let response = app
+            .clone()
+            .oneshot(builder.body(Body::from("{}")).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if duplicate {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::OK
+            }
+        );
+        let body = axum::body::to_bytes(response.into_body(), 100).await.unwrap();
+        assert_eq!(
+            body,
+            if duplicate {
+                "duplicate retry identity"
+            } else {
+                KEY
+            }
+        );
+    }
+    task.abort();
+}
+
+#[tokio::test]
 async fn remote_deployment_resolves_persisted_origins_without_local_launches() {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("remote-access-origin");
     let credentials = crowdb_monitor::ServerCredentials::load_or_create(root.path()).unwrap();

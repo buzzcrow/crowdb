@@ -31,6 +31,7 @@ impl DatasetAuthority {
         let key = key::dataset(identity)?;
         let mut current = self.store.get(&key).await?.ok_or(AuthorityError::NotFound)?;
         let id = DatasetEnvelope::decode(&current.bytes)?.active()?.id;
+        self.check_dataset_instance(id)?;
         for _ in 0..64 {
             let mut envelope = DatasetEnvelope::decode(&current.bytes)?;
             if envelope.record.id != id || envelope.deletion.is_some() {

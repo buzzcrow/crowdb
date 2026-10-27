@@ -106,9 +106,9 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
     setNamespacePages(previous => Object.fromEntries([...Object.entries(previous).filter(([key]) => key !== JSON.stringify(value)).slice(-7), [JSON.stringify(value), page]]));
   };
   const loadTable = async (name: string, ns = namespace) => { if (!ns) return; const request = ++navigation.current; const value = await iceberg(`${namespacePath(ns)}/tables/${encodeURIComponent(name)}`, token); if (request === navigation.current) setLoaded(value); };
-  const selectCatalog = () => { checkpoint(); navigation.current++; operation.current++; setBusy(false); setOutcome(''); setNamespace(null); setTable(''); setLoaded(null); };
-  const selectNamespace = (value: string[]) => { checkpoint(); setNamespacePrevious([]); setNamespace(value); setTable(''); setLoaded(null); setTables([]); void run(() => loadNamespace(value), `Namespace ${value.join('.')} loaded`); };
-  const selectTable = (name: string, ns = namespace) => { if (!ns) return; checkpoint(); setNamespace(ns); setTable(name); setLoaded(null); setSection('Overview'); void run(() => loadTable(name, ns), `Table ${name} loaded`); };
+  const selectCatalog = () => { resourceMenu.closeEditor(); checkpoint(); navigation.current++; operation.current++; setBusy(false); setOutcome(''); setNamespace(null); setTable(''); setLoaded(null); };
+  const selectNamespace = (value: string[]) => { resourceMenu.closeEditor(); checkpoint(); setNamespacePrevious([]); setNamespace(value); setTable(''); setLoaded(null); setTables([]); void run(() => loadNamespace(value), `Namespace ${value.join('.')} loaded`); };
+  const selectTable = (name: string, ns = namespace) => { if (!ns) return; resourceMenu.closeEditor(); checkpoint(); setNamespace(ns); setTable(name); setLoaded(null); setSection('Overview'); void run(() => loadTable(name, ns), `Table ${name} loaded`); };
   const inspector = useInspection(loaded, tablePath, token, origin);
   useNavigationSnapshot(Domain.Iceberg, 'catalog-query', () => {
     const state: IcebergQuery = { namespace: namespace ? [...namespace] : null, table, section,
@@ -159,6 +159,7 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
     if (target.namespace) {
       setNamespace(target.namespace);
       setNamespacePrevious([]);
+      if (action === 'commit' && target.table !== table) setSection('Overview');
       setTable(action === 'commit' ? target.table ?? '' : ''); setLoaded(null);
       await loadNamespace(target.namespace);
       if (target.table && action === 'commit') await loadTable(target.table, target.namespace);
@@ -169,8 +170,9 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
     {catalog && <CatalogTree active={active} revision={treeRevision + retry} namespace={namespace} table={table} loaded={loaded} inspector={inspector}
       onContextMenu={resourceMenu.open} onCatalog={selectCatalog} onNamespace={selectNamespace} onTable={selectTable} />}
   </>}>
-    <h1 tabIndex={0} onKeyDown={resourceMenuKey} onContextMenu={event => { if (!selected) resourceMenu.open(event, { namespace: namespace ?? undefined, table: table || undefined }); }} className="tw-text-lg tw-font-semibold tw-break-all">{focusTitle}</h1>
+    {!resourceMenu.editing && <h1 tabIndex={0} onKeyDown={resourceMenuKey} onContextMenu={event => { if (!selected) resourceMenu.open(event, { namespace: namespace ?? undefined, table: table || undefined }); }} className="tw-text-lg tw-font-semibold tw-break-all">{focusTitle}</h1>}
     {resourceMenu.overlay}
+    {!resourceMenu.editing && <>
     {selected && <button className={buttonClass} disabled={inspector.busy} onClick={() => void inspector.select(selected, '0')}>Refresh {selectedType.toLowerCase()}</button>}
     {loaded && !selected && <button className={buttonClass} disabled={busy} onClick={() => void run(() => loadTable(table), 'Metadata refreshed')}>Refresh table</button>}
 
@@ -197,5 +199,6 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
       {section === 'Files' && !inspector.selection && <p className="tw-text-xs tw-text-muted">Select a snapshot in the reference tree to inspect its manifest list, manifests and file metadata.</p>}
     </>}
 
+    </>}
   </Workbench>;
 }

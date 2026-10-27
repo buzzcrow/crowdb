@@ -54,6 +54,8 @@ pub enum AuthorityError {
     AlreadyExists,
     #[error("dataset is not empty")]
     DatasetNotEmpty,
+    #[error("dataset identity changed; reopen the resource before editing")]
+    DatasetReplaced,
     #[error("dataset was not found")]
     NotFound,
     #[error("snapshot parent does not match the current head")]
@@ -76,10 +78,12 @@ pub enum AuthorityError {
     ReclaimPending { reclaim_after: u64 },
 }
 
+#[derive(Clone)]
 pub struct DatasetAuthority {
     pub(crate) store: Arc<dyn DatasetStore>,
     chunk_reader: Arc<dyn ChunkReader>,
     reclaim_grace_seconds: u64,
+    expected_dataset: Option<DatasetId>,
     #[cfg(feature = "test-util")]
     reclaim_clock: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
@@ -100,6 +104,7 @@ impl DatasetAuthority {
             #[cfg(feature = "test-util")]
             reclaim_clock: None,
             reclaim_grace_seconds: access::RECLAIM_GRACE_SECONDS,
+            expected_dataset: None,
         }
     }
 
@@ -111,7 +116,24 @@ impl DatasetAuthority {
             #[cfg(feature = "test-util")]
             reclaim_clock: None,
             reclaim_grace_seconds: access::RECLAIM_GRACE_SECONDS,
+            expected_dataset: None,
         }
+    }
+
+    /// Uses the same stores and payload reader with a request-owned Dataset identity fence.
+    #[must_use]
+    pub fn for_dataset_instance(&self, expected: DatasetId) -> Self {
+        Self {
+            expected_dataset: Some(expected),
+            ..self.clone()
+        }
+    }
+
+    fn check_dataset_instance(&self, actual: DatasetId) -> Result<(), AuthorityError> {
+        if self.expected_dataset.is_some_and(|expected| expected != actual) {
+            return Err(AuthorityError::DatasetReplaced);
+        }
+        Ok(())
     }
 
     /// # Errors
@@ -119,6 +141,10 @@ impl DatasetAuthority {
     pub async fn create_dataset(&self, identity: DatasetIdentity) -> Result<DatasetId, AuthorityError> {
         if !identity.namespace().is_default() {
             return Err(DatasetError::InvalidDefaultNamespace.into());
+        }
+        if self.expected_dataset.is_some() {
+            self.read_dataset_record(&identity).await?;
+            return Err(AuthorityError::AlreadyExists);
         }
         let id = DatasetId::random();
         let record = DatasetRecord {
@@ -171,7 +197,9 @@ impl DatasetAuthority {
             .get(&key::dataset(identity)?)
             .await?
             .ok_or(AuthorityError::NotFound)?;
-        dataset_lifecycle::DatasetEnvelope::decode(&value.bytes)?.active()
+        let record = dataset_lifecycle::DatasetEnvelope::decode(&value.bytes)?.active()?;
+        self.check_dataset_instance(record.id)?;
+        Ok(record)
     }
 
     /// # Errors

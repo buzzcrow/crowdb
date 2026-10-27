@@ -10,7 +10,7 @@ import { useQuery } from './query';
 
 export interface TreeEntry { expanded?: boolean; splits?: boolean; cursor?: string }
 export type TreeState = Record<string, TreeEntry>;
-type Props = { selected: DatasetSelection; onContextMenu: (event: MouseEvent, selected: DatasetSelection) => void; dataset: string; active: boolean; refresh: number; select: (value: DatasetSelection) => void; tree: TreeState; updateTree: (key: string, value: TreeEntry) => void; head?: Head };
+type Props = { selected: DatasetSelection; onContextMenu: (event: MouseEvent, selected: DatasetSelection) => void; onSplitsContextMenu?: (event: MouseEvent, selected: Exclude<DatasetSelection, { kind: 'root' }>) => void; dataset: string; active: boolean; refresh: number; select: (value: DatasetSelection) => void; tree: TreeState; updateTree: (key: string, value: TreeEntry) => void; head?: Head };
 export function SnapshotTree(props: Props) {
   const head = useQuery(`${props.dataset}:${props.refresh}`, props.active, signal => api.head(props.dataset, signal));
   return <Branches {...props} head={head.value} />;
@@ -39,7 +39,7 @@ function SnapshotNode(props: Props & { item: SnapshotSummary; depth: number }) {
   const current = useQuery(`${props.dataset}:${props.item.id}:${props.refresh}`, props.active && !!splits,
     async signal => { const h = await api.splitHead(props.dataset, props.item.id, signal); return h.revision ? api.revision(props.dataset, props.item.id, h.revision, signal) : null; });
   const selected: DatasetSelection = { kind: 'snapshot', ...scope };
-  const splitsNode: TreeNode = { id: `${key}:splits`, type: 'Dataset', label: 'Splits', expandable: true, navigationOnly: true,
+  const splitsNode: TreeNode = { id: `${key}:splits`, type: 'Dataset', label: 'Splits', expandable: true, activate: () => setSplits(!splits),
     onExpand: () => setSplits(true), children: current.value ? [
       { id: `${key}:revision`, type: 'Dataset', label: `Revision ${current.value.revision.slice(0, 8)}`, activate: () => props.select({ kind: 'revision', ...scope, revision: current.value!.revision }) },
       ...current.value.splits.map(split => ({ id: `${key}:split:${split.name}`, type: 'Dataset' as const, label: `${split.name} (${split.count})`, activate: () => props.select({ kind: 'split', ...scope, revision: current.value!.revision, split: split.name }) })),
@@ -48,6 +48,12 @@ function SnapshotNode(props: Props & { item: SnapshotSummary; depth: number }) {
     selected: props.selected.kind !== 'root' && props.selected.kind !== 'dataset' && props.selected.snapshot === props.item.id,
     activate: () => props.select(selected), expandable: true,
     suffix: <>{props.head?.latest === props.item.id && <span className="tw-text-xs tw-text-accent">Latest</span>}{props.head?.stable === props.item.id && <span className="tw-text-xs tw-text-healthy">Stable</span>}</>,
-    childrenContent: <><Tree nodes={[splitsNode]} expandedIds={splits ? [splitsNode.id] : []} onExpansionChange={ids => setSplits(ids.includes(splitsNode.id))} />{props.depth < 32 ? <Branches {...props} parent={props.item.id} depth={props.depth + 1} /> : <p>Tree depth limit. Open a Snapshot directly to continue.</p>}</>,
+    childrenContent: <><Tree nodes={[splitsNode]} expandedIds={splits ? [splitsNode.id] : []} onExpansionChange={ids => setSplits(ids.includes(splitsNode.id))} onNodeContextMenu={(node, event) => {
+      if (node.id === splitsNode.id) (props.onSplitsContextMenu ?? props.onContextMenu)(event, { ...selected, revision: current.value?.revision });
+      else if (current.value) {
+        const split = current.value.splits.find(value => node.id === `${key}:split:${value.name}`);
+        props.onContextMenu(event, { ...scope, kind: split ? 'split' : 'revision', revision: current.value.revision, ...(split ? { split: split.name } : {}) });
+      }
+    }} />{props.depth < 32 ? <Branches {...props} parent={props.item.id} depth={props.depth + 1} /> : <p>Tree depth limit. Open a Snapshot directly to continue.</p>}</>,
   }]} expandedIds={expanded ? [key] : []} onExpansionChange={ids => setExpanded(ids.includes(key))} onNodeContextMenu={(_, event) => props.onContextMenu(event, selected)} /></li>;
 }

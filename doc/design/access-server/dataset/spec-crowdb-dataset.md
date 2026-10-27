@@ -91,6 +91,15 @@ the receipt and deadline. Name reuse creates a different Dataset ID; a stale
 DELETE MUST conflict. Minimal identity receipts and retired child fences remain
 for retry safety, rather than resurrecting old operations.
 
+Control v2's optional `X-Crowdb-Dataset-Id` active-instance guard MUST reject a
+same-name replacement with 409 `dataset_replaced`. Malformed, zero, noncanonical
+or duplicated values MUST fail with 400. Missing/marked identities return 404.
+The advertised `dataset-identity-fence` capability covers both request admission
+and creation reservation CAS, so deletion/name reuse cannot redirect a delayed
+upload or Snapshot creator after its initial identity observation. Requests that
+omit the header retain their existing contracts; deletion receipt/status retries
+after marking use their own immutable ID without this active-instance guard.
+
 The Access Server setting `dataset.reclaim_grace_seconds` defaults to 1200 and
 must be positive. Dataset, Snapshot and Split revision deletion use this value
 when first marked. Existing deadlines are immutable across configuration changes

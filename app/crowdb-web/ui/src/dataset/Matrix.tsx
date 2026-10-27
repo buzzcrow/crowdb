@@ -4,6 +4,7 @@
 import { useState } from 'react';
 import { buttonClass, inputClass } from '../access/Workbench';
 import { useDomain } from '../contexts/DomainContext';
+import { resourceMenuKey } from '../components/resourceMenuKey';
 import * as api from './api';
 import { bytes, sampleLabel } from './identity';
 import { useQuery } from './query';
@@ -12,7 +13,7 @@ import type { DatasetSelection } from './types';
 type Scope = { dataset: string; snapshot: string; revision?: string; split?: string };
 export interface MatrixWindow { rowCursor?: string; columnCursor?: string; exact: string; lookup: string; filter: string }
 export const emptyWindow: MatrixWindow = { exact: '', lookup: '', filter: '' };
-export function Matrix({ scope, active, refresh, select, window, updateWindow }: { scope: Scope; active: boolean; refresh: number; select: (value: DatasetSelection) => void; window: MatrixWindow; updateWindow: (value: MatrixWindow) => void }) {
+export function Matrix({ scope, active, refresh, select, window, updateWindow, onContextMenu }: { scope: Scope; active: boolean; refresh: number; select: (value: DatasetSelection) => void; window: MatrixWindow; updateWindow: (value: MatrixWindow) => void; onContextMenu?: (event: import('react').MouseEvent, value: DatasetSelection) => void }) {
   const { rowCursor, columnCursor, exact, lookup, filter } = window;
   const setRowCursor = (value?: string) => updateWindow({ ...window, rowCursor: value });
   const setColumnCursor = (value?: string) => updateWindow({ ...window, columnCursor: value });
@@ -52,11 +53,11 @@ export function Matrix({ scope, active, refresh, select, window, updateWindow }:
     {!data.value && !data.error && <p role="status">Loading metadata…</p>}
     {data.value && <div className="tw-overflow-auto"><table className="tw-w-full tw-text-xs" aria-label="Sample field matrix">
       <thead className="tw-sticky tw-top-0 tw-bg-panel"><tr><th className="tw-sticky tw-left-0 tw-bg-panel tw-p-2">Sample ID</th>
-        {data.value.schema.entries.map(field => <th key={field.name} className="tw-p-2"><button onClick={() => select({ ...scope, kind: 'schema', field: field.name, required: field.required })}>{field.name}<small className="tw-block tw-text-muted">{field.required ? 'Required' : 'Optional'}</small></button></th>)}
+        {data.value.schema.entries.map(field => <th key={field.name} className="tw-p-2" onKeyDown={resourceMenuKey} onContextMenu={event => onContextMenu?.(event, { ...scope, kind: 'schema', field: field.name, required: field.required })}><button onClick={() => select({ ...scope, kind: 'schema', field: field.name, required: field.required })}>{field.name}<small className="tw-block tw-text-muted">{field.required ? 'Required' : 'Optional'}</small></button></th>)}
       </tr></thead><tbody>
         {data.value.rows.filter(row => !filter || sampleLabel(row.id).includes(filter) || row.id.includes(filter)).map(row => <tr key={row.id} className="tw-border-t tw-border-border">
-          <th className="tw-sticky tw-left-0 tw-bg-panel tw-p-2 tw-text-left"><button title={row.id} onClick={() => select({ ...scope, kind: 'sample', sample: row.id })}>{sampleLabel(row.id)}</button></th>
-          {row.fields.map((field, index) => <td key={data.value!.schema.entries[index].name} className="tw-p-2"><button onClick={() => select({ ...scope, kind: 'cell', sample: row.id, field: data.value!.schema.entries[index].name })}>
+          <th className="tw-sticky tw-left-0 tw-bg-panel tw-p-2 tw-text-left" onKeyDown={resourceMenuKey} onContextMenu={event => onContextMenu?.(event, { ...scope, kind: 'sample', sample: row.id })}><button title={row.id} onClick={() => select({ ...scope, kind: 'sample', sample: row.id })}>{sampleLabel(row.id)}</button></th>
+          {row.fields.map((field, index) => <td key={data.value!.schema.entries[index].name} className="tw-p-2" onKeyDown={resourceMenuKey} onContextMenu={event => onContextMenu?.(event, { ...scope, kind: 'cell', sample: row.id, field: data.value!.schema.entries[index].name })}><button onClick={() => select({ ...scope, kind: 'cell', sample: row.id, field: data.value!.schema.entries[index].name })}>
             {field ? `${field.storage} · ${field.length} B` : 'Missing'}{field && field.source_snapshot !== scope.snapshot && <small className="tw-block">Inherited</small>}
           </button></td>)}
         </tr>)}

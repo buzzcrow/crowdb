@@ -24,14 +24,14 @@ export async function openDataset(page: Page, name: string) {
   await page.goto('/?domain=Dataset');
   await page.getByRole('navigation', { name: 'Dataset tree', exact: true }).getByRole('button', { name, exact: true }).click();
 }
-export async function preparedResult(page: Page, kind: 'Snapshot' | 'Split revision') {
-  const region = page.getByRole('region', { name: 'Resource publication' });
-  await expect(region.getByRole('button', { name: `Publish ${kind}`, exact: true })).toBeEnabled();
-}
 export async function publishResult(page: Page, kind: 'Snapshot' | 'Split revision') {
-  await preparedResult(page, kind);
-  await page.getByRole('region', { name: 'Resource publication' }).getByRole('button', { name: `Publish ${kind}`, exact: true }).click();
-  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByRole('button', { name: `Submit ${kind}`, exact: true }).click();
+  await expect(page.getByRole('region', { name: kind === 'Snapshot' ? 'Import Snapshot' : 'Edit Split revision', exact: true })).toHaveCount(0);
+}
+export async function mapping(page: Page, value: unknown) {
+  await page.getByText('Advanced batch mapping', { exact: true }).click();
+  await page.getByRole('textbox', { name: 'Sample mapping JSON', exact: true }).fill(JSON.stringify(value));
+  await page.getByRole('button', { name: 'Apply batch mapping', exact: true }).click();
 }
 export async function publishSplits(request: APIRequestContext, name: string, snapshot: string, splits: unknown[]) {
   const path = `${datasetPath(name)}/snapshots/${snapshot}`; const revision = id();

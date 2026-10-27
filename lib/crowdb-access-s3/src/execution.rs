@@ -82,6 +82,19 @@ impl S3Executor {
     }
 
     /// # Errors
+    /// Returns invalid listing scopes or bounded metadata storage failures.
+    pub async fn list_bucket_page(
+        &self,
+        signer: &bucket::BucketListSigner,
+        request: &bucket::BucketListRequest<'_>,
+    ) -> Result<bucket::BucketListPage, S3ErrorCode> {
+        signer
+            .list(&self.storage.metadata, &self.tenant, request)
+            .await
+            .map_err(|error| bucket_error(&error))
+    }
+
+    /// # Errors
     /// Returns missing/nonempty bucket, conflict or metadata failure.
     pub async fn delete_bucket(&self, name: &[u8]) -> Result<(), S3ErrorCode> {
         match bucket::delete_bucket(&self.storage.metadata, &self.tenant, name)
@@ -156,7 +169,7 @@ impl S3Executor {
 
 pub(crate) fn bucket_error(error: &BucketError) -> S3ErrorCode {
     match error {
-        BucketError::Key(_) => S3ErrorCode::InvalidRequest,
+        BucketError::Key(_) | BucketError::InvalidListRequest => S3ErrorCode::InvalidRequest,
         BucketError::Record(_) => S3ErrorCode::InternalError,
         BucketError::Store(_) => S3ErrorCode::ServiceUnavailable,
     }

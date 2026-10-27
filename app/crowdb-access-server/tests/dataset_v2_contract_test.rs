@@ -39,6 +39,7 @@ async fn capabilities_use_existing_auth_and_match_configured_operations() {
             "inspection-preparation",
             "dataset-management",
             "dataset-delete",
+            "dataset-identity-fence",
             "split-revisions",
             "split-revision-delete",
             "split-preparation",

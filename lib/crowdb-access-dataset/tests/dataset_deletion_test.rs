@@ -60,6 +60,27 @@ async fn deletion_persists_deadline_and_fences_name_reuse() {
     );
     let new_id = restarted.create_dataset(name.clone()).await.unwrap();
     assert_ne!(new_id, id);
+    let stale = restarted.for_dataset_instance(id);
+    assert!(matches!(
+        stale.get_dataset(&name).await,
+        Err(AuthorityError::DatasetReplaced)
+    ));
+    assert!(matches!(
+        stale.reserve_upload_creation(&name, OperationId::random()).await,
+        Err(AuthorityError::DatasetReplaced)
+    ));
+    assert!(matches!(
+        stale
+            .prepare_snapshot_candidate(
+                &name,
+                None,
+                publication::publication_manifest(1),
+                OperationId::random()
+            )
+            .await,
+        Err(AuthorityError::DatasetReplaced)
+    ));
+    assert_eq!(restarted.latest(&name).await.unwrap(), None);
     assert!(matches!(
         restarted.delete_dataset(&name, id, &cancel).await,
         Err(AuthorityError::HeadConflict)

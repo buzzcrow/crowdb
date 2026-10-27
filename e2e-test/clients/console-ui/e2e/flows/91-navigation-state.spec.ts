@@ -73,7 +73,7 @@ test('native diagnostics: browser history preserves S3 windows and rejects repla
     await expect(locations.getByRole('alert')).toContainText('404');
     await expect(page.getByLabel('Object metadata')).not.toContainText('content-length');
     await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: bucket, exact: true }).click();
-    await page.getByRole('button', { name: 'List objects', exact: true }).click();
+    await page.getByRole('form', { name: 'Object list query', exact: true }).getByRole('button', { name: 'List', exact: true }).click();
     await expect(objects.getByRole('button', { name: 'item-20', exact: true })).toHaveCount(0);
   } finally {
     for (let start = 0; start < keys.length; start += 4) {

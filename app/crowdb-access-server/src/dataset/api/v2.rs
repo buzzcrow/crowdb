@@ -36,6 +36,35 @@ struct Capabilities {
 
 impl DatasetHttpService {
     pub(super) async fn route_v2(&self, parts: &[String], request: Request<Incoming>) -> ApiResult {
+        const HEADER: &str = "x-crowdb-dataset-id";
+        if request.headers().get_all(HEADER).iter().count() > 1 {
+            return Err(ApiError::invalid());
+        }
+        if let Some(value) = request.headers().get(HEADER) {
+            if parts.len() < 7
+                || parts[..6] != ["api", "dataset", "v2", "namespaces", "dataset-ns", "datasets"]
+            {
+                return Err(ApiError::invalid());
+            }
+            let value = value.to_str().map_err(|_| ApiError::invalid())?;
+            let bytes = hex::decode(value).map_err(|_| ApiError::invalid())?;
+            let id = crowdb_access_dataset::DatasetId::from_bytes(&bytes).map_err(|_| ApiError::invalid())?;
+            if id.to_string() != value {
+                return Err(ApiError::invalid());
+            }
+            let scoped = Self {
+                reads: std::sync::Arc::new(self.reads.for_dataset_instance(id)),
+                ..self.clone()
+            };
+            let identity =
+                DatasetIdentity::new(NamespacePath::root(), &parts[6]).map_err(|_| ApiError::invalid())?;
+            scoped.reads.authority().get_dataset(&identity).await?;
+            return scoped.route_v2_scoped(parts, request).await;
+        }
+        self.route_v2_scoped(parts, request).await
+    }
+
+    async fn route_v2_scoped(&self, parts: &[String], request: Request<Incoming>) -> ApiResult {
         if parts == ["api", "dataset", "v2", "namespaces", "dataset-ns", "datasets"] {
             return self.v2_catalog(request).await;
         }
@@ -49,6 +78,7 @@ impl DatasetHttpService {
                 "inspection-preparation",
                 "dataset-management",
                 "dataset-delete",
+                "dataset-identity-fence",
                 "split-revisions",
                 "split-revision-delete",
                 "split-preparation",

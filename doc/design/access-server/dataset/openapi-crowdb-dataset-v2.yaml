@@ -23,12 +23,20 @@ info:
     standalone Split preparation JSON and final bindings are limited to 1 MiB.
     Composition and standalone Split begin/edit/evaluate/prepare/publish workflow routes return 501;
     legacy draft reads, abandonment and cleanup remain available for old records.
+    The dataset-identity-fence capability supports X-Crowdb-Dataset-Id on named
+    Dataset routes. The active-instance guard is checked during request admission
+    and root creation reservation CAS; a replacement returns 409 dataset_replaced,
+    missing/marked identities return 404, malformed/duplicate headers return 400.
+    Existing clients may omit it. Deletion receipt/status retries after marking
+    omit this active guard and retain their own expected immutable ID.
 servers:
   - url: /api/dataset/v2
 security:
   - bearerAuth: []
 paths:
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     put:
       operationId: prepareSnapshot
       summary: Prepare complete Snapshot content from retained caller inputs
@@ -73,6 +81,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/head:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: datasetHead
       summary: Read mutable names and their current opaque head generation
@@ -154,6 +164,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshot-inventory:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: snapshotInventory
       summary: List complete Snapshot inventory
@@ -170,6 +182,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/roots:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: snapshotRoots
       summary: List complete parentless Snapshot roots
@@ -186,6 +200,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/children:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: snapshotChildren
       summary: List complete children of a concrete Snapshot
@@ -203,6 +219,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/summary:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: snapshotSummary
       summary: Read bounded complete Snapshot metadata
@@ -218,6 +236,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/schema:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: snapshotSchema
       summary: Read an ordered Schema window
@@ -235,6 +255,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/samples:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: snapshotSamples
       summary: Read exact binary Sample IDs in byte order
@@ -252,6 +274,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/matrix:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: snapshotMatrix
       summary: Read effective field metadata without payload access
@@ -305,6 +329,8 @@ paths:
           $ref: '#/components/responses/InspectionError'
 
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/contains:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: snapshotContains
       summary: Look up exact binary Sample membership
@@ -325,6 +351,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/inspection:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: snapshotInspection
       summary: Read explicit metadata preparation status
@@ -355,6 +383,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-head:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     put:
       operationId: updateSplitHead
       summary: Conditionally update currentSplit from a complete resource
@@ -395,6 +425,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-revisions:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: splitHistory
       description: Lists complete revisions, including results that have not updated currentSplit. Snapshot read admission applies.
@@ -418,6 +450,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-revisions/{revision}:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     delete:
       operationId: deleteSplitRevision
       summary: Mark one historical complete Split revision for delayed metadata reclamation
@@ -517,6 +551,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-revisions/{revision}/splits/{name}/members:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: splitMembers
       parameters:
@@ -547,6 +583,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       deprecated: true
       description: Read-only observation of an existing legacy draft; never resumes work.
@@ -595,6 +633,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/reads/bind:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     post:
       operationId: bindRead
       description: Resolve immutable Snapshot and Split versions without creating read state.
@@ -614,6 +654,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/reads/next:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     post:
       operationId: nextReadBatch
       description: Replay this continuation; save the returned next cursor after processing.
@@ -633,6 +675,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/preview:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: snapshotFieldPreview
       summary: Read a bounded binary field prefix for text or hex presentation
@@ -673,6 +717,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/deletion/{id}:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: datasetDeletionStatus
       summary: Reconcile a deletion for the exact Dataset identity
@@ -698,6 +744,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     delete:
       operationId: deleteDatasetV2
       summary: Mark an empty Dataset deleted
@@ -757,6 +805,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/names/stable:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     put:
       operationId: setStableSnapshot
       summary: Set stable without changing latest
@@ -778,6 +828,8 @@ paths:
             schema:
               $ref: '#/components/schemas/StableSnapshot'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/retain:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     post:
       operationId: retainSnapshotV2
       summary: Retain Snapshot retention
@@ -798,6 +850,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/release:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     post:
       operationId: releaseSnapshotV2
       summary: Release Snapshot retention
@@ -817,6 +871,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/reclaim:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: observeSnapshotLifecycleV2
       summary: Observe bounded protection and retirement facts without mutation
@@ -859,6 +915,8 @@ paths:
         are rejected. Background workers retire owners before metadata. Physical capacity
         recovery remains a separate ChunkDB responsibility.
   /namespaces/dataset-ns/datasets/{dataset}/commits/{attempt}:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: commitStatusV2
       summary: Read a legacy publication receipt
@@ -879,6 +937,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}/cleanup:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     post:
       deprecated: true
       operationId: cleanupSplitDraft
@@ -896,6 +956,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/uploads:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     post:
       operationId: createUploadV2
       summary: Create a Dataset-scoped multipart upload
@@ -917,6 +979,8 @@ paths:
             schema:
               $ref: '#/components/schemas/CreateUpload'
   /namespaces/dataset-ns/datasets/{dataset}/uploads/{upload}:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       operationId: getUploadV2
       summary: Inspect upload progress
@@ -954,6 +1018,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/uploads/{upload}/complete:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     post:
       operationId: completeUploadV2
       summary: Verify and complete upload parts
@@ -973,6 +1039,8 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/uploads/{upload}/parts/{index}:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     put:
       operationId: uploadPartV2
       summary: Write one bounded upload part
@@ -1005,6 +1073,8 @@ paths:
               format: binary
               maxLength: 4194304
   /namespaces/dataset-ns/datasets/{dataset}/compositions/{operation}:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     get:
       deprecated: true
       operationId: getComposition
@@ -1051,6 +1121,8 @@ paths:
             schema:
               $ref: '#/components/schemas/DraftRevision'
   /namespaces/dataset-ns/datasets/{dataset}/compositions/{operation}/cleanup:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
     post:
       deprecated: true
       operationId: cleanupComposition
@@ -1069,6 +1141,11 @@ paths:
       description: Returns unsupported after authentication and route validation, before storage. Background workers discover historical draft facts and retire them using local cursors; no client cleanup state or completion confirmation is accepted.
 components:
   parameters:
+    datasetInstance:
+      in: header
+      name: X-Crowdb-Dataset-Id
+      description: Optional active Dataset instance; omit after marking when retrying deletion receipts/status.
+      schema: {type: string, pattern: '^(?!0{32}$)[0-9a-f]{32}$'}
     dataset:
       in: path
       name: dataset

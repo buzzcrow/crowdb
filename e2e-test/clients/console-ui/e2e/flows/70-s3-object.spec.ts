@@ -30,7 +30,8 @@ test('native diagnostics: S3 bucket windows and multipart markers replace rows',
       }
     });
     await page.goto('/?domain=S3');
-    await page.getByLabel('Filter loaded buckets', { exact: true }).fill(prefix);
+    await page.getByLabel('Bucket prefix', { exact: true }).fill(prefix);
+    await page.getByRole('form', { name: 'Bucket list query', exact: true }).getByRole('button', { name: 'List', exact: true }).click();
     const table = page.getByRole('table', { name: 'S3 bucket list', exact: true });
     await expect(table.getByRole('row')).toHaveCount(21);
     expect(await table.getByRole('button').allTextContents()).toEqual(buckets.slice(0, 20));

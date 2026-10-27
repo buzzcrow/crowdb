@@ -413,8 +413,9 @@ the full sweep cadence (default 300s) admits every nonempty backlog, including
 small zones that can never reach the threshold. Threshold polls do not reset
 the full sweep deadline. Both paths skip active zones and use the zone-level
 lock. A disk whose zones are all active must rotate a zone out before background
-compaction can reclaim its free records; managed files normally provide spare
-zones for this purpose.
+compaction can reclaim its free records. Managed files use
+`zone_size_bytes = min(capacity_bytes, 32 GiB)`; capacities above 32 GiB contain
+whole 32 GiB zones. Allocator and compaction policy do not change this geometry.
 
 ### Compaction algorithm
 

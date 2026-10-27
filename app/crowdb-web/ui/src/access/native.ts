@@ -15,23 +15,32 @@ export async function readJson<T>(response: Response): Promise<T> {
   await check(response);
   return response.status === 204 ? undefined as T : response.json();
 }
+export class AccessError extends Error {
+  constructor(readonly status: number, message: string, readonly errorType?: string) {
+    super(`HTTP ${status}: ${message}`);
+  }
+  get unknownOutcome() { return this.errorType === 'CommitStateUnknownException' || this.status >= 500; }
+}
 export async function check(response: Response): Promise<void> {
   if (response.ok) return;
   const text = new TextDecoder().decode(await previewBytes(response));
   let message = text;
+  let errorType: string | undefined;
   try {
     const body = JSON.parse(text);
     message = body.error?.message ?? body.error ?? body.message ?? text;
+    errorType = body.error?.type;
   } catch {
     const xml = new DOMParser().parseFromString(text, 'application/xml');
     message = xml.querySelector('Message')?.textContent ?? text;
+    errorType = xml.querySelector('Code')?.textContent ?? undefined;
   }
-  throw new Error(`HTTP ${response.status}: ${message || response.statusText}`);
+  throw new AccessError(response.status, message || response.statusText, errorType);
 }
-export async function iceberg(path: string, token: string, method = 'GET', body?: object, signal?: AbortSignal): Promise<any> {
+export async function iceberg(path: string, token: string, method = 'GET', body?: object | string, signal?: AbortSignal, requestKey?: string): Promise<any> {
   const response = await fetch(`${getApiBase()}/access/iceberg${path}`, {
-    method, signal, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
-    ...(body ? { body: JSON.stringify(body) } : {}),
+    method, signal, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...(requestKey ? { 'Idempotency-Key': requestKey } : {}) },
+    ...(body ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}),
   });
   await check(response);
   return response.status === 204 ? undefined : parseIcebergJson(await boundedText(response));

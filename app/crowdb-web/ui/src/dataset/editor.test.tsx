@@ -12,12 +12,12 @@ import * as api from './api';
 vi.mock('./operation/storage', () => ({ readRequest: vi.fn(async () => undefined), writeRequest: vi.fn(async () => {}), removeRequest: vi.fn(async () => {}) }));
 vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(),
   listDatasets: vi.fn(async () => ({ entries: [], after: null })),
-  capabilities: vi.fn(async () => ['dataset-management', 'composition-preparation', 'snapshot-head-update']),
+  capabilities: vi.fn(async () => ['dataset-management', 'composition-preparation', 'snapshot-head-update', 'dataset-identity-fence']),
   mutate: vi.fn(async () => ({})),
   page: vi.fn(async () => ({ entries: [], after: null })),
   splitHead: vi.fn(async () => ({ revision: null, generation: null })),
   head: vi.fn(async () => ({ generation: null, latest: null, stable: null })),
-  control: vi.fn(async () => ({})),
+  control: vi.fn(async (path: string) => path.endsWith('/head') ? { latest: null, stable: null, generation: null } : { id: '1'.repeat(32) }),
 }));
 afterEach(() => { vi.clearAllMocks(); localStorage.clear(); });
 it('creates through the parent menu and keeps resource operations out of the center toolbar', async () => {
@@ -38,11 +38,14 @@ it('creates through the parent menu and keeps resource operations out of the cen
   expect(api.mutate).toHaveBeenCalledTimes(1);
   fireEvent.contextMenu(screen.getByTestId('dataset-scope'));
   await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: 'Import / New Snapshot…' })));
-  expect(screen.getByRole('dialog', { name: 'Import Snapshot' })).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'Import Snapshot' })).toBeInTheDocument();
+  expect(screen.queryByRole('dialog', { name: 'Import Snapshot' })).toBeNull();
+  expect(screen.queryByRole('navigation', { name: 'Dataset tree pages' })).toBeNull();
 });
 it('invalid rule text blocks saving and invalidates the previously reviewed rule', () => {
   const change = vi.fn();
   const { container } = render(<Definitions splits={[{ name: 'train', origin: { kind: 'evaluated' }, definition: { kind: 'selection', predicate: { kind: 'all' } } }]} policy={defaultPolicy} change={change} />);
+  fireEvent.click(screen.getByText('Advanced selection JSON'));
   fireEvent.change(screen.getByRole('textbox', { name: 'Selection rule' }), { target: { value: '{broken' } });
   expect(change).toHaveBeenCalled();
   expect(() => validateEditor(container)).toThrow('Correct the invalid editor input');
@@ -118,10 +121,10 @@ it('reclamation confirmation keeps its exact Snapshot target across navigation',
 it('waits for the selected Split base before enabling edits so loading cannot erase input', async () => {
   const { SplitEditor } = await import('./splits/Editor');
   let loaded!: (value: import('./types').SplitHead) => void;
-  vi.mocked(api.splitHead).mockReturnValueOnce(new Promise(resolve => { loaded = resolve; }));
+  vi.mocked(api.control).mockResolvedValueOnce({ id: '1'.repeat(32) }).mockReturnValueOnce(new Promise(resolve => { loaded = resolve; }));
   render(<SplitEditor dataset="demo" snapshot={'1'.repeat(32)} close={vi.fn()} complete={vi.fn()} />);
   expect(screen.getByRole('button', { name: 'Add selection Split' })).toBeDisabled();
-  expect(screen.getByRole('button', { name: 'Prepare Split revision' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Submit Split revision' })).toBeDisabled();
   expect(screen.queryByLabelText('Split 1 name')).toBeNull();
   await act(async () => loaded({ revision: null, generation: null }));
   fireEvent.click(screen.getByRole('button', { name: 'Add selection Split' }));

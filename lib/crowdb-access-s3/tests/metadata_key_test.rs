@@ -4,6 +4,27 @@
 use crowdb_access_s3::metadata::{BucketId, MetadataKey, TenantId};
 
 #[test]
+fn bucket_name_prefix_bounds_preserve_binary_names_and_tenant_scope() {
+    let tenant = TenantId::new(b"tenant".to_vec()).unwrap();
+    let (start, end) = MetadataKey::bucket_name_bounds(&tenant, b"a\0").unwrap();
+    for name in [b"a\0".as_slice(), b"a\0z"] {
+        let key = MetadataKey::bucket_name(&tenant, name).unwrap();
+        assert!(start <= key && key < end);
+    }
+    assert!(MetadataKey::bucket_name(&tenant, b"a\x01").unwrap() >= end);
+    let other = TenantId::new(b"other".to_vec()).unwrap();
+    let key = MetadataKey::bucket_name(&other, b"a\0").unwrap();
+    assert!(key < start || key >= end);
+    assert_eq!(
+        MetadataKey::bucket_name_bounds(&tenant, b"").unwrap(),
+        (
+            MetadataKey::bucket_name_prefix(&tenant),
+            MetadataKey::bucket_name_end(&tenant)
+        )
+    );
+}
+
+#[test]
 fn object_keys_are_binary_safe_and_ordered_within_a_bucket() {
     let tenant = TenantId::new(b"tenant\0a".to_vec()).expect("tenant is valid");
     let bucket = BucketId::new([7; 16]);

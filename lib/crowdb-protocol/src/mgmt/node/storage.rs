@@ -15,20 +15,20 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_FILE_CAPACITY_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 pub const DEFAULT_FILE_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
 
-/// Choose whole, word-aligned zones for newly accepted managed files.
-/// Small zones leave room outside `DiskDB`'s four active allocation zones for
-/// background reclamation. Persisted file preparations retain their geometry.
+/// Validate managed capacity and choose its accepted allocation geometry.
+/// Persisted file preparations retain their geometry across retries.
 #[must_use]
 pub fn managed_file_zone_bytes(capacity_bytes: u64) -> Option<u64> {
-    const MIN_ZONE: u64 = 64 * 1024 * 1024;
-    const MAX_ZONE: u64 = 256 * 1024 * 1024;
-    if capacity_bytes == 0 || capacity_bytes % MIN_ZONE != 0 {
+    const ALIGNMENT: u64 = 64 * 1024 * 1024;
+    const MAX_ZONE: u64 = 32 * 1024 * 1024 * 1024;
+    if capacity_bytes == 0
+        || capacity_bytes > i64::MAX as u64
+        || capacity_bytes % ALIGNMENT != 0
+        || (capacity_bytes > MAX_ZONE && capacity_bytes % MAX_ZONE != 0)
+    {
         return None;
     }
-    let mut zone = MAX_ZONE;
-    while capacity_bytes % zone != 0 {
-        zone /= 2;
-    }
+    let zone = capacity_bytes.min(MAX_ZONE);
     u32::try_from(capacity_bytes / zone).ok().map(|_| zone)
 }
 

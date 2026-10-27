@@ -180,6 +180,7 @@ def main():
                                                 labels.get("org.crowdb.source.tree") or None)
     except ValueError as error:
         parser.error(str(error))
+    args.artifacts = args.artifacts.resolve()
     args.artifacts.mkdir(parents=True, exist_ok=True)
     # Unique artifacts/client bundle avoid concurrent runner collisions.
     run_root = args.artifacts / ("run-" + uuid.uuid4().hex)

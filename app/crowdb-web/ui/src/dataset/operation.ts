@@ -10,9 +10,14 @@ import { readRequest, removeRequest, writeRequest } from './operation/storage';
 type Observation = Head | (SplitHead & { snapshot: string });
 type Pending = { kind: 'prepare' } | { kind: 'publish'; expectedHead: string | null; expectedRevision?: string | null };
 export interface Operation {
-  version: 2; dataset: string; kind: 'snapshot' | 'split'; resource: string; snapshot?: string;
+  version: 2; dataset: string; datasetId?: string; kind: 'snapshot' | 'split'; resource: string; snapshot?: string;
+  editing?: boolean; parentSchema?: import('./types').Schema;
+  parentMode?: 'all' | 'replace' | 'selection';
+  fileChecks?: Record<string, { size: number; md5: string }>;
+  fileSamples?: Array<{ file: string; sample: string }>;
   expectedHead: string | null; expectedRevision?: string | null;
   source?: Omit<PrepareSnapshot, 'samples'>; mapping?: Mapping;
+  inheritedSource?: Omit<PrepareSnapshot, 'samples'>;
   input?: PrepareSnapshot | PrepareSplit; prepared?: PreparedSnapshot | SplitRevision;
   pending?: Pending; conflict?: Observation; fileKeys?: Record<string, string>;
 }
@@ -55,7 +60,7 @@ export async function retryIdentical(op: Operation, signal?: AbortSignal): Promi
   const capability = op.kind === 'snapshot' ? (preparing ? 'composition-preparation' : 'snapshot-head-update')
     : (preparing ? 'split-preparation' : 'split-head-update');
   try {
-    const result = await api.mutate<PreparedSnapshot | SplitRevision | Head | SplitHead>(capability, preparing ? resourcePath(op) : headPath(op), 'PUT', body, signal);
+    const result = await api.mutate<PreparedSnapshot | SplitRevision | Head | SplitHead>(capability, preparing ? resourcePath(op) : headPath(op), 'PUT', body, signal, op.datasetId);
     if (preparing) {
       if (op.kind === 'snapshot' ? !('sample_count' in result) || result.snapshot !== op.resource
         : !('revision' in result) || result.revision !== op.resource || !('snapshot' in result) || result.snapshot !== op.snapshot) throw new api.DatasetError(502, 'Prepared resource identity does not match the request.', true);

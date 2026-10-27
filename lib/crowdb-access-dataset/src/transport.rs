@@ -178,6 +178,16 @@ impl DatasetReadService {
         Arc::clone(&self.authority)
     }
 
+    /// Shares admission while binding mutations to one immutable Dataset instance.
+    #[must_use]
+    pub fn for_dataset_instance(&self, expected: crate::DatasetId) -> Self {
+        Self {
+            authority: Arc::new(self.authority.for_dataset_instance(expected)),
+            identity: self.identity.clone(),
+            window: Arc::clone(&self.window),
+        }
+    }
+
     #[must_use]
     pub fn identity(&self) -> &DatasetIdentity {
         &self.identity

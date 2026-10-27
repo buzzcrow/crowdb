@@ -12,6 +12,7 @@ export function useCatalogTree(active: boolean, revision: number, namespace: str
   const [error, setError] = useState('');
   const [cursor, setCursor] = useState<string>();
   const requests = useRef(new Map<string, AbortController>());
+  const selected = useRef(namespace); selected.current = namespace;
   const start = (key: string) => {
     requests.current.get(key)?.abort();
     const controller = new AbortController(); requests.current.set(key, controller);
@@ -40,7 +41,11 @@ export function useCatalogTree(active: boolean, revision: number, namespace: str
       const page: NamespacePage = { paged: !!table || !!child, tables: tables.identifiers ?? [],
         children: (children.namespaces ?? []).filter((value: string[]) => value.length > ns.length && ns.every((part, index) => part === value[index])),
         nextTables: tables['next-page-token'], nextNamespaces: children['next-page-token'] };
-      setPages(previous => Object.fromEntries([...Object.entries(previous).filter(([name]) => name !== key).slice(-7), [key, page]]));
+      setPages(previous => {
+        const path = new Set((selected.current ?? []).map((_, index) => JSON.stringify(selected.current!.slice(0, index + 1))));
+        const entries = Object.entries(previous).filter(([name]) => name !== key);
+        return Object.fromEntries([...entries.filter(([name]) => !path.has(name)).slice(-7), ...entries.filter(([name]) => path.has(name)), [key, page]]);
+      });
     } catch (reason) { if (!controller.signal.aborted) setError(String(reason)); }
     finally { if (requests.current.get(key) === controller) requests.current.delete(key); }
   };
@@ -50,7 +55,16 @@ export function useCatalogTree(active: boolean, revision: number, namespace: str
     return () => { requests.current.forEach(controller => controller.abort()); requests.current.clear(); };
   }, [active, revision]);
   useEffect(() => {
-    if (active && namespace) void loadNamespace(namespace);
+    if (!active || !namespace) return;
+    let cancelled = false;
+    void (async () => {
+      // At most 32 scopes, sequentially: a revision invalidates ancestor pages too.
+      for (let level = 1; level <= namespace.length; level++) {
+        if (cancelled) return;
+        await loadNamespace(namespace.slice(0, level));
+      }
+    })();
+    return () => { cancelled = true; };
   }, [active, revision, JSON.stringify(namespace)]);
   return { namespaces, pages, next, cursor, error, loadRoot, loadNamespace };
 }

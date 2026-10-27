@@ -21,6 +21,16 @@ bounded control operations. Payload delivery retains the existing binary framing
 
 ## 1. Identity and authority
 
+Control v2 advertises `dataset-identity-fence`. A caller may bind a named route to
+one active Dataset ID with `X-Crowdb-Dataset-Id`, a single canonical nonzero
+32-character lowercase hex value. The request-owned authority carries that
+expected ID through Dataset reads and root resource reservation CAS; checking
+only the initial HTTP observation would leave a deletion/name-reuse race. A
+replacement returns 409 `dataset_replaced`, a marked/missing Dataset returns
+404, and malformed/duplicate headers return 400. Omission preserves existing
+clients. This active-instance guard is omitted when retrying deletion receipts
+after a successful mark; those operations already bind their immutable ID.
+
 A Dataset has opaque latest/stable Snapshot references. A Snapshot may declare any
 complete available same-Dataset parent or no parent. Its parent is independent of the head
 generation used for publication CAS. Multiple roots and off-latest branches remain

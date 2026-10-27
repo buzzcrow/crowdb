@@ -64,8 +64,7 @@ pub(crate) async fn create(
     let node = remote_node(&state, node_id)?;
     canonical_operation(&body.operation_id)?;
     let zone_size_bytes = managed_file_zone_bytes(body.capacity_bytes)
-        .filter(|_| i64::try_from(body.capacity_bytes).is_ok())
-        .ok_or_else(|| err_400("File capacity must be a positive multiple of 64 MiB within the supported zone-count and signed 64-bit bounds"))?;
+        .ok_or_else(|| err_400("File capacity must be a positive multiple of 64 MiB within signed 64-bit bounds; above 32 GiB it must contain whole 32 GiB zones"))?;
     let binding = crate::node::cluster_binding(&state)?
         .ok_or_else(|| err_409("File disk creation is waiting for Group 0"))?;
     let request = PrepareDiskFile {

@@ -35,7 +35,7 @@ export function CatalogTree(props: Props) {
   useEffect(() => setSnapshotPage(0), [loaded]);
   const activeNs = JSON.stringify(namespace);
   const expanded = ['ice-catalog'];
-  if (namespace) expanded.push(`ice-ns-${activeNs}`);
+  if (namespace) for (let level = 1; level <= namespace.length; level++) expanded.push(`ice-ns-${JSON.stringify(namespace.slice(0, level))}`);
   if (loaded) expanded.push(`ice-table-${activeNs}-${table}`, 'ice-snapshots');
   if (inspector.selection) {
     const s = inspector.selection;
@@ -46,11 +46,16 @@ export function CatalogTree(props: Props) {
   const namespaceNode = (ns: string[]): IcebergNode => {
     const key = JSON.stringify(ns);
     const page = catalog.pages[key];
+    const children = [...(page?.children ?? [])];
+    const tables = [...(page?.tables ?? [])];
+    const onPath = namespace && ns.every((part, index) => part === namespace[index]);
+    if (onPath && namespace.length > ns.length && !children.some(child => child.length === ns.length + 1 && child.every((part, index) => part === namespace[index]))) children.push(namespace.slice(0, ns.length + 1));
+    if (activeNs === key && table && !tables.some(entry => entry.name === table)) tables.push({ namespace: ns, name: table });
     return { resource: { namespace: ns }, id: `ice-ns-${key}`, type: 'Iceberg', label: ns.at(-1) ?? '', title: `Namespace · ${ns.join('.')}`,
       icon: <Folder className="tw-h-4 tw-w-4 tw-text-muted" />, expandable: true,
       selected: activeNs === key && !table,
       activate: () => props.onNamespace(ns), onExpand: () => { if (!page) void catalog.loadNamespace(ns); },
-      children: [...(page?.children ?? []).map(namespaceNode), ...(page?.tables ?? []).map(entry => {
+      children: [...children.map(namespaceNode), ...tables.map(entry => {
         const selected = activeNs === key && table === entry.name;
         return { resource: { namespace: ns, table: entry.name }, id: `ice-table-${key}-${entry.name}`, type: 'Iceberg' as const, label: entry.name, title: `Table · ${ns.join('.')}.${entry.name}`,
           icon: <Table2 className="tw-h-4 tw-w-4 tw-text-muted" />, expandable: selected && !!loaded, selected: selected && !inspector.selection,
@@ -64,9 +69,11 @@ export function CatalogTree(props: Props) {
       footer: page && <div className="tw-text-xs tw-text-muted tw-py-2 tw-space-y-1"><p>{page.tables.length} tables loaded</p>{page.paged && <button onClick={() => void catalog.loadNamespace(ns)}>First page</button>}{page.nextTables && <button onClick={() => void catalog.loadNamespace(ns, page.nextTables!)}>Next tables</button>}{page.nextNamespaces && <button onClick={() => void catalog.loadNamespace(ns, undefined, page.nextNamespaces!)}>Next namespaces</button>}</div>,
     };
   };
+  const roots = [...catalog.namespaces];
+  if (namespace?.length && !roots.some(ns => ns[0] === namespace[0])) roots.push(namespace.slice(0, 1));
   const root: IcebergNode & { resource: CatalogTarget } = { resource: {}, id: 'ice-catalog', type: 'Iceberg', label: 'Catalog', title: 'Current cluster Iceberg catalog',
     icon: <Database className="tw-h-4 tw-w-4 tw-text-muted" />, selected: !namespace,
-    activate: props.onCatalog, children: catalog.namespaces.map(namespaceNode),
+    activate: props.onCatalog, children: roots.map(namespaceNode),
     footer: <>{catalog.cursor && <button className="tw-text-xs tw-text-accent tw-mr-2" onClick={() => void catalog.loadRoot()}>First namespaces</button>}{catalog.next && <button className="tw-text-xs tw-text-accent" onClick={() => void catalog.loadRoot(catalog.next!)}>Next namespaces</button>}</>,
   };
   return <nav aria-label="Iceberg tree" className="-tw-mx-4">{catalog.error && <p role="alert">{catalog.error}</p>}<Tree nodes={[root]} defaultExpandedIds={expanded} onNodeClick={node => (node as IcebergNode).activate?.()} onNodeContextMenu={(node, event) => { const resource = (node as IcebergNode & { resource?: CatalogTarget }).resource; if (resource) props.onContextMenu(event, resource); }} /></nav>;

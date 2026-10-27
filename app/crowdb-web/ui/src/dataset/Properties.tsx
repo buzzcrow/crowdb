@@ -15,7 +15,13 @@ export function Properties({ selected, active }: { selected: DatasetSelection; a
     if (selected.kind === 'cell') return (await api.matrix(selected.dataset, selected.snapshot, [selected.sample], [selected.field], signal))[0].fields[0];
     if (selected.kind === 'sample') return { sample_id_base64: selected.sample, snapshot: selected.snapshot, revision: selected.revision, split: selected.split };
     if (selected.kind === 'schema') return { field: selected.field, required: selected.required, definition: 'The selected column shows required/optional. Schema fields have no type or MIME declaration.' };
-    if (selected.revision) return api.revision(selected.dataset, selected.snapshot, selected.revision, signal);
+    if (selected.revision) {
+      const revision = await api.revision(selected.dataset, selected.snapshot, selected.revision, signal);
+      if (selected.kind !== 'split') return revision;
+      const split = revision.splits.find(split => split.name === selected.split);
+      if (!split) throw new Error('Split is unavailable in the selected revision.');
+      return { snapshot: selected.snapshot, revision: selected.revision, ...split, policy: revision.policy };
+    }
     const [summary, lifecycle] = await Promise.allSettled([api.summary(selected.dataset, selected.snapshot, signal), api.control(`${api.snapshotPath(selected.dataset, selected.snapshot)}/reclaim`, 'GET', undefined, signal)]);
     if (summary.status === 'rejected') throw summary.reason;
     return { ...summary.value, lifecycle: lifecycle.status === 'fulfilled' ? lifecycle.value : { unavailable: String(lifecycle.reason) } };

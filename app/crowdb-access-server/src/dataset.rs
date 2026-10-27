@@ -37,6 +37,7 @@ fn body(bytes: Bytes) -> DatasetBody {
     Full::new(bytes).map_err(|never| match never {}).boxed_unsync()
 }
 
+#[derive(Clone)]
 pub struct DatasetHttpService {
     reads: Arc<DatasetReadService>,
     bearer: Option<Arc<str>>,
@@ -94,6 +95,7 @@ fn status_for_authority(error: &AuthorityError) -> StatusCode {
         AuthorityError::Invalid(_) => StatusCode::BAD_REQUEST,
         AuthorityError::AlreadyExists
         | AuthorityError::DatasetNotEmpty
+        | AuthorityError::DatasetReplaced
         | AuthorityError::ParentConflict
         | AuthorityError::HeadConflict
         | AuthorityError::SnapshotHeadConflict { .. }

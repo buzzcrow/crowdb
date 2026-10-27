@@ -59,7 +59,8 @@ impl DatasetAuthority {
             .get(&key::dataset(identity)?)
             .await?
             .ok_or(AuthorityError::NotFound)?;
-        super::dataset_lifecycle::DatasetEnvelope::decode(&dataset.bytes)?.active()?;
+        let record = super::dataset_lifecycle::DatasetEnvelope::decode(&dataset.bytes)?.active()?;
+        self.check_dataset_instance(record.id)?;
         let stored = self.store.get(&key::head(identity)?).await?;
         reference(stored.as_ref())
     }
