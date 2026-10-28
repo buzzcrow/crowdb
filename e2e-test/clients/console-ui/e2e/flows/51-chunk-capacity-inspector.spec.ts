@@ -100,7 +100,7 @@ test('native diagnostics: disk Inspector and Capacity selection retain two actua
     await expect(section).toBeVisible();
     await expect(section.getByRole('article', { name: /^Registered disk / })).toHaveCount(1);
   }
-  await first.group.getByRole('button', { name: 'storage (DG-1)', exact: true }).click();
+  await first.group.getByRole('button', { name: 'DG-1', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Capacity — DG-1', exact: true })).toBeVisible();
   await expect(panel.getByText('Disks in DG-1 (1)', { exact: true })).toBeVisible();
   const label = first.id.slice(0, 8) + '…';

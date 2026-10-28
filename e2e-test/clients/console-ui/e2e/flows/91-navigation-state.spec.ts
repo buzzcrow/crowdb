@@ -71,7 +71,12 @@ test('native diagnostics: browser history preserves S3 windows and rejects repla
 
     await page.getByTestId('domain-kv').click();
     expect((await request.delete(`${path}/item-20`)).status()).toBe(204);
-    await page.goBack();
+    const [restored] = await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === '/api/access/s3/' && response.request().method() === 'GET'),
+      page.goBack(),
+    ]);
+    expect(restored.status(), await restored.text()).toBe(200);
+    expect(await restored.text()).toContain(bucket);
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('item-20');
     await expect(locations.getByRole('alert')).toContainText('404');
     await expect(page.getByLabel('Object metadata')).not.toContainText('content-length');

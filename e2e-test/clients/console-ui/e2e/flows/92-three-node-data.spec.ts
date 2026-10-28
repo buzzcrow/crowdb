@@ -175,8 +175,7 @@ async function s3RoundTrip({ page, request }: UIContext) {
     expect(bucketResponse.status(), bucketResponse.statusText()).toBe(200);
     await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: 'ui-three-node', exact: true }).click();
     await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Upload object…');
-    await page.getByLabel('Object key', { exact: true }).fill('round-trip.txt');
-    await page.getByLabel('Object file').setInputFiles({ name: 'round-trip.txt', mimeType: 'text/plain', buffer: Buffer.from(content) });
+    await page.getByLabel('Object files', { exact: true }).setInputFiles({ name: 'round-trip.txt', mimeType: 'text/plain', buffer: Buffer.from(content) });
     await step('three-node: S3 upload mutation', async () => {
       const uploaded = page.waitForResponse(response => response.request().method() === 'PUT'
         && new URL(response.url()).pathname === '/api/access/s3/ui-three-node/round-trip.txt');
@@ -207,12 +206,16 @@ async function icebergRoundTrip({ page, baseURL }: UIContext) {
     await tree.getByRole('button', { name: 'ui_three_node', exact: true }).click();
     await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Create table…');
     await page.getByLabel('Table name', { exact: true }).fill('events');
-    await page.getByLabel('Schema fields (JSON)', { exact: true }).fill(JSON.stringify([{ id: 1, name: 'id', required: false, type: 'long' }, { id: 2, name: 'message', required: false, type: 'string' }]));
+    await page.getByLabel('Field 1 required', { exact: true }).uncheck();
+    await page.getByRole('button', { name: 'Add field', exact: true }).click();
+    await page.getByLabel('Field 2 name', { exact: true }).fill('message');
+    await page.getByLabel('Field 2 type', { exact: true }).selectOption('string');
     const createdTable = page.waitForResponse(response => new URL(response.url()).pathname === '/api/access/iceberg/v1/namespaces/ui_three_node/tables' && response.request().method() === 'POST');
-    await page.getByRole('button', { name: 'Create table', exact: true }).click();
+    await page.getByRole('button', { name: 'Commit', exact: true }).click();
     const created = await createdTable;
     expect(created.status(), await created.text()).toBe(200);
     const writerConfig = (await created.json()).config;
+    await expect(page.getByRole('region', { name: 'Create Table', exact: true })).toHaveCount(0);
     await tree.getByRole('button', { name: 'events', exact: true }).click();
     const execution = promisify(execFile)('pixi', ['run', '-e', 'iceberg-e2e', 'python', resolve('e2e/fixtures/icebergRoundTrip.py'), `${baseURL}/api/access/iceberg`, 'ui_three_node'], { env: { ...process.env, PYICEBERG_MAX_WORKERS: '4' }, timeout: 300_000 });
     execution.child.stdin!.end(JSON.stringify(writerConfig));

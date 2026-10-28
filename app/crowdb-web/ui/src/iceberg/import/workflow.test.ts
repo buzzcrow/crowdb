@@ -5,7 +5,7 @@ import { AccessError, iceberg } from '../../access/native';
 import { commitBody, submitImport } from './commit';
 import { manifests } from './manifests';
 import { fileRequest } from './files';
-import { filePage } from './source';
+import { filePage, validateSource } from './source';
 import { ocf } from './avro';
 import { loadDraft, saveDraft, type TableDraft } from './draft';
 import { load, type ImportRequest } from './storage';
@@ -50,6 +50,12 @@ it('rejects concurrent main changes before producing new metadata files', async 
   const op = operation(); vi.mocked(iceberg).mockResolvedValueOnce({ ...op.table!, 'metadata-location': 's3://table/v3.json' });
   await expect(submitImport(op, [], vi.fn())).rejects.toThrow('Table changed'); expect(fileRequest).not.toHaveBeenCalled();
 });
+it('rejects incompatible stored-file Schema edits before uploading or publishing metadata', async () => {
+  const op = operation(); op.files = []; op.removed = [];
+  op.schema = { ...schema, fields: [{ ...schema.fields[0], type: 'string' }] };
+  await expect(submitImport(op, [], vi.fn())).rejects.toThrow('incompatible');
+  expect(iceberg).not.toHaveBeenCalled(); expect(fileRequest).not.toHaveBeenCalled();
+});
 it('reconciles a lost update response by immutable Snapshot identity without publishing twice', async () => {
   const op = operation(); op.commit = 'frozen'; op.list = 's3://table/new-list.avro'; op.uncertain = true;
   vi.mocked(iceberg).mockResolvedValueOnce({ metadata: { 'table-uuid': 'uuid', snapshots: [{ 'snapshot-id': '30', 'manifest-list': op.list }] } });
@@ -61,4 +67,13 @@ it('rejects a stale browser Draft version and keeps different source Drafts sepa
   expect(() => saveDraft(stale)).toThrow('changed in another tab');
   const historical = { ...draft, revision: 0, requestedSource: '10' }; saveDraft(historical);
   expect(loadDraft(op.namespace, op.name)?.revision).toBe(2); expect(loadDraft(op.namespace, op.name, '10')?.revision).toBe(1);
+});
+
+it('continues editing current files after compatible metadata-only Schema evolution', () => {
+  const op = operation(); const table = op.table!;
+  table.metadata['current-schema-id'] = 1;
+  table.metadata.schemas = [schema, { ...schema, 'schema-id': 1, fields: [{ ...schema.fields[0], name: 'renamed' }, { id: 2, name: 'note', required: false, type: 'string' }] }];
+  expect(() => validateSource(table, '20')).not.toThrow();
+  (table.metadata.schemas as any[])[1].fields[0].type = 'string';
+  expect(() => validateSource(table, '20')).toThrow('incompatible');
 });

@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { ImportEditor } from '../import/Editor';
 import { defaultPolicy } from '../types';
@@ -67,4 +67,28 @@ it('shows the completed retry in the table and Properties instead of an older fa
   expect(screen.getByRole('button', { name: 'resume.txt · 22 B' })).toHaveTextContent('resume.txt · 22 B');
   expect(screen.getByRole('region', { name: 'Draft properties' })).toHaveTextContent('resume.txt · 22 B · ready');
   expect(screen.queryByText('Network error')).not.toBeInTheDocument();
+});
+it('routes text and file edits to the exact Sample and Field cell', () => {
+  const op = draft();
+  const apply = vi.fn(); const upload = vi.fn();
+  render(<Grid op={op} rows={[{ id: btoa('first'), fields: [null] }, { id: btoa('second'), fields: [null] }]} fields={['content']} apply={apply} upload={upload} rename={vi.fn()} remove={vi.fn()} restore={vi.fn()} select={vi.fn()} selectField={vi.fn()} removeField={vi.fn()} />);
+  fireEvent.change(screen.getByRole('textbox', { name: 'content for second' }), { target: { value: 'second value' } });
+  expect(apply).toHaveBeenCalledWith(btoa('second'), 'content', expect.objectContaining({ kind: 'inline' }));
+  const file = new File(['bytes'], 'second.parquet', { type: 'application/octet-stream' });
+  fireEvent.change(screen.getByLabelText('Upload content for first'), { target: { files: [file] } });
+  expect(upload).toHaveBeenCalledWith(btoa('first'), 'content', file);
+});
+it('keeps the first row in place when editing a newly added column', async () => {
+  const op = draft();
+  op.mapping!.samples = ['first', 'second'].map(id => ({ kind: 'upsert', id: btoa(id), fields: [] }));
+  render(<ImportEditor dataset="demo" recovery={op} close={vi.fn()} complete={vi.fn()} />);
+  await act(async () => {});
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Add Field' })));
+  const name = screen.getByLabelText('Field name');
+  fireEvent.change(name, { target: { value: 'note' } });
+  await act(async () => fireEvent.click(within(screen.getByRole('dialog', { name: 'Add Field' })).getByRole('button', { name: 'Add Field' })));
+  await act(async () => fireEvent.change(screen.getByLabelText('note for first'), { target: { value: 'first only' } }));
+  expect(screen.getAllByRole('textbox', { name: /^Sample ID for/ }).map(input => (input as HTMLInputElement).value)).toEqual(['first', 'second']);
+  expect(screen.getByLabelText('note for first')).toHaveValue('first only');
+  expect(screen.getByLabelText('note for second')).toHaveValue('');
 });

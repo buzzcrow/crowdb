@@ -71,8 +71,9 @@ class CliOwnershipTest(unittest.TestCase):
                 run.return_value.returncode = 0
                 cluster.close()
             arguments = run.call_args.args[0]
-            self.assertTrue(arguments[1].endswith("container/oci-image/docker-local.py"))
-            self.assertEqual(arguments[2:], ["clean", "--cluster", cluster.run_id, "--delete-data"])
+            self.assertTrue(arguments[1].endswith("container/oci-image/clean.py"))
+            self.assertTrue(Path(arguments[1]).is_file())
+            self.assertEqual(arguments[2:], ["--cluster", cluster.run_id, "--delete-data"])
             self.assertEqual(run.call_args.kwargs["env"]["CROWDB_RUNTIME_ROOT"], str(cluster.root))
             self.assertTrue(cluster.closed)
 
@@ -85,6 +86,7 @@ class CliOwnershipTest(unittest.TestCase):
                 run.return_value.stderr = "daemon unavailable"
                 with self.assertRaisesRegex(RuntimeError, "daemon unavailable"):
                     cluster.close()
+            self.assertEqual(run.call_args.args[0][2:], ["--cluster", cluster.run_id, "--keep-data"])
             self.assertFalse(cluster.closed)
 
     def test_recovery_observation_rejects_invalid_node_before_inspection(self):

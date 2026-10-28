@@ -1,5 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+import { compatibleSchema, type IceSchema } from './schema';
 import { iceberg } from '../../access/native';
 import { currentSchema, tablePath } from './commit';
 import type { FileEntry, Inspection, Manifest, TableLoad } from '../types';
@@ -14,7 +15,11 @@ export function validateSource(table: TableLoad, source: string | null) {
   if (!source) return;
   const snapshot = table.metadata.snapshots?.find(value => String(value['snapshot-id']) === source);
   if (!snapshot) throw new Error('The source Snapshot is no longer available.');
-  if (snapshot['schema-id'] !== undefined && snapshot['schema-id'] !== currentSchema(table)['schema-id']) throw new Error('This historical Snapshot uses another Schema. Use an Iceberg client to evolve or restore its Schema.');
+  if (snapshot['schema-id'] !== undefined) {
+    const schema = (table.metadata.schemas as IceSchema[]).find(value => value['schema-id'] === snapshot['schema-id']);
+    if (!schema) throw new Error('The source Snapshot Schema is unavailable.');
+    compatibleSchema(schema, currentSchema(table));
+  }
 }
 export async function inspectSource(op: ImportRequest, manifest?: string, offset?: string, signal?: AbortSignal): Promise<Inspection> {
   const snapshot = sourceSnapshot(op);

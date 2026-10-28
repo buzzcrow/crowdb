@@ -9,9 +9,9 @@ import { bucketFailure, bucketReply } from '../fixtures/bucketDiagnostics';
 // Baseline: 5.3s (2026-10-04); normal three-node fixture, actual multipart acceptance.
 test('S3 native multipart upload, HEAD, bounded preview and full round trip', async ({ page, request }) => {
   const bucket = `console-multipart-${process.pid}-${Date.now()}`;
-  const key = 'multipart a/中文.txt';
+  const key = 'multipart 中文.txt';
   const bucketPath = `/api/access/s3/${bucket}`;
-  const objectPath = `${bucketPath}/multipart%20a/%E4%B8%AD%E6%96%87.txt`;
+  const objectPath = `${bucketPath}/${encodeURIComponent(key)}`;
   const bytes = Buffer.alloc(9 * 1024 * 1024, 'x');
   let created: ReturnType<typeof bucketReply>;
   await step('native bucket setup', async () => {
@@ -43,8 +43,7 @@ test('S3 native multipart upload, HEAD, bounded preview and full round trip', as
       await expect(bucketButton).toBeVisible();
       await bucketButton.click();
       await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Upload object…');
-      await page.getByLabel('Object key', { exact: true }).fill(key);
-      await page.getByLabel('Object file').setInputFiles({ name: 'multipart.txt', mimeType: 'text/plain', buffer: bytes });
+      await page.getByLabel('Object files').setInputFiles({ name: key, mimeType: 'text/plain', buffer: bytes });
     });
     await step('native 9 MiB multipart mutation and DOM refresh', async () => {
       const [completed] = await Promise.all([

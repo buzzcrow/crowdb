@@ -37,10 +37,12 @@ export async function openDraft(dataset: string, parent?: string, source?: Split
 
 /** Upserts are field patches: changing a payload must keep other pending fields. */
 export function patchSample(mapping: Mapping, value: LocalSample): Mapping {
-  const existing = mapping.samples.find(sample => sample.id === value.id);
+  const index = mapping.samples.findIndex(sample => sample.id === value.id);
+  const existing = index < 0 ? undefined : mapping.samples[index];
   const merged = existing?.kind === 'upsert' && value.kind === 'upsert'
     ? { ...value, fields: [...existing.fields.filter(field => !value.fields.some(update => update.name === field.name)), ...value.fields] } : value;
-  return { ...mapping, samples: [...mapping.samples.filter(sample => sample.id !== value.id), merged] };
+  if (index < 0) return { ...mapping, samples: [...mapping.samples, merged] };
+  return { ...mapping, samples: mapping.samples.map((sample, position) => position === index ? merged : sample) };
 }
 
 export function independentRoot(op: Operation, independent: boolean): Operation {

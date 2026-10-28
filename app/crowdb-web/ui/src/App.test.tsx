@@ -6,7 +6,8 @@ import App from './App';
 import { Domain } from './types';
 import * as api from './api';
 const capacityRequests = vi.hoisted(() => vi.fn());
-vi.mock('./shell/NodeCandidatesContext', () => ({ CandidateProvider: ({ children }: { children: import('react').ReactNode }) => children }));
+vi.mock('./shell/NodeCandidatesContext', () => ({ CandidateProvider: ({ children }: { children: import('react').ReactNode }) => children,
+  useNodeCandidates: () => ({ snapshot: undefined, candidates: [] }) }));
 vi.mock('./shell/CandidateNodes', () => ({ CandidateNodes: () => null }));
 
 vi.mock('./api', async importOriginal => ({

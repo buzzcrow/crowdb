@@ -31,6 +31,9 @@ export async function parquetWorkflow(page: Page, request: APIRequestContext, na
     await page.getByLabel('Parquet files', { exact: true }).setInputFiles(file('b.parquet', 'b'));
     await expect(page.getByRole('table', { name: 'Parquet editor table', exact: true }).getByRole('row')).toHaveCount(3);
     await expect(page.getByRole('table', { name: 'Parquet editor table', exact: true }).getByRole('cell', { name: 'Uploaded', exact: true })).toHaveCount(2);
+    await page.getByRole('button', { name: 'Add field', exact: true }).click();
+    await page.getByLabel('Field 3 name', { exact: true }).fill('note');
+    await page.getByLabel('Field 3 type', { exact: true }).selectOption('string');
     await page.getByRole('button', { name: 'Save Draft', exact: true }).click();
     await expect(page.getByText('Draft saved in this browser.', { exact: true })).toBeVisible();
     expect((await request.get(path)).status()).toBe(404);
@@ -43,6 +46,7 @@ export async function parquetWorkflow(page: Page, request: APIRequestContext, na
     await expect(page.getByRole('region', { name: 'Create Table', exact: true })).toHaveCount(0);
     await expect(page.getByRole('table', { name: 'Table snapshots', exact: true }).getByRole('row')).toHaveCount(2);
     await inspect(request, path, 1, 2, '4');
+    await expect(tree).not.toContainText(/Manifest|\d+ (tables )?loaded/);
     await page.getByRole('button', { name: 'Inspect current snapshot', exact: true }).click();
     await expect(page.getByRole('table', { name: 'Manifest list records', exact: true })).toBeVisible();
   });
@@ -73,7 +77,7 @@ export async function parquetWorkflow(page: Page, request: APIRequestContext, na
     await resourceAction(page, snapshots.getByRole('button', { name: first, exact: true }), 'Edit as Draft…');
     const grid = page.getByRole('table', { name: 'Parquet editor table', exact: true });
     await expect(grid.getByRole('row')).toHaveCount(3);
-    const remove = grid.getByRole('button', { name: /^Remove / });
+    const remove = grid.locator('tbody').getByRole('button', { name: /^Remove / });
     const names = await remove.allTextContents(); expect(names).toHaveLength(2);
     // Use the first API-confirmed file identity, not an ambiguous page locator.
     const query = new URLSearchParams({ metadata: before['metadata-location'], snapshot: first });
@@ -92,6 +96,22 @@ export async function parquetWorkflow(page: Page, request: APIRequestContext, na
     expect(String(current['parent-snapshot-id'])).toBe(priorMain);
     expect(current.summary['crowdb.source-snapshot-id']).toBe(first);
     await inspect(request, path, 3, 3, '6');
+  });
+  await step('Iceberg: edit existing field definitions without changing committed Snapshots', async () => {
+    const before = parseIcebergJson(await (await request.get(path)).text()) as any;
+    await resourceAction(page, tree.getByRole('button', { name: 'imported', exact: true }), 'Edit as Draft…');
+    await page.getByLabel('Field 1 type', { exact: true }).selectOption('string');
+    await page.getByRole('button', { name: 'Commit', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Edit Table Draft', exact: true }).getByRole('alert')).toContainText('incompatible');
+    expect((parseIcebergJson(await (await request.get(path)).text()) as any)['metadata-location']).toBe(before['metadata-location']);
+    await page.getByLabel('Field 1 type', { exact: true }).selectOption('long');
+    await page.getByLabel('Field 3 name', { exact: true }).fill('annotation');
+    await page.getByRole('button', { name: 'Commit', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Edit Table Draft', exact: true })).toHaveCount(0);
+    const after = parseIcebergJson(await (await request.get(path)).text()) as any;
+    expect(after['metadata-location']).not.toBe(before['metadata-location']);
+    expect(after.metadata.snapshots).toEqual(before.metadata.snapshots);
+    expect(after.metadata.schemas.find((schema: any) => schema['schema-id'] === after.metadata['current-schema-id']).fields[2].name).toBe('annotation');
   });
   await maintenanceWorkflow(page, request, path);
   await step('Iceberg: drop the maintained Table', async () => {

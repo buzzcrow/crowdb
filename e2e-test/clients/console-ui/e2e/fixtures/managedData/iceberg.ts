@@ -7,23 +7,30 @@ import { step } from '../stepTimer';
 import { parquetWorkflow } from './parquet';
 
 export async function icebergWorkflow(page: Page, request: APIRequestContext) {
-  const namespace = `console_crud_${Date.now()}.literal`;
-  const path = `/api/access/iceberg/v1/namespaces/${namespace}`;
+  let namespace: string; let path: string;
   const tree = page.getByRole('navigation', { name: 'Iceberg tree', exact: true });
   await step('Iceberg: create namespace and table through the tree', async () => {
     await page.getByTestId('domain-iceberg').click();
     await expect(page.getByLabel('Catalog write token')).toHaveCount(0);
     await resourceAction(page, tree.getByRole('button', { name: 'Catalog', exact: true }), 'Create namespace…');
-    await page.getByLabel('Namespace name', { exact: true }).fill(namespace);
+    namespace = await page.getByLabel('Namespace name', { exact: true }).inputValue();
+    expect(namespace).toMatch(/^namespace-[a-f0-9]{8}$/);
+    path = `/api/access/iceberg/v1/namespaces/${namespace}`;
     await page.getByRole('button', { name: 'Create namespace', exact: true }).click();
     await page.getByRole('table', { name: 'Namespaces', exact: true }).getByRole('button', { name: namespace, exact: true }).click();
     const namespaceResponse = await request.get(path);
     expect(namespaceResponse.status(), await namespaceResponse.text()).toBe(200);
     expect((await namespaceResponse.json()).namespace).toEqual([namespace]);
     await resourceAction(page, tree.getByRole('button', { name: namespace, exact: true }), 'Create table…');
-    await page.getByLabel('Table name', { exact: true }).fill('example');
+    const defaultName = await page.getByLabel('Table name', { exact: true }).inputValue();
+    expect(defaultName).toMatch(/^table-[a-f0-9]{8}$/);
     await page.getByRole('button', { name: 'Commit', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Refresh table', exact: true })).toBeVisible();
+    await resourceAction(page, tree.getByRole('button', { name: defaultName, exact: true }), 'Rename table…');
+    await page.getByLabel('New table name', { exact: true }).fill('example');
+    await page.getByRole('dialog', { name: 'Rename table', exact: true }).getByRole('button', { name: 'Rename table', exact: true }).click();
+    await page.getByRole('table', { name: 'Namespace resources', exact: true }).getByRole('button', { name: 'example', exact: true }).click();
+    await expect(tree).not.toContainText(/\d+ (tables )?loaded/);
     await page.getByRole('button', { name: 'Schema', exact: true }).click();
     await expect(page.getByRole('table', { name: 'Table schema', exact: true })).toContainText('long');
   });

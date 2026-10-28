@@ -16,7 +16,6 @@ export function History({ dataset, snapshot, active, refresh, select }: { datase
     {open && <>
       {history.error && <p role="alert">{history.error}</p>}
       <ul>{history.value?.entries.map(item => <li key={item.revision}><button className="tw-text-accent" onClick={() => { setChosen(item.revision); select({ kind: 'revision', dataset, snapshot, revision: item.revision }); }}>{item.revision} {current.value?.revision === item.revision && 'Current'}</button></li>)}</ul>
-      {history.value?.entries.length === 0 && <p>No Split revisions.</p>}
       <button className={buttonClass} disabled={!history.value?.after} onClick={() => setCursor(history.value!.after!)}>Next revisions</button>
       {revision.error && <p role="alert">{revision.error}</p>}
       {revision.value?.splits.map(split => <button key={split.name} className={buttonClass} onClick={() => select({ kind: 'split', dataset, snapshot, revision: revision.value!.revision, split: split.name })}>{split.name} ({split.count})</button>)}

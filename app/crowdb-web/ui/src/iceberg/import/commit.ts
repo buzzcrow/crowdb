@@ -5,13 +5,19 @@ import type { Inspection, TableLoad } from '../types';
 import { fileRequest, uploadFile } from './files';
 import { manifests } from './manifests';
 import { exactJson } from './request';
-import { schemaFromParquet, footer, nameMapping, type IceSchema } from './schema';
+import { schemaFromParquet, footer, nameMapping, compatibleSchema, type IceSchema } from './schema';
 import { forget, save, type ImportRequest } from './storage';
 import { digest } from '../../access/digest';
 import { sourceSnapshot, validateSource } from './source';
 export const namespacePath = (namespace: string[]) => `/v1/namespaces/${encodeURIComponent(namespace.join('\x1f'))}`;
 export const tablePath = (op: Pick<ImportRequest, 'namespace' | 'name'>) => `${namespacePath(op.namespace)}/tables/${encodeURIComponent(op.name)}`;
 export const currentSchema = (table: TableLoad): IceSchema => (table.metadata.schemas as IceSchema[]).find(value => value['schema-id'] === table.metadata['current-schema-id'])!;
+export function schemaChanged(op: Pick<ImportRequest, 'create' | 'schema' | 'table'>): boolean {
+  if (op.create || !op.table) return true;
+  const current = currentSchema(op.table);
+  const normalize = (value: IceSchema) => JSON.stringify({ ...value, 'schema-id': 0 });
+  return normalize(op.schema) !== normalize(current);
+}
 export const integer = (value: unknown): bigint => {
   if (!/^-?(0|[1-9][0-9]*)$/.test(String(value))) throw new Error('Table contains an invalid exact integer.');
   const number = BigInt(String(value)); if (number < -(1n << 63n) || number >= 1n << 63n) throw new Error('Table integer exceeds i64.'); return number;
@@ -48,6 +54,10 @@ export async function oldManifests(op: ImportRequest, signal?: AbortSignal, rewr
 
 export function commitBody(op: ImportRequest): string {
   const metadata = op.table!.metadata; const updates: object[] = [];
+  const changedSchema = schemaChanged(op);
+  const schemas = metadata.schemas as IceSchema[];
+  const matching = schemas.find(schema => JSON.stringify(schema.fields) === JSON.stringify(op.schema.fields));
+  const schemaId = op.create ? 0 : matching?.['schema-id'] ?? Math.max(...schemas.map(schema => schema['schema-id'])) + 1;
   const main = metadata.refs?.main?.['snapshot-id'] ?? (integer(metadata['current-snapshot-id'] ?? -1) > 0n ? metadata['current-snapshot-id'] : null);
   const requirements = op.create ? [{ type: 'assert-create' }] : [{ type: 'assert-table-uuid', uuid: metadata['table-uuid'] },
     { type: 'assert-current-schema-id', 'current-schema-id': metadata['current-schema-id'] }, { type: 'assert-default-spec-id', 'default-spec-id': metadata['default-spec-id'] },
@@ -56,10 +66,14 @@ export function commitBody(op: ImportRequest): string {
     { action: 'add-schema', schema: op.schema }, { action: 'set-current-schema', 'schema-id': -1 },
     { action: 'add-spec', spec: (metadata['partition-specs'] as object[])[0] }, { action: 'set-default-spec', 'spec-id': -1 },
     { action: 'add-sort-order', 'sort-order': (metadata['sort-orders'] as object[])[0] }, { action: 'set-default-sort-order', 'sort-order-id': -1 }, { action: 'set-location', location: metadata.location });
-  if (!(metadata.properties as Record<string, string>)?.['schema.name-mapping.default']) updates.push({ action: 'set-properties', updates: { 'schema.name-mapping.default': nameMapping(op.schema) } });
+  else if (changedSchema) {
+    if (!matching) updates.push({ action: 'add-schema', schema: { ...op.schema, 'schema-id': schemaId } });
+    updates.push({ action: 'set-current-schema', 'schema-id': schemaId });
+  }
+  if (changedSchema || !(metadata.properties as Record<string, string>)?.['schema.name-mapping.default']) updates.push({ action: 'set-properties', updates: { 'schema.name-mapping.default': nameMapping(op.schema, (metadata.properties as Record<string, string>)?.['schema.name-mapping.default']) } });
   if (op.files.length || op.removed?.length) {
     const snapshot = { 'snapshot-id': integer(op.snapshot), ...(main === null ? {} : { 'parent-snapshot-id': integer(main) }), 'sequence-number': integer(metadata['last-sequence-number'] ?? 0) + 1n,
-      'timestamp-ms': op.timestamp ?? Date.now(), 'schema-id': op.schema['schema-id'], 'manifest-list': op.list,
+      'timestamp-ms': op.timestamp ?? Date.now(), 'schema-id': schemaId, 'manifest-list': op.list,
       summary: { operation: op.source && op.source !== String(main) ? 'overwrite' : op.removed?.length ? op.files.length ? 'overwrite' : 'delete' : 'append', ...(op.source ? { 'crowdb.source-snapshot-id': op.source } : {}), ...(!op.source || op.source === String(main) ? { 'added-data-files': String(op.files.length), 'added-records': op.files.reduce((sum, file) => sum + BigInt(file.rows), 0n).toString(), 'added-files-size': op.files.reduce((sum, file) => sum + BigInt(file.size), 0n).toString() } : {}),
         ...(op.totals ? { 'total-records': op.totals.rows, 'total-data-files': op.totals.files, ...(op.totals.bytes === undefined ? {} : { 'total-files-size': op.totals.bytes }) } : {}) } };
     updates.push({ action: 'add-snapshot', snapshot }, { action: 'set-snapshot-ref', 'ref-name': 'main', type: 'branch', 'snapshot-id': integer(op.snapshot) });
@@ -77,12 +91,17 @@ export async function submitImport(op: ImportRequest, files: File[], progress: (
   if (!op.commit) {
     supported(op.table!);
     validateSource(op.table!, sourceSnapshot(op));
+    if (!op.create && sourceSnapshot(op)) compatibleSchema(currentSchema(op.table!), op.schema);
     if (!op.create) {
       const live: TableLoad = await iceberg(tablePath(op), '', 'GET', undefined, signal);
       if (live.metadata['table-uuid'] !== op.table!.metadata['table-uuid'] || live['metadata-location'] !== op.table!['metadata-location']) throw new Error('The Table changed since this Draft was opened. Reopen from the desired Snapshot; no changes were published.');
       validateSource(live, sourceSnapshot(op));
     }
+    const schemas = op.table!.metadata.schemas as IceSchema[];
+    const matching = schemas.find(schema => JSON.stringify(schema.fields) === JSON.stringify(op.schema.fields));
+    op.schema = { ...op.schema, 'schema-id': op.create ? 0 : matching?.['schema-id'] ?? Math.max(...schemas.map(schema => schema['schema-id'])) + 1 };
     for (const input of op.files) {
+      compatibleSchema(input.schema ?? currentSchema(op.table!), op.schema);
       if (input.location) {
         const response = await fileRequest(op, input.location, 'HEAD', undefined, {}, signal);
         if (response.headers.get('content-length') !== String(input.size)) throw new Error(`Uploaded file ${input.name} is no longer valid. Reselect its original bytes.`);

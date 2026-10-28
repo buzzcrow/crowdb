@@ -26,10 +26,26 @@ it('serializes snapshot identities exactly while retaining numeric-looking prope
 });
 it('append fences the original main ref and emits one Snapshot; empty creation has no data Snapshot', () => {
   const schema = schemaFromParquet(metadata);
-  const op: ImportRequest = { version: 1, namespace: ['ns'], name: 'events', create: false, schema, identity: requestKey(), snapshot: '9223372036854775806', list: 's3://table/list.avro', files: [{ name: 'a.parquet', size: 50, md5: '0'.repeat(32), rows: '2', identity: requestKey() }], table: { 'metadata-location': 's3://table/meta.json', metadata: { 'table-uuid': 'uuid', 'current-schema-id': 0, 'default-spec-id': 0, 'last-sequence-number': '9223372036854775805', refs: { main: { type: 'branch', 'snapshot-id': '9223372036854775804' } }, properties: {}, 'partition-specs': [{ 'spec-id': 0, fields: [] }], 'sort-orders': [{ 'order-id': 0, fields: [] }] } } };
+  const op: ImportRequest = { version: 1, namespace: ['ns'], name: 'events', create: false, schema, identity: requestKey(), snapshot: '9223372036854775806', list: 's3://table/list.avro', files: [{ name: 'a.parquet', size: 50, md5: '0'.repeat(32), rows: '2', identity: requestKey() }], table: { 'metadata-location': 's3://table/meta.json', metadata: { 'table-uuid': 'uuid', 'current-schema-id': 0, schemas: [schema], 'default-spec-id': 0, 'last-sequence-number': '9223372036854775805', refs: { main: { type: 'branch', 'snapshot-id': '9223372036854775804' } }, properties: {}, 'partition-specs': [{ 'spec-id': 0, fields: [] }], 'sort-orders': [{ 'order-id': 0, fields: [] }] } } };
   const text = commitBody(op);
   expect(text).toContain('"snapshot-id":9223372036854775804');
   expect(text).toContain('"snapshot-id":9223372036854775806');
   expect(text.match(/"action":"add-snapshot"/g)).toHaveLength(1);
   expect(commitBody({ ...op, create: true, files: [] })).not.toContain('add-snapshot');
+});
+it('publishes an exact Schema ID, preserves aliases and allocates beyond nested and historical IDs', async () => {
+  const { nextFieldId, compatibleSchema } = await import('./schema');
+  const before = schemaFromParquet(metadata);
+  const after: IceSchema = { ...before, fields: [...before.fields, { id: 20, name: 'note', required: false, type: 'string' }] };
+  expect(() => compatibleSchema(before, after)).not.toThrow();
+  expect(() => compatibleSchema(before, { ...after, fields: after.fields.map(field => ({ ...field, required: true })) })).toThrow();
+  expect(nextFieldId(after, 30)).toBe(31);
+  const mapping = nameMapping({ ...before, fields: [{ ...before.fields[0], name: 'renamed' }] }, nameMapping(before));
+  expect(JSON.parse(mapping)[0].names).toEqual(['id', 'renamed']);
+  const op: ImportRequest = { version: 1, namespace: ['ns'], name: 'table', create: false, identity: 'x', snapshot: '30', schema: after, files: [], table: { 'metadata-location': 'old', metadata: { schemas: [before], 'current-schema-id': 0, properties: {} } } };
+  const edits = JSON.parse(commitBody(op)).updates;
+  expect(edits).toContainEqual({ action: 'set-current-schema', 'schema-id': 1 });
+  expect(edits.some((edit: any) => edit.action === 'add-snapshot')).toBe(false);
+  const changed = JSON.parse(commitBody({ ...op, files: [{ name: 'x', size: 1, md5: 'a', rows: '1', identity: 'f' }] })).updates;
+  expect(changed.find((edit: any) => edit.action === 'add-snapshot').snapshot['schema-id']).toBe(1);
 });

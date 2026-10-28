@@ -101,6 +101,12 @@ describe('Sidebar · Cluster tree projection', () => {
     fireEvent.click(within(candidates).getByRole('button', { name: 'Expand' }));
     expect(getByText('Candidate children')).toBeVisible();
   });
+  it('keeps an empty candidate branch compact without a placeholder or expand arrow', () => {
+    const { getByTestId, queryByText } = renderSidebar(Domain.Cluster, { nodeManagement: true, candidateHasNodes: false });
+    const candidates = getByTestId('tree-node-NODE-CANDIDATES');
+    expect(within(candidates).queryByRole('button', { name: 'Expand' })).toBeNull();
+    expect(queryByText('No candidate nodes')).toBeNull();
+  });
   it('renders rack → node → PKV server under the node', () => {
     const { getByText, queryByText } = renderSidebar(Domain.Cluster);
     expect(getByText(/R-1/)).toBeTruthy();
@@ -129,12 +135,12 @@ describe('Sidebar · Cluster tree projection', () => {
     const { getByTestId, getByText, queryByText } = renderSidebar(Domain.Cluster, { onLoadNodeDisks });
     const diskdb = getByTestId('tree-node-DDB-10');
     const storage = getByTestId('tree-node-STORAGE-10');
-    expect(queryByText(/Physical Group.*DG-100/)).toBeNull();
+    expect(queryByText('DG-100')).toBeNull();
     expect(onLoadNodeDisks).not.toHaveBeenCalled();
     fireEvent.click(within(storage).getByRole('button', { name: 'Expand' }));
     expect(onLoadNodeDisks).toHaveBeenCalledWith(10);
     fireEvent.click(within(getByTestId('tree-node-CH-DG-10-100')).getByRole('button', { name: 'Expand' }));
-    expect(storage.contains(getByText(/Physical Group.*DG-100/))).toBe(true);
+    expect(storage.contains(getByText('DG-100'))).toBe(true);
     expect(storage.contains(getByText('0123456789ab…'))).toBe(true);
     expect(diskdb.contains(getByText('0123456789ab…'))).toBe(false);
   });
@@ -148,7 +154,7 @@ describe('Sidebar · Cluster tree projection', () => {
     });
     fireEvent.click(within(getByTestId('tree-node-DDB-11')).getByRole('button', { name: 'Expand' }));
     const owned = getByTestId('tree-node-OWNER-remote-owner-CH-DG-10-100');
-    fireEvent.click(within(owned).getByRole('button', { name: /Physical Group/ }));
+    fireEvent.click(within(owned).getByRole('button', { name: 'DG-100' }));
     expect(onNodeClick.mock.calls[0][0]).toMatchObject({ type: 'DiskGroup', rawId: 100, parentIds: { node_id: 10 } });
     expect(within(getByTestId('tree-node-DDB-10')).queryByText(/Physical Group/)).toBeNull();
   });
@@ -162,7 +168,7 @@ describe('Sidebar · Cluster tree projection', () => {
     fireEvent.click(getByText('Candidates (2)'));
     expect(onNodeClick.mock.calls[0][0]).toMatchObject({ type: 'Node', section: 'candidates', rawId: 10 });
     fireEvent.click(within(getByTestId('tree-node-STORAGE-11')).getByRole('button', { name: 'Expand' }));
-    expect(getByText('Candidates (?)')).toBeTruthy();
+    expect(getByText('Candidates')).toBeTruthy();
   });
 
   it('shows unassigned physical disk groups under Storage', () => {
@@ -170,7 +176,7 @@ describe('Sidebar · Cluster tree projection', () => {
       diskdbInstances: [], diskdbNodeIds: new Set(),
     });
     fireEvent.click(within(getByTestId('tree-node-STORAGE-10')).getByRole('button', { name: 'Expand' }));
-    expect(getByText(/Physical Group.*DG-100/)).toBeTruthy();
+    expect(getByText('DG-100')).toBeTruthy();
   });
 });
 
@@ -200,7 +206,7 @@ describe('Sidebar · shared Capacity hierarchy', () => {
     fireEvent.click(within(getByTestId('tree-node-STORAGE-10')).getByRole('button', { name: 'Expand' }));
     fireEvent.click(within(getByTestId('tree-node-CH-DG-10-100')).getByRole('button', { name: 'Expand' }));
     expect(getByText('N-10', { exact: true })).toBeTruthy();
-    expect(getByText(/Physical Group.*DG-100/)).toBeTruthy();
+    expect(getByText('DG-100')).toBeTruthy();
     expect(getByText('0123456789ab…')).toBeTruthy();
     expect(getByText('DDB-10')).toBeTruthy();
     expect(getByText('PKV-10')).toBeTruthy();

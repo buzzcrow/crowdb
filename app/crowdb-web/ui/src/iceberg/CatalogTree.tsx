@@ -36,18 +36,13 @@ export function CatalogTree(props: Props) {
   const activeNs = JSON.stringify(namespace);
   const expanded = ['ice-catalog'];
   if (namespace) for (let level = 1; level <= namespace.length; level++) expanded.push(`ice-ns-${JSON.stringify(namespace.slice(0, level))}`);
-  if (loaded) expanded.push(`ice-table-${activeNs}-${table}`, 'ice-snapshots');
-  if (inspector.selection) {
-    const s = inspector.selection;
-    expanded.push(`ice-snapshot-${inspector.key({ snapshot: s.snapshot, kind: 'snapshot' })}`);
-    if (s.kind !== 'snapshot') expanded.push(`ice-list-${inspector.key({ snapshot: s.snapshot, kind: 'list' })}`);
-    if (s.manifest) expanded.push(`ice-manifest-${inspector.key({ snapshot: s.snapshot, kind: 'manifest', manifest: s.manifest })}`);
-  }
+  if (loaded) expanded.push(`ice-table-${activeNs}-${table}`);
   const namespaceNode = (ns: string[]): IcebergNode => {
     const key = JSON.stringify(ns);
     const page = catalog.pages[key];
     const children = [...(page?.children ?? [])];
     const tables = [...(page?.tables ?? [])];
+    const hasPageControls = !!page && (page.paged || !!page.nextTables || !!page.nextNamespaces);
     const onPath = namespace && ns.every((part, index) => part === namespace[index]);
     if (onPath && namespace.length > ns.length && !children.some(child => child.length === ns.length + 1 && child.every((part, index) => part === namespace[index]))) children.push(namespace.slice(0, ns.length + 1));
     if (activeNs === key && table && !tables.some(entry => entry.name === table)) tables.push({ namespace: ns, name: table });
@@ -66,7 +61,7 @@ export function CatalogTree(props: Props) {
           ] : [],
         };
       })],
-      footer: page && <div className="tw-text-xs tw-text-muted tw-py-2 tw-space-y-1"><p>{page.tables.length} tables loaded</p>{page.paged && <button onClick={() => void catalog.loadNamespace(ns)}>First page</button>}{page.nextTables && <button onClick={() => void catalog.loadNamespace(ns, page.nextTables!)}>Next tables</button>}{page.nextNamespaces && <button onClick={() => void catalog.loadNamespace(ns, undefined, page.nextNamespaces!)}>Next namespaces</button>}</div>,
+      footer: hasPageControls ? <div className="tw-flex tw-flex-wrap tw-gap-2 tw-text-xs tw-text-muted tw-py-2">{page!.paged && <button onClick={() => void catalog.loadNamespace(ns)}>First page</button>}{page!.nextTables && <button onClick={() => void catalog.loadNamespace(ns, page!.nextTables!)}>Next tables</button>}{page!.nextNamespaces && <button onClick={() => void catalog.loadNamespace(ns, undefined, page!.nextNamespaces!)}>Next namespaces</button>}</div> : undefined,
     };
   };
   const roots = [...catalog.namespaces];

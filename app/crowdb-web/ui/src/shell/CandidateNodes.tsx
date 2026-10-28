@@ -43,7 +43,6 @@ export function CandidateNodes({ racks, readonly, onChange, addNodeRequest, depl
     {unavailable && <p role="status">Candidate status unavailable{snapshot ? ' — last observations shown' : ''}.</p>}
     {policyUnavailable && <p role="status">Auto join settings unavailable.</p>}
     {!snapshot && !unavailable && <p>Discovering nodes…</p>}
-    {snapshot && !candidates.length && <p>No candidate nodes</p>}
     <Tree nodes={candidates.map(node => {
       const id = node.advertisement.discovery_id;
       const enabled = policy ? policy.candidates?.[id] ?? policy.enabled : undefined;

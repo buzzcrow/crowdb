@@ -57,7 +57,13 @@ test('native diagnostics: Iceberg committed references and Parquet footer', asyn
     await page.getByRole('button', { name: 'Inspect current snapshot', exact: true }).click();
     const manifestName = manifest.location.split('/').pop();
     await page.getByRole('table', { name: 'Manifest list records' }).getByRole('button', { name: manifestName, exact: true }).click();
-    await page.getByRole('table', { name: 'Manifest file entries' }).getByRole('button', { name: file.location.split('/').pop(), exact: true }).click();
+    const fileButton = page.getByRole('table', { name: 'Manifest file entries' }).getByRole('button', { name: file.location.split('/').pop(), exact: true });
+    await expect(fileButton).toHaveAttribute('title', file.location);
+    await expect(fileButton).toHaveCSS('text-align', 'left');
+    await expect(fileButton).toHaveCSS('text-overflow', 'ellipsis');
+    expect((await fileButton.boundingBox())!.width).toBeLessThanOrEqual(280);
+    await expect(tree).not.toContainText(file.location.split('/').pop());
+    await fileButton.click();
     const inspection = page.getByLabel('Iceberg file inspection');
     await expect(inspection).toContainText('Data pages read: 0 B');
     const span = inspection.getByRole('button', { name: 'Byte span row group 0 column id', exact: true });

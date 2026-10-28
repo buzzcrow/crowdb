@@ -1,5 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+import { randomUUID } from '../utils/randomUUID';
 import { useState, type MouseEvent } from 'react';
 import { ContextMenu, useContextMenu, type MenuItem } from '../components/ContextMenu';
 import { Dialog } from '../components/Dialog';
@@ -13,6 +14,7 @@ import { load as loadMaintenance, protection } from './maintenance/operation';
 export type ReferenceMenu = (event: MouseEvent, selection: Selection) => void;
 export interface CatalogTarget { namespace?: string[]; table?: string; selection?: Selection; loaded?: TableLoad }
 const path = (ns: string[]) => `/v1/namespaces/${encodeURIComponent(ns.join('\x1f'))}`;
+const defaultNamespaceName = () => `namespace-${randomUUID().replaceAll('-', '').slice(0, 8)}`;
 type Action = 'namespace' | 'table' | 'append' | 'properties' | 'rename' | 'commit' | 'drop-table' | 'drop-namespace' | 'remove-file' | 'expire-snapshot';
 const labels: Record<Action, string> = { 'remove-file': 'Remove from table', 'expire-snapshot': 'Expire snapshot', namespace: 'Create namespace', table: 'Create table', append: 'Edit as Draft', properties: 'Edit properties', rename: 'Rename table', commit: 'Commit metadata', 'drop-table': 'Drop table', 'drop-namespace': 'Drop namespace' };
 export function useIcebergMenu(readonly: boolean, supported: (method: string, endpoint: string) => boolean, changed: (target: CatalogTarget, action: string) => Promise<void>, guarded = false) {
@@ -36,7 +38,7 @@ export function useIcebergMenu(readonly: boolean, supported: (method: string, en
       const maintenance = action === 'remove-file' || action === 'expire-snapshot';
       const problem = maintenance && target.loaded && target.selection ? protection(target.loaded, target.selection, action) : undefined;
       items.push({ id: action, label: labels[action] + '…', hint: problem, disabled: readonly || busy || !!problem || maintenance && !guarded, destructive: action.startsWith('drop-') || maintenance, onSelect: () => {
-        setName(''); setRemovals('[]'); setError('');
+        setName(action === 'namespace' ? defaultNamespaceName() : ''); setRemovals('[]'); setError('');
         setJson(action === 'table' ? '[{"id":1,"name":"id","required":true,"type":"long"}]' : action === 'commit' ? '[]' : '{}');
         setDialog({ action, target: { ...target, namespace: target.namespace && [...target.namespace] } });
       } });

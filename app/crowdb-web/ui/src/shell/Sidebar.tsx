@@ -46,6 +46,8 @@ interface SidebarProps {
   loading?: boolean;
   readonly?: boolean;
   candidateReadonly?: boolean;
+  /** Candidate branch stays expandable while loading, but not when its list is empty. */
+  candidateHasNodes?: boolean;
   width?: number;
   clusterInitialized?: boolean;
   onNodeClick?: (node: TreeNode) => void;
@@ -80,6 +82,7 @@ export function Sidebar({
   loading,
   readonly,
   candidateReadonly,
+  candidateHasNodes = true,
   width = 280,
   clusterInitialized = true,
   onNodeClick,
@@ -159,7 +162,7 @@ export function Sidebar({
                   disksByDg: loaded?.disksByDg ?? {} };
                 return storageTree({ rackId: physical.rack_id, nodeId: physical.node_id, disks, hardwareCapacity, capacityUsage, onLoadGroupDisks })
                   .filter(item => item.type === 'DiskGroup' && item.rawId === groupId)
-                  .map(item => ({ ...item, id: `OWNER-${instance!.instance_id}-${item.id}`,
+                  .map(item => ({ ...item, label: `DG-${groupId}`, id: `OWNER-${instance!.instance_id}-${item.id}`,
                     children: item.children?.map(disk => ({ ...disk, id: `OWNER-${instance!.instance_id}-${disk.id}` })) }));
               });
             }
@@ -190,8 +193,8 @@ export function Sidebar({
       if (nodeManagement) root.children!.push({
         id: 'NODE-CANDIDATES', label: 'Candidate nodes', type: 'Datacenter', navigationOnly: true,
         icon: <Monitor className="tw-h-4 tw-w-4 tw-text-muted" />,
-        childrenContent: <CandidateNodes deployment={nodeAuthority} addNodeRequest={addNodeRequest} racks={racks}
-          readonly={candidateReadonly} onChange={onCandidatesChanged} />,
+        childrenContent: candidateHasNodes ? <CandidateNodes deployment={nodeAuthority} addNodeRequest={addNodeRequest} racks={racks}
+          readonly={candidateReadonly} onChange={onCandidatesChanged} /> : undefined,
       });
       return [root];
     }
@@ -263,7 +266,7 @@ export function Sidebar({
         }),
       };
     }))];
-  }, [allServers, nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId, onLoadNodeDisks, onLoadGroupDisks, servicePlans, candidateSummaries, nodeManagement, nodeAuthority, addNodeRequest, candidateReadonly, onCandidatesChanged]);
+  }, [allServers, nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId, onLoadNodeDisks, onLoadGroupDisks, servicePlans, candidateSummaries, nodeManagement, nodeAuthority, addNodeRequest, candidateReadonly, candidateHasNodes, onCandidatesChanged]);
 
   const expandedIds = useMemo(() => {
     const ids: string[] = [];

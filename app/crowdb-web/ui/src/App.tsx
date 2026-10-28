@@ -24,7 +24,7 @@ import { ToastContainer } from './components/ToastContainer';
 import { TreeNode } from './components/Tree';
 import { ContextMenu, useContextMenu } from './components/ContextMenu';
 import type { MenuTarget } from './topology/TopologyCanvas';
-import { CandidateProvider } from './shell/NodeCandidatesContext';
+import { CandidateProvider, useNodeCandidates } from './shell/NodeCandidatesContext';
 import {
   AddRackDialog,
   AddNodeDialog,
@@ -83,6 +83,7 @@ export interface CrowdbConsoleProps {
 
 function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, managed = false, nodeManagement = false }: CrowdbConsoleProps) {
   const { domain: activeDomain, setDomain } = useDomain();
+  const { snapshot: candidateSnapshot, candidates: candidateNodes } = useNodeCandidates();
   const { selectedEntity, scopeEntity, scopeForDomain, selectionForDomain, selectEntity, clearSelection } = useSelection();
   const [addNodeRequest, setAddNodeRequest] = useState<{ rackId: number; nonce: number }>();
   const openNodeCandidates = useCallback((rackId: number) => setAddNodeRequest({ rackId, nonce: Date.now() }), []);
@@ -545,6 +546,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         diskdbInstanceIdByNodeId={diskdbInstanceIdByNodeId}
         servicePlans={servicePlans.plans}
         candidateSummaries={candidateSummaries}
+        candidateHasNodes={!candidateSnapshot || candidateNodes.length > 0}
       /></div>
 
       {!ownsSidebar && !clusterLayout.hidden && !clusterLayout.overlayNavigation && <PanelDivider fixed side="left" width={sidebarWidth} onResize={setSidebarWidth}

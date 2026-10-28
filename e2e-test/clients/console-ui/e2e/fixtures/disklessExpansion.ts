@@ -27,7 +27,8 @@ export async function disklessExpansion(context: UIContext) {
     expect(candidates.map(candidate => candidate.node_id)).toEqual(disklessNodes);
     const region = page.getByRole('region', { name: 'Candidate nodes' });
     for (const candidate of candidates) {
-      await region.getByTestId(`candidate-${candidate.discovery_id}`).getByRole('button', { name: 'Join node…', exact: true }).click();
+      await region.getByTestId(`tree-node-candidate-${candidate.discovery_id}`).getByRole('button', { name: /^node-/ }).click({ button: 'right' });
+      await page.getByRole('menuitem', { name: 'Join node…', exact: true }).click();
       const dialog = page.getByRole('dialog', { name: 'Move candidate to cluster' });
       await expect(dialog.getByLabel('SSH user', { exact: true })).toHaveValue('crowdb');
       await expect(dialog.getByLabel('Initial SSH password', { exact: true })).toHaveValue('crowdb');
@@ -36,6 +37,10 @@ export async function disklessExpansion(context: UIContext) {
     }
     await queueFullPlans(request, disklessNodes);
     await page.reload();
+    const emptyCandidates = page.getByTestId('tree-node-NODE-CANDIDATES');
+    await expect(emptyCandidates.getByRole('button', { name: 'Candidate nodes', exact: true })).toBeVisible();
+    await expect(emptyCandidates.getByRole('button', { name: /^(Expand|Collapse)$/ })).toHaveCount(0);
+    await expect(emptyCandidates).not.toContainText('No candidate nodes');
   });
   await step('diskless: all services become ready without local disks or Retry', async () => {
     for (const kind of ['diskdb', 'diskio', 'chunkdb', 'chunk-kv', 'access-server']) {

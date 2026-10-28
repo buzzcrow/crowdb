@@ -240,9 +240,9 @@ class CliContainerCluster(CliClient, Cluster):
             return
         started = time.monotonic()
         # Cleanup is an independent host operation, never a product CLI command.
-        deletion = ["--delete-data"] if self.timings["status"] == "pass" else []
-        result = subprocess.run(["python", str(ROOT / "container/oci-image/docker-local.py"),
-            "clean", "--cluster", self.run_id, *deletion], env=self.environment(),
+        deletion = "--delete-data" if self.timings["status"] == "pass" else "--keep-data"
+        result = subprocess.run(["python", str(ROOT / "container/oci-image/clean.py"),
+            "--cluster", self.run_id, deletion], env=self.environment(),
             capture_output=True, text=True, timeout=180)
         if result.returncode:
             raise RuntimeError(f"CLI fixture owned cleanup failed: {result.stdout}\n{result.stderr}")

@@ -49,7 +49,7 @@ export function storageTree({ rackId, nodeId, disks: ndg, hardwareCapacity, capa
       onExpand: () => { void onLoadGroupDisks?.(nodeId, dg.id); },
       id: `CH-DG-${nodeId}-${dg.id}`,
       rawId: dg.id,
-      label: dg.name ? `${dg.name} (DG-${dg.id})` : `DG-${dg.id}`,
+      label: `DG-${dg.id}`,
       type: 'DiskGroup' as const,
       icon: <Boxes className="tw-h-4 tw-w-4 tw-text-muted" />,
       hwStatus: dgStatus ?? undefined,
@@ -66,8 +66,9 @@ export function storageTree({ rackId, nodeId, disks: ndg, hardwareCapacity, capa
     });
   }
 
+  const candidateLabel = candidates ? `Candidates (${candidates.count}${candidates.partial ? '+' : ''})` : 'Candidates';
   children.push({ id: `CANDIDATES-${nodeId}`, rawId: nodeId, type: 'Node', section: 'candidates',
-    label: `Candidates (${candidates?.count ?? '?'}${candidates?.partial ? '+' : ''})`, parentIds: { rack_id: rackId },
+    label: candidateLabel, parentIds: { rack_id: rackId },
     title: candidates ? `Observed ${new Date(candidates.observed_at_ms).toLocaleString()}${candidates.stale ? ' · Stale' : ''}` : 'Not observed',
     icon: <HardDrive className="tw-h-4 tw-w-4 tw-text-muted" /> });
   return children;

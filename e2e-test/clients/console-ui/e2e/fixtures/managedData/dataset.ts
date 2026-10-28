@@ -9,11 +9,11 @@ import { step } from '../stepTimer';
 const matrix = (page: Page) => page.getByRole('table', { name: 'Sample field matrix', exact: true });
 
 export async function datasetWorkflow(page: Page, request: APIRequestContext) {
-  const name = `crud-${Date.now()}`;
+  let name: string;
   await step('Dataset: create and list an empty Dataset through the tree', async () => {
     await page.getByTestId('domain-dataset').click();
     await expect(page.getByRole('region', { name: 'Dataset help' }).getByRole('link', { name: 'Help', exact: true })).toHaveAttribute('href', 'https://crowdb.dev/docs/manual/');
-    await createDataset(page, name);
+    name = await createDataset(page);
     await page.getByRole('navigation', { name: 'Dataset tree', exact: true }).getByRole('button', { name: 'Datasets', exact: true }).click();
     await page.getByRole('table', { name: 'Datasets', exact: true }).getByRole('button', { name, exact: true }).click();
     await expect(page.getByRole('table', { name: 'Snapshots', exact: true }).getByRole('row')).toHaveCount(1);
@@ -112,12 +112,15 @@ async function deleteProtection(page: Page, request: APIRequestContext, name: st
   });
 }
 
-async function createDataset(page: Page, name: string) {
+async function createDataset(page: Page, name?: string) {
   const root = page.getByRole('navigation', { name: 'Dataset tree', exact: true }).getByRole('button', { name: 'Datasets', exact: true });
   await resourceAction(page, root, 'Create Dataset…');
-  await page.getByRole('textbox', { name: 'New Dataset name', exact: true }).fill(name);
+  const input = page.getByRole('textbox', { name: 'New Dataset name', exact: true });
+  if (name) await input.fill(name);
+  else { name = await input.inputValue(); expect(name).toMatch(/^dataset-[a-f0-9]{8}$/); }
   await page.getByRole('dialog', { name: 'Create Dataset', exact: true }).getByRole('button', { name: 'Create Dataset', exact: true }).click();
   await expect(page.getByRole('heading', { name: `Dataset · ${name}`, exact: true })).toBeVisible();
+  return name;
 }
 
 async function selectDataset(page: Page, name: string) {

@@ -26,7 +26,7 @@ it('keeps lazy branches at their real depth and binds equal Split names to disti
         selected={selected} select={value => { select(value); setSelected(value); }} onContextMenu={vi.fn()} />,
     }] }]} />;
   }
-  render(<DomainProvider><SelectionProvider><Workspace /></SelectionProvider></DomainProvider>);
+  await act(async () => { render(<DomainProvider><SelectionProvider><Workspace /></SelectionProvider></DomainProvider>); });
   await screen.findByRole('button', { name: 'train' });
   for (const [name, level] of [['Datasets', 1], ['demo', 2], [snapshot.slice(0, 10), 3], ['Splits', 4], [current.slice(0, 8), 5], ['train', 6]] as const) {
     expect(screen.getByRole('button', { name }).closest('[role="treeitem"]')).toHaveAttribute('aria-level', String(level));
@@ -38,5 +38,7 @@ it('keeps lazy branches at their real depth and binds equal Split names to disti
   expect(select).toHaveBeenLastCalledWith({ kind: 'split', dataset: 'demo', snapshot, revision: old, split: 'train' });
   expect(screen.getAllByRole('button', { name: 'train' })).toHaveLength(2);
   expect(screen.queryByText(/Samples/)).toBeNull();
+  expect(screen.queryByText('No children')).toBeNull();
+  expect(screen.queryByText('No Split revisions')).toBeNull();
   expect(api.history).toHaveBeenCalledTimes(1);
 });

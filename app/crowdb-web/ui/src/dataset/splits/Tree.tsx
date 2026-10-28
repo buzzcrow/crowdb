@@ -21,7 +21,6 @@ export function SplitTree(props: Props) {
     {revisions.map(revision => <RevisionNode key={revision} {...props} revision={revision} current={head.value?.revision === revision} />)}
     {history.value?.after && <button className={buttonClass} onClick={() => updateTree(key, { cursor: history.value!.after! })}>Next revisions</button>}
     {cursor && <button className={buttonClass} onClick={() => updateTree(key, {})}>First revisions</button>}
-    {!revisions.length && history.value && <p className="tw-px-4 tw-text-muted">No Split revisions</p>}
     {props.openDraft && <Drafts dataset={dataset} snapshot={snapshot} active={active} open={props.openDraft} />}
   </>;
 }

@@ -22,9 +22,9 @@ test('native diagnostics: Capacity navigation fetches only opened storage branch
   await expect(page.getByTestId('capacity-summary')).toBeVisible();
   expect(groups).toEqual([]); expect(disks).toEqual([]);
   await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Expand', exact: true }).click();
-  await expect(sidebar.getByRole('button', { name: 'storage (DG-1)', exact: true })).toBeVisible();
+  await expect(sidebar.getByRole('button', { name: 'DG-1', exact: true })).toBeVisible();
   expect(groups).toEqual([1]); expect(disks).toEqual([]);
-  await sidebar.getByRole('button', { name: 'storage (DG-1)', exact: true }).click();
+  await sidebar.getByRole('button', { name: 'DG-1', exact: true }).click();
   await expect.poll(() => usage.some(query => query.includes('dg=1')), { intervals: [100] }).toBe(true);
   await expect.poll(() => disks.length, { intervals: [100] }).toBe(1);
   expect(disks[0]).toBe('/api/nodes/1/disk-groups/1/disks');
@@ -81,7 +81,7 @@ test('native diagnostics: hardware capacity aggregates disks and dashed status u
   await expect(topology).toBeVisible();
   await page.screenshot({ path: test.info().outputPath('cluster-capacity.png') });
   await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Expand', exact: true }).click();
-  const item = sidebar.getByRole('button', { name: 'test-dg-hwcap (DG-591)', exact: true });
+  const item = sidebar.getByRole('button', { name: 'DG-591', exact: true });
   await expect(item).toBeVisible();
   await item.click();
   const inspector = page.getByRole('complementary', { name: 'Entity inspector' });
@@ -96,14 +96,18 @@ test('native diagnostics: hardware capacity aggregates disks and dashed status u
   const capacitySummary = page.getByTestId('capacity-summary');
   const beforeFailure = await capacitySummary.innerText();
   await page.context().setOffline(true);
+  const inventoryFailure = page.waitForEvent('requestfailed', {
+    predicate: failed => new URL(failed.url()).pathname === '/api/hardware/capacity',
+  });
   await page.getByRole('main').getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(page.getByRole('alert').filter({ hasText: 'hardware inventory' })).toBeVisible();
+  expect((await inventoryFailure).failure()?.errorText).toContain('ERR_INTERNET_DISCONNECTED');
+  await expect(page.getByRole('alert').filter({ hasText: 'Group 0 unavailable · confirmed view is stale' })).toBeVisible();
   await expect(disks).toBeVisible();
   await expect(capacitySummary).toHaveText(beforeFailure.replace(/\s+/g, ' '), { useInnerText: true });
   await expect(page.getByLabel('Capacity observation freshness')).toHaveCount(0);
   await page.context().setOffline(false);
   await page.getByRole('main').getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(page.getByRole('alert').filter({ hasText: 'hardware inventory' })).toHaveCount(0);
+  await expect(page.getByRole('alert').filter({ hasText: 'Group 0 unavailable · confirmed view is stale' })).toHaveCount(0);
   await expect(disks).toBeVisible();
   await expect(sidebar.getByRole('button', { name: 'Add Rack', exact: true })).toHaveCount(0);
   await verifyNodeFileWorkspace(page, request);
@@ -142,7 +146,7 @@ async function verifyNodeFileWorkspace(page: Page, request: APIRequestContext) {
   await expect(dialog).toHaveCount(0);
   await expect(workspace.getByRole('article', { name: `File operation ${operationId}`, exact: true })).toBeVisible();
   // The monitor owns execution while the browser is outside this Node scope.
-  await sidebar.getByRole('button', { name: 'test-dg-hwcap (DG-591)', exact: true }).click();
+  await sidebar.getByRole('button', { name: 'DG-591', exact: true }).click();
   await step('monitor continues file admission outside Node scope', async () => {
     await expect.poll(async () => {
       const result = await request.get(`/api/nodes/1/disk-files/${operationId}`);

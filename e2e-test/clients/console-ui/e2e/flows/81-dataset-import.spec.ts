@@ -27,6 +27,18 @@ async function create(page: import('@playwright/test').Page, name: string, url =
 test('Dataset native: import', async ({ page, request }) => {
   const name = `import-${Date.now()}`;
   await step('setup', () => create(page, name));
+  await step('new Field text and file stay in the selected first row', async () => {
+    await addSample(page, 'sample-2');
+    await addField(page, 'note');
+    await textCell(page, 'sample-1', 'note', 'first row only');
+    const ids = page.getByRole('textbox', { name: /^Sample ID for/ });
+    expect(await ids.evaluateAll(nodes => nodes.map(node => (node as HTMLInputElement).value))).toEqual(['sample-1', 'sample-2']);
+    await expect(page.getByLabel('note for sample-2', { exact: true })).toHaveValue('');
+    await page.getByLabel('Upload note for sample-1', { exact: true }).setInputFiles({ name: 'first.txt', mimeType: 'text/plain', buffer: Buffer.from('first file') });
+    await expect(page.getByRole('button', { name: 'first.txt · 10 B', exact: true })).toBeVisible();
+    expect(await ids.evaluateAll(nodes => nodes.map(node => (node as HTMLInputElement).value))).toEqual(['sample-1', 'sample-2']);
+    await expect(page.getByLabel('note for sample-2', { exact: true })).toHaveValue('');
+  });
   const payload = Buffer.alloc(4 * 1024 * 1024 + 17, 0xa5);
   await addField(page, 'payload');
   await page.getByLabel('Upload target field').selectOption('payload');

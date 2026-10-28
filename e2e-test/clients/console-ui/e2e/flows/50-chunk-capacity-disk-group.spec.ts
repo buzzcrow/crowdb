@@ -48,7 +48,7 @@ test('native capacity: disk-group CRUD and explicit owner binding use mounted st
   await expect(create).toHaveCount(0);
   await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Expand', exact: true }).click();
   const group = sidebar.getByTestId('tree-node-CH-DG-1-520').locator(':scope > [role="treeitem"]');
-  await expect(group).toContainText('mounted CRUD');
+  await expect(group).toHaveText('DG-520');
   expect(await json(request, '/api/nodes/1/disk-groups'))
     .toEqual(expect.arrayContaining([expect.objectContaining({ id: 520, node_id: 1 })]));
   await diskMenu(page, node, 'Add Disk Group');

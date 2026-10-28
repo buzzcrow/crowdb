@@ -28,6 +28,15 @@ it('accumulates independent fields on the same Sample and keeps clear distinct f
   expect(mapping.samples[0]).toMatchObject({ kind: 'upsert', fields: [{ name: 'label' }, { name: 'content', value: { kind: 'tombstone' } }] });
   expect(patchSample(mapping, { kind: 'remove', id }).samples).toEqual([{ kind: 'remove', id }]);
 });
+it('keeps Sample order while merging edits into an existing row', () => {
+  const first = btoa('first'); const second = btoa('second');
+  const mapping = { version: 1 as const, schema: { version: 1, fields: [{ name: 'content', required: false }] }, samples: [
+    { kind: 'upsert' as const, id: first, fields: [] }, { kind: 'upsert' as const, id: second, fields: [] },
+  ] };
+  const next = patchSample(mapping, { kind: 'upsert', id: first, fields: [{ name: 'content', value: { kind: 'inline', data: btoa('edited') } }] });
+  expect(next.samples.map(sample => sample.id)).toEqual([first, second]);
+  expect(next.samples[0]).toMatchObject({ id: first, fields: [{ name: 'content' }] });
+});
 it('rejects removal or downgrade of required parent fields and empty independent Snapshots', async () => {
   const draft = await openDraft('training');
   draft.mapping!.schema = { version: 2, fields: [{ name: 'content', required: false }] };

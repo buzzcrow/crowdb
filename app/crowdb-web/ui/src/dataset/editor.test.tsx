@@ -25,7 +25,7 @@ it('creates through the parent menu and keeps resource operations out of the cen
   await act(async () => {});
   fireEvent.contextMenu(screen.getByRole('button', { name: 'Datasets' }));
   fireEvent.click(screen.getByRole('menuitem', { name: 'Create Dataset…' }));
-  fireEvent.change(screen.getByLabelText('New Dataset name'), { target: { value: 'demo' } });
+  expect((screen.getByLabelText('New Dataset name') as HTMLInputElement).value).toMatch(/^dataset-[0-9a-f]{8}$/);
   await act(async () => fireEvent.click(screen.getByRole('button', { name: /^Create Dataset$/ })));
   for (let index = 0; index < 3; index++) {
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh Dataset' })));
@@ -36,6 +36,7 @@ it('creates through the parent menu and keeps resource operations out of the cen
     fireEvent.keyDown(document, { key: 'Escape' });
   }
   expect(api.mutate).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(api.mutate).mock.calls[0][1]).toMatch(/\/datasets\/dataset-[0-9a-f]{8}$/);
   fireEvent.contextMenu(screen.getByTestId('dataset-scope'));
   await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: 'New Snapshot…' })));
   expect(screen.getByRole('region', { name: 'Import Snapshot' })).toBeInTheDocument();

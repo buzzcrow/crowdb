@@ -3,7 +3,7 @@
 import { getApiBase } from '../../api';
 import type { TableLoad } from '../types';
 import type { IceSchema } from './schema';
-export interface ImportFile { name: string; size: number; md5: string; rows: string; identity: string; location?: string; multipart?: { id: string; parts: Array<{ number: number; etag: string }> } }
+export interface ImportFile { schema?: IceSchema; name: string; size: number; md5: string; rows: string; identity: string; location?: string; multipart?: { id: string; parts: Array<{ number: number; etag: string }> } }
 export interface ImportRequest {
   version: 1; namespace: string[]; name: string; create: boolean; schema: IceSchema; files: ImportFile[];
   identity: string; snapshot: string; table?: TableLoad; manifest?: string; list?: string; commit?: string; uncertain?: boolean;

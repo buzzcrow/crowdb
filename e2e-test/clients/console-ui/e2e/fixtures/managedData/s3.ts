@@ -10,17 +10,17 @@ export async function s3Workflow(page: Page, request: APIRequestContext) {
     await page.getByTestId('domain-s3').click();
     await expect(page.getByLabel('Access key', { exact: true })).toHaveCount(0);
     await expect(page.getByLabel('Secret key', { exact: true })).toHaveCount(0);
-    const demoBucket = `console-demo-${Date.now()}`;
+
     const tree = page.getByRole('navigation', { name: 'S3 buckets' });
     await resourceAction(page, tree.getByRole('button', { name: 'S3', exact: true }), 'Create bucket…');
-    await page.getByLabel('New bucket', { exact: true }).fill(demoBucket);
+    const demoBucket = await page.getByLabel('New bucket', { exact: true }).inputValue();
+    expect(demoBucket).toMatch(/^bucket-[a-f0-9]{8}$/);
     await page.getByRole('button', { name: 'Create bucket', exact: true }).click();
     await listBucketsByPrefix(page, demoBucket);
     await tree.getByRole('button', { name: demoBucket, exact: true }).click();
     await expect(page.getByLabel('Object prefix', { exact: true })).toHaveValue('');
     await resourceAction(page, tree.getByRole('button', { name: demoBucket, exact: true }), 'Upload object…');
-    await page.getByLabel('Object key', { exact: true }).fill('example.txt');
-    await page.getByLabel('Object file').setInputFiles({ name: 'example.txt', mimeType: 'text/plain', buffer: Buffer.from('CROWDB console demo\n') });
+    await page.getByLabel('Object files', { exact: true }).setInputFiles({ name: 'example.txt', mimeType: 'text/plain', buffer: Buffer.from('CROWDB console demo\n') });
     await page.getByRole('button', { name: 'Upload object', exact: true }).click();
     await page.getByRole('table', { name: 'S3 objects' }).getByRole('button', { name: 'example.txt', exact: true }).click();
     await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Preview first 4 KiB');
@@ -50,7 +50,15 @@ export async function s3Workflow(page: Page, request: APIRequestContext) {
     for (const [field, expected] of [['Rack', placement.rack_id], ['Node', placement.node_id], ['Diskgroup', placement.disk_group_id], ['Disk', diskId]]) {
       await expect(properties.locator('dt').filter({ hasText: new RegExp(`^${field}$`) }).locator('..').locator('dd')).toHaveText(String(expected));
     }
-    await page.getByTestId('domain-s3').click();
+    const [restored] = await Promise.all([
+      page.waitForResponse(response => {
+        const url = new URL(response.url());
+        return url.pathname === '/api/access/s3/' && url.searchParams.get('prefix') === demoBucket;
+      }),
+      page.getByTestId('domain-s3').click(),
+    ]);
+    expect(restored.status(), await restored.text()).toBe(200);
+    expect(await restored.text()).toContain(`<Prefix>${demoBucket}</Prefix>`);
     await exerciseObjectChanges(page, request, demoBucket);
     await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Delete object…');
     await page.getByRole('button', { name: 'Delete object', exact: true }).click();
@@ -102,12 +110,18 @@ async function exerciseObjectChanges(page: Page, request: APIRequestContext, buc
   const tree = page.getByRole('navigation', { name: 'S3 buckets', exact: true });
   await step('S3: additional upload and server-side prefix listing', async () => {
     await tree.getByRole('button', { name: bucket, exact: true }).click();
+    await expect(page.getByLabel('Object prefix', { exact: true })).toBeVisible();
     await resourceAction(page, tree.getByRole('button', { name: bucket, exact: true }), 'Upload object…');
-    await page.getByLabel('Object key', { exact: true }).fill('other.txt');
-    await page.getByLabel('Object file', { exact: true }).setInputFiles({ name: 'other.txt', mimeType: 'text/plain', buffer: Buffer.from('keep other object') });
+    await page.getByLabel('Object files', { exact: true }).setInputFiles([
+      { name: 'other.txt', mimeType: 'text/plain', buffer: Buffer.from('keep other object') },
+      { name: 'example.txt', mimeType: 'text/plain', buffer: Buffer.from('batch overwrite') },
+    ]);
     await page.getByRole('dialog', { name: 'Upload object', exact: true }).getByRole('button', { name: 'Upload object', exact: true }).click();
     const objects = page.getByRole('table', { name: 'S3 objects', exact: true });
     await expect(objects.getByRole('row')).toHaveCount(3);
+    const overwritten = await request.get(`/api/access/s3/${bucket}/example.txt`);
+    expect(overwritten.ok(), await overwritten.text()).toBe(true);
+    expect(await overwritten.text()).toBe('batch overwrite');
     await expect(page.getByText(`Loaded ${bucket}`, { exact: true })).toHaveCount(0);
     await page.getByLabel('Object prefix', { exact: true }).fill('example');
     await page.getByRole('form', { name: 'Object list query', exact: true }).getByRole('button', { name: 'List', exact: true }).click();

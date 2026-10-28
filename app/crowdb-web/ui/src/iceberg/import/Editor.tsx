@@ -1,13 +1,14 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+import { randomUUID } from '../../utils/randomUUID';
 import { useContext, useEffect, useRef, useState } from 'react';
 import { buttonClass, inputClass } from '../../access/Workbench';
 import { iceberg, AccessError } from '../../access/native';
 import { digest } from '../../access/digest';
 import type { Selection, TableLoad } from '../types';
-import { currentSchema, submitImport, supported, tablePath, namespacePath } from './commit';
+import { currentSchema, schemaChanged, submitImport, supported, tablePath, namespacePath } from './commit';
 import { requestKey, snapshotId } from './request';
-import { footer, schemaFromParquet, type IceSchema } from './schema';
+import { footer, schemaFromParquet, nextFieldId, compatibleSchema, type IceSchema } from './schema';
 import { forget, load, save, type ImportRequest } from './storage';
 import { forgetDraft, loadDraft, saveDraft, type TableDraft } from './draft';
 import { uploadFile, fileRequest } from './files';
@@ -17,6 +18,7 @@ import { useQuery } from '../../dataset/query';
 import { EditorDetails } from '../EditorDetails';
 import { Fields } from '../Fields';
 const initialSchema: IceSchema = { type: 'struct', 'schema-id': 0, fields: [{ id: 1, name: 'id', required: true, type: 'long' }] };
+const defaultTableName = () => `table-${randomUUID().replaceAll('-', '').slice(0, 8)}`;
 interface Window { additions?: number; source?: FileCursor }
 
 export function TableEditor({ namespace, table, selection, guarded = false, close, complete }: {
@@ -47,7 +49,7 @@ export function TableEditor({ namespace, table, selection, guarded = false, clos
         if (base) supported(base);
         const source = base ? requestedSource ?? mainSnapshot(base) : null;
         if (base) validateSource(base, source);
-        value = { version: 1, identity: requestKey(), namespace, table, name: table ?? '', mode: 'parquet', schema: base ? currentSchema(base) : initialSchema, files: [], base, source, requestedSource, removed: [] };
+        value = { version: 1, identity: requestKey(), namespace, table, name: table ?? defaultTableName(), mode: 'parquet', schema: base ? currentSchema(base) : initialSchema, files: [], base, source, requestedSource, removed: [] };
         if (selection?.kind === 'file') value.removed = [{ manifest: selection.manifest!.location, location: selection.file!.location }];
       }
       if (value.source === undefined && value.base && table) value.source = mainSnapshot(value.base);
@@ -88,12 +90,12 @@ export function TableEditor({ namespace, table, selection, guarded = false, clos
       if (op && !existing) throw new Error('Reselect only the files in the frozen submission.');
       if (existing && (existing.size !== file.size || existing.md5 !== md5)) throw new Error(`Remove ${file.name} before uploading replacement bytes.`);
       if (!existing && value.files.length >= 1000) throw new Error('A Draft supports at most 1000 added files.');
-      value.schema = schema;
+      if (!value.base && !value.files.length) value.schema = schema;
       if (!value.base) {
         value.base = await iceberg(`${namespacePath(namespace)}/tables`, '', 'POST', { name: value.name, schema, 'stage-create': true, properties: { 'format-version': '2' } }, signal);
         supported(value.base!); value.schema = currentSchema(value.base!);
       }
-      const input = existing ?? { name: file.name, size: file.size, md5, rows: metadata.num_rows.toString(), identity: requestKey() };
+      const input = existing ?? { name: file.name, size: file.size, md5, rows: metadata.num_rows.toString(), identity: requestKey(), schema: structuredClone(schema) };
       if (!existing) value.files.push(input);
       const keep = () => { persist(value); if (op) { op.files = value.files; op.table = value.base; save(op); setOp({ ...op }); } };
       if (input.location) {
@@ -112,7 +114,9 @@ export function TableEditor({ namespace, table, selection, guarded = false, clos
   const commit = async () => {
     const value = current.current!;
     if (!value.name.trim() || !value.schema.fields.length || value.schema.fields.some(field => !field.name.trim()) || new Set(value.schema.fields.map(field => field.name)).size !== value.schema.fields.length) throw new Error('Use a Table name and distinct, nonempty fields.');
-    if (!op && table && !value.files.length && !value.removed?.length) throw new Error('Add or remove a Parquet file before Commit.');
+    if (!op && table && !value.files.length && !value.removed?.length && !schemaChanged({ create: false, schema: value.schema, table: value.base })) throw new Error('Edit the Schema or add/remove a Parquet file before Commit.');
+    if (table && value.base && value.source) compatibleSchema(currentSchema(value.base), value.schema);
+    for (const file of value.files) compatibleSchema(file.schema ?? currentSchema(value.base!), value.schema);
     persist(value); controller.current = new AbortController(); const pending = op ?? request(value); save(pending); setOp(pending);
     try {
       await submitImport(pending, [], setProgress, controller.current.signal);
@@ -129,9 +133,9 @@ export function TableEditor({ namespace, table, selection, guarded = false, clos
       <fieldset disabled={busy || !!op?.commit} className="tw-space-y-3">
         {!table && <label>Table name <input aria-label="Table name" className={inputClass} value={draft.name} disabled={!!draft.base || !!op} onChange={event => change(value => ({ ...value, name: event.target.value }))} /></label>}
         <div className="tw-flex tw-gap-2"><label className={`${buttonClass} tw-cursor-pointer`}>Upload Parquet<input className="tw-sr-only" aria-label="Parquet files" type="file" multiple accept=".parquet" onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; run(() => choose(files)); }} /></label>
-          {!op && !table && !draft.base && !draft.files.length && <button type="button" className={buttonClass} disabled={draft.schema.fields.length >= 256} onClick={() => change(value => ({ ...value, schema: { ...value.schema, fields: [...value.schema.fields, { id: Math.max(0, ...value.schema.fields.map(field => field.id)) + 1, name: '', required: false, type: 'string' }] } }))}>Add field</button>}
+          {!op && <button type="button" className={buttonClass} disabled={draft.schema.fields.length >= 256} onClick={() => change(value => ({ ...value, schema: { ...value.schema, fields: [...value.schema.fields, { id: nextFieldId(value.schema, Number(value.base?.metadata['last-column-id'] ?? 0)), name: '', required: false, type: 'string' }] } }))}>Add field</button>}
         </div>
-        <FileGrid rows={rows} schema={draft.schema} column={column} readonly={!!op} editableSchema={!op && !table && !draft.base && !draft.files.length} updateSchema={schema => change(value => ({ ...value, schema }))} selected={chosen && rowKey(chosen)} select={row => { setChosen(row); setChosenField(undefined); }} selectField={id => { setChosen(undefined); setChosenField(id); }} remove={remove} />
+        <FileGrid rows={rows} schema={draft.schema} column={column} readonly={!!op} editableSchema={!op} updateSchema={schema => change(value => ({ ...value, schema }))} selected={chosen && rowKey(chosen)} select={row => { setChosen(row); setChosenField(undefined); }} selectField={id => { setChosen(undefined); setChosenField(id); }} remove={remove} />
         {source.loading && showSource && <p role="status">Loading files…</p>}{source.error && showSource && <p role="alert">{source.error}</p>}
         <nav aria-label="Draft file pages" className="tw-flex tw-gap-2"><button className={buttonClass} disabled={!previous.length} onClick={() => { setWindow(previous.at(-1)!); setPrevious(previous.slice(0, -1)); }}>Previous files</button><button className={buttonClass} disabled={!next || source.loading && showSource} onClick={() => { setPrevious([...previous, window].slice(-32)); setWindow(next!); }}>Next files</button>
           <button className={buttonClass} disabled={!column} onClick={() => setColumn(column - 1)}>Previous fields</button><button className={buttonClass} disabled={(column + 1) * 12 >= draft.schema.fields.length} onClick={() => setColumn(column + 1)}>Next fields</button></nav>
@@ -142,6 +146,6 @@ export function TableEditor({ namespace, table, selection, guarded = false, clos
     </>}
     {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}{progress && <p role="status">{progress}</p>}
     {busy && controller.current && <button className={buttonClass} onClick={() => controller.current?.abort()}>Cancel transfer</button>}
-    <p className="tw-text-xs tw-text-muted">Files upload separately. Save Draft keeps metadata in this browser; Commit publishes an immutable Snapshot. Empty Tables have no data Snapshot.</p>
+    <p className="tw-text-xs tw-text-muted">Files upload separately. Save Draft keeps metadata in this browser; Commit publishes metadata; file changes create an immutable Snapshot. Empty Tables have no data Snapshot.</p>
   </section>;
 }

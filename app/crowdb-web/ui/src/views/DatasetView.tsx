@@ -22,6 +22,7 @@ import type { DatasetAction } from '../dataset/Actions';
 import { Actions } from '../dataset/Actions';
 import { DeleteDataset } from '../dataset/DeleteDataset';
 import { Properties } from '../dataset/Properties';
+import { newId } from '../dataset/import/upload';
 
 interface PageWindow { cursor?: string; previous: Array<string | undefined> }
 const firstPage: PageWindow = { previous: [] };
@@ -53,7 +54,7 @@ export function DatasetView({ active, readonly }: { active: boolean; readonly: b
     try { await api.mutate('dataset-management', api.datasetPath(name), 'PUT'); setRefresh(value => value + 1); select({ kind: 'dataset', dataset: name }); setCreating(false); }
     catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
-  const resourceMenu = useDatasetMenu(readonly, capabilities.value ?? [], () => { setName(''); setError(''); setCreating(true); }, (selected, action) => { select(selected); setOperation({ selected, action, nonce: Date.now() }); });
+  const resourceMenu = useDatasetMenu(readonly, capabilities.value ?? [], () => { setName(`dataset-${newId().slice(0, 8)}`); setError(''); setCreating(true); }, (selected, action) => { select(selected); setOperation({ selected, action, nonce: Date.now() }); });
   const editing = operation && ['composition', 'split', 'create-split', 'remove-split', 'resume'].includes(operation.action);
   const openDraft = (op: Operation) => {
     const target: Exclude<DatasetSelection, { kind: 'root' }> = op.kind === 'snapshot' ? { kind: 'dataset', dataset: op.dataset } : { kind: 'snapshot', dataset: op.dataset, snapshot: op.snapshot! };

@@ -43,10 +43,7 @@ fn monitor_web_process_config_accepts_only_process_fields() {
         .replace("{{log_root}}", "/opt/crowdb/data/log");
     let parsed: WebProcessConfig = toml::from_str(&rendered).unwrap();
     parsed.validate().unwrap();
-    assert!(
-        parsed.readonly,
-        "public single-container template must remain readonly"
-    );
+    assert!(!parsed.readonly, "single-container default UI remains editable");
 
     let bare_metal = WEB
         .replace("mode = \"docker\"", "mode = \"bare-metal\"")

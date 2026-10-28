@@ -62,6 +62,11 @@ does not establish that a native service operation succeeds.
   inferred ownership, and placeholder counts must not look like observed data.
 - **UI-05:** Every remote list, expansion, preview, and layout has a work/size
   bound. A large cluster must not require a complete scan before the UI responds.
+- **UI-06:** Visible UI behavior is governed by this specification. A proposed
+  change to behavior or layout is first discussed and added here, including its
+  ASCII layout when applicable; implementation follows the agreed spec and may
+  not silently introduce a conflicting control or tree level. Focused tests or
+  E2E coverage accompany the implementation.
 
 ## 2. Reference environment
 
@@ -115,8 +120,10 @@ provide observable capacity and bitmap fixtures.
   containing zone window, selected Zone and bitmap block window. Parent
   navigation can unmount a detail without losing its return query.
 - **NAV-05:** Trees expand lazily. Each large child collection has continuation
-  or Load more, a visible loaded count, and an explicit end/partial state.
-  Collapsed branches do not recursively load their descendants.
+  or Load more and an explicit end/partial state. Routine loaded-item counts are
+  not shown in tree footers; they are internal pagination state unless a domain
+  contract explicitly makes a count part of the selected resource. Collapsed
+  branches do not recursively load their descendants.
 - **NAV-06:** The center remains usable with the right panel open. Tables and
   diagrams scroll within their work area; action bars and pagination remain
   reachable. Resizing does not reset selection or trigger unbounded refetches.
@@ -203,6 +210,18 @@ remain subject to the resource capabilities and lifecycle rules in the text.
   with disk candidates under Storage. Only unjoined candidates for this cluster
   appear there; confirmed members appear only in their Rack. Raw discovery logs
   are not rendered in the tree. Legacy Capacity links resolve to Cluster.
+  DiskGroup ownership references use the compact `DG-<id>` label directly;
+  do not prefix them with `Managed storage`. The candidate branch is labelled
+  `Candidate nodes`; while its authoritative list is loading it may expand to
+  show the loading state, but once the list is known to be empty it has no
+  expand arrow and renders no `No candidate nodes` placeholder. Candidate
+  rows appear only when there are eligible unjoined nodes. Storage candidate
+  rows may show `Candidates (N)` when the authoritative count is known,
+  including zero, but never `Candidates (?)`.
+  Capacity properties use the same hardware-inventory and runtime-usage scope
+  at Storage/DiskGroup, Node, Rack and Datacenter levels. A complete known
+  aggregate shows capacity, used and free values; an incomplete observation
+  remains explicitly unknown and is never rendered as zero.
   Add Rack and Add Store belong to the respective Datacenter context menu;
   uninitialized KV exposes Initialize Cluster there.
 - **CLU-02:** Rack actions include Add Node. A Node context menu independently
@@ -815,12 +834,16 @@ plan, never edited out of this specification to make a run pass.
   collapse, exact split identity, selected Tree/Journal and stale continuations.
 - **A08 / Iceberg:** Catalog to Parquet footer through a real committed table;
   nested schema, snapshots, paged manifests/files and zero data-page reads.
-- **A09 / S3:** bucket/object replacement pages, HEAD, bounded preview,
-  upload/download/multipart, locations and return from Chunk to the source object.
+- **A09 / S3:** create a bucket using its prefilled name with one click; verify
+  bucket/object replacement pages, HEAD, bounded preview, single and batch upload
+  using filenames as object keys, duplicate-key replacement, download/multipart,
+  locations and return from Chunk to the source object.
 - **A13 / resource interaction:** parent context menu creates a supported child;
   selecting it reads details; its own context menu exposes supported lifecycle
-  operations. Verify tree/list/property refresh, keyboard access, readonly and
-  unknown capability/outcome states across Iceberg, Dataset and S3.
+  operations. Create Dataset, Iceberg Table and S3 Bucket with their prefilled
+  default names without typing, including ordinary HTTP container origins. Verify tree/list/property refresh, keyboard
+  access, readonly and unknown capability/outcome states across Iceberg, Dataset
+  and S3.
 - **A14 / Dataset:** create/import, parent-linked Snapshots, paged Samples/Fields,
   explicit verified preview, Split revisions and supported lifecycle operations.
   No browser Session activity or default raw-JSON properties replace this content.
@@ -990,10 +1013,11 @@ uses real bounded base-page inspection; the graph does not scan records for weig
 ## 21. Iceberg
 
 - **ICE-01:** The configured cluster Catalog loads automatically. Left shared
-  Tree is Catalog → Namespace → Table → Snapshot → Manifest → File. Namespace
-  and Table types are labelled explicitly. CrowDB supports nested Namespace
-  components as represented by the [Iceberg REST Catalog specification](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/open-api/rest-catalog-open-api.yaml). No Metadata leaf, Snapshots wrapper,
-  or Manifest List file layer duplicates content. Current Snapshot is marked
+  Tree is Catalog → Namespace → Table → Snapshot. Manifest and File are center
+  inspection data, not tree levels. Namespace and Table types are labelled
+  explicitly. CrowDB supports nested Namespace
+  components as represented by the [Iceberg REST Catalog specification](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/open-api/rest-catalog-open-api.yaml). No Metadata leaf or Snapshots wrapper
+  duplicates content; Manifest List is a center inspection level. Current Snapshot is marked
   `Current`; immutable IDs remain exact.
 - **ICE-02:** Catalog/Namespace centers list their children. Table center shows
   a compact overview followed directly by a Snapshot table: time, operation,
@@ -1005,12 +1029,29 @@ uses real bounded base-page inspection; the graph does not scan records for weig
 - **ICE-03:** Schema is an expanded tree table with field ID/name/type/required
   and hierarchy for structs, lists and maps. Element/key/value identities stay
   visible. Large schemas use bounded row windows; collapse is optional, not a
-  prerequisite to seeing ordinary fields.
-- **ICE-04:** Snapshot center has one scoped summary and a Manifest table.
-  Expanding one Manifest row requests its File subtable. Manifest and File
+  prerequisite to seeing ordinary fields. The Table Draft editor keeps field
+  name, type and required controls editable while a draft is open, including
+  when editing an existing Table from a selected Snapshot. A schema edit is
+  published as a new metadata version; changing the file set also creates an
+  immutable Snapshot. A committed Snapshot never becomes editable in place.
+  Existing field IDs survive renames; added IDs exceed all historical field IDs.
+  Incompatible type/required changes are rejected before publication. Name mapping
+  retains historical aliases so files without embedded field IDs remain readable.
+- **ICE-04:** Selecting a Snapshot keeps the left tree at the Snapshot level and
+  shows one scoped summary plus bounded center inspection levels:
+  `Manifest List → Manifest File list → Data/Delete File list`. These are center
+  tables/sections, never tree nodes. Expanding one Manifest File requests its
+  Data/Delete File subtable. Manifest List, Manifest File and Data/Delete File
   pagination are independent and lazy; no full-snapshot fetch to calculate a
-  total. The right properties retain Manifest List path and known size even
-  though that file is omitted from navigation.
+  total. The right properties retain Manifest List path and known size.
+  File-name columns use a bounded width, left alignment and ellipsis for long
+  names. The full path/name remains available in the selected object's
+  Properties and in the filename tooltip. Tree levels are contiguous: Catalog,
+  Namespace, Table and Snapshot have no empty spacer row or duplicate text-only
+  leaf between them.
+  Center drill-down keeps the left tree selected on the Snapshot. Back returns
+  to the previous center scope with its bounded page, cursor and selection;
+  browser Forward/Back uses the same bounded center history contract.
 - **ICE-05:** Manifest/file inspectors render decoded fields. Parquet shows
   footer information and sized Row Group/column blocks. Selecting a column
   shows complete metadata in properties. Inspection reads footer/metadata only,
@@ -1020,7 +1061,10 @@ uses real bounded base-page inspection; the graph does not scan records for weig
   creates one literal child name component; a dot in the entered name does not
   create another level. Full identity is the ordered namespace component array.
   Its menu also edits supported properties or drops that empty Namespace. A Table's menu
-  exposes supported Edit as Draft, Rename, Commit metadata and Drop table operations. Drop
+  exposes supported Edit as Draft, Rename, Commit metadata and Drop table operations. A new
+  Namespace form is prefilled with an editable unique name such as
+  `namespace-<short-id>`. A new Table form is prefilled with an editable unique name such as `table-<short-id>`,
+  so the default Create action completes without manual typing. Drop
   removes the catalog reference; physical reclamation follows service GC.
   Snapshot and Parquet menus expose table-managed maintenance as defined in ICE-10.
   Manifest and metadata files have no arbitrary physical Delete action. Demo operations are not primary
@@ -1038,11 +1082,16 @@ uses real bounded base-page inspection; the graph does not scan records for weig
   is a Schema field. Cells show types and compatibility, not editable data records.
   File and field selection populate Properties, including nested Schema details.
   The first file of a new Table supplies its Schema; further files must match its
-  IDs, names, types and nullability. Existing Tables retain their durable Schema IDs.
+  IDs, names, types and nullability. Existing Tables retain their durable field IDs;
+  compatible Schema evolution selects a new Schema version. Uploaded files are
+  checked again against edited definitions before Commit; adding an optional
+  column does not require rewriting older Parquet files.
   No silent union, coercion or Parquet rewriting occurs. An empty Table has editable
   field definitions in column headers and may Commit without a data Snapshot.
   The writer supports unpartitioned format-v2 Tables and standard three-level List/Map
-  encodings; historical sources with a different Schema require an Iceberg client.
+  encodings; source Snapshots may retain an older compatible Schema. Incompatible
+  historical Schemas require an Iceberg client; metadata-only evolution must not
+  block subsequent file edits of the current Snapshot.
   Authoring permits 1000 added files, 256 top-level fields, 20 files per selection
   and 100 MiB per file. Existing file windows load one Manifest page at a time,
   with explicit continuation; fields use twelve-column windows. No total-file count
@@ -1094,7 +1143,7 @@ Namespace -> Create Table       Table / Snapshot -> Edit as Draft
 +--------------------------+------------------------------------------------+----------------------+
 | v Catalog                | events / New Snapshot             Draft local | Properties           |
 |   v analytics            | Source: snapshot-a; expected main: snapshot-b | selected file/field  |
-|     v events             | [Upload Parquet]                              | path, size, records  |
+|     v events             | [Upload Parquet] [Add field]                  | path, size, records  |
 |       snapshot-a         | File          id       category  Change       | Schema and IDs       |
 |       snapshot-b Current | a.parquet     long     string    Kept         | nested fields        |
 |                          | b.parquet     long     string    Removed Undo|                      |
@@ -1107,6 +1156,24 @@ Save Draft -> close/reload -> reuse uploaded files -> continue editing
 Commit -> frozen source + add/remove -> new Manifest List -> conditional main
   existing Snapshot and its referenced bytes remain immutable
   empty Table -> Schema and metadata, no data Snapshot
+```
+
+Iceberg: Snapshot file inspection (ICE-04):
+
+```text
+Left tree                         Center panel
+v Catalog                          Snapshot snapshot-a
+  v analytics                       [Back]  Manifest List
+    v events                        ml-001  2 manifests  [Open]
+      snapshot-a *                  └─> Manifest Files
+                                      mf-001  added  [Open]
+                                      mf-002  delete  [Open]
+                                      └─> Data/Delete Files
+                                          part-001.parquet  [Properties]
+                                          delete-001.pos    [Properties]
+
+Open / drill -> next bounded center level
+Back         -> previous level; left tree remains on snapshot-a
 ```
 
 Iceberg: lifecycle (ICE-10):
@@ -1190,8 +1257,12 @@ and footer structure; it does not imply reading data pages or SQL querying.
   fields show `—`. The center presents the selected object's content inspection.
   Tree selection and Back/Forward restore the Bucket list and its cursor/prefix.
   Preview is a separate bounded operation, not an automatic payload GET.
-- **S3-04:** S3 root context menu creates Bucket; a Bucket's menu uploads a child
-  Object, opens multipart uploads or deletes that empty Bucket. An Object's own
+- **S3-04:** S3 root context menu creates Bucket; the create form is prefilled
+  with an editable DNS-safe unique name such as `bucket-<short-id>`, so the
+  default Create action completes without manual typing. A Bucket's menu uploads
+  one or more child Objects; batch upload uses each selected file's filename as
+  its object key, with duplicate keys replacing the existing object. A Bucket's
+  menu also opens multipart uploads or deletes that empty Bucket. An Object's own
   menu exposes Preview, Download, Replace and Delete. Object rows in the center
   use the same menu contract without adding every Object to the left tree.
   Prefix is a key filter, not a physical folder; Bucket deletion does not silently
@@ -1254,7 +1325,7 @@ S3 context-menu targets:
 ```text
 S3 root                Bucket                     Object list row / detail
 +-------------------+ +-------------------------+ +------------------------+
-| Create bucket...  | | Upload object...        | | Preview                |
+| Create bucket...  | | Upload files...         | | Preview                |
 +-------------------+ | Multipart uploads       | | Download               |
                       | Delete empty bucket...  | | Replace...             |
                       +-------------------------+ | Delete object...       |
@@ -1405,7 +1476,9 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   missing configuration, unavailable service and denied access remain distinct.
   Credentials stay on the Console server; no browser endpoint or bearer editor.
   The root center automatically lists Datasets. Root context menu creates a
-  Dataset; a Dataset's menu starts Import / New Snapshot. All use §23; there is
+  Dataset; the create form is prefilled with an editable unique name such as
+  `dataset-<short-id>`, so the default Create action completes without manual
+  typing. A Dataset's menu starts Import / New Snapshot. All use §23; there is
   no Session activity region. The left panel begins with the Dataset title and
   shared Help link above the tree. Properties render named fields rather than JSON.
 - **DS-02 — Relationships:** left navigation follows declared parent links as a
@@ -1422,6 +1495,10 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   Datasets root retains its first bounded page plus the selected resource; the
   catalog has no Previous/Next tree-page toolbar. Snapshot branch continuation
   stays lazy and independent. Tree appearance and selection use shared conventions.
+  Empty child collections do not render diagnostic/footer text such as `No Split
+  revisions` or `No children` in the tree. If an empty state is useful, it is
+  shown in the selected resource's center panel; the tree keeps only real nodes,
+  continuation controls, and actionable errors.
 - **DS-03 — Combined inspection:** one Samples matrix uses Schema definitions as
   columns, defaulting to twenty rows and twelve fields. Required/optional is the
   actual field definition; no inferred type, MIME or nested schema. Header, Sample
@@ -1443,15 +1520,26 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
 - **DS-06 — Table editor:** Dataset → New Snapshot opens one center table.
   One row is a Sample; one column is a Field; Sample ID is a separate editable
   row key. An empty Dataset starts with optional `content`. Add Sample generates
-  an editable ID; Upload files adds rows with filename IDs into the selected Field.
+  an editable ID; Upload files adds rows with the file's exact filename as the
+  default Sample ID into the selected Field, without a type or `string` prefix.
   Duplicate IDs are rejected. Existing values are replaced explicitly through their
   cells, preserving other pending Field changes. Empty cells show Upload file or
   a text input directly. Choosing Upload opens the native picker immediately; text
   is edited inline, including newly added columns, without a Text/File dialog or
   Apply step. Inherited inline values load on focus, not for every visible cell.
-  Clear writes a tombstone and Remove changes membership. Add Field adds a column;
-  required parent Fields cannot be removed or downgraded. A selected row exposes
-  its Fields in Properties independently of the center column window.
+  Clear writes a tombstone and Remove changes membership. Add Field adds a
+  column and remains available after files are added; a Field is not itself a
+  standalone file. A file or inline text is a value in a Sample × Field cell,
+  so every cell in a new file-valued Field keeps the direct Upload file or text
+  input. A field-level bulk upload, if later needed, must be a separate explicit operation and
+  must not replace the cell editor. Every upload or text edit started from a
+  cell is bound to that exact Sample × Field cell and can never fall back to the
+  last row or another implicit target. A bulk upload creates one explicit
+  file-to-row mapping and never chooses a row implicitly. Required parent Fields
+  cannot be removed or downgraded. A selected row exposes
+  its Fields in Properties independently of the center column window. Editing a
+  cell preserves the Draft's Sample row order; changing a value must not move
+  that Sample to the end of the table or change the target of the next edit.
   Dataset selection freezes Latest at opening; Snapshot selection freezes that
   specific parent. Original content remains immutable. Advanced controls expose
   independent roots, parent selection, frozen Split source filtering and explicit

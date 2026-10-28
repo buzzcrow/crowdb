@@ -16,6 +16,8 @@ it('locates a deep selected namespace through paged ancestors and refreshes the 
   await act(async () => {});
   expect(screen.getByRole('button', { name: 'grandchild' })).toBeVisible();
   expect(screen.getByRole('treeitem', { selected: true })).toHaveTextContent('grandchild');
+  expect(screen.queryByText(/\d+ (tables )?loaded/)).toBeNull();
+  expect(document.querySelectorAll('[role=group] > .tw-text-muted:empty')).toHaveLength(0);
   vi.mocked(iceberg).mockClear();
   rerender(view(2)); await act(async () => {});
   expect(screen.getByRole('button', { name: 'child.literal' })).toBeVisible();

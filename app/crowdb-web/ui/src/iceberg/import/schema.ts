@@ -83,7 +83,7 @@ export function schemaFromParquet(metadata: Pick<FileMetaData, 'schema'>, expect
     return result;
   };
   const fields = (nodes: Node[], base?: IceField[]): IceField[] => {
-    if (new Set(nodes.map(value => value.element.name)).size !== nodes.length || base && (base.length !== nodes.length || base.some(value => !nodes.some(node => node.element.name === value.name)))) throw new Error('Parquet field names do not match the Table schema.');
+    if (new Set(nodes.map(value => value.element.name)).size !== nodes.length || base && (nodes.some(node => !base.some(value => value.name === node.element.name)) || base.some(value => value.required && !nodes.some(node => node.element.name === value.name)))) throw new Error('Parquet field names do not match the Table schema.');
     return nodes.map(node => {
       const field = base?.find(value => value.name === node.element.name); const required = node.element.repetition_type === 'REQUIRED';
       if (field?.required && !required) throw new Error(`${node.element.name}: optional Parquet field cannot fill a required Table field.`);
@@ -94,10 +94,48 @@ export function schemaFromParquet(metadata: Pick<FileMetaData, 'schema'>, expect
   return { type: 'struct', 'schema-id': expected?.['schema-id'] ?? 0, fields: fields(root.children, expected?.fields) };
 }
 
-export function nameMapping(schema: IceSchema): string {
+export function nameMapping(schema: IceSchema, previous?: string): string {
   const children = (type: IceType): unknown[] => typeof type === 'string' ? [] : type.type === 'struct' ? type.fields.map(field)
     : type.type === 'list' ? [field({ id: type['element-id'], name: 'element', required: type['element-required'], type: type.element })]
     : [field({ id: type['key-id'], name: 'key', required: true, type: type.key }), field({ id: type['value-id'], name: 'value', required: type['value-required'], type: type.value })];
   const field = (value: IceField): unknown => ({ 'field-id': value.id, names: [value.name], ...(typeof value.type === 'string' ? {} : { fields: children(value.type) }) });
-  return JSON.stringify(schema.fields.map(field));
+  type Mapping = { 'field-id': number; names: string[]; fields?: Mapping[] };
+  const merge = (old: Mapping[], added: Mapping[]): Mapping[] => {
+    const result = structuredClone(old);
+    for (const next of added) {
+      const found = result.find(value => value['field-id'] === next['field-id']);
+      if (!found) result.push(next);
+      else {
+        found.names = [...new Set([...found.names, ...next.names])];
+        if (next.fields) found.fields = merge(found.fields ?? [], next.fields);
+      }
+    }
+    return result;
+  };
+  return JSON.stringify(merge(previous ? JSON.parse(previous) : [], schema.fields.map(field) as Mapping[]));
+}
+
+
+export function nextFieldId(schema: IceSchema, historical = 0): number {
+  const visit = (value: unknown): number => {
+    if (!value || typeof value !== 'object') return 0;
+    return Math.max(0, ...Object.entries(value).map(([key, child]) =>
+      ['id', 'element-id', 'key-id', 'value-id'].includes(key) ? Number(child) : visit(child)));
+  };
+  return Math.max(historical, visit(schema)) + 1;
+}
+
+// Uploaded bytes keep their original types. Schema edits may only project or
+// safely widen them; missing optional columns read as null.
+export function compatibleSchema(file: IceSchema, target: IceSchema): void {
+  const compatible = (old: IceType, next: IceType): boolean => {
+    if (JSON.stringify(old) === JSON.stringify(next)) return true;
+    return old === 'int' && next === 'long' || old === 'float' && next === 'double';
+  };
+  for (const field of target.fields) {
+    const source = file.fields.find(value => value.id === field.id);
+    if (!source) { if (field.required) throw new Error(`${field.name}: missing required Parquet field.`); continue; }
+    if (!compatible(source.type, field.type) || field.required && !source.required)
+      throw new Error(`${field.name}: edited definition is incompatible with uploaded Parquet.`);
+  }
 }

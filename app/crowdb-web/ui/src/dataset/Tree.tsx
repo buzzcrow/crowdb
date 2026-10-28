@@ -27,7 +27,6 @@ function Branches(props: SnapshotTreeProps & { parent?: string; depth?: number }
   return <ul aria-label={props.parent ? `Children of ${props.parent}` : 'Root Snapshots'} className="tw-space-y-0">
     {result.error && <li role="alert">{result.error}</li>}
     {result.value?.entries.map(item => <SnapshotNode key={item.id} {...props} item={item} depth={props.depth ?? 0} />)}
-    {result.value?.entries.length === 0 && <li className="tw-text-muted">No {props.parent ? 'children' : 'root Snapshots'}</li>}
     {result.value?.after && <li><button className={buttonClass} onClick={() => setCursor(result.value!.after!)}>Next {props.parent ? 'children' : 'roots'}</button></li>}
     {cursor && <li><button className={buttonClass} onClick={() => setCursor(undefined)}>First page</button></li>}
   </ul>;
