@@ -19,7 +19,7 @@ import urllib.error
 
 ROOT = Path(__file__).resolve().parents[2]
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-BENCHMARKS = {"kv", "diskdb", "chunkdb", "chunkio", "s3"}
+BENCHMARKS = {"paxos-kv", "diskdb", "chunkdb", "chunkio", "s3"}
 
 
 class FixtureStopped(ValueError):
@@ -168,12 +168,6 @@ def run(args):
         if not isinstance(seeds, list) or not seeds or not all(isinstance(seed, str) and seed for seed in seeds):
             raise ValueError("live measurement target has no Group-0 endpoints")
         print(seeds[0])
-    elif args.action == "report":
-        path = args.state.parent / "client-runtime/artifacts/cli/bench-kv/report.json"
-        report = json.loads(path.read_text())
-        if not all(key in report for key in ("total_ops", "total_errors", "duration_ms", "by_op")):
-            raise ValueError("latest benchmark report is incomplete")
-        print(json.dumps(report, indent=2))
     return 0
 
 
@@ -187,7 +181,6 @@ def main():
     subcommands.add_parser("target")
     subcommands.add_parser("root")
     subcommands.add_parser("seed")
-    subcommands.add_parser("report")
     subcommands.add_parser("inspect")
     reset = subcommands.add_parser("reset")
     reset.add_argument("--store", type=int, default=0)

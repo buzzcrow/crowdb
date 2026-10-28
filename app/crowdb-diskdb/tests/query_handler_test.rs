@@ -194,13 +194,13 @@ async fn disk_rpc_reports_effective_status() {
     use crowdb_diskdb::scanner::ScanState;
     use crowdb_diskdb::service::DiskdbRpcService;
     use crowdb_diskdb_client::rpc_transport::DiskdbRpcTransport;
-    use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+    use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 
     let dg = make_dg();
     let disk = dg.get_disk(disk_id(1)).unwrap();
     let container = Arc::new(DdbDiskGroupContainer::new(1));
     container.replace_disk_group(&dg);
-    let kv = Arc::new(DdbKvClient::new(CrowdbKvClient::new(ClientConfig::new(vec![]))));
+    let kv = Arc::new(DdbKvClient::new(PaxosKvClient::new(ClientConfig::new(vec![]))));
     let service = Arc::new(DiskdbRpcService::new(
         container.clone(),
         kv.clone(),

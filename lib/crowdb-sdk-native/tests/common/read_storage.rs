@@ -12,7 +12,7 @@ use crowdb_access_s3::integrity::SinglePartIntegrity;
 use crowdb_access_s3::metadata::{BucketId, ChunkKvMetadataStore, MetadataKey, ObjectRecord, TenantId};
 use crowdb_chunk_client::{ChunkAllocator, ChunkIoClient, DiskWriter, Result};
 use crowdb_chunk_kv_client::{ChunkKvRpcTransport, ChunkKvRpcTransportConfig};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::chunkdb::rpc::*;
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -166,7 +166,7 @@ impl TestFixture {
         let metadata = super::metadata::client().await;
         let runtime = ClientRuntime::adopt_clients(
             RuntimeClients {
-                control: Arc::new(CrowdbKvClient::new(ClientConfig::new(Vec::new()))),
+                control: Arc::new(PaxosKvClient::new(ClientConfig::new(Vec::new()))),
                 metadata: metadata.clone(),
                 metadata_transport: Arc::new(
                     ChunkKvRpcTransport::with_config(8, 1, 1, &ChunkKvRpcTransportConfig::default()).unwrap(),

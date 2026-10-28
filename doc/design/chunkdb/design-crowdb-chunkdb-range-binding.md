@@ -4,7 +4,7 @@
 # CROWDB - Design: ChunkDB Slot Routing
 
 Depends on: [ChunkDB architecture](design-crowdb-chunkdb.md),
-[KV group 0](../kv/design-crowdb-kv-group0.md).
+[KV group 0](../kv/design-crowdb-paxos-kv-group0.md).
 Satisfies: ChunkDB stateless execution and explicit nonzero persistence.
 
 ChunkDB uses independent service and storage maps over the same fixed hash

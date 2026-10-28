@@ -11,6 +11,8 @@ import subprocess
 import stat
 import uuid
 
+from ports import WEB_BASE, ACCESS_SERVER_DATASET_HTTP_BASE
+
 CLUSTER = "org.crowdb.cluster"
 OWNER = "org.crowdb.cluster.owner"
 ROOT = Path(__file__).resolve().parents[2]
@@ -82,7 +84,7 @@ def load(cluster, directory=RECORDS):
     if (set(record["runtime"]) != {"daemon", "context", "endpoint"}
             or not all(isinstance(value, str) and value for value in record["runtime"].values())
             or record["nodes"] not in (1, 3) or not isinstance(record["port_base"], int)
-            or not 1 <= record["port_base"] <= 65512
+            or not 1 <= record["port_base"] <= 65535 - (ACCESS_SERVER_DATASET_HTTP_BASE - WEB_BASE) - 2
             or not isinstance(record["cpus"], (float, int)) or not math.isfinite(record["cpus"]) or record["cpus"] <= 0
             or not isinstance(record["memory_mib"], int) or record["memory_mib"] < 512
             or not all(isinstance(record[key], str) and record[key] for key in ("image", "image_id"))):

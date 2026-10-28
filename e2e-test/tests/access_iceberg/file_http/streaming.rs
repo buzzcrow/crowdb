@@ -45,9 +45,11 @@ async fn ordinary_put_size_matrix_streams_and_reads_ranges() {
         assert!(!locations.is_empty());
         if size == 12 * 1024 * 1024 {
             let chunkdb = crowdb_chunkdb_client::ChunkdbClient::new(
-                crowdb_kv_client::ServiceRegistryClient::new(crowdb_kv_client::CrowdbKvClient::new(
-                    crowdb_kv_client::ClientConfig::new(stack.seeds.clone()),
-                )),
+                crowdb_paxos_kv_client::ServiceRegistryClient::new(
+                    crowdb_paxos_kv_client::PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
+                        stack.seeds.clone(),
+                    )),
+                ),
                 std::sync::Arc::new(crowdb_chunkdb_client::ChunkdbRpcTransport::new()),
             );
             let chunk = chunkdb

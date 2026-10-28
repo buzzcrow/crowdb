@@ -14,7 +14,7 @@ use crowdb_chunk_kv_server::{
     ChunkKvStorage, DomainMonitorRegistry, Group0ControlStore, ManagementState, StorageRuntimeError,
     TransitionExecutor, TransitionProcessor,
 };
-use crowdb_kv_client::{WatchNotifyClient, WatchSubscription};
+use crowdb_paxos_kv_client::{WatchNotifyClient, WatchSubscription};
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
     ChunkKvRangeCatalogPartitionState, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, KeyRange,

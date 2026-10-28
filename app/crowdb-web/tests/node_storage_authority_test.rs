@@ -9,7 +9,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use crowdb_console_shared::ConsoleConfig;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient};
 use crowdb_protocol::{
     common::{DiskId, NodeValue, RackValue},
     diskdb::rpc::{DiskGroupValue, DiskValue},
@@ -32,7 +32,7 @@ async fn read(app: &axum::Router, path: &str) -> serde_json::Value {
 #[tokio::test]
 async fn bound_storage_reads_observe_monitor_publication_without_console_cache_refresh() {
     let cluster = memory_kv::TestKvCluster::start().await;
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+    let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
         cluster.mgmt_endpoints.clone(),
     )));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());

@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 PIXI = ["pixi", "run", "--as-is", "--manifest-path", str(ROOT / "pixi.toml")]
-BINARIES = ("crowdb-monitor", "crowdb-kv-server", "crowdb-diskdb", "crowdb-diskio",
+BINARIES = ("crowdb-monitor", "crowdb-paxos-kv-server", "crowdb-diskdb", "crowdb-diskio",
             "crowdb-chunkdb", "crowdb-chunk-kv-server", "crowdb-access-server", "crowdb-web")
 
 
@@ -50,8 +50,8 @@ class StagingTest(unittest.TestCase):
         for name, function in definitions.items():
             self.compile(f"int {function}(void) {{ return 0; }}", libraries / name,
                          "-shared", "-fPIC", "-Wl,-soname," + name)
-        self.compile("int ffi(void) { return 0; }", release / "libcrowdb_kv_client.so",
-                     "-shared", "-fPIC", "-Wl,-soname,libcrowdb_kv_client.so")
+        self.compile("int ffi(void) { return 0; }", release / "libcrowdb_paxos_kv_client.so",
+                     "-shared", "-fPIC", "-Wl,-soname,libcrowdb_paxos_kv_client.so")
         self.compile("int provider_dependency(void); int provider(void) { return provider_dependency(); }",
                      libraries / "libfixture.so.1", "-shared", "-fPIC", "-L" + str(libraries),
                      "-lprovider-dependency", "-Wl,-rpath," + str(libraries))
@@ -61,7 +61,7 @@ class StagingTest(unittest.TestCase):
         executable = directory / "node"
         self.compile(source, executable, "-L" + str(libraries), "-L" + str(release),
                      "-Wl,-l:libibverbs.so.1", "-Wl,-l:librdmacm.so.1", "-Wl,-l:libcrypto.so.3",
-                     "-lcrowdb_kv_client")
+                     "-lcrowdb_paxos_kv_client")
         for name in BINARIES:
             target = root / "app/crowdb-diskio/build" if name == "crowdb-diskio" else release
             target.mkdir(parents=True, exist_ok=True)
@@ -76,7 +76,7 @@ class StagingTest(unittest.TestCase):
         command = [*PIXI, "bash", "-c", 'PATH="$1:$PATH"; exec bash "$2" "$3"', "_",
                    str(tools), str(ROOT / "container/oci-image/collect-libs.sh"), str(staged)]
         subprocess.run(command, check=True, env=dict(os.environ, CROWDB_STAGING_TEST_ROOT=str(root)))
-        for name in (*definitions, "libcrowdb_kv_client.so"):
+        for name in (*definitions, "libcrowdb_paxos_kv_client.so"):
             self.assertTrue((staged / "lib" / name).is_file(), name)
         provider = staged / "lib/libibverbs/libfixture-rdmav99.so"
         self.assertTrue(provider.is_file())

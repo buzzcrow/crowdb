@@ -23,23 +23,23 @@ TYPE_PATTERN = re.compile(r"\bDashMap\s*<")
 # lookup guard. The reason also documents the maximum guard lifetime.
 ALLOWED: dict[tuple[str, str], str] = {
     (
-        "app/crowdb-kv-server/src/mgmt/operation_registry.rs",
+        "app/crowdb-paxos-kv-server/src/mgmt/operation_registry.rs",
         "operations",
     ): "low-frequency management operations; guards are dropped before polling or await",
     (
-        "lib/crowdb-kv/src/cluster/group.rs",
+        "lib/crowdb-paxos-kv/src/cluster/group.rs",
         "snapshots",
     ): "per-group snapshot lifecycle handles; guards only clone or remove one handle",
     (
-        "lib/crowdb-kv-client/src/service/discovery.rs",
+        "lib/crowdb-paxos-kv-client/src/service/discovery.rs",
         "services",
     ): "service-name cache; lookup clones Arc<ServiceState> before refresh I/O",
     (
-        "lib/crowdb-kv/src/rpc/snapshot_registry.rs",
+        "lib/crowdb-paxos-kv/src/rpc/snapshot_registry.rs",
         "sessions",
     ): "snapshot transfer lifecycle; guards clone Arc<RegistryEntry> or remove before any await",
     (
-        "lib/crowdb-kv/src/rpc/snapshot_registry.rs",
+        "lib/crowdb-paxos-kv/src/rpc/snapshot_registry.rs",
         "expired",
     ): "expired-session tombstones; lookups only check contains_key, insert, or remove",
 }

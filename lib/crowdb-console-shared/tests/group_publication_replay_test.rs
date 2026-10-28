@@ -4,13 +4,13 @@
 use crowdb_console_shared::ops::kv_logical::{
     complete_initial_membership_for_tests, initial_membership_for_tests,
 };
-use crowdb_kv::cluster::{
+use crowdb_paxos_kv::cluster::{
     group::PxGroup,
-    kv_server::KvServer,
     local_replica::{PxLocalReplica, PxLocalReplicaRole},
+    paxos_kv_server::PaxosKvServer,
     px_kv_store::PxKvStore,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GroupMembershipClient};
+use crowdb_paxos_kv_client::{ClientConfig, GroupMembershipClient, PaxosKvClient};
 use crowdb_protocol::kv_membership::{GroupMember, GroupMembershipState};
 use std::sync::Arc;
 
@@ -22,7 +22,7 @@ async fn authority() -> (Arc<PxKvStore>, GroupMembershipClient, Vec<GroupMember>
     ));
     store.start().await.unwrap();
     let endpoint = store.listen_addr().unwrap().to_string();
-    let client = Arc::new(CrowdbKvClient::new(ClientConfig::new(Vec::new())));
+    let client = Arc::new(PaxosKvClient::new(ClientConfig::new(Vec::new())));
     client.seed_leader(0, 0, endpoint.clone());
     let member = GroupMember {
         node_id: 1,

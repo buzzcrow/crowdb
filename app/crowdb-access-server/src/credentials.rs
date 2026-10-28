@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crowdb_access_s3::auth::{
     Credential, CredentialCipher, DurableCredentialRecord, IssuedUserToken, SecretError,
 };
-use crowdb_kv_client::{CrowdbKvClient, Error as KvError, ReadMode};
+use crowdb_paxos_kv_client::{Error as KvError, PaxosKvClient, ReadMode};
 
 mod ensure;
 
@@ -16,7 +16,7 @@ const CREDENTIAL_PREFIX: &[u8] = b"crowdb/s3/credential/";
 const CREATE_ATTEMPTS: usize = 8;
 
 pub struct CredentialAuthority {
-    control: Arc<CrowdbKvClient>,
+    control: Arc<PaxosKvClient>,
     cipher: Arc<CredentialCipher>,
 }
 
@@ -40,7 +40,7 @@ pub enum CredentialAuthorityError {
 
 impl CredentialAuthority {
     #[must_use]
-    pub fn new(control: Arc<CrowdbKvClient>, cipher: Arc<CredentialCipher>) -> Self {
+    pub fn new(control: Arc<PaxosKvClient>, cipher: Arc<CredentialCipher>) -> Self {
         Self { control, cipher }
     }
 

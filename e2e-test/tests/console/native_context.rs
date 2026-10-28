@@ -3,7 +3,7 @@
 
 //! Host clients of the normal three-node Console deployment surface.
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use reqwest::{Client, Method};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
@@ -11,7 +11,7 @@ use std::{sync::Arc, time::Duration};
 pub(super) struct TestNativeContext {
     pub(super) http: Client,
     pub(super) base: String,
-    pub(super) kv: Arc<CrowdbKvClient>,
+    pub(super) kv: Arc<PaxosKvClient>,
     pub(super) addresses: Vec<String>,
 }
 
@@ -43,7 +43,7 @@ impl TestNativeContext {
             .unwrap();
         let index = usize::try_from(leader.checked_sub(1).unwrap()).unwrap();
         assert!(index < addresses.len());
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
             addresses
                 .iter()
                 .map(|address| format!("http://{address}:10000"))

@@ -19,7 +19,7 @@ namespace crowdb.kv_client.proto;
 //   cache. No Paxos term/epoch reasoning (unlike kv_consensus.fbs).
 // - Unary requests carry `forwarded: bool` (default false) — the
 //   server-side leader-forward loop-guard that replaces the
-//   `x-crowdb-kv-forwarded` legacy metadata header (crowdb-rpc has no
+//   `x-crowdb-paxos-kv-forwarded` legacy metadata header (crowdb-rpc has no
 //   metadata). Set to true when the server re-issues a Linearizable
 //   read to the leader; the leader serves it locally without
 //   re-forwarding.

@@ -51,7 +51,10 @@ pub(super) fn node_profile(config: &super::NodeRuntimeConfig) -> Result<Deployme
         .find(|service| service.id == "kv")
         .ok_or("node profile requires KV service")?
         .env
-        .insert("CROWDB_KV_MANAGEMENT_ADVERTISE_ADDR".into(), address.to_string());
+        .insert(
+            "CROWDB_PAXOS_KV_MANAGEMENT_ADVERTISE_ADDR".into(),
+            address.to_string(),
+        );
     Ok(profile)
 }
 
@@ -110,7 +113,10 @@ async fn wait_ready(processes: &mut ProcessManager) -> Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         if client
-            .get("http://127.0.0.1:10000/health")
+            .get(format!(
+                "http://127.0.0.1:{}/health",
+                crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE
+            ))
             .send()
             .await
             .is_ok_and(|reply| reply.status().is_success())
@@ -159,7 +165,7 @@ async fn spawn(
     }
     let mut kv = service(profile, "kv")?;
     kv.env.insert(
-        "CROWDB_KV_CLUSTER_ID".into(),
+        "CROWDB_PAXOS_KV_CLUSTER_ID".into(),
         accepted.bootstrap.cluster_id.clone(),
     );
     let root = profile
@@ -174,9 +180,13 @@ async fn spawn(
         "--root".into(),
         root.to_string_lossy().into_owned(),
         "--management-port".into(),
-        "10000".into(),
+        crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE.to_string(),
         "--ports".into(),
-        "10100,10101".into(),
+        format!(
+            "{},{}",
+            crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE,
+            crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE + 1
+        ),
         "--instance-id".into(),
         accepted.node_id.to_string(),
         "--node-id".into(),

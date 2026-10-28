@@ -3,7 +3,7 @@
 
 #include "group0/group0_sync.h"
 
-#include "crowdb-kv-client/c_api.h"
+#include "crowdb-paxos-kv-client/c_api.h"
 #include "disk/block_disk.h"
 #include "disk/mem_disk.h"
 #include "disk/null_disk.h"

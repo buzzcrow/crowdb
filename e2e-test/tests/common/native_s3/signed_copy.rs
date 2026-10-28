@@ -8,13 +8,13 @@ use std::sync::Arc;
 
 use crowdb_access_s3::auth::{CredentialCipher, MasterKey};
 use crowdb_access_server::credentials::CredentialAuthority;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use hmac::{Hmac, Mac};
 use reqwest::{Client, Response};
 use sha2::{Digest, Sha256};
 
 pub async fn copy(addresses: &[String], http: &Client, base: &str) -> Response {
-    let control = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+    let control = Arc::new(PaxosKvClient::new(ClientConfig::new(
         addresses[..3]
             .iter()
             .map(|ip| super::super::management::origin(ip))

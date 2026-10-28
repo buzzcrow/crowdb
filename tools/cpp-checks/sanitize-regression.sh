@@ -71,6 +71,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 unset CROWDB_ASAN
+: "${CROWDB_SANITIZER_BASE_IMAGE:?set a local CrowDB OCI base image for Paxos-KV sanitizer containers}"
+if [[ "${1:-}" == --paxos-kv-only ]]; then
+    exec pixi run bash tools/cpp-checks/sanitize-paxos-kv.sh
+fi
 
 RUNTIME_ROOT="${CROWDB_RUNTIME_ROOT:-${PIXI_PROJECT_ROOT:-$(pwd)}/.crowdb-runtime}"
 RUNTIME_DIR="$RUNTIME_ROOT/artifacts/sanitize-regression-$(date +%Y%m%d-%H%M%S)-$$"
@@ -79,7 +83,6 @@ RESULTS_FILE="$RUNTIME_DIR/sanitize-regression.tsv"
 DURATION=5
 KEYSPACE=1000
 VALUE_SIZE=128
-PREPARE_KEYS=500
 GATE_FAILED=0
 
 # Path to the debug binary (built with CROWDB_ASAN=1).
@@ -92,7 +95,7 @@ CROWDB_CLI="$(cd "$(dirname "$0")/../.." && pwd)/target/debug/crowdb-cli"
 LIBASAN="$(cd "$(dirname "$0")/../.." && pixi run -- pwd)/.pixi/envs/default/lib/libasan.so"
 
 restore_binaries() {
-    pixi run cargo build -p crowdb-cli -p crowdb-rpc-test -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+    pixi run cargo build -p crowdb-cli -p crowdb-rpc-test -p crowdb-paxos-kv-server -p crowdb-diskdb -p crowdb-chunkdb
     pixi run cargo build -p crowdb-console-shared --example regression-fixture --features test-util
 }
 
@@ -112,7 +115,7 @@ trap cleanup_sanitize EXIT
 
 # --- Phase 1: Build with ASan + LSan enabled ---
 echo "=== building with CROWDB_ASAN=1 (debug) ==="
-CROWDB_ASAN=1 pixi run -- cargo build -p crowdb-cli -p crowdb-rpc-test -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+CROWDB_ASAN=1 pixi run -- cargo build -p crowdb-cli -p crowdb-rpc-test -p crowdb-paxos-kv-server -p crowdb-diskdb -p crowdb-chunkdb
 CROWDB_ASAN=1 pixi run cargo build -p crowdb-console-shared --example regression-fixture --features test-util
 pixi run -- cmake --build app/crowdb-diskio/build -j
 RPC_ASAN_BUILD="$RUNTIME_DIR/rpc-server-build"
@@ -137,7 +140,6 @@ asan_client() {
     local log_prefix="$1" state="$2"; shift 2
     local endpoint
     endpoint=$(pixi run python tools/benchmark/fixture.py --state "$state" target)
-    rm -f "$(dirname "$state")/client-runtime/artifacts/cli/bench-kv/report.json"
     CROWDB_RUNTIME_ROOT="$(dirname "$state")/client-runtime" pixi run env -u CROWDB_CLUSTER ASAN_OPTIONS="detect_leaks=1:abort_on_error=0:log_path=${log_prefix}" \
         LD_PRELOAD="$LIBASAN" "$CROWDB_CLI" --management-endpoint "$endpoint" "$@"
 }
@@ -191,115 +193,6 @@ bench_status() {
         status="FAIL(no-operations)"
     fi
     printf '%s' "$status"
-}
-
-# run_bench <deploy_name> <subcmd> <threads> <conn> <label> <extra_args...>
-# Cleans user data (except for read/scan which need prepare first),
-# runs the workload under ASan, checks for leaks.
-run_bench() {
-    local deploy="$1" subcmd="$2" threads="$3" conn="$4" label="$5"; shift 5
-    local extra_args=("$@")
-    echo ">>> $label ..."
-    local config_file
-    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
-    if [ -z "$config_file" ] || [ ! -f "$config_file" ]; then
-        echo "    ERROR: no config for deploy '$deploy'"
-        echo -e "$label\t0\t0\tFAIL(config)" >> "$RESULTS_FILE"
-        return
-    fi
-    local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
-    local output rc
-    if output=$(asan_client "$log_prefix" "$config_file" \
-        bench kv "$subcmd" --duration-secs "$DURATION" \
-        --loader-num "$threads" --connections "$conn" \
-        --key-space "$KEYSPACE" --value-size "$VALUE_SIZE" \
-        "${extra_args[@]}" 2>&1); then
-        rc=0
-    else
-        rc=$?
-        echo "$output" >&2
-    fi
-    local json; json=$(pixi run python tools/benchmark/fixture.py --state "$config_file" report) || json=""
-    if [ -z "$json" ]; then
-        echo "    ERROR: no JSON output"; echo "$output"
-        echo -e "$label\t0\t0\tFAIL(output)" >> "$RESULTS_FILE"
-        return
-    fi
-    local total_ops ops_s errors
-    total_ops=$(echo "$json" | jq -r '.total_ops')
-    ops_s=$(echo "$json" | jq -r '.total_ops * 1000 / .duration_ms' | awk '{printf "%.2f", $1}')
-    errors=$(echo "$json" | jq -r '.total_errors')
-    # Check for ASan leak logs from the client process.
-    local leak_status="PASS"
-    local logs
-    logs=$(ls "${log_prefix}."* 2>/dev/null || true)
-    if [ -n "$logs" ]; then
-        leak_status="FAIL(leaks)"
-        for log in $logs; do
-            local summary
-            summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
-            echo "    LEAK: $summary"
-            cat "$log"
-        done
-    fi
-    leak_status=$(bench_status "$leak_status" "$rc" "$errors" "$ops_s")
-    echo "    ops/s=$ops_s err=$errors leak_check=$leak_status"
-    echo -e "$label\t$ops_s\t$errors\t$leak_status" >> "$RESULTS_FILE"
-}
-
-# run_prepare <deploy_name> <label>
-# Pre-populates keys so read/scan have data to work with.
-run_prepare() {
-    local deploy="$1" label="$2"
-    echo ">>> $label ..."
-    local config_file
-    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
-    if [ -z "$config_file" ] || [ ! -f "$config_file" ]; then
-        echo "    ERROR: no config for deploy '$deploy'"
-        GATE_FAILED=1
-        return
-    fi
-    local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
-    local output rc
-    if output=$(asan_client "$log_prefix" "$config_file" \
-        bench kv prepare --keys "$PREPARE_KEYS" \
-        --value-size "$VALUE_SIZE" --concurrency 4 \
-        2>&1); then
-        rc=0
-    else
-        rc=$?
-        echo "$output" >&2
-    fi
-    echo "    exit=$rc"
-    if [ "$rc" -ne 0 ]; then
-        GATE_FAILED=1
-    fi
-    local line written errors
-    line=$(echo "$output" | sed -n '/^bench kv prepare:/p' | tail -n 1)
-    written=$(echo "$line" | sed -n 's/^bench kv prepare: \([0-9][0-9]*\) keys written.*/\1/p')
-    errors=$(echo "$line" | sed -n 's/.*written, \([0-9][0-9]*\) errors.*/\1/p')
-    if [[ ! "$written" =~ ^[0-9]+$ ]] || [ "$written" -ne "$PREPARE_KEYS" ] \
-        || [[ ! "$errors" =~ ^[0-9]+$ ]] || [ "$errors" -ne 0 ]; then
-        echo "    ERROR: prepare produced invalid output (written=$written errors=$errors)"
-        GATE_FAILED=1
-    fi
-    if ! check_asan_logs "$log_prefix" "$label"; then
-        GATE_FAILED=1
-    fi
-}
-
-# deploy_cluster <name>
-# Deploy a 3-node cluster with default tunables for sanitize testing.
-deploy_cluster() {
-    local name="$1"
-    local config_file="${RUNTIME_DIR}/sanitize-reg-${name}.toml"
-    echo "=== deploying cluster '$name' ==="
-    rm -f "$config_file"
-    local log_prefix="${RUNTIME_DIR}/asan-sanitize-deploy-${name}"
-    asan_fixture "$log_prefix" "$config_file" --nodes 3 --kind kv \
-        --kv-backend mem-block --wal-backend mem-block 2>&1
-    echo "$config_file" > "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath"
-
 }
 
 # teardown_cluster <name>
@@ -678,36 +571,9 @@ run_chunkio_small_write_bench() {
 
 echo -e "label\tops_s\terrors\tleak_check" > "$RESULTS_FILE"
 
-# --- Phase 2a: KV-only cluster (write/read/scan) ---
-
-# Single deploy for all KV sub-tests.
-DEPLOY="sanitize-reg-$$-$(date +%s)"
-deploy_cluster "$DEPLOY"
-
-# Prepare: pre-populate keys so read/scan have data.
-run_prepare "$DEPLOY" "prepare_${PREPARE_KEYS}keys"
-
-# Write: put workload (consensus + WAL + storage).
-echo "=== write ==="
-run_bench "$DEPLOY" write 1 1 "write_1t_1c"
-run_bench "$DEPLOY" write 16 2 "write_16t_2c"
-run_bench "$DEPLOY" write 64 4 "write_64t_4c"
-
-# Read: point-get workload (linearizable + minslot).
-echo "=== read ==="
-run_bench "$DEPLOY" read 1 1 "read_1t_1c_linearizable" --read-mode linearizable
-run_bench "$DEPLOY" read 16 2 "read_16t_2c_linearizable" --read-mode linearizable
-run_bench "$DEPLOY" read 32 32 "read_32t_32c_linearizable" --read-mode linearizable
-run_bench "$DEPLOY" read 1 1 "read_1t_1c_minslot" --read-mode minslot
-
-# Scan: range scan workload.
-echo "=== scan ==="
-run_bench "$DEPLOY" scan 1 1 "scan_1t_1c"
-run_bench "$DEPLOY" scan 16 2 "scan_16t_2c"
-run_bench "$DEPLOY" scan 32 32 "scan_32t_32c"
-
-# Teardown: destroy KV cluster, check server shutdown leaks.
-teardown_cluster "$DEPLOY"
+# --- Phase 2a: Paxos-KV containers (same write/read/scan matrix) ---
+# The diagnostic fixture owns containers; product bench only injects load.
+KV_BENCH_LOG_ROOT="$RUNTIME_DIR/paxos-kv" pixi run bash tools/cpp-checks/sanitize-paxos-kv.sh --built
 
 # --- Phase 2b: Combined cluster (diskdb + chunkdb + chunkio) ---
 

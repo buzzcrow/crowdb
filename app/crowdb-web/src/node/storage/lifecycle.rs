@@ -12,7 +12,7 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use crowdb_kv_client::{Error, HardwareClient};
+use crowdb_paxos_kv_client::{Error, HardwareClient};
 use crowdb_protocol::{common::HwStatus, disk_storage::DiskRemovalRecord, key::DiskKey, DiskIdExt};
 use serde::{Deserialize, Serialize};
 

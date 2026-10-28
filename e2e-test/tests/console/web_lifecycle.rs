@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{HardwareClient, ServiceRegistryClient};
 use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -65,17 +65,18 @@ async fn deploys_real_chunkdb_with_fixed_cluster_seeds_and_retained_launch() {
 async fn prepare_storage(http: &Client, base: &str) {
     let addresses = crate::common::management::addresses(4);
     let cluster = super::fixture::TestKvCluster::from_addresses(addresses[..3].to_vec()).await;
-    let kv =
-        crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(cluster.mgmt_endpoints));
+    let kv = crowdb_paxos_kv_client::PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
+        cluster.mgmt_endpoints,
+    ));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint);
     let kv = std::sync::Arc::new(kv);
-    let sysmd = crowdb_kv_client::CrowdbSysmdClient::from_shared(kv.clone());
+    let sysmd = crowdb_paxos_kv_client::CrowdbSysmdClient::from_shared(kv.clone());
     sysmd.add_store(0, &[1, 2, 3]).await.unwrap();
     sysmd.add_group(0, 0).await.unwrap();
     sysmd.add_group(0, 1).await.unwrap();
     register_voters(http, &sysmd, &addresses[..3]).await;
-    let registry = crowdb_kv_client::ServiceRegistryClient::from_shared(kv.clone());
-    let hardware = crowdb_kv_client::HardwareClient::from_shared(kv);
+    let registry = crowdb_paxos_kv_client::ServiceRegistryClient::from_shared(kv.clone());
+    let hardware = crowdb_paxos_kv_client::HardwareClient::from_shared(kv);
     hardware
         .add_rack(
             1,
@@ -174,7 +175,11 @@ async fn prepare_diskdb(
         .unwrap();
 }
 
-async fn register_voters(http: &Client, sysmd: &crowdb_kv_client::CrowdbSysmdClient, addresses: &[String]) {
+async fn register_voters(
+    http: &Client,
+    sysmd: &crowdb_paxos_kv_client::CrowdbSysmdClient,
+    addresses: &[String],
+) {
     for (index, address) in addresses.iter().enumerate() {
         let topology: Value = http
             .get(format!("http://{address}:7000/topology"))

@@ -19,7 +19,7 @@ mod diskio;
 mod kv;
 
 use bytes::Bytes;
-use crowdb_kv::rpc::{KvBatchItem, KvBatchWriteRequest, KvDeleteRequest, KvGetRequest, KvSetRequest};
+use crowdb_paxos_kv::rpc::{KvBatchItem, KvBatchWriteRequest, KvDeleteRequest, KvGetRequest, KvSetRequest};
 
 use common::{run_kv_op_with_retry, KvOp};
 

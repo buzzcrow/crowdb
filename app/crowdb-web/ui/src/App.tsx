@@ -1,6 +1,7 @@
 import { PanelDivider } from './components/PanelDivider';
 import { ClusterViewSwitch } from './shell/ClusterViewSwitch';
 import { ClusterBreadcrumb } from './shell/ClusterBreadcrumb';
+import { PAXOS_KV_SERVER_MGMT_BASE, PAXOS_KV_SERVER_RPC_BASE, DISKDB_RPC_BASE } from './ports';
 import { useClusterLayout } from './shell/useClusterLayout';
 import { CapacityObservations } from './shell/CapacityObservations';
 // Copyright 2026-present Gian <crow.db@outlook.com>
@@ -398,13 +399,13 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
 
   const deployDialogDefaults = useMemo(() => {
     if (!dialog.deployServer?.nodeId) {
-      return { defaultRestPort: '19910', defaultRpcPort: '19920' };
+      return { defaultRestPort: String(PAXOS_KV_SERVER_MGMT_BASE), defaultRpcPort: String(PAXOS_KV_SERVER_RPC_BASE) };
     }
     return deployPortDefaultsForNode(
       servers,
       dialog.deployServer.nodeId,
-      19910,
-      19920,
+      PAXOS_KV_SERVER_MGMT_BASE,
+      PAXOS_KV_SERVER_RPC_BASE,
       rememberedDeployPorts.mgmt,
       rememberedDeployPorts.rpc,
     );
@@ -417,8 +418,8 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         ...deployPortDefaultsForNode(
           servers,
           nextNodeId,
-          19910,
-          19920,
+          PAXOS_KV_SERVER_MGMT_BASE,
+          PAXOS_KV_SERVER_RPC_BASE,
           rememberedDeployPorts.mgmt,
           rememberedDeployPorts.rpc,
         ),
@@ -434,7 +435,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   );
 
   const deployDiskdbDefaults = useMemo(() => {
-    if (!dialog.deployDiskdb?.nodeId) return '29920';
+    if (!dialog.deployDiskdb?.nodeId) return String(DISKDB_RPC_BASE);
     return diskdbPortDefaultsForNode(
       diskdbInstances,
       dialog.deployDiskdb.nodeId,

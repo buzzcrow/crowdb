@@ -73,24 +73,27 @@ impl Default for NodeDeploymentPolicy {
             let listeners = &mut service.listeners;
             match service.kind {
                 SetupServiceKind::PaxosKv => {
-                    listeners.http_port = Some(10000);
-                    listeners.rpc_port = Some(10100);
+                    listeners.http_port = Some(crate::PAXOS_KV_SERVER_MGMT_BASE);
+                    listeners.rpc_port = Some(crate::PAXOS_KV_SERVER_RPC_BASE);
                 }
-                SetupServiceKind::Diskdb => listeners.rpc_port = Some(7100),
-                SetupServiceKind::Diskio => listeners.rpc_port = Some(7200),
+                SetupServiceKind::Diskdb => {
+                    listeners.rpc_port = Some(crate::DISKDB_RPC_BASE);
+                    listeners.http_port = Some(crate::DISKDB_HTTP_BASE);
+                }
+                SetupServiceKind::Diskio => listeners.rpc_port = Some(crate::DISKIO_RPC_BASE),
                 SetupServiceKind::Chunkdb => {
-                    listeners.http_port = Some(7300);
-                    listeners.rpc_port = Some(7301);
+                    listeners.http_port = Some(crate::CHUNKDB_HTTP_BASE);
+                    listeners.rpc_port = Some(crate::CHUNKDB_RPC_BASE);
                 }
                 SetupServiceKind::ChunkKv => {
-                    listeners.http_port = Some(7400);
-                    listeners.rpc_port = Some(7401);
+                    listeners.http_port = Some(crate::CHUNK_KV_HTTP_BASE);
+                    listeners.rpc_port = Some(crate::CHUNK_KV_RPC_BASE);
                 }
                 SetupServiceKind::AccessServer => {
-                    listeners.s3_port = Some(9091);
-                    listeners.http_port = Some(9092);
-                    listeners.dataset_port = Some(9093);
-                    listeners.health_port = Some(9094);
+                    listeners.s3_port = Some(crate::ACCESS_SERVER_HTTP_BASE);
+                    listeners.http_port = Some(crate::ACCESS_SERVER_ICEBERG_HTTP_BASE);
+                    listeners.dataset_port = Some(crate::ACCESS_SERVER_DATASET_HTTP_BASE);
+                    listeners.health_port = Some(crate::ACCESS_SERVER_HEALTH_HTTP_BASE);
                 }
             }
         }
@@ -101,9 +104,15 @@ impl Default for NodeDeploymentPolicy {
             initial_voters: 1,
             setup,
             public_access: PublicAccessUris {
-                s3: Some("http://127.0.0.1:9091".into()),
-                iceberg: Some("http://127.0.0.1:9092".into()),
-                dataset: Some("http://127.0.0.1:9093".into()),
+                s3: Some(format!("http://127.0.0.1:{}", crate::ACCESS_SERVER_HTTP_BASE)),
+                iceberg: Some(format!(
+                    "http://127.0.0.1:{}",
+                    crate::ACCESS_SERVER_ICEBERG_HTTP_BASE
+                )),
+                dataset: Some(format!(
+                    "http://127.0.0.1:{}",
+                    crate::ACCESS_SERVER_DATASET_HTTP_BASE
+                )),
             },
         }
     }
@@ -142,9 +151,10 @@ impl NodeDeploymentPolicy {
         for service in self.setup.services.iter().filter(|service| service.enabled) {
             let ports = &service.listeners;
             if service.kind == SetupServiceKind::PaxosKv
-                && (ports.http_port != Some(10000) || ports.rpc_port != Some(10100))
+                && (ports.http_port != Some(crate::PAXOS_KV_SERVER_MGMT_BASE)
+                    || ports.rpc_port != Some(crate::PAXOS_KV_SERVER_RPC_BASE))
             {
-                return Err("bootstrap KV requires management port 10000 and RPC port 10100");
+                return Err("bootstrap KV requires the default management and RPC ports");
             }
             if [
                 ports.http_port,
@@ -155,8 +165,15 @@ impl NodeDeploymentPolicy {
             ]
             .into_iter()
             .flatten()
-            .any(|port| matches!(port, 2222 | 9090 | 9095 | 10101))
-            {
+            .any(|port| {
+                [
+                    crate::SSH_PORT,
+                    crate::WEB_BASE,
+                    crate::MONITOR_HTTP_BASE,
+                    crate::PAXOS_KV_SERVER_RPC_BASE + 1,
+                ]
+                .contains(&port)
+            }) {
                 return Err("service listener conflicts with node management or bootstrap transport");
             }
             let complete = match service.kind {

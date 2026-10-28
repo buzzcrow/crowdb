@@ -100,11 +100,11 @@ any_case_selected() {
 verify_logs() {
     local label="$1" kv_metrics diskdb_metrics chunkdb_metrics cli_metrics
     local kv_rpc diskdb_rpc chunkdb_rpc cli_rpc expected_servers expected_clients
-    kv_metrics=$(find "$LOG_ROOT" -path '*/services/rack*/node*/kv-server-*/log/crowdb-kv-server-metrics-*.log' -type f | wc -l)
+    kv_metrics=$(find "$LOG_ROOT" -path '*/services/rack*/node*/kv-server-*/log/crowdb-paxos-kv-server-metrics-*.log' -type f | wc -l)
     diskdb_metrics=$(find "$LOG_ROOT" -path '*/services/rack*/node*/diskdb-*/log/crowdb-diskdb-metrics-*.log' -type f | wc -l)
     chunkdb_metrics=$(find "$LOG_ROOT" -path '*/services/rack*/node*/chunkdb-*/log/crowdb-chunkdb-metrics-*.log' -type f | wc -l)
     cli_metrics=$(find "$LOG_ROOT" -path '*/measurements/bench-chunkdb-*/crowdb-cli-metrics-*.log' -type f | wc -l)
-    kv_rpc=$(find "$LOG_ROOT" -path '*/services/rack*/node*/kv-server-*/log/crowdb-kv-server-rpc-*.log' -type f | wc -l)
+    kv_rpc=$(find "$LOG_ROOT" -path '*/services/rack*/node*/kv-server-*/log/crowdb-paxos-kv-server-rpc-*.log' -type f | wc -l)
     diskdb_rpc=$(find "$LOG_ROOT" -path '*/services/rack*/node*/diskdb-*/log/crowdb-diskdb-rpc-*.log' -type f | wc -l)
     chunkdb_rpc=$(find "$LOG_ROOT" -path '*/services/rack*/node*/chunkdb-*/log/crowdb-chunkdb-rpc-*.log' -type f | wc -l)
     cli_rpc=$(find "$LOG_ROOT" -path '*/measurements/bench-chunkdb-*/crowdb-cli-rpc-*.log' -type f | wc -l)
@@ -117,7 +117,7 @@ verify_logs() {
         echo "ERROR: incomplete logs for $label (kv=$kv_metrics/$kv_rpc diskdb=$diskdb_metrics/$diskdb_rpc chunkdb=$chunkdb_metrics/$chunkdb_rpc cli=$cli_metrics/$cli_rpc)" >&2
         return 1
     fi
-    regression_require_metric_files 'crowdb-kv-server-metrics-*.log' rust cpp-rpc cpp-tree || return 1
+    regression_require_metric_files 'crowdb-paxos-kv-server-metrics-*.log' rust cpp-rpc cpp-tree || return 1
     regression_require_metric_files 'crowdb-diskdb-metrics-*.log' rust cpp-rpc || return 1
     regression_require_metric_files 'crowdb-chunkdb-metrics-*.log' rust cpp-rpc || return 1
     echo "    logs: kv=$kv_metrics/$kv_rpc diskdb=$diskdb_metrics/$diskdb_rpc chunkdb=$chunkdb_metrics/$chunkdb_rpc cli=$cli_metrics/$cli_rpc"
@@ -194,7 +194,7 @@ run_case() {
 }
 
 echo "=== building release binaries ==="
-pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+pixi run -- cargo build --release -p crowdb-cli -p crowdb-paxos-kv-server -p crowdb-diskdb -p crowdb-chunkdb
 mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
 regression_init
 printf 'Wl\tGrp\tThr\tStrip\tEC\tCli\tCdb\tDdb\tKv\tWkr\tWin\tCoal\tchunk/s\tblock/s\tavg\tp50\tp99\tDur\tErr\tStop\tSpc\n' >"$RESULTS_FILE"

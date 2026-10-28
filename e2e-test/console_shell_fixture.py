@@ -33,7 +33,7 @@ class ShellBrowserCluster(StandaloneWebCluster):
         browser_output = (self.artifacts / "browser").resolve()
         bypass = ",".join(filter(None, [env.get("NO_PROXY", ""), env.get("no_proxy", ""), address]))
         env.update(NO_PROXY=bypass, no_proxy=bypass,
-                   CROWDB_WEB_E2E_BASE_URL=f"http://{address}:9090",
+                   CROWDB_WEB_E2E_BASE_URL=f"http://{address}:6135",
                    CROWDB_WEB_E2E_OUTPUT=str(browser_output))
         env.update(extra_env or {})
         test_budget = scaled_timeout(max(getattr(self, "browser_timeout", 120),

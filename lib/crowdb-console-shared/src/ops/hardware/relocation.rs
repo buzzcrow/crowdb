@@ -8,7 +8,7 @@ use crate::{
     error::{Error, Result},
     ops::OpContext,
 };
-use crowdb_kv_client::{BatchOp, Error as KvError, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{BatchOp, Error as KvError, GetOutcome, ReadMode};
 use crowdb_protocol::{
     common::{NodeValue, RackValue},
     key::{NodeKey, RackKey, TextKey},

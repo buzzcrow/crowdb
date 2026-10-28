@@ -462,7 +462,7 @@ pub fn router(state: AppState) -> axum::Router {
             health::require_editable,
         ))
         .with_state(state)
-        // Propagate `x-crowdb-kv-corr-id` through every request: read it
+        // Propagate `x-crowdb-paxos-kv-corr-id` through every request: read it
         // (or mint one), open a task-local scope so outbound clients
         // attach it to their own headers, echo it back on the response.
         .layer(axum::middleware::from_fn(corr_id::corr_id_layer))

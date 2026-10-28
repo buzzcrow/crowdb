@@ -13,7 +13,7 @@ use crowdb_console_shared::{
     },
     ops::OpContext,
 };
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use crowdb_protocol::mgmt::node::{NodeBinding, NodeControl};
 use std::path::Path;
 

@@ -8,7 +8,7 @@ use crowdb_chunk_kv_client::{
     BatchItem, ChunkKvClient, ChunkKvRangeCatalogMap, ChunkKvRangeCatalogSource, ChunkKvRpcTransport,
     ClientConfig, Group0ChunkKvRangeCatalogSource,
 };
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use crowdb_protocol::{
     chunk_kv::{ChunkKvRangeCatalogPartitionState, OperationResult, PointOperation},
     common::ChunkKvExtra,
@@ -74,7 +74,7 @@ async fn verify_values(client: &ChunkKvClient) {
 async fn wait_balanced(
     source: &Group0ChunkKvRangeCatalogSource,
     registry: &ServiceRegistryClient,
-    kv: &crowdb_kv_client::CrowdbKvClient,
+    kv: &crowdb_paxos_kv_client::PaxosKvClient,
     started: Instant,
 ) -> ChunkKvRangeCatalogMap {
     let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -144,19 +144,19 @@ async fn wait_balanced(
     }
 }
 
-async fn placement_ready(kv: &crowdb_kv_client::CrowdbKvClient, generation: u64) -> bool {
+async fn placement_ready(kv: &crowdb_paxos_kv_client::PaxosKvClient, generation: u64) -> bool {
     use crowdb_protocol::chunk_kv::balance::{BalanceObservation, OBSERVATION_KEY};
     let value = kv
         .get(
             0,
             0,
             OBSERVATION_KEY.as_bytes(),
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await
         .unwrap();
-    let crowdb_kv_client::GetOutcome::Found { value, .. } = value else {
+    let crowdb_paxos_kv_client::GetOutcome::Found { value, .. } = value else {
         return false;
     };
     let observation: BalanceObservation = serde_json::from_slice(&value).unwrap();

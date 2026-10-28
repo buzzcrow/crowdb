@@ -241,7 +241,7 @@ async fn verify_binding(binding: &NodeBinding) -> Result<()> {
     if binding.management_seeds.is_empty() || binding.management_seeds.len() > 16 {
         return Err("invalid authority seeds".into());
     }
-    let client = crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(
+    let client = crowdb_paxos_kv_client::PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
         binding.management_seeds.clone(),
     ));
     let found = client
@@ -249,11 +249,11 @@ async fn verify_binding(binding: &NodeBinding) -> Result<()> {
             0,
             0,
             b"/deployment/cluster",
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await?;
-    let crowdb_kv_client::GetOutcome::Found { value, .. } = found else {
+    let crowdb_paxos_kv_client::GetOutcome::Found { value, .. } = found else {
         return Err("cluster publication not complete".into());
     };
     let publication: Value = serde_json::from_slice(&value)?;
@@ -265,11 +265,11 @@ async fn verify_binding(binding: &NodeBinding) -> Result<()> {
             0,
             0,
             b"/deployment/nodes",
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await?;
-    let crowdb_kv_client::GetOutcome::Found { value, .. } = registry else {
+    let crowdb_paxos_kv_client::GetOutcome::Found { value, .. } = registry else {
         return Err("node registry publication incomplete".into());
     };
     let registry: Value = serde_json::from_slice(&value)?;
@@ -301,7 +301,7 @@ fn web_service(profile: &DeploymentProfile, monitor_port: u16) -> Result<Service
         "--bind".into(),
         "0.0.0.0".into(),
         "--port".into(),
-        "9090".into(),
+        crowdb_protocol::WEB_BASE.to_string(),
         "--runtime-dir".into(),
         root.join("console").to_string_lossy().into_owned(),
         "--node-monitor".into(),
@@ -318,7 +318,7 @@ fn web_service(profile: &DeploymentProfile, monitor_port: u16) -> Result<Service
         profile.paths.log_root.join("web").to_string_lossy().into_owned(),
     ];
     web.env.insert(
-        "CROWDB_KV_KNOWN_HOSTS".into(),
+        "CROWDB_PAXOS_KV_KNOWN_HOSTS".into(),
         root.join("ssh/console-known_hosts")
             .to_string_lossy()
             .into_owned(),

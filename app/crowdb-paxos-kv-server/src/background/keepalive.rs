@@ -1,0 +1,236 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+//! kv-server keep-alive loop.
+//!
+//! Registers the instance under `/srv/kv-server/<instance_id>` in
+//! group 0 via `ServiceRegistryClient` and heartbeats periodically.
+//! On shutdown, the loop unregisters (clean shutdown).
+
+use std::sync::Arc;
+
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient, ServiceRegistryClient};
+use crowdb_protocol::common::HostedGroup;
+use tokio::task::JoinHandle;
+use tracing::{debug, info, info_span, warn, Instrument};
+
+use crate::store_registry::PaxosKvStoreRegistry;
+
+/// Keep-alive loop handle. Call `stop` to unregister and terminate the
+/// background task.
+pub struct KeepAliveLoop {
+    handle: Option<JoinHandle<()>>,
+    stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl KeepAliveLoop {
+    /// Spawn the keep-alive background task.
+    ///
+    /// The loop registers immediately, then heartbeats every
+    /// `interval_secs`. It reads `hosted_stores` / `hosted_groups`
+    /// from the registry each tick so the record reflects live state.
+    pub fn spawn(
+        registry: Arc<PaxosKvStoreRegistry>,
+        identity: crowdb_protocol::common::KvServerIdentity,
+        rpc_endpoint: String,
+        group0_endpoint: &str,
+        group0_management_seeds: Vec<String>,
+        data_root: String,
+        interval_secs: u64,
+    ) -> Self {
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let instance_id = identity.instance_id;
+        let ep = group0_endpoint.to_string();
+        // Before Group 0 exists, this node can seed its own RPC endpoint.
+        // Once Group 0 exists, use its management seeds for discovery.
+        let bootstrap_local = group0_management_seeds.is_empty();
+        let mut mgmt_seeds = if bootstrap_local {
+            vec![rpc_endpoint.clone()]
+        } else {
+            group0_management_seeds
+        };
+        // The local management listener survives a complete address change.
+        // Retained peer seeds can all be unreachable before the first fresh
+        // registration enables normal committed endpoint publication.
+        if !mgmt_seeds.contains(&rpc_endpoint) {
+            mgmt_seeds.insert(0, rpc_endpoint.clone());
+        }
+        let handle = tokio::spawn(async move {
+            let kv_client = PaxosKvClient::new(ClientConfig::new(mgmt_seeds.clone()));
+            if bootstrap_local {
+                kv_client.seed_leader(0, 0, ep);
+            }
+            let svc = ServiceRegistryClient::new(kv_client);
+            let mut discovered_seeds = Vec::new();
+
+            let discovery_ready = !bootstrap_local
+                || refresh_discovery(&registry, &svc, &mgmt_seeds, &mut discovered_seeds).await;
+
+            // Initial registration.
+            let (stores, groups) = hosted_summary(&registry);
+            let registration_started = tokio::time::Instant::now();
+            let mut registered = if !discovery_ready {
+                false
+            } else if let Err(e) = svc
+                .register_kv_server(identity, &rpc_endpoint, &stores, &groups, "ok", &data_root)
+                .await
+            {
+                warn!(error = %e, "keep-alive: initial register failed");
+                false
+            } else {
+                info!(instance_id, "keep-alive: registered");
+                true
+            };
+
+            let retry_interval = tokio::time::Duration::from_secs(1);
+            let regular_interval = tokio::time::Duration::from_secs(interval_secs);
+            // The value is stamped before discovery and RPC retries. Starting
+            // its interval after completion would add that latency to its age.
+            let mut ticker = tokio::time::interval_at(
+                registration_started + if registered { regular_interval } else { retry_interval },
+                if registered { regular_interval } else { retry_interval },
+            );
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            let mut stop_rx = stop_rx;
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        if bootstrap_local
+                            && !refresh_discovery(&registry, &svc, &mgmt_seeds, &mut discovered_seeds).await
+                        {
+                            continue;
+                        }
+                        let (stores, groups) = hosted_summary(&registry);
+                        let heartbeat_started = tokio::time::Instant::now();
+                        if let Err(e) = svc
+                            .heartbeat_kv_server(identity, &rpc_endpoint, &stores, &groups, "ok", &data_root)
+                            .await
+                        {
+                            if registered {
+                                warn!(error = %e, "keep-alive: heartbeat failed");
+                            } else {
+                                debug!(error = %e, "keep-alive: registration retry failed");
+                            }
+                        } else if !registered {
+                            registered = true;
+                            info!(instance_id, "keep-alive: registered");
+                            ticker = tokio::time::interval_at(
+                                heartbeat_started + regular_interval,
+                                regular_interval,
+                            );
+                            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                        }
+                    }
+                    _ = &mut stop_rx => {
+                        info!(instance_id, "keep-alive: shutting down; unregistering");
+                        // Best-effort unregister: if group-0 is unreachable
+                        // (e.g. this server hosts group-0 and is shutting down
+                        // its own RPC stack), the registry entry expires via
+                        // heartbeat TTL anyway. Keep the timeout short so
+                        // shutdown isn't blocked by a dead RPC endpoint.
+                        match tokio::time::timeout(
+                            tokio::time::Duration::from_millis(100),
+                            svc.unregister("kv-server", instance_id),
+                        )
+                        .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => {
+                                warn!(error = %e, "keep-alive: unregister failed");
+                            }
+                            Err(_) => {
+                                warn!(instance_id, "keep-alive: unregister timed out");
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }.instrument(info_span!("keepalive", instance_id)));
+        Self {
+            handle: Some(handle),
+            stop_tx: Some(stop_tx),
+        }
+    }
+
+    /// Stop the loop and unregister. Returns once the task has exited.
+    pub async fn stop(mut self) {
+        if let Some(tx) = self.stop_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(h) = self.handle.take() {
+            let _ = h.await;
+        }
+    }
+}
+
+async fn refresh_discovery(
+    registry: &PaxosKvStoreRegistry,
+    service: &ServiceRegistryClient,
+    bootstrap_seeds: &[String],
+    current: &mut Vec<String>,
+) -> bool {
+    match super::discovery::load(&registry.config.config_root).await {
+        Ok(Some(seeds)) if seeds != *current => {
+            service.kv().set_mgmt_seeds(seeds.clone());
+            if let Err(error) = service.kv().refresh_topology().await {
+                debug!(%error, "keep-alive: discovery unavailable; deferring registration");
+                return false;
+            }
+            *current = seeds;
+            true
+        }
+        Ok(Some(_)) => true,
+        Ok(None) => {
+            let Some(group) = registry.get_store(0).and_then(|store| store.get_group(0)) else {
+                return false;
+            };
+            // Bootstrap membership is wired before election. Resolve its
+            // elected leader before sending the first registration write.
+            if group.leader_id() == 0 {
+                return false;
+            }
+            if current.is_empty() {
+                if let Err(error) = service.kv().refresh_topology().await {
+                    debug!(%error, "keep-alive: bootstrap leader unavailable; deferring registration");
+                    return false;
+                }
+                *current = bootstrap_seeds.to_vec();
+            }
+            true
+        }
+        Err(error) => {
+            warn!(%error, "keep-alive: discovery hints unreadable; deferring registration");
+            false
+        }
+    }
+}
+
+impl Drop for KeepAliveLoop {
+    fn drop(&mut self) {
+        if let Some(tx) = self.stop_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(h) = self.handle.take() {
+            h.abort();
+        }
+    }
+}
+
+/// Collect hosted store IDs and group IDs from the registry.
+fn hosted_summary(registry: &PaxosKvStoreRegistry) -> (Vec<u64>, Vec<HostedGroup>) {
+    let stores: Vec<u64> = registry.store_ids();
+    let mut groups: Vec<HostedGroup> = Vec::new();
+    for &sid in &stores {
+        if let Some(store) = registry.get_store(sid) {
+            for gid in store.group_ids() {
+                groups.push(HostedGroup {
+                    store_id: sid,
+                    group_id: gid,
+                });
+            }
+        }
+    }
+    (stores, groups)
+}

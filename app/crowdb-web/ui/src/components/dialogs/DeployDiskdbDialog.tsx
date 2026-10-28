@@ -22,11 +22,12 @@ export function DeployDiskdbDialog({
   onClose,
   nodes,
   defaultNodeId,
-  defaultRpcPort = '29920',
+  defaultRpcPort = '',
   onSuccess,
 }: DeployDiskdbDialogProps) {
   const [nodeId, setNodeId] = useState('');
   const [rpcPort, setRpcPort] = useState(defaultRpcPort);
+  const [httpPort, setHttpPort] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const wasOpenRef = useRef(false);
   const { success, error } = useToast();
@@ -46,10 +47,11 @@ export function DeployDiskdbDialog({
   useEffect(() => {
     if (!defaults.values) return;
     setRpcPort(String(defaults.values.diskdb.rpc_port));
+    setHttpPort(String(defaults.values.diskdb.http_port));
   }, [defaults.values]);
 
   const isPort = (v: string) => /^\d+$/.test(v) && Number(v) > 0 && Number(v) < 65536;
-  const valid = nodeId !== '' && isPort(rpcPort);
+  const valid = nodeId !== '' && isPort(rpcPort) && isPort(httpPort) && rpcPort !== httpPort;
 
   const handleSubmit = async () => {
     if (!valid) return;
@@ -57,6 +59,7 @@ export function DeployDiskdbDialog({
     try {
       await deployDiskdb(Number(nodeId), {
         rpc_port: Number(rpcPort),
+        http_port: Number(httpPort),
       });
       success(`DiskDB deployed on node ${nodeId}`);
       onClose();
@@ -99,6 +102,7 @@ export function DeployDiskdbDialog({
             ))}
           </select>
         </div>
+        <Input label="HTTP Port (management)" inputMode="numeric" value={httpPort} onChange={e => setHttpPort(e.target.value)} />
         <Input
           label="RPC Port (crowdb-rpc)"
           inputMode="numeric"

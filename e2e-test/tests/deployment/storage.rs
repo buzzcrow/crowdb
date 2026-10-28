@@ -1,8 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, CrowdbSysmdClient};
 use crowdb_monitor::{verify_chunk_services, DeploymentProfile};
+use crowdb_paxos_kv_client::{ClientConfig, CrowdbSysmdClient, PaxosKvClient};
 use std::path::PathBuf;
 
 fn root() -> PathBuf {
@@ -50,7 +50,7 @@ async fn chunk_services_validate_live_registration_and_logical_topology() {
 }
 
 async fn verify_logical_topology() {
-    let sysmd = CrowdbSysmdClient::new(CrowdbKvClient::new(ClientConfig::new(vec![seed()])));
+    let sysmd = CrowdbSysmdClient::new(PaxosKvClient::new(ClientConfig::new(vec![seed()])));
     assert_eq!(sysmd.list_stores().await.unwrap().len(), 1);
     let initial = sysmd.list_groups_in_store(0).await.unwrap();
     assert_eq!(initial.len(), 2);

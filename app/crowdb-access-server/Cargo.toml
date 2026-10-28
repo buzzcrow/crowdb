@@ -30,7 +30,7 @@ crowdb-access-s3 = { path = "../../lib/crowdb-access-s3" }
 crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client" }
 crowdb-chunk-kv-client = { path = "../../lib/crowdb-chunk-kv-client" }
 crowdb-common = { path = "../../lib/crowdb-common/rust" }
-crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
+crowdb-paxos-kv-client = { path = "../../lib/crowdb-paxos-kv-client" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
 futures = "0.3"
@@ -56,7 +56,7 @@ sync_wrapper = { version = "1", features = ["futures"] }
 
 [dev-dependencies]
 crowdb-access-dataset = { path = "../../lib/crowdb-access-dataset", features = ["test-util"] }
-crowdb-kv = { path = "../../lib/crowdb-kv" }
+crowdb-paxos-kv = { path = "../../lib/crowdb-paxos-kv" }
 bytes = "1"
 tempfile = "3"
 bincode = "1"

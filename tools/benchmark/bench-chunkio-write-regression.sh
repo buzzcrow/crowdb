@@ -78,7 +78,7 @@ memory_bandwidth() {
 
 verify_logs() {
     local kv diskdb chunkdb diskio cli_metrics cli_metrics_file
-    kv=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-kv-server-metrics-*.log' | wc -l)
+    kv=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-paxos-kv-server-metrics-*.log' | wc -l)
     diskdb=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-diskdb-metrics-*.log' | wc -l)
     chunkdb=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-chunkdb-metrics-*.log' | wc -l)
     diskio=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-diskio-metrics-*.log' | wc -l)
@@ -90,7 +90,7 @@ verify_logs() {
         && grep -Eq -- 'chunkio\.object\.write\.e2e\.lh' "$cli_metrics_file" \
         && grep -Eq -- 'chunkio\.chunk\.allocate\.e2e\.lh' "$cli_metrics_file" \
         && grep -Eq -- 'chunkio\.diskio\.write\.e2e\.lh' "$cli_metrics_file" \
-        && regression_require_metric_files 'crowdb-kv-server-metrics-*.log' rust cpp-rpc cpp-tree \
+        && regression_require_metric_files 'crowdb-paxos-kv-server-metrics-*.log' rust cpp-rpc cpp-tree \
         && regression_require_metric_files 'crowdb-diskdb-metrics-*.log' rust cpp-rpc \
         && regression_require_metric_files 'crowdb-chunkdb-metrics-*.log' rust cpp-rpc \
         && regression_require_metric_files 'crowdb-diskio-metrics-*.log' cpp-rpc \
@@ -186,7 +186,7 @@ run_case() {
 
 if [ "$SKIP_BUILD" != 1 ]; then
     echo "=== building release binaries ==="
-    pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+    pixi run -- cargo build --release -p crowdb-cli -p crowdb-paxos-kv-server -p crowdb-diskdb -p crowdb-chunkdb
     pixi run build-cpp
 fi
 mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"

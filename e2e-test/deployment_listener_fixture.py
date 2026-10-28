@@ -15,7 +15,7 @@ class FixedListenerAccessCluster(ManagedCluster):
     def start(self):
         super().start()
         config = self.command("exec", self.servers[0], "cat", "/opt/crowdb/data/services/access-1/service.toml")
-        port = {"s3": 9091, "iceberg": 9092}[self.protocol]
+        port = {"s3": 7135, "iceberg": 8135}[self.protocol]
         expected = f"{self.addresses[0]}:{port}"
         if tomllib.loads(config)[self.protocol]["listen"] != expected:
             raise AssertionError(f"{self.protocol} listener was not kept on its fixed port {expected}")

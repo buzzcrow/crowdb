@@ -136,7 +136,7 @@ async fn bootstrap_resumes_missing_records_and_preserves_committed_revisions() {
             0,
             0,
             key.as_bytes(),
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await
@@ -148,14 +148,14 @@ async fn bootstrap_resumes_missing_records_and_preserves_committed_revisions() {
             0,
             0,
             key.as_bytes(),
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await
         .unwrap();
     let (
-        crowdb_kv_client::GetOutcome::Found { revision: before, .. },
-        crowdb_kv_client::GetOutcome::Found { revision: after, .. },
+        crowdb_paxos_kv_client::GetOutcome::Found { revision: before, .. },
+        crowdb_paxos_kv_client::GetOutcome::Found { revision: after, .. },
     ) = (before, after)
     else {
         panic!("rack must remain present")

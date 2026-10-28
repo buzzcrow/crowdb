@@ -24,8 +24,8 @@ use crowdb_diskdb::recovery::ZoneLoader;
 use crowdb_diskdb::scanner::{BusyBlockOwnerScanner, ScanState, ScannerTask, SegmentOwnerQuery};
 use crowdb_diskdb::service::DiskdbRpcService;
 use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport};
-use crowdb_kv_client::{
-    ClientConfig, CrowdbKvClient, DomainMonitorClient, HardwareClient,
+use crowdb_paxos_kv_client::{
+    ClientConfig, DomainMonitorClient, HardwareClient, PaxosKvClient,
     RangeBindingClient as KvRangeBindingClient, ServiceRegistryClient, WatchNotifyClient,
 };
 use crowdb_protocol::chunk_kv::{EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest};
@@ -39,10 +39,6 @@ struct Cli {
     #[arg(long)]
     config: String,
 
-    /// crowdb-rpc listen address (overrides config).
-    #[arg(long)]
-    listen_addr: Option<String>,
-
     /// HTTP management listen address (overrides config).
     #[arg(long)]
     http_addr: Option<String>,
@@ -50,10 +46,6 @@ struct Cli {
     /// crowdb-rpc listener address (overrides config `rpc_listen_addr`).
     #[arg(long)]
     rpc_listen_addr: Option<String>,
-
-    /// Main listener port (overrides the port in config `listen_addr`).
-    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
-    listen_port: Option<u16>,
 
     /// HTTP management port (overrides the port in config `http_listen_addr`).
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
@@ -198,7 +190,7 @@ async fn main() {
     // leader and data-group leaders are discovered lazily via the
     // kv-server HTTP management API seeds from config — no pre-seeding.
     // One client is shared across all service classes (hardware,
-    // service-registry, data-group) since `CrowdbKvClient` is fully
+    // service-registry, data-group) since `PaxosKvClient` is fully
     // interior-mutable; each service class takes it via `from_shared`.
     let kv_config = {
         let loaded = config.load();
@@ -207,7 +199,7 @@ async fn main() {
         client.rpc_workers = loaded.server.kv_rpc_workers;
         client
     };
-    let kv_client = Arc::new(CrowdbKvClient::new(kv_config));
+    let kv_client = Arc::new(PaxosKvClient::new(kv_config));
     let (sys_store, sys_group) = kv_client.system_group();
     info!(
         store_id = sys_store,
@@ -323,14 +315,6 @@ async fn main() {
     let relocation_worker = Arc::new(
         RelocationWorker::new(owner_client.clone(), relocation_io).with_source_free(relocation_source_free),
     );
-    let listen_addr: SocketAddr = config
-        .load()
-        .server
-        .listen_addr
-        .parse()
-        .expect("valid listen_addr");
-    info!(%listen_addr, "RPC server listening (zone load pending)");
-
     // Build the crowdb-rpc server. The RpcServer listens on the RPC
     // port and dispatches to DiskdbRpcService handlers.
     let rpc_listen_addr: SocketAddr = config
@@ -616,17 +600,11 @@ fn load_config(args: &Cli) -> DdbConfig {
             panic!("failed to load config file {config_path}: {e}");
         });
 
-    if let Some(addr) = &args.listen_addr {
-        config.server.listen_addr.clone_from(addr);
-    }
     if let Some(addr) = &args.http_addr {
         config.server.http_listen_addr.clone_from(addr);
     }
     if let Some(addr) = &args.rpc_listen_addr {
         config.server.rpc_listen_addr.clone_from(addr);
-    }
-    if let Some(port) = args.listen_port {
-        config.server.listen_addr = replace_port(&config.server.listen_addr, port);
     }
     if let Some(port) = args.http_port {
         config.server.http_listen_addr = replace_port(&config.server.http_listen_addr, port);
@@ -693,7 +671,7 @@ fn resolve_instance_id(config: &arc_swap::ArcSwap<DdbConfig>) -> u64 {
     }
 
     // 3. Generate new and persist.
-    let id = crowdb_kv_client::new_client_id();
+    let id = crowdb_paxos_kv_client::new_client_id();
     if let Err(e) = std::fs::create_dir_all(state_dir) {
         warn!(error = %e, "failed to create state dir; instance_id will not persist across restarts");
     } else if let Err(e) = std::fs::write(&state_file, id.to_string()) {

@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::HardwareClient;
+use crowdb_paxos_kv_client::HardwareClient;
 use crowdb_protocol::chunk_allocation_geometry::uniform_allocation_unit;
 use crowdb_protocol::common::HwStatus;
 

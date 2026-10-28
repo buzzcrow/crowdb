@@ -5,7 +5,7 @@ use super::native_context::TestNativeContext;
 use crowdb_chunk_kv_client::{
     BatchItem, ChunkKvClient, ChunkKvRpcTransport, ClientConfig, Group0ChunkKvRangeCatalogSource,
 };
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use crowdb_protocol::chunk_kv::{ChunkKvInstanceObservation, OperationResult, PointOperation};
 use reqwest::Method;
 use std::{

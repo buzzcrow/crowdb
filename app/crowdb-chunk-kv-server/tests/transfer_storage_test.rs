@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crowdb_chunk_kv_server::storage::open_root_catalog_for_tests;
 use crowdb_chunk_kv_server::{ChunkKvRangeCatalogPublisher, Group0ControlStore};
-use crowdb_kv_client::CrowdbKvClient;
+use crowdb_paxos_kv_client::PaxosKvClient;
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
     ChunkKvRangeCatalogPartitionState, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
@@ -88,7 +88,7 @@ async fn preparing_target_does_not_fence_source_or_mutate_shared_root() {
     recovered.publish(42, 2, 1, 3, b"source-checkpoint-3").unwrap();
 }
 
-async fn publish_assignment(kv: Arc<CrowdbKvClient>, entry: ChunkKvRangeCatalogEntry, generation: u64) {
+async fn publish_assignment(kv: Arc<PaxosKvClient>, entry: ChunkKvRangeCatalogEntry, generation: u64) {
     let mut page = ChunkKvRangeCatalogPage {
         generation,
         page_index: 0,

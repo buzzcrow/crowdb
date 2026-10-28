@@ -8,7 +8,7 @@ exclusive ownership), §3.9 (unit-based sizes, disk-id key routing), §6
 (hierarchy);
 [`design-crowdb-protocol-key.md`](../protocol/design-crowdb-protocol-key.md)
 (binary key encoding);
-[`design-crowdb-kv-state-machine.md`](../kv/design-crowdb-kv-state-machine.md)
+[`design-crowdb-paxos-kv-state-machine.md`](../kv/design-crowdb-paxos-kv-state-machine.md)
 (slot tracking, apply semantics).
 Satisfies: `design-crowdb-diskdb.md` §7 (Zone Records and Crash Recovery),
 §8 (Allocation Algorithm), §9 zone allocation state, §14 zone-level
@@ -212,7 +212,7 @@ three complementary strategies (§6).
 
 **Note on scan ordering:** a key prefix scan returns records in
 **lexicographic key order** (= `unit_offset` order), not slot order.
-`min_slot` on the ordinary crowdb-kv scan request is a read-freshness floor,
+`min_slot` on the ordinary crowdb-paxos-kv scan request is a read-freshness floor,
 not a record-slot filter. Compaction uses the R132 fixed-cutoff bounded scan,
 which returns each current record's `commit_slot`. Strategy 2 uses
 `JournalScan` for slot-ordered replay.
@@ -289,7 +289,7 @@ rolled back together on allocation or persistence failure.
 1. **Phase 1 (sync)**: bitmap-scan allocate (nanoseconds). Bits are set
    in `usage_bits` via per-bit CAS. No zone-level lock. Other threads
    can allocate concurrently.
-2. **Phase 2 (async)**: `.await` on crowdb-kv `batch_write` that Puts
+2. **Phase 2 (async)**: `.await` on crowdb-paxos-kv `batch_write` that Puts
    the `BusyBlockValue` with a new `allocation_ts` at `BusyBlockKey {
    disk_id, zone_idx, unit_offset }`. On success, return a `Segment`
    carrying the same incarnation. On failure:
@@ -436,7 +436,7 @@ atomic `batch_write`.
 5. **One atomic `batch_write`**: Put the new `ZoneValue`, delete busy records
    for matched frees, and delete every processed free fact at or below the
    cutoff. This is a single
-   `batch_write` on the bound data group, atomic via crowdb-kv paxos.
+   `batch_write` on the bound data group, atomic via crowdb-paxos-kv paxos.
    The snapshot and the free-record deletion succeed or fail together;
    there is no window where the snapshot is written but the free
    records survive (the race that caused double-free in the two-op
@@ -506,8 +506,8 @@ Load the `ZoneValue` snapshot, then replay only the operations (Put /
 Delete) written after `snapshot_slot`, in slot order, and apply them to
 the snapshot bitmap. One scan per disk-group (or per disk) covers all
 its zones, batch recovery, low overhead. **Requires a `JournalScan`
-crowdb-kv RPC** (slot-range + key-prefix filter, returns ops in slot
-order). This is the sole crowdb-kv extension diskdb needs. Fast because
+crowdb-paxos-kv RPC** (slot-range + key-prefix filter, returns ops in slot
+order). This is the sole crowdb-paxos-kv extension diskdb needs. Fast because
 compaction (strategy 3) keeps the uncompacted record set small.
 
 **Strategy 3 — compaction (ongoing maintenance).**

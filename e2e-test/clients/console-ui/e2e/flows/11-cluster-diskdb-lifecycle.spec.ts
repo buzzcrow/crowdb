@@ -47,8 +47,14 @@ async function deployDiskDb(page: Page, request: APIRequestContext, kv: LiveServ
   await expect(dialog).toHaveCount(0);
   await diskMenu(page, node, 'Deploy DiskDB');
   await expect(dialog.getByRole('button', { name: 'Deploy', exact: true })).toBeEnabled();
+  await expect(dialog.getByLabel('HTTP Port (management)')).toHaveValue('13135');
   await dialog.getByLabel('RPC Port (crowdb-rpc)').fill('7100');
+  const deployed = page.waitForResponse(response => response.url().endsWith('/api/nodes/1/diskdb/deploy')
+    && response.request().method() === 'POST');
   await dialog.getByRole('button', { name: 'Deploy', exact: true }).click();
+  const response = await deployed;
+  expect(response.ok(), await response.text()).toBe(true);
+  expect(response.request().postDataJSON()).toMatchObject({ http_port: 13135, rpc_port: 7100 });
   await expect(dialog).toHaveCount(0, { timeout: 5_000 });
   const ddb = await liveService(request, 'diskdb');
   await unchangedService(request, kv);

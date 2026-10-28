@@ -220,7 +220,7 @@ pub async fn http_remove_node(
     let t0 = std::time::Instant::now();
     // Cascade-stop the server process and drop its deployment record +
     // topology before removing the node, so a direct DELETE /api/nodes/:id
-    // does not orphan a running crowdb-kv-server. No-op when no server is
+    // does not orphan a running crowdb-paxos-kv-server. No-op when no server is
     // deployed (e.g. the UI already called DELETE .../server first).
     stop_and_remove_server_for_node(&state, id).await;
     let t_stop = t0.elapsed().as_millis();
@@ -620,7 +620,7 @@ pub async fn http_stop_node_server(
 /// deployed on the node. Does NOT persist — the caller persists. Does NOT
 /// remove the node itself. Used by both `DELETE /api/nodes/:id/server`
 /// and the node-delete cascade so a direct `DELETE /api/nodes/:id` does
-/// not orphan a running crowdb-kv-server.
+/// not orphan a running crowdb-paxos-kv-server.
 ///
 /// # Panics
 /// Panics if the `RwLock` is poisoned.
@@ -945,13 +945,13 @@ async fn shutdown_kv_data(state: &AppState) -> Vec<String> {
                 tracing::warn!(rack_id = rid, error = %e, "reset: remove_rack_cascade failed");
             }
         }
-        let meta = crowdb_kv_client::KVClusterMetaClient::from_shared(hw.shared_kv());
+        let meta = crowdb_paxos_kv_client::PaxosKvClusterMetaClient::from_shared(hw.shared_kv());
         for sid in &stores {
             if let Err(e) = meta.remove_store(*sid).await {
                 tracing::warn!(store_id = sid, error = %e, "reset: remove_store from sysdata failed");
             }
         }
-        let svc = crowdb_kv_client::ServiceRegistryClient::from_shared(hw.shared_kv());
+        let svc = crowdb_paxos_kv_client::ServiceRegistryClient::from_shared(hw.shared_kv());
         match svc.read_all_diskdb_instances().await {
             Ok(instances) => {
                 for (instance_id, _) in &instances {

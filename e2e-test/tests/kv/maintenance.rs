@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crate::common::management::{addresses, client, origin, request, wait_for_leader};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, PaxosKvClient, ReadMode};
 use reqwest::Method;
 use serde_json::{json, Value};
 
@@ -46,7 +46,7 @@ async fn flush_and_wipe_preserve_group_and_resume_writes() {
     let client = client();
     maintenance_errors(&client, &base).await;
     wait_for_leader(&client, &base).await;
-    let kv = CrowdbKvClient::new(ClientConfig::new(vec![base.clone()]));
+    let kv = PaxosKvClient::new(ClientConfig::new(vec![base.clone()]));
     kv.put(0, 1, b"wipe-test-key", b"wipe-test-value", None)
         .await
         .unwrap();
@@ -79,7 +79,7 @@ async fn flush_and_wipe_preserve_group_and_resume_writes() {
     let restored = wait_for_leader(&client, &base).await;
     assert_eq!(restored["stores"][0]["store_id"], 0);
     assert_eq!(restored["stores"][0]["groups"][0]["group_id"], 1);
-    let kv = CrowdbKvClient::new(ClientConfig::new(vec![base]));
+    let kv = PaxosKvClient::new(ClientConfig::new(vec![base]));
     assert!(matches!(
         kv.get(0, 1, b"wipe-test-key", ReadMode::Linearizable, None)
             .await

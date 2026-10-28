@@ -2,7 +2,7 @@
 
 // OS-level system metrics: CPU time, memory RSS, TCP retransmits, and
 // DRAM read/write bandwidth. Mirrors the Rust `crowdb_common::metrics::system`
-// module so C++ servers (crowdb-diskio) and Rust servers (crowdb-kv-server)
+// module so C++ servers (crowdb-diskio) and Rust servers (crowdb-paxos-kv-server)
 // report the same `sys.*` metric lines.
 //
 // On Linux, reads /proc/self/stat for CPU jiffies, /proc/self/status for

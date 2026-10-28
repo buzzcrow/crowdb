@@ -60,8 +60,8 @@ async fn full_simulated_disk_preserves_file_authority_then_recovers_after_compac
     client.shutdown_small_writes().await.unwrap();
     drop(client);
     let disk = DiskdbClient::new(
-        crowdb_kv_client::ServiceRegistryClient::new(crowdb_kv_client::CrowdbKvClient::new(
-            crowdb_kv_client::ClientConfig::new(stack.seeds.clone()),
+        crowdb_paxos_kv_client::ServiceRegistryClient::new(crowdb_paxos_kv_client::PaxosKvClient::new(
+            crowdb_paxos_kv_client::ClientConfig::new(stack.seeds.clone()),
         )),
         Arc::new(DiskdbRpcTransport::new()),
     );

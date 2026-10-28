@@ -45,7 +45,7 @@ pub use full_scan::rebuild_zone_bitmap_full_scan;
 #[derive(Debug)]
 pub enum ZoneLoadError {
     /// KV client error.
-    Kv(crowdb_kv_client::Error),
+    Kv(crowdb_paxos_kv_client::Error),
     /// A `JournalScan` returned `KV_ERROR_JOURNAL_SCAN_GC_GAP` — slots
     /// already GC'd below the WAL trim point. The caller should fall
     /// back to strategy 1 (full scan) for this zone.
@@ -70,8 +70,8 @@ impl std::fmt::Display for ZoneLoadError {
 
 impl std::error::Error for ZoneLoadError {}
 
-impl From<crowdb_kv_client::Error> for ZoneLoadError {
-    fn from(e: crowdb_kv_client::Error) -> Self {
+impl From<crowdb_paxos_kv_client::Error> for ZoneLoadError {
+    fn from(e: crowdb_paxos_kv_client::Error) -> Self {
         Self::Kv(e)
     }
 }

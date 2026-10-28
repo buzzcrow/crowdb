@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{Result, StreamError};
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, Error};
+use crowdb_paxos_kv_client::{BatchOp, Error};
 use crowdb_protocol::chunk_stream::{encode_stream_chunk_record, StreamChunkRecord, StreamChunkState};
 use crowdb_protocol::key::BinaryKey;
 

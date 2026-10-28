@@ -15,7 +15,7 @@ use crowdb_chunkdb::{
     routing::{BindingCache, BindingTable},
     storage::{range_retirement::RetiredByteRange, ChunkStore},
 };
-use crowdb_kv_client::{ChunkSlotMapClient, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, PaxosKvClient};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, ChunkType};
 
 use super::storage::TestPayloads;
@@ -29,7 +29,7 @@ pub(super) struct TestRangeProof {
 
 impl TestRangeProof {
     pub(super) async fn new(stack: &TestNativeStorage, data: &TestPayloads) -> Self {
-        let kv = Arc::new(CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(
+        let kv = Arc::new(PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
             stack.seeds.clone(),
         )));
         let maps = ChunkSlotMapClient::new(kv.clone());

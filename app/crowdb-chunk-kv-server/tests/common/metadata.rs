@@ -5,14 +5,14 @@
 
 use std::sync::Arc;
 
-use crowdb_kv::cluster::group::PxGroup;
-use crowdb_kv::cluster::kv_server::KvServer;
-use crowdb_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv::cluster::group::PxGroup;
+use crowdb_paxos_kv::cluster::paxos_kv_server::PaxosKvServer;
+use crowdb_paxos_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 
 pub struct TestMetadata {
     store: Arc<PxKvStore>,
-    pub client: Arc<CrowdbKvClient>,
+    pub client: Arc<PaxosKvClient>,
 }
 
 impl TestMetadata {
@@ -26,7 +26,7 @@ impl TestMetadata {
         }
         store.start().await.expect("start pinned memory metadata");
         let endpoint = store.listen_addr().unwrap().to_string();
-        let client = Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![])));
+        let client = Arc::new(PaxosKvClient::new(ClientConfig::new(vec![])));
         for id in [0, 1] {
             client.seed_leader(0, id, endpoint.clone());
         }

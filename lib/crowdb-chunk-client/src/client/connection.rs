@@ -9,13 +9,13 @@ use crate::negative_list::FailedDiskList;
 use crate::writer::small_pool::SmallWritePool;
 use crate::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, ChunkReader, Result, RoutedDiskWriter};
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient, ServiceRegistryClient};
 use std::sync::Arc;
 
 impl ChunkIoClient {
     /// Discover services and build lock-free DiskIO routing.
     pub async fn connect(config: ChunkIoClientConfig) -> Result<Self> {
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
             config.management_seeds.clone(),
         )));
         Self::connect_with_kv(config, kv).await
@@ -23,14 +23,14 @@ impl ChunkIoClient {
 
     /// Discover services using an existing KV topology client shared with the
     /// embedding process.
-    pub async fn connect_with_kv(config: ChunkIoClientConfig, kv: Arc<CrowdbKvClient>) -> Result<Self> {
+    pub async fn connect_with_kv(config: ChunkIoClientConfig, kv: Arc<PaxosKvClient>) -> Result<Self> {
         Self::connect_with_kv_read_policy(config, kv, ChunkReadPolicy::default()).await
     }
 
     /// Connect with explicit shared read resource limits.
     pub async fn connect_with_kv_read_policy(
         config: ChunkIoClientConfig,
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         read_policy: ChunkReadPolicy,
     ) -> Result<Self> {
         Self::connect_with_kv_transport(config, kv, read_policy, None).await
@@ -39,7 +39,7 @@ impl ChunkIoClient {
     /// Connect using explicit data transport settings; None retains environment defaults.
     pub async fn connect_with_kv_transport(
         config: ChunkIoClientConfig,
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         read_policy: ChunkReadPolicy,
         rdma: Option<crowdb_rpc_ffi::RdmaConfig>,
     ) -> Result<Self> {

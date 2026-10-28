@@ -6,7 +6,7 @@
 //! preview belong to the Console container flows.
 
 use crowdb_console_shared::ops::s3::S3HttpClient;
-use crowdb_kv_client::HardwareClient;
+use crowdb_paxos_kv_client::HardwareClient;
 use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
 use reqwest::Method;
@@ -73,9 +73,9 @@ async fn protected_restart_preserves_objects_and_fixed_endpoints() {
     assert_eq!(range, b"object");
 }
 
-fn kv_client() -> crowdb_kv_client::CrowdbKvClient {
+fn kv_client() -> crowdb_paxos_kv_client::PaxosKvClient {
     let addresses: Vec<String> = serde_json::from_str(&std::env::var("CROWDB_E2E_RPC").unwrap()).unwrap();
-    crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(
+    crowdb_paxos_kv_client::PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
         addresses[..3]
             .iter()
             .map(|address| format!("http://{address}:7000"))
@@ -91,8 +91,9 @@ async fn seed() {
         return;
     }
     crate::chunkdb::voting::register_actual_voters().await;
-    let maps =
-        crowdb_kv_client::ChunkSlotMapClient::new(std::sync::Arc::new(crate::common::hardware::kv_client()));
+    let maps = crowdb_paxos_kv_client::ChunkSlotMapClient::new(std::sync::Arc::new(
+        crate::common::hardware::kv_client(),
+    ));
     maps.initialize_layout(&crowdb_protocol::chunk_slot::ChunkSlotBootstrap {
         service_instances: vec![20000, 20001, 20002],
         storage_groups: (1..=3)

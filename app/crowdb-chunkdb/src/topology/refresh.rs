@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 
-use crowdb_kv_client::HardwareClient;
+use crowdb_paxos_kv_client::HardwareClient;
 
 use super::{build_snapshot, TopologyCache};
 

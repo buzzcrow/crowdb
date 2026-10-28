@@ -1,0 +1,17 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+//! `crowdb-paxos-kv-server` library — exposes the binary's modules so integration
+//! tests under `tests/` can exercise CLI parsing, the management router,
+//! and the registry without spawning a process.
+//!
+//! The binary entry (`main.rs`) imports from this lib via
+//! `use crowdb_paxos_kv_server::{cli, mgmt, startup, store_registry};`.
+
+pub mod background;
+pub mod cli;
+pub mod engine_collector;
+pub mod group0_control_plane;
+pub mod mgmt;
+pub mod recovery;
+pub mod store_registry;

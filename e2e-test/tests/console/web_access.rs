@@ -21,7 +21,7 @@ async fn call(http: &Client, base: &str, method: Method, path: &str, body: Value
 #[tokio::test]
 #[ignore = "fixture setup requires the owned storage authority"]
 async fn prepare() {
-    let hardware = crowdb_kv_client::HardwareClient::new(crate::common::hardware::kv_client());
+    let hardware = crowdb_paxos_kv_client::HardwareClient::new(crate::common::hardware::kv_client());
     hardware
         .add_rack(
             1,

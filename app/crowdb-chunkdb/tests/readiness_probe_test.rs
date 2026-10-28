@@ -9,8 +9,8 @@ use crowdb_chunkdb::{
     storage::ChunkStore,
 };
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbClientError, ChunkdbRpcTransport};
-use crowdb_kv::cluster::kv_server::KvServer;
-use crowdb_kv_client::{ChunkSlotMapClient, ClientConfig, CrowdbKvClient, ServiceRegistryClient};
+use crowdb_paxos_kv::cluster::paxos_kv_server::PaxosKvServer;
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, ClientConfig, PaxosKvClient, ServiceRegistryClient};
 use crowdb_protocol::{
     chunk_domain::ChunkDomain,
     chunk_id::{ChunkIdParts, CHUNK_TYPE_S3},
@@ -61,7 +61,7 @@ async fn readiness_reads_both_domains_without_scanning_or_mutating_the_catalog()
             .unwrap()
             .unwrap();
     }
-    let control = Arc::new(CrowdbKvClient::new(ClientConfig::new(Vec::new())));
+    let control = Arc::new(PaxosKvClient::new(ClientConfig::new(Vec::new())));
     control.seed_leader(0, 0, test.server.listen_addr().unwrap().to_string());
     let registry = ServiceRegistryClient::from_shared(Arc::clone(&control));
     registry
@@ -69,7 +69,7 @@ async fn readiness_reads_both_domains_without_scanning_or_mutating_the_catalog()
         .await
         .unwrap();
     let client = ChunkdbClient::new(registry, Arc::new(ChunkdbRpcTransport::new()));
-    let reference = crowdb_kv_client::RangeBindingClient::from_shared(Arc::clone(&control));
+    let reference = crowdb_paxos_kv_client::RangeBindingClient::from_shared(Arc::clone(&control));
     let _ = control.drain_window();
     reference.refresh().await.unwrap();
     let binding_scans = control.drain_window().scan.len();

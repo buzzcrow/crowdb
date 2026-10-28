@@ -1,9 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv::wal::io_backend::IoBackend;
-use crowdb_kv::wal::record::{RecordType, WALRecord};
-use crowdb_kv::wal::segment::SegmentReader;
+use crowdb_paxos_kv::wal::io_backend::IoBackend;
+use crowdb_paxos_kv::wal::record::{RecordType, WALRecord};
+use crowdb_paxos_kv::wal::segment::SegmentReader;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -12,7 +12,7 @@ use crate::{
     error::{Error, Result},
     ops::OpContext,
 };
-use crowdb_kv_client::{DiskRecord, HardwareClient, ReadMode, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{DiskRecord, HardwareClient, ReadMode, ServiceRegistryClient};
 use crowdb_protocol::mgmt::cluster::{DependencyKind, DependencyObservation, DependencyState};
 use crowdb_protocol::{
     common::InstanceValue,
@@ -93,11 +93,11 @@ pub(super) async fn read(ctx: &OpContext, bootstrap: &PreparedBootstrap) -> Resu
 pub(super) struct StorageSnapshot {
     accepted: preparation::DefaultPreparation,
     revision: u64,
-    groups: crowdb_kv_client::Result<Vec<DiskGroupEntry>>,
-    disks: crowdb_kv_client::Result<Vec<DiskRecord>>,
-    owners: crowdb_kv_client::Result<Vec<DiskdbOwnerEntry>>,
-    binds: crowdb_kv_client::Result<Vec<KVGroupBindEntry>>,
-    instances: crowdb_kv_client::Result<Vec<(u64, InstanceValue)>>,
+    groups: crowdb_paxos_kv_client::Result<Vec<DiskGroupEntry>>,
+    disks: crowdb_paxos_kv_client::Result<Vec<DiskRecord>>,
+    owners: crowdb_paxos_kv_client::Result<Vec<DiskdbOwnerEntry>>,
+    binds: crowdb_paxos_kv_client::Result<Vec<KVGroupBindEntry>>,
+    instances: crowdb_paxos_kv_client::Result<Vec<(u64, InstanceValue)>>,
 }
 
 impl StorageSnapshot {

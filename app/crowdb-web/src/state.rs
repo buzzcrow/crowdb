@@ -31,19 +31,20 @@ pub struct AppState {
     pub diskdb_client: Arc<tokio::sync::RwLock<Option<crowdb_diskdb_client::DiskdbClient>>>,
     /// Cached crowdb-rpc transport reused across KV requests to avoid
     /// spawning 6+ threads per request. Shared by the cached `kv_client`.
-    pub kv_rpc_transport: Arc<tokio::sync::RwLock<Option<Arc<crowdb_kv_client::KvRpcTransport>>>>,
+    pub kv_rpc_transport: Arc<tokio::sync::RwLock<Option<Arc<crowdb_paxos_kv_client::PaxosKvRpcTransport>>>>,
     /// Immutable transport shared by bounded Chunk diagnostics requests.
     pub(crate) rpc_health: Arc<crate::services::rpc_health::RpcHealth>,
     pub(crate) chunk_rpc_transport: Arc<crowdb_chunkdb_client::ChunkdbRpcTransport>,
-    /// Cached `CrowdbKvClient` reused across KV requests so the topology
+    /// Cached `PaxosKvClient` reused across KV requests so the topology
     /// cache persists — avoids re-discovering the leader from seeds on
     /// every put/get/delete. Invalidated on `/internal/reset`.
-    pub kv_client: Arc<tokio::sync::RwLock<Option<Arc<crowdb_kv_client::CrowdbKvClient>>>>,
+    pub kv_client: Arc<tokio::sync::RwLock<Option<Arc<crowdb_paxos_kv_client::PaxosKvClient>>>>,
     /// Cached `ServiceDiscoveryClient` reused across requests so the
     /// discovery cache (service registry entries) persists. Built from
-    /// the same `CrowdbKvClient` as `kv_client` so topology + connection
+    /// the same `PaxosKvClient` as `kv_client` so topology + connection
     /// pool are shared.
-    pub discovery_client: Arc<tokio::sync::RwLock<Option<Arc<crowdb_kv_client::ServiceDiscoveryClient>>>>,
+    pub discovery_client:
+        Arc<tokio::sync::RwLock<Option<Arc<crowdb_paxos_kv_client::ServiceDiscoveryClient>>>>,
     /// Rate-limiter for repeated crowdb-rpc failure warnings: maps
     /// `endpoint` → last-warned timestamp. Prevents flooding the
     /// console with identical "instance query failed" warnings every
@@ -381,11 +382,11 @@ impl AppState {
         std::fs::canonicalize(base).map_err(Error::Io)
     }
 
-    /// Get or create a cached `KvRpcTransport`. The transport (and its
+    /// Get or create a cached `PaxosKvRpcTransport`. The transport (and its
     /// crowdb-rpc server/client + I/O thread) is reused across KV requests
     /// to avoid spawning threads per request. Shared by the cached
     /// `kv_client`.
-    pub async fn kv_rpc_transport(&self) -> Arc<crowdb_kv_client::KvRpcTransport> {
+    pub async fn kv_rpc_transport(&self) -> Arc<crowdb_paxos_kv_client::PaxosKvRpcTransport> {
         if let Some(t) = self.kv_rpc_transport.read().await.as_ref() {
             return Arc::clone(t);
         }
@@ -393,16 +394,16 @@ impl AppState {
         if let Some(t) = guard.as_ref() {
             return Arc::clone(t);
         }
-        let t = Arc::new(crowdb_kv_client::KvRpcTransport::new());
+        let t = Arc::new(crowdb_paxos_kv_client::PaxosKvRpcTransport::new());
         *guard = Some(Arc::clone(&t));
         t
     }
 
-    /// Get or create a cached `CrowdbKvClient` sharing the cached RPC
+    /// Get or create a cached `PaxosKvClient` sharing the cached RPC
     /// transport. The topology cache persists across requests so the
     /// leader endpoint is not re-discovered from seeds on every call.
     /// Call `seed_leader` before each use to keep the hint fresh.
-    pub async fn kv_client(&self) -> Arc<crowdb_kv_client::CrowdbKvClient> {
+    pub async fn kv_client(&self) -> Arc<crowdb_paxos_kv_client::PaxosKvClient> {
         if let Some(c) = self.kv_client.read().await.as_ref() {
             return Arc::clone(c);
         }
@@ -411,8 +412,8 @@ impl AppState {
             return Arc::clone(c);
         }
         let transport = self.kv_rpc_transport().await;
-        let c = Arc::new(crowdb_kv_client::CrowdbKvClient::new_with_rpc_transport(
-            crowdb_kv_client::ClientConfig::new(self.authority_seeds.as_ref().clone()),
+        let c = Arc::new(crowdb_paxos_kv_client::PaxosKvClient::new_with_rpc_transport(
+            crowdb_paxos_kv_client::ClientConfig::new(self.authority_seeds.as_ref().clone()),
             transport,
         ));
         *guard = Some(Arc::clone(&c));
@@ -421,7 +422,7 @@ impl AppState {
 
     /// Drop every client that retains cluster topology so the next
     /// request rebuilds from the post-reset cluster. The discovery and
-    /// `DiskDB` clients both retain the shared `CrowdbKvClient`, so
+    /// `DiskDB` clients both retain the shared `PaxosKvClient`, so
     /// clearing only `kv_client` would leave its old group-0 leader hint
     /// reachable through those wrappers.
     pub async fn clear_cluster_clients(&self) {
@@ -434,10 +435,10 @@ impl AppState {
     }
 
     /// Get or lazily build the cached `ServiceDiscoveryClient`. Shares
-    /// the same `CrowdbKvClient` as `kv_client()` so topology + connection
+    /// the same `PaxosKvClient` as `kv_client()` so topology + connection
     /// pool are shared. Used by web handlers that need to discover living
     /// service instances (diskdb, chunkdb) from the group-0 registry.
-    pub async fn discovery_client(&self) -> Arc<crowdb_kv_client::ServiceDiscoveryClient> {
+    pub async fn discovery_client(&self) -> Arc<crowdb_paxos_kv_client::ServiceDiscoveryClient> {
         if let Some(d) = self.discovery_client.read().await.as_ref() {
             return Arc::clone(d);
         }
@@ -446,12 +447,12 @@ impl AppState {
             return Arc::clone(d);
         }
         let kv = self.kv_client().await;
-        let d = Arc::new(crowdb_kv_client::ServiceDiscoveryClient::from_shared_kv(kv));
+        let d = Arc::new(crowdb_paxos_kv_client::ServiceDiscoveryClient::from_shared_kv(kv));
         *guard = Some(Arc::clone(&d));
         d
     }
 
-    /// Re-seed the cached `CrowdbKvClient`'s mgmt seed list from the
+    /// Re-seed the cached `PaxosKvClient`'s mgmt seed list from the
     /// current config. Called after cluster init (or server deploy) so
     /// the shared client can discover leaders for the new topology.
     /// No-op if no client is cached (it will be created with config
@@ -479,7 +480,7 @@ impl AppState {
     }
 
     /// Build an [`OpContext`] for a single request, sharing the cached
-    /// `CrowdbKvClient` (topology cache + connection pool) and a
+    /// `PaxosKvClient` (topology cache + connection pool) and a
     /// snapshot of the persisted [`ConsoleConfig`].
     ///
     /// The group-0 endpoint is resolved from the config's store-0
@@ -735,11 +736,11 @@ mod tests {
         let _ = config.add_server(ServerEntry {
             access_origins: std::collections::BTreeMap::new(),
             id: "s1".into(),
-            url: "http://127.0.0.1:10000".into(),
+            url: "http://127.0.0.1:10135".into(),
             node_id: Some(1),
             rpc_url: None,
-            rest_port: Some(10000),
-            rpc_port: Some(10100),
+            rest_port: Some(crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE),
+            rpc_port: Some(crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE),
             auto_start: true,
             binary: None,
             election_profile: None,
@@ -750,7 +751,7 @@ mod tests {
         });
         let (endpoint, seeds) = resolve_group0_endpoint(&config);
         assert!(endpoint.is_none(), "no store 0 → no RPC endpoint to seed");
-        assert_eq!(seeds, vec!["http://127.0.0.1:10000"]);
+        assert_eq!(seeds, vec!["http://127.0.0.1:10135"]);
     }
 
     #[test]
@@ -759,11 +760,11 @@ mod tests {
         let _ = config.add_server(ServerEntry {
             access_origins: std::collections::BTreeMap::new(),
             id: "s1".into(),
-            url: "http://127.0.0.1:10000".into(),
+            url: "http://127.0.0.1:10135".into(),
             node_id: Some(1),
-            rpc_url: Some("http://127.0.0.1:10100".into()),
-            rest_port: Some(10000),
-            rpc_port: Some(10100),
+            rpc_url: Some("http://127.0.0.1:11135".into()),
+            rest_port: Some(crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE),
+            rpc_port: Some(crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE),
             auto_start: true,
             binary: None,
             election_profile: None,
@@ -774,8 +775,8 @@ mod tests {
         });
         config.record_store(0, vec![1]);
         let (endpoint, seeds) = resolve_group0_endpoint(&config);
-        assert_eq!(endpoint.as_deref(), Some("http://127.0.0.1:10100"));
-        assert_eq!(seeds, vec!["http://127.0.0.1:10000"]);
+        assert_eq!(endpoint.as_deref(), Some("http://127.0.0.1:11135"));
+        assert_eq!(seeds, vec!["http://127.0.0.1:10135"]);
     }
 
     #[tokio::test]
@@ -794,11 +795,11 @@ mod tests {
         let _ = config.add_server(ServerEntry {
             access_origins: std::collections::BTreeMap::new(),
             id: "s1".into(),
-            url: "http://127.0.0.1:10000".into(),
+            url: "http://127.0.0.1:10135".into(),
             node_id: Some(1),
-            rpc_url: Some("http://127.0.0.1:10100".into()),
-            rest_port: Some(10000),
-            rpc_port: Some(10100),
+            rpc_url: Some("http://127.0.0.1:11135".into()),
+            rest_port: Some(crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE),
+            rpc_port: Some(crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE),
             auto_start: true,
             binary: None,
             election_profile: None,
@@ -817,7 +818,7 @@ mod tests {
         let cached = state.kv_client().await;
         assert!(
             Arc::ptr_eq(ctx.kv_arc(), &cached),
-            "OpContext must share the cached CrowdbKvClient"
+            "OpContext must share the cached PaxosKvClient"
         );
     }
 
@@ -850,11 +851,11 @@ mod tests {
         let _ = config.add_server(ServerEntry {
             access_origins: std::collections::BTreeMap::new(),
             id: "s1".into(),
-            url: "http://127.0.0.1:10000".into(),
+            url: "http://127.0.0.1:10135".into(),
             node_id: Some(1),
-            rpc_url: Some("http://127.0.0.1:10100".into()),
-            rest_port: Some(10000),
-            rpc_port: Some(10100),
+            rpc_url: Some("http://127.0.0.1:11135".into()),
+            rest_port: Some(crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE),
+            rpc_port: Some(crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE),
             auto_start: true,
             binary: None,
             election_profile: None,

@@ -15,12 +15,12 @@ use crowdb_chunk_kv_client::{
     Group0ChunkKvRangeCatalogSource,
 };
 use crowdb_common::ec::EcScheme;
-use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig as KvConfig, PaxosKvClient};
 use crowdb_protocol::chunkdb::rpc::ChunkType;
 
 #[derive(Clone)]
 pub struct S3StorageClients {
-    pub control: Arc<CrowdbKvClient>,
+    pub control: Arc<PaxosKvClient>,
     pub metadata: Arc<ChunkKvMetadataStore>,
     pub chunks: Arc<ChunkIoClient>,
 }
@@ -185,7 +185,7 @@ impl S3StorageClients {
         chunk_kv_rpc: &ChunkKvRpcTransportConfig,
     ) -> Result<Self, StorageConnectError> {
         small_write.chunk_type = ChunkType::S3;
-        let kv = Arc::new(CrowdbKvClient::new(KvConfig::new(management_seeds.clone())));
+        let kv = Arc::new(PaxosKvClient::new(KvConfig::new(management_seeds.clone())));
         let config = ChunkKvConfig::default();
         let catalog = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::clone(&kv)));
         let transport = Arc::new(

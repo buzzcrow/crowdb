@@ -89,7 +89,7 @@ so perf time-shares them.
 
 ## How CROWDB reads DRAM bandwidth in-process
 
-CROWDB services (`crowdb-cli`, `crowdb-kv-server`, `crowdb-diskdb`,
+CROWDB services (`crowdb-cli`, `crowdb-paxos-kv-server`, `crowdb-diskdb`,
 `crowdb-chunkdb`, `crowdb-diskio`) read the **same hardware uncore
 counters** directly via `perf_event_open` — no `perf` CLI or `pcm`
 needed at runtime. Two implementations exist (kept in sync):
@@ -168,9 +168,9 @@ sentinel needs first:
 
 ```bash
 # KV / RPC / diskdb / chunkdb sentinels
-pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server
+pixi run -- cargo build --release -p crowdb-cli -p crowdb-paxos-kv-server
 # chunkio write sentinel also needs diskdb + chunkdb + diskio (C++)
-pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server \
+pixi run -- cargo build --release -p crowdb-cli -p crowdb-paxos-kv-server \
     -p crowdb-diskdb -p crowdb-chunkdb
 pixi run build-cpp
 ```

@@ -2,15 +2,15 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crate::error::{Error, Result};
-use crowdb_kv_client::CrowdbKvClient;
+use crowdb_paxos_kv_client::PaxosKvClient;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 /// Confirm that loaded `DiskDB` group counts cover the registered online disks.
 /// # Errors
 /// Rejects unavailable registry/hardware reads and incomplete storage publication.
-pub async fn diskdb_storage_ready(kv: Arc<CrowdbKvClient>) -> Result<()> {
-    let registry = crowdb_kv_client::ServiceRegistryClient::from_shared(kv.clone());
-    let hardware = crowdb_kv_client::HardwareClient::from_shared(kv);
+pub async fn diskdb_storage_ready(kv: Arc<PaxosKvClient>) -> Result<()> {
+    let registry = crowdb_paxos_kv_client::ServiceRegistryClient::from_shared(kv.clone());
+    let hardware = crowdb_paxos_kv_client::HardwareClient::from_shared(kv);
     let (instances, disks) = tokio::time::timeout(Duration::from_secs(3), async {
         tokio::join!(registry.read_all_diskdb_instances(), hardware.list_all_disks())
     })

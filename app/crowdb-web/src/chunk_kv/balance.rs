@@ -3,7 +3,7 @@
 
 //! Read the monitor's bounded diagnostic snapshot without scanning catalog/data.
 
-use crowdb_kv_client::{CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_protocol::chunk_kv::{
     balance::{BalanceObservation, MAX_OBSERVATION_BYTES, OBSERVATION_KEY},
     ChunkKvRangeCatalogEntry,
@@ -16,7 +16,7 @@ pub(super) struct Observation {
     reason: String,
 }
 
-pub(super) async fn observe(kv: &CrowdbKvClient, generation: u64) -> Observation {
+pub(super) async fn observe(kv: &PaxosKvClient, generation: u64) -> Observation {
     match load(kv, generation).await {
         Ok(value) => Observation {
             reason: value.reason.clone(),
@@ -26,7 +26,7 @@ pub(super) async fn observe(kv: &CrowdbKvClient, generation: u64) -> Observation
     }
 }
 
-async fn load(kv: &CrowdbKvClient, generation: u64) -> Result<BalanceObservation, String> {
+async fn load(kv: &PaxosKvClient, generation: u64) -> Result<BalanceObservation, String> {
     let outcome = kv
         .get(0, 0, OBSERVATION_KEY.as_bytes(), ReadMode::Linearizable, None)
         .await

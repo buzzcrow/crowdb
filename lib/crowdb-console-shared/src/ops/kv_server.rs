@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! `crowdb-kv-server` lifecycle: deploy, restart, stop, delete, list.
+//! `crowdb-paxos-kv-server` lifecycle: deploy, restart, stop, delete, list.
 //!
 //! Each function mutates the local TOML [`ConsoleConfig`] (adding /
 //! removing [`ServerEntry`] records) and spawns / stops the server
@@ -81,7 +81,7 @@ fn restart_seed_hints(ctx: &OpContext, configured_seeds: &[String]) -> Result<Ve
     Ok(seeds)
 }
 
-/// Deploy a `crowdb-kv-server` on a node.
+/// Deploy a `crowdb-paxos-kv-server` on a node.
 ///
 /// `workspace_dir` is used for local-fork deploys (the server's data
 /// directory); `None` uses the current directory. SSH deploys ignore it.
@@ -111,7 +111,7 @@ pub async fn deploy(
     let binary = req.binary.as_ref().map(|p| p.to_string_lossy().to_string());
     let deployed = if node.ssh_enabled() {
         let server_bin = binary.clone().unwrap_or_else(|| {
-            std::env::var("CROWDB_KV_SERVER_BIN").unwrap_or_else(|_| "crowdb-kv-server".into())
+            std::env::var("CROWDB_PAXOS_KV_SERVER_BIN").unwrap_or_else(|_| "crowdb-paxos-kv-server".into())
         });
         crate::ssh::deploy_via_ssh(&launch, &node, &server_bin)
             .await
@@ -153,7 +153,7 @@ pub async fn deploy(
     Ok(deployed)
 }
 
-/// Stop the `crowdb-kv-server` on a node (keep the deployment record).
+/// Stop the `crowdb-paxos-kv-server` on a node (keep the deployment record).
 ///
 /// `pid_override` lets callers supply an in-memory PID (e.g. the web's
 /// `runtime_pid`) that takes precedence over the persisted `entry.pid`.
@@ -192,7 +192,7 @@ pub async fn stop(ctx: &OpContext, node_id: NodeId, pid_override: Option<u32>) -
     Ok(sent)
 }
 
-/// Restart the `crowdb-kv-server` on a node: stop (if running) and
+/// Restart the `crowdb-paxos-kv-server` on a node: stop (if running) and
 /// re-deploy on the same recorded ports.
 ///
 /// `workspace_dir` is used for local-fork redeploys; `None` uses the
@@ -253,7 +253,8 @@ pub async fn restart(
     };
 
     let deployed = if node.ssh_enabled() {
-        let server_bin = std::env::var("CROWDB_KV_SERVER_BIN").unwrap_or_else(|_| "crowdb-kv-server".into());
+        let server_bin =
+            std::env::var("CROWDB_PAXOS_KV_SERVER_BIN").unwrap_or_else(|_| "crowdb-paxos-kv-server".into());
         crate::ssh::deploy_via_ssh(&req, &node, &server_bin)
             .await
             .map_err(|e| Error::NodeUnreachable {

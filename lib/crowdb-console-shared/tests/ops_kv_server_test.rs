@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 //! Tests for [`ops::kv_server`] validation paths. The actual deploy /
-//! stop requires a real `crowdb-kv-server` binary and is covered by E2E
+//! stop requires a real `crowdb-paxos-kv-server` binary and is covered by E2E
 //! tests in Phase 4; here we verify the guard clauses.
 
 use crowdb_console_shared::config::{ConsoleConfig, NodeEntry, ServerEntry, ServiceType};

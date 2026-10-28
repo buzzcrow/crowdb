@@ -1,0 +1,149 @@
+# Copyright 2026-present Gian <crow.db@outlook.com>
+# Licensed under the Apache License, Version 2.0.
+# Programs and supervision defaults only. Accepted node policy and committed
+# service intents supply membership, media, configuration and actual listeners.
+
+version = 1
+name = "node-container"
+display_name = "CROWDB Node"
+placement_mode = "node-policy"
+s3_tenant = "default"
+iceberg_catalog = "default"
+
+[paths]
+install_root = "/opt/crowdb"
+bin_root = "/opt/crowdb/bin"
+template_root = "/opt/crowdb/etc/templates"
+data_root = "/opt/crowdb/data"
+run_root = "/opt/crowdb/run"
+log_root = "/opt/crowdb/data/log"
+
+[logs]
+max_file_bytes = 31457280
+max_files = 5
+mirror_warnings_to_stderr = true
+
+[[public_endpoints]]
+id = "s3"
+bind = "0.0.0.0"
+port = @ACCESS_SERVER_HTTP_BASE@
+
+[[public_endpoints]]
+id = "iceberg"
+bind = "0.0.0.0"
+port = @ACCESS_SERVER_ICEBERG_HTTP_BASE@
+
+[[public_endpoints]]
+id = "web"
+bind = "0.0.0.0"
+port = @WEB_BASE@
+
+[[public_endpoints]]
+id = "dataset"
+bind = "0.0.0.0"
+port = @ACCESS_SERVER_DATASET_HTTP_BASE@
+
+[[services]]
+id = "kv"
+program = "/opt/crowdb/bin/crowdb-paxos-kv-server"
+args = []
+dependencies = []
+[services.probe]
+kind = "http"
+target = "http://127.0.0.1:@PAXOS_KV_SERVER_MGMT_BASE@/health"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000
+
+[[services]]
+id = "diskdb"
+program = "/opt/crowdb/bin/crowdb-diskdb"
+args = []
+dependencies = ["kv"]
+[services.probe]
+kind = "http"
+target = "http://127.0.0.1:@DISKDB_HTTP_BASE@/ready"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000
+
+[[services]]
+id = "diskio"
+program = "/opt/crowdb/bin/crowdb-diskio"
+args = []
+dependencies = ["kv", "diskdb"]
+[services.probe]
+kind = "rpc-ping"
+target = "127.0.0.1:@DISKIO_RPC_BASE@"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000
+
+[[services]]
+id = "chunkdb"
+program = "/opt/crowdb/bin/crowdb-chunkdb"
+args = []
+dependencies = ["kv", "diskdb", "diskio"]
+[services.probe]
+kind = "http"
+target = "http://127.0.0.1:@CHUNKDB_HTTP_BASE@/ready"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000
+
+[[services]]
+id = "chunk-kv"
+program = "/opt/crowdb/bin/crowdb-chunk-kv-server"
+args = []
+dependencies = ["kv", "chunkdb", "diskio"]
+[services.probe]
+kind = "http"
+target = "http://127.0.0.1:@CHUNK_KV_HTTP_BASE@/ready"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000
+
+[[services]]
+id = "access"
+program = "/opt/crowdb/bin/crowdb-access-server"
+args = []
+dependencies = ["kv", "chunk-kv", "chunkdb", "diskio"]
+[services.probe]
+kind = "http"
+target = "http://127.0.0.1:@ACCESS_SERVER_HEALTH_HTTP_BASE@/_crowdb/health/ready"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000
+
+[[services]]
+id = "web"
+program = "/opt/crowdb/bin/crowdb-web"
+args = []
+dependencies = []
+[services.probe]
+kind = "http"
+target = "http://127.0.0.1:@WEB_BASE@/healthz"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000

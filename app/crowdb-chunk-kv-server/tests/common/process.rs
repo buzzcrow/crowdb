@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::{StreamProcessAuthority, StreamProcessLeaseTiming};
+use crowdb_paxos_kv_client::{StreamProcessAuthority, StreamProcessLeaseTiming};
 use crowdb_protocol::chunk_stream::{StreamProcessIdentity, StreamProcessLease, StreamPurpose};
 use std::{sync::Arc, time::Instant};
 

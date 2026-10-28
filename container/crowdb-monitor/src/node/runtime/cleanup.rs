@@ -48,7 +48,10 @@ pub(super) async fn execute(
         .timeout(Duration::from_secs(30))
         .build()?;
     let response = client
-        .post("http://127.0.0.1:10000/system/cleanup")
+        .post(format!(
+            "http://127.0.0.1:{}/system/cleanup",
+            crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE
+        ))
         .json(&json!({"bootstrap": bootstrap, "confirm_delete_system_store": true}))
         .send()
         .await;

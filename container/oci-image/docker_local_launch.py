@@ -6,8 +6,12 @@ import json
 import math
 import uuid
 
+from ports import WEB_BASE, ACCESS_SERVER_HTTP_BASE, ACCESS_SERVER_ICEBERG_HTTP_BASE, ACCESS_SERVER_DATASET_HTTP_BASE
 from docker_local_state import CLUSTER, OWNER, check_daemon, load, require_owned, seal
 
+
+PUBLIC_PORTS = ((WEB_BASE, None), (ACCESS_SERVER_HTTP_BASE, "S3"),
+                (ACCESS_SERVER_ICEBERG_HTTP_BASE, "ICEBERG"), (ACCESS_SERVER_DATASET_HTTP_BASE, "DATASET"))
 
 def arguments(record):
     return ["--label", f"{CLUSTER}={record['cluster']}", "--label", f"{OWNER}={record['owner']}"]
@@ -44,10 +48,10 @@ def accepted(docker, args):
     if metadata.get("Config", {}).get("Labels", {}).get("org.opencontainers.image.source") != "https://github.com/buzzcrow/crowdb":
         raise ValueError("image is not a CROWDB node image")
     record = {"version": 1, "cluster": args.cluster, "owner": str(uuid.uuid4()), "runtime": docker.identity(),
-              "nodes": args.nodes if args.nodes is not None else 1, "port_base": args.port_base if args.port_base is not None else 9090, "image": image,
+              "nodes": args.nodes if args.nodes is not None else 1, "port_base": args.port_base if args.port_base is not None else WEB_BASE, "image": image,
               "image_id": metadata["Id"], "cpus": args.cpus if args.cpus is not None else 1,
               "memory_mib": args.memory_mib if args.memory_mib is not None else 1536}
-    if record["nodes"] not in (1, 3) or not 1 <= record["port_base"] <= 65512:
+    if record["nodes"] not in (1, 3) or not 1 <= record["port_base"] <= 65535 - (ACCESS_SERVER_DATASET_HTTP_BASE - WEB_BASE) - 2:
         raise ValueError("local cluster requires one or three nodes and a valid port range")
     if not math.isfinite(record["cpus"]) or record["cpus"] <= 0 or record["memory_mib"] < 512:
         raise ValueError("CPU must be positive and memory at least 512 MiB")
@@ -58,11 +62,12 @@ def accepted(docker, args):
 def verify_container(item, record, index, volume, network):
     require_owned(item, record, "container")
     host = item["HostConfig"]
-    base = record["port_base"] + (index - 1) * 10
-    ports = {f"{9090+offset}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(base+offset)}]
-             for offset in range(4)}
+    base = record["port_base"] + (index - 1)
+    ports = {f"{port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(base+port-WEB_BASE)}]
+             for port, _ in PUBLIC_PORTS}
     expected_environment = {"CROWDB_CLUSTER": record["cluster"], "CROWDB_INITIAL_VOTERS": str(record["nodes"])}
-    for offset, protocol in enumerate((None, "S3", "ICEBERG", "DATASET")):
+    for port, protocol in PUBLIC_PORTS:
+        offset = port - WEB_BASE
         if protocol:
             expected_environment[f"CROWDB_{protocol}_PUBLIC_URI"] = f"http://127.0.0.1:{base+offset}"
     environment = dict(value.split("=", 1) for value in item["Config"].get("Env", []) if "=" in value)
@@ -96,13 +101,14 @@ def run(docker, record):
                 check_daemon(docker, record)
                 docker.call("start", item["Id"])
             continue
-        base = record["port_base"] + (index - 1) * 10
+        base = record["port_base"] + (index - 1)
         command = ["run", "-d", "--pull", "never", "--name", name, *arguments(record),
                    "--network", network, "--cpus", record["cpus"], "--memory", f"{record['memory_mib']}m",
                    "--mount", f"type=volume,source={volume},target=/opt/crowdb/data",
                    "-e", "CROWDB_CLUSTER=" + record["cluster"], "-e", f"CROWDB_INITIAL_VOTERS={record['nodes']}"]
-        for offset, protocol in enumerate((None, "S3", "ICEBERG", "DATASET")):
-            command += ["-p", f"127.0.0.1:{base+offset}:{9090+offset}"]
+        for port, protocol in PUBLIC_PORTS:
+            offset = port - WEB_BASE
+            command += ["-p", f"127.0.0.1:{base+offset}:{port}"]
             if protocol:
                 command += ["-e", f"CROWDB_{protocol}_PUBLIC_URI=http://127.0.0.1:{base+offset}"]
         check_daemon(docker, record)

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crowdb_kv_client::ServiceDiscoveryClient;
+use crowdb_paxos_kv_client::ServiceDiscoveryClient;
 
 use crate::error::{Error, Result};
 use crate::ops::OpContext;

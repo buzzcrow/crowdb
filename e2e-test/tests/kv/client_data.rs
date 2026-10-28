@@ -2,17 +2,17 @@
 // Licensed under the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{BatchOp, ClientConfig, GetOutcome, PaxosKvClient, ReadMode};
 
 const STORE_ID: u64 = 1;
 const GROUP_ID: u64 = 1;
 
-pub(super) async fn fixture_client() -> CrowdbKvClient {
+pub(super) async fn fixture_client() -> PaxosKvClient {
     let ips = crate::common::management::addresses(1);
     let http = crate::common::management::client();
     let seed = crate::common::management::origin(&ips[0]);
     crate::common::management::wait_for_leader(&http, &seed).await;
-    CrowdbKvClient::new(ClientConfig::new(vec![seed]))
+    PaxosKvClient::new(ClientConfig::new(vec![seed]))
 }
 
 #[tokio::test]
@@ -69,7 +69,7 @@ async fn revision_cas_and_conditional_batch_round_trip() {
         .expect("create-if-absent CAS");
     assert!(matches!(
         client.put_cas(STORE_ID, GROUP_ID, b"guard", b"stale", 0).await,
-        Err(crowdb_kv_client::Error::CasFailed {
+        Err(crowdb_paxos_kv_client::Error::CasFailed {
             current_revision, ..
         }) if current_revision == created.revision
     ));

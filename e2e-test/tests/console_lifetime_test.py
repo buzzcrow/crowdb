@@ -34,5 +34,5 @@ class DisposableOwnershipTest(unittest.TestCase):
             cluster.command = Mock()
             for pid in (True, None, 0, 1, -1, "42"):
                 with self.assertRaises(ValueError):
-                    cluster.identity(pid, "crowdb-kv-server")
+                    cluster.identity(pid, "crowdb-paxos-kv-server")
             cluster.command.assert_not_called()

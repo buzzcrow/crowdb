@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::{ChunkSlotMapClient, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, PaxosKvClient};
 use crowdb_protocol::chunk_slot::{
     ChunkServiceHandoff, ChunkServiceIncarnation, ChunkSlot, ChunkSlotAuthority, ChunkSlotBootstrap,
     ChunkSlotTransfer, ChunkStorageGroup,
@@ -10,7 +10,7 @@ use crowdb_protocol::key::{ChunkSlotFenceKey, TextKey};
 use std::sync::Arc;
 
 pub(super) struct TestHandoffCluster {
-    pub(super) kv: Arc<CrowdbKvClient>,
+    pub(super) kv: Arc<PaxosKvClient>,
 }
 
 impl TestHandoffCluster {

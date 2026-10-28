@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crossbeam_skiplist::SkipMap;
 use crowdb_chunk_client::{ChunkIoClient, ChunkReadPolicy};
-use crowdb_kv_client::CrowdbKvClient;
+use crowdb_paxos_kv_client::PaxosKvClient;
 use crowdb_protocol::chunk_stream::{StreamName, StreamRecord};
 
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
 
 /// Shared production dependencies used to create and reopen stream handles.
 pub struct ProductionStreamRuntime {
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
     registry: Arc<KvStreamRegistry>,
     chunks: Arc<ProductionStreamChunkStore>,
     config: StreamConfig,
@@ -32,7 +32,7 @@ impl ProductionStreamRuntime {
     /// Returns an error for an invalid writer lease, read policy, or stream
     /// configuration.
     pub fn new(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         chunk_io: &ChunkIoClient,
         writer_lease_ms: u64,
         read_policy: ChunkReadPolicy,
@@ -47,7 +47,7 @@ impl ProductionStreamRuntime {
     ///
     /// Returns an error for an invalid writer lease, mirror count, read policy, or stream configuration.
     pub fn new_with_mirror_copies(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         chunk_io: &ChunkIoClient,
         writer_lease_ms: u64,
         read_policy: ChunkReadPolicy,

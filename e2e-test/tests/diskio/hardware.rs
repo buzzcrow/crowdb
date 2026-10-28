@@ -4,6 +4,6 @@
 #[tokio::test]
 #[ignore = "requires the owned container fixture"]
 async fn seed() {
-    let hardware = crowdb_kv_client::HardwareClient::new(crate::common::hardware::kv_client());
+    let hardware = crowdb_paxos_kv_client::HardwareClient::new(crate::common::hardware::kv_client());
     crate::common::hardware::seed_hardware(&hardware, &crate::common::hardware::standard_disk_ids_4()).await;
 }

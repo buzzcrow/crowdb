@@ -3,7 +3,7 @@
 
 //! Data-group fencing for `DiskGroup` management handovers.
 
-use crowdb_kv_client::{BatchOp, Error, GetOutcome, ReadMode, Result};
+use crowdb_paxos_kv_client::{BatchOp, Error, GetOutcome, ReadMode, Result};
 use crowdb_protocol::{
     common::{DiskId, HwStatus},
     key::DiskKey,
@@ -44,7 +44,7 @@ impl DdbKvClient {
         group: &crate::model::disk_group::DdbDiskGroup,
         disk: &DiskId,
     ) -> Result<()> {
-        let hardware = crowdb_kv_client::HardwareClient::from_shared(self.kv.clone());
+        let hardware = crowdb_paxos_kv_client::HardwareClient::from_shared(self.kv.clone());
         let Some(fence) = &self.fence else {
             if self.require_fence {
                 return Err(fenced());

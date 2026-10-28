@@ -20,10 +20,10 @@ class DiscoveryBrowserCluster(ShellBrowserCluster):
     def start(self):
         subnet = create_network(self)
         provider = str(subnet.network_address + 2)
-        monitor = "http://127.0.0.1:9095"
+        monitor = "http://127.0.0.1:26135"
         host = json.loads(self.command("info", "--format", "{{json .}}"))["ID"]
         self.addresses.append(start_node(self, 0, node_data(self, 0),
-            ("server", "web", "--bind", "0.0.0.0", "--port", "9091",
+            ("server", "web", "--bind", "0.0.0.0", "--port", "7135",
              "--ui-root", "/opt/crowdb/ui", "--log-dir", "/opt/crowdb/data/log/web",
              "--node-monitor", monitor), address=provider,
             environment=("CROWDB_RUNTIME_ROOT=/opt/crowdb/data",)))
@@ -40,9 +40,9 @@ class DiscoveryBrowserCluster(ShellBrowserCluster):
                          "CROWDB_SSH_PASSWORD=crowdb", f"CROWDB_CLUSTER={self.run_id}",
                          f"CROWDB_PHYSICAL_HOST_ID={host}"),
             network_container=self.servers[0]))
-        wait(lambda: HTTP.open(f"http://{self.addresses[0]}:9091/healthz", timeout=5).read(),
+        wait(lambda: HTTP.open(f"http://{self.addresses[0]}:7135/healthz", timeout=5).read(),
              lambda body: body == b"ok", "independent release Web", seconds=20)
-        wait(lambda: HTTP.open(f"http://{self.addresses[0]}:9091/api/node/candidates", timeout=5).read(),
+        wait(lambda: HTTP.open(f"http://{self.addresses[0]}:7135/api/node/candidates", timeout=5).read(),
              lambda body: json.loads(body)["local"]["advertisement"]["monitor_endpoints"],
              "release monitor observations", seconds=10)
         return self
@@ -51,7 +51,7 @@ class DiscoveryBrowserCluster(ShellBrowserCluster):
         with Control(self) as control:
             super().browser(name, config=config, extra_env={
                 "CROWDB_E2E_CONTROL": str(control.directory),
-                "CROWDB_WEB_E2E_BASE_URL": f"http://{self.addresses[0]}:9091"})
+                "CROWDB_WEB_E2E_BASE_URL": f"http://{self.addresses[0]}:7135"})
 
     def control(self, body):
         if body != {"action": "stop-discovery-provider"}:

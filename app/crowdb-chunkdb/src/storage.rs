@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tracing::warn;
 
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{BatchOp, GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_protocol::chunk_task::ChunkTaskValue;
 use crowdb_protocol::chunkdb::rpc::Chunk;
 use crowdb_protocol::common::ChunkId;
@@ -55,14 +55,14 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 
 /// Chunk metadata store — persists `Chunk` records to CROWDB KV.
 pub struct ChunkStore {
-    pub(super) kv: Arc<CrowdbKvClient>,
+    pub(super) kv: Arc<PaxosKvClient>,
     pub(super) bindings: BindingCache,
     scope: Option<(Arc<RangeGuard>, ChunkDomain)>,
 }
 
 impl ChunkStore {
     #[must_use]
-    pub fn new(kv: Arc<CrowdbKvClient>, bindings: BindingCache) -> Self {
+    pub fn new(kv: Arc<PaxosKvClient>, bindings: BindingCache) -> Self {
         Self {
             kv,
             bindings,
@@ -114,12 +114,12 @@ impl ChunkStore {
             .await
         {
             Ok(_) => Ok(()),
-            Err(crowdb_kv_client::Error::OutcomeUnknown) => match self.get_chunk(id).await {
+            Err(crowdb_paxos_kv_client::Error::OutcomeUnknown) => match self.get_chunk(id).await {
                 Ok(stored) if stored == *chunk => Ok(()),
                 Ok(_) | Err(StoreError::ChunkNotFound) => Err(StoreError::Conflict),
                 Err(error) => Err(error),
             },
-            Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {
+            Err(crowdb_paxos_kv_client::Error::CasFailed { .. } | crowdb_paxos_kv_client::Error::CasBusy) => {
                 Err(StoreError::ChunkAlreadyExists)
             }
             Err(error) => Err(StoreError::Kv(error.to_string())),
@@ -179,9 +179,9 @@ impl ChunkStore {
         {
             Ok(_) => Ok(()),
             Err(
-                crowdb_kv_client::Error::CasFailed { .. }
-                | crowdb_kv_client::Error::CasBusy
-                | crowdb_kv_client::Error::OutcomeUnknown,
+                crowdb_paxos_kv_client::Error::CasFailed { .. }
+                | crowdb_paxos_kv_client::Error::CasBusy
+                | crowdb_paxos_kv_client::Error::OutcomeUnknown,
             ) => {
                 match self
                     .kv

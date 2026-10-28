@@ -212,7 +212,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
                 if (disposed || stopped.current) break;
                 const value = { ...defaults[kind], ...(overrides.current[id]?.[kind] ?? {}) };
                 if (kind === 'paxos-kv') await deployServer(id, { rest_port: value.http_port!, rpc_port: value.rpc_port! });
-                else if (kind === 'diskdb') await deployDiskdb(id, { rpc_port: value.rpc_port!, ...(value.keepalive_interval_secs === undefined ? {} : { keepalive_interval_secs: value.keepalive_interval_secs }) });
+                else if (kind === 'diskdb') await deployDiskdb(id, { rpc_port: value.rpc_port!, ...(value.http_port === undefined ? {} : { http_port: value.http_port }), ...(value.keepalive_interval_secs === undefined ? {} : { keepalive_interval_secs: value.keepalive_interval_secs }) });
                 else await serviceRequest(`/nodes/${id}/services/deploy`, 'POST', {
                   kind, ...value,
                   ...(kind === 'diskio' ? { disk_group_id: diskGroup?.id ?? 0 } : {}),

@@ -291,7 +291,7 @@ impl RecoveryScanTask {
     /// Scan one zone: read zone records, extract live busy blocks,
     /// call the placeholder recovery function. Returns the count of
     /// impacted blocks in this zone.
-    async fn scan_zone(&self, zone_index: u32) -> Result<u32, crowdb_kv_client::Error> {
+    async fn scan_zone(&self, zone_index: u32) -> Result<u32, crowdb_paxos_kv_client::Error> {
         let records = self
             .kv
             .read_zone_records(self.bind, &self.disk.disk_id, zone_index)

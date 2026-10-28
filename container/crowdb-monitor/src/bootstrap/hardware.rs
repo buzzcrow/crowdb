@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient};
 use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
 use thiserror::Error;
@@ -16,7 +16,7 @@ const UNIT_BYTES: u64 = 1024 * 1024;
 #[derive(Debug, Error)]
 pub enum HardwareBootstrapError {
     #[error("Group 0 hardware request failed: {0}")]
-    Client(#[from] crowdb_kv_client::Error),
+    Client(#[from] crowdb_paxos_kv_client::Error),
     #[error("bootstrap manifest failed: {0}")]
     Manifest(#[from] ManifestError),
     #[error("monitor lifecycle log failed: {0}")]
@@ -69,7 +69,7 @@ pub struct HardwareBootstrap {
 impl HardwareBootstrap {
     #[must_use]
     pub fn new(management_seed: String) -> Self {
-        let kv = CrowdbKvClient::new(ClientConfig::new(vec![management_seed]));
+        let kv = PaxosKvClient::new(ClientConfig::new(vec![management_seed]));
         Self {
             client: HardwareClient::new(kv),
         }
@@ -444,7 +444,7 @@ fn disk_matches(actual: &DiskValue, expected: &DiskValue) -> bool {
 }
 
 fn verify_written(
-    write: Result<(), crowdb_kv_client::Error>,
+    write: Result<(), crowdb_paxos_kv_client::Error>,
     visible: bool,
 ) -> Result<(), HardwareBootstrapError> {
     if visible {

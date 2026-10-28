@@ -103,9 +103,9 @@ and decides when a completed write group requires a durability barrier.
 - **Flexible EC** — support multiple EC schemes simultaneously, selected
   per-strip based on cluster size and fault tolerance requirements.
 
-**Design philosophy:** "chunkdb is a thin, stateless client of crowdb-kv and
+**Design philosophy:** "chunkdb is a thin, stateless client of crowdb-paxos-kv and
 diskdb." All consensus, replication, and durability are delegated to
-crowdb-kv; block allocation is delegated to diskdb. chunkdb's job is chunk
+crowdb-paxos-kv; block allocation is delegated to diskdb. chunkdb's job is chunk
 lifecycle management, placement policy, and EC coordination, nothing more.
 
 ## 2. Non-Goals (Design Envelope)
@@ -113,8 +113,8 @@ lifecycle management, placement policy, and EC coordination, nothing more.
 - **No local block engine.** chunkdb does not own devices or implement block
   reads and writes. Maintenance handlers route I/O through DiskIO services.
 - **No local WAL.** CROWDB KV's WAL is the sole durability mechanism.
-- **No consensus code.** chunkdb is a client of crowdb-kv; all interaction
-  uses the existing crowdb-kv API.
+- **No consensus code.** chunkdb is a client of crowdb-paxos-kv; all interaction
+  uses the existing crowdb-paxos-kv API.
 - **No GC operations in v1.** Garbage collection (reclaim, collapse, merge)
   is deferred to a future requirement. Chunks are allocated and deleted as
   whole units in v1.
@@ -175,11 +175,11 @@ periodic refresh provides a good balance between freshness and performance.
 
 ### 3.4a Watch/notify for real-time updates
 
-chunkdb uses crowdb-kv's watch/notify mechanism for real-time topology updates
+chunkdb uses crowdb-paxos-kv's watch/notify mechanism for real-time topology updates
 in addition to periodic refresh:
 
 - **Watch registration**: chunkdb registers for group-0 watch on disk-group
-  and node status keys via the crowdb-kv watch/notify client.
+  and node status keys via the crowdb-paxos-kv watch/notify client.
 - **Immediate updates**: A notification coalesces into a complete group-0
   topology rebuild. The immutable snapshot is published with one `ArcSwap`
   operation, so allocation never observes a mixture of generations.
@@ -298,7 +298,7 @@ either mirror or EC strips based on configuration and access patterns.
          │                    │                    │
          ▼                    ▼                    ▼
     ┌─────────┐         ┌─────────┐         ┌─────────┐
-    │ crowdb-kv │         │ diskdb  │         │ group-0 │
+    │ crowdb-paxos-kv │         │ diskdb  │         │ group-0 │
     │ (KV)    │         │         │         │Hardware │
     └─────────┘         └─────────┘         └─────────┘
 ```
@@ -488,7 +488,7 @@ allocations account for projected utilization without a placement lock.
   default 30s) fetches full topology from group-0 via `HardwareClient` for
   consistency and missed notification recovery.
 - **Watch/notify integration**: Register for group-0 watch on disk-group and
-  node status keys via crowdb-kv watch/notify client. Notifications coalesce
+  node status keys via crowdb-paxos-kv watch/notify client. Notifications coalesce
   into a complete refresh; no point mutation is published.
 - Fetch all nodes with status and rack assignment
 - Fetch all disk-groups with capacity and node assignment

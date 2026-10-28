@@ -30,11 +30,11 @@ object methods so fields propagate. Defaults remain file=`debug`, console=`info`
 - Put integration tests in `<crate>/tests/*_test.rs`; helpers belong in
   `tests/common/` and use `Test*` names. Do not add inline test modules,
   `tests/testkit/`, or fixtures under `src/`.
-- Keep Paxos tests under `lib/crowdb-kv/tests/paxos_test/`, entered by
-  `lib/crowdb-kv/tests/paxos_test.rs`.
+- Keep Paxos tests under `lib/crowdb-paxos-kv/tests/paxos_test/`, entered by
+  `lib/crowdb-paxos-kv/tests/paxos_test.rs`.
 - Use `CROWDB_TEST_LOG=1` and `tests/common/logging.rs` for test tracing.
 - Expose useful new state through `StatusLevel` or the relevant `*Status`
-  type in `lib/crowdb-kv/src/cluster/status.rs`; shared wire types live in
+  type in `lib/crowdb-paxos-kv/src/cluster/status.rs`; shared wire types live in
   `lib/crowdb-protocol/src/mgmt.rs`.
 - Track new TODO/FIXME items in `doc/todo_code.md`; remove both together.
 

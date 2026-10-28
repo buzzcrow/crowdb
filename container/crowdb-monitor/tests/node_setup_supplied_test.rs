@@ -1,8 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
 use crowdb_monitor::{DeploymentProfile, NodeIdentity, NodeSetupForTests};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient};
 use crowdb_protocol::{
     common::{BindMapValue, NodeValue, RackValue},
     diskdb::rpc::DiskGroupValue,
@@ -109,7 +109,7 @@ impl TestSetup {
     async fn authority(&self) -> node_setup::TestAuthority {
         let authority = node_setup::TestAuthority::start(self.root.path(), &self.request).await;
         assert_eq!(authority.registry.nodes[0].physical_host_id, "owned-host");
-        let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(
+        let hardware = HardwareClient::new(PaxosKvClient::new(ClientConfig::new(
             authority.binding.management_seeds.clone(),
         )));
         hardware
@@ -249,7 +249,7 @@ async fn media_class_placement_and_disk_operations_survive_repeated_background_p
             disk_group_id: request.record.disk_group_id,
             disk_id: request.record.disk_id,
         };
-        let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(
+        let hardware = HardwareClient::new(PaxosKvClient::new(ClientConfig::new(
             authority.binding.management_seeds.clone(),
         )));
         assert!(

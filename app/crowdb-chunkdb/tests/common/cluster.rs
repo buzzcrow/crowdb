@@ -33,22 +33,22 @@ use crowdb_diskdb::recovery::ZoneLoader;
 use crowdb_diskdb::scanner::ScanState;
 use crowdb_diskdb::service::DiskdbRpcService;
 use crowdb_diskdb_client::DiskdbRpcTransport;
-use crowdb_kv::cluster::KvServer;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv::cluster::PaxosKvServer;
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{RelocateSegmentHandoffRequest, RelocationHandoffDisposition};
 use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue, Segment};
 
 pub struct KvCluster {
-    memory_store: Arc<crowdb_kv::cluster::PxKvStore>,
+    memory_store: Arc<crowdb_paxos_kv::cluster::PxKvStore>,
     endpoint: String,
 }
 
 impl KvCluster {
     /// Pinned memory dependency for component handler tests.
     pub async fn start_pinned() -> Self {
-        use crowdb_kv::cluster::group::PxGroup;
-        use crowdb_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
+        use crowdb_paxos_kv::cluster::group::PxGroup;
+        use crowdb_paxos_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
         let store = Arc::new(PxKvStore::new(0, "127.0.0.1:0".parse().unwrap()));
         for id in [0, 1] {
             store.add_group(PxGroup::new(
@@ -64,8 +64,8 @@ impl KvCluster {
         }
     }
 
-    pub fn make_crowdb_client(&self) -> Arc<CrowdbKvClient> {
-        let kv = CrowdbKvClient::new(ClientConfig::new(vec![]));
+    pub fn make_crowdb_client(&self) -> Arc<PaxosKvClient> {
+        let kv = PaxosKvClient::new(ClientConfig::new(vec![]));
         kv.seed_leader(0, 0, self.endpoint.clone());
         kv.seed_leader(0, 1, self.endpoint.clone());
         Arc::new(kv)

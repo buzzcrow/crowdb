@@ -62,10 +62,10 @@ pub struct DeployNodeServerBody {
     /// `--send-queue-capacity` value for per-connection send queue.
     #[serde(default)]
     send_queue_capacity: Option<u32>,
-    /// Optional `--config` JSON path passed to the spawned `crowdb-kv-server`.
+    /// Optional `--config` JSON path passed to the spawned `crowdb-paxos-kv-server`.
     #[serde(default)]
     config: Option<String>,
-    /// `--rpc-workers` value for the spawned `crowdb-kv-server`.
+    /// `--rpc-workers` value for the spawned `crowdb-paxos-kv-server`.
     #[serde(default)]
     rpc_workers: Option<u32>,
 }
@@ -105,7 +105,7 @@ pub async fn http_get_node_server(
     Ok(Json(entry))
 }
 
-/// `POST /api/nodes/:node_id/server/deploy`. Spawn `crowdb-kv-server` on
+/// `POST /api/nodes/:node_id/server/deploy`. Spawn `crowdb-paxos-kv-server` on
 /// the node (local fork for `ssh_user=""`, SSH otherwise), wait for
 /// health, persist the deployment record.
 ///
@@ -179,9 +179,9 @@ async fn deploy_node_server(
 }
 
 /// `POST /api/nodes/:node_id/server/restart`. Stop the tracked
-/// `crowdb-kv-server` process on this node (if any) and immediately
+/// `crowdb-paxos-kv-server` process on this node (if any) and immediately
 /// re-deploy on the same ports recorded in the `ServerEntry`. The
-/// binary path falls back to `CROWDB_KV_SERVER_BIN` / `"crowdb-kv-server"`
+/// binary path falls back to `CROWDB_PAXOS_KV_SERVER_BIN` / `"crowdb-paxos-kv-server"`
 /// the same way the initial deploy does when no `binary` override
 /// is supplied. Returns the new `DeployResult`.
 ///
@@ -313,7 +313,7 @@ fn deployment_request(
         group0_management_seeds: (*state.authority_seeds).clone(),
         election_profile: body
             .election_profile
-            .or_else(|| std::env::var("CROWDB_KV_SERVER_ELECTION_PROFILE").ok()),
+            .or_else(|| std::env::var("CROWDB_PAXOS_KV_SERVER_ELECTION_PROFILE").ok()),
         binary: body.binary.map(std::path::PathBuf::from),
         kv_backend: body.kv_backend,
         wal_backend: body.wal_backend,

@@ -52,11 +52,11 @@ pub(crate) async fn run(args: NodeRunArgs) -> Result<(), Box<dyn std::error::Err
         .collect();
     let config = NodeRuntimeConfig {
         profile: args.profile,
-        bind: "0.0.0.0:9095".parse()?,
+        bind: std::net::SocketAddr::from(([0, 0, 0, 0], crowdb_protocol::MONITOR_HTTP_BASE)),
         discovery: DiscoveryConfig {
             interfaces: args.interface,
             addresses,
-            monitor_port: 9095,
+            monitor_port: crowdb_protocol::MONITOR_HTTP_BASE,
             cluster_id: None,
             seeds: discovery_seeds(),
         },

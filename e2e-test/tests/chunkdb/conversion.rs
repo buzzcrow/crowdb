@@ -7,7 +7,7 @@ use bytes::Bytes;
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_common::ec::{encode_parity_from_shards, EcScheme};
-use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{
     AllocateChunkRequest, Chunk, ChunkType, QueryChunkRequest, SealChunkRequest, Strip, StripType,
 };

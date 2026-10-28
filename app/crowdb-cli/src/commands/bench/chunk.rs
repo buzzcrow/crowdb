@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport, RangeBindingClient, RetryConfig};
 use crowdb_diskdb_client::{DiskdbClient, DiskdbClientError, DiskdbRpcTransport};
-use crowdb_kv_client::{ReadEndpointPolicy, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ReadEndpointPolicy, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{
     AllocateChunkRequest, AppendChunkRequest, Chunk, ChunkState, ChunkType, DeleteChunkRequest,
     QueryChunkRequest, SealChunkRequest, Strip, StripType,
@@ -21,7 +21,7 @@ use crowdb_protocol::generate_chunk_id;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-use super::kv::{build_kv_client, KvClientTunables};
+use super::client::{build_kv_client, KvClientTunables};
 use super::metrics::BenchMetrics;
 use super::verb::{ChunkdbArgs, ChunkdbBenchVerb, ChunkdbStripMode};
 use crate::Cli;

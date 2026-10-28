@@ -14,7 +14,7 @@ workspace = true
 arc-swap = "1.9"
 async-trait = "0.1"
 crowdb-protocol = { path = "../crowdb-protocol" }
-crowdb-kv-client = { path = "../crowdb-kv-client" }
+crowdb-paxos-kv-client = { path = "../crowdb-paxos-kv-client" }
 crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi" }
 bytes = "1"
 clap = { version = "4", features = ["derive"] }

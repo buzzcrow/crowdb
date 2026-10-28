@@ -40,11 +40,11 @@ class CliAttachedCluster(CliClient, Cluster):
                     f"CROWDB_CLUSTER={self.run_id}", "CROWDB_INITIAL_VOTERS=3",
                     "CROWDB_DEPLOYMENT_MODE=local",
                     f"CROWDB_PHYSICAL_HOST_ID={host}",
-                    f"CROWDB_S3_PUBLIC_URI=http://{address}:9091",
-                    f"CROWDB_ICEBERG_PUBLIC_URI=http://{address}:9092",
-                    f"CROWDB_DATASET_PUBLIC_URI=http://{address}:9093",
-                    "CROWDB_DISCOVERY_SEEDS=" + ",".join(f"http://{peer}:9095" for peer in peers))))
-        self.origins = [f"http://{address}:10000" for address in self.addresses]
+                    f"CROWDB_S3_PUBLIC_URI=http://{address}:7135",
+                    f"CROWDB_ICEBERG_PUBLIC_URI=http://{address}:8135",
+                    f"CROWDB_DATASET_PUBLIC_URI=http://{address}:9135",
+                    "CROWDB_DISCOVERY_SEEDS=" + ",".join(f"http://{peer}:26135" for peer in peers))))
+        self.origins = [f"http://{address}:10135" for address in self.addresses]
         for name in self.servers:
             if not json.loads(self.command("inspect", name))[0]["State"]["Running"]:
                 raise AssertionError("plain Docker node exited: " + self.command("logs", name))
@@ -60,7 +60,7 @@ class CliAttachedCluster(CliClient, Cluster):
         return self
 
     def endpoint(self, index):
-        return f"http://{self.addresses[index]}:9090"
+        return f"http://{self.addresses[index]}:6135"
 
     def inventory(self):
         containers = [json.loads(self.command("inspect", name))[0] for name in self.servers]
@@ -90,17 +90,17 @@ class CliAttachedCluster(CliClient, Cluster):
         before = self.inventory()
         for domain in ("rack", "node", "disk-group", "disk"):
             assert self.invoke("cluster", domain, "list", endpoint=self.endpoint(1)).strip()
-        assert self.invoke("kv", "store", "list").strip()
-        assert self.invoke("kv", "group", "list", "--store", "0").strip()
+        assert self.invoke("paxos-kv", "store", "list").strip()
+        assert self.invoke("paxos-kv", "group", "list", "--store", "0").strip()
         key, value = "cli-attach/" + self.run_id, "verified-selected-cluster"
-        self.invoke("kv", "data", "put",
+        self.invoke("paxos-kv", "data", "put",
                     "--store", "0", "--group", "0", "--key", key, "--value", value)
         for index in range(3):
-            found = self.invoke("kv", "data", "get", "--store", "0", "--group", "0", "--key", key,
+            found = self.invoke("paxos-kv", "data", "get", "--store", "0", "--group", "0", "--key", key,
                                 endpoint=self.endpoint(index))
             assert value in found, found
-        self.invoke("kv", "data", "delete", "--store", "0", "--group", "0", "--key", key)
-        assert "not found" in self.invoke("kv", "data", "get", "--store", "0", "--group", "0", "--key", key)
+        self.invoke("paxos-kv", "data", "delete", "--store", "0", "--group", "0", "--key", key)
+        assert "not found" in self.invoke("paxos-kv", "data", "get", "--store", "0", "--group", "0", "--key", key)
         self.invoke("s3", "bucket", "put", "cli-attach", endpoint=self.endpoint(2))
         self.invoke("s3", "object", "put", "cli-attach", "witness", "--text", value)
         for index in range(3):

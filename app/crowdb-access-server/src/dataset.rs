@@ -16,7 +16,7 @@ use crowdb_access_dataset::{
 use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig as ChunkKvConfig, Group0ChunkKvRangeCatalogSource,
 };
-use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig as KvConfig, PaxosKvClient};
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
@@ -146,7 +146,7 @@ pub async fn run_with_shutdown(
         .listen
         .clone()
         .or_else(|| std::env::var("CROWDB_DATASET_LISTEN").ok())
-        .unwrap_or_else(|| "127.0.0.1:9093".into());
+        .unwrap_or_else(|| format!("127.0.0.1:{}", crowdb_protocol::ACCESS_SERVER_DATASET_HTTP_BASE));
     let _: std::net::SocketAddr = address.parse()?;
     let seeds = if access.common.management_seeds.is_empty() {
         std::env::var("CROWDB_MANAGEMENT_SEEDS")?
@@ -161,7 +161,7 @@ pub async fn run_with_shutdown(
     if seeds.is_empty() {
         return Err("one or more management seeds are required".into());
     }
-    let control = Arc::new(CrowdbKvClient::new(KvConfig::new(seeds.clone())));
+    let control = Arc::new(PaxosKvClient::new(KvConfig::new(seeds.clone())));
     let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::clone(&control)));
     let chunk_config = ChunkKvConfig::default();
     let transport = Arc::new(ChunkKvRpcTransport::with_config(
@@ -331,7 +331,7 @@ pub fn start_dataset_cleanup_for_tests(
 
 async fn connect_payloads(
     seeds: Vec<String>,
-    control: Arc<CrowdbKvClient>,
+    control: Arc<PaxosKvClient>,
     capacity: usize,
     mut small_write: crowdb_chunk_client::SmallWritePolicy,
 ) -> Result<crowdb_chunk_client::ChunkIoClient, BoxError> {

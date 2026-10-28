@@ -3,13 +3,13 @@
 
 use super::cluster::{leader, topology};
 use crate::common::management::{addresses, client, origin, request};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, PaxosKvClient, ReadMode};
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
-fn kv(ips: &[String]) -> CrowdbKvClient {
-    CrowdbKvClient::new(ClientConfig::new(ips.iter().map(|ip| origin(ip)).collect()))
+fn kv(ips: &[String]) -> PaxosKvClient {
+    PaxosKvClient::new(ClientConfig::new(ips.iter().map(|ip| origin(ip)).collect()))
 }
 
 pub(super) async fn wire_initial(http: &Client, ips: &[String]) {
@@ -66,7 +66,7 @@ async fn shrink(http: &Client, ips: &[String]) {
     }
 }
 
-async fn exact(kv: &CrowdbKvClient, store: u64, key: &[u8], value: &[u8]) {
+async fn exact(kv: &PaxosKvClient, store: u64, key: &[u8], value: &[u8]) {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match kv.get(store, 1, key, ReadMode::Linearizable, None).await.unwrap() {

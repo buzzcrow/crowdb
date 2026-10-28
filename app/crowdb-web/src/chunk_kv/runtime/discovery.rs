@@ -6,7 +6,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crowdb_console_shared::config::ServiceType;
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use crowdb_protocol::{common::InstanceValue, key::InstanceKey};
 
 use super::super::Failure;

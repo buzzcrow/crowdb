@@ -1,14 +1,14 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Axum middleware that propagates the `x-crowdb-kv-corr-id` header.
+//! Axum middleware that propagates the `x-crowdb-paxos-kv-corr-id` header.
 //!
 //! For every inbound request:
-//! 1. Read `x-crowdb-kv-corr-id` from the request, or generate a new one
+//! 1. Read `x-crowdb-paxos-kv-corr-id` from the request, or generate a new one
 //!    via `shared::corr_id::new()` if absent.
 //! 2. Open a `shared::corr_id::scope` so any outbound client call made
 //!    inside the handler attaches the same id to its
-//!    `x-crowdb-kv-corr-id` header (see `ConsoleClient` /
+//!    `x-crowdb-paxos-kv-corr-id` header (see `ConsoleClient` /
 //!    `ServerClient` plumbing).
 //! 3. Add the id to the response headers so the SPA / CLI can echo it
 //!    in user-facing error messages and operators can grep one log

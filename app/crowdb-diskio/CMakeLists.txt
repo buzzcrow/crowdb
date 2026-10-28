@@ -19,11 +19,11 @@ add_compile_options(-Wall -Wextra -Werror)
 # add crowdb-common separately here (avoids duplicate target collision).
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../lib/crowdb-rpc crowdb-rpc-build)
 
-# ── crowdb-kv-client FFI (Rust cdylib with --features ffi) ──────────
-# crowdb-kv-client produces both an rlib (for Rust dependents) and a
+# ── crowdb-paxos-kv-client FFI (Rust cdylib with --features ffi) ──────────
+# crowdb-paxos-kv-client produces both an rlib (for Rust dependents) and a
 # cdylib (for C++ consumers). The cdylib exports C ABI symbols only
 # when built with the `ffi` feature.
-set(CROWDB_KV_CLIENT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../lib/crowdb-kv-client)
+set(CROWDB_PAXOS_KV_CLIENT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../lib/crowdb-paxos-kv-client)
 set(CROWDB_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
   set(CARGO_PROFILE release)
@@ -31,16 +31,16 @@ else()
   set(CARGO_PROFILE debug)
 endif()
 if(APPLE)
-  set(CROWDB_KV_CLIENT_FFI_LIB ${CROWDB_ROOT_DIR}/target/${CARGO_PROFILE}/libcrowdb_kv_client.dylib)
+  set(CROWDB_PAXOS_KV_CLIENT_FFI_LIB ${CROWDB_ROOT_DIR}/target/${CARGO_PROFILE}/libcrowdb_paxos_kv_client.dylib)
 else()
-  set(CROWDB_KV_CLIENT_FFI_LIB ${CROWDB_ROOT_DIR}/target/${CARGO_PROFILE}/libcrowdb_kv_client.so)
+  set(CROWDB_PAXOS_KV_CLIENT_FFI_LIB ${CROWDB_ROOT_DIR}/target/${CARGO_PROFILE}/libcrowdb_paxos_kv_client.so)
 endif()
-add_custom_target(crowdb-kv-client-ffi
-  BYPRODUCTS ${CROWDB_KV_CLIENT_FFI_LIB}
-  COMMAND pixi run cargo build -p crowdb-kv-client --features ffi
+add_custom_target(crowdb-paxos-kv-client-ffi
+  BYPRODUCTS ${CROWDB_PAXOS_KV_CLIENT_FFI_LIB}
+  COMMAND pixi run cargo build -p crowdb-paxos-kv-client --features ffi
           $<$<STREQUAL:${CARGO_PROFILE},release>:--release>
   WORKING_DIRECTORY ${CROWDB_ROOT_DIR}
-  COMMENT "Building crowdb-kv-client (Rust cdylib with ffi feature)"
+  COMMENT "Building crowdb-paxos-kv-client (Rust cdylib with ffi feature)"
   VERBATIM
 )
 
@@ -53,7 +53,7 @@ target_include_directories(crowdb-diskio-lib
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
          ${CMAKE_CURRENT_SOURCE_DIR}/../../lib/crowdb-common/cpp/include
          ${CMAKE_CURRENT_SOURCE_DIR}/../../lib/crowdb-rpc/include
-         ${CROWDB_KV_CLIENT_DIR}/include
+         ${CROWDB_PAXOS_KV_CLIENT_DIR}/include
   PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/crowdb-rpc-build/generated
           ${CMAKE_CURRENT_SOURCE_DIR}/../../lib/crowdb-protocol/cpp/include
 )
@@ -67,8 +67,8 @@ target_include_directories(crowdb-diskio PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_BINARY_DIR}/crowdb-rpc-build/generated
 )
-target_link_libraries(crowdb-diskio PRIVATE crowdb-diskio-lib ${CROWDB_KV_CLIENT_FFI_LIB} ${CMAKE_DL_LIBS})
-add_dependencies(crowdb-diskio crowdb-kv-client-ffi)
+target_link_libraries(crowdb-diskio PRIVATE crowdb-diskio-lib ${CROWDB_PAXOS_KV_CLIENT_FFI_LIB} ${CMAKE_DL_LIBS})
+add_dependencies(crowdb-diskio crowdb-paxos-kv-client-ffi)
 set_target_properties(crowdb-diskio PROPERTIES
   BUILD_RPATH ${CROWDB_ROOT_DIR}/target/${CARGO_PROFILE}
 )

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use crowdb_protocol::chunk_kv::{ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage};
 use crowdb_protocol::key::{ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, TextKey};
 
-use crowdb_kv_client::{CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, PaxosKvClient, ReadMode};
 
 use crate::{ClientError, Result};
 
@@ -24,12 +24,12 @@ pub trait ChunkKvRangeCatalogSource: Send + Sync {
 
 /// Production catalog source reading immutable pages from group 0.
 pub struct Group0ChunkKvRangeCatalogSource {
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
 }
 
 impl Group0ChunkKvRangeCatalogSource {
     #[must_use]
-    pub fn from_shared(kv: Arc<CrowdbKvClient>) -> Self {
+    pub fn from_shared(kv: Arc<PaxosKvClient>) -> Self {
         Self { kv }
     }
 

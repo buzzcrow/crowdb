@@ -282,7 +282,7 @@ bool DioConfig::parse_args(int argc, char *argv[], DioConfig &out, std::string &
         }
         else if (arg == "--kv-seeds" && i + 1 < argc) {
             // Comma-separated list of kv-server management endpoints.
-            // e.g. --kv-seeds http://127.0.0.1:10000,http://127.0.0.1:10001
+            // e.g. --kv-seeds http://127.0.0.1:10135,http://127.0.0.1:10136
             std::string seeds = argv[++i];
             if (!cli_kv_seeds) {
                 out.kv_seeds.clear();

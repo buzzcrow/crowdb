@@ -12,7 +12,7 @@ use crowdb_console_shared::{
     ops::{cluster::readiness, OpContext},
     ConsoleConfig,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::mgmt::{
     cluster::{ClusterStatus, DependencyKind, DependencyObservation, DependencyState, ReadinessReason},
     node::observation::NodeRuntimeObservation,
@@ -37,7 +37,7 @@ pub(crate) async fn read(State(state): State<AppState>) -> Result<Json<ClusterSt
         .binding
         .as_ref()
         .map_or_else(Vec::new, |binding| binding.management_seeds.clone());
-    let client = Arc::new(CrowdbKvClient::new(ClientConfig::new(seeds.clone())));
+    let client = Arc::new(PaxosKvClient::new(ClientConfig::new(seeds.clone())));
     let context = OpContext::with_shared_client_preserving_hint(client, &seeds, ConsoleConfig::default());
     let id = local.binding.as_ref().map_or_else(
         || "local-node/observation".into(),

@@ -26,7 +26,7 @@ impl Drop for TestProcess {
 #[tokio::test]
 async fn ssh_launch_uses_referenced_key_and_preserves_literal_arguments() {
     let dir = tempdir_in_test_data("launch-ssh");
-    std::env::set_var("CROWDB_KV_KNOWN_HOSTS", dir.path().join("known-hosts"));
+    std::env::set_var("CROWDB_PAXOS_KV_KNOWN_HOSTS", dir.path().join("known-hosts"));
     let key = russh::keys::key::KeyPair::generate_ed25519().unwrap();
     let credentials = dir.path().join("credentials");
     std::fs::create_dir_all(&credentials).unwrap();

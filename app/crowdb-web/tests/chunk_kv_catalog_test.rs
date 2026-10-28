@@ -13,7 +13,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
     ChunkKvRangeCatalogPartitionState, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
@@ -44,7 +44,7 @@ async fn get(app: axum::Router, query: &str) -> (StatusCode, Value) {
 #[tokio::test]
 async fn catalog_windows_pin_generation_validate_checksums_and_keep_exact_ids() {
     let cluster = memory_kv::TestKvCluster::start().await;
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+    let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
         cluster.mgmt_endpoints.clone(),
     )));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
@@ -303,7 +303,7 @@ fn catalog_fixture() -> (ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage) {
     (head, page)
 }
 
-async fn verify_balance(kv: &CrowdbKvClient, app: &axum::Router, page: &ChunkKvRangeCatalogPage) {
+async fn verify_balance(kv: &PaxosKvClient, app: &axum::Router, page: &ChunkKvRangeCatalogPage) {
     use crowdb_protocol::chunk_kv::balance::OBSERVATION_KEY;
     catalog_balance::seed(kv, page).await;
     let (status, first) = get(app.clone(), "").await;
@@ -319,12 +319,12 @@ async fn verify_balance(kv: &CrowdbKvClient, app: &axum::Router, page: &ChunkKvR
         first["entries"][0]["balance"]["partition"]["weight"]["byte_units"],
         "7619047"
     );
-    let crowdb_kv_client::GetOutcome::Found { value, .. } = kv
+    let crowdb_paxos_kv_client::GetOutcome::Found { value, .. } = kv
         .get(
             0,
             0,
             OBSERVATION_KEY.as_bytes(),
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await

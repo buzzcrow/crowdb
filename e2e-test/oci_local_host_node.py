@@ -20,7 +20,7 @@ class LocalHostNode(HostNode):
         self.devices, self.disk_files = [], []
         lines = ['version = 1', 'mode = "local"', f'cluster = "{self.cluster}"', 'initial_voters = 1',
                  '[public_access]', *[f'{kind} = "http://{self.ip}:{port}"'
-                 for kind, port in [('s3',9091), ('iceberg',9092), ('dataset',9093)]],
+                 for kind, port in [('s3',7135), ('iceberg',8135), ('dataset',9135)]],
                  '[storage]', 'mode = "automatic"', 'capacity_bytes = 8589934592',
                  'reserve_bytes = 1073741824', 'sparse = true']
         self.policy.write_text('\n'.join(lines) + '\n')

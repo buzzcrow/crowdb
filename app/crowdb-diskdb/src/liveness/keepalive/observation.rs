@@ -130,7 +130,7 @@ impl KeepAlive {
         &self,
         owner: &crowdb_protocol::DiskdbOwnerEntry,
         bind: (u64, u64),
-    ) -> crowdb_kv_client::Result<std::sync::Arc<crate::ddb_kv_client::OwnershipFence>> {
+    ) -> crowdb_paxos_kv_client::Result<std::sync::Arc<crate::ddb_kv_client::OwnershipFence>> {
         use crowdb_protocol::key::OwnerMapKey;
         let epoch = self.ensure_process_session().await?;
         let generation = self

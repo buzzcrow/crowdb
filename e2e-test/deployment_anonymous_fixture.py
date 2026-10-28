@@ -23,9 +23,9 @@ class AnonymousReleaseCluster(ManagedCluster):
                 raise AssertionError("anonymous-volume startup exited: " + self.command("logs", self.servers[0]))
             try:
                 self.command("exec", self.servers[0], "/opt/crowdb/bin/crowdb-monitor", "readiness")
-                if HTTP.open(f"http://{address}:9090/healthz", timeout=5).read() != b"ok":
+                if HTTP.open(f"http://{address}:6135/healthz", timeout=5).read() != b"ok":
                     raise RuntimeError("default release Web health response is invalid")
-                if request(f"http://{address}:9090", "/api/cluster/status")["phase"] != "ready":
+                if request(f"http://{address}:6135", "/api/cluster/status")["phase"] != "ready":
                     raise RuntimeError("default node application is not ready")
                 break
             except (RuntimeError, OSError):
@@ -35,7 +35,7 @@ class AnonymousReleaseCluster(ManagedCluster):
         info = json.loads(self.command("inspect", self.servers[0]))[0]
         accepted = json.loads(self.command("exec", self.servers[0], "cat",
                                           "/opt/crowdb/data/accepted-node.json"))
-        status = request(f"http://{address}:9090", "/api/cluster/status")
+        status = request(f"http://{address}:6135", "/api/cluster/status")
         (self.artifacts / "anonymous-runtime.json").write_text(json.dumps({
             "mounts": info["Mounts"], "accepted": accepted, "status": status,
             "log": self.command("logs", self.servers[0])}, indent=2))

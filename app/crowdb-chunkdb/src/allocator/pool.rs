@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use arc_swap::ArcSwap;
 
 use crowdb_diskdb_client::{DiskdbClientError, DiskdbRpcTransport};
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::{
     AllocateBlocksRequest, AllocateResponse, ExecuteRelocationRequest, ExecuteRelocationResponse,

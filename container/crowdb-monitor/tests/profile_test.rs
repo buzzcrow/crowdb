@@ -60,7 +60,7 @@ port = 14000
 
 [[services]]
 id = "kv"
-program = "/opt/crowdb/bin/crowdb-kv-server"
+program = "/opt/crowdb/bin/crowdb-paxos-kv-server"
 args = []
 dependencies = []
 config_template = "/opt/crowdb/etc/templates/kv.toml"

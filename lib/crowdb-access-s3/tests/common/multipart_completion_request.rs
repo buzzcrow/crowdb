@@ -9,7 +9,7 @@ use crowdb_access_s3::{
     storage::S3StorageClients,
     S3ErrorCode,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 
 use super::retrieval_storage::TestReadStorage;
 use super::{actor::TestProbe, part, repository_with_probe, session, CompletionPart, MetadataKey, TenantId};
@@ -29,7 +29,7 @@ impl TestCompletion {
         let chunks = Arc::new(TestReadStorage { queries: 0.into() });
         let executor = S3Executor::new(
             S3StorageClients {
-                control: Arc::new(CrowdbKvClient::new(ClientConfig::new(Vec::new()))),
+                control: Arc::new(PaxosKvClient::new(ClientConfig::new(Vec::new()))),
                 metadata: store.clone(),
                 chunks: Arc::new(chunks.client()),
             },

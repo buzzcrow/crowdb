@@ -157,7 +157,10 @@ impl Launch {
             || owner.is_nil()
             || owner.to_string() != self.owner
             || !matches!(self.nodes, 1 | 3)
-            || !(1..=65512).contains(&self.port_base)
+            || !(1..=u16::MAX
+                - (crowdb_protocol::ACCESS_SERVER_DATASET_HTTP_BASE - crowdb_protocol::WEB_BASE)
+                - 2)
+                .contains(&self.port_base)
             || !self.cpus.is_finite()
             || self.cpus <= 0.0
             || self.cpus > f64::from(u32::MAX)
@@ -179,7 +182,7 @@ impl Launch {
     }
     pub fn origins(&self) -> Vec<String> {
         (0..self.nodes)
-            .map(|index| format!("http://127.0.0.1:{}", self.port_base + u16::from(index) * 10))
+            .map(|index| format!("http://127.0.0.1:{}", self.port_base + u16::from(index)))
             .collect()
     }
     pub fn resource_name(&self, kind: &str, index: u8) -> String {

@@ -14,8 +14,8 @@ fn client() -> ChunkKvClient {
         .iter()
         .map(|ip| crate::common::management::origin(ip))
         .collect();
-    let kv = Arc::new(crowdb_kv_client::CrowdbKvClient::new(
-        crowdb_kv_client::ClientConfig::new(seeds),
+    let kv = Arc::new(crowdb_paxos_kv_client::PaxosKvClient::new(
+        crowdb_paxos_kv_client::ClientConfig::new(seeds),
     ));
     ChunkKvClient::new(
         ClientConfig::default(),

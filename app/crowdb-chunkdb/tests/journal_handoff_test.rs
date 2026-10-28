@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use crowdb_chunkdb::storage::{decode_chunk_for_tests, encode_chunk_for_tests};
-use crowdb_kv::cluster::group::{ProposeResult, PxGroup};
-use crowdb_kv::cluster::{PxLocalReplica, PxLocalReplicaRole};
-use crowdb_kv::kv::{CrowdbTreeConfig, CrowdbTreeEngine, KVEngine};
-use crowdb_kv::paxos::learner::PxLearner;
-use crowdb_kv::paxos::roles::{PxBallot, PxLogEntry};
+use crowdb_paxos_kv::cluster::group::{ProposeResult, PxGroup};
+use crowdb_paxos_kv::cluster::{PxLocalReplica, PxLocalReplicaRole};
+use crowdb_paxos_kv::kv::{CrowdbTreeConfig, CrowdbTreeEngine, KVEngine};
+use crowdb_paxos_kv::paxos::learner::PxLearner;
+use crowdb_paxos_kv::paxos::roles::{PxBallot, PxLogEntry};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkType};
 use crowdb_protocol::common::ChunkId;
 

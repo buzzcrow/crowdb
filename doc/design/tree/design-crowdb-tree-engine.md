@@ -3,7 +3,7 @@
 
 # CROWDB - Design: crowdb-tree In-Memory Engine
 
-Depends on: [`design-crowdb-tree.md`](design-crowdb-tree.md), [`../kv/design-crowdb-kv-state-machine.md`](../kv/design-crowdb-kv-state-machine.md) (apply semantics, slot rules)
+Depends on: [`design-crowdb-tree.md`](design-crowdb-tree.md), [`../kv/design-crowdb-paxos-kv-state-machine.md`](../kv/design-crowdb-paxos-kv-state-machine.md) (apply semantics, slot rules)
 Satisfies: [`design-crowdb-tree.md`](design-crowdb-tree.md) §2 (in-memory engine architecture)
 
 This document specifies crowdb-tree's in-memory engine: the bounded 2-level
@@ -784,7 +784,7 @@ resolves on the next DiskIOUring-driven wakeup.
 
 ## 4. Rust-Side `KVEngine` Async Trait Shape
 
-> **Merged from `design-crowdb-kv-async-kvengine.md` (2026-07).**
+> **Merged from `design-crowdb-paxos-kv-async-kvengine.md` (2026-07).**
 > **Status:** implemented (landed 2026-07-09).
 > This section records the design of the Rust-side `KVEngine` trait's async
 > shape (`KVFuture<T>`) and why it looks the way it does, kept as the
@@ -840,7 +840,7 @@ pub trait KVEngine: Send + Sync {
 
 `Ready` costs nothing beyond the enum tag + inline value, no allocation, no
 `Pin<Box<..>>`. `InMemKV` always returns `Ready`. `CrowdbTreeEngine::get`
-(`lib/crowdb-kv/src/kv/crowdb_tree_engine.rs`) does the same fast-path check the C++
+(`lib/crowdb-paxos-kv/src/kv/crowdb_tree_engine.rs`) does the same fast-path check the C++
 layer does first, via `crowdb_tree_ffi::AsyncCrowdbtree::try_get`; on a resident
 hit/miss it returns `Ready` at zero extra cost, and only on a genuine
 demand-load miss does it construct `Pending`, wrapping the DiskIOUring-driven

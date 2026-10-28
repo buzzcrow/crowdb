@@ -11,11 +11,11 @@ COMPONENT_PACKAGES = {
     "test-cpp": {"crowdb-tree-ffi", "crowdb-rpc-ffi", "crowdb-rpc-test"},
     "test-core": {
         "crowdb-common", "crowdb-test-harness", "crowdb-protocol",
-        "crowdb-kv", "crowdb-kv-client",
+        "crowdb-paxos-kv", "crowdb-paxos-kv-client",
     },
     "test-storage": {
         "crowdb-chunkdb-client", "crowdb-chunk-kv", "crowdb-chunk-kv-client",
-        "crowdb-chunk-kv-server", "crowdb-chunk-stream", "crowdb-kv-server",
+        "crowdb-chunk-kv-server", "crowdb-chunk-stream", "crowdb-paxos-kv-server",
         "crowdb-diskdb", "crowdb-diskdb-client", "crowdb-chunkdb",
         "crowdb-chunk-client", "crowdb-diskio-client",
     },

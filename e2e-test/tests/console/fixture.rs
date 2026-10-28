@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient, ServiceRegistryClient};
 
 pub(super) struct TestKvCluster {
     pub mgmt_endpoints: Vec<String>,
@@ -39,7 +39,7 @@ impl TestKvCluster {
     }
 
     pub fn make_service_registry_client(&self) -> ServiceRegistryClient {
-        let client = CrowdbKvClient::new(ClientConfig::new(self.mgmt_endpoints.clone()));
+        let client = PaxosKvClient::new(ClientConfig::new(self.mgmt_endpoints.clone()));
         client.seed_leader(0, 0, self.group0_leader_endpoint.clone());
         ServiceRegistryClient::new(client)
     }

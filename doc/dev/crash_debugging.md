@@ -30,7 +30,7 @@ cat /proc/sys/fs/suid_dumpable
 
 The container's data volume does not override a host collector. During the
 2026-09-29 Ubuntu development-host check, Apport received the crash but could
-not resolve `/opt/crowdb/bin/crowdb-kv-server` in the host filesystem.
+not resolve `/opt/crowdb/bin/crowdb-paxos-kv-server` in the host filesystem.
 The image contains the executable; the failed lookup happens in Apport. No
 CROWDB core was saved by that test.
 
@@ -108,7 +108,7 @@ Use the exact image that ran the crashed process. Export its binary and shared
 libraries to a private directory, then run:
 
 ```sh
-pixi run -- gdb -q /private/runtime/bin/crowdb-kv-server /private/core
+pixi run -- gdb -q /private/runtime/bin/crowdb-paxos-kv-server /private/core
 (gdb) set solib-search-path /private/runtime/lib
 (gdb) sharedlibrary
 (gdb) set print frame-arguments none
@@ -125,7 +125,7 @@ Bare-metal deployment keeps the binary's debug information. Use the exact
 binary and shared libraries that were running when the core was made:
 
 ```sh
-pixi run -- gdb -q /path/to/exact/crowdb-kv-server /private/core
+pixi run -- gdb -q /path/to/exact/crowdb-paxos-kv-server /private/core
 (gdb) set solib-search-path /path/to/exact/lib
 (gdb) sharedlibrary
 (gdb) set print frame-arguments none

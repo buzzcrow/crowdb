@@ -5,7 +5,7 @@ use crate::{
     config::NodeEntry,
     error::{Error, Result},
 };
-use crowdb_kv_client::{CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_protocol::mgmt::node::{NodeControl, NodeServiceIntent};
 use serde_json::Value;
 
@@ -20,7 +20,7 @@ pub use readiness::diskdb_storage_ready;
 ///
 /// # Errors
 /// Rejects lost quorum, concurrent supersession and failed remote execution.
-pub async fn execute(kv: &CrowdbKvClient, node: &NodeEntry, mut intent: NodeServiceIntent) -> Result<Value> {
+pub async fn execute(kv: &PaxosKvClient, node: &NodeEntry, mut intent: NodeServiceIntent) -> Result<Value> {
     claim_service_id(kv, &intent).await?;
     let key = format!("/deployment/services/{}/{}", intent.node_id, intent.service_id);
     let current = kv.get(0, 0, key.as_bytes(), ReadMode::Linearizable, None).await?;
@@ -45,7 +45,7 @@ pub async fn execute(kv: &CrowdbKvClient, node: &NodeEntry, mut intent: NodeServ
 ///
 /// # Errors
 /// Rejects unavailable authority or invalid stored records.
-pub async fn current(kv: &CrowdbKvClient, node: u64, service: &str) -> Result<Option<NodeServiceIntent>> {
+pub async fn current(kv: &PaxosKvClient, node: u64, service: &str) -> Result<Option<NodeServiceIntent>> {
     let key = format!("/deployment/services/{node}/{service}");
     match kv.get(0, 0, key.as_bytes(), ReadMode::Linearizable, None).await? {
         GetOutcome::Found { value, .. } => serde_json::from_slice(&value)
@@ -59,7 +59,7 @@ pub async fn current(kv: &CrowdbKvClient, node: u64, service: &str) -> Result<Op
 ///
 /// # Errors
 /// Rejects unavailable authority, oversized views or invalid stored records.
-pub async fn list(kv: &CrowdbKvClient) -> Result<Vec<NodeServiceIntent>> {
+pub async fn list(kv: &PaxosKvClient) -> Result<Vec<NodeServiceIntent>> {
     let result = kv
         .scan_bounded(0, 0, b"/deployment/services/", b"", b"", 4096, false, None)
         .await?;
@@ -73,7 +73,7 @@ pub async fn list(kv: &CrowdbKvClient) -> Result<Vec<NodeServiceIntent>> {
         .collect()
 }
 
-async fn claim_service_id(kv: &CrowdbKvClient, intent: &NodeServiceIntent) -> Result<()> {
+async fn claim_service_id(kv: &PaxosKvClient, intent: &NodeServiceIntent) -> Result<()> {
     let key = format!("/deployment/service-owners/{}", intent.service_id);
     let owner = serde_json::to_vec(&(intent.cluster_id.as_str(), intent.node_id, intent.kind.as_str()))
         .map_err(|error| Error::Config(error.to_string()))?;

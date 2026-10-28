@@ -7,7 +7,7 @@ use super::{
     Counters, DiskioClient, DiskioClientConfig, DiskioError, DiskioResult, RouteSnapshot, WireClient,
 };
 use arc_swap::ArcSwap;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient, ServiceRegistryClient};
 use crowdb_rpc_ffi::{ConnectionPoolIndex, RdmaWireLayout, RpcServer};
 use std::sync::{atomic::AtomicU64, Arc};
 
@@ -61,7 +61,7 @@ impl DiskioClient {
         scope: Option<crowdb_protocol::key::DiskKey>,
     ) -> DiskioResult<Self> {
         config.validate(true)?;
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
             config.management_seeds.clone(),
         )));
         kv.refresh_topology()

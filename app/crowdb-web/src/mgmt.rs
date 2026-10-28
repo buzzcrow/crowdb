@@ -159,7 +159,7 @@ pub(crate) fn rpc_is_conflict(err: &SharedError) -> bool {
 }
 
 /// Return the bare `host:port` of the crowdb-rpc listener that hosts `store_id`
-/// on `node_id`. Each `PxKvStore` on a `crowdb-kv-server` binds its own
+/// on `node_id`. Each `PxKvStore` on a `crowdb-paxos-kv-server` binds its own
 /// random port, so the bootstrap `ServerEntry::rpc_url` only points at
 /// the store created at process start (id 1). Operator-created stores
 /// must be looked up via the monitor cache, which carries the actual
@@ -193,7 +193,7 @@ pub(crate) fn strip_scheme(s: String) -> String {
     }
 }
 
-/// Parse `port` out of a URL like `http://host:10000` or `host:10000`.
+/// Parse `port` out of a URL like `http://host:10135` or `host:10135`.
 /// Returns `None` on any shape we don't recognise.
 #[must_use]
 pub(crate) fn port_of(url: &str) -> Option<u16> {
@@ -219,11 +219,13 @@ pub(crate) fn remap_zero_host(addr: &str) -> String {
 /// leader instead of failing with "no seeds configured".
 /// Returns `None` when no group-0 endpoint is known (e.g. cluster not
 /// yet initialized).
-pub(crate) async fn build_hardware_client(state: &AppState) -> Option<crowdb_kv_client::HardwareClient> {
+pub(crate) async fn build_hardware_client(
+    state: &AppState,
+) -> Option<crowdb_paxos_kv_client::HardwareClient> {
     if state.managed_mode {
         let kv = state.kv_client().await;
         kv.refresh_topology().await.ok()?;
-        return Some(crowdb_kv_client::HardwareClient::from_shared(kv));
+        return Some(crowdb_paxos_kv_client::HardwareClient::from_shared(kv));
     }
     if state.node_monitor_url.is_some() {
         let binding = crate::node::cluster_binding(state).ok()??;
@@ -232,7 +234,7 @@ pub(crate) async fn build_hardware_client(state: &AppState) -> Option<crowdb_kv_
         // Admitted remote services have no PID in this console's namespace.
         // A persisted binding supplies discovery before any browser warms the
         // process/topology observation cache, including after a web restart.
-        return Some(crowdb_kv_client::HardwareClient::from_shared(kv));
+        return Some(crowdb_paxos_kv_client::HardwareClient::from_shared(kv));
     }
     let snap = state.monitor_cache.snapshot().await;
     if snap.is_empty() {
@@ -283,7 +285,7 @@ pub(crate) async fn build_hardware_client(state: &AppState) -> Option<crowdb_kv_
             }
         }
     }
-    // Reuse the shared CrowdbKvClient — its topology cache persists
+    // Reuse the shared PaxosKvClient — its topology cache persists
     // across requests so the group-0 leader is already known from prior
     // op_context / clusterInit calls. Creating a new client here would
     // trigger a 5s leader-discovery retry on every poll, saturating the
@@ -324,7 +326,7 @@ pub(crate) async fn build_hardware_client(state: &AppState) -> Option<crowdb_kv_
         // refresh retry. Log at warn so this is visible.
         warn!("build_hardware_client: no rpc endpoint resolved; relying on shared client's cached leader");
     }
-    Some(crowdb_kv_client::HardwareClient::from_shared(kv))
+    Some(crowdb_paxos_kv_client::HardwareClient::from_shared(kv))
 }
 
 /// Check whether group-0 (store 0) is available for a sysdata read.
@@ -388,7 +390,7 @@ mod tests {
             NodeStore {
                 node_id: 7,
                 store_id: 0,
-                listen_addr: Some("127.0.0.1:10001".into()),
+                listen_addr: Some("127.0.0.1:10136".into()),
                 groups: Vec::new(),
             },
         );

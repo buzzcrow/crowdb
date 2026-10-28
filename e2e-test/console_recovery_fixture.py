@@ -23,14 +23,14 @@ class RecoveringWebCluster(Cluster):
             "server": [{"id": f"kv-{index + 1}", "url": origin, "node_id": index + 1,
                         "auto_start": False} for index, origin in enumerate(self.origins)]})
         self.addresses.append(start_node(self, 3, data,
-            ("server", "web", "--bind", "0.0.0.0", "--port", "9090",
+            ("server", "web", "--bind", "0.0.0.0", "--port", "6135",
              "--ui-root", "/opt/crowdb/ui", "--log-dir", "/opt/crowdb/data/log/web"),
             environment=("CROWDB_RUNTIME_ROOT=/opt/crowdb/data",)))
         self.web_ready()
         return self
 
     def web_ready(self):
-        wait(lambda: HTTP.open(f"http://{self.addresses[3]}:9090/healthz", timeout=5).read(),
+        wait(lambda: HTTP.open(f"http://{self.addresses[3]}:6135/healthz", timeout=5).read(),
              lambda body: body == b"ok", "standalone release recovery readiness", seconds=20)
 
     def control(self, body):

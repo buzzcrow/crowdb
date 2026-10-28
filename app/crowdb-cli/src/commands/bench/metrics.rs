@@ -10,7 +10,7 @@
 //! counters (e.g. `rpc.client.*`) are flushed into the same file via a
 //! `set_cpp_flush` callback that calls
 //! `crowdb_rpc_ffi::flush_cpp_global_metrics` — the same pattern
-//! `crowdb-kv-server` uses. After the workload, the final JSON report
+//! `crowdb-paxos-kv-server` uses. After the workload, the final JSON report
 //! is appended to the metrics log via `write_raw`.
 
 use std::path::Path;
@@ -78,7 +78,7 @@ impl BenchMetrics {
 
         let mut runner = MetricsRunner::new(file, metrics_interval);
         // Merge C++ crowdb-rpc process-level metrics (rpc.client.*) into
-        // the same log file. Mirrors crowdb-kv-server's engine_collector.
+        // the same log file. Mirrors crowdb-paxos-kv-server's engine_collector.
         runner.set_cpp_flush(|writer, window_secs, timestamp, rust_width, count_w, tps_w| {
             let cpp_max = crowdb_rpc_ffi::cpp_global_metrics_max_name_len();
             let shared_width = rust_width.max(cpp_max);
@@ -117,17 +117,6 @@ impl BenchMetrics {
     pub async fn stop(&mut self) {
         if let Some(ref mut r) = self.runner {
             r.stop().await;
-        }
-    }
-
-    /// Write the final report to the metrics log file as readable text.
-    /// Falls back to `eprintln!` if the runner is disabled (no metrics log).
-    pub fn write_report(&self, result: &super::result::BenchResult) {
-        let text = result.to_string();
-        if let Some(ref r) = self.runner {
-            r.write_raw(&text);
-        } else {
-            eprint!("{text}");
         }
     }
 }

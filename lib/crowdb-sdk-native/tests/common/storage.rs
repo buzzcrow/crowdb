@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_client::{ChunkAllocator, ChunkIoClient, DiskWriter, Result};
 use crowdb_chunk_kv_client::{ChunkKvRpcTransport, ChunkKvRpcTransportConfig};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::chunkdb::rpc::*;
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_sdk_native::runtime::RuntimeClients;
@@ -61,7 +61,7 @@ pub fn runtime_with_limits(
         Arc::new(ChunkKvRpcTransport::with_config(8, 1, 1, &ChunkKvRpcTransportConfig::default()).unwrap());
     ClientRuntime::from_clients(
         RuntimeClients {
-            control: Arc::new(CrowdbKvClient::new(ClientConfig::new(Vec::new()))),
+            control: Arc::new(PaxosKvClient::new(ClientConfig::new(Vec::new()))),
             metadata,
             metadata_transport,
             chunks: Arc::new(ChunkIoClient::from_parts(

@@ -8,7 +8,7 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeBalancePolicy, DomainFailurePolicy, DomainMonitorDescriptor, Id128,
 };
 use crowdb_protocol::chunk_stream::StreamName;
-use crowdb_protocol::{CHUNK_KV_HTTP_BASE, CHUNK_KV_RPC_BASE, KV_SERVER_MGMT_BASE};
+use crowdb_protocol::{CHUNK_KV_HTTP_BASE, CHUNK_KV_RPC_BASE, PAXOS_KV_SERVER_MGMT_BASE};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -55,7 +55,7 @@ impl Default for ChunkKvServerConfig {
             rpc_advertise_addr: format!("127.0.0.1:{CHUNK_KV_RPC_BASE}"),
             http_listen_addr: format!("0.0.0.0:{CHUNK_KV_HTTP_BASE}"),
             http_advertise_addr: None,
-            group0_mgmt_seeds: vec![format!("http://127.0.0.1:{KV_SERVER_MGMT_BASE}")],
+            group0_mgmt_seeds: vec![format!("http://127.0.0.1:{PAXOS_KV_SERVER_MGMT_BASE}")],
             max_hosted_partitions: 256,
             catalog_refresh_interval_ms: 5_000,
             max_split_catchup_lag_records: 1_024,

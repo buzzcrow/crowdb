@@ -162,7 +162,7 @@ async fn init_internal(
 
     // Phase 4: seed the KV client with the group-0 leader endpoint so
     // `write_topology_to_sysdata` (which uses `ctx.sysmd()`) can reach
-    // group 0. Without this, the shared `CrowdbKvClient` may have a
+    // group 0. Without this, the shared `PaxosKvClient` may have a
     // stale or dummy leader hint from before init.
     let mgmt_seeds: Vec<String> = succeeded
         .iter()

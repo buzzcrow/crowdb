@@ -3,7 +3,7 @@
 
 //! Conditional Group 0 hardware publication with confirmed outcomes.
 
-use crowdb_kv_client::{BatchOp, Error as KvError, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{BatchOp, Error as KvError, GetOutcome, ReadMode};
 use crowdb_protocol::key::TextKey;
 use crowdb_protocol::{
     common::{NodeValue, RackValue},

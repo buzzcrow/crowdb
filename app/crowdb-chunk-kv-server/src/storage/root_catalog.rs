@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{BatchOp, GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_tree_ffi::{RootCatalogObject, RootCatalogStore};
 
 use super::StorageRuntimeError;
@@ -17,7 +17,7 @@ use crate::{ChunkKvRangeCatalogPublisher, Group0ControlStore};
 use crowdb_protocol::chunk_kv::{ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogPartitionState};
 
 pub(super) struct KvRootCatalogStore {
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
     runtime: tokio::runtime::Handle,
     store_id: u64,
     group_id: u64,
@@ -30,7 +30,7 @@ pub(super) struct KvRootCatalogStore {
 
 impl KvRootCatalogStore {
     pub(super) async fn claim(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         store_id: u64,
         group_id: u64,
         tree_id: u64,
@@ -74,7 +74,9 @@ impl KvRootCatalogStore {
                 .await
             {
                 Ok(_) => break,
-                Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {}
+                Err(
+                    crowdb_paxos_kv_client::Error::CasFailed { .. } | crowdb_paxos_kv_client::Error::CasBusy,
+                ) => {}
                 Err(error) => return Err(StorageRuntimeError::Tree(error.to_string())),
             }
         }
@@ -92,7 +94,7 @@ impl KvRootCatalogStore {
     }
 
     pub(super) async fn for_assignment(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         store_id: u64,
         group_id: u64,
         entry: &ChunkKvRangeCatalogEntry,
@@ -112,7 +114,7 @@ impl KvRootCatalogStore {
     }
 
     pub(super) fn prepare(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         store_id: u64,
         group_id: u64,
         entry: &ChunkKvRangeCatalogEntry,
@@ -194,7 +196,7 @@ impl KvRootCatalogStore {
         }
     }
 
-    async fn get(&self, key: &[u8]) -> Result<Option<(Bytes, u64)>, crowdb_kv_client::Error> {
+    async fn get(&self, key: &[u8]) -> Result<Option<(Bytes, u64)>, crowdb_paxos_kv_client::Error> {
         self.kv
             .get(self.store_id, self.group_id, key, ReadMode::Linearizable, None)
             .await
@@ -337,7 +339,9 @@ impl RootCatalogStore for KvRootCatalogStore {
                 revision,
             )) {
                 Ok(_) => return Ok(current),
-                Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {}
+                Err(
+                    crowdb_paxos_kv_client::Error::CasFailed { .. } | crowdb_paxos_kv_client::Error::CasBusy,
+                ) => {}
                 Err(_) => return Err(crowdb_tree_ffi::CtError::Unavailable),
             }
         }
@@ -453,7 +457,9 @@ impl RootCatalogStore for KvRootCatalogStore {
                     .put_cas(self.store_id, self.group_id, &key, &generation.to_be_bytes(), 0),
             ) {
                 Ok(_) => return Ok(()),
-                Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {}
+                Err(
+                    crowdb_paxos_kv_client::Error::CasFailed { .. } | crowdb_paxos_kv_client::Error::CasBusy,
+                ) => {}
                 Err(_) => return Err(crowdb_tree_ffi::CtError::Unavailable),
             }
         }

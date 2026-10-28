@@ -19,7 +19,7 @@ use crowdb_diskdb::ddb_kv_client::DdbKvClient;
 use crowdb_diskdb::liveness::keepalive::KeepAlive;
 use crowdb_diskdb::model::alloc;
 use crowdb_diskdb::model::disk_group_container::DdbDiskGroupContainer;
-use crowdb_kv_client::{GetOutcome, HardwareClient};
+use crowdb_paxos_kv_client::{GetOutcome, HardwareClient};
 use crowdb_protocol::common::{ChunkId, DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{BlockState, CommitState, DiskGroupValue, DiskType, DiskValue};
 use crowdb_protocol::key::{BinaryKey, BusyBlockKey, FreeBlockKey};
@@ -56,7 +56,7 @@ async fn kv_get(kv: &DdbKvClient, key: &[u8]) -> Option<bytes::Bytes> {
             STORE_ID,
             DATA_GROUP_ID,
             key,
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await

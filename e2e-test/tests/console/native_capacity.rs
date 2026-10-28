@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::native_context::TestNativeContext;
-use crowdb_kv_client::HardwareClient;
+use crowdb_paxos_kv_client::HardwareClient;
 use crowdb_protocol::{
     common::{DiskId, HwStatus},
     disk_storage::DiskStorageRecord,

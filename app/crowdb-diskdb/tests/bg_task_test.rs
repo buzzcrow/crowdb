@@ -63,8 +63,8 @@ impl BackgroundTask for MockTask {
 
 fn make_ctx() -> Arc<BgCtx> {
     let container = Arc::new(DdbDiskGroupContainer::new(1));
-    let kv = Arc::new(DdbKvClient::new(crowdb_kv_client::CrowdbKvClient::new(
-        crowdb_kv_client::ClientConfig::new(vec!["127.0.0.1:0".to_string()]),
+    let kv = Arc::new(DdbKvClient::new(crowdb_paxos_kv_client::PaxosKvClient::new(
+        crowdb_paxos_kv_client::ClientConfig::new(vec!["127.0.0.1:0".to_string()]),
     )));
     let mut registry = crowdb_common::metrics::MetricsRegistry::new();
     let metrics = DiskdbMetrics::register(&mut registry);

@@ -119,8 +119,8 @@ impl FileAllocator {
                     FilePreparationPhase::WaitingForDiskIO
                 } else if current == Some(FilePreparationPhase::Unknown)
                     || matches!(
-                        error.downcast_ref::<crowdb_kv_client::Error>(),
-                        Some(crowdb_kv_client::Error::OutcomeUnknown)
+                        error.downcast_ref::<crowdb_paxos_kv_client::Error>(),
+                        Some(crowdb_paxos_kv_client::Error::OutcomeUnknown)
                     )
                 {
                     FilePreparationPhase::Unknown

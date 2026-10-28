@@ -74,7 +74,7 @@ impl AsyncCrowdbtree {
     /// Like [`Self::get`], but never allocates or boxes anything for the
     /// fast (resident hit/miss) path -- only the genuine demand-load-miss
     /// path (`GetOutcome::Pending`) does. Lets a caller with its own
-    /// fast-path/slow-path return type (`crowdb_kv`'s `KVFuture`,     /// #11 Phase 6) mirror `ct_get_async`'s own C++-layer split one layer
+    /// fast-path/slow-path return type (`crowdb_paxos_kv`'s `KVFuture`,     /// #11 Phase 6) mirror `ct_get_async`'s own C++-layer split one layer
     /// up, instead of collapsing it back into a uniform `async fn` (which
     /// would force boxing on every call, fast path included -- exactly what
     /// `KVFuture::Ready` exists to avoid).

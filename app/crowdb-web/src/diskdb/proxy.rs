@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport};
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use crowdb_protocol::common::{DiskGroupUsageSummary, DiskdbExtra, HwStatus, InstanceValue};
 use crowdb_protocol::common_type::InstanceId;
 use crowdb_protocol::diskdb::rpc::{
@@ -380,7 +380,7 @@ pub async fn http_diskdb_usage(
 /// Returns `502` if group-0 is not available.
 pub async fn http_hardware_capacity(
     State(state): State<AppState>,
-) -> Result<Json<crowdb_kv_client::HardwareCapacitySummary>, (StatusCode, Json<ErrorBody>)> {
+) -> Result<Json<crowdb_paxos_kv_client::HardwareCapacitySummary>, (StatusCode, Json<ErrorBody>)> {
     let hw = build_hardware_client(&state)
         .await
         .ok_or_else(|| err_502("no group-0 endpoint; cluster not initialized"))?;
@@ -638,7 +638,7 @@ pub async fn http_set_disk_group_owner(
     hw.set_owner(rack_id, node_id, dg_id, instance_id, body.lease_expiry_ms)
         .await
         .map_err(|e| match e {
-            crowdb_kv_client::Error::OwnerConflict { .. } => (
+            crowdb_paxos_kv_client::Error::OwnerConflict { .. } => (
                 StatusCode::CONFLICT,
                 Json(ErrorBody {
                     error: format!("set_owner: {e}"),

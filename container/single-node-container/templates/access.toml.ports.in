@@ -1,0 +1,92 @@
+# Access configuration shared by the S3 and Iceberg listeners.
+# Secrets stay in /opt/crowdb/data/secrets/server.env.
+
+[deployment]
+mode = "local"
+max_node_failures = 0
+
+[common]
+management_seeds = ["http://127.0.0.1:@PAXOS_KV_SERVER_MGMT_BASE@"]
+diskio_connections_per_endpoint = 1
+diskio_rpc_workers = 1
+
+[read]
+stream_window_bytes = 1048576
+stream_slots = 3
+global_stream_bytes = 268435456
+recovery_memory_bytes = 268435456
+
+[small_write]
+threshold_ratio = 0.9
+disk_block_bytes = 1048576
+conversion_enabled = false
+mirror_copies = 1
+ec_data = 2
+ec_code = 1
+memory_budget_bytes = 1342177280
+queue_capacity = 1024
+min_pipelines = 1
+max_pipelines = 32
+max_batch_bytes = 1048576
+chunk_capacity_bytes = 67108864
+
+[s3]
+large_mirror_copies = 1
+listen = "0.0.0.0:@ACCESS_SERVER_HTTP_BASE@"
+tenant = "preview"
+region = "us-east-1"
+small_object_limit = 8388608
+list_scan_items = 1001
+list_scan_bytes = 4194304
+continuation_ttl_seconds = 900
+native_budget_bytes = 268435456
+cleanup_backlog_limit = 10000
+ec_data = 2
+ec_code = 1
+max_chunk_size = 67108864
+
+[s3.small_write]
+conversion_enabled = false
+mirror_copies = 1
+disk_block_bytes = 1048576
+ec_data = 2
+ec_code = 1
+chunk_capacity_bytes = 67108864
+
+[iceberg]
+large_mirror_copies = 1
+listen = "0.0.0.0:@ACCESS_SERVER_ICEBERG_HTTP_BASE@"
+native_budget_bytes = 268435456
+max_chunk_size = 67108864
+
+[iceberg.small_write]
+conversion_enabled = false
+mirror_copies = 1
+disk_block_bytes = 1048576
+ec_data = 2
+ec_code = 1
+chunk_capacity_bytes = 33554432
+
+[iceberg.gc]
+enabled = false
+interval_ms = 60000
+step_bytes = 8388608
+step_ms = 1000
+page_items = 64
+page_bytes = 49152
+concurrency = 1
+kv_bytes = 67108864
+kv_requests = 128
+chunk_bytes = 8388608
+chunk_requests = 128
+retry_base_ms = 1000
+retry_max_ms = 60000
+corruption_attempts = 3
+minimum_retention_ms = 604800000
+catalogs = []
+
+[dataset]
+listen = "0.0.0.0:@ACCESS_SERVER_DATASET_HTTP_BASE@"
+max_in_flight = 8
+request_timeout_seconds = 60
+max_batch_size = 10000

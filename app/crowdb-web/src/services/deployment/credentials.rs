@@ -13,7 +13,7 @@ pub(super) async fn prepare(
     root: &Path,
     spec: &LocalLaunchSpec,
     seeds: &[String],
-    kv: &crowdb_kv_client::CrowdbKvClient,
+    kv: &crowdb_paxos_kv_client::PaxosKvClient,
 ) -> Result<(), Failure> {
     let s3_endpoint = spec
         .env

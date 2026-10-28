@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! [`DdbKvClient`] — wraps [`CrowdbKvClient`] for put/delete/scan on
+//! [`DdbKvClient`] — wraps [`PaxosKvClient`] for put/delete/scan on
 //! the disk-group's bound paxos data group.
 //!
 //! Uses `(store_id, group_id)` from `DdbDiskGroup.bind` (set by the
@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, CrowdbKvClient, GetOutcome, JournalOp, ReadMode, Result};
+use crowdb_paxos_kv_client::{BatchOp, GetOutcome, JournalOp, PaxosKvClient, ReadMode, Result};
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::{
     BusyBlockValue, FreeBlockValue, RecoveryScanProgressValue, RelocationJournalValue, ZoneValue,
@@ -39,11 +39,11 @@ pub type Bind = (u64, u64);
 /// Client for the disk-group's bound paxos data group.
 ///
 /// All methods take `(store_id, group_id)` from `DdbDiskGroup.bind`. The
-/// wrapped `CrowdbKvClient` must have its topology seeded with the
+/// wrapped `PaxosKvClient` must have its topology seeded with the
 /// data-group leader endpoint.
 #[derive(Clone)]
 pub struct DdbKvClient {
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
     metrics: Option<Arc<crate::metrics::DiskdbMetrics>>,
     require_fence: bool,
     disks: Option<Arc<Vec<Arc<crate::model::disk::DdbDisk>>>>,
@@ -113,7 +113,7 @@ impl DdbKvClient {
         let mut journals = Vec::with_capacity(outcome.items.len());
         for (raw_key, raw_value) in outcome.items {
             let key = RelocationJournalKey::from_bytes(&raw_key).map_err(|error| {
-                crowdb_kv_client::Error::SysdataDecode {
+                crowdb_paxos_kv_client::Error::SysdataDecode {
                     key: format!("{raw_key:02x?}"),
                     reason: error.to_string(),
                 }
@@ -137,7 +137,7 @@ impl DdbKvClient {
             .await?
         {
             GetOutcome::Found { value, .. } => bincode::deserialize(&value).map(Some).map_err(|error| {
-                crowdb_kv_client::Error::SysdataDecode {
+                crowdb_paxos_kv_client::Error::SysdataDecode {
                     key: format!("{:02x?}", key.to_bytes()),
                     reason: error.to_string(),
                 }
@@ -179,9 +179,9 @@ impl DdbKvClient {
         .map(|_| ())
     }
 
-    /// Wrap a `CrowdbKvClient` for data-group access.
+    /// Wrap a `PaxosKvClient` for data-group access.
     #[must_use]
-    pub fn new(kv: CrowdbKvClient) -> Self {
+    pub fn new(kv: PaxosKvClient) -> Self {
         Self {
             kv: Arc::new(kv),
             metrics: None,
@@ -191,9 +191,9 @@ impl DdbKvClient {
         }
     }
 
-    /// Wrap an already-shared `CrowdbKvClient`.
+    /// Wrap an already-shared `PaxosKvClient`.
     #[must_use]
-    pub fn from_shared(kv: Arc<CrowdbKvClient>) -> Self {
+    pub fn from_shared(kv: Arc<PaxosKvClient>) -> Self {
         Self {
             kv,
             metrics: None,
@@ -210,9 +210,9 @@ impl DdbKvClient {
         self
     }
 
-    /// Access the underlying `CrowdbKvClient`.
+    /// Access the underlying `PaxosKvClient`.
     #[must_use]
-    pub fn kv(&self) -> &CrowdbKvClient {
+    pub fn kv(&self) -> &PaxosKvClient {
         &self.kv
     }
 
@@ -238,11 +238,12 @@ impl DdbKvClient {
             .await?;
         match outcome {
             GetOutcome::Found { value, revision } => {
-                let bv =
-                    bincode::deserialize(&value).map_err(|e| crowdb_kv_client::Error::SysdataDecode {
+                let bv = bincode::deserialize(&value).map_err(|e| {
+                    crowdb_paxos_kv_client::Error::SysdataDecode {
                         key: format!("{:02x?}", key.to_bytes()),
                         reason: e.to_string(),
-                    })?;
+                    }
+                })?;
                 Ok(Some((bv, revision)))
             }
             GetOutcome::NotFound => Ok(None),
@@ -435,13 +436,12 @@ impl DdbKvClient {
             .get(store_id, group_id, &zone_bytes, ReadMode::Linearizable, None)
             .await?;
         if let GetOutcome::Found { value, .. } = zone_get {
-            records.zone_value =
-                Some(
-                    ZoneValue::from_bytes(&value).map_err(|e| crowdb_kv_client::Error::SysdataDecode {
-                        key: format!("{zone_bytes:02x?}"),
-                        reason: e,
-                    })?,
-                );
+            records.zone_value = Some(ZoneValue::from_bytes(&value).map_err(|e| {
+                crowdb_paxos_kv_client::Error::SysdataDecode {
+                    key: format!("{zone_bytes:02x?}"),
+                    reason: e,
+                }
+            })?);
         }
 
         // 2. BusyBlock records
@@ -521,19 +521,20 @@ impl DdbKvClient {
             .await?;
         let cutoff = free_scan.scan_cutoff;
         if free_scan.items.len() != free_scan.commit_slots.len() {
-            return Err(crowdb_kv_client::Error::SysdataDecode {
+            return Err(crowdb_paxos_kv_client::Error::SysdataDecode {
                 key: format!("{free_prefix:02x?}"),
                 reason: "bounded free scan item/commit-slot count mismatch".to_string(),
             });
         }
         for ((key, value), commit_slot) in free_scan.items.iter().zip(&free_scan.commit_slots) {
-            let decoded_key =
-                FreeBlockKey::from_bytes(key).map_err(|error| crowdb_kv_client::Error::SysdataDecode {
+            let decoded_key = FreeBlockKey::from_bytes(key).map_err(|error| {
+                crowdb_paxos_kv_client::Error::SysdataDecode {
                     key: format!("{key:02x?}"),
                     reason: error.to_string(),
-                })?;
+                }
+            })?;
             let decoded_value = bincode::deserialize::<FreeBlockValue>(value).map_err(|error| {
-                crowdb_kv_client::Error::SysdataDecode {
+                crowdb_paxos_kv_client::Error::SysdataDecode {
                     key: format!("{key:02x?}"),
                     reason: error.to_string(),
                 }
@@ -551,19 +552,20 @@ impl DdbKvClient {
             .scan_bounded_at(store_id, group_id, &busy_prefix, &[], &[], 0, false, None, cutoff)
             .await?;
         if busy_scan.items.len() != busy_scan.commit_slots.len() {
-            return Err(crowdb_kv_client::Error::SysdataDecode {
+            return Err(crowdb_paxos_kv_client::Error::SysdataDecode {
                 key: format!("{busy_prefix:02x?}"),
                 reason: "bounded busy scan item/commit-slot count mismatch".to_string(),
             });
         }
         for ((key, value), commit_slot) in busy_scan.items.iter().zip(&busy_scan.commit_slots) {
-            let decoded_key =
-                BusyBlockKey::from_bytes(key).map_err(|error| crowdb_kv_client::Error::SysdataDecode {
+            let decoded_key = BusyBlockKey::from_bytes(key).map_err(|error| {
+                crowdb_paxos_kv_client::Error::SysdataDecode {
                     key: format!("{key:02x?}"),
                     reason: error.to_string(),
-                })?;
+                }
+            })?;
             let decoded_value = bincode::deserialize::<BusyBlockValue>(value).map_err(|error| {
-                crowdb_kv_client::Error::SysdataDecode {
+                crowdb_paxos_kv_client::Error::SysdataDecode {
                     key: format!("{key:02x?}"),
                     reason: error.to_string(),
                 }
@@ -646,11 +648,12 @@ impl DdbKvClient {
             .await?;
         match outcome {
             GetOutcome::Found { value, .. } => {
-                let zv =
-                    ZoneValue::from_bytes(&value).map_err(|e| crowdb_kv_client::Error::SysdataDecode {
+                let zv = ZoneValue::from_bytes(&value).map_err(|e| {
+                    crowdb_paxos_kv_client::Error::SysdataDecode {
                         key: format!("{:02x?}", key.to_bytes()),
                         reason: e,
-                    })?;
+                    }
+                })?;
                 Ok(Some(zv))
             }
             GetOutcome::NotFound => Ok(None),
@@ -684,7 +687,7 @@ impl DdbKvClient {
 
     /// Slot-ordered journal scan over `BusyBlockKey` ops for one zone
     /// (R73 recovery strategy 2 step c, scan 1). Wraps
-    /// `CrowdbKvClient::journal_scan` with `BusyBlockKey::prefix_for_zone`.
+    /// `PaxosKvClient::journal_scan` with `BusyBlockKey::prefix_for_zone`.
     /// Returns ops in slot order; the caller replays them to rebuild
     /// the bitmap.
     pub async fn journal_scan_busy(
@@ -716,7 +719,7 @@ impl DdbKvClient {
 
     /// Slot-ordered journal scan over `FreeBlockKey` ops for one zone
     /// (R73 recovery strategy 2 step c, scan 2). Wraps
-    /// `CrowdbKvClient::journal_scan` with `FreeBlockKey::prefix_for_zone`.
+    /// `PaxosKvClient::journal_scan` with `FreeBlockKey::prefix_for_zone`.
     pub async fn journal_scan_free(
         &self,
         bind: Bind,
@@ -785,7 +788,7 @@ impl DdbKvClient {
         match outcome {
             GetOutcome::Found { value, .. } => {
                 let v = RecoveryScanProgressValue::from_bytes(&value).map_err(|e| {
-                    crowdb_kv_client::Error::SysdataDecode {
+                    crowdb_paxos_kv_client::Error::SysdataDecode {
                         key: format!("{:02x?}", key.to_bytes()),
                         reason: e,
                     }
@@ -814,7 +817,7 @@ impl DdbKvClient {
 }
 
 fn decode_relocation_journal(key: &RelocationJournalKey, bytes: &[u8]) -> Result<RelocationJournalValue> {
-    bincode::deserialize(bytes).map_err(|error| crowdb_kv_client::Error::SysdataDecode {
+    bincode::deserialize(bytes).map_err(|error| crowdb_paxos_kv_client::Error::SysdataDecode {
         key: format!("{:02x?}", key.to_bytes()),
         reason: error.to_string(),
     })

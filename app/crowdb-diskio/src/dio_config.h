@@ -6,6 +6,7 @@
 #pragma once
 
 #include "crowdb-common/runtime_path.h"
+#include "crowdb-protocol/ports.h"
 #include "crowdb-protocol/timing.h"
 #include "disk/disk_properties.h"
 #include "disk/types.h"
@@ -35,10 +36,9 @@ struct DiskEntry
 // Server configuration.
 struct DioConfig
 {
-    // RPC listen. Default port 13000 matches DISKIO_RPC_BASE in
-    // lib/crowdb-protocol/src/ports.rs — keep in sync.
+    // RPC listen; defaults are generated from protocol ports.rs.
     std::string bind_address = "127.0.0.1";
-    int         listen_port  = 13000;
+    int         listen_port  = protocol::DISKIO_RPC_BASE;
     uint32_t    rpc_workers  = 4;
 
     // Node identity (64-bit; each diskio service manages one node).

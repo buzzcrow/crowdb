@@ -2,20 +2,20 @@
 // Licensed under the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use crowdb_kv::rpc::{KvBatchItem, KvErrorCode};
-use crowdb_kv_client::{BatchOp, Error, GetOutcome, KvRpcTransport, ReadMode};
+use crowdb_paxos_kv::rpc::{KvBatchItem, KvErrorCode};
+use crowdb_paxos_kv_client::{BatchOp, Error, GetOutcome, PaxosKvRpcTransport, ReadMode};
 use crowdb_protocol::chunk_slot::{ChunkServiceIncarnation, ChunkSlotAuthority};
 
 const FENCE: &[u8] = b"/chunkdb/ownership-fence/0";
 
 use crate::common::management::{addresses, client as http_client, origin, wait_for_leader};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 
-async fn kv() -> (CrowdbKvClient, String) {
+async fn kv() -> (PaxosKvClient, String) {
     let ips = addresses(1);
     wait_for_leader(&http_client(), &origin(&ips[0])).await;
     (
-        CrowdbKvClient::new(ClientConfig::new(vec![origin(&ips[0])])),
+        PaxosKvClient::new(ClientConfig::new(vec![origin(&ips[0])])),
         format!("{}:7001", ips[0]),
     )
 }
@@ -133,7 +133,7 @@ async fn ordinary_and_malformed_writes_cannot_change_slot_authority() {
 async fn raw_owner_rpc_rejects_malformed_authority_and_cross_namespace_mutation() {
     let (client, endpoint) = kv().await;
     let endpoint = &endpoint;
-    let transport = KvRpcTransport::new();
+    let transport = PaxosKvRpcTransport::new();
     let value = ChunkSlotAuthority::new(4, ChunkServiceIncarnation::try_from([1; 16]).unwrap(), 1)
         .unwrap()
         .to_fence_value();

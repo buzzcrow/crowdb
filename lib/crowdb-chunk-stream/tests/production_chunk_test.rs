@@ -13,7 +13,7 @@ use crowdb_chunk_stream::{
     ProductionStreamRuntime, StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName, StreamRecord,
     StreamRecordState, StreamRegistry,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
     AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
@@ -446,7 +446,7 @@ fn production_runtime_shares_connected_chunk_io_parts() {
     let disks: Arc<dyn DiskWriter> = Arc::new(Disks::default());
     let chunk_io =
         ChunkIoClient::from_parts(allocator, disks, crowdb_protocol::chunkdb::rpc::ChunkType::Stream);
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![
+    let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(vec![
         "http://127.0.0.1:1".into()
     ])));
 

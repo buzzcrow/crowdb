@@ -33,9 +33,9 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use commands::{
-    run_bench_verb, run_cluster_verb, run_group_verb, run_kv_data_verb, run_port_alloc, run_replica_verb,
-    run_s3_verb, run_store_verb, BenchVerb, ClusterVerb, GroupVerb, KvDataVerb, PortAllocArgs, ReplicaVerb,
-    S3Verb, StoreVerb,
+    run_bench_verb, run_cluster_verb, run_group_verb, run_paxos_kv_data_verb, run_port_alloc,
+    run_replica_verb, run_s3_verb, run_store_verb, BenchVerb, ClusterVerb, GroupVerb, PaxosKvDataVerb,
+    PortAllocArgs, ReplicaVerb, S3Verb, StoreVerb,
 };
 
 #[derive(Parser, Debug)]
@@ -66,7 +66,7 @@ impl Cli {
     fn benchmark_slug(&self) -> Option<&'static str> {
         match &self.command {
             Domain::Bench { verb } => Some(match verb {
-                BenchVerb::Kv(_) => "bench-kv",
+                BenchVerb::PaxosKv(_) => "bench-paxos-kv",
                 BenchVerb::Diskdb(_) => "bench-diskdb",
                 BenchVerb::Chunkdb(_) => "bench-chunkdb",
                 BenchVerb::Chunkio(_) => "bench-chunkio",
@@ -85,10 +85,10 @@ enum Domain {
         #[command(subcommand)]
         verb: ClusterVerb,
     },
-    /// Logical KV topology and data operations.
-    Kv {
+    /// Logical Paxos-KV topology and data operations.
+    PaxosKv {
         #[command(subcommand)]
-        verb: KvVerb,
+        verb: PaxosKvVerb,
     },
     /// Load injection only.
     Bench {
@@ -110,7 +110,7 @@ enum Domain {
 }
 
 #[derive(Subcommand, Debug)]
-enum KvVerb {
+enum PaxosKvVerb {
     #[command(subcommand)]
     Store(StoreVerb),
     #[command(subcommand)]
@@ -118,7 +118,7 @@ enum KvVerb {
     #[command(subcommand)]
     Replica(ReplicaVerb),
     #[command(subcommand)]
-    Data(KvDataVerb),
+    Data(PaxosKvDataVerb),
 }
 
 fn main() -> ExitCode {
@@ -161,8 +161,8 @@ fn main() -> ExitCode {
                 "crowdb-cli",
                 30,
                 1,
-                "warn,crowdb_cli=info,crowdb_console_shared=info,crowdb_kv_client=info",
-                "warn,crowdb_cli=info,crowdb_console_shared=info,crowdb_kv_client=info",
+                "warn,crowdb_cli=info,crowdb_console_shared=info,crowdb_paxos_kv_client=info",
+                "warn,crowdb_cli=info,crowdb_console_shared=info,crowdb_paxos_kv_client=info",
             )
             .ok();
             crowdb_rpc_ffi::init_logging(
@@ -238,11 +238,11 @@ async fn dispatch(mut cli: Cli) -> ExitCode {
     );
     match command {
         Domain::Cluster { verb } => run_cluster_verb(&cli, verb).await,
-        Domain::Kv { verb } => match verb {
-            KvVerb::Store(sv) => run_store_verb(&cli, sv).await,
-            KvVerb::Group(gv) => run_group_verb(&cli, gv).await,
-            KvVerb::Replica(rv) => run_replica_verb(&cli, rv).await,
-            KvVerb::Data(dv) => run_kv_data_verb(&cli, dv).await,
+        Domain::PaxosKv { verb } => match verb {
+            PaxosKvVerb::Store(sv) => run_store_verb(&cli, sv).await,
+            PaxosKvVerb::Group(gv) => run_group_verb(&cli, gv).await,
+            PaxosKvVerb::Replica(rv) => run_replica_verb(&cli, rv).await,
+            PaxosKvVerb::Data(dv) => run_paxos_kv_data_verb(&cli, dv).await,
         },
         Domain::Bench { verb } => run_bench_verb(&cli, verb).await,
         Domain::S3 { verb } => run_s3_verb(&cli, verb).await,

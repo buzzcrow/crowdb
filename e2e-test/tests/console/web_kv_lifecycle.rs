@@ -60,7 +60,7 @@ async fn deploy_restart_and_stop_retains_fixed_ports_and_workspace() {
     }
     assert!(workspace.join("bin").read_dir().unwrap().next().is_some());
     assert!(workspace
-        .join(format!("log/crowdb-kv-server-{first}.out.log"))
+        .join(format!("log/crowdb-paxos-kv-server-{first}.out.log"))
         .is_file());
     let server = request(&http, &base, Method::GET, "/api/nodes/1/server", Value::Null, 200).await;
     assert_eq!(server["url"], "http://127.0.0.1:7000");

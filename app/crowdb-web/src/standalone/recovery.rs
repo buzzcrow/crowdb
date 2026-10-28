@@ -127,7 +127,7 @@ impl AppState {
             ..Default::default()
         };
         let deployed = if node.ssh_enabled() {
-            let binary = server.binary.as_deref().unwrap_or("crowdb-kv-server");
+            let binary = server.binary.as_deref().unwrap_or("crowdb-paxos-kv-server");
             crowdb_console_shared::ssh::deploy_via_ssh(&request, node, binary).await?
         } else {
             let workspace = self.prepare_node_workspace(node.id)?;

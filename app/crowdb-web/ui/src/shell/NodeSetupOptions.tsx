@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+import { PAXOS_KV_SERVER_MGMT_BASE, PAXOS_KV_SERVER_RPC_BASE } from '../ports';
 import { Input, Select } from '../components/ui/Input';
 import { serviceLabels } from '../services/useNodeServicePlans';
 import type { DiskInventory } from '../storage/types';
@@ -23,7 +24,7 @@ export function NodeSetupOptions({ choices, inventory, disabled, onChange }: Pro
   return <fieldset disabled={disabled} className="tw-space-y-4">
     <section aria-label="Node service choices" className="tw-space-y-2">
       <h3 className="tw-font-semibold">Services</h3>
-      <p className="tw-text-xs tw-text-muted">Selected services start on the node after their prerequisites are ready. Blank listeners use available defaults. KV bootstrap retains ports 10000 / 10100.</p>
+      <p className="tw-text-xs tw-text-muted">Selected services start on the node after their prerequisites are ready. Blank listeners use available defaults. KV bootstrap uses ports {PAXOS_KV_SERVER_MGMT_BASE} / {PAXOS_KV_SERVER_RPC_BASE}.</p>
       <p className="tw-text-xs tw-text-muted">Unselecting a service retains any existing deployment, including the admitted KV process.</p>
       <div className="tw-grid tw-grid-cols-1 sm:tw-grid-cols-2 tw-gap-2">{choices.services.map((service, index) => <div key={service.kind} className="tw-rounded tw-border tw-border-border tw-p-2 tw-space-y-2">
         <label className="tw-flex tw-gap-2 tw-text-sm"><input type="checkbox" checked={service.enabled} onChange={event => updateService(index, { enabled: event.target.checked })} />{serviceLabels[service.kind]}</label>

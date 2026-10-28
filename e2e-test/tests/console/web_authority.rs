@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::fixture::{web_kv, TestKvCluster as KvCluster};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, CrowdbSysmdClient};
+use crowdb_paxos_kv_client::{ClientConfig, CrowdbSysmdClient, PaxosKvClient};
 use crowdb_protocol::common::{HwStatus, KvServerIdentity, NodeValue, RackValue, ReplicaValue};
 use crowdb_protocol::key::InstanceKey;
 use reqwest::StatusCode;
@@ -29,7 +29,7 @@ async fn register(sysmd: &CrowdbSysmdClient, node: u64, instance: u64, endpoint:
 }
 
 async fn initialized_authority(cluster: &KvCluster) -> CrowdbSysmdClient {
-    let kv = CrowdbKvClient::new(ClientConfig::new(cluster.mgmt_endpoints.clone()));
+    let kv = PaxosKvClient::new(ClientConfig::new(cluster.mgmt_endpoints.clone()));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
     let sysmd = CrowdbSysmdClient::new(kv);
     sysmd

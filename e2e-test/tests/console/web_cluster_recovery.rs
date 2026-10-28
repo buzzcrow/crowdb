@@ -11,12 +11,12 @@ async fn prepare() {
     super::fixture::TestKvCluster::start().await;
     super::super::chunkdb::voting::register_actual_voters().await;
     let kv = std::sync::Arc::new(crate::common::hardware::kv_client());
-    let sysmd = crowdb_kv_client::CrowdbSysmdClient::from_shared(kv.clone());
+    let sysmd = crowdb_paxos_kv_client::CrowdbSysmdClient::from_shared(kv.clone());
     sysmd.add_store(0, &[1, 2, 3]).await.unwrap();
     for group in [0, 1] {
         sysmd.add_group(0, group).await.unwrap();
     }
-    let hardware = crowdb_kv_client::HardwareClient::from_shared(kv);
+    let hardware = crowdb_paxos_kv_client::HardwareClient::from_shared(kv);
     hardware
         .add_rack(
             1,
@@ -69,7 +69,7 @@ async fn standalone_recovers_three_member_group0_and_diskdb() {
         &http,
         Method::POST,
         "/api/nodes/1/diskdb/deploy",
-        json!({"rpc_port":7100, "listen_port":7100, "http_port":7101}),
+        json!({"rpc_port":7102, "http_port":7101}),
     )
     .await;
     assert!(deployed["pid"].as_u64().unwrap() > 1);

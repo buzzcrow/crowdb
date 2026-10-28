@@ -6,7 +6,7 @@ use axum::{extract::State, Json};
 use crowdb_console_shared::{cluster::NodeHealth, config::ServiceType};
 use serde::Serialize;
 
-/// One row of `GET /api/servers`: a deployed `crowdb-kv-server` projected
+/// One row of `GET /api/servers`: a deployed `crowdb-paxos-kv-server` projected
 /// from the persisted config plus the live monitor cache.
 #[derive(Debug, Serialize)]
 pub struct ServerSummary {

@@ -4,7 +4,7 @@
 //! Resolve every sealed supplied medium through its actual Group-0 placement.
 
 use crate::deployment::preparation::DefaultStorageBinding;
-use crowdb_kv_client::DiskRecord;
+use crowdb_paxos_kv_client::DiskRecord;
 use crowdb_protocol::{
     common::DiskId,
     mgmt::node::{
@@ -21,8 +21,8 @@ type Failure = (&'static str, String);
 pub(super) fn bindings(
     expected: &DefaultStorageBinding,
     node: &NodeRuntimeObservation,
-    disks: Result<&[DiskRecord], &crowdb_kv_client::Error>,
-    groups: Result<&[DiskGroupEntry], &crowdb_kv_client::Error>,
+    disks: Result<&[DiskRecord], &crowdb_paxos_kv_client::Error>,
+    groups: Result<&[DiskGroupEntry], &crowdb_paxos_kv_client::Error>,
 ) -> Result<Vec<DefaultStorageBinding>, Failure> {
     let SetupStorage::Supplied { disks: media } = &node.policy.setup.storage else {
         unreachable!("caller selected supplied storage")

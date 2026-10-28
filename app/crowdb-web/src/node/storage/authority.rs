@@ -8,7 +8,7 @@ use crate::{
     error::{err_400, err_404, err_409, err_502},
     state::AppState,
 };
-use crowdb_kv_client::HardwareClient;
+use crowdb_paxos_kv_client::HardwareClient;
 use crowdb_protocol::{key::DiskKey, DiskIdExt};
 
 pub(super) async fn disk(

@@ -3,7 +3,7 @@
 
 //! Freeze one predecessor before claiming a new per-process epoch.
 use super::{KeepAlive, Ordering};
-use crowdb_kv_client::{Error, Result};
+use crowdb_paxos_kv_client::{Error, Result};
 use std::sync::Arc;
 
 pub(super) struct Predecessor {

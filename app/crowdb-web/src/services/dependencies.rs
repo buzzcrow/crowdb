@@ -7,14 +7,14 @@ pub(crate) async fn group0_ready(state: &AppState) -> bool {
     if state.service_operations.load().contains("cluster/init") {
         return false;
     }
-    let sysmd = crowdb_kv_client::CrowdbSysmdClient::from_shared(state.kv_client().await);
+    let sysmd = crowdb_paxos_kv_client::CrowdbSysmdClient::from_shared(state.kv_client().await);
     tokio::time::timeout(std::time::Duration::from_secs(2), sysmd.get_group(0, 0))
         .await
         .is_ok_and(|result| result.is_ok_and(|group| group.is_some()))
 }
 use axum::{extract::State, Json};
 use crowdb_console_shared::config::ServiceType;
-use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{HardwareClient, ServiceRegistryClient};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 

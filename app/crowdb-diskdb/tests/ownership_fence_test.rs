@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn stale_zone_loader_cannot_mark_a_successor_disk_offline() {
-    use crowdb_kv_client::ReadMode;
+    use crowdb_paxos_kv_client::ReadMode;
     use crowdb_protocol::{
         common::{HwStatus, OwnerMapValue},
         key::{OwnerMapKey, TextKey},
@@ -62,7 +62,7 @@ async fn stale_zone_loader_cannot_mark_a_successor_disk_offline() {
         HwStatus::Offline as i32
     );
     hardware.add_disk(1, 1, 1, &disk, &online).await.unwrap();
-    let crowdb_kv_client::GetOutcome::Found { revision, .. } = kv
+    let crowdb_paxos_kv_client::GetOutcome::Found { revision, .. } = kv
         .kv()
         .get(0, 0, owner_key.as_bytes(), ReadMode::Linearizable, None)
         .await
@@ -178,7 +178,7 @@ async fn concurrent_disk_initialization_persists_every_zone_under_one_owner() {
             for batch in records.chunks(crowdb_diskdb::ddb_kv_client::MAX_ZONE_INIT_BATCH) {
                 scoped.put_zone_batch((0, 1), &disk, batch).await?;
             }
-            Ok::<_, crowdb_kv_client::Error>(disk)
+            Ok::<_, crowdb_paxos_kv_client::Error>(disk)
         }
     }))
     .await;
@@ -195,12 +195,12 @@ async fn concurrent_disk_initialization_persists_every_zone_under_one_owner() {
                     0,
                     1,
                     &key.to_bytes(),
-                    crowdb_kv_client::ReadMode::Linearizable,
+                    crowdb_paxos_kv_client::ReadMode::Linearizable,
                     None,
                 )
                 .await
                 .unwrap();
-            let crowdb_kv_client::GetOutcome::Found { value, .. } = record else {
+            let crowdb_paxos_kv_client::GetOutcome::Found { value, .. } = record else {
                 panic!("missing zone baseline")
             };
             let snapshot = crowdb_protocol::diskdb::rpc::ZoneValue::from_bytes(&value).unwrap();
@@ -213,7 +213,7 @@ async fn concurrent_disk_initialization_persists_every_zone_under_one_owner() {
 #[tokio::test]
 async fn ordinary_writes_cannot_bypass_ownership_handover() {
     use bytes::Bytes;
-    use crowdb_kv_client::{BatchOp, GetOutcome, ReadMode};
+    use crowdb_paxos_kv_client::{BatchOp, GetOutcome, ReadMode};
     let cluster = TestMetadata::start().await;
     let ddb = cluster.make_ddb_kv_client();
     let kv = ddb.kv();

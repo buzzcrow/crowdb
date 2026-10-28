@@ -4,7 +4,7 @@
 //! Shared core for the `CrowDB Storage` Console (web + CLI).
 //!
 //! Key work: data models for racks/nodes/servers/stores/groups/replicas,
-//! HTTP and crowdb-rpc clients to `crowdb-kv-server`, registry persistence,
+//! HTTP and crowdb-rpc clients to `crowdb-paxos-kv-server`, registry persistence,
 //! topology aggregation, error model, structured operation log.
 //!
 //! C0 status: skeleton only. Real modules land in C1+.

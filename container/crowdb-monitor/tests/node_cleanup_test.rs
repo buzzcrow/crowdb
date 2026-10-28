@@ -62,7 +62,9 @@ async fn retired_cleanup_restarts_its_local_worker_after_a_failed_deletion() {
     assert!(!retired.exists());
     assert!(!manager.owns("kv"));
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:10000").await.unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE))
+        .await
+        .unwrap();
     let endpoint = tokio::spawn(serve_deletions(listener, bootstrap.clone(), retired.clone()));
     assert!(
         cleanup_node_for_tests(&profile, &mut manager, bootstrap.clone(), true)

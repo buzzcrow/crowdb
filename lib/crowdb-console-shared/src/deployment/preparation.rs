@@ -11,7 +11,7 @@ pub use record::{
     DefaultChunkKvBootstrap, DefaultMetadataGroup, DefaultPreparation, DefaultReplica, DefaultStorageBinding,
 };
 
-use crowdb_kv_client::{Error as KvError, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{Error as KvError, GetOutcome, ReadMode};
 use crowdb_protocol::mgmt::SystemBootstrapIdentity;
 
 use super::{PreparedBootstrap, CLUSTER_KEY};

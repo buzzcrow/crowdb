@@ -4,7 +4,7 @@
 //! Volatile protocol stub for pinned placement/task proofs. Packaged Diskio
 //! discovery, bytes and durability are verified by the container acceptance.
 
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use crowdb_protocol::diskio_fb::{
     FBDiskFsyncRequest, FBDiskFsyncResponse, FBDiskFsyncResponseArgs, FBDiskReadRequest, FBDiskReadResponse,
     FBDiskReadResponseArgs, FBDiskWriteRequest, FBDiskWriteResponse, FBDiskWriteResponseArgs,

@@ -6,7 +6,7 @@
 `crowdb-chunk-kv` is the embeddable range-partitioned state machine for the
 shared-storage metadata index. It composes crowdb-tree's runtime-selected
 chunk page store with a private chunk-stream WAL. It does not depend on the
-Paxos-facing `crowdb-kv::KVEngine`, and partition count is independent of node
+Paxos-facing `crowdb-paxos-kv::KVEngine`, and partition count is independent of node
 count.
 
 ## 1. Identity and Ownership

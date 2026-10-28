@@ -138,8 +138,12 @@ fn valid_listeners(service: &SetupService, ports: &mut BTreeSet<u16>) -> bool {
     use SetupServiceKind::{AccessServer, Chunkdb, Diskdb, Diskio};
     let listeners = &service.listeners;
     if service.kind == SetupServiceKind::PaxosKv
-        && (listeners.http_port.is_some_and(|port| port != 10000)
-            || listeners.rpc_port.is_some_and(|port| port != 10100))
+        && (listeners
+            .http_port
+            .is_some_and(|port| port != crate::PAXOS_KV_SERVER_MGMT_BASE)
+            || listeners
+                .rpc_port
+                .is_some_and(|port| port != crate::PAXOS_KV_SERVER_RPC_BASE))
     {
         return false;
     }
@@ -150,7 +154,7 @@ fn valid_listeners(service: &SetupService, ports: &mut BTreeSet<u16>) -> bool {
                 || listeners.health_port.is_some()
                 || listeners.dataset_port.is_some()))
         || (service.kind == AccessServer && listeners.rpc_port.is_some())
-        || (matches!(service.kind, Diskdb | Diskio) && listeners.http_port.is_some())
+        || (service.kind == Diskio && listeners.http_port.is_some())
     {
         return false;
     }
@@ -169,11 +173,6 @@ fn valid_listeners(service: &SetupService, ports: &mut BTreeSet<u16>) -> bool {
     {
         if port == 0 || !ports.insert(port) {
             return false;
-        }
-    }
-    if service.kind == Diskdb {
-        if let Some(port) = listeners.rpc_port {
-            return port <= 65533 && ports.insert(port + 1) && ports.insert(port + 2);
         }
     }
     true

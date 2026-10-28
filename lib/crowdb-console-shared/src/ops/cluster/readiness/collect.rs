@@ -10,7 +10,7 @@ use crate::{
     error::{Error, Result},
     ops::OpContext,
 };
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use crowdb_protocol::mgmt::{
     cluster::{
         ClusterObservation, ClusterStatus, DependencyKind, DependencyObservation, DependencyState,

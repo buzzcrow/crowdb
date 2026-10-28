@@ -26,7 +26,7 @@ workspace = true
 
 [dependencies]
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
-crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
+crowdb-paxos-kv-client = { path = "../../lib/crowdb-paxos-kv-client" }
 crowdb-diskdb-client = { path = "../../lib/crowdb-diskdb-client" }
 crowdb-diskio-client = { path = "../../lib/crowdb-diskio-client" }
 crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client" }
@@ -54,7 +54,7 @@ futures = "0.3"
 
 [dev-dependencies]
 crowdb-console-shared = { path = "../../lib/crowdb-console-shared" }
-crowdb-kv = { path = "../../lib/crowdb-kv", features = ["test-util"] }
+crowdb-paxos-kv = { path = "../../lib/crowdb-paxos-kv", features = ["test-util"] }
 crowdb-chunkdb-client = { path = "../../lib/crowdb-chunkdb-client" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }

@@ -22,7 +22,7 @@ validated, and activated.
 
 ## 1. Scope
 
-The `crowdb-kv-server`, `crowdb-diskdb`, `crowdb-chunkdb`, `crowdb-diskio`,
+The `crowdb-paxos-kv-server`, `crowdb-diskdb`, `crowdb-chunkdb`, `crowdb-diskio`,
 and `crowdb-access-server` processes accept typed TOML startup
 configuration. A service may require a file or make it optional, but a supplied
 file follows the same resolution and failure rules in every process.
@@ -153,7 +153,7 @@ backend. Manual node startup runs only monitor, SSH and Web until an operator
 prepares nodes and initializes Group 0; then shared authority enables management.
 Both startup policies use the same image and services. Discovery UUID, SSH keys,
 host keys, binding and operation recovery records reside on the persistent root.
-`CROWDB_KV_MANAGEMENT_ADVERTISE_ADDR` specifies the reachable management address
+`CROWDB_PAXOS_KV_MANAGEMENT_ADVERTISE_ADDR` specifies the reachable management address
 for service registration independently of the local listening address. See the
 [deployment architecture](../deploy/design-crowdb-deploy.md) for ownership and
 recovery ordering.

@@ -29,7 +29,7 @@ pub struct StartArgs {
     /// Already loaded CROWDB node image; start never builds or pulls.
     #[arg(long)]
     image: Option<String>,
-    /// First localhost console port; each node reserves four ports, ten apart.
+    /// First localhost console port; Access uses the default relative offsets, nodes add 0/1/2.
     #[arg(long)]
     port_base: Option<u16>,
     #[arg(long)]

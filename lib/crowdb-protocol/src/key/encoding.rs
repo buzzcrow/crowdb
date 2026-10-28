@@ -45,7 +45,7 @@ impl std::error::Error for KeyError {}
 
 // ── Trait ───────────────────────────────────────────────────────
 
-/// A crowdb-kv binary key.
+/// A crowdb-paxos-kv binary key.
 ///
 /// Each implementor is a flat struct with a fixed, positional binary
 /// layout. The layout is frozen once shipped — never change field
@@ -195,7 +195,7 @@ pub(super) fn check_exact(buf: &[u8], consumed: usize) -> Result<(), KeyError> {
 
 // ── TextKey trait ───────────────────────────────────────────────
 
-/// A crowdb-kv text-path key (group-0 sysdata encoding).
+/// A crowdb-paxos-kv text-path key (group-0 sysdata encoding).
 ///
 /// The text encoding is `/magic/type/<field1>/<field2>/...` — a slash-
 /// delimited path where `magic` is a namespace prefix (`/hw`, `/srv`,

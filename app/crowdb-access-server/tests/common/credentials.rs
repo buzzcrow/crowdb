@@ -3,15 +3,15 @@
 
 use crowdb_access_s3::auth::{CredentialCipher, MasterKey};
 use crowdb_access_server::credentials::CredentialAuthority;
-use crowdb_kv::cluster::{
-    group::PxGroup, kv_server::KvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
+use crowdb_paxos_kv::cluster::{
+    group::PxGroup, paxos_kv_server::PaxosKvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use std::sync::Arc;
 
 pub struct TestCredentials {
     store: Arc<PxKvStore>,
-    pub control: Arc<CrowdbKvClient>,
+    pub control: Arc<PaxosKvClient>,
     cipher: Arc<CredentialCipher>,
 }
 
@@ -23,7 +23,7 @@ impl TestCredentials {
             PxLocalReplica::new(1, PxLocalReplicaRole::Leader),
         ));
         store.start().await.unwrap();
-        let client = CrowdbKvClient::new(ClientConfig::new(vec![]));
+        let client = PaxosKvClient::new(ClientConfig::new(vec![]));
         client.seed_leader(0, 0, store.listen_addr().unwrap().to_string());
         let key = MasterKey::from_hex(&"11".repeat(32)).unwrap();
         Self {

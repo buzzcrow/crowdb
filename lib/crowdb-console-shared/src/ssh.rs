@@ -234,7 +234,7 @@ impl Session {
     }
 }
 
-/// Run a no-op command (`echo crowdb-kv-ping`) and assert the round trip.
+/// Run a no-op command (`echo crowdb-paxos-kv-ping`) and assert the round trip.
 ///
 /// # Errors
 /// `Error::UpstreamRpc` on connect, auth, or exec failure; or if the
@@ -242,7 +242,7 @@ impl Session {
 pub async fn probe(node: &NodeEntry) -> Result<()> {
     let creds = SshCreds::resolve(node)?;
     let mut session = Session::connect(node, &creds).await?;
-    let out = session.exec("echo crowdb-kv-ping").await?;
+    let out = session.exec("echo crowdb-paxos-kv-ping").await?;
     session.close().await;
 
     if !out.success() {
@@ -251,7 +251,7 @@ pub async fn probe(node: &NodeEntry) -> Result<()> {
             status: format!("probe exit={:?}, stderr={}", out.exit, out.stderr_str()),
         });
     }
-    if !out.stdout_str().contains("crowdb-kv-ping") {
+    if !out.stdout_str().contains("crowdb-paxos-kv-ping") {
         return Err(Error::UpstreamRpc {
             node_id: node.host.clone(),
             status: format!("probe got unexpected stdout: {}", out.stdout_str()),
@@ -311,7 +311,7 @@ impl client::Handler for ClientHandler {
 }
 
 /// Resolve the process-wide `known_hosts` store. The first call computes
-/// the path (`$CROWDB_KV_KNOWN_HOSTS` or `~/.crowdb-kv/known_hosts`) and
+/// the path (`$CROWDB_PAXOS_KV_KNOWN_HOSTS` or `~/.crowdb-paxos-kv/known_hosts`) and
 /// memoizes the resulting `KnownHostsStore` for the rest of the
 /// process. If neither path is resolvable we still hand back an
 /// in-memory store so connections can proceed under TOFU rules within
@@ -325,7 +325,7 @@ fn known_hosts_store_for_session() -> Result<Arc<KnownHostsStore>> {
     let path = KnownHostsStore::default_path().unwrap_or_else(|| {
         // No HOME or override: keep the fallback inside the workspace runtime
         // namespace so cleanup and inspection remain deterministic.
-        warn!("ssh: cannot resolve $HOME or $CROWDB_KV_KNOWN_HOSTS; using in-memory known_hosts (keys will not persist)");
+        warn!("ssh: cannot resolve $HOME or $CROWDB_PAXOS_KV_KNOWN_HOSTS; using in-memory known_hosts (keys will not persist)");
         crowdb_protocol::port::namespace::runtime_root()
             .join("persistent")
             .join("ssh")

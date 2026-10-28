@@ -10,7 +10,7 @@ use crowdb_console_shared::{
     },
     ConsoleConfig,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient, ServiceRegistryClient};
 use crowdb_protocol::{
     common::{DiskId, DiskioHardwareScope, HwStatus, NodeValue, RackValue},
     disk_storage::DiskStorageRecord,
@@ -32,7 +32,7 @@ pub struct TestStorageApi {
 impl TestStorageApi {
     pub async fn start() -> Self {
         let cluster = TestKvCluster::start().await;
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
             cluster.mgmt_endpoints.clone(),
         )));
         kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());

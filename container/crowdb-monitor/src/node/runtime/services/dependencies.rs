@@ -13,7 +13,7 @@ pub(super) async fn committed_ready(
     intent: &NodeServiceIntent,
     binding: &NodeBinding,
 ) -> Result<()> {
-    let kv = crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(
+    let kv = crowdb_paxos_kv_client::PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
         binding.management_seeds.clone(),
     ));
     let intents = tokio::time::timeout(
@@ -87,8 +87,8 @@ pub(in crate::node::runtime) async fn ready(
         // has finished WAL replay. Probe the same routed read Access needs.
         let binding: NodeBinding = super::durable::read(&profile.paths.data_root.join("node-binding.json"))?
             .ok_or("node is unbound")?;
-        let kv = Arc::new(crowdb_kv_client::CrowdbKvClient::new(
-            crowdb_kv_client::ClientConfig::new(binding.management_seeds),
+        let kv = Arc::new(crowdb_paxos_kv_client::PaxosKvClient::new(
+            crowdb_paxos_kv_client::ClientConfig::new(binding.management_seeds),
         ));
         let catalog = Arc::new(crowdb_chunk_kv_client::Group0ChunkKvRangeCatalogSource::from_shared(kv));
         let transport = Arc::new(crowdb_chunk_kv_client::ChunkKvRpcTransport::new(1, 1, 1));
@@ -117,8 +117,8 @@ pub(in crate::node::runtime) async fn ready(
 async fn diskdb_routes_ready(profile: &DeploymentProfile) -> Result<()> {
     let binding: NodeBinding =
         super::durable::read(&profile.paths.data_root.join("node-binding.json"))?.ok_or("node is unbound")?;
-    let kv = Arc::new(crowdb_kv_client::CrowdbKvClient::new(
-        crowdb_kv_client::ClientConfig::new(binding.management_seeds),
+    let kv = Arc::new(crowdb_paxos_kv_client::PaxosKvClient::new(
+        crowdb_paxos_kv_client::ClientConfig::new(binding.management_seeds),
     ));
     crowdb_console_shared::deployment::services::diskdb_storage_ready(kv).await?;
     Ok(())

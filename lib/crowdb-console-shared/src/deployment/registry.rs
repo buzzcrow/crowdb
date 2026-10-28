@@ -4,7 +4,7 @@
 //! Conditional UUID allocation and public admission state in Group 0.
 
 use crate::error::{Error, Result};
-use crowdb_kv_client::{CrowdbKvClient, Error as KvError, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{Error as KvError, GetOutcome, PaxosKvClient, ReadMode};
 use serde::{Deserialize, Serialize};
 
 pub const NODES_KEY: &[u8] = b"/deployment/nodes";
@@ -55,7 +55,7 @@ impl NodeRecord {
 
 /// # Errors
 /// Rejects conflicting bootstrap mapping or unavailable quorum.
-pub async fn publish(kv: &CrowdbKvClient, registry: &NodeRegistry) -> Result<()> {
+pub async fn publish(kv: &PaxosKvClient, registry: &NodeRegistry) -> Result<()> {
     let bytes = serde_json::to_vec(registry).map_err(config_error)?;
     match kv.put_cas(0, 0, NODES_KEY, &bytes, 0).await {
         Ok(_) => Ok(()),
@@ -82,7 +82,7 @@ pub async fn publish(kv: &CrowdbKvClient, registry: &NodeRegistry) -> Result<()>
 ///
 /// # Errors
 /// Rejects duplicate UUID endpoints, changed clusters and unavailable authority.
-pub async fn admit(kv: &CrowdbKvClient, cluster: &str, mut node: NodeRecord) -> Result<NodeRecord> {
+pub async fn admit(kv: &PaxosKvClient, cluster: &str, mut node: NodeRecord) -> Result<NodeRecord> {
     super::node_update::check_admission(kv, &node.discovery_id).await?;
     let mut last_conflict = None;
     for attempt in 0..32 {
@@ -166,7 +166,7 @@ fn cancellation_key(operation: &str) -> Vec<u8> {
     format!("/deployment/cancelled-admissions/{operation}").into_bytes()
 }
 
-async fn cancellation_complete(kv: &CrowdbKvClient, cluster: &str, node: &NodeRecord) -> Result<bool> {
+async fn cancellation_complete(kv: &PaxosKvClient, cluster: &str, node: &NodeRecord) -> Result<bool> {
     let expected =
         serde_json::to_vec(&(cluster, &node.discovery_id, &node.operation_id)).map_err(config_error)?;
     Ok(
@@ -179,7 +179,7 @@ async fn cancellation_complete(kv: &CrowdbKvClient, cluster: &str, node: &NodeRe
 ///
 /// # Errors
 /// Rejects replaced operations, confirmed nodes and unavailable authority.
-pub async fn complete_cancellation(kv: &CrowdbKvClient, cluster: &str, node: &NodeRecord) -> Result<()> {
+pub async fn complete_cancellation(kv: &PaxosKvClient, cluster: &str, node: &NodeRecord) -> Result<()> {
     let (registry, _) = read(kv)
         .await?
         .ok_or_else(|| Error::Config("cluster mapping absent".into()))?;
@@ -209,12 +209,7 @@ pub async fn complete_cancellation(kv: &CrowdbKvClient, cluster: &str, node: &No
 ///
 /// # Errors
 /// Rejects committed nodes, changed operation identity and unavailable authority.
-pub async fn cancel(
-    kv: &CrowdbKvClient,
-    cluster: &str,
-    discovery_id: &str,
-    operation_id: &str,
-) -> Result<()> {
+pub async fn cancel(kv: &PaxosKvClient, cluster: &str, discovery_id: &str, operation_id: &str) -> Result<()> {
     for attempt in 0..32 {
         let (mut registry, revision) = read(kv)
             .await?
@@ -247,7 +242,7 @@ pub async fn cancel(
 
 /// # Errors
 /// Returns an explicit authority error rather than an empty registry on failure.
-pub async fn read(kv: &CrowdbKvClient) -> Result<Option<(NodeRegistry, u64)>> {
+pub async fn read(kv: &PaxosKvClient) -> Result<Option<(NodeRegistry, u64)>> {
     match kv.get(0, 0, NODES_KEY, ReadMode::Linearizable, None).await? {
         GetOutcome::Found { value, revision, .. } => Ok(Some((
             serde_json::from_slice(&value).map_err(config_error)?,

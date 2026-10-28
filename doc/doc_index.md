@@ -10,7 +10,7 @@ listed document or section needed by the task.
 
 | Doc                                                       | When to read                                               |
 | --------------------------------------------------------- | ---------------------------------------------------------- |
-| `doc/design/kv/design-crowdb-kv.md`                       | KV architecture and sub-design map.                        |
+| `doc/design/kv/design-crowdb-paxos-kv.md`                       | KV architecture and sub-design map.                        |
 | `doc/design/protocol/design-crowdb-protocol.md`           | Protocol and key encoding architecture.                    |
 | `doc/design/diskdb/design-crowdb-diskdb.md`               | Diskdb lifecycle, placement, and concurrency.              |
 | `doc/design/diskio/design-crowdb-diskio.md`               | Disk I/O engine, fallbacks, cancellation, and RPC.         |
@@ -80,18 +80,18 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | Doc                                                                           | Read when working on                                    |
 | ----------------------------------------------------------------------------- | ------------------------------------------------------- |
 | `doc/design/deploy/design-crowdb-oci-image.md`                                  | Pixi OCI build, Docker/containerd, CI and macOS slot.     |
-| `doc/design/kv/design-crowdb-kv-leader-election.md`                           | Election, lease, ReadIndex, step-down.                  |
-| `doc/design/kv/design-crowdb-kv-slot.md`                                      | Slot pipelining, catch-up, coalescing, safe retention. |
-| `doc/design/kv/design-crowdb-kv-rpc.md`                                       | Paxos RPC transport, schema, and errors.                |
-| `doc/design/kv/design-crowdb-kv-rpc-client.md`                                | Client KV RPC, watch push, rollout, topology cache.     |
-| `doc/design/kv/design-crowdb-kv-reconfiguration.md`                           | Membership change, leader transfer, epoch fence.        |
-| `doc/design/kv/design-crowdb-kv-group0.md`                                    | Group-0 schema, registry, topology, cleanup.            |
-| `doc/design/kv/design-crowdb-kv-state-machine.md`                             | Apply semantics, per-key slots, snapshot, compaction.   |
-| `doc/design/kv/design-crowdb-kv-wal.md`                                       | WAL flush, replay, recovery, index, GC.                 |
-| `doc/design/kv/design-crowdb-kv-watch-notify.md`                              | Watch registry, apply trigger, client, fallback.        |
-| `doc/design/kv/design-crowdb-kv-server.md`                                    | KV server startup, API, lifecycle, cleanup.             |
-| `doc/design/kv/design-crowdb-kv-test.md`                                      | KV test strategy and coverage.                          |
-| `doc/design/kv/design-crowdb-kv-observability.md`                             | Metrics, collectors, instrumentation, logs.             |
+| `doc/design/kv/design-crowdb-paxos-kv-leader-election.md`                           | Election, lease, ReadIndex, step-down.                  |
+| `doc/design/kv/design-crowdb-paxos-kv-slot.md`                                      | Slot pipelining, catch-up, coalescing, safe retention. |
+| `doc/design/kv/design-crowdb-paxos-kv-rpc.md`                                       | Paxos RPC transport, schema, and errors.                |
+| `doc/design/kv/design-crowdb-paxos-kv-rpc-client.md`                                | Client KV RPC, watch push, rollout, topology cache.     |
+| `doc/design/kv/design-crowdb-paxos-kv-reconfiguration.md`                           | Membership change, leader transfer, epoch fence.        |
+| `doc/design/kv/design-crowdb-paxos-kv-group0.md`                                    | Group-0 schema, registry, topology, cleanup.            |
+| `doc/design/kv/design-crowdb-paxos-kv-state-machine.md`                             | Apply semantics, per-key slots, snapshot, compaction.   |
+| `doc/design/kv/design-crowdb-paxos-kv-wal.md`                                       | WAL flush, replay, recovery, index, GC.                 |
+| `doc/design/kv/design-crowdb-paxos-kv-watch-notify.md`                              | Watch registry, apply trigger, client, fallback.        |
+| `doc/design/kv/design-crowdb-paxos-kv-server.md`                                    | KV server startup, API, lifecycle, cleanup.             |
+| `doc/design/kv/design-crowdb-paxos-kv-test.md`                                      | KV test strategy and coverage.                          |
+| `doc/design/kv/design-crowdb-paxos-kv-observability.md`                             | Metrics, collectors, instrumentation, logs.             |
 | `doc/design/chunkds/design-crowdb-chunk-kv.md`                                | Chunk-backed range KV, recovery, transfer, split.       |
 | `doc/design/chunkds/design-crowdb-chunk-kv-server.md`                         | Range catalog, fencing, balance, lifecycle.             |
 | `doc/design/chunkds/design-crowdb-chunk-kv-client.md`                         | Routed client, cache, composition, scans.               |

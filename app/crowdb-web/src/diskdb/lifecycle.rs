@@ -20,10 +20,7 @@ use crowdb_console_shared::lifecycle::{self, DiskdbDeployRequest};
 #[derive(Debug, Deserialize)]
 pub struct DeployDiskdbBody {
     pub rpc_port: u16,
-    /// Main listener port. When omitted, derived from `rpc_port`.
-    #[serde(default)]
-    pub listen_port: Option<u16>,
-    /// Internal HTTP health port. When omitted, derived from `rpc_port`.
+    /// HTTP listener; omitted values use the protocol default.
     #[serde(default)]
     pub http_port: Option<u16>,
     /// Normal `DiskDB` heartbeat cadence, retained across service restart.
@@ -33,22 +30,16 @@ pub struct DeployDiskdbBody {
 
 pub(super) fn validate_diskdb_ports(
     body: &DeployDiskdbBody,
-) -> Result<(u16, u16, u16), (StatusCode, Json<ErrorBody>)> {
-    let listen_port = body.listen_port.unwrap_or(body.rpc_port);
-    let http_port = body.http_port.unwrap_or_else(|| body.rpc_port.saturating_add(1));
-    let rpc_listen_port = body.rpc_port.saturating_add(2);
-    let ports = [listen_port, http_port, rpc_listen_port];
-    if ports.contains(&0) || body.rpc_port > 65_533 {
-        return Err(err_400("DiskDB ports must be in the range 1..=65535"));
+) -> Result<(u16, u16), (StatusCode, Json<ErrorBody>)> {
+    let http = body.http_port.unwrap_or(crowdb_protocol::DISKDB_HTTP_BASE);
+    if http == 0 || body.rpc_port == 0 || http == body.rpc_port {
+        return Err(err_400("DiskDB HTTP and RPC ports must be distinct and nonzero"));
     }
-    if ports[0] == ports[1] || ports[0] == ports[2] || ports[1] == ports[2] {
-        return Err(err_400("DiskDB listener ports must be distinct"));
-    }
-    Ok((listen_port, http_port, rpc_listen_port))
+    Ok((http, body.rpc_port))
 }
 
 #[cfg(target_os = "macos")]
-fn ensure_local_ports_free(ports: [u16; 3]) -> Result<(), (StatusCode, Json<ErrorBody>)> {
+fn ensure_local_ports_free(ports: [u16; 2]) -> Result<(), (StatusCode, Json<ErrorBody>)> {
     for port in ports {
         if std::net::TcpListener::bind(("127.0.0.1", port)).is_err() {
             return Err(err_409(format!("DiskDB listener port {port} is unavailable")));
@@ -100,10 +91,10 @@ async fn deploy_diskdb(
             "Group 0 is not ready; deploy Paxos-KV and initialize Group 0 before starting DiskDB",
         ));
     }
-    let (listen_port, http_port, rpc_listen_port) = validate_diskdb_ports(&body)?;
+    let (http_port, rpc_listen_port) = validate_diskdb_ports(&body)?;
     #[cfg(target_os = "macos")]
-    ensure_local_ports_free([listen_port, http_port, rpc_listen_port])?;
-    let _ports = crate::services::defaults::claim_ports(&state, &[listen_port, http_port, rpc_listen_port])?;
+    ensure_local_ports_free([http_port, rpc_listen_port])?;
+    let _ports = crate::services::defaults::claim_ports(&state, &[http_port, rpc_listen_port])?;
     let node = {
         let cfg = state.config.read().unwrap();
         // Check for existing diskdb instance on this node.
@@ -150,7 +141,6 @@ async fn deploy_diskdb(
         free_batch_enabled: None,
         free_flush_max_batch: None,
         server_id: format!("diskdb-{node_id}"),
-        listen_port,
         http_port,
         rpc_port: rpc_listen_port,
         kv_server_mgmt_seeds,
@@ -171,7 +161,7 @@ async fn deploy_diskdb(
         url: deployed.endpoint.clone(),
         node_id: Some(node_id),
         rpc_url: Some(deployed.endpoint.clone()),
-        rest_port: None,
+        rest_port: Some(http_port),
         rpc_port: Some(body.rpc_port),
         auto_start: true,
         binary: None,
@@ -242,8 +232,10 @@ async fn restart_diskdb(
     let (entry, node) = diskdb_restart_inputs(&state, node_id)?;
 
     let rpc_port = entry
-        .rpc_port
-        .or_else(|| entry.rpc_url.as_deref().and_then(crate::mgmt::port_of))
+        .rpc_url
+        .as_deref()
+        .and_then(crate::mgmt::port_of)
+        .or(entry.rpc_port)
         .ok_or_else(|| err_500(format!("diskdb entry has malformed rpc_url: {:?}", entry.rpc_url)))?;
 
     // Stop existing process.
@@ -264,10 +256,21 @@ async fn restart_diskdb(
             .collect()
     };
 
-    // Backward-compat: derive from the old paired-port scheme.
-    let listen_port = rpc_port;
-    let http_port = rpc_port.saturating_add(1);
-    let rpc_listen_port = rpc_port.saturating_add(2);
+    // Retain the configured listeners across restart.
+    let (http_port, rpc_listen_port) = validate_diskdb_ports(&DeployDiskdbBody {
+        rpc_port,
+        http_port: entry.rest_port.or_else(|| {
+            state
+                .config
+                .read()
+                .unwrap()
+                .local_launches
+                .get(&entry.id)
+                .and_then(|launch| launch.readiness_url.as_deref())
+                .and_then(crate::mgmt::port_of)
+        }),
+        keepalive_interval_secs: None,
+    })?;
     let req = DiskdbDeployRequest {
         instance_id: None,
         metrics_interval: None,
@@ -278,7 +281,6 @@ async fn restart_diskdb(
         free_batch_enabled: None,
         free_flush_max_batch: None,
         server_id: format!("diskdb-{node_id}"),
-        listen_port,
         http_port,
         rpc_port: rpc_listen_port,
         kv_server_mgmt_seeds,
@@ -298,7 +300,7 @@ async fn restart_diskdb(
         url: deployed.endpoint.clone(),
         node_id: Some(node_id),
         rpc_url: Some(deployed.endpoint.clone()),
-        rest_port: None,
+        rest_port: Some(http_port),
         rpc_port: Some(rpc_port),
         auto_start: entry.auto_start,
         binary: None,

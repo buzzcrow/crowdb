@@ -7,7 +7,7 @@ use crowdb_console_shared::{
     deployment::{PreparedBootstrap, CLUSTER_KEY},
     ConsoleConfig,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::mgmt::node::NodeBinding;
 use crowdb_web::AppState;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ pub struct TestClusterTarget {
     pub state: AppState,
     pub prepared: PreparedBootstrap,
     pub binding: NodeBinding,
-    pub kv: Arc<CrowdbKvClient>,
+    pub kv: Arc<PaxosKvClient>,
     pub root: crowdb_test_harness::test_dirs::TestDir,
     _cluster: TestKvCluster,
 }
@@ -24,7 +24,7 @@ pub struct TestClusterTarget {
 impl TestClusterTarget {
     pub async fn start() -> Self {
         let cluster = TestKvCluster::start().await;
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
             cluster.mgmt_endpoints.clone(),
         )));
         kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());

@@ -20,7 +20,7 @@ key encoding. This doc covers everything else in `crowdb-protocol`: ID
 aliases, HTTP management API wire types, and group-0 sysdata entry
 types.
 
-See `doc/design/kv/design-crowdb-kv-group0.md` §2.4 (single home
+See `doc/design/kv/design-crowdb-paxos-kv-group0.md` §2.4 (single home
 decision) and §2.5 (ID alias decision) for the upstream mandates.
 
 ## Table of Contents
@@ -36,8 +36,8 @@ decision) and §2.5 (ID alias decision) for the upstream mandates.
 
 ## 1. Problem
 
-CROWDB has multiple consumers of the same wire shapes — `crowdb-kv-server`
-(producer), `crowdb-kv-client` (consumer), `crowdb-console-shared`
+CROWDB has multiple consumers of the same wire shapes — `crowdb-paxos-kv-server`
+(producer), `crowdb-paxos-kv-client` (consumer), `crowdb-console-shared`
 (consumer), `crowdb-web` / `crowdb-cli` (via the console). If each crate
 defines its own copy, the copies drift: one crate adds a field, the
 others silently drop it (serde leaves them at default). The same
@@ -114,7 +114,7 @@ Every mgmt wire type derives `utoipa::ToSchema` behind a feature-gated
 pub struct TopologyResponse { … }
 ```
 
-Only `crowdb-kv-server` (which builds the OpenAPI spec) enables the
+Only `crowdb-paxos-kv-server` (which builds the OpenAPI spec) enables the
 `schema` feature. All other consumers depend on `crowdb-protocol`
 without it and never pull in `utoipa`.
 
@@ -134,7 +134,7 @@ hosts the conversions. It defines zero structs.
 
 ### 3.6 Server-local types stay server-local
 
-Types used only inside `crowdb-kv-server` (e.g. `JoinGroupRequest`,
+Types used only inside `crowdb-paxos-kv-server` (e.g. `JoinGroupRequest`,
 `FlushResult`, `ReadinessResponse`, `ApiDoc`) stay in the server.
 They are not cross-component; promoting them to `crowdb-protocol`
 would be premature. The rule: a type moves to `crowdb-protocol` only
@@ -156,7 +156,7 @@ types are re-exported from the crate root.
     state, read state, metrics points).
 - **`sysdata`** — group-0 sysdata entry return types: the decoded
   form of a text-path key + its JSON value, produced by
-  `HardwareClient` / `KVClusterMetaClient` reads.
+  `HardwareClient` / `PaxosKvClusterMetaClient` reads.
 - **`key`** — key encoding traits and structs (covered in
   [`design-crowdb-protocol-key.md`](design-crowdb-protocol-key.md)).
 - **`common` / `diskdb::rpc` / `chunkdb::rpc` / `diskio::rpc`** —
@@ -164,13 +164,18 @@ types are re-exported from the crate root.
 - **`diskdb_type_util`** — extension traits and utility functions
   for diskdb flatbuffer types.
 - **`bitmap`** — usage bitmap utilities for disk space accounting.
-- **`ports`** — default port allocation for CROWDB services. Each
-  service type has a base (start) port; multiple instances of the
-  same service type on one node increment by a per-type stride. Port
-  ranges are non-overlapping across service types so different
-  services never collide. Consumers (kv-server, diskdb, web, cli)
-  reference the base constants for clap `default_value_t` and config
-  defaults instead of hardcoding port numbers.
+- **`ports`** — the single definition of default listener ports. Rust
+  consumers use the constants or `ServicePort`; Python, TypeScript, C++ and
+  packaged configuration use generated defaults. Each active listener kind
+  owns a disjoint 1000-port range, with instance stride 1. Console Web uses
+  6135; S3, Iceberg and Dataset use 7135, 8135 and 9135. Management and RPC
+  defaults for the same server are 1000 apart. Explicit deployment endpoints
+  remain authoritative. An unused main-listener field does not reserve a
+  port or create a listener. DiskDB HTTP and RPC are independent endpoints;
+  its deployment RPC input is the actual RPC port without an implicit offset.
+  Paxos-KV's RPC pool serves both consensus and client requests. A deployment
+  with multiple stores must allocate distinct RPC ports for every store.
+
 
 Field-level detail for every type lives in the source files
 (`lib/crowdb-protocol/src/{common_type,mgmt,sysdata}.rs`), not in this
@@ -187,9 +192,9 @@ Every consumer follows the same pattern:
 
 ## 6. References
 
-- `design-crowdb-kv-group0.md` §2.4 — single home mandate.
-- `design-crowdb-kv-group0.md` §2.5 — ID alias mandate.
-- `design-crowdb-kv-server.md` §2.4 — HTTP management API endpoints.
+- `design-crowdb-paxos-kv-group0.md` §2.4 — single home mandate.
+- `design-crowdb-paxos-kv-group0.md` §2.5 — ID alias mandate.
+- `design-crowdb-paxos-kv-server.md` §2.4 — HTTP management API endpoints.
 - [`design-crowdb-protocol-key.md`](design-crowdb-protocol-key.md) — key
   encoding (companion sub-design).
 - The `crowdb-protocol` crate modules — type definitions (the

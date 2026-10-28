@@ -37,7 +37,7 @@ pub(crate) struct HostArgs {
     physical_host_id: Option<String>,
     #[arg(long)]
     interface: Option<String>,
-    /// This host's management IP on the selected interface; port 9090.
+    /// This host's management IP on the selected interface; uses the default Console Web port.
     #[arg(long)]
     management_address: Option<IpAddr>,
     #[arg(long)]

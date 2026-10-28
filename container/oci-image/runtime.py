@@ -2,6 +2,8 @@
 # Licensed under the Apache License, Version 2.0.
 """Host Docker/containerd commands and verified container resource boundaries."""
 
+from ports import WEB_BASE
+
 import json
 import math
 import os
@@ -133,13 +135,13 @@ class Runtime:
         if args.seed:
             command += ["-e", "CROWDB_DISCOVERY_SEEDS=" + ",".join(args.seed)]
         if args.ui_port:
-            command += ["-p", f"127.0.0.1:{args.ui_port}:9090"]
+            command += ["-p", f"127.0.0.1:{args.ui_port}:{WEB_BASE}"]
         try:
             container = self.invoke(*command, args.image).strip()
             self.verify(container, args.cpus, args.memory_mib, args.network == "host", shares)
             for disk in disks:
                 kind = "-f" if disk["backend"] == "file" else "-b"
-                self.invoke("exec", "--user", "10001:10001", container, "sh", "-c",
+                self.invoke("exec", "--user", "10001:10136", container, "sh", "-c",
                             'test "$1" "$2" && test -r "$2" && test -w "$2"', "sh", kind, disk["path"])
             record_inputs(args.data_root, disks)
             return container

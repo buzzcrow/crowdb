@@ -4,10 +4,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
 use crowdb_monitor::{
     hardware_step_names, BootstrapSession, DeploymentProfile, HardwareBootstrap, MonitorLog,
 };
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient};
 use crowdb_protocol::common::{HwStatus, RackValue};
 use uuid::Uuid;
 
@@ -84,7 +84,7 @@ async fn writes_and_validates_hardware_with_real_group_zero() {
         .reconcile(&mut restart, &profile, &mut events)
         .await
         .unwrap();
-    let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(seeds.clone())));
+    let hardware = HardwareClient::new(PaxosKvClient::new(ClientConfig::new(seeds.clone())));
     let disks = hardware.list_all_disks().await.unwrap();
     assert_eq!(disks.len(), 4);
     assert!(disks.iter().all(|disk| disk.value.zone_count == 1));
@@ -106,7 +106,7 @@ async fn conflicting_group_zero_record_rejects_without_creating_hardware() {
         .iter()
         .map(|ip| crate::common::management::origin(ip))
         .collect::<Vec<_>>();
-    let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(seeds.clone())));
+    let hardware = HardwareClient::new(PaxosKvClient::new(ClientConfig::new(seeds.clone())));
     hardware
         .add_rack(
             1,

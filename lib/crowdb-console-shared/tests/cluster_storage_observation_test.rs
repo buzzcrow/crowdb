@@ -153,7 +153,7 @@ async fn storage_diagnostics_follow_disk_owner_space_dependencies() {
     owner.lease_expiry_ms = u64::try_from(now).unwrap() + 120_000;
     put(&authority, "/hw/dg_owner/4/2/1", &owner).await;
     storage_layer(&authority, "/owner", Some("storage-owner-not-live")).await;
-    let registry = crowdb_kv_client::ServiceRegistryClient::from_shared(authority.ctx.kv_arc().clone());
+    let registry = crowdb_paxos_kv_client::ServiceRegistryClient::from_shared(authority.ctx.kv_arc().clone());
     registry
         .register_diskdb(42, "127.0.0.1:7200", &[], &[])
         .await
@@ -231,7 +231,7 @@ async fn space_must_come_from_the_current_owner_instead_of_a_detached_summary() 
         },
     )
     .await;
-    let registry = crowdb_kv_client::ServiceRegistryClient::from_shared(authority.ctx.kv_arc().clone());
+    let registry = crowdb_paxos_kv_client::ServiceRegistryClient::from_shared(authority.ctx.kv_arc().clone());
     registry
         .register_diskdb(42, "127.0.0.1:7200", &[1], &[])
         .await

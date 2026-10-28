@@ -315,7 +315,7 @@ impl TopologySnapshot {
         }
     }
 
-    fn set_allocation_geometry(&mut self, disks: &[crowdb_kv_client::DiskRecord]) {
+    fn set_allocation_geometry(&mut self, disks: &[crowdb_paxos_kv_client::DiskRecord]) {
         match crowdb_protocol::chunk_allocation_geometry::uniform_allocation_unit(
             disks
                 .iter()
@@ -453,7 +453,7 @@ impl Default for TopologyCache {
 /// Fetches racks, nodes, and disk-groups from group-0 and assembles
 /// them into a snapshot. If the fetch fails or returns empty, returns
 /// `None` (caller should keep the previous snapshot).
-pub async fn build_snapshot(hw: &crowdb_kv_client::HardwareClient) -> Option<TopologySnapshot> {
+pub async fn build_snapshot(hw: &crowdb_paxos_kv_client::HardwareClient) -> Option<TopologySnapshot> {
     let racks = match hw.list_racks().await {
         Ok(r) => r,
         Err(e) => {
@@ -486,7 +486,7 @@ pub async fn build_snapshot(hw: &crowdb_kv_client::HardwareClient) -> Option<Top
         }
     };
 
-    let mut usages = match crowdb_kv_client::SpaceUsageClient::from_shared(hw.clone())
+    let mut usages = match crowdb_paxos_kv_client::SpaceUsageClient::from_shared(hw.clone())
         .list_disk_group_usages()
         .await
     {
@@ -496,7 +496,7 @@ pub async fn build_snapshot(hw: &crowdb_kv_client::HardwareClient) -> Option<Top
             Vec::new()
         }
     };
-    let service = crowdb_kv_client::ServiceRegistryClient::from_shared(hw.shared_kv());
+    let service = crowdb_paxos_kv_client::ServiceRegistryClient::from_shared(hw.shared_kv());
     if let Ok(instances) = service.read_all_diskdb_instances().await {
         for (_, instance) in instances {
             if let Some(diskdb) = instance.extra.and_then(|extra| extra.diskdb) {

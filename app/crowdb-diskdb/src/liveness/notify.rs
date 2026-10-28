@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::bg_task::StopHandle;
-use crowdb_kv_client::WatchNotifyClient;
+use crowdb_paxos_kv_client::WatchNotifyClient;
 use crowdb_protocol::DISKDB_WATCH_PREFIXES;
 
 /// Group-0 store + group ids (system group).

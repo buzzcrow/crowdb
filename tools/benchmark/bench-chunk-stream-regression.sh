@@ -199,7 +199,7 @@ def initialize(args):
     root = Path.cwd()
     binaries = [args.binary, os.environ["CROWDB_REGRESSION_FIXTURE_BIN"],
                 *(root / "target/release" / name for name in
-                  ("crowdb-cli", "crowdb-kv-server", "crowdb-diskdb", "crowdb-chunkdb")),
+                  ("crowdb-cli", "crowdb-paxos-kv-server", "crowdb-diskdb", "crowdb-chunkdb")),
                 root / "app/crowdb-diskio/build/crowdb-diskio"]
     value = dict(commit=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
                  dirty_paths=subprocess.check_output(["git", "status", "--short"], text=True).splitlines(),
@@ -436,7 +436,7 @@ trap cleanup EXIT
 # identified executable directly, so a case cannot trigger a Cargo rebuild.
 if [ "$SKIP_BUILD" -eq 0 ]; then
     pixi run build-cpp
-    pixi run cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+    pixi run cargo build --release -p crowdb-cli -p crowdb-paxos-kv-server -p crowdb-diskdb -p crowdb-chunkdb
     if [ -z "$BENCH_BIN" ]; then
         pixi run cargo bench -p crowdb-chunk-stream --bench production_bounds --no-run \
             --message-format=json >"$LOG_ROOT/build.jsonl"

@@ -3,7 +3,7 @@
 
 use super::TestResult;
 use crowdb_console_shared::ops::OpContext;
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use crowdb_protocol::{
     chunk_kv::{ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage},
     chunk_stream::{decode_stream_chunk_record, StreamName, StreamRecord},

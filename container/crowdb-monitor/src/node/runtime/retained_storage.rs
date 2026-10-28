@@ -3,7 +3,7 @@
 
 //! Verify bound authority before inspecting an explicitly retained disk.
 use super::{durable, Result};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient};
 use crowdb_protocol::{
     common::HwStatus,
     disk_storage::DiskStorageRecord,
@@ -35,7 +35,7 @@ pub(super) async fn check(root: &Path, request: CheckRetainedDisk) -> Result<Ret
         disk_group_id: request.disk_group_id,
         disk_id,
     };
-    let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(binding.management_seeds)));
+    let hardware = HardwareClient::new(PaxosKvClient::new(ClientConfig::new(binding.management_seeds)));
     let nodes = hardware.list_nodes().await?;
     let locations: Vec<_> = nodes.iter().filter(|(_, id, _)| *id == request.node_id).collect();
     if locations.len() != 1 || locations[0].0 != request.rack_id {

@@ -20,7 +20,7 @@ use crate::service::ChunkdbRpcService;
 use crate::storage::ChunkStore;
 use crate::task::{TaskManager, TaskStore};
 use crate::topology::TopologyCache;
-use crowdb_kv_client::CrowdbKvClient;
+use crowdb_paxos_kv_client::PaxosKvClient;
 use crowdb_protocol::chunk_domain::ChunkDomain;
 
 mod background;
@@ -30,7 +30,7 @@ mod recovery;
 #[derive(Clone)]
 pub struct RuntimeContext {
     pub config: ChunkdbConfig,
-    pub kv: Arc<CrowdbKvClient>,
+    pub kv: Arc<PaxosKvClient>,
     pub bindings: BindingCache,
     pub range_guard: Arc<RangeGuard>,
     pub allocator: Arc<ChunkAllocator>,

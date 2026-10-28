@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 //! Aggregator integration test using a stand-in HTTP server that mimics
-//! `crowdb-kv-server`'s `/health` + `/topology` endpoints.
+//! `crowdb-paxos-kv-server`'s `/health` + `/topology` endpoints.
 
 use std::net::SocketAddr;
 

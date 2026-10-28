@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use crowdb_kv_client::{ChunkSlotMapClient, CrowdbKvClient, GetOutcome, ReadMode};
-use crowdb_kv_client::{RangeBindingClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, GetOutcome, PaxosKvClient, ReadMode};
+use crowdb_paxos_kv_client::{RangeBindingClient, ServiceRegistryClient};
 use crowdb_protocol::chunk_slot::{
     ChunkSlot, ChunkSlotBinding, ChunkSlotBitmap, ChunkSlotMap, ChunkSlotMapHead, ChunkStorageGroup,
     CHUNK_SLOT_LAYOUT_VERSION,
@@ -12,7 +12,7 @@ use crowdb_protocol::chunk_slot::{
 use crowdb_protocol::key::{ChunkServiceSlotsKey, ChunkSlotMapHeadKey, TextKey};
 
 pub(super) struct TestGroup0 {
-    pub(super) kv: Arc<CrowdbKvClient>,
+    pub(super) kv: Arc<PaxosKvClient>,
 }
 impl TestGroup0 {
     pub(super) async fn start() -> Self {

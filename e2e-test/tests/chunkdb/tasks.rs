@@ -3,7 +3,7 @@
 
 use crowdb_chunkdb::routing::{BindingCache, BindingTable};
 use crowdb_chunkdb::task::TaskStore;
-use crowdb_kv_client::ChunkSlotMapClient;
+use crowdb_paxos_kv_client::ChunkSlotMapClient;
 use crowdb_protocol::chunk_task::{ChunkTaskState, ChunkTaskValue};
 use crowdb_protocol::common::ChunkId;
 use std::sync::Arc;

@@ -8,7 +8,7 @@
 //! `/kv/...` text-path keys. They implement [`TextKey`] only (no
 //! [`BinaryKey`] — these are group-0 only).
 //!
-//! See `doc/design/kv/design-crowdb-kv-group0.md` §3.1 for the key
+//! See `doc/design/kv/design-crowdb-paxos-kv-group0.md` §3.1 for the key
 //! layout.
 
 use super::encoding::{

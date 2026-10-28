@@ -6,7 +6,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use crowdb_chunk_client::ChunkIoClient;
 use crowdb_chunk_kv_client::{ChunkKvClient, ChunkKvRpcTransport};
-use crowdb_kv_client::CrowdbKvClient;
+use crowdb_paxos_kv_client::PaxosKvClient;
 
 use super::{ClientRuntime, RuntimeLimits, RuntimeResources, Storage};
 use crate::topology::CatalogObservation;
@@ -15,7 +15,7 @@ use crate::{Error, Result};
 /// Existing client owners attached by an embedding system. The catalog must
 /// already be validated; this path never reconnects or creates HTTP listeners.
 pub struct RuntimeClients {
-    pub control: Arc<CrowdbKvClient>,
+    pub control: Arc<PaxosKvClient>,
     pub metadata: Arc<ChunkKvClient>,
     pub metadata_transport: Arc<ChunkKvRpcTransport>,
     pub chunks: Arc<ChunkIoClient>,

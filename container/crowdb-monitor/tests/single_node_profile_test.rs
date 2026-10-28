@@ -37,7 +37,7 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         .collect::<BTreeMap<_, _>>();
     assert_eq!(
         endpoints,
-        BTreeMap::from([("iceberg", 9092), ("s3", 9091), ("web", 9090)])
+        BTreeMap::from([("iceberg", 8135), ("s3", 7135), ("web", 6135)])
     );
     let access_service = profile
         .services
@@ -46,13 +46,13 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         .unwrap();
     assert_eq!(
         access_service.env.get("CROWDB_ICEBERG_PUBLIC_URI"),
-        Some(&"http://localhost:9092".to_owned())
+        Some(&"http://localhost:8135".to_owned())
     );
-    assert_eq!(access_service.probe.target, "http://127.0.0.1:9092/v1/config");
+    assert_eq!(access_service.probe.target, "http://127.0.0.1:8135/v1/config");
     assert_eq!(access_service.additional_probes.len(), 1);
     assert_eq!(
         access_service.additional_probes[0].target,
-        "http://127.0.0.1:9094/_crowdb/health/ready"
+        "http://127.0.0.1:25135/_crowdb/health/ready"
     );
     assert_eq!(
         access_service.additional_probes[0].failure_threshold,
@@ -60,16 +60,16 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
     );
     assert_eq!(
         access_service.env.get("CROWDB_MANAGEMENT_SEEDS"),
-        Some(&"http://127.0.0.1:10000".to_owned())
+        Some(&"http://127.0.0.1:10135".to_owned())
     );
     assert_eq!(access_service.args[1], "/opt/crowdb/run/config/access.toml");
     assert_eq!(
         access_service.fence_listeners,
         [
-            "127.0.0.1:9092",
-            "127.0.0.1:9091",
-            "127.0.0.1:9093",
-            "127.0.0.1:9094"
+            "127.0.0.1:8135",
+            "127.0.0.1:7135",
+            "127.0.0.1:9135",
+            "127.0.0.1:25135"
         ]
     );
     let access = std::fs::read_to_string(
@@ -77,25 +77,25 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
     )
     .unwrap();
     let access: toml::Value = toml::from_str(&access).unwrap();
-    assert_eq!(access["iceberg"]["listen"].as_str(), Some("0.0.0.0:9092"));
-    assert_eq!(access["s3"]["listen"].as_str(), Some("0.0.0.0:9091"));
-    assert_eq!(access["dataset"]["listen"].as_str(), Some("0.0.0.0:9093"));
+    assert_eq!(access["iceberg"]["listen"].as_str(), Some("0.0.0.0:8135"));
+    assert_eq!(access["s3"]["listen"].as_str(), Some("0.0.0.0:7135"));
+    assert_eq!(access["dataset"]["listen"].as_str(), Some("0.0.0.0:9135"));
     assert_eq!(
         access_service.env.get("CROWDB_DATASET_PUBLIC_URI"),
-        Some(&"http://localhost:9093".to_owned())
+        Some(&"http://localhost:9135".to_owned())
     );
     let web = profile
         .services
         .iter()
         .find(|service| service.id == "web")
         .unwrap();
-    assert_eq!(web.probe.target, "http://127.0.0.1:9090/healthz");
+    assert_eq!(web.probe.target, "http://127.0.0.1:6135/healthz");
     let template = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/templates/crowdb-web.toml"),
     )
     .unwrap();
     let config: toml::Value = toml::from_str(&template).unwrap();
-    assert_eq!(config["port"].as_integer(), Some(9090));
+    assert_eq!(config["port"].as_integer(), Some(6135));
 }
 
 #[test]

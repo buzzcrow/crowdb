@@ -4,7 +4,7 @@
 //! Per-node store / group / remote primitives (A4).
 //!
 //! Key work: read endpoints served from the monitor cache, low-level
-//! mutators that proxy to the upstream `crowdb-kv-server` management API
+//! mutators that proxy to the upstream `crowdb-paxos-kv-server` management API
 //! and invalidate the affected node in the monitor cache on success.
 
 use crate::error::{err_500, map_err, ErrorBody};

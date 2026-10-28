@@ -69,11 +69,10 @@ export function AddNodeDialog({ isOpen, onClose, racks, defaultRackId,
     })));
   }, [defaults.values]);
 
-  const allPorts = selected.flatMap(kind => [...Object.values(ports[kind] ?? {}).filter((value): value is number => typeof value === 'number'), ...(kind === 'diskdb' && ports[kind]?.rpc_port ? [ports[kind]!.rpc_port! + 1, ports[kind]!.rpc_port! + 2] : [])]);
+  const allPorts = selected.flatMap(kind => Object.values(ports[kind] ?? {}).filter((value): value is number => typeof value === 'number'));
   const validPorts = selected.every(kind => listenerFields(kind).every(([field]) => ports[kind]?.[field] != null))
     && allPorts.every(port => Number.isInteger(port) && port > 0 && port <= 65535)
-    && new Set(allPorts).size === allPorts.length
-    && (!selected.includes('diskdb') || (ports.diskdb?.rpc_port ?? 0) <= 65533);
+    && new Set(allPorts).size === allPorts.length;
   const valid = /^\d+$/.test(nodeId) && Number.isSafeInteger(Number(nodeId)) && Number(nodeId) > 0
     && !!rackId && !!host.trim() && validPorts && !!defaults.values;
 

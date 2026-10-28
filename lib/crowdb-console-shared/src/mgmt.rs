@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Typed bindings for `crowdb-kv-server`'s management API (C5).
+//! Typed bindings for `crowdb-paxos-kv-server`'s management API (C5).
 //!
 //! The HTTP request/response DTOs live in `crowdb-protocol::mgmt` (the
 //! single home for cross-component protocol types). This module re-
@@ -10,7 +10,7 @@
 //! stays in one place.
 
 // Re-export all DTOs so existing callers (`use crate::mgmt::*`) keep
-// working until Stage 4 migrates them to `KVClusterAdmin`.
+// working until Stage 4 migrates them to `PaxosKvClusterAdmin`.
 pub use crowdb_protocol::mgmt::*;
 
 use crate::clients::http::ServerClient;

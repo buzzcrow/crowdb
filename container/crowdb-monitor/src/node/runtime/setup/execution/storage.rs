@@ -5,7 +5,7 @@
 
 use super::{journal, AcceptedSetup, Result};
 use crate::DeploymentProfile;
-use crowdb_kv_client::{CrowdbKvClient, HardwareClient};
+use crowdb_paxos_kv_client::{HardwareClient, PaxosKvClient};
 use crowdb_protocol::mgmt::node::{
     setup::{SetupDiskStatus, SetupStepPhase, SetupStorage},
     storage::{DiskInput, FileDiskAdmission, FilePreparationPhase, PrepareDiskFile},
@@ -16,7 +16,7 @@ pub(super) async fn advance(
     profile: &DeploymentProfile,
     state: &mut AcceptedSetup,
     binding: &NodeBinding,
-    kv: &std::sync::Arc<CrowdbKvClient>,
+    kv: &std::sync::Arc<PaxosKvClient>,
 ) -> Result<bool> {
     let (capacity_bytes, reserve_bytes, sparse) = match &state.request.choices.storage {
         SetupStorage::Automatic {
@@ -120,7 +120,7 @@ async fn advance_file(
 }
 
 pub(super) async fn ensure_group(
-    kv: &std::sync::Arc<CrowdbKvClient>,
+    kv: &std::sync::Arc<PaxosKvClient>,
     binding: &NodeBinding,
     group_id: u64,
     data_binding: Option<crowdb_protocol::common::BindMapValue>,
@@ -169,7 +169,7 @@ pub(super) async fn ensure_group(
 
 pub(super) async fn select_group(
     hardware: &HardwareClient,
-    kv: &std::sync::Arc<CrowdbKvClient>,
+    kv: &std::sync::Arc<PaxosKvClient>,
     rack: u64,
     binding: &NodeBinding,
     media_type: Option<i32>,
@@ -196,7 +196,7 @@ pub(super) async fn select_group(
             .await
         {
             Ok(()) => {}
-            Err(crowdb_kv_client::Error::Server(reason))
+            Err(crowdb_paxos_kv_client::Error::Server(reason))
                 if reason == "DiskGroup media class or allocation unit is incompatible with this disk" =>
             {
                 if automatic {

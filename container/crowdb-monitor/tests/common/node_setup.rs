@@ -9,17 +9,17 @@ use crowdb_console_shared::{
     ops::OpContext,
     ConsoleConfig,
 };
-use crowdb_kv::cluster::{
-    group::PxGroup, kv_server::KvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
+use crowdb_paxos_kv::cluster::{
+    group::PxGroup, paxos_kv_server::PaxosKvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::mgmt::node::{setup::NodeSetupRequest, NodeBinding};
 use std::{os::unix::fs::PermissionsExt, path::Path, sync::Arc};
 
 pub struct TestAuthority {
     store: Arc<PxKvStore>,
     task: tokio::task::JoinHandle<()>,
-    pub kv: CrowdbKvClient,
+    pub kv: PaxosKvClient,
     pub binding: NodeBinding,
     pub registry: NodeRegistry,
 }
@@ -43,7 +43,7 @@ impl TestAuthority {
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        let kv = CrowdbKvClient::new(ClientConfig::new(vec![seed.clone()]));
+        let kv = PaxosKvClient::new(ClientConfig::new(vec![seed.clone()]));
         kv.seed_leader(0, 0, store.listen_addr().unwrap().to_string());
         let bootstrap = bootstrap(root, &kv, &seed, &store.listen_addr().unwrap().to_string()).await;
         let binding = NodeBinding {
@@ -83,7 +83,7 @@ impl TestAuthority {
     }
 }
 
-async fn bootstrap(root: &Path, kv: &CrowdbKvClient, management: &str, rpc: &str) -> PreparedBootstrap {
+async fn bootstrap(root: &Path, kv: &PaxosKvClient, management: &str, rpc: &str) -> PreparedBootstrap {
     let mut server = ServerEntry::new("kv-2", management);
     server.node_id = Some(2);
     server.rpc_url = Some(rpc.into());

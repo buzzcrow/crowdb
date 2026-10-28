@@ -3,8 +3,8 @@
 
 use super::cluster::{leader, topology};
 use crate::common::management::{addresses, client, origin, request};
-use crowdb_kv::rpc::ReadMode;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, KvRpcTransport};
+use crowdb_paxos_kv::rpc::ReadMode;
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient, PaxosKvRpcTransport};
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -21,7 +21,13 @@ async fn peers(http: &Client, ip: &str, store: usize, body: Value) {
     .await;
 }
 
-async fn local_value(transport: &KvRpcTransport, ip: &str, key: &[u8], expected: &[u8], timeout: Duration) {
+async fn local_value(
+    transport: &PaxosKvRpcTransport,
+    ip: &str,
+    key: &[u8],
+    expected: &[u8],
+    timeout: Duration,
+) {
     let deadline = Instant::now() + timeout;
     loop {
         let response = transport
@@ -65,7 +71,7 @@ async fn snapshot_import_precedes_wiring_and_catches_up_tail() {
         .await;
     }
     let leader = leader(&http, &ips[..2], 1).await;
-    let kv = CrowdbKvClient::new(ClientConfig::new(ips[..2].iter().map(|ip| origin(ip)).collect()));
+    let kv = PaxosKvClient::new(ClientConfig::new(ips[..2].iter().map(|ip| origin(ip)).collect()));
     for (key, value) in [(b"k1", b"v1"), (b"k2", b"v2")] {
         kv.put(0, 1, key, value, None).await.unwrap();
     }
@@ -80,7 +86,7 @@ async fn snapshot_import_precedes_wiring_and_catches_up_tail() {
         201,
     )
     .await;
-    let transport = KvRpcTransport::new();
+    let transport = PaxosKvRpcTransport::new();
     for (key, value) in [(b"k1", b"v1"), (b"k2", b"v2")] {
         local_value(&transport, &ips[2], key, value, Duration::from_secs(1)).await;
     }

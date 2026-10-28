@@ -4,7 +4,7 @@
 use super::{corrupt, publication::put, storage_error, StreamChunkRecordSnapshot, StreamChunkRecordStore};
 use crate::{ChunkId, Result, StreamError};
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, Error};
+use crowdb_paxos_kv_client::{BatchOp, Error};
 use crowdb_protocol::chunk_stream::{StreamChunkRecord, StreamChunkState, StreamName};
 use crowdb_protocol::key::{BinaryKey, StreamChunkRecordKey, StreamChunkRecordOrder};
 

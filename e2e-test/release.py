@@ -71,7 +71,7 @@ def check_startup(image, artifacts):
           ("version", "unknown field"), mounts=(
               f"type=bind,source={old_config.resolve()},target=/opt/crowdb/etc/old-web.toml,readonly",))
     managed_config = root / "managed-web.toml"
-    managed_config.write_text("version = 1\nmode = 'docker'\nbind = '127.0.0.1'\nport = 9090\n"
+    managed_config.write_text("version = 1\nmode = 'docker'\nbind = '127.0.0.1'\nport = 6135\n"
         "group0_management_seeds = ['http://127.0.0.1:10000']\nui_root = '/opt/crowdb/ui'\n"
         "monitor_status = '/opt/crowdb/run/status/monitor.json'\nlog_dir = '/opt/crowdb/data/log/web'\n"
         "log_max_file_mb = 30\nlog_max_files = 5\n")
@@ -83,7 +83,7 @@ def check_startup(image, artifacts):
               f"type=bind,source={registry.resolve()},target=/opt/crowdb/etc/registry.toml,readonly"))
     check("chunk-kv-missing-config", ["server", "chunk-kv", "--config", "/opt/crowdb/etc/missing.toml",
           "--log-dir", "/opt/crowdb/data/log/chunk-kv", "--log"], "failed to load configuration")
-    check("managed-root", ["server", "kv"], "requires a separate data root")
+    check("managed-root", ["server", "paxos-kv"], "requires a separate data root")
     profile = root / "invalid-profile.toml"
     profile.write_text("version = [\n")
     check("invalid-profile", [], "failed to decode deployment profile", mounts=(

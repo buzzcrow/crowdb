@@ -10,7 +10,7 @@ use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
 use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig, Group0ChunkKvRangeCatalogSource,
 };
-use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig as KvConfig, PaxosKvClient};
 use crowdb_protocol::chunkdb::rpc::ChunkType;
 
 use super::RuntimeConfig;
@@ -20,7 +20,7 @@ use crate::{Error, Result};
 pub(crate) struct Storage {
     pub owns_small_pool: bool,
     pub owns_transports: bool,
-    pub control: Arc<CrowdbKvClient>,
+    pub control: Arc<PaxosKvClient>,
     pub metadata: Arc<ChunkKvClient>,
     pub chunks: Arc<ChunkIoClient>,
     pub chunk_type: ChunkType,
@@ -34,9 +34,7 @@ impl Storage {
     pub async fn connect(config: RuntimeConfig) -> Result<Self> {
         let policy = config.small_write.clone();
         let chunk_type = config.small_write.chunk_type;
-        let control = Arc::new(CrowdbKvClient::new(KvConfig::new(
-            config.management_seeds.clone(),
-        )));
+        let control = Arc::new(PaxosKvClient::new(KvConfig::new(config.management_seeds.clone())));
         let catalog = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::clone(&control)));
         let metadata_config = ClientConfig::default();
         let transport = Arc::new(

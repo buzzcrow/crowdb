@@ -5,6 +5,7 @@
 import json
 import time
 from pathlib import Path
+import default_ports as ports
 from allocation import create_network, node_data, start_node
 from fixture import Cluster, LABEL, request, wait
 
@@ -39,7 +40,7 @@ class ManagedCluster(Cluster):
         profile = self.artifacts / "profile.toml"
         profile.write_text(self.profile())
         self.addresses.append(self.launch(data, profile))
-        self.origins = [f"http://{self.addresses[0]}:10000"]
+        self.origins = [f"http://{self.addresses[0]}:{ports.PAXOS_KV_SERVER_MGMT_BASE}"]
         self.before_ready(data, profile)
         self.ready()
         return self
@@ -52,20 +53,20 @@ class ManagedCluster(Cluster):
 
     def launch(self, data, profile):
         listeners = {
-            "paxos-kv": ("kv", {"http_port": 10000, "rpc_port": 10100}),
-            "diskdb": ("diskdb", {"rpc_port": 7100}),
+            "paxos-kv": ("kv", {"http_port": ports.PAXOS_KV_SERVER_MGMT_BASE, "rpc_port": ports.PAXOS_KV_SERVER_RPC_BASE}),
+            "diskdb": ("diskdb", {"rpc_port": ports.DISKDB_RPC_BASE, "http_port": ports.DISKDB_HTTP_BASE}),
             "diskio": ("diskio", {"rpc_port": 7200}),
             "chunkdb": ("chunkdb", {"http_port": 7300, "rpc_port": 7301}),
             "chunk-kv": ("chunk-kv", {"http_port": 7400, "rpc_port": 7401}),
-            "access-server": ("access", {"http_port": 9092, "s3_port": 9091,
-                                         "dataset_port": 9093, "health_port": 9094}),
+            "access-server": ("access", {"http_port": 8135, "s3_port": 7135,
+                                         "dataset_port": 9135, "health_port": 25135}),
         }
         policy = self.artifacts / "node-policy.toml"
         choices = []
-        for kind, (role, ports) in listeners.items():
-            ports = ", ".join(f"{key} = {value}" for key, value in ports.items())
+        for kind, (role, service_ports) in listeners.items():
+            port_values = ", ".join(f"{key} = {value}" for key, value in service_ports.items())
             enabled = str(role in self.services).lower()
-            choices.append(f'{{ kind = "{kind}", enabled = {enabled}, listeners = {{ {ports} }} }}')
+            choices.append(f'{{ kind = "{kind}", enabled = {enabled}, listeners = {{ {port_values} }} }}')
         choices = ", ".join(choices)
         storage = 'mode = "automatic"\ncapacity_bytes = 17179869184\nreserve_bytes = 1073741824\nsparse = true' \
             if "diskio" in self.services else 'mode = "diskless"'
@@ -89,7 +90,7 @@ class ManagedCluster(Cluster):
             if not state["Running"]:
                 raise AssertionError("normal release monitor exited: " + self.command("logs", self.servers[0]))
             try:
-                report = request(f"http://{self.addresses[0]}:9090", "/api/cluster/status")
+                report = request(f"http://{self.addresses[0]}:6135", "/api/cluster/status")
                 last = report
                 if report["phase"] == "failed":
                     raise AssertionError(f"normal selected release services failed: {report}")
@@ -167,7 +168,7 @@ class ManagedCluster(Cluster):
         if type(pid) is not int or pid <= 1:
             raise ValueError("service PID must identify a child of the release monitor")
         executable = self.command("exec", name, "cat", f"/proc/{pid}/cmdline").split("\0")[0]
-        expected = {"kv": "crowdb-kv-server", "diskdb": "crowdb-diskdb",
+        expected = {"kv": "crowdb-paxos-kv-server", "diskdb": "crowdb-diskdb",
                     "diskio": "crowdb-diskio", "chunkdb": "crowdb-chunkdb",
                     "chunk-kv": "crowdb-chunk-kv-server", "access": "crowdb-access-server",
                     "web": "crowdb-web"}[service]

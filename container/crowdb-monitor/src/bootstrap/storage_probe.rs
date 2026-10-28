@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crowdb_diskio_client::{DiskId, DiskioClient, DiskioClientConfig, DiskioError, OperationOptions};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient, ServiceRegistryClient};
 use thiserror::Error;
 use tokio::time::{sleep, Instant};
 
@@ -15,7 +15,7 @@ pub enum StorageProbeError {
     #[error("DiskIO probe failed: {0}")]
     Diskio(#[from] DiskioError),
     #[error("DiskIO registration lookup failed: {0}")]
-    Registry(#[from] crowdb_kv_client::Error),
+    Registry(#[from] crowdb_paxos_kv_client::Error),
     #[error("DiskIO profile is invalid: {0}")]
     Invalid(&'static str),
     #[error("DiskIO registration did not become ready")]
@@ -69,7 +69,7 @@ async fn wait_for_registration(
         .first()
         .ok_or(StorageProbeError::Invalid("disk is absent"))?
         .disk_group_id;
-    let registry = ServiceRegistryClient::new(CrowdbKvClient::new(ClientConfig::new(vec![
+    let registry = ServiceRegistryClient::new(PaxosKvClient::new(ClientConfig::new(vec![
         management_seed.to_owned()
     ])));
     registry.kv().refresh_topology().await?;

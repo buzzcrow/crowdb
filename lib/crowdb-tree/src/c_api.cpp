@@ -158,18 +158,19 @@ struct ct_tree
 {
     std::unique_ptr<PageStore>        store; // null for pure in-memory engine
     std::shared_ptr<PageStoreBundle>  injected_store;
-    std::unique_ptr<Crowdbtree>       tree;
     std::shared_ptr<CompletionSignal> completion = std::make_shared<CompletionSignal>();
 #ifdef CROWDB_HAVE_LIBURING
     // Both null for an in-memory tree, or if opening the async twin failed
     // (see ct_open) -- get_async/flush_async/snapshot_async then fall back
-    // to completing synchronously. Declared so `uring`
-    // outlives `async_store` (async_store is non-owning re: uring,
-    // mirroring Config' own comment) and both outlive `tree`, which is
-    // what actually calls into them.
+    // to completing synchronously. Declare backend owners before `tree`:
+    // C++ destroys members in reverse
+    // declaration order, so tree is destroyed first, then async_store, then
+    // uring. Both backends are non-owning from the tree's point of view and
+    // must remain alive until the tree has stopped using them.
     std::unique_ptr<crowdb::common::DiskIOUring> uring;
     std::unique_ptr<AsyncPageStore>              async_store;
 #endif
+    std::unique_ptr<Crowdbtree> tree;
 };
 
 struct ct_uring

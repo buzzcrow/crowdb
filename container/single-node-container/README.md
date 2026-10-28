@@ -28,7 +28,7 @@ reserve physical host space. Production does not fall back to this policy.
   is retained for diagnosis; restarting is not permission to replace its data.
 
 The node-first local client origins default to `http://127.0.0.1` on ports
-9091 (S3), 9092 (Iceberg) and 9093 (Dataset). When publishing different host
+7135 (S3), 8135 (Iceberg) and 9135 (Dataset). When publishing different host
 ports or addresses, supply `CROWDB_S3_PUBLIC_URI`, `CROWDB_ICEBERG_PUBLIC_URI`
 and `CROWDB_DATASET_PUBLIC_URI` to each node. These HTTP origins are sealed in
 the node policy before startup; omitted restart values retain the accepted
@@ -49,8 +49,8 @@ into logs or cluster status.
 
 ## Client listeners and readiness
 
-The same Access service exposes S3 at 9091, Iceberg at 9092 and Dataset at 9093.
-The Web UI listens at 9090. Publish these ports when using a bridge. A listener
+The same Access service exposes S3 at 7135, Iceberg at 8135 and Dataset at 9135.
+The Web UI listens at 6135. Publish these ports when using a bridge. A listener
 or an old completed setup record is not proof of current storage availability.
 
 Use the client origins returned by the credential command. Iceberg metadata and
@@ -95,7 +95,7 @@ s3 =
 ```
 
 Use that profile in `AWS_CONFIG_FILE`, export the generated credentials, then
-run `aws --endpoint-url http://127.0.0.1:9091 ...`. For server copy, supply
+run `aws --endpoint-url http://127.0.0.1:7135 ...`. For server copy, supply
 `--metadata-directive COPY` to `aws s3 cp`. The repeatable repository gate is
 `pixi run test-e2e-s3 --case s3.protocol::test_aws_cli_workflow`; container acceptance runs the same recipe
 and checks persisted bytes after recovery before publication credentials become
@@ -134,3 +134,6 @@ The OCI image carries the same server binaries for all protocols. It neither
 mounts the Docker socket nor delegates bootstrap or storage preparation to the
 host CLI. Monitor-owned accepted operations continue after the launching shell
 or browser exits. Changing an image does not reset node identity or storage.
+
+Default listener ports are defined in [protocol ports.rs](../../lib/crowdb-protocol/src/port/ports.rs).
+Generated packaging defaults are maintained with [tools/ports](../../tools/ports/README.md).

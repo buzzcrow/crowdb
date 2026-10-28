@@ -3,7 +3,7 @@
 
 use super::web_legacy::{bootstrap, get};
 use crate::common::management::request;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient, ServiceRegistryClient};
 use reqwest::Method;
 use serde_json::json;
 use std::sync::Arc;
@@ -59,7 +59,7 @@ async fn diskio_discovers_disk_groups_created_after_web_deployment() {
         201,
     )
     .await;
-    let kv = CrowdbKvClient::new(ClientConfig::new(vec![format!("http://{address}:7000")]));
+    let kv = PaxosKvClient::new(ClientConfig::new(vec![format!("http://{address}:7000")]));
     kv.seed_leader(0, 0, format!("{address}:7001"));
     let registry = ServiceRegistryClient::from_shared(Arc::new(kv));
     let initial = tokio::time::timeout(Duration::from_secs(10), async {

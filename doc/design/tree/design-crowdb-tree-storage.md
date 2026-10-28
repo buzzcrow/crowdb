@@ -3,7 +3,7 @@
 
 # CROWDB - Design: crowdb-tree Durable Storage
 
-Depends on: [`design-crowdb-tree.md`](design-crowdb-tree.md), [`design-crowdb-tree-engine.md`](design-crowdb-tree-engine.md), [`../kv/design-crowdb-kv.md`](../kv/design-crowdb-kv.md) §12.1, [`../kv/design-crowdb-kv-state-machine.md`](../kv/design-crowdb-kv-state-machine.md), [`../kv/design-crowdb-kv-wal.md`](../kv/design-crowdb-kv-wal.md), [`../kv/design-crowdb-kv-reconfiguration.md`](../kv/design-crowdb-kv-reconfiguration.md)
+Depends on: [`design-crowdb-tree.md`](design-crowdb-tree.md), [`design-crowdb-tree-engine.md`](design-crowdb-tree-engine.md), [`../kv/design-crowdb-paxos-kv.md`](../kv/design-crowdb-paxos-kv.md) §12.1, [`../kv/design-crowdb-paxos-kv-state-machine.md`](../kv/design-crowdb-paxos-kv-state-machine.md), [`../kv/design-crowdb-paxos-kv-wal.md`](../kv/design-crowdb-paxos-kv-wal.md), [`../kv/design-crowdb-paxos-kv-reconfiguration.md`](../kv/design-crowdb-paxos-kv-reconfiguration.md)
 Satisfies: [`design-crowdb-tree.md`](design-crowdb-tree.md) §2 (durable storage architecture)
 
 This document specifies how crowdb-tree pages reach durable media and how that
@@ -40,7 +40,7 @@ crowdb-tree's tree logic references pages by `PID` and is unaware of the storage
 medium. A `PageStore` maps a durable page slot to bytes; it is the only part
 of crowdb-tree that does I/O, and it is page-granular and **always asynchronous**
 (`read_page`/`write_page` complete via callback/future, matching
-[`../kv/design-crowdb-kv-wal.md`](../kv/design-crowdb-kv-wal.md)).
+[`../kv/design-crowdb-paxos-kv-wal.md`](../kv/design-crowdb-paxos-kv-wal.md)).
 The upper layer always uses the async API, regardless of whether the
 underlying platform has `io_uring` (Linux) or not (macOS/fallback). On
 Linux, `BlockAsyncPageStore` + `DiskIOUring` submit genuine `io_uring` SQEs;
@@ -120,7 +120,7 @@ platform-level fallback described above provides the async abstraction.
 
 On macOS, `fsync` costs ~3ms per call (stable). `SkipSync` or `BatchSync`
 eliminates this overhead for test/CI runs. The same policy applies to WAL
-file sync (see `../kv/design-crowdb-kv-wal.md`).
+file sync (see `../kv/design-crowdb-paxos-kv-wal.md`).
 
 **RDMA-remote is deferred**, like any remote block device: it needs a local
 page cache (§4) with pinning + epoch-gated eviction, and remote allocation
@@ -499,11 +499,11 @@ gated on the snapshot pipeline (§6) having run at least once for that page.
 ## 5. Internal WAL Decision
 
 **Decision: crowdb-tree does NOT keep a redo WAL of data operations. Recovery is
-snapshot + consensus replay**, consistent with `../kv/design-crowdb-kv-state-machine.md §2.1`
-and `../kv/design-crowdb-kv.md §8`.
+snapshot + consensus replay**, consistent with `../kv/design-crowdb-paxos-kv-state-machine.md §2.1`
+and `../kv/design-crowdb-paxos-kv.md §8`.
 
 - The consensus layer already has a durable WAL of chosen entries
-  ([`../kv/design-crowdb-kv-wal.md`](../kv/design-crowdb-kv-wal.md)). Adding a second op-log in crowdb-tree
+  ([`../kv/design-crowdb-paxos-kv-wal.md`](../kv/design-crowdb-paxos-kv-wal.md)). Adding a second op-log in crowdb-tree
   duplicates durability machinery.
 - crowdb-tree persists a **snapshot** at `last_applied_slot`. On restart, slots
   `> last_applied_slot` are re-applied from the consensus WAL / re-learned via
@@ -618,9 +618,9 @@ own `last_applied_slot`:
 `set_gc_watermark(snapshot_slot, safe_slot)` is called by the learner
 whenever these advance; crowdb-tree stores them and uses
 `gc_slot = min(snapshot_slot, safe_slot)` to gate reclamation (§9), matching
-`../kv/design-crowdb-kv-state-machine.md §7`.
+`../kv/design-crowdb-paxos-kv-state-machine.md §7`.
 
-The consensus WAL's own GC ([`../kv/design-crowdb-kv-wal.md`](../kv/design-crowdb-kv-wal.md)) uses this same
+The consensus WAL's own GC ([`../kv/design-crowdb-paxos-kv-wal.md`](../kv/design-crowdb-paxos-kv-wal.md)) uses this same
 `gc_slot` rule: a WAL segment may be unlinked only when all its records have
 `slot < min(last_applied_slot across members, safe_slot, snapshot_slot)`.
 Because a restarting node resumes at its own `last_applied_slot` and
@@ -635,7 +635,7 @@ drop old segments.
 ```
 node restart:
     1. consensus WAL replay rebuilds ACCEPTOR state only
-       (Promised / Accepted / VoteGranted)  — ../kv/design-crowdb-kv-wal.md
+       (Promised / Accepted / VoteGranted)  — ../kv/design-crowdb-paxos-kv-wal.md
     2. crowdb-tree.recover() loads the commit anchor -> last_applied_slot = L
     3. learner sets contiguous_applied = L
     4. slots (L, max_chosen] are re-learned (heartbeat catch-up or new-leader

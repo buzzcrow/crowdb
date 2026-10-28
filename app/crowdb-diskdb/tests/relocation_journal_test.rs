@@ -26,7 +26,7 @@ use crowdb_diskdb::recovery::ZoneLoader;
 use crowdb_diskdb::scanner::ScanState;
 use crowdb_diskdb::service::DiskdbRpcService;
 use crowdb_diskdb_client::DiskdbRpcTransport;
-use crowdb_kv_client::HardwareClient;
+use crowdb_paxos_kv_client::HardwareClient;
 use crowdb_protocol::chunkdb::rpc::{RelocateSegmentHandoffRequest, RelocationHandoffDisposition};
 use crowdb_protocol::common::{ChunkId, DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{

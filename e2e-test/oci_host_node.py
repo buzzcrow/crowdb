@@ -40,7 +40,7 @@ class HostNode:
         self.cli = self.bundle / 'crowdb-cli'
         self.cli_digest = self.client_digest()
         self.interface, self.ip = interface_address()
-        self.origin = f'http://{self.ip}:9090'
+        self.origin = f'http://{self.ip}:6135'
         self.voters, self.metadata_only = voters, metadata_only
         self.private = self.root / 'private'
         self.private.mkdir(mode=0o700)
@@ -71,10 +71,10 @@ class HostNode:
             for kind in ('paxos-kv', 'diskdb', 'diskio', 'chunkdb', 'chunk-kv', 'access-server'):
                 lines += ['[[services]]', f'kind = "{kind}"', f'enabled = {str(kind == "paxos-kv").lower()}']
                 if kind == 'paxos-kv':
-                    lines += ['[services.listeners]', 'http_port = 10000', 'rpc_port = 10100']
+                    lines += ['[services.listeners]', 'http_port = 10135', 'rpc_port = 11135']
         else:
             lines += ['[public_access]', *[f'{kind} = "http://{self.ip}:{port}"'
-                for kind, port in [('s3',9091), ('iceberg',9092), ('dataset',9093)]], '[storage]']
+                for kind, port in [('s3',7135), ('iceberg',8135), ('dataset',9135)]], '[storage]']
             if self.devices:
                 for device in self.devices:
                     os.chown(device, 10001, 10001)

@@ -12,7 +12,7 @@ use crowdb_chunk_kv::{
     StreamPartitionJournal, TransitionId,
 };
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName, StreamRegistry};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, PartitionArtifact, SplitChildAssignment, SplitTransition, TailOverlayArtifact,
     TransferTransition,
@@ -47,7 +47,7 @@ pub enum StorageRuntimeError {
 
 /// Process-wide production clients shared by every hosted partition stream.
 pub struct ChunkKvStorage {
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
     chunk_io: ChunkIoClient,
     streams: Arc<ProductionStreamRuntime>,
     tree_transport: Arc<ChunkTransport>,
@@ -70,7 +70,7 @@ impl ChunkKvStorage {
     ///
     /// Returns an endpoint discovery or storage configuration error.
     pub async fn connect(config: &ChunkKvServerConfig) -> Result<Self, StorageRuntimeError> {
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
             config.group0_mgmt_seeds.clone(),
         )));
         let chunk_io = ChunkIoClient::connect_with_kv(
@@ -103,7 +103,7 @@ impl ChunkKvStorage {
     }
 
     async fn from_parts_with_geometry(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         chunk_io: ChunkIoClient,
         metadata_store_id: u64,
         writer_lease_ms: u64,
@@ -130,7 +130,7 @@ impl ChunkKvStorage {
     ///
     /// Returns an error for an invalid stream lease or read policy.
     pub async fn from_parts(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         chunk_io: ChunkIoClient,
         metadata_store_id: u64,
         writer_lease_ms: u64,
@@ -152,7 +152,7 @@ impl ChunkKvStorage {
     }
 
     async fn assemble(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         chunk_io: ChunkIoClient,
         streams: Arc<ProductionStreamRuntime>,
         metadata_store_id: u64,
@@ -195,7 +195,7 @@ impl ChunkKvStorage {
     }
 
     #[must_use]
-    pub fn kv(&self) -> &Arc<CrowdbKvClient> {
+    pub fn kv(&self) -> &Arc<PaxosKvClient> {
         &self.kv
     }
 
@@ -868,7 +868,7 @@ fn assignment_recovery_error(
 /// Returns a root identity, KV availability or stale authority error.
 #[cfg(feature = "test-util")]
 pub async fn open_root_catalog_for_tests(
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
     store_id: u64,
     group_id: u64,
     entry: &ChunkKvRangeCatalogEntry,

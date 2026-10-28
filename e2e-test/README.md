@@ -20,7 +20,7 @@ they are not test execution environments. Domain profiles configure that same
 server artifact rather than introducing separate test-server builds.
 
 This component owns real-server acceptance. The KV
-profile uses three packaged `crowdb-kv-server` processes with block tree storage,
+profile uses three packaged `crowdb-paxos-kv-server` processes with block tree storage,
 block-device WAL and the existing `e2e` election preset. It consumes the shared
 `crowdb-node` OCI runtime image; it never starts a host server substitute.
 

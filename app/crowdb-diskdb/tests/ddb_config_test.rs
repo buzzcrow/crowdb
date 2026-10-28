@@ -46,9 +46,9 @@ fn config_validate_rejects_granularity_not_equal_to_block() {
 }
 
 #[test]
-fn config_validate_rejects_bad_listen_addr() {
+fn config_validate_rejects_bad_rpc_listen_addr() {
     let mut config = DdbConfig::default();
-    config.server.listen_addr = "not-an-addr".to_string();
+    config.server.rpc_listen_addr = "not-an-addr".to_string();
     assert!(validate(&config).is_err());
 }
 
@@ -93,14 +93,13 @@ fn config_defaults_match_design() {
 #[test]
 fn partial_persistence_config_keeps_defaults() {
     let config: DdbConfig = toml::from_str(
-        r#"
+        r"
         [server]
-        listen_addr = "127.0.0.1:1"
 
         [persistence]
         free_batch_enabled = true
         free_flush_max_batch = 32
-        "#,
+        ",
     )
     .unwrap();
     assert!(config.persistence.free_batch_enabled);
@@ -114,7 +113,6 @@ fn allocator_weight_policy_parses_and_keeps_other_defaults() {
     let config: DdbConfig = toml::from_str(
         r#"
         [server]
-        listen_addr = "127.0.0.1:1"
 
         [allocator]
         load_aware_weight = "inverse_used_pct"
@@ -198,7 +196,6 @@ fn config_load_from_file_roundtrip() {
     std::fs::write(&tmp, &toml).expect("write temp");
     let loaded = crowdb_common::config::load_from_file::<DdbConfig>(&tmp).expect("load");
     assert_eq!(loaded.storage.block_size_bytes, config.storage.block_size_bytes);
-    assert_eq!(loaded.server.listen_addr, config.server.listen_addr);
     let _ = std::fs::remove_file(&tmp);
 }
 
@@ -209,7 +206,6 @@ fn config_load_from_file_roundtrip() {
 #[test]
 fn minimal_server_only_config_uses_section_defaults() {
     let toml = "[server]\n\
-         listen_addr = \"0.0.0.0:11000\"\n\
          http_listen_addr = \"0.0.0.0:11100\"\n\
          rpc_listen_addr = \"0.0.0.0:11200\"\n\
          kv_server_mgmt_seeds = [\"http://127.0.0.1:10000\"]\n";

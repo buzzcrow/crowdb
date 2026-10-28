@@ -63,7 +63,6 @@ class S3NodeCluster(Cluster):
         address = str(ipaddress.ip_address(self.addresses[0]) + index)
         config = f'''[server]
 rpc_workers = 2
-listen_addr = "0.0.0.0:7100"
 http_listen_addr = "0.0.0.0:7101"
 rpc_listen_addr = "{address}:7102"
 instance_id = "{10001 + logical}"

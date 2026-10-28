@@ -3,15 +3,15 @@
 
 # CROWDB - Design: crowdb-tree Storage Engine (Overview)
 
-Depends on: [`../kv/design-crowdb-kv.md`](../kv/design-crowdb-kv.md), [`../kv/design-crowdb-kv-state-machine.md`](../kv/design-crowdb-kv-state-machine.md)
-Satisfies: [`../kv/design-crowdb-kv.md`](../kv/design-crowdb-kv.md) §8.3 (learner storage)
+Depends on: [`../kv/design-crowdb-paxos-kv.md`](../kv/design-crowdb-paxos-kv.md), [`../kv/design-crowdb-paxos-kv-state-machine.md`](../kv/design-crowdb-paxos-kv-state-machine.md)
+Satisfies: [`../kv/design-crowdb-paxos-kv.md`](../kv/design-crowdb-paxos-kv.md) §8.3 (learner storage)
 
 This is the parent document for **crowdb-tree**, the production storage engine that
 backs CROWDB learners: an embeddable, ordered key-value engine implementing the
 CROWDB `KVEngine` contract, built as a standalone C++ library (`libcrowdb-tree`) and
-consumed from the Rust `crowdb-kv` crate over a C ABI. It records the decisions
+consumed from the Rust `crowdb-paxos-kv` crate over a C ABI. It records the decisions
 behind that design and maps the sub-design documents. `libcrowdb-tree` is fully
-implemented, wired into `crowdb-kv` (`CrowdbTreeEngine`), and shipped; this document
+implemented, wired into `crowdb-paxos-kv` (`CrowdbTreeEngine`), and shipped; this document
 set is the durable record of *why* it looks the way it does, not a build plan.
 See [`todo_code.md`](../../working/todo_code.md) for anything still open.
 
@@ -99,7 +99,7 @@ reused vs. dropped vs. simplified:
 ## 2. Architecture
 
 ```
-crowdb-kv (Rust)
+crowdb-paxos-kv (Rust)
   PxLearner ──drives──► dyn KVEngine
                           ├─ InMemKV            (Rust, tests)
                           └─ CrowdbTreeEngine     (Rust, FFI adapter; §4)
@@ -239,7 +239,7 @@ trivial: the receiver imports the root at `S`, then replays the WAL from
 ## 4. FFI Boundary
 
 The boundary is **coarse** (engine-level). The Rust `CrowdbTreeEngine`
-(`lib/crowdb-kv/src/kv/crowdb_tree_engine.rs`) is a thin adapter that:
+(`lib/crowdb-paxos-kv/src/kv/crowdb_tree_engine.rs`) is a thin adapter that:
 
 - Owns an opaque `*mut ct_tree` handle returned by `ct_open`.
 - Translates `Batch` / keys / ranges to `(ptr, len)` pairs across the C ABI.
@@ -273,7 +273,7 @@ The crowdb-tree design is split into focused documents:
 | [`design-crowdb-tree-chunk-storage.md`](design-crowdb-tree-chunk-storage.md) | **Chunk storage.** Immutable mirrored page packs, async execution, fenced manifests and recovery, range rebuild, sharing, ownership materialization, and reclamation boundaries. |
 
 Test strategy for crowdb-tree (C++ unit, integration, crash/recovery, Rust FFI,
-cross-engine parity, sanitizer) is documented in [`../kv/design-crowdb-kv-test.md`](../kv/design-crowdb-kv-test.md) §
+cross-engine parity, sanitizer) is documented in [`../kv/design-crowdb-paxos-kv-test.md`](../kv/design-crowdb-paxos-kv-test.md) §
 "crowdb-tree C++ Test Layers".
 
 ---

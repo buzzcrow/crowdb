@@ -10,7 +10,7 @@ from managed_fixture import ManagedCluster
 
 
 class ManagedSupervisionTest(unittest.TestCase):
-    def fixture(self, label="owned", pid=27, executable="/opt/crowdb/bin/crowdb-kv-server"):
+    def fixture(self, label="owned", pid=27, executable="/opt/crowdb/bin/crowdb-paxos-kv-server"):
         cluster = object.__new__(ManagedCluster)
         cluster.services, cluster.servers, cluster.run_id = ("kv",), ["node"], "owned"
         cluster.command = Mock(side_effect=[json.dumps([{

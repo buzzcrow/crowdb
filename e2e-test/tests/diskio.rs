@@ -68,9 +68,9 @@ async fn wait_for_disk(
     }
 }
 
-fn registry() -> crowdb_kv_client::ServiceRegistryClient {
-    crowdb_kv_client::ServiceRegistryClient::new(crate::common::hardware::kv_client())
+fn registry() -> crowdb_paxos_kv_client::ServiceRegistryClient {
+    crowdb_paxos_kv_client::ServiceRegistryClient::new(crate::common::hardware::kv_client())
 }
-fn hardware_client() -> crowdb_kv_client::HardwareClient {
-    crowdb_kv_client::HardwareClient::new(crate::common::hardware::kv_client())
+fn hardware_client() -> crowdb_paxos_kv_client::HardwareClient {
+    crowdb_paxos_kv_client::HardwareClient::new(crate::common::hardware::kv_client())
 }

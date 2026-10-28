@@ -3,7 +3,7 @@
 
 //! Test-only client facade that preserves the former tonic
 //! `KvServiceClient` call shape (`.put(req).await.expect(..).
-//! into_inner()`) but sends over the crowdb-rpc `KvRpcTransport`.
+//! into_inner()`) but sends over the crowdb-rpc `PaxosKvRpcTransport`.
 //! Exists so the process-level e2e tests could be migrated off the
 //! deleted tonic client with minimal churn.
 
@@ -12,11 +12,11 @@
 
 use std::sync::Arc;
 
-use crowdb_kv::rpc::{
+use crowdb_paxos_kv::rpc::{
     KvBatchWriteRequest, KvDeleteRequest, KvGetRequest, KvResponse, KvScanRequest, KvScanResponse,
     KvSetRequest, ReadMode,
 };
-use crowdb_kv_client::KvRpcTransport;
+use crowdb_paxos_kv_client::PaxosKvRpcTransport;
 
 /// Status-like error returned by the facade. Implements `Debug` so
 /// `Result<_, TestRpcStatus>::expect(..)` compiles, and exposes
@@ -60,7 +60,7 @@ fn read_mode_from_i32(v: i32) -> ReadMode {
 /// with `TestKvClient::connect(endpoint).await` (the `.await` mirrors the
 /// old `KvServiceClient::connect(..).await` shape).
 pub struct TestKvClient {
-    transport: Arc<KvRpcTransport>,
+    transport: Arc<PaxosKvRpcTransport>,
     endpoint: String,
 }
 
@@ -68,13 +68,13 @@ impl TestKvClient {
     #[allow(clippy::unused_async_trait_impl)]
     pub async fn connect(endpoint: String) -> Self {
         Self {
-            transport: Arc::new(KvRpcTransport::new()),
+            transport: Arc::new(PaxosKvRpcTransport::new()),
             endpoint,
         }
     }
 
     #[must_use]
-    pub fn with_transport(transport: Arc<KvRpcTransport>, endpoint: String) -> Self {
+    pub fn with_transport(transport: Arc<PaxosKvRpcTransport>, endpoint: String) -> Self {
         Self { transport, endpoint }
     }
 
@@ -170,8 +170,12 @@ impl TestKvClient {
                 false,
                 0,
                 match req.direction {
-                    crowdb_kv::rpc::KvScanDirection::Forward => crowdb_kv_client::ScanDirection::Forward,
-                    crowdb_kv::rpc::KvScanDirection::Reverse => crowdb_kv_client::ScanDirection::Reverse,
+                    crowdb_paxos_kv::rpc::KvScanDirection::Forward => {
+                        crowdb_paxos_kv_client::ScanDirection::Forward
+                    }
+                    crowdb_paxos_kv::rpc::KvScanDirection::Reverse => {
+                        crowdb_paxos_kv_client::ScanDirection::Reverse
+                    }
                 },
             )
             .await

@@ -19,7 +19,7 @@ class CliClient:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         for index, address in enumerate(self.addresses):
             try:
-                with opener.open(f"http://{address}:9091/_crowdb/metrics", timeout=2) as response:
+                with opener.open(f"http://{address}:7135/_crowdb/metrics", timeout=2) as response:
                     metrics = response.read(1024 * 1024 + 1)
                 if len(metrics) > 1024 * 1024:
                     raise ValueError("Access metrics exceeded the diagnostic limit")

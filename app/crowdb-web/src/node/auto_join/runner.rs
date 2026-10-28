@@ -216,7 +216,7 @@ async fn admit_candidate(
         discovery_id: id.clone(),
         rack_id: record.map_or(default_rack, |record| record.rack_id),
         ssh_user: record.map_or_else(|| "crowdb".into(), |record| record.ssh_user.clone()),
-        ssh_port: record.map_or(2222, |record| record.ssh_port),
+        ssh_port: record.map_or(crowdb_protocol::SSH_PORT, |record| record.ssh_port),
         ssh_password: password,
         preflight_operation_id: None,
         setup: None,

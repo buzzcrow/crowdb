@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::handoff_fixture::TestHandoffCluster;
-use crowdb_kv_client::ChunkSlotMapClient;
+use crowdb_paxos_kv_client::ChunkSlotMapClient;
 use crowdb_protocol::chunk_slot::{
     ChunkServiceIncarnation, ChunkSlot, ChunkSlotAuthority, ChunkSlotBinding, ChunkSlotBitmap, ChunkSlotMap,
 };
@@ -15,7 +15,7 @@ async fn missing_cached_endpoint_refreshes_dynamic_owner_before_routing() {
     let test = TestHandoffCluster::start().await;
     let maps = ChunkSlotMapClient::new(Arc::clone(&test.kv));
     maps.initialize_service_epochs().await.unwrap();
-    crowdb_kv_client::ServiceRegistryClient::from_shared(Arc::clone(&test.kv))
+    crowdb_paxos_kv_client::ServiceRegistryClient::from_shared(Arc::clone(&test.kv))
         .register_chunkdb(2, "127.0.0.1:17002")
         .await
         .unwrap();
@@ -25,11 +25,11 @@ async fn missing_cached_endpoint_refreshes_dynamic_owner_before_routing() {
         .find(|id| before.service().owner(ChunkSlot::for_chunk(id)) == 1)
         .unwrap();
     let slot = ChunkSlot::for_chunk(&chunk);
-    let routes = crowdb_kv_client::RangeBindingClient::from_shared(Arc::clone(&test.kv));
+    let routes = crowdb_paxos_kv_client::RangeBindingClient::from_shared(Arc::clone(&test.kv));
     routes.refresh().await.unwrap();
     assert!(matches!(
         routes.route_slot(slot),
-        Err(crowdb_kv_client::RangeRouteError::NoEndpoint(1))
+        Err(crowdb_paxos_kv_client::RangeRouteError::NoEndpoint(1))
     ));
     let after = before.authority().reassign(&[(slot, 2)]).unwrap();
     maps.publish_service_epochs(&after).await.unwrap();
@@ -54,7 +54,7 @@ async fn stale_epoch_publications_are_conflicts_and_concurrent_regrants_preserve
     second.unwrap();
     assert!(matches!(
         client.publish_service_epochs(&stale).await,
-        Err(crowdb_kv_client::Error::CasFailed { .. })
+        Err(crowdb_paxos_kv_client::Error::CasFailed { .. })
     ));
     let after = client.read_service_snapshot().await.unwrap();
     assert_eq!(
@@ -183,12 +183,12 @@ async fn competing_publications_choose_one_complete_epoch_map_without_changing_d
             0,
             1,
             path.as_bytes(),
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await
         .unwrap();
     assert!(
-        matches!(original, crowdb_kv_client::GetOutcome::Found { value, .. } if value.as_ref() == TestHandoffCluster::plan(2).record().transfers[0].previous.unwrap().to_fence_value())
+        matches!(original, crowdb_paxos_kv_client::GetOutcome::Found { value, .. } if value.as_ref() == TestHandoffCluster::plan(2).record().transfers[0].previous.unwrap().to_fence_value())
     );
 }

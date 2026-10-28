@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use crowdb_kv_client::{CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_protocol::chunk_stream::{StreamName, StreamRecord};
 use crowdb_protocol::key::{BinaryKey, StreamRecordKey};
 
@@ -17,13 +17,13 @@ use crate::{Result, StreamError, StreamMetadataStore, StreamRegistry};
 
 /// Group-0 readable stream record registry.
 pub struct KvStreamRegistry {
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
     processes: owner::OwnerProcesses,
 }
 
 impl KvStreamRegistry {
     #[must_use]
-    pub fn new(kv: Arc<CrowdbKvClient>) -> Self {
+    pub fn new(kv: Arc<PaxosKvClient>) -> Self {
         Self {
             kv,
             processes: owner::OwnerProcesses::default(),
@@ -81,14 +81,16 @@ impl StreamRegistry for KvStreamRegistry {
             .map_err(|error| StreamError::Internal(format!("stream record encode failed: {error}")))?;
         match self.kv.put_cas(0, 0, &key, &value, 0).await {
             Ok(_) => Ok(()),
-            Err(crowdb_kv_client::Error::CasFailed { .. }) => {
+            Err(crowdb_paxos_kv_client::Error::CasFailed { .. }) => {
                 Err(StreamError::InvalidRequest("stream record already exists".into()))
             }
-            Err(crowdb_kv_client::Error::CasBusy) => Err(StreamError::Backpressure),
-            Err(crowdb_kv_client::Error::OutcomeUnknown) => match self.load(record.stream_name).await? {
-                Some(observed) if observed == record => Ok(()),
-                _ => Err(StreamError::WriteStalled),
-            },
+            Err(crowdb_paxos_kv_client::Error::CasBusy) => Err(StreamError::Backpressure),
+            Err(crowdb_paxos_kv_client::Error::OutcomeUnknown) => {
+                match self.load(record.stream_name).await? {
+                    Some(observed) if observed == record => Ok(()),
+                    _ => Err(StreamError::WriteStalled),
+                }
+            }
             Err(error) => Err(kv_error(&error)),
         }
     }
@@ -96,14 +98,14 @@ impl StreamRegistry for KvStreamRegistry {
 
 /// KV adapter for one nonzero Stream metadata group.
 pub struct KvStreamMetadataStore {
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
     store_id: u64,
     group_id: u64,
 }
 impl KvStreamMetadataStore {
     /// # Errors
     /// Rejects group zero, reserved for Stream identity and ownership records.
-    pub fn new(kv: Arc<CrowdbKvClient>, store_id: u64, group_id: u64) -> Result<Self> {
+    pub fn new(kv: Arc<PaxosKvClient>, store_id: u64, group_id: u64) -> Result<Self> {
         if group_id == 0 {
             return Err(StreamError::InvalidRequest(
                 "Stream chunk records require a nonzero KV group".into(),
@@ -133,6 +135,6 @@ impl StreamMetadataStore for KvStreamMetadataStore {
         )
     }
 }
-fn kv_error(error: &crowdb_kv_client::Error) -> StreamError {
+fn kv_error(error: &crowdb_paxos_kv_client::Error) -> StreamError {
     StreamError::ReadUnavailable(format!("Stream KV operation failed: {error}"))
 }

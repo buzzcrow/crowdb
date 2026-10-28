@@ -9,13 +9,13 @@ use clap::{Parser, Subcommand};
 use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig, Group0ChunkKvRangeCatalogSource,
 };
-use crowdb_kv_client::{ClientConfig as KvClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig as KvClientConfig, PaxosKvClient};
 use futures::{stream, StreamExt};
 
 #[derive(Debug, Parser)]
 #[command(name = "crowdb-chunk-kv-cli")]
 struct Args {
-    #[arg(long = "mgmt-seed", default_value = "http://127.0.0.1:25000")]
+    #[arg(long = "mgmt-seed", default_values_t = [format!("http://127.0.0.1:{}", crowdb_protocol::CHUNK_KV_HTTP_BASE)])]
     mgmt_seeds: Vec<String>,
 
     #[command(subcommand)]
@@ -105,7 +105,7 @@ async fn main() {
 }
 
 fn production_client(mgmt_seeds: Vec<String>) -> Result<ChunkKvClient, String> {
-    let kv = Arc::new(CrowdbKvClient::new(KvClientConfig::new(mgmt_seeds)));
+    let kv = Arc::new(PaxosKvClient::new(KvClientConfig::new(mgmt_seeds)));
     let config = ClientConfig::default();
     let catalog = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(kv));
     let transport = Arc::new(ChunkKvRpcTransport::new(config.max_owner_connections, 1, 2));

@@ -59,7 +59,7 @@ pub fn map_config_err(e: Error) -> (StatusCode, Json<ErrorBody>) {
         Error::UpstreamRpc { ref status, .. } if status.contains("HTTP 409") => {
             (StatusCode::CONFLICT, Json(ErrorBody { error: msg }))
         }
-        Error::KvClient(crowdb_kv_client::Error::MembershipConflict { .. }) => {
+        Error::KvClient(crowdb_paxos_kv_client::Error::MembershipConflict { .. }) => {
             (StatusCode::CONFLICT, Json(ErrorBody { error: msg }))
         }
         Error::NotFound { .. } => (StatusCode::NOT_FOUND, Json(ErrorBody { error: msg })),

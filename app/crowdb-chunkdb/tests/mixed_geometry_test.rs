@@ -6,7 +6,7 @@ mod common;
 use crowdb_chunkdb::allocator::{ChunkAllocator, DiskdbClientPool, StripAllocType};
 use crowdb_chunkdb::selector::PlacementConstraints;
 use crowdb_chunkdb::topology::build_snapshot;
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use std::sync::Arc;
 
 #[tokio::test]

@@ -25,7 +25,7 @@ use crowdb_diskdb::model::disk_group_container::DdbDiskGroupContainer;
 use crowdb_diskdb::model::zone::DdbZone;
 use crowdb_diskdb::recovery::compaction::CompactionEngine;
 use crowdb_diskdb::recovery::ZoneLoader;
-use crowdb_kv_client::{GetOutcome, HardwareClient};
+use crowdb_paxos_kv_client::{GetOutcome, HardwareClient};
 use crowdb_protocol::common::{ChunkId, DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
 use crowdb_protocol::key::BinaryKey;
@@ -639,7 +639,7 @@ async fn compaction_compact_zone_writes_snapshot_and_deletes_free_records() {
             STORE_ID,
             DATA_GROUP_ID,
             &free_key.to_bytes(),
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await
@@ -666,7 +666,7 @@ async fn compaction_compact_zone_writes_snapshot_and_deletes_free_records() {
             STORE_ID,
             DATA_GROUP_ID,
             &free_key.to_bytes(),
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await
@@ -781,7 +781,7 @@ async fn compaction_watermark_prevents_double_free_after_crashed_compaction() {
             STORE_ID,
             DATA_GROUP_ID,
             &free_key.to_bytes(),
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await
@@ -887,7 +887,7 @@ async fn compaction_watermark_prevents_double_free_after_crashed_compaction() {
             STORE_ID,
             DATA_GROUP_ID,
             &free_key.to_bytes(),
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await

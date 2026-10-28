@@ -78,13 +78,13 @@ ChunkDB owner to publish the new layout.
   capacity and busy/free, with a recalculation path to verify
   correctness.
 
-**Design philosophy:** "diskdb is a thin, stateless client of crowdb-kv."
-All consensus, replication, and durability are delegated to crowdb-kv.
+**Design philosophy:** "diskdb is a thin, stateless client of crowdb-paxos-kv."
+All consensus, replication, and durability are delegated to crowdb-paxos-kv.
 diskdb's job is allocation policy, disk health, and space accounting —
-nothing more. One crowdb-kv extension is required: a `JournalScan` RPC
+nothing more. One crowdb-paxos-kv extension is required: a `JournalScan` RPC
 (slot-range + key-prefix filter, returns ops in slot order) for fast
 crash recovery (zone-management §6, strategy 2). This is the sole extension; all other
-diskdb ↔ crowdb-kv interaction uses the existing scan / get / put /
+diskdb ↔ crowdb-paxos-kv interaction uses the existing scan / get / put /
 batch_write API.
 
 ## 2. Non-Goals (Design Envelope)
@@ -93,9 +93,9 @@ batch_write API.
   implement a device engine. Background relocation delegates copy and fsync to
   DiskIO and persists only allocation and relocation metadata.
 - **No local WAL.** CROWDB KV's WAL is the sole durability mechanism.
-- **No consensus code.** diskdb is a client of crowdb-kv, with one
+- **No consensus code.** diskdb is a client of crowdb-paxos-kv, with one
   extension: a `JournalScan` RPC for fast crash recovery (zone-management §6). All
-  other interaction uses the existing crowdb-kv API.
+  other interaction uses the existing crowdb-paxos-kv API.
 - **No native SMR / zoned-namespace SSD support (v1).** Start with
   conventional HDD/SSD (`ZoneBlockDisk`); the zone is a logical concept
   that can later adopt to native zone APIs.
@@ -197,7 +197,7 @@ a multiple of 64) ensures no bitmap masking or padding. Details in
 ### 3.6 Common protocol crate; crowdb-rpc transport
 
 A new `lib/crowdb-protocol` crate holds flatbuffers definitions for all CROWDB
-components. diskdb uses it first; crowdb-kv's existing schemas stay where
+components. diskdb uses it first; crowdb-paxos-kv's existing schemas stay where
 they are (unchanged). The flatbuffers messages are reused across the
 crowdb-rpc transport.
 
@@ -242,7 +242,7 @@ routing (§3.2); it is not stored in record keys or `Segment`.
    │  │ disk-grp4│          │ disk-grp5│          │ disk-grp6│      │
    │  └────┬─────┘          └────┬─────┘          └────┬─────┘      │
    └───────┼─────────────────────┼─────────────────────┼────────────┘
-           │  crowdb-kv-client     │                     │
+           │  crowdb-paxos-kv-client     │                     │
            v                     v                     v
    ┌────────────────────────────────────────────────────────────────┐
    │  CROWDB KV (Multi-Paxos)                                         │
@@ -291,12 +291,12 @@ The storage path uses three RPC services:
   free update the durable allocator records.
 - **Hardware admin** (no rpc surface): rack/node/disk-group/disk
   add/remove and `set_*_status` are writes to group-0 sysdata
-  performed through `HardwareClient` in `crowdb-kv-client`, invoked by
+  performed through `HardwareClient` in `crowdb-paxos-kv-client`, invoked by
   the console (`crowdb-web` / `crowdb-cli`). Hardware reads use
   `HardwareClient` prefix scans; liveness uses `ServiceRegistryClient.heartbeat`.
   The diskdb server reads hardware state
   from group 0 via `HardwareClient` in its sync loop; it does not
-  serve hardware admin. See `doc/design/kv/design-crowdb-kv-group0.md`
+  serve hardware admin. See `doc/design/kv/design-crowdb-paxos-kv-group0.md`
   §2.8.
 - **`ChunkdbService`**: `AllocateChunk`,
   `AppendChunk`, `QueryChunk`, `SealChunk`, `DeleteChunk`,
@@ -316,9 +316,9 @@ status codes with `ErrorInfo` details (`error_code.fbs`), not
 
 Group 0 stores the diskdb subsystem metadata as KV entries. The
 authoritative schema is defined in
-[`doc/design/kv/design-crowdb-kv-group0.md`](../kv/design-crowdb-kv-group0.md)
-(text-path keys + JSON values, owned by `crowdb-kv-client`'s
-`HardwareClient` / `ServiceRegistryClient` / `KVClusterMetaClient`).
+[`doc/design/kv/design-crowdb-paxos-kv-group0.md`](../kv/design-crowdb-paxos-kv-group0.md)
+(text-path keys + JSON values, owned by `crowdb-paxos-kv-client`'s
+`HardwareClient` / `ServiceRegistryClient` / `PaxosKvClusterMetaClient`).
 This section summarizes the diskdb-relevant parts; see the group-0
 design doc for the full key/value layout and scan patterns.
 
@@ -346,7 +346,7 @@ each key for scan narrowing:
 structs live in `lib/crowdb-protocol/src/key/` and implement both
 `BinaryKey` (kept for data-group records) and `TextKey` (group 0). See
 `doc/design/protocol/design-crowdb-protocol-key.md` §5 and
-`doc/design/kv/design-crowdb-kv-group0.md` §3.
+`doc/design/kv/design-crowdb-paxos-kv-group0.md` §3.
 
 diskdb's own data groups (zone records) keep the `BinaryKey` encoding:
 `ZoneKey`, `BusyBlockKey`, `FreeBlockKey` (binary + flatbuffers, unchanged).
@@ -355,7 +355,7 @@ Value types live in `crowdb-protocol` (flatbuffers `*Value` types used
 directly; new sysdata values `OwnerMapValue`, `BindMapValue`,
 `InstanceValue` added as schema messages; Entry return types
 `DiskGroupEntry`/`DiskdbOwnerEntry`/`KVGroupBindEntry` are plain serde
-structs). See `design-crowdb-kv-group0.md` §3.3.
+structs). See `design-crowdb-paxos-kv-group0.md` §3.3.
 
 **Note**: zones are NOT stored in group 0. A zone is created when its
 disk is added, and its state (records + snapshot) lives on the
@@ -530,7 +530,7 @@ This replaces polling for status changes as the primary
 change-detection mechanism; polling stays as a safety net with an
 increased interval. The detailed design (schema, registry, apply-path
 trigger, client, diskdb handler, configuration) lives in
-[`design-crowdb-kv-watch-notify.md`](../kv/design-crowdb-kv-watch-notify.md).
+[`design-crowdb-paxos-kv-watch-notify.md`](../kv/design-crowdb-paxos-kv-watch-notify.md).
 
 ## 9. Space Metrics
 
@@ -641,7 +641,7 @@ persist round-trip.
 Latency metrics use `LatencyHistogram` (percentile precision) for hot
 paths (allocate/free bitmap scan, KV persist) and `LatencySummary`
 (count + sum + max + avg) for cold paths (sync, compaction, zone
-rotate), matching crowdb-kv's convention. Gauges are derived snapshots
+rotate), matching crowdb-paxos-kv's convention. Gauges are derived snapshots
 updated on the reporting interval, not hot-path writes. `degraded` and
 `last_sync_age_secs` are the key health indicators for alerting.
 
@@ -798,7 +798,7 @@ lib/crowdb-diskdb-client    (client library for callers: allocate/free/query; cr
   (allocate/free/query) + extension traits for schema types
   (`diskdb_type_util.rs`: `DiskIdExt`, `HwStatusExt`,
   `ZoneAllocationStateExt`, `ZoneValueExt`, `effective_status`).
-  crowdb-kv's existing schemas stay in `crowdb-kv` (unchanged). The
+  crowdb-paxos-kv's existing schemas stay in `crowdb-paxos-kv` (unchanged). The
   flatbuffers messages are reused across the crowdb-rpc transport.
 - **`app/crowdb-diskdb`** — server crate (package name `crowdb-diskdb`).
   Combined library + binary: contains all diskdb logic (types, zone
@@ -835,7 +835,7 @@ lib/crowdb-diskdb-client    (client library for callers: allocate/free/query; cr
   heartbeat → observation → reconciliation. `DiskdbRpcService` remains the
   public registration facade; all mutations pass through `mutation_gate`.
 - **`lib/crowdb-diskdb-client`** — client library for easy access to the server
-  (allocate/free/query), mirroring `crowdb-kv-client`'s retry +
+  (allocate/free/query), mirroring `crowdb-paxos-kv-client`'s retry +
   topology-cache pattern. crowdb-rpc transport; flatbuffers framing.
 
 ### Dependencies
@@ -843,10 +843,10 @@ lib/crowdb-diskdb-client    (client library for callers: allocate/free/query; cr
 ```
 crowdb-common (metrics, logging, time)
   ↑
-crowdb-kv-client (sole durable store — group 0 + data groups)
+crowdb-paxos-kv-client (sole durable store — group 0 + data groups)
   ↑
-crowdb-diskdb (server) ──depends──> crowdb-kv-client, crowdb-common, protocol
-crowdb-diskdb-client  ──depends──> protocol, crowdb-kv-client (for group-0 discovery)
+crowdb-diskdb (server) ──depends──> crowdb-paxos-kv-client, crowdb-common, protocol
+crowdb-diskdb-client  ──depends──> protocol, crowdb-paxos-kv-client (for group-0 discovery)
 
 protocol ──> (no internal deps beyond flatbuffers/crowdb-rpc)
 ```
@@ -889,7 +889,7 @@ All public and inter-module APIs are `async`. Runtime is `tokio`
 These design assumptions map cleanly onto CROWDB and need no design
 work, just implementation:
 
-- **Durability model**: crowdb-kv's WAL is the sole durable log. DiskDB's blind
+- **Durability model**: crowdb-paxos-kv's WAL is the sole durable log. DiskDB's blind
   allocation/free writes and conditional commit batches become durable through
   the same Paxos/WAL path.
 - **Consensus semantics**: Multi-Paxos retains parallel blind allocation and
@@ -964,7 +964,7 @@ the full diskdb server.
 - **Console + CLI integration** — disk/disk-group management UI, zone
   busy/free visualization, CLI command design.
 - **Group-0 notify/watch** — replace polling with watch/notify; see
-  [`design-crowdb-kv-watch-notify.md`](../kv/design-crowdb-kv-watch-notify.md).
+  [`design-crowdb-paxos-kv-watch-notify.md`](../kv/design-crowdb-paxos-kv-watch-notify.md).
   Polling stays as safety net.
 - **Free batch** — size-threshold batching, no timer; graceful-shutdown
   drain + flush.
@@ -975,9 +975,9 @@ the diskdb component area.
 
 ## 16. References
 
-- CROWDB root KV design: `doc/design/kv/design-crowdb-kv.md`
-- CROWDB WAL design: `doc/design/kv/design-crowdb-kv-wal.md`
-- CROWDB metrics design: `doc/design/kv/design-crowdb-kv-observability.md`
+- CROWDB root KV design: `doc/design/kv/design-crowdb-paxos-kv.md`
+- CROWDB WAL design: `doc/design/kv/design-crowdb-paxos-kv-wal.md`
+- CROWDB metrics design: `doc/design/kv/design-crowdb-paxos-kv-observability.md`
 - CROWDB console design: `doc/design/console/design-crowdb-console.md`
 
 ---

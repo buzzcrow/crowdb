@@ -119,10 +119,15 @@ impl ConfirmedMemberTrust {
                 .map_err(|_| invalid("invalid recovery contact address"))?;
             let mut server = ServerEntry::new(
                 format!("kv-{}", node.node_id),
-                format!("http://{}", std::net::SocketAddr::new(address, 10000)),
+                format!(
+                    "http://{}",
+                    std::net::SocketAddr::new(address, crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE)
+                ),
             );
             server.node_id = Some(node.node_id);
-            server.rpc_url = Some(std::net::SocketAddr::new(address, 10100).to_string());
+            server.rpc_url = Some(
+                std::net::SocketAddr::new(address, crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE).to_string(),
+            );
             config.servers.push(server);
         }
         Ok(config)

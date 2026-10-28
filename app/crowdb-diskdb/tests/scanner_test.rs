@@ -31,7 +31,7 @@ use crowdb_diskdb::model::disk_group_container::DdbDiskGroupContainer;
 use crowdb_diskdb::scanner::ghost::diff_bitmaps;
 use crowdb_diskdb::scanner::integrity::{is_zero_chunk, is_zero_owner};
 use crowdb_diskdb::scanner::{BusyBlockOwnerScanner, ScanState, ScanSummary, SegmentOwnerQuery, ZonePacer};
-use crowdb_kv_client::HardwareClient;
+use crowdb_paxos_kv_client::HardwareClient;
 use crowdb_protocol::chunkdb::rpc::{QuerySegmentOwnerRequest, SegmentOwnerDisposition};
 use crowdb_protocol::common::{ChunkId, DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{BusyBlockValue, CommitState, DiskGroupValue, DiskType, DiskValue};

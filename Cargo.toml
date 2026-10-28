@@ -2,10 +2,10 @@
 resolver = "2"
 members = [
     "lib/crowdb-common/rust",
-    "lib/crowdb-kv",
-    "lib/crowdb-kv-client",
+    "lib/crowdb-paxos-kv",
+    "lib/crowdb-paxos-kv-client",
     "lib/crowdb-protocol",
-    "app/crowdb-kv-server",
+    "app/crowdb-paxos-kv-server",
     "app/crowdb-diskdb",
     "lib/crowdb-diskdb-client",
     "app/crowdb-chunkdb",
@@ -35,7 +35,7 @@ members = [
 ]
 exclude = ["third-party/hyper", "sdk"]
 # : crowdb-tree/ffi moved from `exclude` into `members` now that
-# crowdb-kv depends on it (CrowdbTreeEngine) -- building crowdb-kv already triggers
+# crowdb-paxos-kv depends on it (CrowdbTreeEngine) -- building crowdb-paxos-kv already triggers
 # the C++ build step via crowdb-tree-ffi's build.rs regardless of workspace
 # membership, so the original "keep the C build out of the main workspace"
 # rationale for excluding it no longer holds; membership instead unifies

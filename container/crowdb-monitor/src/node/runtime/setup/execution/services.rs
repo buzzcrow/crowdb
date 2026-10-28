@@ -6,7 +6,7 @@
 use super::{journal, AcceptedSetup, Result};
 use crate::DeploymentProfile;
 use crowdb_console_shared::deployment::services;
-use crowdb_kv_client::CrowdbKvClient;
+use crowdb_paxos_kv_client::PaxosKvClient;
 use crowdb_protocol::mgmt::node::{
     setup::{SetupServiceKind, SetupStepPhase},
     NodeBinding, NodeControl, NodeServiceAction,
@@ -18,7 +18,7 @@ pub(super) async fn advance(
     profile: &DeploymentProfile,
     state: &mut AcceptedSetup,
     binding: &NodeBinding,
-    kv: &CrowdbKvClient,
+    kv: &PaxosKvClient,
     storage_ready: bool,
 ) -> Result<bool> {
     if state.status.services.iter().all(|step| {
@@ -131,7 +131,8 @@ async fn prepare(
         .timeout(Duration::from_secs(30))
         .build()?
         .post(format!(
-            "http://127.0.0.1:9090/api/nodes/{}/setup/prepare-service",
+            "http://127.0.0.1:{}/api/nodes/{}/setup/prepare-service",
+            crowdb_protocol::WEB_BASE,
             binding.node_id
         ))
         .json(&json!({"operation_id":state.request.operation_id,"kind":kind}))

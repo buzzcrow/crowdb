@@ -5,7 +5,7 @@
 use super::{BinaryKey, Bind, BusyBlockKey, DdbKvClient, DiskId, FreeBlockKey, ZoneKey};
 use crate::model::records::{BusyRecord, FreeRecord, ZoneRecords};
 use bincode::Options;
-use crowdb_kv_client::{Error, Result};
+use crowdb_paxos_kv_client::{Error, Result};
 use crowdb_protocol::diskdb::rpc::ZoneValue;
 use crowdb_protocol::ZoneValueExt;
 use serde::de::DeserializeOwned;
@@ -36,7 +36,7 @@ impl DdbKvClient {
         &self,
         key: &crowdb_protocol::key::DiskKey,
     ) -> Result<bool> {
-        let hardware = crowdb_kv_client::HardwareClient::from_shared(self.kv.clone());
+        let hardware = crowdb_paxos_kv_client::HardwareClient::from_shared(self.kv.clone());
         Ok(hardware.disk_rejoin_receipt(key).await?.is_some()
             || hardware.disk_online_operation(key).await?.is_some())
     }

@@ -42,7 +42,7 @@ def create_nonvoter(cluster):
         '--mount', f'type=bind,source={policy.resolve()},target=/run/later-member.toml,readonly',
         '--env', 'CROWDB_NODE_POLICY_FILE=/run/later-member.toml',
         '--env', f'CROWDB_CLUSTER={cluster.run_id}', '--env', 'CROWDB_INITIAL_VOTERS=3',
-        '--publish', f'127.0.0.1:{cluster.port_base + 30}:9090', cluster.image)
+        '--publish', f'127.0.0.1:{cluster.port_base + 30}:6135', cluster.image)
     cluster.containers.append(name)
 
 
@@ -87,7 +87,7 @@ def no_old_transports(addresses):
                 raise AssertionError(f'old management transport remains reachable: {endpoint}')
         except OSError:
             return endpoint
-    endpoints = [(address, port) for address in addresses for port in (2222, 9090, 9095, 10000, 10100)]
+    endpoints = [(address, port) for address in addresses for port in (2222, 6135, 26135, 10135, 11135)]
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         return list(executor.map(unreachable, endpoints))
 

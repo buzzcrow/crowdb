@@ -22,7 +22,7 @@ crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv" }
 crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client" }
 crowdb-chunk-stream = { path = "../../lib/crowdb-chunk-stream" }
 crowdb-common = { workspace = true }
-crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
+crowdb-paxos-kv-client = { path = "../../lib/crowdb-paxos-kv-client" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
 crowdb-tree-ffi = { path = "../../lib/crowdb-tree/ffi", features = ["chunk-rpc"] }
@@ -38,7 +38,7 @@ tracing = { workspace = true }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }
 crowdb-chunk-kv-client = { path = "../../lib/crowdb-chunk-kv-client" }
 sha2 = "0.10"
-crowdb-kv = { path = "../../lib/crowdb-kv", features = ["test-util"] }
+crowdb-paxos-kv = { path = "../../lib/crowdb-paxos-kv", features = ["test-util"] }
 crowdb-chunk-kv-server = { path = ".", features = ["test-util"] }
 crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv", features = ["test-util"] }
 crowdb-chunk-stream = { path = "../../lib/crowdb-chunk-stream", features = ["test-util"] }

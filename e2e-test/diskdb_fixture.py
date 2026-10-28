@@ -27,7 +27,6 @@ class DiskdbCluster(Cluster):
         config = self.artifacts / "diskdb.toml"
         config.write_text(f'''[server]
 rpc_workers = 2
-listen_addr = "0.0.0.0:7100"
 http_listen_addr = "0.0.0.0:7101"
 rpc_listen_addr = "{address}:7102"
 instance_id = "999"

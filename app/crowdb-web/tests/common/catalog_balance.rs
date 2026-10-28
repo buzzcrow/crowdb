@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::CrowdbKvClient;
+use crowdb_paxos_kv_client::PaxosKvClient;
 use crowdb_protocol::chunk_kv::{
     balance::{
         BalanceObservation, BalanceOwnerObservation, BalancePartitionObservation, BalanceWeights,
@@ -10,7 +10,7 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeBalancePolicy, ChunkKvRangeCatalogPage,
 };
 
-pub async fn seed(kv: &CrowdbKvClient, page: &ChunkKvRangeCatalogPage) {
+pub async fn seed(kv: &PaxosKvClient, page: &ChunkKvRangeCatalogPage) {
     let weights = BalanceWeights::new(&[(105, 1_050)], 80).unwrap();
     let first = &page.entries[0];
     let now = u64::try_from(

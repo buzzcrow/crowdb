@@ -14,7 +14,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use crowdb_chunkdb_client::ChunkdbClient;
 use crowdb_console_shared::ops::hardware;
-use crowdb_kv_client::{RangeBindingClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{RangeBindingClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ListChunksRequest, QueryChunkRequest};
 use crowdb_protocol::common::ChunkId;
 use serde::Deserialize;

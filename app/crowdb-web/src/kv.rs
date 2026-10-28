@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use crowdb_console_shared::cluster::{GroupHealth, NodeId};
 use crowdb_console_shared::ops;
-use crowdb_kv_client::{GetOutcome, ScanOutcome};
+use crowdb_paxos_kv_client::{GetOutcome, ScanOutcome};
 use hex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

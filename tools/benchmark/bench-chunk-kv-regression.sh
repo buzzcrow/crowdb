@@ -63,7 +63,7 @@ if ! [[ "$READ_PERCENT" =~ ^[0-9]+$ ]] || [ "$READ_PERCENT" -gt 100 ]; then
 fi
 if [ "$SKIP_BUILD" -eq 0 ]; then
     pixi run build-cpp
-    pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server \
+    pixi run -- cargo build --release -p crowdb-cli -p crowdb-paxos-kv-server \
         -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server \
         -p crowdb-chunk-kv-client
 fi

@@ -1,8 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, HardwareClient, ReadMode};
 use crowdb_monitor::{accept_file_for_tests, prepare_file_for_tests, publish_file_for_tests};
+use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, HardwareClient, PaxosKvClient, ReadMode};
 use crowdb_protocol::{
     common::{HwStatus, NodeValue, RackValue},
     disk_storage::DiskStorageRecord,
@@ -93,7 +93,7 @@ async fn fixture(root: &std::path::Path) -> (node_setup::TestAuthority, Hardware
     };
     let authority = node_setup::TestAuthority::start(root, &setup).await;
     assert_eq!(authority.registry.nodes[0].physical_host_id, "owned-host");
-    let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(
+    let hardware = HardwareClient::new(PaxosKvClient::new(ClientConfig::new(
         authority.binding.management_seeds.clone(),
     )));
     hardware

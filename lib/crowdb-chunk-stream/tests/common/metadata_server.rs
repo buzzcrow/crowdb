@@ -3,15 +3,15 @@
 
 use std::sync::Arc;
 
-use crowdb_kv::cluster::group::PxGroup;
-use crowdb_kv::cluster::kv_server::KvServer;
-use crowdb_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
-use crowdb_kv::cluster::px_kv_store::PxKvStore;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv::cluster::group::PxGroup;
+use crowdb_paxos_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
+use crowdb_paxos_kv::cluster::paxos_kv_server::PaxosKvServer;
+use crowdb_paxos_kv::cluster::px_kv_store::PxKvStore;
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 
 pub struct TestMetadataServer {
     pub server: Arc<PxKvStore>,
-    pub client: Arc<CrowdbKvClient>,
+    pub client: Arc<PaxosKvClient>,
 }
 
 impl TestMetadataServer {
@@ -24,7 +24,7 @@ impl TestMetadataServer {
         server.start().await.unwrap();
         // This fixture explicitly seeds its one real RPC endpoint; discovery is
         // outside the metadata adapter contract exercised here.
-        let client = Arc::new(CrowdbKvClient::new(ClientConfig::new(Vec::new())));
+        let client = Arc::new(PaxosKvClient::new(ClientConfig::new(Vec::new())));
         client.seed_leader(1, 1, server.listen_addr().unwrap().to_string());
         Self { server, client }
     }

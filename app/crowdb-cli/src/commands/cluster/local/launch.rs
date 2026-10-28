@@ -9,7 +9,17 @@ use super::{
     StartArgs,
 };
 use crowdb_console_shared::error::Result;
+use crowdb_protocol::{
+    ACCESS_SERVER_DATASET_HTTP_BASE, ACCESS_SERVER_HTTP_BASE, ACCESS_SERVER_ICEBERG_HTTP_BASE, WEB_BASE,
+};
 use serde_json::{json, Value};
+
+const PUBLIC_PORTS: [(u16, &str); 4] = [
+    (WEB_BASE, ""),
+    (ACCESS_SERVER_HTTP_BASE, "S3"),
+    (ACCESS_SERVER_ICEBERG_HTTP_BASE, "ICEBERG"),
+    (ACCESS_SERVER_DATASET_HTTP_BASE, "DATASET"),
+];
 use std::time::Duration;
 
 pub(super) async fn accepted(docker: &Docker, cluster: &str, args: &StartArgs) -> Result<Launch> {
@@ -46,7 +56,7 @@ pub(super) async fn accepted(docker: &Docker, cluster: &str, args: &StartArgs) -
         owner: uuid::Uuid::new_v4().to_string(),
         runtime: docker.identity().await?,
         nodes: args.nodes.unwrap_or(1),
-        port_base: args.port_base.unwrap_or(9090),
+        port_base: args.port_base.unwrap_or(WEB_BASE),
         image: image.into(),
         image_id: metadata["Id"]
             .as_str()
@@ -110,12 +120,10 @@ fn arguments(record: &Launch, index: u8) -> Vec<String> {
         "--mount",
         &format!("type=volume,source={volume},target=/opt/crowdb/data"),
     ]));
-    let base = record.port_base + u16::from(index - 1) * 10;
-    for (offset, protocol) in [(0_u16, ""), (1, "S3"), (2, "ICEBERG"), (3, "DATASET")] {
-        args.extend(strings(&[
-            "-p",
-            &format!("127.0.0.1:{}:{}", base + offset, 9090 + offset),
-        ]));
+    let base = record.port_base + u16::from(index - 1);
+    for (port, protocol) in PUBLIC_PORTS {
+        let offset = port - WEB_BASE;
+        args.extend(strings(&["-p", &format!("127.0.0.1:{}:{}", base + offset, port)]));
         if !protocol.is_empty() {
             args.extend(strings(&[
                 "-e",
@@ -135,11 +143,12 @@ fn arguments(record: &Launch, index: u8) -> Vec<String> {
 
 pub(super) fn verify(item: &Value, record: &Launch, index: u8) -> Result<()> {
     require_owned(item, record, "container")?;
-    let base = record.port_base + u16::from(index - 1) * 10;
+    let base = record.port_base + u16::from(index - 1);
     let mut ports = serde_json::Map::new();
-    for offset in 0..4 {
+    for (port, _) in PUBLIC_PORTS {
+        let offset = port - WEB_BASE;
         ports.insert(
-            format!("{}/tcp", 9090 + offset),
+            format!("{port}/tcp"),
             json!([{"HostIp":"127.0.0.1", "HostPort":(base+offset).to_string()}]),
         );
     }
@@ -173,7 +182,11 @@ pub(super) fn verify(item: &Value, record: &Launch, index: u8) -> Result<()> {
         format!("CROWDB_CLUSTER={}", record.cluster),
         format!("CROWDB_INITIAL_VOTERS={}", record.nodes),
     ];
-    for (offset, protocol) in [(1, "S3"), (2, "ICEBERG"), (3, "DATASET")] {
+    for (port, protocol) in PUBLIC_PORTS
+        .into_iter()
+        .filter(|(_, protocol)| !protocol.is_empty())
+    {
+        let offset = port - WEB_BASE;
         expected.push(format!(
             "CROWDB_{protocol}_PUBLIC_URI=http://127.0.0.1:{}",
             base + offset

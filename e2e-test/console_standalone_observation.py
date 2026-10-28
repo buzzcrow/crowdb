@@ -20,7 +20,7 @@ class StandaloneBrowserObservations:
         if body != {"action": "observe-native-services", "node": 0}:
             raise ValueError("unsupported standalone observation")
         identity = owned(self.cluster, node)
-        with HTTP.open(f"http://{self.cluster.addresses[0]}:9090/api/servers", timeout=5) as response:
+        with HTTP.open(f"http://{self.cluster.addresses[0]}:6135/api/servers", timeout=5) as response:
             rows = json.load(response)
         observed = {}
         known = getattr(self.cluster, "native_processes", set())

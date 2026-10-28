@@ -87,7 +87,7 @@ async fn setup() -> (TestPreparationAuthority, NodeRuntimeObservation) {
         statuses.push(status);
         usage.push(summary);
     }
-    crowdb_kv_client::ServiceRegistryClient::from_shared(authority.ctx.kv_arc().clone())
+    crowdb_paxos_kv_client::ServiceRegistryClient::from_shared(authority.ctx.kv_arc().clone())
         .register_diskdb(42, "127.0.0.1:7200", &[7, 9], &usage)
         .await
         .unwrap();

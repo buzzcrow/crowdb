@@ -5,14 +5,14 @@
 mod memory_kv;
 
 use crowdb_console_shared::ConsoleConfig;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_protocol::mgmt::{node::NodeBinding, SystemBootstrapIdentity};
 use crowdb_web::AppState;
 
 #[tokio::test]
 async fn bound_operations_discover_group0_without_a_warmed_console_projection() {
     let cluster = memory_kv::TestKvCluster::start().await;
-    let kv = CrowdbKvClient::new(ClientConfig::new(cluster.mgmt_endpoints.clone()));
+    let kv = PaxosKvClient::new(ClientConfig::new(cluster.mgmt_endpoints.clone()));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
     kv.put(0, 0, b"binding-probe", b"committed", None).await.unwrap();
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("bound-client");

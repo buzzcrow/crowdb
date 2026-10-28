@@ -65,10 +65,10 @@ class RegressionFixtureTest(unittest.TestCase):
 
     def test_failed_client_drops_stale_report_and_does_not_inherit_cluster_target(self):
         self.write_descriptor()
-        report = self.root / "client-runtime/artifacts/cli/bench-kv/report.json"
+        report = self.root / "client-runtime/artifacts/cli/bench-paxos-kv/report.json"
         report.parent.mkdir(parents=True)
         report.write_text('{"total_ops": 999}')
-        args = argparse.Namespace(state=self.state, action="client", arguments=["bench", "kv", "bad"])
+        args = argparse.Namespace(state=self.state, action="client", arguments=["bench", "paxos-kv", "bad"])
         with patch.dict(os.environ, {"CROWDB_CLUSTER": "foreign"}), \
                 patch.object(fixture.subprocess, "call", return_value=2) as call:
             self.assertEqual(fixture.run(args), 2)

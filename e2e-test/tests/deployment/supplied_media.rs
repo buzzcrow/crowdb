@@ -5,12 +5,12 @@ use bytes::Bytes;
 use crowdb_diskio_client::{
     DiskId, DiskioClient, DiskioClientConfig, Durability, OperationOptions, SegmentTarget,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient};
 use crowdb_protocol::{common::HwStatus, key::DiskKey, mgmt::node::storage::DiskBackend, DiskIdExt};
 use serde_json::Value;
 use std::time::Duration;
 
-async fn assert_selected_host(kv: &CrowdbKvClient, specification: &Value, host: &str) {
+async fn assert_selected_host(kv: &PaxosKvClient, specification: &Value, host: &str) {
     let (registry, _) = crowdb_console_shared::deployment::registry::read(kv)
         .await
         .unwrap()
@@ -36,7 +36,7 @@ async fn retained_data_probe() {
     assert!(matches!(mode, "write" | "verify"));
     let host = specification["physical_host_id"].as_str().unwrap();
     let seeds: Vec<String> = serde_json::from_value(specification["seeds"].clone()).unwrap();
-    let kv = CrowdbKvClient::new(ClientConfig::new(seeds.clone()));
+    let kv = PaxosKvClient::new(ClientConfig::new(seeds.clone()));
     assert_selected_host(&kv, &specification, host).await;
     let hardware = HardwareClient::new(kv);
     let disks = specification["disks"].as_array().unwrap();

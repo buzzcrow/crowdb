@@ -9,7 +9,7 @@ use axum::{
     Json,
 };
 use crowdb_console_shared::deployment::PreparedBootstrap;
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use serde_json::{json, Value};
 
 use crate::{
@@ -309,15 +309,15 @@ async fn confirmed_inner(
             .iter_mut()
             .find(|server| server.node_id == Some(node.node_id))
         {
-            server.url = format!("http://{host}:10000");
-            server.rpc_url = Some(format!("{host}:10100"));
+            server.url = format!("http://{host}:{}", crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE);
+            server.rpc_url = Some(format!("{host}:{}", crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE));
         } else {
             let mut server = crowdb_console_shared::config::ServerEntry::new(
                 format!("kv-{}", node.node_id),
-                format!("http://{host}:10000"),
+                format!("http://{host}:{}", crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE),
             );
             server.node_id = Some(node.node_id);
-            server.rpc_url = Some(format!("{host}:10100"));
+            server.rpc_url = Some(format!("{host}:{}", crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE));
             config.servers.push(server);
         }
     }

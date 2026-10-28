@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::slot_map::{services, TestGroup0};
-use crowdb_kv_client::{ChunkSlotMapClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, GetOutcome, ReadMode};
 use crowdb_protocol::key::{ChunkServiceSlotsKey, ChunkSlotMapHeadKey, TextKey};
 use std::sync::Arc;
 

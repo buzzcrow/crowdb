@@ -576,6 +576,10 @@ TEST(Persist, WriteMutexNotHeldDuringSnapshotIo)
 
     store.release();
     snap_thread.join();
+    EXPECT_EQ(t.last_applied_slot(), 2U)
+        << "snapshot completion must not regress concurrent flush coverage";
+    EXPECT_EQ(t.durable_snapshot_last_applied_slot(), 1U)
+        << "durable snapshot frontier remains the prepared snapshot frontier";
 }
 
 // Task 6: Array-of-blocks BlockPageStore integration test. Snapshot with

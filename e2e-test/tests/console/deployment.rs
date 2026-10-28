@@ -22,7 +22,7 @@ fn config() -> ConsoleConfig {
 #[ignore = "requires the owned release KV containers"]
 async fn concurrent_admissions_allocate_unique_stable_ids_through_group_zero() {
     let cluster = KvCluster::start().await;
-    let kv = crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(
+    let kv = crowdb_paxos_kv_client::PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
         cluster.mgmt_endpoints.clone(),
     ));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
@@ -114,7 +114,7 @@ async fn service_retries_retain_identity_and_other_nodes_cannot_claim_the_same_s
     use crowdb_protocol::mgmt::node::{NodeServiceAction, NodeServiceIntent};
 
     let cluster = KvCluster::start().await;
-    let kv = crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(
+    let kv = crowdb_paxos_kv_client::PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
         cluster.mgmt_endpoints.clone(),
     ));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());

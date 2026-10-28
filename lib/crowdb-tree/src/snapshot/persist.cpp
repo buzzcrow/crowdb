@@ -827,7 +827,16 @@ void Crowdbtree::commit_prepared_snapshot(const PreparedSnapshot &prepared)
         }
     }
     version_.fetch_add(1);
-    last_applied_slot_.store(prepared.last_applied_slot, std::memory_order_release);
+    // Snapshot preparation runs before its I/O phase.  A concurrent flush may
+    // publish a newer live frontier while that I/O is in progress, so the
+    // prepared snapshot's older frontier must never move live coverage
+    // backwards.  The durable snapshot frontier remains the exact prepared
+    // value and is published separately by finalize_prepared_snapshot().
+    uint64_t live_frontier = last_applied_slot_.load(std::memory_order_relaxed);
+    while (live_frontier < prepared.last_applied_slot
+           && !last_applied_slot_.compare_exchange_weak(
+               live_frontier, prepared.last_applied_slot, std::memory_order_release, std::memory_order_relaxed)) {
+    }
     snapshot_total_.fetch_add(1, std::memory_order_relaxed);
     CRB_LOG_INFO("[{}] snapshot committed: seq={} last_applied={} live_pages={} written={} segdir_len={}", name_,
                  prepared.seq, prepared.last_applied_slot, prepared.live_page_count, prepared.pages_written,

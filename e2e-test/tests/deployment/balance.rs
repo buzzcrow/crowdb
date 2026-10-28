@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_protocol::chunk_kv::{ChunkKvRangeBalancePolicy, DomainMonitorDescriptor, SplitTransition};
 use crowdb_protocol::key::{ChunkKvSplitKey, DomainMonitorKey, TextKey};
 use std::time::{Duration, Instant};
@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 async fn single_node_preserves_default_chunk_kv_balance_policy() {
     super::witness_with_write(true, true).await;
     let address = crate::common::management::addresses(1)[0].clone();
-    let client = CrowdbKvClient::new(ClientConfig::new(vec![format!("http://{address}:10000")]));
+    let client = PaxosKvClient::new(ClientConfig::new(vec![format!("http://{address}:10000")]));
     let key = DomainMonitorKey {
         domain: "chunk-kv".into(),
     }

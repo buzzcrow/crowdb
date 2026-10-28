@@ -32,33 +32,33 @@ def hardware(cluster):
 
 
 def logical(cluster):
-    cluster.invoke("kv", "store", "add", "--id", "9", "--nodes", "1")
-    stores = cluster.invoke("kv", "store", "list", endpoint=cluster.endpoint(1))
+    cluster.invoke("paxos-kv", "store", "add", "--id", "9", "--nodes", "1")
+    stores = cluster.invoke("paxos-kv", "store", "list", endpoint=cluster.endpoint(1))
     assert any(line.split()[0] == "9" for line in stores.splitlines() if line.split()), stores
     for group in (90, 91):
-        cluster.invoke("kv", "group", "add", "--store", "9", "--group", str(group),
+        cluster.invoke("paxos-kv", "group", "add", "--store", "9", "--group", str(group),
                        "--replica-id", str(group * 10), "--nodes", "1")
-    groups = cluster.invoke("kv", "group", "list", "--store", "9", endpoint=cluster.endpoint(2))
+    groups = cluster.invoke("paxos-kv", "group", "list", "--store", "9", endpoint=cluster.endpoint(2))
     assert "90" in groups and "91" in groups, groups
-    cluster.invoke("kv", "data", "put", "--store", "9", "--group", "90", "--key", "witness", "--value", "owned")
-    assert "owned" in cluster.invoke("kv", "data", "get", "--store", "9", "--group", "90", "--key", "witness")
-    cluster.invoke("kv", "group", "remove", "--store", "9", "--group", "91")
-    groups = cluster.invoke("kv", "group", "list", "--store", "9")
+    cluster.invoke("paxos-kv", "data", "put", "--store", "9", "--group", "90", "--key", "witness", "--value", "owned")
+    assert "owned" in cluster.invoke("paxos-kv", "data", "get", "--store", "9", "--group", "90", "--key", "witness")
+    cluster.invoke("paxos-kv", "group", "remove", "--store", "9", "--group", "91")
+    groups = cluster.invoke("paxos-kv", "group", "list", "--store", "9")
     assert "90" in groups and "91" not in groups, groups
-    cluster.invoke("kv", "store", "remove", "--id", "9")
-    stores = cluster.invoke("kv", "store", "list")
+    cluster.invoke("paxos-kv", "store", "remove", "--id", "9")
+    stores = cluster.invoke("paxos-kv", "store", "list")
     assert not any(line.split()[0] == "9" for line in stores.splitlines() if line.split()), stores
 
 
 def data(cluster):
     prefix = "cli-data/" + cluster.run_id
     for suffix in ("a", "b"):
-        cluster.invoke("kv", "data", "put", "--store", "0", "--group", "0",
+        cluster.invoke("paxos-kv", "data", "put", "--store", "0", "--group", "0",
                        "--key", prefix + suffix, "--value", suffix)
-    scanned = cluster.invoke("kv", "data", "scan", "--store", "0", "--group", "0",
+    scanned = cluster.invoke("paxos-kv", "data", "scan", "--store", "0", "--group", "0",
                              "--prefix", prefix, endpoint=cluster.endpoint(2))
     assert prefix + "a" in scanned and prefix + "b" in scanned, scanned
     for suffix in ("a", "b"):
-        cluster.invoke("kv", "data", "delete", "--store", "0", "--group", "0", "--key", prefix + suffix)
-        assert "not found" in cluster.invoke("kv", "data", "get", "--store", "0", "--group", "0",
+        cluster.invoke("paxos-kv", "data", "delete", "--store", "0", "--group", "0", "--key", prefix + suffix)
+        assert "not found" in cluster.invoke("paxos-kv", "data", "get", "--store", "0", "--group", "0",
                                              "--key", prefix + suffix, endpoint=cluster.endpoint(1))

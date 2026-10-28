@@ -32,7 +32,7 @@ use crowdb_access_server::storage::S3StorageClients;
 #[cfg(feature = "s3")]
 use crowdb_chunk_client::LargeWritePolicy;
 #[cfg(feature = "s3")]
-use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig as KvConfig, PaxosKvClient};
 #[cfg(feature = "s3")]
 use tokio::net::TcpListener;
 #[cfg(feature = "s3")]
@@ -271,7 +271,7 @@ async fn bind_health_listener(access_config: &AccessConfig) -> std::io::Result<T
         .listen
         .clone()
         .or_else(|| std::env::var("CROWDB_ACCESS_HEALTH_LISTEN").ok())
-        .unwrap_or_else(|| "127.0.0.1:9094".into());
+        .unwrap_or_else(|| format!("127.0.0.1:{}", crowdb_protocol::ACCESS_SERVER_HEALTH_HTTP_BASE));
     TcpListener::bind(address).await
 }
 
@@ -435,7 +435,7 @@ async fn issue_user(args: &[String], access: &AccessConfig) -> Result<(), Box<dy
     } else {
         access.common.management_seeds.clone()
     };
-    let control = Arc::new(CrowdbKvClient::new(KvConfig::new(seeds)));
+    let control = Arc::new(PaxosKvClient::new(KvConfig::new(seeds)));
     let authority = CredentialAuthority::new(control, cipher);
     let token = match command.as_str() {
         "ensure-user" => authority.ensure_user(user.as_bytes()).await?,

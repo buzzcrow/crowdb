@@ -4,7 +4,7 @@
 // Group0Sync: periodic group-0 synchronization for crowdb-diskio.
 //
 // When kv_seeds are configured, Group0Sync connects to group-0 via
-// the crowdb-kv-client FFI C ABI, fetches the disk list for this node's
+// the crowdb-paxos-kv-client FFI C ABI, fetches the disk list for this node's
 // disk-group, reconciles the DiskSet, and heartbeats to the service
 // registry.
 //
@@ -81,7 +81,7 @@ class Group0Sync
     DiskExclusion                          exclusions_;
     bool                                   registered_ = false;
 
-    // FFI handles (opaque pointers from crowdb-kv-client FFI).
+    // FFI handles (opaque pointers from crowdb-paxos-kv-client FFI).
     void *hw_client_  = nullptr;
     void *svc_client_ = nullptr;
 };

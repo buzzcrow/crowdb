@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crowdb_chunkdb::routing::{BindingCache, BindingTable};
 use crowdb_chunkdb::storage::ChunkStore;
 use crowdb_chunkdb::task::TaskStore;
-use crowdb_kv_client::{ChunkSlotMapClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, GetOutcome, ReadMode};
 use crowdb_protocol::chunk_slot::{ChunkSlot, ChunkSlotBootstrap, ChunkStorageGroup};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, ChunkType};
 use crowdb_protocol::common::ChunkId;

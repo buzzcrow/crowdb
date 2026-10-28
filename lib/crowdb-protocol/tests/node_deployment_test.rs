@@ -25,9 +25,18 @@ fn fresh_local_policy_has_one_voter_and_all_public_access_listeners() {
         .iter()
         .find(|service| service.kind == SetupServiceKind::AccessServer)
         .unwrap();
-    assert_eq!(access.listeners.s3_port, Some(9091));
-    assert_eq!(access.listeners.http_port, Some(9092));
-    assert_eq!(access.listeners.dataset_port, Some(9093));
+    assert_eq!(
+        access.listeners.s3_port,
+        Some(crowdb_protocol::ACCESS_SERVER_HTTP_BASE)
+    );
+    assert_eq!(
+        access.listeners.http_port,
+        Some(crowdb_protocol::ACCESS_SERVER_ICEBERG_HTTP_BASE)
+    );
+    assert_eq!(
+        access.listeners.dataset_port,
+        Some(crowdb_protocol::ACCESS_SERVER_DATASET_HTTP_BASE)
+    );
 }
 
 #[test]
@@ -175,16 +184,31 @@ fn invalid_policies_are_rejected_before_any_resolution_can_replace_them() {
             .is_err());
     }
     let mut duplicate_port = valid;
-    duplicate_port.setup.services[5].listeners.dataset_port = Some(9092);
+    duplicate_port.setup.services[5].listeners.dataset_port =
+        Some(crowdb_protocol::ACCESS_SERVER_ICEBERG_HTTP_BASE);
     assert!(duplicate_port.validate().is_err());
     duplicate_port.setup.services[5].listeners.dataset_port = None;
     assert!(duplicate_port.validate().is_err());
-    for reserved in [2222, 9090, 9095, 10101] {
+    for reserved in [
+        crowdb_protocol::SSH_PORT,
+        crowdb_protocol::WEB_BASE,
+        crowdb_protocol::MONITOR_HTTP_BASE,
+        crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE + 1,
+    ] {
         let mut policy = NodeDeploymentPolicy::default();
         policy.setup.services[5].listeners.dataset_port = Some(reserved);
         assert!(policy.validate().is_err());
     }
-    for (http, rpc) in [(10001, 10100), (10000, 10102)] {
+    for (http, rpc) in [
+        (
+            crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE + 1,
+            crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE,
+        ),
+        (
+            crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE,
+            crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE + 2,
+        ),
+    ] {
         let mut policy = NodeDeploymentPolicy::default();
         let kv = policy
             .setup

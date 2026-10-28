@@ -7,8 +7,8 @@ use crowdb_console_shared::{
     config::ConsoleConfig,
     ops::{cluster::publish_topology_for_tests, OpContext},
 };
-use crowdb_kv::cluster::{
-    group::PxGroup, kv_server::KvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
+use crowdb_paxos_kv::cluster::{
+    group::PxGroup, paxos_kv_server::PaxosKvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
 };
 use serde_json::json;
 

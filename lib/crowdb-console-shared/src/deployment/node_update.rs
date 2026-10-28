@@ -8,7 +8,7 @@ use crate::{
     error::{Error, Result},
     ops::OpContext,
 };
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use crowdb_protocol::common::NodeValue;
 use serde::{Deserialize, Serialize};
 
@@ -152,9 +152,9 @@ async fn publish(ctx: &OpContext, cluster: &str, source: &NodeRecord, target: &N
         {
             Ok(_) => return Ok(()),
             Err(
-                crowdb_kv_client::Error::CasFailed { .. }
-                | crowdb_kv_client::Error::CasBusy
-                | crowdb_kv_client::Error::OutcomeUnknown,
+                crowdb_paxos_kv_client::Error::CasFailed { .. }
+                | crowdb_paxos_kv_client::Error::CasBusy
+                | crowdb_paxos_kv_client::Error::OutcomeUnknown,
             ) => {}
             Err(error) => return Err(error.into()),
         }
@@ -170,7 +170,7 @@ fn config_error(error: impl std::fmt::Display) -> Error {
 
 /// # Errors
 /// Rejects concurrent admission while a node relocation is incomplete.
-pub async fn check_admission(kv: &crowdb_kv_client::CrowdbKvClient, id: &str) -> Result<()> {
+pub async fn check_admission(kv: &crowdb_paxos_kv_client::PaxosKvClient, id: &str) -> Result<()> {
     if let GetOutcome::Found { value, .. } = kv
         .get(
             0,

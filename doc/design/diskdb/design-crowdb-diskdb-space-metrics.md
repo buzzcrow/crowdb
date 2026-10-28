@@ -5,7 +5,7 @@
 
 Depends on: [`design-crowdb-diskdb.md`](design-crowdb-diskdb.md) §3.4 (records are
 source of truth), §7 (record model + recovery strategies), §3.7 (reuse
-`crowdb-common` metrics), §8 (allocation algorithm); [`design-crowdb-kv-group0.md`](../kv/design-crowdb-kv-group0.md)
+`crowdb-common` metrics), §8 (allocation algorithm); [`design-crowdb-paxos-kv-group0.md`](../kv/design-crowdb-paxos-kv-group0.md)
 (hardware hierarchy + service registry).
 Satisfies: `design-crowdb-diskdb.md` §11 (Space Metrics).
 
@@ -588,7 +588,7 @@ summaries joined with the hardware hierarchy. This is the stale (≤1
 sync interval) cluster-wide view; live per-disk/per-zone drill-down is
 via the diskdb-client (§11).
 
-`SpaceUsageClient` in `lib/crowdb-kv-client/src/space_usage.rs` wraps
+`SpaceUsageClient` in `lib/crowdb-paxos-kv-client/src/space_usage.rs` wraps
 `HardwareClient` (which already has the hierarchy scans +
 `scan_prefix`). Re-exported from `lib.rs`.
 
@@ -626,7 +626,7 @@ impl SpaceUsageClient {
   hierarchy subtree.
 
 `ClusterUsage`/`RackUsage`/`NodeUsage` structs hold capacity/used/free
-bytes + disk-group/disk counts. Mirror `crowdb-kv-client`'s retry pattern
+bytes + disk-group/disk counts. Mirror `crowdb-paxos-kv-client`'s retry pattern
 (the underlying `HardwareClient` already retries).
 
 Edge cases:
@@ -639,7 +639,7 @@ Edge cases:
 
 `crowdb-diskdb-client` is the primary client surface for all diskdb rpc
 operations (allocate/free/query with retry + endpoint caching),
-mirroring `crowdb-kv-client`'s pattern. Without it, callers must use raw
+mirroring `crowdb-paxos-kv-client`'s pattern. Without it, callers must use raw
 rpc stubs and do endpoint discovery manually.
 
 `DiskdbClient` in `lib/crowdb-diskdb-client/src/client.rs`:
@@ -703,7 +703,7 @@ impl DiskdbClient {
 - **`recalc_disk_usage`**: wraps the admin RPC.
 - **Error model**: `DiskdbClientError` with `Rpc(crowdb_rpc::Status)` /
   `NoSpace` / `NotFound` / `InvalidArgument` mappings. `RetryConfig`
-  mirrors `crowdb-kv-client` (max retries, backoff).
+  mirrors `crowdb-paxos-kv-client` (max retries, backoff).
 
 Edge cases:
 - Cache miss (unknown `dg_id`) → lazy refresh + retry; if still not
@@ -721,7 +721,7 @@ Edge cases:
 
 New rpc-level e2e tests in `lib/crowdb-diskdb-client/tests/` using
 `DiskdbClient` against an in-process diskdb rpc server + `KvCluster`
-(mirroring `crowdb-kv-client/tests/` pattern):
+(mirroring `crowdb-paxos-kv-client/tests/` pattern):
 - `allocate_free_e2e.rs` — allocate → verify busy record → free →
   verify free.
 - `query_e2e.rs` — allocate →
@@ -780,7 +780,7 @@ lib/crowdb-protocol/src/fbs/
   diskdb_type.fbs    # ZoneUsage, extend DiskInfo/DiskGroupInfo
   diskdb_op.fbs      # extend QueryCapacityStatsRequest, RecalcDiskUsage*
   diskdb_service.fbs # RecalcDiskUsage RPC
-lib/crowdb-kv-client/src/
+lib/crowdb-paxos-kv-client/src/
   space_usage.rs       # SpaceUsageClient + ClusterUsage/RackUsage/NodeUsage
   lib.rs               # re-export
 lib/crowdb-diskdb-client/src/

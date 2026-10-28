@@ -433,7 +433,7 @@ export async function pingNode(nodeId: number, options?: RequestOptions): Promis
 }
 
 /**
- * Deploy a crowdb-kv-server instance to a node
+ * Deploy a crowdb-paxos-kv-server instance to a node
  */
 export async function deployServer(
   nodeId: number,
@@ -512,7 +512,7 @@ export async function removeServer(nodeId: number, options?: RequestOptions): Pr
 }
 
 /**
- * Get the OpenAPI spec for a node's crowdb-kv-server instance
+ * Get the OpenAPI spec for a node's crowdb-paxos-kv-server instance
  */
 export async function getNodeOpenApi(nodeId: number, options?: RequestOptions): Promise<Record<string, any>> {
   const url = `/api/nodes/${encodeURIComponent(nodeId)}/openapi.json`;
@@ -592,7 +592,7 @@ export interface AddStoreRequest {
 
 /**
  * Create a new cluster-wide store. The target nodes must already have a
- * running `crowdb-kv-server` (deployed via `deployServer`).
+ * running `crowdb-paxos-kv-server` (deployed via `deployServer`).
  */
 export async function addStore(
   req: AddStoreRequest,
@@ -900,6 +900,7 @@ export interface AddDisksBatchResult {
 
 export interface DeployDiskdbRequest {
   rpc_port: number;
+  http_port?: number;
   keepalive_interval_secs?: number;
 }
 

@@ -3,7 +3,7 @@
 
 //! Accepted node plans cannot supersede later explicit service controls.
 
-use crowdb_kv_client::{CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_protocol::mgmt::node::{NodeServiceAction, NodeServiceIntent};
 
 use crate::error::{Error, Result};
@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 /// Rejects invalid starts, an existing different intent, changed service ownership
 /// and unavailable authority. In particular a later Stop/Restart/Delete can never
 /// be overwritten by an old accepted plan or its delayed retry.
-pub async fn publish_planned_start(kv: &CrowdbKvClient, intent: &NodeServiceIntent) -> Result<()> {
+pub async fn publish_planned_start(kv: &PaxosKvClient, intent: &NodeServiceIntent) -> Result<()> {
     let operation = uuid::Uuid::parse_str(&intent.operation_id)
         .map_err(|error| Error::Config(format!("planned Start operation: {error}")))?;
     if intent.action != NodeServiceAction::Start

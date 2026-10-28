@@ -12,6 +12,19 @@ use crate::Cli;
 pub(crate) async fn resolve(cli: &Cli) -> Result<Option<ResolvedClusterTarget>, ExitCode> {
     if matches!(
         cli.command,
+        crate::Domain::Bench {
+            verb: crate::commands::BenchVerb::PaxosKv(_)
+        }
+    ) {
+        if cli.cluster.is_some() || !cli.management_endpoints.is_empty() {
+            return Err(failure(
+                "bench paxos-kv uses container --endpoint addresses, not a Console cluster target",
+            ));
+        }
+        return Ok(None);
+    }
+    if matches!(
+        cli.command,
         crate::Domain::Cluster {
             verb: super::ClusterVerb::Status { .. }
                 | super::ClusterVerb::Check { .. }
@@ -49,7 +62,7 @@ fn validate_command(command: &crate::Domain) -> Result<(), ExitCode> {
 fn supports_attachment(command: &crate::Domain) -> bool {
     use crate::{
         commands::{BenchVerb, ClusterVerb},
-        Domain, KvVerb,
+        Domain, PaxosKvVerb,
     };
     matches!(
         command,
@@ -61,15 +74,14 @@ fn supports_attachment(command: &crate::Domain) -> bool {
                 | ClusterVerb::Node { .. }
                 | ClusterVerb::DiskGroup { .. }
                 | ClusterVerb::Disk { .. }
-        } | Domain::Kv {
-            verb: KvVerb::Store(_) | KvVerb::Group(_) | KvVerb::Replica(_) | KvVerb::Data(_)
+        } | Domain::PaxosKv {
+            verb: PaxosKvVerb::Store(_)
+                | PaxosKvVerb::Group(_)
+                | PaxosKvVerb::Replica(_)
+                | PaxosKvVerb::Data(_)
         } | Domain::S3 { .. }
             | Domain::Bench {
-                verb: BenchVerb::Kv(_)
-                    | BenchVerb::Diskdb(_)
-                    | BenchVerb::Chunkdb(_)
-                    | BenchVerb::Chunkio(_)
-                    | BenchVerb::S3(_)
+                verb: BenchVerb::Diskdb(_) | BenchVerb::Chunkdb(_) | BenchVerb::Chunkio(_) | BenchVerb::S3(_)
             }
     )
 }

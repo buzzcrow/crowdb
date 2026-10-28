@@ -6,7 +6,7 @@ use crowdb_chunkdb::routing::{BindingCache, BindingTable};
 use crowdb_chunkdb::storage::ChunkStore;
 use crowdb_chunkdb::task::TaskStore;
 use crowdb_chunkdb_client::ChunkdbRpcTransport;
-use crowdb_kv_client::{ChunkSlotMapClient, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_protocol::chunk_slot::ChunkSlot;
 use crowdb_protocol::chunk_stream::StreamName;
 use crowdb_protocol::chunkdb::rpc::{AllocateChunkRequest, ChunkType, StripType};
@@ -19,7 +19,7 @@ use std::sync::Arc;
 #[ignore = "requires three packaged Chunkdb owners and three KV voters"]
 async fn three_service_owners_preserve_all_purposes_across_paxos_failover() {
     let ips = management::addresses(7)[..3].to_vec();
-    let kv = Arc::new(CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(
+    let kv = Arc::new(PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
         ips.iter().map(|ip| format!("http://{ip}:7000")).collect(),
     )));
     let maps = ChunkSlotMapClient::new(Arc::clone(&kv));
@@ -85,7 +85,7 @@ async fn allocate_owner(
     instance: u64,
     service: &crowdb_protocol::chunk_slot::ChunkSlotMap<u64>,
     storage: &crowdb_protocol::chunk_slot::ChunkSlotMap<crowdb_protocol::chunk_slot::ChunkStorageGroup>,
-    kv: &CrowdbKvClient,
+    kv: &PaxosKvClient,
     chunks: &ChunkStore,
     tasks: &TaskStore,
 ) -> Vec<(ChunkId, u64)> {
@@ -139,13 +139,7 @@ async fn allocate_owner(
     allocated
 }
 
-async fn assert_records(
-    kv: &CrowdbKvClient,
-    chunks: &ChunkStore,
-    tasks: &TaskStore,
-    id: ChunkId,
-    group: u64,
-) {
+async fn assert_records(kv: &PaxosKvClient, chunks: &ChunkStore, tasks: &TaskStore, id: ChunkId, group: u64) {
     let chunk = chunks.get_chunk(&id).await.unwrap();
     assert_eq!(u64::try_from(chunk.chunk_type).unwrap(), id.high >> 56);
     let task = tasks

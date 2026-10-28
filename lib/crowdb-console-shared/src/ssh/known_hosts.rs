@@ -74,14 +74,14 @@ pub(crate) struct KnownHostsStore {
 }
 
 impl KnownHostsStore {
-    /// Default file path: `$CROWDB_KV_KNOWN_HOSTS` if set, else
-    /// `~/.crowdb-kv/known_hosts`.
+    /// Default file path: `$CROWDB_PAXOS_KV_KNOWN_HOSTS` if set, else
+    /// `~/.crowdb-paxos-kv/known_hosts`.
     #[must_use]
     pub(crate) fn default_path() -> Option<PathBuf> {
-        if let Ok(p) = std::env::var("CROWDB_KV_KNOWN_HOSTS") {
+        if let Ok(p) = std::env::var("CROWDB_PAXOS_KV_KNOWN_HOSTS") {
             return Some(PathBuf::from(p));
         }
-        dirs::home_dir().map(|h| h.join(".crowdb-kv").join("known_hosts"))
+        dirs::home_dir().map(|h| h.join(".crowdb-paxos-kv").join("known_hosts"))
     }
 
     /// Open (or create) the store at `path`. A missing file is

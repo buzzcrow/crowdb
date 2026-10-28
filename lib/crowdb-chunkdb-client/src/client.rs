@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use arc_swap::ArcSwap;
 
-use crowdb_kv_client::{RangeBindingClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{RangeBindingClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
     AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,

@@ -12,6 +12,8 @@ import time
 from fixture import Cluster, redact, request
 from console_cli_recovery import terminal_writer_recovery
 from console_cli_client import CliClient
+from default_ports import (WEB_BASE, ACCESS_SERVER_HTTP_BASE,
+    ACCESS_SERVER_ICEBERG_HTTP_BASE, ACCESS_SERVER_DATASET_HTTP_BASE)
 
 LABEL = "org.crowdb.cluster"
 OWNER_LABEL = "org.crowdb.cluster.owner"
@@ -39,13 +41,22 @@ class CliContainerCluster(CliClient, Cluster):
         self.root.mkdir(parents=True, mode=0o700)
         # Claims belong to this live runner in the shared allocator. Receipt roots
         # remain per case; separate roots must not allocate overlapping host ports.
-        result = subprocess.run([str(self.bundle / "crowdb-cli"), "port-alloc",
-            "--service", "web", "--count", "24", "--owner-pid", str(os.getpid())],
-            capture_output=True, text=True, timeout=10, check=True)
-        ports = [int(port) for port in result.stdout.split()]
-        if len(ports) != 24 or ports != list(range(ports[0], ports[0] + 24)):
-            raise AssertionError("CLI fixture needs 24 contiguous published ports")
-        self.port_base = ports[0]
+        services = (("web", WEB_BASE), ("access-http", ACCESS_SERVER_HTTP_BASE),
+                    ("access-iceberg-http", ACCESS_SERVER_ICEBERG_HTTP_BASE),
+                    ("access-dataset-http", ACCESS_SERVER_DATASET_HTTP_BASE))
+        offset = 0
+        for service, base in services:
+            result = subprocess.run([str(self.bundle / "crowdb-cli"), "port-alloc",
+                "--service", service, "--instance", str(offset), "--count", "3",
+                "--owner-pid", str(os.getpid())],
+                capture_output=True, text=True, timeout=10, check=True)
+            ports = [int(port) for port in result.stdout.split()]
+            if service == "web" and ports:
+                offset = ports[0] - WEB_BASE
+                self.port_base = ports[0]
+            expected = list(range(base + offset, base + offset + 3))
+            if ports != expected:
+                raise AssertionError(f"CLI fixture needs aligned {service} ports {expected}, got {ports}")
         self.interrupt("storage" if self.checkpoint == "terminal-writer" else self.checkpoint)
         self.refresh()
         return self
@@ -125,11 +136,11 @@ class CliContainerCluster(CliClient, Cluster):
         assert self.invoke("s3", "object", "get", "cli-replay", "witness") == "durable-container-witness"
         # Alternate-member endpoint attachment uses no local runtime selector.
         report = json.loads(self.invoke("cluster", "check", "--json",
-            endpoint=f"http://{self.addresses[2]}:9090"))
+            endpoint=f"http://{self.addresses[2]}:6135"))
         assert report["phase"] == "ready" and report["observation"]["cluster_id"] == cluster_id
 
     def current_readiness(self, cluster_id):
-        origin = f"http://{self.addresses[0]}:9090"
+        origin = f"http://{self.addresses[0]}:6135"
         node_id = self.read_owned("node-binding.json")["node_id"]
         services = request(origin, "/api/servers")
         service = next(item for item in services if item["node_id"] == node_id
@@ -178,7 +189,7 @@ class CliContainerCluster(CliClient, Cluster):
         observed = []
         for index, address in enumerate(self.addresses):
             node_id = self.read_owned("node-binding.json", index)["node_id"]
-            page = request(f"http://{address}:9090", f"/api/nodes/{node_id}/disk-files")
+            page = request(f"http://{address}:6135", f"/api/nodes/{node_id}/disk-files")
             assert page["next"] is None and len(page["items"]) == 1, page
             disk = page["items"][0]
             assert disk["phase"] == "registered" and disk["preparation_complete"] and disk["backing_identity"], disk
@@ -197,10 +208,10 @@ class CliContainerCluster(CliClient, Cluster):
             self.servers.append(name)
             self.addresses.append(info["NetworkSettings"]["Networks"][network]["IPAddress"])
         self.containers = self.servers.copy()
-        self.origins = [f"http://{address}:10000" for address in self.addresses]
+        self.origins = [f"http://{address}:10135" for address in self.addresses]
         (self.artifacts / "endpoints.json").write_text(json.dumps({
-            "addresses": self.addresses, "web_port": 9090,
-            "published_console_ports": [self.port_base + index * 10 for index in range(3)]}, indent=2))
+            "addresses": self.addresses, "web_port": 6135,
+            "published_console_ports": [self.port_base + index for index in range(3)]}, indent=2))
 
     def read_owned(self, path, index=0):
         if path not in ("node-binding.json", "diskdb-execution"):
@@ -224,7 +235,7 @@ class CliContainerCluster(CliClient, Cluster):
             for path in ("/api/cluster/status", "/api/disk-groups", "/api/disks", "/api/servers"):
                 name = path.removeprefix("/api/").replace("/", "-")
                 try:
-                    value = request(f"http://{address}:9090", path)
+                    value = request(f"http://{address}:6135", path)
                     (self.artifacts / f"{name}-{index}.json").write_text(redact(value))
                 except (OSError, ValueError) as error:
                     (self.artifacts / f"{name}-{index}.error").write_text(redact(str(error)))

@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use async_trait::async_trait;
-use crowdb_kv_client::{BatchOp, GetOutcome, Result, ScanOutcome, WriteOutcome};
+use crowdb_paxos_kv_client::{BatchOp, GetOutcome, Result, ScanOutcome, WriteOutcome};
 
 #[async_trait]
 pub(crate) trait RecordBackend: Send + Sync {

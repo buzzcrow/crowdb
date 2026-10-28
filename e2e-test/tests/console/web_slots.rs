@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::{ChunkSlotMapClient, ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, ClientConfig, PaxosKvClient};
 use crowdb_protocol::chunk_slot::{ChunkSlotBootstrap, ChunkStorageGroup};
 use reqwest::StatusCode;
 use serde_json::Value;
@@ -21,7 +21,7 @@ async fn get(origin: &str, query: &str) -> (StatusCode, Value) {
 #[ignore = "requires owned release Web and KV containers"]
 async fn owner_windows_keep_disjoint_slots_generations_and_exact_ids() {
     let cluster = super::fixture::web_kv().await;
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+    let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
         cluster.mgmt_endpoints.clone(),
     )));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());

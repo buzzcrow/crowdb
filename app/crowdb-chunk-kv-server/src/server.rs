@@ -11,7 +11,7 @@ use crowdb_chunk_kv::{
     ChunkKvError, CompareCondition, JournalPosition, MutationOperation, MutationResult, Partition,
     PreparedSplitWriterArtifact, RequestId, SplitArtifact, ValueRevision,
 };
-use crowdb_kv_client::StreamProcessAuthority;
+use crowdb_paxos_kv_client::StreamProcessAuthority;
 use crowdb_protocol::chunk_kv::{
     BatchMutationRequest, BatchMutationResponse, BatchMutationResult, ChunkKvRangeCatalogEntry,
     ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPartitionState, ChunkKvResponse,

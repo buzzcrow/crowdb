@@ -49,7 +49,7 @@ impl DdbKvClient {
     /// Rejects an empty or oversized batch and propagates ownership or write failures.
     pub async fn put_zone_batch(&self, bind: Bind, disk: &DiskId, values: &[(u32, ZoneValue)]) -> Result<()> {
         if values.is_empty() || values.len() > MAX_ZONE_INIT_BATCH {
-            return Err(crowdb_kv_client::Error::Server(
+            return Err(crowdb_paxos_kv_client::Error::Server(
                 "zone initialization batch must contain 1..=128 records".into(),
             ));
         }

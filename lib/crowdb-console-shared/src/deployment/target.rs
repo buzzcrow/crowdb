@@ -123,9 +123,9 @@ impl ResolvedClusterTarget {
     /// cluster, even if its TCP listener accepts connections.
     pub async fn verify_native_authority(
         &self,
-        kv: &crowdb_kv_client::CrowdbKvClient,
+        kv: &crowdb_paxos_kv_client::PaxosKvClient,
     ) -> Result<(), TargetError> {
-        use crowdb_kv_client::{GetOutcome, ReadMode};
+        use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
         let result = tokio::time::timeout(
             Duration::from_secs(3),
             kv.get(0, 0, super::CLUSTER_KEY, ReadMode::Linearizable, None),

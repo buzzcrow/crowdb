@@ -4,7 +4,7 @@
 //! Normal three-node storage prerequisites shared by public Console clients.
 
 use super::native_context::TestNativeContext;
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use reqwest::Method;
 use serde_json::{json, Value};
 use std::{collections::BTreeSet, time::Duration};
@@ -115,12 +115,12 @@ async fn verify_manual_metadata(context: &TestNativeContext) {
                 0,
                 0,
                 crowdb_console_shared::deployment::preparation::DEFAULT_PREPARATION_KEY,
-                crowdb_kv_client::ReadMode::Linearizable,
+                crowdb_paxos_kv_client::ReadMode::Linearizable,
                 None
             )
             .await
             .unwrap(),
-        crowdb_kv_client::GetOutcome::NotFound,
+        crowdb_paxos_kv_client::GetOutcome::NotFound,
     ));
 }
 

@@ -5,7 +5,7 @@
 mod fixture;
 
 use crowdb_chunk_kv_server::serving::process::ProcessLeaseSession;
-use crowdb_kv_client::{GetOutcome, ReadMode, StreamProcessLeaseClient, StreamProcessLeaseError};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode, StreamProcessLeaseClient, StreamProcessLeaseError};
 use crowdb_protocol::{
     chunk_stream::StreamPurpose,
     common::{ChunkKvExtra, InstanceValue},
@@ -280,7 +280,7 @@ async fn queued_heartbeat_cannot_extend_the_original_fence_deadline() {
     assert!(authority.status(Instant::now()).fenced);
 }
 
-async fn wait_for_pending_renewal(group: &crowdb_kv::cluster::group::PxGroup) {
+async fn wait_for_pending_renewal(group: &crowdb_paxos_kv::cluster::group::PxGroup) {
     let lease_key = StreamProcessLeaseKey {
         purpose: StreamPurpose::Wal,
         instance_id: 7,

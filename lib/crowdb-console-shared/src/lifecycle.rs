@@ -4,7 +4,7 @@
 //! Server-instance lifecycle (deploy / start / stop).
 //!
 //! C3 status: **local-spawn placeholder**. `deploy_local` runs
-//! `tokio::process::Command` against the `crowdb-kv-server` binary on the
+//! `tokio::process::Command` against the `crowdb-paxos-kv-server` binary on the
 //! current host; the `node.host` is honored for URL construction but
 //! ignored for transport. C4 replaces this module's body with `russh`,
 //! preserving the public API.
@@ -50,8 +50,8 @@ pub struct DeployRequest {
     pub rpc_port: u16,
     pub group0_management_seeds: Vec<String>,
     /// Optional override of the binary path. Defaults via
-    /// `crowdb_kv_server_bin()` resolution: `$CROWDB_KV_SERVER_BIN` →
-    /// `$PATH` → `target/{debug,release}/crowdb-kv-server` next to the
+    /// `crowdb_paxos_kv_server_bin()` resolution: `$CROWDB_PAXOS_KV_SERVER_BIN` →
+    /// `$PATH` → `target/{debug,release}/crowdb-paxos-kv-server` next to the
     /// current executable.
     pub binary: Option<PathBuf>,
     pub election_profile: Option<String>,
@@ -86,10 +86,10 @@ pub struct DeployRequest {
     /// `--send-queue-capacity` value. `None` leaves the spawned
     /// server's own default in effect.
     pub send_queue_capacity: Option<u32>,
-    /// Optional `--config` TOML path for `crowdb-kv-server` (first-boot
+    /// Optional `--config` TOML path for `crowdb-paxos-kv-server` (first-boot
     /// tunable overrides only; ignored in restore mode).
     pub config: Option<PathBuf>,
-    /// `--rpc-workers` value for the spawned `crowdb-kv-server`. `None`
+    /// `--rpc-workers` value for the spawned `crowdb-paxos-kv-server`. `None`
     /// leaves the server's default (2) in effect.
     pub rpc_workers: Option<u32>,
 }
@@ -169,7 +169,7 @@ pub struct DiskioLocalDisk {
     pub zone_capacity: u64,
 }
 
-/// Spawn `crowdb-kv-server` locally. The `node.host` is folded into the
+/// Spawn `crowdb-paxos-kv-server` locally. The `node.host` is folded into the
 /// returned URLs so the rest of the console can address the instance
 /// uniformly with the SSH path coming in C4.
 ///
@@ -195,7 +195,7 @@ pub async fn deploy_local_in_dir(
 }
 
 /// Deploys a server in a specific workspace directory, passing extra
-/// CLI arguments to the spawned `crowdb-kv-server` binary. Used by tests
+/// CLI arguments to the spawned `crowdb-paxos-kv-server` binary. Used by tests
 /// to bootstrap previously-created stores/groups on restart so the
 /// server recovers from WAL and rejoins the cluster.
 ///
@@ -213,7 +213,7 @@ pub async fn deploy_local_in_dir_with_extra_args(
 }
 
 /// Append `--kv-backend`/`--wal-backend`/`--no-fsync`/`--metrics-interval`/
-/// `--max-inflight` flags to the spawned `crowdb-kv-server` command per `req`.
+/// `--max-inflight` flags to the spawned `crowdb-paxos-kv-server` command per `req`.
 /// Split out of `deploy_local_in_workspace` to keep it under the line-count
 /// lint.
 fn apply_benchmark_flags(cmd: &mut Command, req: &DeployRequest) {
@@ -266,16 +266,16 @@ fn apply_node_identity_and_seeds(cmd: &mut Command, req: &DeployRequest) {
 
 /// Resolve the `--config` path for a deploy. When `req.config` is set,
 /// it is used verbatim. When unset, returns `None` — the server boots
-/// with `CrowDBConfig::default()` tunables (no toml needed). The
+/// with `PaxosKvConfig::default()` tunables (no toml needed). The
 /// `--config` flag is now optional and only used for first-boot
 /// tunable overrides.
 fn resolve_config_path(req: &DeployRequest) -> Option<PathBuf> {
     req.config.clone()
 }
 
-// stage_server_binary creates a symlink at dir/bin/crowdb-kv-server.
+// stage_server_binary creates a symlink at dir/bin/crowdb-paxos-kv-server.
 // We set current_dir(dir) below, so use a path relative to the CWD
-// (just "bin/crowdb-kv-server") — an absolute or full-relative path
+// (just "bin/crowdb-paxos-kv-server") — an absolute or full-relative path
 // would be resolved relative to the new CWD and fail with ENOENT.
 fn resolve_launch_binary(binary: &Path, workspace_dir: Option<&Path>) -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
@@ -293,7 +293,7 @@ fn resolve_launch_binary(binary: &Path, workspace_dir: Option<&Path>) -> Result<
         Ok(PathBuf::from("bin").join(
             binary
                 .file_name()
-                .unwrap_or_else(|| std::ffi::OsStr::new("crowdb-kv-server")),
+                .unwrap_or_else(|| std::ffi::OsStr::new("crowdb-paxos-kv-server")),
         ))
     } else {
         Ok(binary.to_path_buf())
@@ -321,9 +321,9 @@ async fn deploy_local_in_workspace(
 
     let binary = match &req.binary {
         Some(p) => p.clone(),
-        None => crowdb_kv_server_bin().ok_or_else(|| Error::Validation {
+        None => crowdb_paxos_kv_server_bin().ok_or_else(|| Error::Validation {
             field: "binary".into(),
-            message: "could not locate crowdb-kv-server binary; set $CROWDB_KV_SERVER_BIN".into(),
+            message: "could not locate crowdb-paxos-kv-server binary; set $CROWDB_PAXOS_KV_SERVER_BIN".into(),
         })?,
     };
     let launch_binary = resolve_launch_binary(&binary, workspace_dir)?;
@@ -343,7 +343,7 @@ async fn deploy_local_in_workspace(
             req.election_profile
                 .as_deref()
                 .map(str::to_owned)
-                .or_else(|| std::env::var("CROWDB_KV_SERVER_ELECTION_PROFILE").ok())
+                .or_else(|| std::env::var("CROWDB_PAXOS_KV_SERVER_ELECTION_PROFILE").ok())
                 .unwrap_or_else(|| "default".into()),
         )
         .kill_on_drop(false);
@@ -362,7 +362,7 @@ async fn deploy_local_in_workspace(
         // Merge stdout and stderr into one file. We open a temp file before
         // spawn (PID unknown), then rename it with the PID after spawn.
         let log_dir = dir.join("log");
-        let tmp_path = log_dir.join("crowdb-kv-server.stdout.log");
+        let tmp_path = log_dir.join("crowdb-paxos-kv-server.stdout.log");
         let out = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -378,7 +378,7 @@ async fn deploy_local_in_workspace(
         // first-boot mode, not restore mode.
         let root = crowdb_protocol::port::namespace::runtime_root()
             .join("ephemeral")
-            .join(format!("crowdb-kv-server-deploy-{}", req.rest_port));
+            .join(format!("crowdb-paxos-kv-server-deploy-{}", req.rest_port));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).map_err(Error::Io)?;
         cmd.arg("--root")
@@ -403,10 +403,10 @@ async fn deploy_local_in_workspace(
     // confirmed by polling /health.
     if workspace_dir.is_none() {
         if let Some(stdout) = child.stdout.take() {
-            spawn_log_pipe(stdout, "crowdb-kv-server stdout");
+            spawn_log_pipe(stdout, "crowdb-paxos-kv-server stdout");
         }
         if let Some(stderr) = child.stderr.take() {
-            spawn_log_pipe(stderr, "crowdb-kv-server stderr");
+            spawn_log_pipe(stderr, "crowdb-paxos-kv-server stderr");
         }
     }
 
@@ -414,7 +414,7 @@ async fn deploy_local_in_workspace(
 
     // Keep ownership of the child in a reaper task so exited children do not
     // become zombies under the console process.
-    tokio::spawn(reap_child(child, pid, "crowdb-kv-server"));
+    tokio::spawn(reap_child(child, pid, "crowdb-paxos-kv-server"));
 
     Ok(DeployedServer {
         server_id: req.server_id.clone(),
@@ -433,11 +433,11 @@ async fn reap_child(mut child: Child, pid: u32, service: &'static str) {
 
 /// Send SIGTERM to a tracked pid on the **local** host. Returns
 /// `Ok(false)` if the pid is already gone. Implemented by shelling out
-/// to `/bin/kill`, matching `crowdb-kv-server/tests/testkit/process.rs` so
+/// to `/bin/kill`, matching `crowdb-paxos-kv-server/tests/testkit/process.rs` so
 /// that both paths behave identically and the workspace
 /// `unsafe_code = deny` lint is kept.
 ///
-/// For SSH-deployed servers, use `crowdb_kv_ssh` to run the
+/// For SSH-deployed servers, use `crowdb_paxos_kv_ssh` to run the
 /// equivalent command on the remote host.
 ///
 /// # Errors
@@ -526,7 +526,7 @@ pub fn process_is_alive(pid: u32) -> bool {
     }
 }
 
-/// Render the shell command that brings up `crowdb-kv-server` on the remote
+/// Render the shell command that brings up `crowdb-paxos-kv-server` on the remote
 /// host. Public so the SSH path can reuse it without duplicating arg
 /// formatting.
 #[must_use]
@@ -569,8 +569,8 @@ fn record_kv_child(
         record_workspace_child(child, workspace, pid)?;
         let log_dir = workspace.join("log");
         let _ = std::fs::rename(
-            log_dir.join("crowdb-kv-server.stdout.log"),
-            log_dir.join(format!("crowdb-kv-server-{pid}.out.log")),
+            log_dir.join("crowdb-paxos-kv-server.stdout.log"),
+            log_dir.join(format!("crowdb-paxos-kv-server-{pid}.out.log")),
         );
     }
     Ok(())
@@ -658,7 +658,7 @@ fn stage_server_binary(binary: &std::path::Path, workspace_dir: &std::path::Path
     let staged = bin_dir.join(
         source
             .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("crowdb-kv-server")),
+            .unwrap_or_else(|| std::ffi::OsStr::new("crowdb-paxos-kv-server")),
     );
     if staged.exists() {
         std::fs::remove_file(&staged).map_err(Error::Io)?;
@@ -689,17 +689,17 @@ fn resolve_binary_path(binary: &std::path::Path) -> Option<PathBuf> {
     find_in_path(binary.as_os_str())
 }
 
-/// Resolve the path to the `crowdb-kv-server` binary.
+/// Resolve the path to the `crowdb-paxos-kv-server` binary.
 ///
 /// Search order:
-/// 1. `$CROWDB_KV_SERVER_BIN`.
-/// 2. A sibling named `crowdb-kv-server` next to the current executable
+/// 1. `$CROWDB_PAXOS_KV_SERVER_BIN`.
+/// 2. A sibling named `crowdb-paxos-kv-server` next to the current executable
 ///    (covers `cargo run -p crowdb-console-cli`).
-/// 3. `crowdb-kv-server` on `$PATH` (returned as a relative path so the OS
+/// 3. `crowdb-paxos-kv-server` on `$PATH` (returned as a relative path so the OS
 ///    resolves it at exec time).
 #[must_use]
-pub fn crowdb_kv_server_bin() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("CROWDB_KV_SERVER_BIN") {
+pub fn crowdb_paxos_kv_server_bin() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("CROWDB_PAXOS_KV_SERVER_BIN") {
         return Some(PathBuf::from(p));
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -707,7 +707,7 @@ pub fn crowdb_kv_server_bin() -> Option<PathBuf> {
             // dir is e.g. target/debug/. Walk up if we are deeper (deps/).
             let mut p = dir.to_path_buf();
             for _ in 0..3 {
-                let candidate = p.join("crowdb-kv-server");
+                let candidate = p.join("crowdb-paxos-kv-server");
                 if is_executable(&candidate) {
                     return Some(candidate);
                 }
@@ -726,7 +726,7 @@ pub fn crowdb_kv_server_bin() -> Option<PathBuf> {
                 }
             }
             if target.file_name().is_some_and(|name| name == "target") {
-                let candidate = target.join("release").join("crowdb-kv-server");
+                let candidate = target.join("release").join("crowdb-paxos-kv-server");
                 if is_executable(&candidate) {
                     return Some(candidate);
                 }
@@ -734,10 +734,10 @@ pub fn crowdb_kv_server_bin() -> Option<PathBuf> {
         }
     }
     // Fall back to PATH.
-    if let Some(path) = find_in_path(std::ffi::OsStr::new("crowdb-kv-server")) {
+    if let Some(path) = find_in_path(std::ffi::OsStr::new("crowdb-paxos-kv-server")) {
         return Some(path);
     }
-    warn!("crowdb-kv-server binary not found via env, sibling, or $PATH");
+    warn!("crowdb-paxos-kv-server binary not found via env, sibling, or $PATH");
     None
 }
 
@@ -792,8 +792,6 @@ pub struct DiskdbDeployRequest {
     pub free_batch_enabled: Option<bool>,
     /// Maximum free records per coalesced KV proposal.
     pub free_flush_max_batch: Option<u32>,
-    /// Main listener port (diskdb `listen_addr`).
-    pub listen_port: u16,
     /// HTTP management port (diskdb `http_listen_addr`).
     pub http_port: u16,
     /// crowdb-rpc listener port (diskdb `rpc_listen_addr`).
@@ -885,7 +883,7 @@ pub fn crowdb_diskio_bin() -> Option<PathBuf> {
 /// pre-copied config at `<workspace>/conf/crowdb_diskdb_config.toml`.
 /// Falls back to a minimal auto-generated config with all required
 /// sections if the file is missing. The auto-generated config sets
-/// `listen_addr`, `http_listen_addr`, and `rpc_listen_addr`
+/// `http_listen_addr` and `rpc_listen_addr`
 /// independently (no paired-port invariant). When
 /// `kv_server_mgmt_seeds` is non-empty, the config is always
 /// (re)written so the diskdb can discover group-0 on the actual
@@ -928,7 +926,10 @@ fn resolve_diskdb_config_path(
         return Ok(path);
     }
     let seeds = if request.kv_server_mgmt_seeds.is_empty() {
-        format!("\"http://127.0.0.1:{}\"", crowdb_protocol::KV_SERVER_MGMT_BASE)
+        format!(
+            "\"http://127.0.0.1:{}\"",
+            crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE
+        )
     } else {
         request
             .kv_server_mgmt_seeds
@@ -960,14 +961,12 @@ fn resolve_diskdb_config_path(
     let config = format!(
         "[server]\n\
          rpc_workers = {}\n\
-         listen_addr = \"0.0.0.0:{}\"\n\
          http_listen_addr = \"0.0.0.0:{}\"\n\
          rpc_listen_addr = \"0.0.0.0:{}\"\n\
          {instance_id}\
          kv_server_mgmt_seeds = [{seeds}]\n\
          {persistence}{heartbeat}",
         request.rpc_workers.unwrap_or(2),
-        request.listen_port,
         request.http_port,
         request.rpc_port,
     );
@@ -1071,8 +1070,7 @@ async fn wait_for_service_ready(
 /// Spawn `crowdb-diskdb` locally. The binary and config file are
 /// pre-copied to the node workspace (`<workspace>/bin/crowdb-diskdb`
 /// and `<workspace>/conf/crowdb_diskdb_config.toml`). The deploy only
-/// overrides `--listen-addr` with the crowdb-rpc port; the HTTP port comes
-/// from the config file.
+/// sets the HTTP and crowdb-rpc endpoints explicitly.
 ///
 /// # Errors
 /// Returns `Error::Validation` for bad inputs and `Error::Io` for
@@ -1082,10 +1080,10 @@ pub async fn deploy_diskdb_local(
     node: &NodeEntry,
     workspace_dir: &std::path::Path,
 ) -> Result<DeployedDiskdb> {
-    if req.listen_port == 0 || req.http_port == 0 || req.rpc_port == 0 {
+    if req.http_port == 0 || req.rpc_port == 0 || req.http_port == req.rpc_port {
         return Err(Error::Validation {
             field: "port".into(),
-            message: "listen_port, http_port, and rpc_port must all be non-zero".into(),
+            message: "http_port and rpc_port must be distinct and non-zero".into(),
         });
     }
     std::fs::create_dir_all(workspace_dir.join("log"))?;
@@ -1104,8 +1102,7 @@ pub async fn deploy_diskdb_local(
     };
 
     let config_path = resolve_diskdb_config_path(workspace_dir, req)?;
-    // The public endpoint is the crowdb-rpc listener. The main listener is
-    // an internal compatibility endpoint and is not exposed as DiskDB identity.
+    // The public endpoint is the crowdb-rpc listener.
     let endpoint = format!("http://{}:{}", node.host, req.rpc_port);
 
     // Read the HTTP listen address from the config file for readiness
@@ -1130,8 +1127,6 @@ pub async fn deploy_diskdb_local(
     if let Some(workers) = req.kv_client_rpc_workers {
         cmd.arg("--kv-client-rpc-workers").arg(workers.to_string());
     }
-    cmd.arg("--listen-addr")
-        .arg(format!("{}:{}", node.host, req.listen_port));
     cmd.arg("--http-addr")
         .arg(format!("{}:{}", node.host, req.http_port));
     cmd.arg("--rpc-listen-addr")
@@ -1181,8 +1176,6 @@ fn diskdb_launch_args(req: &DiskdbDeployRequest, config_path: &Path, workspace_d
         config_path.to_string_lossy().into_owned(),
         "--log-dir".into(),
         workspace_dir.join("log").to_string_lossy().into_owned(),
-        "--listen-addr".into(),
-        format!("127.0.0.1:{}", req.listen_port),
         "--http-addr".into(),
         format!("127.0.0.1:{}", req.http_port),
         "--rpc-listen-addr".into(),
@@ -1432,12 +1425,12 @@ fn diskio_ffi_lib_dir(workspace_dir: &Path) -> Option<PathBuf> {
     }
     for mut root in roots {
         for _ in 0..8 {
-            if root.join("libcrowdb_kv_client.so").exists() {
+            if root.join("libcrowdb_paxos_kv_client.so").exists() {
                 return Some(root);
             }
             for profile in ["debug", "release"] {
                 let candidate = root.join("target").join(profile);
-                if candidate.join("libcrowdb_kv_client.so").exists() {
+                if candidate.join("libcrowdb_paxos_kv_client.so").exists() {
                     return Some(candidate);
                 }
             }

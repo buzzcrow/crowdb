@@ -1,0 +1,298 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+//! `paxos-kv data put/get/delete/scan/snapshot` command handlers — data-plane.
+
+use std::process::ExitCode;
+
+use clap::Subcommand;
+use crowdb_paxos_kv_client::GetOutcome;
+
+use crate::commands::authority_context;
+use crate::Cli;
+
+#[derive(Subcommand, Debug)]
+pub enum PaxosKvDataVerb {
+    Put {
+        #[arg(short = 's', long)]
+        store: String,
+        #[arg(short = 'g', long)]
+        group: String,
+        #[arg(short = 'k', long)]
+        key: String,
+        #[arg(short = 'v', long)]
+        value: String,
+    },
+    Get {
+        #[arg(short = 's', long)]
+        store: String,
+        #[arg(short = 'g', long)]
+        group: String,
+        #[arg(short = 'k', long)]
+        key: String,
+    },
+    Delete {
+        #[arg(short = 's', long)]
+        store: String,
+        #[arg(short = 'g', long)]
+        group: String,
+        #[arg(short = 'k', long)]
+        key: String,
+    },
+    Scan {
+        #[arg(short = 's', long)]
+        store: String,
+        #[arg(short = 'g', long)]
+        group: String,
+        #[arg(short = 'P', long, default_value = "")]
+        prefix: String,
+        #[arg(short = 'l', long, default_value_t = 100)]
+        limit: u32,
+    },
+    #[command(subcommand)]
+    Snapshot(SnapshotVerb),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SnapshotVerb {
+    Create {
+        #[arg(short = 's', long)]
+        store: String,
+        #[arg(short = 'g', long)]
+        group: String,
+    },
+    List {
+        #[arg(short = 's', long)]
+        store: String,
+        #[arg(short = 'g', long)]
+        group: String,
+    },
+    Release {
+        #[arg(short = 's', long)]
+        store: String,
+        #[arg(short = 'g', long)]
+        group: String,
+        #[arg(short = 'h', long)]
+        handle: String,
+    },
+}
+
+#[allow(clippy::too_many_lines)]
+pub async fn run_paxos_kv_data_verb(cli: &Cli, verb: PaxosKvDataVerb) -> ExitCode {
+    match verb {
+        PaxosKvDataVerb::Put {
+            store,
+            group,
+            key,
+            value,
+        } => {
+            let (store_id, group_id) = match parse_store_group(&store, &group) {
+                Ok(ids) => ids,
+                Err(c) => return c,
+            };
+            let ctx = match authority_context(cli).await {
+                Ok(c) => c,
+                Err(c) => return c,
+            };
+            match crowdb_console_shared::ops::kv_data::put(
+                &ctx,
+                store_id,
+                group_id,
+                key.as_bytes(),
+                value.as_bytes(),
+                None,
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    println!("put ok (revision {})", outcome.revision);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: put: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        PaxosKvDataVerb::Get { store, group, key } => {
+            let (store_id, group_id) = match parse_store_group(&store, &group) {
+                Ok(ids) => ids,
+                Err(c) => return c,
+            };
+            let ctx = match authority_context(cli).await {
+                Ok(c) => c,
+                Err(c) => return c,
+            };
+            match crowdb_console_shared::ops::kv_data::get(&ctx, store_id, group_id, key.as_bytes()).await {
+                Ok(GetOutcome::Found { value, revision }) => {
+                    println!(
+                        "found: {} (revision {})",
+                        String::from_utf8_lossy(&value),
+                        revision
+                    );
+                    ExitCode::SUCCESS
+                }
+                Ok(GetOutcome::NotFound) => {
+                    println!("not found");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: get: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        PaxosKvDataVerb::Delete { store, group, key } => {
+            let (store_id, group_id) = match parse_store_group(&store, &group) {
+                Ok(ids) => ids,
+                Err(c) => return c,
+            };
+            let ctx = match authority_context(cli).await {
+                Ok(c) => c,
+                Err(c) => return c,
+            };
+            match crowdb_console_shared::ops::kv_data::delete(&ctx, store_id, group_id, key.as_bytes(), None)
+                .await
+            {
+                Ok(_) => {
+                    println!("deleted");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: delete: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        PaxosKvDataVerb::Scan {
+            store,
+            group,
+            prefix,
+            limit,
+        } => {
+            let (store_id, group_id) = match parse_store_group(&store, &group) {
+                Ok(ids) => ids,
+                Err(c) => return c,
+            };
+            let ctx = match authority_context(cli).await {
+                Ok(c) => c,
+                Err(c) => return c,
+            };
+            match crowdb_console_shared::ops::kv_data::scan(
+                &ctx,
+                store_id,
+                group_id,
+                prefix.as_bytes(),
+                &[],
+                limit,
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    for (k, v) in &outcome.items {
+                        println!("{}  {}", String::from_utf8_lossy(k), String::from_utf8_lossy(v));
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: scan: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        PaxosKvDataVerb::Snapshot(sv) => run_snapshot_verb(cli, sv).await,
+    }
+}
+
+async fn run_snapshot_verb(cli: &Cli, verb: SnapshotVerb) -> ExitCode {
+    match verb {
+        SnapshotVerb::Create { store, group } => {
+            let (store_id, group_id) = match parse_store_group(&store, &group) {
+                Ok(ids) => ids,
+                Err(c) => return c,
+            };
+            let ctx = match authority_context(cli).await {
+                Ok(c) => c,
+                Err(c) => return c,
+            };
+            match crowdb_console_shared::ops::kv_data::create_snapshot(&ctx, store_id, group_id).await {
+                Ok(resp) => {
+                    println!("snapshot created: handle {}", resp.snapshot_handle);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: create snapshot: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        SnapshotVerb::List { store, group } => {
+            let (store_id, group_id) = match parse_store_group(&store, &group) {
+                Ok(ids) => ids,
+                Err(c) => return c,
+            };
+            let ctx = match authority_context(cli).await {
+                Ok(c) => c,
+                Err(c) => return c,
+            };
+            match crowdb_console_shared::ops::kv_data::list_snapshots(&ctx, store_id, group_id).await {
+                Ok(snapshots) => {
+                    for s in &snapshots {
+                        println!("handle {} slot {}", s.snapshot_handle, s.at_slot);
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: list snapshots: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        SnapshotVerb::Release { store, group, handle } => {
+            let (store_id, group_id) = match parse_store_group(&store, &group) {
+                Ok(ids) => ids,
+                Err(c) => return c,
+            };
+            let snapshot_handle: u64 = match handle.parse() {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("error: invalid snapshot handle: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            let ctx = match authority_context(cli).await {
+                Ok(c) => c,
+                Err(c) => return c,
+            };
+            match crowdb_console_shared::ops::kv_data::release_snapshot(
+                &ctx,
+                store_id,
+                group_id,
+                snapshot_handle,
+            )
+            .await
+            {
+                Ok(_) => {
+                    println!("released snapshot {snapshot_handle}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: release snapshot: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+    }
+}
+
+fn parse_store_group(store: &str, group: &str) -> Result<(u64, u64), ExitCode> {
+    let store_id: u64 = store.parse().map_err(|e| {
+        eprintln!("error: invalid store id: {e}");
+        ExitCode::from(1)
+    })?;
+    let group_id: u64 = group.parse().map_err(|e| {
+        eprintln!("error: invalid group id: {e}");
+        ExitCode::from(1)
+    })?;
+    Ok((store_id, group_id))
+}

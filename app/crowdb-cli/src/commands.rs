@@ -9,15 +9,15 @@
 
 pub(crate) mod bench;
 pub(crate) mod cluster;
-pub(crate) mod kv;
+pub(crate) mod paxos_kv;
 pub(crate) mod port_alloc;
 pub(crate) mod s3;
 
 pub(crate) use bench::{run_bench_verb, BenchVerb};
 pub(crate) use cluster::{run_cluster_verb, ClusterVerb};
-pub(crate) use kv::{
-    run_group_verb, run_kv_data_verb, run_replica_verb, run_store_verb, GroupVerb, KvDataVerb, ReplicaVerb,
-    StoreVerb,
+pub(crate) use paxos_kv::{
+    run_group_verb, run_paxos_kv_data_verb, run_replica_verb, run_store_verb, GroupVerb, PaxosKvDataVerb,
+    ReplicaVerb, StoreVerb,
 };
 pub(crate) use port_alloc::{run as run_port_alloc, PortAllocArgs};
 pub(crate) use s3::{run_s3_verb, S3Verb};
@@ -47,7 +47,7 @@ pub(crate) async fn group0_connection(cli: &Cli) -> Result<(Vec<String>, String)
         eprintln!("error: cluster native transport: {error}");
         ExitCode::from(2)
     })?;
-    let native = crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(
+    let native = crowdb_paxos_kv_client::PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
         target.identity.group0_management_endpoints.clone(),
     ));
     native.seed_leader(0, 0, target.identity.group0_rpc_endpoints[0].clone());

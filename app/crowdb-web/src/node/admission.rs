@@ -334,10 +334,18 @@ pub(super) fn update_config(state: &AppState, record: &NodeRecord, target: NodeE
         if config.server_for_node(record.node_id).is_none() {
             let mut server = ServerEntry::new(
                 format!("kv-{}", record.node_id),
-                format!("http://{}:10000", bracket_host(&record.host)),
+                format!(
+                    "http://{}:{}",
+                    bracket_host(&record.host),
+                    crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE
+                ),
             );
             server.node_id = Some(record.node_id);
-            server.rpc_url = Some(format!("{}:10100", bracket_host(&record.host)));
+            server.rpc_url = Some(format!(
+                "{}:{}",
+                bracket_host(&record.host),
+                crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE
+            ));
             config.servers.push(server);
         }
     }

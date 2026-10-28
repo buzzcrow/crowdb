@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+import { WEB_BASE } from '../ports';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { listNodeCandidates, nodeAdmissions, cancelNodeAdmission, discardCandidateReview, type NodeAdmission, type NodeCandidates, type NodeDeploymentStatus } from '../api';
@@ -106,7 +107,7 @@ export function CandidateNodes({ racks, readonly, onChange, addNodeRequest, depl
 
 function clusterConsole(endpoint: string): string {
   const url = new URL(endpoint);
-  url.port = '9090';
+  url.port = String(WEB_BASE);
   url.pathname = '/';
   url.search = '?domain=Cluster';
   return url.toString();

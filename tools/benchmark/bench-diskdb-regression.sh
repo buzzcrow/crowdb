@@ -149,10 +149,10 @@ trap destroy_cluster EXIT
 
 verify_logs() {
     local label="$1" kv_metrics diskdb_metrics cli_metrics kv_rpc diskdb_rpc cli_rpc
-    kv_metrics=$(find "$LOG_ROOT" -path '*/services/rack*/node*/kv-server-*/log/crowdb-kv-server-metrics-*.log' -type f | wc -l)
+    kv_metrics=$(find "$LOG_ROOT" -path '*/services/rack*/node*/kv-server-*/log/crowdb-paxos-kv-server-metrics-*.log' -type f | wc -l)
     diskdb_metrics=$(find "$LOG_ROOT" -path '*/services/rack*/node*/diskdb-*/log/crowdb-diskdb-metrics-*.log' -type f | wc -l)
     cli_metrics=$(find "$LOG_ROOT" -path '*/measurements/bench-diskdb-*/crowdb-cli-metrics-*.log' -type f | wc -l)
-    kv_rpc=$(find "$LOG_ROOT" -path '*/services/rack*/node*/kv-server-*/log/crowdb-kv-server-rpc-*.log' -type f | wc -l)
+    kv_rpc=$(find "$LOG_ROOT" -path '*/services/rack*/node*/kv-server-*/log/crowdb-paxos-kv-server-rpc-*.log' -type f | wc -l)
     diskdb_rpc=$(find "$LOG_ROOT" -path '*/services/rack*/node*/diskdb-*/log/crowdb-diskdb-rpc-*.log' -type f | wc -l)
     cli_rpc=$(find "$LOG_ROOT" -path '*/measurements/bench-diskdb-*/crowdb-cli-rpc-*.log' -type f | wc -l)
     local expected_servers=$((CASE_NUMBER * 3)) expected_clients="$CASE_NUMBER"
@@ -162,7 +162,7 @@ verify_logs() {
         echo "ERROR: incomplete logs for $label (kv=$kv_metrics/$kv_rpc diskdb=$diskdb_metrics/$diskdb_rpc cli=$cli_metrics/$cli_rpc)" >&2
         return 1
     fi
-    regression_require_metric_files 'crowdb-kv-server-metrics-*.log' rust cpp-rpc cpp-tree || return 1
+    regression_require_metric_files 'crowdb-paxos-kv-server-metrics-*.log' rust cpp-rpc cpp-tree || return 1
     regression_require_metric_files 'crowdb-diskdb-metrics-*.log' rust cpp-rpc || return 1
     echo "    logs: kv=$kv_metrics/$kv_rpc diskdb=$diskdb_metrics/$diskdb_rpc cli=$cli_metrics/$cli_rpc root=$LOG_ROOT"
 }
@@ -213,7 +213,7 @@ deploy_group() {
     regression_fixture setup -- --nodes 3 --kind kv "${backend_args[@]}" "${kv_args[@]}"
     local groups=()
     for group in $(seq 1 "$DATA_GROUP_COUNT"); do
-        cli kv group add -s 0 -g "$group" -n 1,2,3
+        cli paxos-kv group add -s 0 -g "$group" -n 1,2,3
         groups+=("$group")
     done
     local group_csv
@@ -316,7 +316,7 @@ run_case() {
 }
 
 echo "=== building release binaries ==="
-pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb
+pixi run -- cargo build --release -p crowdb-cli -p crowdb-paxos-kv-server -p crowdb-diskdb
 regression_init
 mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
 printf 'Wl\tGrp\tThr\tBlk\tCli\tDdb\tKv\tWkr\tWin\tCoal\tops/s\tavg\tp50\tp99\tDur\tErr\tSpc\tFB\tFReq\tFKV\tFCo\n' >"$RESULTS_FILE"

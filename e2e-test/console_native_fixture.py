@@ -67,7 +67,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
     def api(self, path, body=None, method=None, status=200):
         payload = None if body is None else json.dumps(body).encode()
         origin = getattr(self, "management_address", self.addresses[0])
-        request = urllib.request.Request(f"http://{origin}:9090" + path,
+        request = urllib.request.Request(f"http://{origin}:6135" + path,
             data=payload, method=method, headers={"Content-Type": "application/json"})
         try:
             with HTTP.open(request, timeout=20) as response:
@@ -110,9 +110,9 @@ class NativeConsoleCluster(ShellBrowserCluster):
                     "CROWDB_DISK_INPUTS=" + json.dumps(self.candidate_inputs if index == 0 else []))))
         self.ready()
         for address in self.addresses:
-            with HTTP.open(f"http://{address}:9090/api/node/auto-join", timeout=5) as response:
+            with HTTP.open(f"http://{address}:6135/api/node/auto-join", timeout=5) as response:
                 assert json.load(response)["enabled"] is False
-            request = urllib.request.Request(f"http://{address}:9090/api/node/auto-join",
+            request = urllib.request.Request(f"http://{address}:6135/api/node/auto-join",
                 data=json.dumps({"enabled": False}).encode(),
                 headers={"Content-Type": "application/json"})
             with HTTP.open(request, timeout=5) as response:
@@ -165,7 +165,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
         (self.artifacts / "native-endpoints.json").write_text(json.dumps({
             "nodes": self.node_ids, "addresses": self.addresses, "disk_gib": self.disk_gib,
             "zone_gib": self.zone_gib, "spare_disk_gib": self.spare_disk_gib, "racks": self.rack_ids, "ports": {
-                "web": 9090, "ssh": 2222, "kv": 10000, "diskdb": 7100, "diskio": 7200}}, indent=2))
+                "web": 6135, "ssh": 2222, "kv": 10000, "diskdb": 7100, "diskio": 7200}}, indent=2))
         return self
 
     def verify_auto_bootstrap(self):
@@ -193,7 +193,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
 
     def ready(self):
         for address in self.addresses:
-            wait(lambda: HTTP.open(f"http://{address}:9090/healthz", timeout=5).read(),
+            wait(lambda: HTTP.open(f"http://{address}:6135/healthz", timeout=5).read(),
                  lambda body: body == b"ok", "native release Web listener", seconds=20)
 
     def observed_browser(self, name, *, config):

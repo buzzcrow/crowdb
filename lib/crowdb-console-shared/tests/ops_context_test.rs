@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 //! Construction tests for [`OpContext`]. The sysmd + kv clients share
-//! the same underlying `Arc<CrowdbKvClient>`; the config is held behind
+//! the same underlying `Arc<PaxosKvClient>`; the config is held behind
 //! an `RwLock` and accessible via `config()` / `config_mut()`.
 
 use crowdb_console_shared::config::ConsoleConfig;
@@ -15,7 +15,7 @@ fn op_context_shares_arc_between_sysmd_and_kv() {
         vec!["http://127.0.0.1:10000".into()],
         ConsoleConfig::default(),
     );
-    // Both sysmd and kv wrap the same Arc<CrowdbKvClient>, so the
+    // Both sysmd and kv wrap the same Arc<PaxosKvClient>, so the
     // references returned by kv() must point to the same allocation.
     assert!(std::ptr::eq(ctx.sysmd().kv(), ctx.kv()));
 }

@@ -215,12 +215,12 @@ async fn diskless_setup_requires_the_exact_confirmed_admission_and_does_not_star
                 0,
                 0,
                 preparation_key,
-                crowdb_kv_client::ReadMode::Linearizable,
+                crowdb_paxos_kv_client::ReadMode::Linearizable,
                 None
             )
             .await
             .unwrap(),
-        crowdb_kv_client::GetOutcome::NotFound,
+        crowdb_paxos_kv_client::GetOutcome::NotFound,
     ));
     assert_eq!(status.node_id, Some(2));
     assert_eq!(
@@ -288,7 +288,7 @@ async fn explicit_cleanup_retires_only_the_matching_setup_and_never_replays_it()
 
 #[tokio::test]
 async fn default_file_waits_for_metadata_then_reuses_one_durable_request_and_group() {
-    use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+    use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient};
     use crowdb_protocol::common::{NodeValue, RackValue};
     let directory = run_root::TestRunRoot::new("setup");
     let root = directory.path();
@@ -301,7 +301,7 @@ async fn default_file_waits_for_metadata_then_reuses_one_durable_request_and_gro
         .accept_for_tests(root, intent.clone())
         .unwrap();
     let authority = node_setup::TestAuthority::start(root, &intent).await;
-    let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(
+    let hardware = HardwareClient::new(PaxosKvClient::new(ClientConfig::new(
         authority.binding.management_seeds.clone(),
     )));
     hardware
@@ -357,7 +357,7 @@ async fn default_file_waits_for_metadata_then_reuses_one_durable_request_and_gro
 
 #[tokio::test]
 async fn a_conflicting_reserved_disk_group_binding_cannot_redirect_default_storage() {
-    use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+    use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient};
     use crowdb_protocol::{
         common::{NodeValue, RackValue},
         diskdb::rpc::DiskGroupValue,
@@ -375,7 +375,7 @@ async fn a_conflicting_reserved_disk_group_binding_cannot_redirect_default_stora
     let authority = node_setup::TestAuthority::start(root, &intent).await;
     node_setup_groups::publish_group(&authority, 1).await;
     node_setup_groups::publish_group(&authority, 8).await;
-    let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(
+    let hardware = HardwareClient::new(PaxosKvClient::new(ClientConfig::new(
         authority.binding.management_seeds.clone(),
     )));
     hardware

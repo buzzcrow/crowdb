@@ -8,7 +8,7 @@ use crate::{
     services::Failure,
     state::AppState,
 };
-use crowdb_kv_client::{ChunkSlotMapClient, CrowdbSysmdClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, CrowdbSysmdClient, GetOutcome, ReadMode};
 use crowdb_protocol::{
     chunk_slot::{ChunkSlotBootstrap, ChunkStorageGroup},
     key::{ChunkSlotMapHeadKey, TextKey},

@@ -9,7 +9,7 @@ use crowdb_console_shared::{
     ops::OpContext,
     ConsoleConfig,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_protocol::mgmt::node::{recovery::MemberEndpoints, NodeServiceAction};
 use std::{path::Path, sync::Arc};
 
@@ -20,30 +20,8 @@ pub(super) async fn reconcile(
     topology: &ConsoleConfig,
 ) -> Result<()> {
     let local = super::identity(root)?.endpoint;
-    let mut config = topology.clone();
-    let mut seeds = Vec::new();
-    for node in &mut config.nodes {
-        let Some(peer) = endpoints.members.iter().find(|peer| peer.node_id == node.id) else {
-            continue;
-        };
-        let address = peer
-            .addresses
-            .iter()
-            .find(|address| address.is_ipv4())
-            .or_else(|| peer.addresses.first())
-            .ok_or("member address missing")?;
-        node.host = address.to_string();
-        seeds.push(format!("http://{}", std::net::SocketAddr::new(*address, 10000)));
-        for server in config
-            .servers
-            .iter_mut()
-            .filter(|server| server.node_id == Some(node.id))
-        {
-            server.url = format!("http://{}", std::net::SocketAddr::new(*address, 10000));
-            server.rpc_url = Some(std::net::SocketAddr::new(*address, 10100).to_string());
-        }
-    }
-    let client = Arc::new(CrowdbKvClient::new(ClientConfig::new(seeds.clone())));
+    let (config, seeds) = recovered_topology(endpoints, topology)?;
+    let client = Arc::new(PaxosKvClient::new(ClientConfig::new(seeds.clone())));
     let GetOutcome::Found { value, .. } = client
         .get(
             0,
@@ -117,9 +95,45 @@ pub(super) async fn reconcile(
     Ok(())
 }
 
+fn recovered_topology(
+    endpoints: &MemberEndpoints,
+    topology: &ConsoleConfig,
+) -> Result<(ConsoleConfig, Vec<String>)> {
+    let mut config = topology.clone();
+    let mut seeds = Vec::new();
+    for node in &mut config.nodes {
+        let Some(peer) = endpoints.members.iter().find(|peer| peer.node_id == node.id) else {
+            continue;
+        };
+        let address = peer
+            .addresses
+            .iter()
+            .find(|address| address.is_ipv4())
+            .or_else(|| peer.addresses.first())
+            .ok_or("member address missing")?;
+        node.host = address.to_string();
+        let management_url = format!(
+            "http://{}",
+            std::net::SocketAddr::new(*address, crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE)
+        );
+        seeds.push(management_url.clone());
+        for server in config
+            .servers
+            .iter_mut()
+            .filter(|server| server.node_id == Some(node.id))
+        {
+            server.url.clone_from(&management_url);
+            server.rpc_url = Some(
+                std::net::SocketAddr::new(*address, crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE).to_string(),
+            );
+        }
+    }
+    Ok((config, seeds))
+}
+
 async fn rebind(
     root: &Path,
-    client: &CrowdbKvClient,
+    client: &PaxosKvClient,
     operation: &PreparedBootstrap,
     node: u64,
     current: &str,
@@ -212,6 +226,6 @@ pub async fn rebind_recovery_services_for_tests(
     seeds: &[String],
     complete: bool,
 ) -> Result<bool> {
-    let client = CrowdbKvClient::new(ClientConfig::new(vec!["http://127.0.0.1:9".into()]));
+    let client = PaxosKvClient::new(ClientConfig::new(vec!["http://127.0.0.1:9".into()]));
     rebind(root, &client, operation, node, current, seeds, complete).await
 }

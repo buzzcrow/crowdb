@@ -6,8 +6,8 @@ mod memory_kv;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use crowdb_console_shared::config::web::{WebMode, WebProcessConfig};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, CrowdbSysmdClient};
 use crowdb_monitor::{MonitorPhase, MonitorStatus, ServiceStatus, StatusStore};
+use crowdb_paxos_kv_client::{ClientConfig, CrowdbSysmdClient, PaxosKvClient};
 use crowdb_protocol::common::{HwStatus, KvServerIdentity, NodeValue, RackValue, ServiceExtra};
 use crowdb_web::{router, AppState};
 use tower::ServiceExt;
@@ -195,7 +195,7 @@ async fn managed_readonly_mode_does_not_expose_local_topology_or_mutations() {
 #[tokio::test]
 async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
     let cluster = memory_kv::TestKvCluster::start().await;
-    let kv = CrowdbKvClient::new(ClientConfig::new(cluster.mgmt_endpoints.clone()));
+    let kv = PaxosKvClient::new(ClientConfig::new(cluster.mgmt_endpoints.clone()));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
     let sysmd = CrowdbSysmdClient::new(kv);
     sysmd

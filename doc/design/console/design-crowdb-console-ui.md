@@ -4,7 +4,7 @@
 # CROWDB - Design: Console UI Specification
 
 Depends on: [Console architecture](design-crowdb-console.md),
-[KV architecture](../kv/design-crowdb-kv.md).
+[KV architecture](../kv/design-crowdb-paxos-kv.md).
 Satisfies: [Console architecture](design-crowdb-console.md).
 
 This is the authoritative UI design and acceptance specification. Each numbered

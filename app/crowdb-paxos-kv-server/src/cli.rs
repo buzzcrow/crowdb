@@ -1,0 +1,313 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+use clap::Parser;
+use crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE;
+
+/// `CrowDB` server — reference implementation wrapping the `crowdb_paxos_kv` library.
+#[derive(Parser, Debug)]
+#[allow(clippy::struct_excessive_bools)]
+#[command(name = "crowdb-paxos-kv-server", about = "CrowDB server daemon")]
+pub struct Cli {
+    /// HTTP management API listen port. Default: 10135.
+    #[arg(long, default_value_t = PAXOS_KV_SERVER_MGMT_BASE, value_parser = clap::value_parser!(u16).range(1..))]
+    pub management_port: u16,
+
+    /// HTTP management API bind address.
+    #[arg(long, default_value = "0.0.0.0")]
+    pub management_addr: String,
+
+    /// Reachable address advertised in the Group 0 service registry.
+    #[arg(long, env = "CROWDB_PAXOS_KV_MANAGEMENT_ADVERTISE_ADDR")]
+    pub management_advertise_addr: Option<std::net::IpAddr>,
+
+    /// Node root directory. Derives `wal_root`=`<root>`/waldata,
+    /// `config_root`=`<root>`/conf, `data_root`=`<root>`/ctdata, `log_dir`=`<root>`/log
+    /// (fixed on-disk layout). Required on every start.
+    #[arg(long)]
+    pub root: std::path::PathBuf,
+    /// Owning monitor root for authenticated member address recovery.
+    #[arg(long)]
+    pub node_recovery_root: Option<std::path::PathBuf>,
+
+    /// Optional TOML config for startup tunables in first-boot and restore modes.
+    /// When omitted, tunables use `PaxosKvConfig::default()`.
+    #[arg(long)]
+    pub config: Option<std::path::PathBuf>,
+
+    /// Port pool for crowdb-rpc `PxKvStore` listeners (comma/range format, e.g. "11135,11136,11145..11155").
+    #[arg(long)]
+    pub ports: Option<String>,
+
+    /// Store ID list (comma/range format). When omitted, the server
+    /// starts with no stores; the operator (or the console) creates
+    /// stores explicitly via the management API. Pass `--stores 1
+    /// --groups 1` to keep the legacy auto-bootstrap behavior.
+    #[arg(long)]
+    pub stores: Option<String>,
+
+    /// Group ID list (comma/range format). Required when `--stores` is
+    /// set; ignored otherwise.
+    #[arg(long)]
+    pub groups: Option<String>,
+
+    /// Local replica ID (single value, range \[1, 128\]). Default: 1.
+    #[arg(long, default_value_t = 1)]
+    pub replica: u64,
+
+    /// Also print logs to console (in addition to file logging).
+    #[arg(short = 'l', long)]
+    pub log: bool,
+
+    /// Log directory. If omitted, uses `config.log_dir` (default
+    /// `<root>/log`). All Rust and C++ logs land under this directory.
+    #[arg(long)]
+    pub log_dir: Option<String>,
+
+    /// Log level for both Rust and C++ stacks. If omitted, derives
+    /// from `RUST_LOG` (first global directive) or defaults to
+    /// `"info"`. Valid: trace, debug, info, warn, error, off.
+    #[arg(long)]
+    pub log_level: Option<String>,
+
+    /// Mirror C++ log lines at this level or above to stderr (e.g.
+    /// `"warn"` mirrors warn+error). Off by default.
+    #[arg(long)]
+    pub log_stderr: Option<String>,
+
+    /// Named election preset. Overrides the complete `[election]` section.
+    #[arg(long, value_parser = ["default", "test", "e2e"])]
+    pub election_profile: Option<String>,
+
+    /// Durable backend for the crowdb-tree engine. `block` (default) opens
+    /// `data_root`'s per-group directory with `BlockPageStore` (array-of-
+    /// blocks, `O_DIRECT`) for a real SSD/SCM deployment target; `file` is
+    /// the file-based page store (no alignment), intended for debugging and
+    /// focused tests; `mem-block` uses an in-memory block device.
+    #[arg(long, default_value = "block", value_parser = ["file", "block", "mem-block"])]
+    pub kv_backend: String,
+
+    /// WAL storage backend. `file` uses durable `tokio::fs` I/O;
+    /// `uring` explicitly requests buffered-file `io_uring`; `mem-block` uses an in-memory block device (no
+    /// alignment); `block-device` uses an aligned block device model
+    /// (SSD/NVMe, 4K I/O unit, default).
+    #[arg(long, default_value = "block-device", value_parser = ["file", "uring", "mem-block", "block-device"])]
+    pub wal_backend: String,
+
+    /// Metrics flush interval in seconds. 0 disables metrics logging.
+    /// Default: 5.
+    #[arg(long, default_value_t = 5)]
+    pub metrics_interval: u64,
+
+    /// Skip the durable `fdatasync` on every WAL write batch. Records are
+    /// still written to the segment file, but the flush is not durable.
+    /// Unsafe for production — only for benchmark path-overhead isolation
+    /// (R10 benchmark framework).
+    #[arg(long)]
+    pub no_fsync: bool,
+
+    /// Max log file size in MiB before rotation. Default: 30.
+    #[arg(long, default_value_t = 30)]
+    pub log_max_file_mb: usize,
+
+    /// Number of rotated log files to keep. Default: 5.
+    #[arg(long, default_value_t = 5)]
+    pub log_max_files: usize,
+
+    /// Maximum in-flight (allocated-but-not-chosen) proposals per group.
+    /// Each proposal acquires one permit from the admission semaphore;
+    /// a full window fails fast with `Busy` instead of queuing.
+    /// Overrides `paxos.max_inflight_proposals`.
+    #[arg(long)]
+    pub max_inflight: Option<usize>,
+
+    /// R45 max ops per coalesced batch (capped at 65535). The leader
+    /// event-batches concurrent single-key proposes into one multi-key
+    /// Paxos proposal. `0` disables coalescing. Default: 32.
+    #[arg(long)]
+    pub coalesce_max_keys: Option<usize>,
+
+    /// Number of crowdb-rpc connections per peer endpoint for inter-server
+    /// consensus RPCs. Round-robined to distribute send-queue pressure.
+    /// Overrides `server.peer_pool_size`.
+    #[arg(long)]
+    pub peer_pool_size: Option<usize>,
+
+    /// Enable Nagle's algorithm (disable `TCP_NODELAY`) on RPC connections.
+    /// Default: false (Nagle off). Nagle degrades Paxos latency.
+    #[arg(long)]
+    pub enable_nagle: bool,
+
+    /// Enable `TCP_QUICKACK` on RPC connections (Linux only). Breaks the
+    /// Nagle + delayed-ACK deadlock when Nagle is enabled. Default: false.
+    #[arg(long)]
+    pub quickack: bool,
+
+    /// Event-write mode: `submit()` enqueues to the I/O worker instead of
+    /// calling `writev()` directly. Coalesces multiple frames into one
+    /// writev at the cost of ~20-40us epoll wake latency. Default: false.
+    /// Enable for high-concurrency write workloads.
+    #[arg(long)]
+    pub event_write: bool,
+
+    /// Per-connection send queue capacity (backpressure bound).
+    /// Overrides `server.send_queue_capacity`.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    pub send_queue_capacity: Option<u32>,
+
+    /// Instance ID for service-registry keep-alive. If omitted, a
+    /// unique ID is generated at startup.
+    #[arg(long)]
+    pub instance_id: Option<u64>,
+
+    /// Stable node identity published with the service-registry record.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    pub node_id: Option<u64>,
+
+    /// Keep-alive heartbeat interval in seconds. 0 disables the
+    /// keep-alive loop. Default: 10.
+    #[arg(long, default_value_t = 10)]
+    pub keepalive_interval: u64,
+
+    /// HTTP management seeds for discovering Group 0 when this node does not host it.
+    #[arg(long = "group0-management-seed")]
+    pub group0_management_seeds: Vec<String>,
+
+    /// Domain monitor descriptor discovery interval in seconds. 0 disables
+    /// discovery. Drivers use the tick interval in their persisted descriptor;
+    /// only the group-0 leader performs writes. Default: 1.
+    #[arg(long, default_value_t = 1)]
+    pub binding_monitor_interval: u64,
+
+    /// Number of crowdb-rpc I/O worker threads. Overrides
+    /// `server.rpc_workers` from the config file. Lower values
+    /// reduce scheduler contention under low-concurrency workloads (e.g.
+    /// the management console driving a single-node test cluster).
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    pub rpc_workers: Option<u32>,
+}
+
+impl Cli {
+    /// Apply only explicitly supplied CLI values that overlap the TOML schema.
+    ///
+    /// # Errors
+    /// Returns the first complete-config validation error.
+    pub fn apply_config_overrides(
+        &self,
+        config: &mut crowdb_paxos_kv::common::config::PaxosKvConfig,
+    ) -> Result<(), String> {
+        use crowdb_paxos_kv::common::config::PxElectionConfig;
+
+        if let Some(profile) = self.election_profile.as_deref() {
+            config.election = match profile {
+                "test" => PxElectionConfig::for_tests(),
+                "e2e" => PxElectionConfig::for_e2e(),
+                _ => PxElectionConfig::DEFAULT,
+            };
+        }
+        if let Some(max_inflight) = self.max_inflight {
+            config.paxos.max_inflight_proposals = max_inflight;
+        }
+        if let Some(max_keys) = self.coalesce_max_keys {
+            config.paxos.coalesce_max_keys = max_keys;
+        }
+        if let Some(peer_pool_size) = self.peer_pool_size {
+            config.server.peer_pool_size = peer_pool_size;
+        }
+        if self.enable_nagle {
+            config.server.enable_nagle = true;
+        }
+        if self.quickack {
+            config.server.quickack = true;
+        }
+        if self.event_write {
+            config.server.event_write = true;
+        }
+        if let Some(send_queue_capacity) = self.send_queue_capacity {
+            config.server.send_queue_capacity = send_queue_capacity;
+        }
+        if let Some(rpc_workers) = self.rpc_workers {
+            config.server.rpc_workers = rpc_workers;
+        }
+        crowdb_common::config::BaseConfig::validate(config)
+    }
+}
+
+/// Parse a comma-separated list of numbers and ranges into a `Vec<u64>`.
+///
+/// Supported formats:
+/// - Single value: `28`
+/// - Inclusive range: `40..50` (produces 40..50)
+/// - Mixed: `28,39,40..50,59`
+///
+/// Duplicates are silently deduplicated. Order is preserved (first occurrence wins).
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The input string is empty
+/// - Any part cannot be parsed as a number
+/// - A range has start >= end
+pub fn parse_id_list(input: &str) -> Result<Vec<u64>, String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+
+    for part in input.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        if let Some((start_s, end_s)) = part.split_once("..") {
+            let start: u64 = start_s
+                .trim()
+                .parse()
+                .map_err(|_| format!("invalid range start: '{start_s}'"))?;
+            let end: u64 = end_s
+                .trim()
+                .parse()
+                .map_err(|_| format!("invalid range end: '{end_s}'"))?;
+            if start > end {
+                return Err(format!("range start must be <= end: '{part}'"));
+            }
+            for v in start..=end {
+                if seen.insert(v) {
+                    result.push(v);
+                }
+            }
+        } else {
+            let v: u64 = part.parse().map_err(|_| format!("invalid number: '{part}'"))?;
+            if seen.insert(v) {
+                result.push(v);
+            }
+        }
+    }
+
+    if result.is_empty() {
+        return Err("empty list".to_string());
+    }
+
+    Ok(result)
+}
+
+/// Parse port list — same format as `parse_id_list` but validates u16
+/// range and rejects port 0.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The input cannot be parsed by `parse_id_list`
+/// - Any value is outside the u16 range (1-65535)
+/// - Any value is 0 (port 0 is not allowed)
+pub fn parse_port_list(input: &str) -> Result<Vec<u16>, String> {
+    let ids = parse_id_list(input)?;
+    ids.into_iter()
+        .map(|v| {
+            let p = u16::try_from(v).map_err(|_| format!("port out of range (1-65535): {v}"))?;
+            if p == 0 {
+                return Err("port 0 is not allowed; pass an explicit non-zero port".into());
+            }
+            Ok(p)
+        })
+        .collect()
+}

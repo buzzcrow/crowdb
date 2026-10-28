@@ -25,7 +25,7 @@ class CliOwnershipTest(unittest.TestCase):
                 opener.open.return_value = MagicMock()
                 opener.open.return_value.__enter__.return_value = response
                 cluster.diagnostics()
-            opener.open.assert_called_once_with("http://192.0.2.1:9091/_crowdb/metrics", timeout=2)
+            opener.open.assert_called_once_with("http://192.0.2.1:7135/_crowdb/metrics", timeout=2)
             response.read.assert_called_once_with(1024 * 1024 + 1)
             collect.assert_called_once()
             self.assertIn('phase="diskio"', (cluster.artifacts / "access-metrics-0.prom").read_text())

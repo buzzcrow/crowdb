@@ -7,15 +7,15 @@ use crate::common::{
     control,
     management::{addresses, client, origin, request},
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, PaxosKvClient, ReadMode};
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
 
-fn kv(ips: &[String]) -> CrowdbKvClient {
-    CrowdbKvClient::new(ClientConfig::new(ips.iter().map(|ip| origin(ip)).collect()))
+fn kv(ips: &[String]) -> PaxosKvClient {
+    PaxosKvClient::new(ClientConfig::new(ips.iter().map(|ip| origin(ip)).collect()))
 }
 
-async fn exact(kv: &CrowdbKvClient, store: u64, key: &[u8], expected: &[u8]) {
+async fn exact(kv: &PaxosKvClient, store: u64, key: &[u8], expected: &[u8]) {
     assert!(
         matches!(kv.get(store, 1, key, ReadMode::Linearizable, None).await.unwrap(),
         GetOutcome::Found {value, ..} if value.as_ref() == expected)

@@ -46,10 +46,6 @@ regression_fixture_log_root() {
     pixi run python tools/benchmark/fixture.py --state "$REGRESSION_CONFIG" root
 }
 
-regression_report_for() {
-    pixi run python tools/benchmark/fixture.py --state "$1" report
-}
-
 regression_destroy() {
     if [ -f "$REGRESSION_CONFIG" ]; then
         regression_fixture stop

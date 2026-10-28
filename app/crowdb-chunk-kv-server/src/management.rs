@@ -28,7 +28,7 @@ impl ManagementState {
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     instance_id: u64,
-    process_lease: crowdb_kv_client::StreamProcessLeaseStatus,
+    process_lease: crowdb_paxos_kv_client::StreamProcessLeaseStatus,
     lifecycle: &'static str,
     catalog_generation: u64,
     hosted_partitions: usize,

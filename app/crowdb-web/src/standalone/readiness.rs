@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crowdb_console_shared::config::ServiceType;
 use crowdb_console_shared::error::{Error, Result};
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 
 use crate::state::AppState;
 

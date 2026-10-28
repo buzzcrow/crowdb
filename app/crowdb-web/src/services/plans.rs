@@ -89,16 +89,11 @@ fn valid_overrides(overrides: &BTreeMap<String, ListenerOverrides>) -> bool {
             && (kind == "access-server"
                 || (value.s3.is_none() && value.health.is_none() && value.dataset.is_none()))
             && (kind != "access-server" || value.rpc.is_none())
-            && (!matches!(kind.as_str(), "diskdb" | "diskio") || value.http.is_none())
-            && (kind != "diskdb" || value.rpc.map_or(true, |port| port <= 65533))
+            && (kind != "diskio" || value.http.is_none())
             && [value.http, value.rpc, value.s3, value.health, value.dataset]
                 .into_iter()
                 .flatten()
                 .all(|port| port != 0 && ports.insert(port))
-            && (kind != "diskdb"
-                || value
-                    .rpc
-                    .map_or(true, |port| ports.insert(port + 1) && ports.insert(port + 2)))
     })
 }
 
@@ -253,11 +248,6 @@ pub(super) fn reserved_ports(state: &AppState) -> Result<Vec<u16>, Failure> {
                             .into_iter()
                             .flatten(),
                     );
-                    if kind == "diskdb" {
-                        if let Some(port) = value.rpc.filter(|port| *port <= 65533) {
-                            ports.extend([port + 1, port + 2]);
-                        }
-                    }
                 }
             }
         }

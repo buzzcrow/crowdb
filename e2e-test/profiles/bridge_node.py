@@ -25,7 +25,7 @@ def origin_for(name):
     address = node["NetworkSettings"]["Networks"][PREFIX]["IPAddress"]
     if not address:
         raise ValueError("owned bridge node has no inspected IP")
-    return f"http://{address}:9090"
+    return f"http://{address}:6135"
 
 
 def start_node(name, *, default_setup=False):

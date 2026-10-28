@@ -79,7 +79,7 @@ def run_profile(args, parser):
     (run_root / "identity.json").write_text(json.dumps({"profile":"bridge-admission", "id":identity["Id"],
         "labels":labels, "sources":source, "cpus":cpus, "memory_mib":memory,
         "node_cpus":args.node_cpus, "host_data":str(data), "container_data":"/opt/crowdb/data",
-        "ports":{"web":9090,"ssh":2222},
+        "ports":{"web":6135,"ssh":2222},
         "core_policy":Path("/proc/sys/kernel/core_pattern").read_text().strip()}, indent=2))
     bundle = client_bundle(run_root / "host-client")
     env = os.environ.copy()

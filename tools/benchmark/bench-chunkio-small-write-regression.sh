@@ -176,7 +176,7 @@ run_case() {
 
 if [ "$SKIP_BUILD" != 1 ]; then
     echo "=== building release binaries ==="
-    pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+    pixi run -- cargo build --release -p crowdb-cli -p crowdb-paxos-kv-server -p crowdb-diskdb -p crowdb-chunkdb
     pixi run build-cpp
 fi
 mkdir -p "$LOG_ROOT"

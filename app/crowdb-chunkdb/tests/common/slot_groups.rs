@@ -1,10 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv::cluster::group::PxGroup;
-use crowdb_kv::cluster::kv_server::KvServer;
-use crowdb_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv::cluster::group::PxGroup;
+use crowdb_paxos_kv::cluster::paxos_kv_server::PaxosKvServer;
+use crowdb_paxos_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::chunk_task::{
     ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_FINALIZE_CHUNK,
 };
@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 pub struct TestGroups {
     pub server: Arc<PxKvStore>,
-    pub kv: Arc<CrowdbKvClient>,
+    pub kv: Arc<PaxosKvClient>,
 }
 
 impl TestGroups {
@@ -26,7 +26,7 @@ impl TestGroups {
             ));
         }
         server.start().await.unwrap();
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(Vec::new())));
+        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(Vec::new())));
         for group in 0..=3 {
             kv.seed_leader(0, group, server.listen_addr().unwrap().to_string());
         }

@@ -10,7 +10,7 @@ use crowdb_console_shared::{
     config::{ServerEntry, ServiceType},
     ConsoleConfig,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient, ServiceRegistryClient};
 use crowdb_protocol::diskdb::rpc::DiskGroupValue;
 use crowdb_web::{router, AppState};
 use serde_json::Value;
@@ -35,7 +35,7 @@ async fn readiness(app: &axum::Router) -> Value {
 #[tokio::test]
 async fn chunk_storage_requires_live_complete_ownership_even_when_diskio_pid_is_alive() {
     let cluster = memory_kv::TestKvCluster::start().await;
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+    let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
         cluster.mgmt_endpoints.clone(),
     )));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());

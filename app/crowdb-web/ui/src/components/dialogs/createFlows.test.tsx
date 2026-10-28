@@ -10,6 +10,7 @@ import { AddNodeDialog } from './AddNodeDialog';
 import { AddStoreDialog } from './AddStoreDialog';
 import { AddGroupDialog } from './AddGroupDialog';
 import { AddReplicaDialog } from './AddReplicaDialog';
+import { DeployDiskdbDialog } from './DeployDiskdbDialog';
 import { DeployServerDialog } from './DeployServerDialog';
 import { serviceOrder, serviceLabels } from '../../services/useNodeServicePlans';
 import { NodeHealth, ProcState } from '../../types';
@@ -36,7 +37,7 @@ interface CapturedRequest {
 let captured: CapturedRequest[] = [];
 const deploymentDefaults = {
   'paxos-kv': { instance_id: '1', http_port: 19911, rpc_port: 19921 },
-  diskdb: { instance_id: '1', rpc_port: 29921 },
+  diskdb: { instance_id: '1', rpc_port: 14135, http_port: 13135 },
   diskio: { instance_id: '1', rpc_port: 13010 },
   chunkdb: { instance_id: '1', http_port: 12010, rpc_port: 12110 },
   'chunk-kv': { instance_id: '1', http_port: 15010, rpc_port: 15110 },
@@ -166,7 +167,7 @@ describe('Add Node dialog', () => {
     const cards = screen.getByRole('list', { name: 'Default services' });
     expect(within(cards).getAllByRole('checkbox').map(input => input.getAttribute('aria-label'))).toEqual(serviceOrder.map(kind => serviceLabels[kind]));
     for (const kind of serviceOrder.filter(kind => kind !== 'access-server')) {
-      expect(within(screen.getByTestId(`service-card-${kind}`)).getAllByRole('textbox')).toHaveLength(1);
+      expect(within(screen.getByTestId(`service-card-${kind}`)).getAllByRole('textbox')).toHaveLength(kind === 'diskio' ? 1 : 2);
       expect(screen.getByLabelText(`${serviceLabels[kind]} RPC port`)).toBeEnabled();
     }
     fireEvent.click(screen.getByLabelText('crowdb-access-server'));
@@ -282,17 +283,17 @@ describe('Deploy Server dialog', () => {
       [
         {
           id: 1,
-          server: { mgmt_url: 'http://127.0.0.1:19910', rpc_url: 'http://127.0.0.1:19920' },
+          server: { mgmt_url: 'http://127.0.0.1:10135', rpc_url: 'http://127.0.0.1:11135' },
         },
         {
           id: 2,
-          server: { mgmt_url: 'http://127.0.0.1:19910', rpc_url: 'http://127.0.0.1:19920' },
+          server: { mgmt_url: 'http://127.0.0.1:10135', rpc_url: 'http://127.0.0.1:11135' },
         },
       ],
       1,
     );
 
-    expect(defaults).toEqual({ defaultRestPort: '19911', defaultRpcPort: '19921' });
+    expect(defaults).toEqual({ defaultRestPort: '10136', defaultRpcPort: '11136' });
   });
 
   it('increments globally when a different node already uses the base ports', () => {
@@ -300,77 +301,38 @@ describe('Deploy Server dialog', () => {
       [
         {
           id: 2,
-          server: { mgmt_url: 'http://127.0.0.1:19910', rpc_url: 'http://127.0.0.1:19920' },
+          server: { mgmt_url: 'http://127.0.0.1:10135', rpc_url: 'http://127.0.0.1:11135' },
         },
       ],
       1,
     );
 
-    expect(defaults).toEqual({ defaultRestPort: '19911', defaultRpcPort: '19921' });
+    expect(defaults).toEqual({ defaultRestPort: '10136', defaultRpcPort: '11136' });
   });
 
   it('derives defaults from the node id suffix before checking collisions', () => {
-    const defaults = deployPortDefaultsForNode([], 2, 19910, 19920);
+    const defaults = deployPortDefaultsForNode([], 2, 10135, 11135);
 
-    expect(defaults).toEqual({ defaultRestPort: '19912', defaultRpcPort: '19922' });
+    expect(defaults).toEqual({ defaultRestPort: '10136', defaultRpcPort: '11136' });
   });
 
   it('can increment from remembered same-node ports even after the server is gone', () => {
-    const defaults = deployPortDefaultsForNode([], 1, 19910, 19920, [19910], [19920]);
+    const defaults = deployPortDefaultsForNode([], 1, 10135, 11135, [10135], [11135]);
 
-    expect(defaults).toEqual({ defaultRestPort: '19911', defaultRpcPort: '19921' });
+    expect(defaults).toEqual({ defaultRestPort: '10136', defaultRpcPort: '11136' });
   });
 });
 
 describe('diskdbPortDefaultsForNode', () => {
-  it('returns the base port when no instances or remembered ports collide', () => {
-    expect(diskdbPortDefaultsForNode([], 1)).toBe('29921');
+  it('uses node offsets zero, one and two', () => {
+    expect([1, 2, 3].map(id => diskdbPortDefaultsForNode([], id))).toEqual(['14135', '14136', '14137']);
   });
-
-  it('derives defaults from the node id suffix before checking collisions', () => {
-    expect(diskdbPortDefaultsForNode([], 2)).toBe('29922');
+  it('skips active RPC endpoints and remembered ports', () => {
+    expect(diskdbPortDefaultsForNode([{ rpc_endpoint: 'http://127.0.0.1:14135' }], 1)).toBe('14136');
+    expect(diskdbPortDefaultsForNode([], 1, undefined, [14135, 14136])).toBe('14137');
   });
-
-  it('increments past ports already assigned to other diskdb instances', () => {
-    const instances = [{ rpc_endpoint: 'http://127.0.0.1:29921' }];
-    expect(diskdbPortDefaultsForNode(instances, 1)).toBe('29922');
-  });
-
-  it('skips the complete range for remembered ports even when no instances exist', () => {
-    expect(diskdbPortDefaultsForNode([], 1, undefined, [29921])).toBe('29924');
-  });
-
-  it('allocates disjoint 3-port ranges across nodes 1, 2, and 3', () => {
-    // Simulate sequential allocation: each node's base is remembered so
-    // the next node skips past the full derived range (base, base+1, base+2).
-    const node1 = Number(diskdbPortDefaultsForNode([], 1));
-    const node2 = Number(diskdbPortDefaultsForNode([], 2, undefined, [node1]));
-    const node3 = Number(diskdbPortDefaultsForNode([], 3, undefined, [node1, node2]));
-
-    const ranges = [node1, node2, node3].map((b) => [b, b + 1, b + 2]);
-    const all = ranges.flat();
-    expect(new Set(all).size).toBe(all.length);
-    // Node 1 starts at its suffix offset (29921).
-    expect(node1).toBe(29921);
-    // Node 2's suffix offset (29922) falls inside node 1's range, so it
-    // skips to the first free 3-port window.
-    expect(node2).toBe(29924);
-    // Node 3's suffix offset (29923) falls inside node 1's range, and
-    // 29924-29926 are node 2's, so it skips further.
-    expect(node3).toBe(29927);
-  });
-
-  it('detects collisions on each derived listener port (main, HTTP, crowdb-rpc)', () => {
-    // An existing instance with crowdb-rpc endpoint 29923 means its main
-    // listener is 29921 and HTTP is 29922 — all three collide with node 1's
-    // default window [29921, 29922, 29923].
-    expect(diskdbPortDefaultsForNode([{ rpc_endpoint: 'http://127.0.0.1:29923' }], 1)).toBe('29924');
-    // Endpoint 29922 → main 29920, HTTP 29921, rpc 29922. Node 1's window
-    // [29921, 29922, 29923] collides on HTTP and rpc.
-    expect(diskdbPortDefaultsForNode([{ rpc_endpoint: 'http://127.0.0.1:29922' }], 1)).toBe('29923');
-    // Endpoint 29921 → main 29919, HTTP 29920, rpc 29921. Node 1's window
-    // collides only on the main port (29921).
-    expect(diskdbPortDefaultsForNode([{ rpc_endpoint: 'http://127.0.0.1:29921' }], 1)).toBe('29922');
+  it('does not reserve imaginary main or HTTP listeners adjacent to RPC', () => {
+    expect(diskdbPortDefaultsForNode([{ rpc_endpoint: 'http://127.0.0.1:14137' }], 1)).toBe('14135');
   });
 });
 
@@ -886,5 +848,21 @@ describe('end-to-end create flow', () => {
     });
     expect(captured[4].body).toEqual({ group_id: 80, replica_id: 800, nodes: [1] });
     expect(captured[5].body).toEqual({ node_id: 2, replica_id: 701 });
+  });
+});
+
+
+describe('Deploy DiskDB independent listeners', () => {
+  it('submits HTTP and the exact RPC port returned by the server', async () => {
+    installFetchMock({ node_id: 1, endpoint: 'http://127.0.0.1:14135', pid: 1 });
+    render(<DeployDiskdbDialog isOpen nodes={[{ id: 1 }]} onClose={() => {}} />, { wrapper });
+    await waitFor(() => expect(screen.getByLabelText('RPC Port (crowdb-rpc)')).toHaveValue('14135'));
+    expect(screen.getByLabelText('HTTP Port (management)')).toHaveValue('13135');
+    fireEvent.change(screen.getByLabelText('HTTP Port (management)'), { target: { value: '14135' } });
+    expect(screen.getByRole('button', { name: /^Deploy$/ })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('HTTP Port (management)'), { target: { value: '13135' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Deploy$/ }));
+    await waitFor(() => expect(captured).toHaveLength(1));
+    expect(captured[0]).toMatchObject({ url: '/api/nodes/1/diskdb/deploy', body: { rpc_port: 14135, http_port: 13135 } });
   });
 });

@@ -150,7 +150,7 @@ pub(super) async fn assert_native_locations(app: &TestNativeContext) {
     }
     let id = first["locations"][0]["chunk_id"].as_str().unwrap();
     let chunkdb = crowdb_chunkdb_client::ChunkdbClient::new(
-        crowdb_kv_client::ServiceRegistryClient::from_shared(app.kv.clone()),
+        crowdb_paxos_kv_client::ServiceRegistryClient::from_shared(app.kv.clone()),
         std::sync::Arc::new(crowdb_chunkdb_client::ChunkdbRpcTransport::new()),
     );
     let chunk = chunkdb

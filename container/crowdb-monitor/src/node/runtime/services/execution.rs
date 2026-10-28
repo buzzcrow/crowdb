@@ -219,7 +219,7 @@ async fn wait_ready(
 }
 
 async fn verify_intent(binding: &NodeBinding, intent: &NodeServiceIntent) -> Result<()> {
-    let client = crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(
+    let client = crowdb_paxos_kv_client::PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
         binding.management_seeds.clone(),
     ));
     let key = format!("/deployment/services/{}/{}", intent.node_id, intent.service_id);
@@ -229,12 +229,12 @@ async fn verify_intent(binding: &NodeBinding, intent: &NodeServiceIntent) -> Res
             0,
             0,
             key.as_bytes(),
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         ),
     )
     .await??;
-    let crowdb_kv_client::GetOutcome::Found { value, .. } = outcome else {
+    let crowdb_paxos_kv_client::GetOutcome::Found { value, .. } = outcome else {
         return Err("service intent is not committed".into());
     };
     let current: NodeServiceIntent = serde_json::from_slice(&value)?;

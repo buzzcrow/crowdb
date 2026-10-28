@@ -4,11 +4,11 @@
 use std::sync::Arc;
 
 use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient, ServiceRegistryClient};
 use crowdb_protocol::common::DiskId;
 
 fn client() -> DiskdbClient {
-    let service = ServiceRegistryClient::new(CrowdbKvClient::new(ClientConfig::new(Vec::new())));
+    let service = ServiceRegistryClient::new(PaxosKvClient::new(ClientConfig::new(Vec::new())));
     DiskdbClient::new(service, Arc::new(DiskdbRpcTransport::new()))
 }
 

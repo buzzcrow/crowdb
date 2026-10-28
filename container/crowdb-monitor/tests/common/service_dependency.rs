@@ -1,14 +1,14 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::{CrowdbKvClient, HardwareClient};
+use crowdb_paxos_kv_client::{HardwareClient, PaxosKvClient};
 use crowdb_protocol::{
     common::{DiskId, HwStatus, NodeValue, RackValue},
     diskdb::rpc::{DiskGroupValue, DiskValue},
 };
 use std::sync::Arc;
 
-pub async fn publish_online_disk(kv: Arc<CrowdbKvClient>) {
+pub async fn publish_online_disk(kv: Arc<PaxosKvClient>) {
     let hardware = HardwareClient::from_shared(kv.clone());
     hardware
         .add_rack(
@@ -74,7 +74,7 @@ pub async fn ready_listener() -> (std::net::SocketAddr, tokio::task::JoinHandle<
 }
 
 pub async fn assert_initial_start_waits(
-    kv: &CrowdbKvClient,
+    kv: &PaxosKvClient,
     profile: &crowdb_monitor::DeploymentProfile,
     local: &crowdb_protocol::mgmt::node::NodeServiceIntent,
     consumer: &crowdb_protocol::mgmt::node::NodeServiceIntent,

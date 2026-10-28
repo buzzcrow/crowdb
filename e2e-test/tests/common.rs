@@ -9,8 +9,8 @@ pub(crate) mod native_s3;
 mod test_client;
 
 use bytes::Bytes;
-use crowdb_kv::rpc::{KvBatchWriteRequest, KvDeleteRequest, KvErrorCode, KvGetRequest, KvSetRequest};
-use crowdb_kv_client::KvRpcTransport;
+use crowdb_paxos_kv::rpc::{KvBatchWriteRequest, KvDeleteRequest, KvErrorCode, KvGetRequest, KvSetRequest};
+use crowdb_paxos_kv_client::PaxosKvRpcTransport;
 use serde_json::Value;
 use std::sync::Arc;
 use test_client::TestKvClient;
@@ -102,9 +102,9 @@ pub async fn run_kv_op_with_retry(
     nodes: &[ServerNode],
     group_id: u64,
     op: &KvOp,
-) -> crowdb_kv::rpc::KvResponse {
+) -> crowdb_paxos_kv::rpc::KvResponse {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let transport = Arc::new(KvRpcTransport::new());
+    let transport = Arc::new(PaxosKvRpcTransport::new());
     let mut last_err = String::new();
     while std::time::Instant::now() < deadline {
         let leader_idx = wait_for_leader(nodes, group_id, std::time::Duration::from_secs(10)).await;

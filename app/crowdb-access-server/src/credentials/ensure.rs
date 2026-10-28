@@ -5,7 +5,7 @@
 
 use super::{credential_key, CredentialAuthority, CredentialAuthorityError};
 use crowdb_access_s3::auth::{DurableCredentialRecord, IssuedUserToken};
-use crowdb_kv_client::{Error as KvError, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{Error as KvError, GetOutcome, ReadMode};
 use sha2::{Digest, Sha256};
 
 impl CredentialAuthority {

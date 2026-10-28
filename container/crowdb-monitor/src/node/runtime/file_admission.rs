@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient};
 use crowdb_protocol::{
     common::{DiskId, HwStatus},
     disk_storage::{DiskStorageRecord, PhysicalBacking},
@@ -25,7 +25,7 @@ pub(super) fn authority(root: &Path, request: &PrepareDiskFile) -> Result<Hardwa
     if binding.node_id != request.node_id || binding.bootstrap.cluster_id != request.cluster_id {
         return Err("file admission belongs to another node or cluster".into());
     }
-    Ok(HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(
+    Ok(HardwareClient::new(PaxosKvClient::new(ClientConfig::new(
         binding.management_seeds,
     ))))
 }

@@ -14,6 +14,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from docker_local_cleanup import clean, image_garbage, selected
 from docker_local_launch import ensure, verify_container
+from ports import WEB_BASE, ACCESS_SERVER_HTTP_BASE, ACCESS_SERVER_ICEBERG_HTTP_BASE, ACCESS_SERVER_DATASET_HTTP_BASE
 from docker_local_state import CLUSTER, OWNER, Docker, load, seal
 
 
@@ -22,7 +23,7 @@ class DockerLocalTest(unittest.TestCase):
         self.record = {"version": 1, "cluster": "first", "owner": str(uuid.uuid4()),
                        "runtime": {"daemon": "owned", "context": "default", "endpoint": "unix:///owned"},
                        "image_id": "sha256:retained", "image": "crowdb-node:dev", "nodes": 1,
-                       "port_base": 9090, "cpus": 1, "memory_mib": 1536}
+                       "port_base": WEB_BASE, "cpus": 1, "memory_mib": 1536}
         self.labels = {CLUSTER: "first", OWNER: self.record["owner"]}
         self.docker = MagicMock()
         self.docker.identity.return_value = self.record["runtime"]
@@ -102,15 +103,15 @@ class DockerLocalTest(unittest.TestCase):
         self.docker.call.assert_not_called()
 
     def test_changed_container_inputs_are_rejected_before_resume(self):
-        record = dict(self.record, nodes=1, port_base=9090, cpus=1, memory_mib=1536)
+        record = dict(self.record, nodes=1, port_base=WEB_BASE, cpus=1, memory_mib=1536)
         environment = ["CROWDB_CLUSTER=first", "CROWDB_INITIAL_VOTERS=1"]
-        for offset, name in enumerate(("S3", "ICEBERG", "DATASET"), start=1):
-            environment.append(f"CROWDB_{name}_PUBLIC_URI=http://127.0.0.1:{9090+offset}")
+        for port, name in ((ACCESS_SERVER_HTTP_BASE, "S3"), (ACCESS_SERVER_ICEBERG_HTTP_BASE, "ICEBERG"), (ACCESS_SERVER_DATASET_HTTP_BASE, "DATASET")):
+            environment.append(f"CROWDB_{name}_PUBLIC_URI=http://127.0.0.1:{port}")
         item = {"Name": "/crowdb-first-1", "Image": record["image_id"], "Config": {"Labels": self.labels, "Env": environment},
                 "HostConfig": {"NanoCpus": 1_000_000_000, "Memory": 1536 * 1024 * 1024,
                                "NetworkMode": "crowdb-first", "PortBindings": {
                                    f"{port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(port)}]
-                                   for port in range(9090, 9094)}},
+                                   for port in (WEB_BASE, ACCESS_SERVER_HTTP_BASE, ACCESS_SERVER_ICEBERG_HTTP_BASE, ACCESS_SERVER_DATASET_HTTP_BASE)}},
                 "Mounts": [{"Destination": "/opt/crowdb/data", "Name": "owned-volume", "Type": "volume", "RW": True}]}
         verify_container(item, record, 1, "owned-volume", "crowdb-first")
         for field, value in (("Image", "foreign"), ("Mounts", []), ("HostConfig", {})):

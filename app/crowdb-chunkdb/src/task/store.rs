@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::range_guard::RangeGuard;
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, CrowdbKvClient, Error as KvError, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{BatchOp, Error as KvError, GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_protocol::chunk_domain::ChunkDomain;
 use crowdb_protocol::chunk_task::{ChunkTaskState, ChunkTaskValue, TASK_KIND_FINALIZE_CHUNK};
 use crowdb_protocol::common::ChunkId;
@@ -44,7 +44,7 @@ pub enum TaskStoreError {
 /// Persistent task storage. It is lock-free and relies on the caller's
 /// existing resource lifecycle guard for same-process transition ordering.
 pub struct TaskStore {
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
     bindings: BindingCache,
     scope: Option<(Arc<RangeGuard>, ChunkDomain)>,
 }
@@ -68,7 +68,7 @@ impl TaskStore {
         Ok(())
     }
     #[must_use]
-    pub fn new(kv: Arc<CrowdbKvClient>, bindings: BindingCache) -> Self {
+    pub fn new(kv: Arc<PaxosKvClient>, bindings: BindingCache) -> Self {
         Self {
             kv,
             bindings,

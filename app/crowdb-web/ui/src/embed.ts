@@ -6,7 +6,7 @@
  *
  * Usage from a host React app:
  *   import { CrowdbConsole } from 'crowdb-console';
- *   <CrowdbConsole apiPrefix="/storage/crowdb-kv/api" readonly />
+ *   <CrowdbConsole apiPrefix="/storage/crowdb-paxos-kv/api" readonly />
  */
 export { default as CrowdbConsole, type CrowdbConsoleProps } from './App';
 export { Domain } from './types';

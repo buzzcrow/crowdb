@@ -126,7 +126,7 @@ pixi run oci-clean --cluster demo-three --delete-data
 
 Use the built `crowdb-cli` executable on PATH, or substitute its absolute path
 after `pixi run`. Start defaults to cluster `local`, one node, 1 CPU, 1536 MiB,
-and console port 9090. It accepts `--image`, `--cpus`, `--memory-mib` and
+and console port 6135. It accepts `--image`, `--cpus`, `--memory-mib` and
 `--port-base` before sealing the first launch inputs. Subsequent starts verify
 those inputs and resume existing state. `--wait` bounds readiness observation;
 an unmet check returns 1 and leaves accepted work resumable.
@@ -152,7 +152,7 @@ pixi run oci-host-clean --cluster production
 The existing data directory must be writable by UID 10001. The node policy
 must select production mode, the same cluster and initial voter count, supplied
 media and reachable public protocol URIs. `--nodes 3` selects the three-voter
-formation policy; run one node on each host. Host networking uses port 9090 and
+formation policy; run one node on each host. Host networking uses port 6135 and
 rejects `--port-base`. The management address must belong to the selected local
 interface. Disk files use `--disk-file`; files and devices are explicit existing
 inputs and are never created by the CLI.
@@ -201,8 +201,8 @@ A direct single-container cluster needs a volume and four published ports:
 
 ```bash
 pixi run docker run -d --name crowdb-one --cpus 1 --memory 1536m \
-  -p 127.0.0.1:9090:9090 -p 127.0.0.1:9091:9091 \
-  -p 127.0.0.1:9092:9092 -p 127.0.0.1:9093:9093 \
+  -p 127.0.0.1:6135:6135 -p 127.0.0.1:7135:7135 \
+  -p 127.0.0.1:8135:8135 -p 127.0.0.1:9135:9135 \
   --mount type=volume,source=crowdb-one-data,target=/opt/crowdb/data \
   crowdb-node:dev
 ```
@@ -214,27 +214,27 @@ in any order. No node addresses or membership list are supplied:
 pixi run docker network create crowdb-demo
 pixi run docker run -d --name crowdb-demo-1 --network crowdb-demo --cpus 1 --memory 1536m \
   -e CROWDB_CLUSTER=demo -e CROWDB_INITIAL_VOTERS=3 \
-  -e CROWDB_S3_PUBLIC_URI=http://127.0.0.1:9091 \
-  -e CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:9092 \
-  -e CROWDB_DATASET_PUBLIC_URI=http://127.0.0.1:9093 \
-  -p 127.0.0.1:9090:9090 -p 127.0.0.1:9091:9091 \
-  -p 127.0.0.1:9092:9092 -p 127.0.0.1:9093:9093 \
+  -e CROWDB_S3_PUBLIC_URI=http://127.0.0.1:7135 \
+  -e CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:8135 \
+  -e CROWDB_DATASET_PUBLIC_URI=http://127.0.0.1:9135 \
+  -p 127.0.0.1:6135:6135 -p 127.0.0.1:7135:7135 \
+  -p 127.0.0.1:8135:8135 -p 127.0.0.1:9135:9135 \
   --mount type=volume,source=crowdb-demo-1-data,target=/opt/crowdb/data crowdb-node:dev
 pixi run docker run -d --name crowdb-demo-2 --network crowdb-demo --cpus 1 --memory 1536m \
   -e CROWDB_CLUSTER=demo -e CROWDB_INITIAL_VOTERS=3 \
-  -e CROWDB_S3_PUBLIC_URI=http://127.0.0.1:9101 \
-  -e CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:9102 \
-  -e CROWDB_DATASET_PUBLIC_URI=http://127.0.0.1:9103 \
-  -p 127.0.0.1:9100:9090 -p 127.0.0.1:9101:9091 \
-  -p 127.0.0.1:9102:9092 -p 127.0.0.1:9103:9093 \
+  -e CROWDB_S3_PUBLIC_URI=http://127.0.0.1:7136 \
+  -e CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:8136 \
+  -e CROWDB_DATASET_PUBLIC_URI=http://127.0.0.1:9136 \
+  -p 127.0.0.1:6136:6135 -p 127.0.0.1:7136:7135 \
+  -p 127.0.0.1:8136:8135 -p 127.0.0.1:9136:9135 \
   --mount type=volume,source=crowdb-demo-2-data,target=/opt/crowdb/data crowdb-node:dev
 pixi run docker run -d --name crowdb-demo-3 --network crowdb-demo --cpus 1 --memory 1536m \
   -e CROWDB_CLUSTER=demo -e CROWDB_INITIAL_VOTERS=3 \
-  -e CROWDB_S3_PUBLIC_URI=http://127.0.0.1:9111 \
-  -e CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:9112 \
-  -e CROWDB_DATASET_PUBLIC_URI=http://127.0.0.1:9113 \
-  -p 127.0.0.1:9110:9090 -p 127.0.0.1:9111:9091 \
-  -p 127.0.0.1:9112:9092 -p 127.0.0.1:9113:9093 \
+  -e CROWDB_S3_PUBLIC_URI=http://127.0.0.1:7137 \
+  -e CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:8137 \
+  -e CROWDB_DATASET_PUBLIC_URI=http://127.0.0.1:9137 \
+  -p 127.0.0.1:6137:6135 -p 127.0.0.1:7137:7135 \
+  -p 127.0.0.1:8137:8135 -p 127.0.0.1:9137:9135 \
   --mount type=volume,source=crowdb-demo-3-data,target=/opt/crowdb/data crowdb-node:dev
 ```
 
@@ -290,8 +290,8 @@ pixi run --manifest-path container/oci-image/pixi.toml -e runtime run --runtime 
   --password-file /private/crowdb-password
 ```
 
-Host networking uses port 9090 directly; no `-p` mapping is needed. Fixed listener
-ports mean one node per host. Use `--seed http://host:9095` when multicast is unavailable.
+Host networking uses port 6135 directly; no `-p` mapping is needed. Fixed listener
+ports mean one node per host. Use `--seed http://host:26135` when multicast is unavailable.
 Explicit `--device /dev/...` permits individual block devices; the host must grant
 UID/GID 10001 access. The launcher checks device type and effective read/write
 permissions, actual cgroup v2 CPU/memory limits and the host network namespace.
@@ -441,3 +441,6 @@ checked-in Pixi source recipes supply missing tools from SHA256-pinned upstream
 releases. All six upstream projects use Apache-2.0 licensing; recipes retain
 upstream sources/checksums and license metadata. The dedicated Linux workspace
 leaves the repository's macOS dependency solve unchanged.
+
+Default listener ports are defined in [protocol ports.rs](../../lib/crowdb-protocol/src/port/ports.rs).
+Generated packaging defaults are maintained with [tools/ports](../../tools/ports/README.md).

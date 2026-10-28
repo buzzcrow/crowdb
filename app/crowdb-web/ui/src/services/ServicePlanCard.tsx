@@ -7,7 +7,7 @@ type Ports = Omit<NonNullable<ServiceOverrides[ServiceKind]>, 'dynamic_ownership
 export function listenerFields(kind: ServiceKind): [keyof Ports, string][] {
   return kind === 'access-server'
     ? [['http_port', 'Iceberg'], ['s3_port', 'S3'], ['dataset_port', 'Dataset'], ['health_port', 'Health']]
-    : [['rpc_port', 'RPC']];
+    : kind === 'diskio' ? [['rpc_port', 'RPC']] : [['http_port', 'HTTP'], ['rpc_port', 'RPC']];
 }
 export function ServicePlanCard({ kind, enabled, ports, onToggle, onChange }: {
   kind: ServiceKind; enabled: boolean; ports: Ports; onToggle: () => void;

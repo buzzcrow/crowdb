@@ -5,7 +5,7 @@
 
 use axum::{http::StatusCode, Json};
 use crowdb_console_shared::config::{DiskEntry, DiskGroupEntry};
-use crowdb_kv_client::HardwareClient;
+use crowdb_paxos_kv_client::HardwareClient;
 
 use crate::{
     error::{err_409, err_502, map_config_err, map_persist_err, ErrorBody},

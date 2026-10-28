@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::hardware::{DG_ID, UNIT_SIZE_BYTES};
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use crowdb_protocol::diskdb::rpc::{
     AllocateBlocksRequest, CommitBlocksRequest, CompactZoneRequest, FreeBlocksRequest, Segment,
 };

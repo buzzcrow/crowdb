@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::client_data::fixture_client;
-use crowdb_kv_client::DomainMonitorClient;
+use crowdb_paxos_kv_client::DomainMonitorClient;
 use crowdb_protocol::chunk_kv::{
     DomainFailurePolicy, DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest,
 };

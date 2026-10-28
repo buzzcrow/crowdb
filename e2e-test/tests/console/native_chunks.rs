@@ -3,7 +3,7 @@
 
 use super::native_context::TestNativeContext;
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use crowdb_protocol::chunkdb::rpc::{AllocateChunkRequest, ChunkType, Strip, StripType};
 use serde_json::{json, Value};
 use std::sync::Arc;

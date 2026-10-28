@@ -4,7 +4,7 @@
 use crowdb_console_shared::clients::http::ServerClient;
 use crowdb_console_shared::lifecycle;
 use crowdb_console_shared::mgmt::{AddGroupRequest, AddStoreRequest};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, PaxosKvClient, ReadMode};
 use std::time::Duration;
 
 async fn store_rpc_endpoint(mgmt_url: &str, store_id: u64) -> String {
@@ -48,11 +48,11 @@ async fn put_get_delete_cycle() {
         .expect("wait_for_leader");
 
     let endpoint = store_rpc_endpoint(&mgmt_url, store_id).await;
-    // `CrowdbKvClient` normally discovers leaders via `/topology`; here we
+    // `PaxosKvClient` normally discovers leaders via `/topology`; here we
     // already know the endpoint (just resolved it above), so seed it
     // directly rather than standing up topology discovery for a
     // single-node test.
-    let kv = CrowdbKvClient::new(ClientConfig::new(Vec::new()));
+    let kv = PaxosKvClient::new(ClientConfig::new(Vec::new()));
     kv.seed_leader(store_id, group_id, endpoint.clone());
 
     // Put.
@@ -182,11 +182,11 @@ async fn put_get_delete_cycle() {
         .expect_err("scan missing group");
     assert!(format!("{err}").contains("not found"), "got: {err}");
 
-    // A second, independently-constructed `CrowdbKvClient` seeded at the
+    // A second, independently-constructed `PaxosKvClient` seeded at the
     // same endpoint must also work end-to-end (no shared process-wide
-    // state to warm up -- `crowdb-kv-client`'s connection pool is
+    // state to warm up -- `crowdb-paxos-kv-client`'s connection pool is
     // per-instance and lazily connected).
-    let kv2 = CrowdbKvClient::new(ClientConfig::new(Vec::new()));
+    let kv2 = PaxosKvClient::new(ClientConfig::new(Vec::new()));
     kv2.seed_leader(store_id, group_id, endpoint.clone());
     let _ = kv2
         .put(store_id, group_id, b"cached", b"hit", None)

@@ -4,7 +4,7 @@
 //! Durable strip-reservation values co-located with their owning chunk.
 
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, GetOutcome, ReadMode, ScanOutcome};
+use crowdb_paxos_kv_client::{BatchOp, GetOutcome, ReadMode, ScanOutcome};
 use crowdb_protocol::chunkdb::rpc::{Chunk, StripReservationGroup};
 use crowdb_protocol::common::ChunkId;
 
@@ -217,9 +217,9 @@ impl ChunkStore {
         {
             Ok(_) => Ok(()),
             Err(
-                crowdb_kv_client::Error::CasFailed { .. }
-                | crowdb_kv_client::Error::CasBusy
-                | crowdb_kv_client::Error::OutcomeUnknown,
+                crowdb_paxos_kv_client::Error::CasFailed { .. }
+                | crowdb_paxos_kv_client::Error::CasBusy
+                | crowdb_paxos_kv_client::Error::OutcomeUnknown,
             ) => match self
                 .kv
                 .get(store_id, group_id, &key, ReadMode::Linearizable, None)

@@ -6,7 +6,7 @@ mod memory_kv;
 
 use axum::{body::Body, http::Request};
 use crowdb_console_shared::config::{ConsoleConfig, ServerEntry};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::mgmt::{
     node::{NodeBinding, NodeServiceAction, NodeServiceIntent},
     SystemBootstrapIdentity,
@@ -19,7 +19,7 @@ use tower::ServiceExt;
 #[tokio::test]
 async fn diskdb_restart_claims_the_remote_node_once_before_target_validation() {
     let cluster = memory_kv::TestKvCluster::start().await;
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+    let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
         cluster.mgmt_endpoints.clone(),
     )));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
@@ -71,7 +71,7 @@ async fn diskdb_restart_claims_the_remote_node_once_before_target_validation() {
 #[tokio::test]
 async fn kv_lifecycle_intents_preserve_admitted_endpoints_while_auxiliary_services_refresh() {
     let cluster = memory_kv::TestKvCluster::start().await;
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+    let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
         cluster.mgmt_endpoints.clone(),
     )));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
@@ -127,7 +127,7 @@ async fn kv_lifecycle_intents_preserve_admitted_endpoints_while_auxiliary_servic
         .any(|row| row["id"] == "chunkdb-1"));
 }
 
-async fn publish_intents(kv: &CrowdbKvClient, cluster_id: &str) {
+async fn publish_intents(kv: &PaxosKvClient, cluster_id: &str) {
     for (id, kind, configuration) in [
         ("kv-1", "kv", "node_id = 1\n"),
         (

@@ -19,7 +19,7 @@
   safety-net poller covers any missed notifies. The impact is purely
   load/efficiency under bursty workloads.
 - **Design pointers** —
-  [`doc/design/kv/design-crowdb-kv-watch-notify.md`](../design/kv/design-crowdb-kv-watch-notify.md)
+  [`doc/design/kv/design-crowdb-kv-watch-notify.md`](../design/kv/design-crowdb-paxos-kv-watch-notify.md)
   §3 (Coalescing — deferred) states the rationale and points
   back to this backlog item. The original coalescer design (struct
   shape, timer-task lifecycle, per-prefix debounce, step-down flush)
@@ -141,7 +141,7 @@
 
 - Depends on the watch/notify extension (`WatchRegistry`,
   `WatchCoalescer` apply-path hook, `WatchNotifyClient` — see
-  [`doc/design/kv/design-crowdb-kv-watch-notify.md`](../design/kv/design-crowdb-kv-watch-notify.md)).
+  [`doc/design/kv/design-crowdb-kv-watch-notify.md`](../design/kv/design-crowdb-paxos-kv-watch-notify.md)).
   That extension must be landed first; this item adds the coalescer
   layer on top.
 - No items depend on R82 — it is a pure load optimization.

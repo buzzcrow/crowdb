@@ -5,7 +5,7 @@ use crate::common::{
     control,
     management::{addresses, client, origin, request},
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient, ServiceRegistryClient};
 use crowdb_protocol::common::KvServerIdentity;
 use reqwest::Method;
 use serde_json::{json, Value};
@@ -83,7 +83,7 @@ async fn nonmember_recovers_discovery_and_registration_identity() {
         201,
     )
     .await;
-    let service = ServiceRegistryClient::new(CrowdbKvClient::new(ClientConfig::new(vec![leader.clone()])));
+    let service = ServiceRegistryClient::new(PaxosKvClient::new(ClientConfig::new(vec![leader.clone()])));
     for seeds in [
         json!([]),
         json!(["127.0.0.1:1"]),

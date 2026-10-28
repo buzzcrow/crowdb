@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use crowdb_diskio_client::{DiskioClient, DiskioClientConfig};
-use crowdb_kv::cluster::{
-    group::PxGroup, kv_server::KvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
+use crowdb_paxos_kv::cluster::{
+    group::PxGroup, paxos_kv_server::PaxosKvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient, ServiceRegistryClient};
 use crowdb_protocol::{
     common::{DiskId, HwStatus},
     diskdb::rpc::DiskValue,
@@ -16,7 +16,7 @@ use crowdb_protocol::{
 
 struct TestDiscovery {
     store: Arc<PxKvStore>,
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
 }
 impl TestDiscovery {
     async fn start() -> Self {
@@ -26,7 +26,7 @@ impl TestDiscovery {
             PxLocalReplica::new(1, PxLocalReplicaRole::Leader),
         ));
         store.start().await.unwrap();
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![])));
+        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(vec![])));
         kv.seed_leader(0, 0, store.listen_addr().unwrap().to_string());
         Self { store, kv }
     }

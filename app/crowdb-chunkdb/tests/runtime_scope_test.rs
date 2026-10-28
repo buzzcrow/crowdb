@@ -110,7 +110,7 @@ async fn production_runtime_dispatches_all_purposes_and_lists_only_owned_chunks(
 #[tokio::test]
 async fn native_snapshots_route_by_service_slot_and_refresh_endpoints_without_storage_map() {
     use crowdb_chunkdb_client::ChunkdbClient;
-    use crowdb_kv_client::{ChunkSlotMapClient, ServiceRegistryClient};
+    use crowdb_paxos_kv_client::{ChunkSlotMapClient, ServiceRegistryClient};
     use crowdb_protocol::chunk_slot::ChunkSlot;
     use crowdb_protocol::common::ChunkId;
 
