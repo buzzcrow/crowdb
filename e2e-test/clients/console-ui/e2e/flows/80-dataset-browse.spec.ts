@@ -56,6 +56,11 @@ test('Dataset native: browse', async ({ page, request }, testInfo) => {
     await expect(page.getByRole('region', { name: 'Dataset properties' })).toContainText('Properties · schema');
     await matrix.getByRole('button', { name: 'sample-00', exact: true }).click();
     await expect(page.getByRole('region', { name: 'Dataset properties' })).toContainText('c2FtcGxlLTAw');
+    const properties = page.getByRole('region', { name: 'Sample fields', exact: true });
+    await properties.getByRole('button', { name: 'Next fields', exact: true }).click();
+    await expect(properties).toContainText('field-12');
+    await expect(matrix.getByRole('columnheader')).toHaveCount(13);
+    await expect(matrix.getByRole('row').filter({ has: page.getByRole('button', { name: 'sample-00', exact: true }) })).toHaveAttribute('aria-selected', 'true');
     await matrix.getByRole('row').filter({ hasText: 'sample-00' }).getByRole('button', { name: 'inline · 7 B' }).click();
     await page.getByRole('button', { name: 'Preview field' }).click();
     await expect(page.getByLabel('Verified field preview')).toHaveText('value-0');

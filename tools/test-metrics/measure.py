@@ -77,7 +77,7 @@ def main():
         if len(matches) != 1:
             parser.error(f"expected one task named {suite}, found {matches}")
         environment, _ = matches[0]
-        subprocess.run(["pixi", "run", "clean-env"], cwd=ROOT, check=True)
+        subprocess.run(["pixi", "run", "clean", "--runtime-only"], cwd=ROOT, check=True)
         log = archive / f"measure-{suite}.out"
         command = ["pixi", "run", "-e", environment, suite]
         container_root = archive / f"container-{suite}"

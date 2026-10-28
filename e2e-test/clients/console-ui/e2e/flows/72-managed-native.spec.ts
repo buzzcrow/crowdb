@@ -3,6 +3,7 @@
 import { icebergWorkflow } from '../fixtures/managedData/iceberg';
 import { s3Workflow } from '../fixtures/managedData/s3';
 import { datasetWorkflow } from '../fixtures/managedData/dataset';
+import { capacityWorkflow } from '../fixtures/managedData/capacity';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -37,6 +38,7 @@ test('Managed native KV, Iceberg, S3, Dataset and Chunk operations retain hardwa
     expect(deleted.ok(), await deleted.text()).toBeTruthy();
   });
 
+  await capacityWorkflow(page, request);
   await icebergWorkflow(page, request);
   await s3Workflow(page, request);
   await datasetWorkflow(page, request);

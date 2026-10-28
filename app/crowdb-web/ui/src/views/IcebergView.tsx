@@ -2,11 +2,12 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { resourceMenuKey } from '../components/resourceMenuKey';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { useIcebergMenu } from '../iceberg/ResourceMenu';
 import { DocsHelp, Workbench, buttonClass } from '../access/Workbench';
 import { connections, iceberg } from '../access/native';
 import { Fields } from '../iceberg/Fields';
+import { EditorDetails } from '../iceberg/EditorDetails';
 import { InspectionView } from '../iceberg/ReferenceExplorer';
 import { TableContent } from '../iceberg/TableContent';
 import { useInspection } from '../iceberg/useInspection';
@@ -44,6 +45,7 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
   const readonly = domainReadonly;
   const [retry, setRetry] = useState(0);
   const [treeRevision, setTreeRevision] = useState(0);
+  const [editorDetails, setEditorDetails] = useState<ReactNode>(null);
   const [propertyHost, setPropertyHost] = useState<HTMLDivElement | null>(null);
   const [namespacePages, setNamespacePages] = useState<Record<string, NamespacePage>>({});
   const [pagedNamespaces, setPagedNamespaces] = useState(false);
@@ -164,13 +166,14 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
       await loadNamespace(target.namespace);
       if (target.table && action === 'commit') await loadTable(target.table, target.namespace);
     } else await loadNamespaces();
-  });
-  return <Workbench resizableSidebar showActivity={false} help={<DocsHelp href="https://crowdb.dev/docs/manual/iceberg/" title="iceberg" auth="The Console uses its server-side bearer token. External clients use ICEBERG_TOKEN; there is no separate username or password." />} detail={<div aria-label="Iceberg properties" className="tw-space-y-4"><h2 className="tw-font-semibold">Properties</h2><div ref={setPropertyHost} /><Fields stacked values={selectedProperties} /></div>} sidebar={<>
+  }, catalog?.overrides?.['crowdb.guarded-maintenance'] === 'true');
+  const referenceMenu = (event: React.MouseEvent, selection: Selection) => resourceMenu.open(event, { namespace: namespace!, table, loaded, selection });
+  return <EditorDetails.Provider value={setEditorDetails}><Workbench resizableSidebar showActivity={false} help={<DocsHelp href="https://crowdb.dev/docs/manual/iceberg/" title="iceberg" auth="The Console uses its server-side bearer token. External clients use ICEBERG_TOKEN; there is no separate username or password." />} detail={resourceMenu.editing && editorDetails ? editorDetails : <div aria-label="Iceberg properties" className="tw-space-y-4"><h2 className="tw-font-semibold">Properties</h2><div ref={setPropertyHost} /><Fields stacked values={selectedProperties} /></div>} sidebar={<>
     {busy && !catalog && <p role="status" className="tw-text-xs">Loading catalog…</p>}
     {catalog && <CatalogTree active={active} revision={treeRevision + retry} namespace={namespace} table={table} loaded={loaded} inspector={inspector}
       onContextMenu={resourceMenu.open} onCatalog={selectCatalog} onNamespace={selectNamespace} onTable={selectTable} />}
   </>}>
-    {!resourceMenu.editing && <h1 tabIndex={0} onKeyDown={resourceMenuKey} onContextMenu={event => { if (!selected) resourceMenu.open(event, { namespace: namespace ?? undefined, table: table || undefined }); }} className="tw-text-lg tw-font-semibold tw-break-all">{focusTitle}</h1>}
+    {!resourceMenu.editing && <h1 tabIndex={0} onKeyDown={resourceMenuKey} onContextMenu={event => { resourceMenu.open(event, { namespace: namespace ?? undefined, table: table || undefined, loaded, selection: selected ?? undefined }); }} className="tw-text-lg tw-font-semibold tw-break-all">{focusTitle}</h1>}
     {resourceMenu.overlay}
     {!resourceMenu.editing && <>
     {selected && <button className={buttonClass} disabled={inspector.busy} onClick={() => void inspector.select(selected, '0')}>Refresh {selectedType.toLowerCase()}</button>}
@@ -194,11 +197,11 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
       <div className="tw-flex tw-gap-2"><button className={buttonClass} disabled={busy || !namespacePrevious.length} onClick={() => { const previous = namespacePrevious.at(-1)!; setNamespacePrevious(namespacePrevious.slice(0, -1)); void run(() => loadNamespace(namespace, previous.table, previous.namespace), 'Previous page loaded'); }}>Previous page</button><button className={buttonClass} disabled={busy || !namespacePages[JSON.stringify(namespace)]?.paged} onClick={() => { setNamespacePrevious([]); void run(() => loadNamespace(namespace), 'First page loaded'); }}>First page</button><button className={buttonClass} disabled={busy || !namespacePages[JSON.stringify(namespace)]?.nextTables} onClick={() => { setNamespacePrevious([...namespacePrevious, namespaceCursor].slice(-32)); void run(() => loadNamespace(namespace, namespacePages[JSON.stringify(namespace)].nextTables!, namespaceCursor.namespace), 'Next tables loaded'); }}>Next tables</button><button className={buttonClass} disabled={busy || !namespacePages[JSON.stringify(namespace)]?.nextNamespaces} onClick={() => { setNamespacePrevious([...namespacePrevious, namespaceCursor].slice(-32)); void run(() => loadNamespace(namespace, namespaceCursor.table, namespacePages[JSON.stringify(namespace)].nextNamespaces!), 'Next namespaces loaded'); }}>Next namespaces</button></div>
     </>}
     {loaded && <>{!selected && <nav className="tw-flex tw-gap-2" aria-label="Table sections">{sections.map(value => <button key={value} className={buttonClass} aria-pressed={section === value} onClick={() => setSection(value)}>{value}</button>)}</nav>}
-      {!inspector.selection && <TableContent loaded={loaded} section={section} inspector={inspector} />}
-      <InspectionView inspector={inspector} propertyHost={propertyHost} />
+      {!inspector.selection && <TableContent loaded={loaded} section={section} inspector={inspector} onContextMenu={referenceMenu} />}
+      <InspectionView inspector={inspector} propertyHost={propertyHost} onContextMenu={referenceMenu} />
       {section === 'Files' && !inspector.selection && <p className="tw-text-xs tw-text-muted">Select a snapshot in the reference tree to inspect its manifest list, manifests and file metadata.</p>}
     </>}
 
     </>}
-  </Workbench>;
+  </Workbench></EditorDetails.Provider>;
 }

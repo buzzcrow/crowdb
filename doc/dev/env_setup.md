@@ -172,7 +172,7 @@ pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server
 # chunkio write sentinel also needs diskdb + chunkdb + diskio (C++)
 pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server \
     -p crowdb-diskdb -p crowdb-chunkdb
-pixi run build-cpp
+pixi run build
 ```
 
 Regression sentinels under `tools/`:

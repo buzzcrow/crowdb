@@ -14,7 +14,7 @@ export async function openDraft(dataset: string, parent?: string, source?: Split
   api.opaqueId(info.id);
   const head = await api.control<Head>(`${api.datasetPath(dataset)}/head`, 'GET', undefined, signal, info.id);
   const base = parent ?? head.latest;
-  let schema: Schema = { version: 1, fields: [] };
+  let schema: Schema = { version: 1, fields: [{ name: 'content', required: false }] };
   if (base) {
     const summary = await api.summary(dataset, base, signal);
     schema = { version: summary.schema_version, fields: [] };
@@ -22,7 +22,7 @@ export async function openDraft(dataset: string, parent?: string, source?: Split
     do {
       const page = await api.schemaPage(dataset, base, after, signal);
       schema.fields.push(...page.entries);
-      if (schema.fields.length > 256) throw new Error('Snapshot exceeds the 256-field editor limit.');
+      if (schema.fields.length > 64) throw new Error('Snapshot exceeds the 64-field editor limit. Use View for larger Schemas.');
       after = page.after ?? undefined;
     } while (after);
   }
@@ -30,8 +30,8 @@ export async function openDraft(dataset: string, parent?: string, source?: Split
   const revision = base && revisionId ? await api.revision(dataset, base, revisionId, signal) : undefined;
   const splits: DraftSplit[] = revision?.splits.map(({ name, definition }) => ({ name, definition, origin: { kind: 'inherited', source: { snapshot: base!, revision: revisionId!, name } } })) ?? [];
   const op: Operation = { version: 2, dataset, datasetId: info.id, kind: 'snapshot', resource: newId(), snapshot: base ?? undefined,
-    expectedHead: head.generation, editing: true, parentSchema: schema,
-    mapping: { version: 1, schema, samples: [] }, source: { parent: base, source: source ? { kind: 'split', source, selection: null } : { kind: 'all' }, schema, splits, policy: revision?.policy ?? defaultPolicy } };
+    expectedHead: head.generation, editing: true, parentSchema: schema, parentSplits: { splits, policy: revision?.policy ?? defaultPolicy },
+    mapping: { version: 1, schema, samples: [] }, source: { parent: base, source: source ? { kind: 'split', source, selection: null } : { kind: 'all' }, schema, splits: [], policy: defaultPolicy } };
   await saveOperation(op); return op;
 }
 

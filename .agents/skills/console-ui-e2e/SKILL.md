@@ -59,7 +59,7 @@ when sequencing suites or CI jobs. Fix a failure with its affected spec/group,
 then resume the remaining selection; use this skill for browser diagnosis.
 
 ```sh
-pixi run clean-env
+pixi run clean --runtime-only
 pixi run test-container-e2e --scope console.operations --case <registered-owner> --concurrency 1 --node-cpus 0.25 --cpus 8 --memory-mib 16384
 ```
 

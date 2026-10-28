@@ -11,7 +11,7 @@ import { ImportEditor } from './import/Editor';
 import { SplitEditor } from './splits/Editor';
 
 export type DatasetAction = 'delete' | 'composition' | 'split' | 'create-split' | 'remove-split' | 'resume' | 'stable' | 'retain' | 'release' | 'reclaim' | 'inspect';
-export function Actions({ selected: target, action, readonly, capabilities, complete, close = () => {} }: { selected: Exclude<DatasetSelection, { kind: 'root' }>; action: DatasetAction; readonly: boolean; capabilities: string[]; complete: (receipt?: PublicationResult) => void; close?: () => void }) {
+export function Actions({ selected: target, action, draftId, readonly, capabilities, complete, close = () => {} }: { selected: Exclude<DatasetSelection, { kind: 'root' }>; action: DatasetAction; draftId?: string; readonly: boolean; capabilities: string[]; complete: (receipt?: PublicationResult) => void; close?: () => void }) {
   const [selected] = useState(target);
   const started = useRef(false);
   const [editor, setEditor] = useState<{ kind: 'snapshot' | 'split'; parent?: string; revision?: string; source?: SplitSource; recovery?: Operation; sample?: string; field?: string }>();
@@ -20,8 +20,6 @@ export function Actions({ selected: target, action, readonly, capabilities, comp
   const run = async (action: () => Promise<void>) => { setBusy(true); setError(''); try { await action(); } catch (reason) { setError(String(reason)); } finally { setBusy(false); } };
   const open = async (kind: 'snapshot' | 'split') => {
     try {
-      const recovery = await savedOperation(dataset);
-      if (recovery) { setEditor({ kind: recovery.kind, recovery, parent: recovery.snapshot }); return; }
       const source = 'split' in selected && selected.split !== undefined && selected.revision && snapshot ? { snapshot, revision: selected.revision, name: selected.split } : undefined;
       setEditor({ kind, parent: snapshot, source, revision: 'revision' in selected ? selected.revision : undefined, sample: 'sample' in selected ? selected.sample : undefined, field: 'field' in selected ? selected.field : undefined });
     } catch (reason) { setError(String(reason)); }
@@ -38,7 +36,7 @@ export function Actions({ selected: target, action, readonly, capabilities, comp
     if (readonly && action !== 'inspect') return;
     if (action === 'composition' && capabilities.includes('composition-preparation') && capabilities.includes('snapshot-head-update')) void run(() => open('snapshot'));
     if (['split', 'create-split', 'remove-split'].includes(action) && snapshot && capabilities.includes('split-preparation') && capabilities.includes('split-head-update')) void run(() => open('split'));
-    if (action === 'resume') void run(async () => { const recovery = await savedOperation(dataset); if (!recovery) throw new Error('No saved request for this Dataset.'); setEditor({ kind: recovery.kind, recovery, parent: recovery.snapshot }); });
+    if (action === 'resume') void run(async () => { const recovery = await savedOperation(dataset, draftId); if (!recovery) throw new Error('No saved Draft for this Dataset.'); setEditor({ kind: recovery.kind, recovery, parent: recovery.snapshot }); });
     if (snapshot && action === 'stable' && capabilities.includes('dataset-management')) void run(async () => { setObservation(await api.mutate('dataset-management', `${api.datasetPath(dataset)}/names/stable`, 'PUT', { snapshot })); complete(); });
     if (snapshot && (action === 'retain' || action === 'release') && capabilities.includes('dataset-management')) void mutate(action);
     if (snapshot && action === 'reclaim' && capabilities.includes('snapshot-reclaim')) setConfirm(snapshot);

@@ -148,6 +148,11 @@ impl TableWrites {
 
 fn direct_error(error: DirectCommitError) -> IcebergErrorResponse {
     match error {
+        DirectCommitError::ReferencedSnapshot => IcebergErrorResponse::new(
+            409,
+            "CommitFailedException",
+            "Cannot expire a current or referenced snapshot",
+        ),
         DirectCommitError::Conflict => {
             IcebergErrorResponse::new(409, "CommitFailedException", "Table generation changed")
         }

@@ -823,7 +823,18 @@ the generation they validated or fail for the client to reconcile; they never
 merge implicitly.
 
 Ordinary commits prepare immutable metadata and publish with one TableHead CAS.
-They do not write a phase journal, per-file committed state or post-publication
+The Catalog config advertises `crowdb.guarded-maintenance=true` when table writes
+are installed. Console maintenance uses the optional CrowDB extension
+`x-crowdb-base-metadata-location` on an existing-table commit to bind the complete
+reviewed metadata generation. A changed base conflicts; guarded `remove-snapshots`
+also rejects every current or named-reference target on that exact base. The head
+CAS prevents a concurrent Branch or Tag from being silently removed. This guard
+does not change ordinary Iceberg update semantics and cannot accompany `assert-create`.
+An exact successful request replay returns its published metadata. Prepared metadata
+may still publish while its base remains current; when a newer generation conceals
+that operation's metadata file, the result stays uncertain rather than being rebased.
+
+Existing-table commits do not write a phase journal, per-file committed state or post-publication
 head settlement. No server instance is a table leader or lock owner. A current
 head carries the operation-named metadata pointer and an optional 32-byte digest
 binding principal, route and request bytes. A matching visible retry returns that

@@ -9,10 +9,11 @@ export type IcebergNode = TreeNode & { activate?: () => void; resource?: import(
 export const filename = (path: string) => path.split('/').pop() || path;
 const short = (value: string) => value.length > 24 ? `${value.slice(0, 12)}…${value.slice(-8)}` : value;
 const iconClass = 'tw-h-4 tw-w-4 tw-text-muted';
-export function referenceNodes(loaded: TableLoad, inspector: Inspector, page: number): IcebergNode[] {
+export function referenceNodes(loaded: TableLoad, inspector: Inspector, page: number, resource?: { namespace: string[]; table: string }): IcebergNode[] {
   const snapshots = [...(loaded.metadata.snapshots ?? [])].reverse();
   const current = String(loaded.metadata['current-snapshot-id']);
   const node = (selection: Selection, label: string, icon: TreeNode['icon']): IcebergNode => ({
+    resource: resource && { ...resource, loaded, selection },
     id: `ice-${selection.kind}-${inspector.key(selection)}`, type: 'Iceberg', label, icon,
     title: `${selection.kind} · ${selection.file?.location ?? selection.manifest?.location ?? selection.snapshot['snapshot-id']}`,
     selected: inspector.selection?.kind === selection.kind && inspector.key(inspector.selection) === inspector.key(selection),

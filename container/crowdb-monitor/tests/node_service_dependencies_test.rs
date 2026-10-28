@@ -5,11 +5,20 @@
 mod durable;
 
 use crowdb_monitor::{DeploymentProfile, NodeServiceForTests};
+use crowdb_protocol::chunk_kv::*;
+use crowdb_protocol::key::{ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, TextKey};
 use crowdb_protocol::mgmt::{
     node::{NodeBinding, NodeServiceAction, NodeServiceIntent},
     SystemBootstrapIdentity,
 };
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 #[tokio::test]
 async fn a_local_chunk_kv_listener_cannot_admit_access_before_catalog_authority_is_available() {
@@ -171,4 +180,136 @@ async fn healthy_diskdb_listener_must_publish_the_registered_disks_ownership_bef
         .unwrap();
     server.abort();
     assert!(!root.path().join("services/chunkdb-2/execution.json").exists());
+}
+
+#[tokio::test]
+async fn access_readiness_follows_catalog_redirects_within_its_probe_deadline() {
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("access-route-redirect");
+    let request = crowdb_protocol::mgmt::node::setup::NodeSetupRequest {
+        version: 1,
+        discovery_id: uuid::Uuid::new_v4().to_string(),
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        choices: crowdb_protocol::mgmt::node::setup::NodeSetupChoices::default(),
+    };
+    let authority = node_setup::TestAuthority::start(root.path(), &request).await;
+    let (rpc, requests) = redirecting_rpc();
+    publish_catalog(&authority.kv, rpc.port()).await;
+    let mut profile =
+        DeploymentProfile::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../oci-image/node-profile.toml"))
+            .unwrap();
+    profile.paths.data_root = root.path().to_path_buf();
+    // Isolate the routed catalog dependency; listener probes have separate coverage.
+    profile
+        .services
+        .iter_mut()
+        .find(|service| service.id == "access")
+        .unwrap()
+        .dependencies
+        .clear();
+    let intent = NodeServiceIntent {
+        cluster_id: authority.binding.bootstrap.cluster_id.clone(),
+        node_id: 2,
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        service_id: "access-2".into(),
+        kind: "access".into(),
+        action: NodeServiceAction::Restart,
+        configuration: String::new(),
+        environment: BTreeMap::new(),
+    };
+    let result = NodeServiceForTests::dependencies_ready_for_tests(&profile, &intent, &[]).await;
+    rpc.stop();
+    result.unwrap();
+    assert_eq!(requests.load(Ordering::Relaxed), 2);
+}
+
+fn redirecting_rpc() -> (crowdb_rpc_ffi::RpcServer, Arc<AtomicUsize>) {
+    let rpc = crowdb_rpc_ffi::RpcServer::new(None);
+    rpc.listen("127.0.0.1", 0).unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let observed = requests.clone();
+    rpc.register_reply_for_tests(
+        u16::try_from(crowdb_protocol::fb::FBMsgType::EChunkKvPointRequest.0).unwrap(),
+        move |request| {
+            let result = if observed.fetch_add(1, Ordering::Relaxed) == 0 {
+                Err(RpcFailure {
+                    code: ChunkKvRpcErrorCode::NotMyRange,
+                    message: "owner grant is catching up".into(),
+                    retry_after_ms: None,
+                    latest_map_revision: Some(1),
+                    owner_hint: None,
+                })
+            } else {
+                Ok(OperationResult::Value(None))
+            };
+            let response = ChunkKvResponse {
+                map_revision: 1,
+                journal_position: None,
+                result,
+            };
+            let (bytes, offset) = crowdb_protocol::chunk_kv_wire::encode_point_response(
+                request.request_id,
+                request.rpc_create_nano,
+                &response,
+            );
+            (bytes[offset..].to_vec(), Vec::new())
+        },
+    );
+    rpc.start();
+    (rpc, requests)
+}
+
+async fn publish_catalog(kv: &crowdb_kv_client::CrowdbKvClient, port: i32) {
+    let mut page = ChunkKvRangeCatalogPage {
+        generation: 1,
+        page_index: 0,
+        checksum: [0; 32],
+        entries: vec![ChunkKvRangeCatalogEntry {
+            partition_id: Id128 { high: 1, low: 1 },
+            range: KeyRange {
+                start: vec![],
+                end: None,
+            },
+            owner: OwnerDescriptor {
+                instance_id: 2,
+                rpc_endpoint: format!("127.0.0.1:{port}"),
+            },
+            owner_epoch: 1,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
+            transition_id: None,
+            artifact: PartitionArtifact {
+                tree_id: 1,
+                stream_name: crowdb_protocol::chunk_stream::StreamName { high: 1, low: 1 },
+                tail_overlay: None,
+            },
+        }],
+    };
+    page.seal().unwrap();
+    let mut head = ChunkKvRangeCatalogHead {
+        generation: 1,
+        previous_generation: None,
+        checksum: [0; 32],
+        pages: vec![ChunkKvRangeCatalogPageRef {
+            page_generation: 1,
+            page_index: 0,
+            first_key: vec![],
+            page_checksum: page.checksum,
+        }],
+    };
+    head.seal().unwrap();
+    for (key, value) in [
+        (
+            ChunkKvRangeCatalogPageKey {
+                generation: 1,
+                page_index: 0,
+            }
+            .to_path(),
+            serde_json::to_vec(&page).unwrap(),
+        ),
+        (
+            ChunkKvRangeCatalogHeadKey.to_path(),
+            serde_json::to_vec(&head).unwrap(),
+        ),
+    ] {
+        kv.put(0, 0, key.as_bytes(), &value, None).await.unwrap();
+    }
 }

@@ -3,6 +3,52 @@ use crowdb_access_iceberg::manifest::{
 };
 use serde_json::{json, Value};
 
+// Only the bounded console writer's scalar layouts can be reconstructed from
+// inspection rows. Reject extra fields (including encryption metadata) rather
+// than silently losing them during a manifest rewrite.
+pub(super) fn rewritable_schema(
+    metadata: &std::collections::BTreeMap<String, Vec<u8>>,
+    manifest: bool,
+) -> bool {
+    let Some(bytes) = metadata.get("avro.schema") else {
+        return false;
+    };
+    let Ok(schema) = serde_json::from_slice::<Value>(bytes) else {
+        return false;
+    };
+    let fields_match = |schema: &Value, expected: &[i64]| {
+        schema["fields"].as_array().is_some_and(|fields| {
+            fields.len() == expected.len()
+                && expected
+                    .iter()
+                    .all(|id| fields.iter().any(|field| field["field-id"].as_i64() == Some(*id)))
+        })
+    };
+    if !manifest {
+        return fields_match(
+            &schema,
+            &[500, 501, 502, 503, 517, 515, 516, 504, 505, 506, 512, 513, 514],
+        );
+    }
+    if !fields_match(&schema, &[0, 1, 2, 3, 4]) {
+        return false;
+    }
+    let Some(data) = schema["fields"]
+        .as_array()
+        .and_then(|fields| fields.iter().find(|field| field["field-id"] == 2))
+    else {
+        return false;
+    };
+    if !fields_match(&data["type"], &[134, 100, 101, 102, 103, 104]) {
+        return false;
+    }
+    data["type"]["fields"]
+        .as_array()
+        .and_then(|fields| fields.iter().find(|field| field["field-id"] == 102))
+        .and_then(|field| field["type"]["fields"].as_array())
+        .is_some_and(Vec::is_empty)
+}
+
 pub(super) fn stringify_integers(value: &mut Value) {
     match value {
         Value::Number(number) if number.is_i64() || number.is_u64() => {

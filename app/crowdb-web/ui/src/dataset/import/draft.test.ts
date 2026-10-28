@@ -11,10 +11,11 @@ vi.mock('../api', async original => ({ ...await original<typeof import('../api')
 }));
 it('freezes the default Latest, Dataset identity, head, schema and Split policy at opening', async () => {
   const draft = await openDraft('training');
+  expect(draft.source?.splits).toEqual([]);
   expect(draft.datasetId).toBe('1'.repeat(32)); expect(draft.expectedHead).toBe('3'.repeat(64));
   expect(draft.source?.parent).toBe('2'.repeat(32));
-  expect(draft.source?.policy).toEqual({ overlap: 'allow_overlap', coverage: 'require_complete' });
-  expect(draft.source?.splits[0].origin).toEqual({ kind: 'inherited', source: { snapshot: '2'.repeat(32), revision: '4'.repeat(32), name: 'train' } });
+  expect(draft.parentSplits?.policy).toEqual({ overlap: 'allow_overlap', coverage: 'require_complete' });
+  expect(draft.parentSplits?.splits[0].origin).toEqual({ kind: 'inherited', source: { snapshot: '2'.repeat(32), revision: '4'.repeat(32), name: 'train' } });
   expect(vi.mocked(api.control).mock.calls[1][4]).toBe(draft.datasetId);
 });
 it('accumulates independent fields on the same Sample and keeps clear distinct from removal', async () => {

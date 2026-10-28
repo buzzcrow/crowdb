@@ -62,7 +62,7 @@ export function CatalogTree(props: Props) {
           activate: () => props.onTable(entry.name, ns),
           footer: selected && loaded && (loaded.metadata.snapshots?.length ?? 0) > 20 && <div className="tw-flex tw-gap-2 tw-text-xs"><button disabled={!snapshotPage} onClick={() => setSnapshotPage(snapshotPage - 1)}>Previous snapshots</button><button disabled={(snapshotPage + 1) * 20 >= (loaded.metadata.snapshots?.length ?? 0)} onClick={() => setSnapshotPage(snapshotPage + 1)}>Next snapshots</button></div>,
           children: selected && loaded ? [
-            ...referenceNodes(loaded, inspector, snapshotPage),
+            ...referenceNodes(loaded, inspector, snapshotPage, { namespace: ns, table: entry.name }),
           ] : [],
         };
       })],

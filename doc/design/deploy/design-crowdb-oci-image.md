@@ -29,7 +29,9 @@ macOS implementation and Kubernetes deployment automation are deferred.
 
 - **I1 — Docker-free build**: a Linux amd64 host with Pixi and documented kernel
   prerequisites can compile, stage, construct and validate an OCI image without
-  Docker CLI, Docker daemon, Docker socket or containerd daemon.
+  Docker CLI, Docker daemon, Docker socket or containerd daemon. The public
+  shortcut selects this archive-only behavior explicitly; its default also
+  loads the validated artifact into local Docker.
 - **I2 — One image**: for a given architecture and release, Docker and containerd
   consume the same published image digest. Local and Production formation use
   accepted startup policies rather than separate image builds.
@@ -131,15 +133,25 @@ The public build operation has three stages:
   to the requested local artifact path.
 
 Rootless construction is preferred, subject to user namespaces and snapshotter
-support. Preflight reports required kernel/host setup. No automatic privileged
+support. Before compilation, preflight exercises the pinned RootlessKit with the
+same user namespace and mount setup used by the builder and reports complete
+startup diagnostics. Dependency installation on Linux amd64 and the public OCI
+build entry point set up a per-executable AppArmor profile through sudo when
+the namespace probe identifies the host's AppArmor restriction. Setup validates
+the profile before installation, keeps checkout paths distinct, leaves global
+policy unchanged and verifies namespace startup after loading it. Existing
+working hosts require no privilege prompt. Noninteractive runs fail promptly
+when sudo authentication is unavailable. No automatic privileged builder
 fallback is allowed: a documented administrator-enabled build mode can be
 selected explicitly if rootless support is unavailable. Pixi supplies userspace
 tools, not kernel capabilities or privilege delegation.
 
 The common build component lives under `container/oci-image/`. The existing
 single-node component delegates staging and image construction to it while
-retaining its startup conveniences and acceptance tests. A Docker load/start
-helper is separate from the Docker-free image build. The same split supports a
+retaining its startup conveniences and acceptance tests. Docker import is a
+separate step after Docker-free construction and validation. The public shortcut
+performs that import by default and accepts an archive-only option that avoids
+all Docker access. The same split supports a
 future Linux-VM build backend without putting host-platform branches in the
 image recipe.
 
@@ -219,6 +231,17 @@ trigger managed-file fallback. Local defaults to one 16-GiB sparse managed file
 and a 1-GiB host reserve. Production automatic storage uses preallocation and
 rejects sparse files. File preallocation failure never authorizes sparse fallback.
 
+New managed files use 1-MiB allocation units and whole 256-MiB zones. For
+capacities not divisible by 256 MiB, the zone size is halved until it divides
+the capacity, down to the 64-MiB bitmap-word minimum. The default 16-GiB file
+therefore has 64 zones, leaving non-active zones available for background
+reclamation while four zones accept allocations. The accepted preparation
+persists this geometry: retries and restarts never repartition existing files.
+Files smaller than five minimum-size zones cannot provide a spare zone for this
+background rotation; their capacity remains valid, but reclamation may wait for
+allocation to rotate the full active set out.
+
+
 Supplied provisioning seals the canonical physical host/resource and physical
 capacity separately from whole-zone usable geometry. A full-file loop device
 shares its backing file's canonical resource; partitions, loop slices and ambiguous
@@ -281,8 +304,18 @@ file hashes. Resume accepts the same inputs and exact owned container, or
 recreates that container against the retained data. A foreign same-name object,
 changed daemon or changed configuration fails before start/stop effects.
 Application UUID binding is separate and can be sealed only after observing
-that cluster. Independent host cleanup verifies the same ownership and removes
-only the container, preserving media, data and receipts.
+that cluster. One cleanup entry point selects all recorded bridge and host-network
+clusters by default, or one explicitly named cluster. Cleanup verifies the same
+ownership and removes containers, unused owned bridges, node data and matching
+launch/application receipts. Bridge data is held in owned Docker volumes. Host
+data deletion requires the retained storage declaration to match accepted media
+and rejects symlinked roots, nested mounts, overlapping recorded data directories
+and bind mounts referenced by another container in the selected runtime. Supplied
+disk files, raw devices and external policy/password inputs are preserved;
+cleanup never wipes their contents. Retaining data and restart receipts is an
+explicit cleanup option. Failures leave ownership retryable until data deletion
+and target-binding removal complete. Containerd-only cleanup requires no Docker
+daemon or CLI binary.
 
 Explicit monitor liveness/readiness probes report node health. A dedicated
 systemd unit restarts the containerd daemon, and its restart plugin applies the

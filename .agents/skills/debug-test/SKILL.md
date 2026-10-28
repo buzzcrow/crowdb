@@ -34,7 +34,7 @@ Use existing runner records where available.
 - Complete shared build prerequisites before parallel test jobs. Never run
   concurrent builders against the same output directory; use independent
   output directories when parallel builds are necessary. Perform shared
-  environment cleanup before dispatch; do not repeat `clean-env` while other
+  environment cleanup before dispatch; do not repeat `clean --runtime-only` while other
   local jobs still own running fixtures. Host browser fixtures that require
   stable Docker networks also share that constraint across local CI jobs;
   keep their browser phases separate from other jobs' bridge creation/removal.

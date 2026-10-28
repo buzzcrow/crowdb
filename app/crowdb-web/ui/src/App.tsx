@@ -160,7 +160,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   });
   const { instances: diskdbInstances, usage: capacityUsage, hardwareCapacity, scanStatus: capacityScanStatus, loading: capLoading, error: capError, refresh: refreshCapacity, refreshRuntime: observeCapacityRuntime } = useCapacityTree({
     enabled: domain === Domain.Capacity || domain === Domain.Cluster,
-    observeRuntime: capacityActive && (scopeEntity?.type === 'DiskGroup' || scopeEntity?.type === 'Disk'),
+    observeRuntime: capacityActive,
     diskGroupId: scopeForDomain(Domain.Cluster)?.parentIds?.disk_group_id !== undefined
       ? Number(scopeForDomain(Domain.Cluster)!.parentIds!.disk_group_id)
       : scopeForDomain(Domain.Cluster)?.type === 'DiskGroup' ? Number(scopeForDomain(Domain.Cluster)!.id) : undefined,

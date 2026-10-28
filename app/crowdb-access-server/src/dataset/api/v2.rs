@@ -18,6 +18,7 @@ mod read_models;
 mod reads;
 mod split_models;
 mod split_preparation;
+mod split_preview;
 mod split_requests;
 mod split_responses;
 mod splits;
@@ -80,6 +81,7 @@ impl DatasetHttpService {
                 "dataset-delete",
                 "dataset-identity-fence",
                 "split-revisions",
+                "split-preview",
                 "split-revision-delete",
                 "split-preparation",
                 "split-head-update",
@@ -122,6 +124,11 @@ impl DatasetHttpService {
                         .v2_exact_matrix(&identity, super::snapshot(id)?, request)
                         .await;
                 }
+            }
+            if let ["snapshots", id, "split-preview"] = tail.as_slice() {
+                return self
+                    .v2_split_preview(&identity, super::snapshot(id)?, request)
+                    .await;
             }
             if let ["snapshots", id] = tail.as_slice() {
                 if request.method() == Method::PUT {

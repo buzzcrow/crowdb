@@ -25,7 +25,7 @@ export async function upload(dataset: string, file: File, progress: (text: strin
       if (!(reason instanceof api.DatasetError) || reason.status !== 404) throw reason;
       status = await create();
     }
-    if (status.state === 'aborted') {
+    if (status.state === 'aborted' || (status.state !== 'claimed' && Number(status.expires_at) * 1000 <= Date.now())) {
       id = newId(); localStorage.setItem(key, id); await register?.(id, key);
       path = `${api.datasetPath(dataset)}/uploads/${id}`; status = await create();
     }

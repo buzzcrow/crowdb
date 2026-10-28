@@ -25,11 +25,11 @@ export async function openDataset(page: Page, name: string) {
   await page.getByRole('navigation', { name: 'Dataset tree', exact: true }).getByRole('button', { name, exact: true }).click();
 }
 export async function publishResult(page: Page, kind: 'Snapshot' | 'Split revision') {
-  await page.getByRole('button', { name: `Submit ${kind}`, exact: true }).click();
+  await page.getByRole('button', { name: 'Commit', exact: true }).click();
   await expect(page.getByRole('region', { name: kind === 'Snapshot' ? 'Import Snapshot' : 'Edit Split revision', exact: true })).toHaveCount(0);
 }
 export async function mapping(page: Page, value: unknown) {
-  await page.getByText('Advanced batch mapping', { exact: true }).click();
+  await expandEditor(page, 'Advanced');
   await page.getByRole('textbox', { name: 'Sample mapping JSON', exact: true }).fill(JSON.stringify(value));
   await page.getByRole('button', { name: 'Apply batch mapping', exact: true }).click();
 }
@@ -40,4 +40,36 @@ export async function publishSplits(request: APIRequestContext, name: string, sn
     splits, policy: { overlap: 'disjoint', coverage: 'allow_unassigned' },
   });
   return call(request, `${path}/split-head`, 'PUT', { revision, expected_revision: head.revision, expected_head: head.generation });
+}
+
+export async function expandEditor(page: Page, title: string) {
+  const summary = page.locator('summary').filter({ hasText: new RegExp(`^${title}$`) });
+  if (await summary.locator('..').getAttribute('open') === null) await summary.click();
+}
+
+export async function addField(page: Page, name: string, required = false) {
+  await page.getByRole('button', { name: 'Add Field', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add Field', exact: true });
+  await dialog.getByLabel('Field name', { exact: true }).fill(name);
+  await dialog.getByLabel('New field required').setChecked(required);
+  await dialog.getByRole('button', { name: 'Add Field', exact: true }).click();
+}
+export async function addSample(page: Page, name: string) {
+  const table = page.getByRole('table', { name: 'Snapshot editor table', exact: true });
+  await page.getByRole('button', { name: 'Add Sample', exact: true }).click();
+  const input = table.getByRole('textbox', { name: /^Sample ID for sample-[0-9a-f]{8}$/ });
+  await input.fill(name); await input.press('Tab');
+  await expect(table.getByLabel(`Sample ID for ${name}`, { exact: true })).toHaveValue(name);
+}
+export async function textCell(page: Page, sample: string, field: string, value: string) {
+  const input = page.getByRole('textbox', { name: `${field} for ${sample}`, exact: true });
+  await input.focus();
+  await expect(input).not.toHaveAttribute('readonly', '');
+  await input.fill(value);
+  await expect(page.getByRole('dialog', { name: `Edit ${field}`, exact: true })).toHaveCount(0);
+}
+export async function resumeDraft(page: Page, name: string, resource: string) {
+  const tree = page.getByRole('navigation', { name: 'Dataset tree', exact: true });
+  await tree.getByRole('button', { name, exact: true }).click();
+  await tree.getByRole('button', { name: `Snapshot Draft ${resource.slice(0, 8)}`, exact: true }).click();
 }

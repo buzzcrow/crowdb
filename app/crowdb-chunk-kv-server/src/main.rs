@@ -569,6 +569,7 @@ async fn main() -> std::process::ExitCode {
             info!("chunk KV service admission drained");
         })
         .await;
+    info!("chunk KV HTTP shutdown complete");
     if let Err(error) = &serving {
         error!(%error, "HTTP management server failed");
     }
@@ -576,18 +577,26 @@ async fn main() -> std::process::ExitCode {
     materialization_task.abort();
     transition_task.abort();
     refresh_task.abort();
-    let _ = tokio::join!(
+    // These workers only observe the service and have already been fenced by
+    // begin_drain. Drop their handles after cancellation: a worker may be in
+    // a synchronous storage observation, and waiting for that observation here
+    // would hold the management restart request open until the supervisor kills
+    // the process. The service drain below is the durable shutdown barrier.
+    drop((
         heartbeat_task,
         materialization_task,
         transition_task,
-        refresh_task
-    );
+        refresh_task,
+    ));
+    info!("chunk KV background workers stopped");
     if let Err(error) = service.drain_writers().await {
         warn!(%error, "WAL writer drain incomplete; restart must retain lease exclusion");
     }
+    info!("chunk KV WAL writer drain complete");
     if let Err(error) = process_lease.withdraw_observation().await {
         warn!(%error, "failed to unregister chunk KV instance");
     }
+    info!("chunk KV observation withdrawal complete");
     if let Some(runner) = &mut metrics_runner {
         runner.stop().await;
     }

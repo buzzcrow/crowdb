@@ -42,6 +42,34 @@ class LifecycleTest(unittest.TestCase):
                     self.fail("unready daemon accepted a build")
                 self.assertEqual(kill.call_count, 0 if exited else 1)
 
+    def test_rootless_shutdown_signals_only_the_forwarding_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            process = MagicMock(pid=42)
+            process.poll.return_value = None
+            with (patch('builder.preflight'), patch('builder.tool', side_effect=lambda name: name),
+                  patch('builder.subprocess.Popen', return_value=process),
+                  patch('builder.subprocess.run', return_value=MagicMock(returncode=0)),
+                  patch('builder.Path.exists', return_value=True), patch('builder.os.killpg') as kill):
+                with running(Path(directory)):
+                    pass
+            process.terminate.assert_called_once_with()
+            process.wait.assert_called_once_with(timeout=10)
+            kill.assert_not_called()
+
+    def test_unresponsive_rootless_parent_still_kills_its_owned_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            process = MagicMock(pid=42)
+            process.poll.return_value = None
+            process.wait.side_effect = [subprocess.TimeoutExpired('rootlesskit', 10), None]
+            with (patch('builder.preflight'), patch('builder.tool', side_effect=lambda name: name),
+                  patch('builder.subprocess.Popen', return_value=process),
+                  patch('builder.subprocess.run', return_value=MagicMock(returncode=0)),
+                  patch('builder.Path.exists', return_value=True), patch('builder.os.killpg') as kill):
+                with running(Path(directory)):
+                    pass
+            process.terminate.assert_called_once_with()
+            kill.assert_called_once_with(42, signal.SIGKILL)
+
 
 class PublicationTest(unittest.TestCase):
     def test_registry_copy_must_preserve_verified_digest(self):

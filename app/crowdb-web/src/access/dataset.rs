@@ -14,7 +14,7 @@ const PREFIX: &str = "/api/access/dataset";
 const API: &str = "/api/dataset/v2";
 const METADATA_LIMIT: usize = 1024 * 1024;
 
-/// The exact matrix POST is an observation, not a state change.
+/// Exact matrix and Split preview POSTs observe immutable Snapshot content.
 pub(crate) fn observes(method: &Method, path: &str) -> bool {
     if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
         return true;
@@ -25,7 +25,7 @@ pub(crate) fn observes(method: &Method, path: &str) -> bool {
     let parts: Vec<_> = path.split('/').collect();
     *method == Method::POST
         && matches!(parts.as_slice(),
-        ["", "namespaces", "dataset-ns", "datasets", dataset, "snapshots", snapshot, "matrix"]
+        ["", "namespaces", "dataset-ns", "datasets", dataset, "snapshots", snapshot, "matrix" | "split-preview"]
         if !dataset.is_empty() && snapshot.len() == 32 && snapshot.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 

@@ -13,7 +13,7 @@ info:
     bounded-inspection; explicit POST inspection preparation requires
     inspection-preparation. Dataset creation, stable/retention changes and receipts
     require dataset-management; direct Snapshot head updates require snapshot-head-update;
-    Split reads require split-revisions; complete Split preparation requires split-preparation;
+    Split reads require split-revisions; read-only rule previews require split-preview; complete Split preparation requires split-preparation;
     direct Split head updates require split-head-update; explicit complete-revision
     deletion requires split-revision-delete and never falls back to draft abandonment; versioned
     stateless reads require stateless-reads. Upload, Snapshot composition preparation and retirement
@@ -268,6 +268,36 @@ paths:
       responses:
         '200':
           description: Bounded metadata result; counts and byte lengths are decimal strings.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SamplePage'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-preview:
+    parameters:
+      - {$ref: '#/components/parameters/datasetInstance'}
+    post:
+      operationId: previewSnapshotSplit
+      summary: Preview one Split definition without creating a revision
+      description: >-
+        Requires split-preview. Read-only bounded evaluation on a complete Snapshot,
+        including frozen inherited membership. Limit bounds scanned Samples, not
+        returned matches; an empty page can have a continuation. The cursor binds
+        the immutable scope and complete definition. No draft, evaluation progress,
+        resource or read session is written. Uploaded payload bytes are not read.
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+        - {$ref: '#/components/parameters/after'}
+        - {$ref: '#/components/parameters/limit'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DraftSplit'}
+      responses:
+        '200':
+          description: Matching base64 Sample IDs and scan continuation.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/SamplePage'}

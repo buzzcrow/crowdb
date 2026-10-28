@@ -11,7 +11,7 @@ export function useDatasetMenu(readonly: boolean, capabilities: string[], create
     if (selected.kind === 'root') items.push({ id: 'create', label: 'Create Dataset…', disabled: readonly || !capabilities.includes('dataset-management'), onSelect: create });
     else {
       const add = (key: DatasetAction, label: string, required: string[] = []) => items.push({ id: key, label, destructive: ['delete', 'remove-split', 'reclaim'].includes(key), disabled: key !== 'inspect' && (readonly || required.some(capability => !capabilities.includes(capability))), onSelect: () => action(selected, key) });
-      add('composition', selected.kind === 'split' ? 'Create child from Split…' : ['sample', 'cell', 'schema'].includes(selected.kind) ? 'Edit in child Snapshot…' : 'snapshot' in selected ? 'Create child Snapshot…' : 'Import / New Snapshot…', ['composition-preparation', 'snapshot-head-update']);
+      add('composition', selected.kind === 'split' ? 'Create child from Split…' : ['sample', 'cell', 'schema'].includes(selected.kind) ? 'Edit in child Snapshot…' : 'snapshot' in selected ? 'Create child Snapshot…' : 'New Snapshot…', ['composition-preparation', 'snapshot-head-update']);
       add('resume', 'Resume saved request…');
       if (selected.kind === 'dataset') add('delete', 'Delete Dataset…', ['dataset-delete']);
       if ('snapshot' in selected) {

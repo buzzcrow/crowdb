@@ -10,9 +10,16 @@ Run commands through `pixi run`. Read only the directory relevant to the task.
   `unit GROUP`, `e2e DOMAIN`, `profile NAME`, or `all`. Container lifecycle
   remains owned by `e2e-test/run.py`. Component runs retain phase logs and wall
   times under `.crowdb-runtime/artifacts/unit/`.
-  `clean-env` stops only recorded ephemeral processes and preserves persistent
-  clusters. `oci-clean --cluster NAME` removes owned containers and unused
-  bridges; data deletion requires explicit `--delete-data`.
+  `install-deps` prepares host prerequisites, frontend packages and profiling
+  tools, and enables Pixi Bash completion in `~/.bashrc` without duplicating an
+  existing entry. New Bash terminals load the completion automatically; source
+  `~/.bashrc` to enable it in an existing terminal.
+  `build` compiles C++, Rust release binaries, the frontend and workspace
+  test targets without executing tests. `clean` stops services and removes build
+  products and the runtime tree. `clean --runtime-only` stops only recorded
+  ephemeral processes and preserves build products and persistent clusters.
+  `oci-clean --cluster NAME` removes owned containers, unused bridges and node
+  data; `--keep-data` preserves data and restart receipts.
 - **`ci-checks/`** — version consistency, production concurrency-container
   policy and package-to-Pixi-to-CI coverage. `task_graph.py` follows task calls
   through shell scripts; it is shared with timing collection.
@@ -39,7 +46,7 @@ Common entry points:
 ```sh
 pixi run check-ci-test-tasks
 pixi run check-version
-pixi run clean-env
+pixi run clean --runtime-only
 pixi run bash tools/test-metrics/measure.sh test-access test-console
 ```
 
@@ -120,5 +127,5 @@ pixi run test profile containerd-cluster
 pixi run test-e2e-iceberg
 ```
 
-On a fresh checkout, use `test-cpp` and `test-console-ui`; their Pixi
-dependencies build C++ and install UI packages before dispatch.
+On a fresh checkout, `test-cpp` depends on the unified build and `test-console-ui`
+depends on dependency installation before dispatch.

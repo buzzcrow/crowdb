@@ -84,7 +84,7 @@ Verification commands:
 
 - `pixi run -- cargo test --manifest-path sdk/Cargo.toml --workspace`
 - `pixi run -- python -m unittest discover -s sdk -p 'test_*.py'`
-- `pixi run clean-env && pixi run test-e2e-dataset`
+- `pixi run clean --runtime-only && pixi run test-e2e-dataset`
 - `pixi run -- cargo fmt --manifest-path sdk/Cargo.toml --all -- --check`
 - `pixi run -- cargo clippy --manifest-path sdk/Cargo.toml --workspace --all-targets -- -D warnings`
 - `pixi run rs-fmt-check`

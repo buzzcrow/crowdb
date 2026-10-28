@@ -3,7 +3,7 @@
 
 import { buttonClass, JsonView } from '../access/Workbench';
 import type { PublicationResult } from './types';
-import { forgetOperation, prepare, publish, retryIdentical, useObservedHead, type Operation } from './operation';
+import { correctedDraft, forgetOperation, prepare, publish, retryIdentical, useObservedHead, type Operation } from './operation';
 
 export function Publication({ operation: op, update, complete, close, busy, run }: {
   operation: Operation; update: (op: Operation) => void; complete: (result: PublicationResult) => void;
@@ -22,6 +22,7 @@ export function Publication({ operation: op, update, complete, close, busy, run 
       <p role="status">Reply unavailable. The complete request is saved in this browser.</p>
       <button className={buttonClass} disabled={busy} onClick={() => run(async () => finish(await retryIdentical(op)))}>Retry identical request</button>
     </div> : <div className="tw-flex tw-flex-wrap tw-gap-2">
+      {op.rejectedPreparation && !op.prepared && (op.mapping || op.kind === 'split') && <button className={buttonClass} disabled={busy} onClick={() => run(async () => update(await correctedDraft(op)))}>Edit as new Draft</button>}
       {!op.prepared && op.input && <button className={buttonClass} disabled={busy} onClick={() => run(async () => { await prepare(op); update({ ...op }); })}>Prepare complete result</button>}
       <button className={buttonClass} disabled={busy || !op.prepared || !!op.conflict} onClick={() => run(async () => finish(await publish(op)))}>Publish {op.kind === 'snapshot' ? 'Snapshot' : 'Split revision'}</button>
       {op.conflict && <div><p>The head changed. Review the returned values before replacing it with this complete result.</p><JsonView value={op.conflict} />

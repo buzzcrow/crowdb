@@ -5,20 +5,29 @@
 
 Build one Linux amd64 image for Docker and containerd. Ubuntu 24.04 is pinned
 by digest; the common recipe packages the existing release binaries, UI and SSH.
-The build requires Pixi and Linux kernel privileges, with no Docker installation,
-socket or containerd service. Running the image is a separate operation.
+Construction requires Pixi and Linux kernel privileges, with no Docker or
+containerd service. The `oci-build` shortcut also loads the result into local
+Docker by default; use `--no-load` for Docker-free archive construction.
+Running the image is a separate operation.
 
 ## Build and import
 
 ```bash
 pixi run oci-build --output target/crowdb.oci.tar
+pixi run docker images crowdb-node
 pixi run --manifest-path container/oci-image/pixi.toml inspect target/crowdb.oci.tar --receipt
-# Optional import into the system Docker image store:
+# Build only an archive on a host without Docker:
+pixi run oci-build --no-load
+# Import an existing archive without rebuilding:
 pixi run --manifest-path container/oci-image/pixi.toml import target/crowdb.oci.tar --image crowdb-node:dev
 ```
 
 `oci-build` compiles/stages with the repository environment, then selects the
-locked standalone builder environment. `--staged` reuses an existing
+locked standalone builder environment. It loads `crowdb-node:dev` into Docker
+after archive validation, or uses `CROWDB_CONTAINER_IMAGE` / `--load-image NAME`
+for a different tag. Docker availability is checked before compilation when
+loading is enabled; import failures fail the command and preserve the archive.
+`--no-load` skips all Docker access. `--staged` reuses an existing
 `target/container-runtime`. Unsupported platforms fail before compilation.
 Only Linux amd64 is enabled; macOS will compile inside a Linux VM backend.
 
@@ -27,8 +36,35 @@ UID/GID ranges for the invoking user, and permitted unprivileged user namespaces
 Pixi supplies RootlessKit, BuildKit and runc; it cannot grant kernel privileges.
 The builder uses the native snapshotter and host network, so no FUSE or CNI is
 required. Startup errors include complete daemon diagnostics. Rootless preflight
-validates these requirements before starting BuildKit.
+validates these requirements by starting the pinned RootlessKit with the same
+namespace and mount setup before compiling or starting BuildKit.
 Both rootless build/import and the explicit rootful recipe are supported.
+
+On Linux amd64, `pixi run install-deps` also prepares the OCI builder's host
+prerequisites. On hosts that restrict unprivileged user namespaces through
+AppArmor, the system RootlessKit profile does not cover the Pixi executable.
+When the namespace probe reports that denial, setup generates, validates,
+installs and loads a profile for the pinned executable through sudo. Enter the
+sudo password in the same terminal when prompted; dependency installation then
+continues. A healthy namespace probe requires no sudo or policy changes.
+
+`oci-build` performs the same check and setup before compiling, so it also works
+directly on a host that has not run `install-deps`:
+
+```bash
+pixi run oci-build
+```
+
+Profiles allow user namespaces for one executable path, have distinct names per
+checkout/environment path and leave the host-wide restriction unchanged. This
+is host configuration, separate from the tools installed in Pixi. A setup
+failure stops before compilation. Unattended runs use noninteractive sudo and
+fail promptly if administrator provisioning or authentication is needed. Other
+kernel or UID/GID mapping errors remain host prerequisite failures.
+Administrators can inspect generated policy with `preflight.py --apparmor-profile`
+in the OCI Pixi environment. If compilation and staging already completed before
+a host prerequisite failure, use `pixi run oci-build --staged` to reuse those
+artifacts.
 
 If rootless prerequisites are unavailable, an administrator can explicitly run:
 
@@ -66,7 +102,7 @@ needed. Do not replace the image entrypoint with the monitor for normal nodes.
 Build and load once, then run a named cluster:
 
 ```bash
-pixi run oci-build --load
+pixi run oci-build
 pixi run oci-run --cluster demo
 # Explicit equivalent of oci-run:
 pixi run oci-run-1c --cluster demo
@@ -74,11 +110,11 @@ pixi run oci-run-1c --cluster demo
 pixi run oci-run-3c --cluster demo-three --port-base 9190
 pixi run oci-stop --cluster demo-three
 pixi run oci-run-3c --cluster demo-three
-pixi run oci-clean --cluster demo-three
+pixi run oci-clean --cluster demo-three --keep-data
 # Recreate containers and bridge with the original volumes and accepted policy:
 pixi run oci-run-3c --cluster demo-three
-# Explicitly delete the owned data too:
-pixi run oci-clean --cluster demo-three --delete-data
+# Clean containers, bridge and owned data:
+pixi run oci-clean --cluster demo-three
 ```
 
 Run never compiles, downloads or pulls an image. It accepts `--image`, `--cpus`,
@@ -86,18 +122,32 @@ Run never compiles, downloads or pulls an image. It accepts `--image`, `--cpus`,
 A different node count or conflicting input requires another cluster name.
 Ports for each node are UI/S3/Iceberg/Dataset at base/base+1/base+2/base+3;
 subsequent members add 10 and 20. All published ports bind to `127.0.0.1`.
-Names default to `local`; global stop/clean requires explicit `--all`.
+Run and stop default to `local`; stop accepts `--all` for every recorded local
+cluster. Clean defaults to every recorded local and host-network cluster and
+deletes their node data; use `--cluster NAME` to clean only one. Explicit `--all`
+also selects every recorded cluster. Use `--keep-data` to preserve data and
+restart receipts; `--delete-data` explicitly selects the default deletion mode.
+
+```bash
+pixi run oci-clean
+```
+
+With no cluster receipts, clean reports that there are no recorded clusters and
+checks for dangling CROWDB images if Docker is installed. An explicitly named
+cluster without a receipt remains an error. Containerd-only host cleanup needs
+no Docker daemon.
 
 Host receipts live in `.crowdb-runtime/persistent/oci-clusters/`. The shortcuts
 verify the Docker daemon/context and exact ownership labels before effects.
-Clean stops and removes owned containers and unused owned bridges. It keeps
-volumes and restart inputs unless `--delete-data` is explicit. Image cleanup
+Clean stops and removes owned containers, unused owned bridges and owned data
+volumes. It also removes the launch receipt and matching optional CLI target
+binding. `--keep-data` retains volumes and restart inputs. Image cleanup
 only considers dangling CROWDB images, preserving retained cluster references
 and images used by any running or stopped container. Attached or relabelled
 networks and volumes referenced elsewhere are rejected. No global prune runs.
 These host scripts invoke Docker directly and require no CLI binary or application
-target binding. Explicit data deletion also removes a matching optional CLI
-target binding; a binding with different ownership is rejected before deletion.
+target binding. A binding with different ownership is rejected before data
+deletion.
 
 One node and three nodes use the same editable monitor lifecycle. Local mode
 prepares test storage and all access services. An incomplete three-node start
@@ -121,7 +171,7 @@ pixi run crowdb-cli --cluster demo-three cluster start
 pixi run crowdb-cli --cluster demo-three s3 bucket put example
 pixi run crowdb-cli --cluster demo-three s3 object put example hello.txt --text hello
 pixi run crowdb-cli --management-endpoint http://127.0.0.1:9190 s3 object get example hello.txt
-pixi run oci-clean --cluster demo-three --delete-data
+pixi run oci-clean --cluster demo-three
 ```
 
 Use the built `crowdb-cli` executable on PATH, or substitute its absolute path
@@ -146,7 +196,7 @@ pixi run crowdb-cli --cluster production cluster start --runtime containerd \
   --password-file /srv/crowdb/private-password --device /dev/nvme1n1
 pixi run crowdb-cli --cluster production cluster stop
 pixi run crowdb-cli --cluster production cluster start
-pixi run oci-host-clean --cluster production
+pixi run oci-clean --cluster production
 ```
 
 The existing data directory must be writable by UID 10001. The node policy
@@ -161,9 +211,20 @@ The CLI seals a private host receipt before creating a container. Start/resume
 and stop verify the recorded daemon, Unix endpoint, context/namespace, owner,
 image, resource limits, mounts and startup inputs. Resume preserves the accepted
 policy and media identities; foreign same-name containers are rejected.
-`oci-host-clean` works without the CLI binary and removes only that verified
-container. It preserves data, raw devices, files, credentials and both launch
-and application receipts, so the next start can recreate the container.
+The same `oci-clean` command works without the CLI binary for Docker bridge,
+Docker host-network and containerd host-network clusters. Host cleanup removes
+the verified container, recorded node data directory and matching launch and
+application receipts. It preserves supplied disk files, raw devices, node policy
+and password inputs, including supplied files inside the data directory; their
+containing directories remain when needed. A data directory that is itself a
+mount point is emptied without removing the mount point. Nonempty data requires
+the matching retained storage declaration. Symlinked roots, nested mounts,
+overlapping host data directories and data referenced by another container in
+the selected runtime are rejected. Run with the host permissions needed to
+delete that data; failures retain ownership receipts for retry.
+Use `--keep-data` to preserve host data and receipts for recreation on the next
+start. Cleanup never wipes supplied media, so reusing those media still requires
+their retained cluster identity.
 
 Status/check and application commands need only management HTTP access. A named
 CLI target pins the observed cluster UUID; explicit management endpoints must

@@ -435,7 +435,7 @@ trap cleanup EXIT
 # Finish every build before starting fixtures or measurements. Invoke the
 # identified executable directly, so a case cannot trigger a Cargo rebuild.
 if [ "$SKIP_BUILD" -eq 0 ]; then
-    pixi run build-cpp
+    pixi run build
     pixi run cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
     if [ -z "$BENCH_BIN" ]; then
         pixi run cargo bench -p crowdb-chunk-stream --bench production_bounds --no-run \

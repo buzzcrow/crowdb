@@ -546,9 +546,11 @@ resource menu. Data browsing is read-only; Query/Scan remain center query tools.
 - **SVC-03:** Startup observes dependencies: Group 0 before dependent metadata
   services; valid disks/ownership for storage; journal/data prerequisites before
   Chunk-KV bootstrap; Chunk-KV catalog before Access startup.
-- Plans waiting for a registered DiskIO service to restart observe dependencies
-  every two seconds, including when Capacity data has not been loaded. The
-  ten-second missing-disk backoff applies only to other hardware waiting states.
+- Plans waiting for a registered DiskIO restart or authoritative storage readiness
+  observe dependencies every two seconds, including when Capacity data has not
+  been loaded. A live PID does not establish disk-group ownership. The ten-second
+  missing-disk backoff does not apply to an outstanding storage-readiness probe or
+  a deployment rejected because its storage prerequisite changed.
 - Access provisioning durably records catalog initialization and activation
   request identities before issuing either mutation. Interrupted deployment
   reconciles committed state and resumes the same request. An existing catalog
@@ -685,8 +687,11 @@ operations remain in resource menus with the mode restrictions in §14.
 
 - **CAP-06:** Opening Cluster does not issue DiskDB runtime usage or scan
   requests. Capacity usage is scoped to the selected DiskGroup/Disk when that
-  scope is known. Cluster/Rack overviews use cached reports until an explicit
-  Refresh requests a runtime snapshot; opening an overview is not that request.
+  scope is known. Selecting Datacenter, Rack, Node or Storage requests the runtime summary
+  needed for that scope automatically. DG and Disk requests retain their narrower
+  scope. Inventory capacity remains available independently; Busy/Free are known
+  only when exact node/DG/disk identities and geometry cover the selected inventory.
+  Moving from Disk to an upper scope never reuses the Disk report as a full summary.
   Cached candidate/setup summaries are bounded to 64 nodes and never initiate
   node-by-node discovery.
   Disk inventory belongs to one shared source. Expanding a Node's Storage branch loads its
@@ -986,7 +991,8 @@ uses real bounded base-page inspection; the graph does not scan records for weig
 
 - **ICE-01:** The configured cluster Catalog loads automatically. Left shared
   Tree is Catalog → Namespace → Table → Snapshot → Manifest → File. Namespace
-  and Table types are labelled explicitly. No Metadata leaf, Snapshots wrapper,
+  and Table types are labelled explicitly. CrowDB supports nested Namespace
+  components as represented by the [Iceberg REST Catalog specification](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/open-api/rest-catalog-open-api.yaml). No Metadata leaf, Snapshots wrapper,
   or Manifest List file layer duplicates content. Current Snapshot is marked
   `Current`; immutable IDs remain exact.
 - **ICE-02:** Catalog/Namespace centers list their children. Table center shows
@@ -1014,10 +1020,10 @@ uses real bounded base-page inspection; the graph does not scan records for weig
   creates one literal child name component; a dot in the entered name does not
   create another level. Full identity is the ordered namespace component array.
   Its menu also edits supported properties or drops that empty Namespace. A Table's menu
-  exposes supported Append Parquet, Rename, Commit metadata and Drop table operations. Drop
+  exposes supported Edit as Draft, Rename, Commit metadata and Drop table operations. Drop
   removes the catalog reference; physical reclamation follows service GC.
-  Snapshots, Manifests and Files are inspected through table-managed metadata,
-  not given arbitrary Create/Delete actions. Demo operations are not primary
+  Snapshot and Parquet menus expose table-managed maintenance as defined in ICE-10.
+  Manifest and metadata files have no arbitrary physical Delete action. Demo operations are not primary
   browsing controls. Properties describe only the selected identity.
 - **ICE-07:** Reference windows contain at most 100 entries; Parquet windows
   contain 20 Row Groups and 12 columns. Paging replaces the visible window.
@@ -1027,56 +1033,92 @@ uses real bounded base-page inspection; the graph does not scan records for weig
   Cached branches do not bypass revalidation. A failed or stale inspection
   preserves selection context but removes data and continuation actions.
 
-- **ICE-08 — Table editing:** Namespace Create Table opens the center editor.
-  Empty Table uses name/type/required field rows; Parquet source accepts a batch,
-  reads bounded footers and checks stable IDs, nested types and nullability.
-  The Console writer supports unpartitioned format-v2 Tables and standard
-  three-level List/Map encodings. Unsupported types or incompatible files fail
-  explicitly before upload. It neither unions schemas nor rewrites Parquet.
-  Stage-create supplies the canonical UUID/Schema/storage identity; one standard
-  assert-create commit publishes the Table and its first data Snapshot. Empty
-  Tables have no data Snapshot. Append freezes the current Schema and main ref,
-  retains existing Manifests and adds one Snapshot for the entire batch.
-  Repeated file selections accumulate in the batch; individual files can be
-  removed before Submit. Same-name different bytes require explicit removal.
-- **ICE-09 — Submission and recovery:** FileIO goes through the configured Catalog
-  origin with a freshly authorized Table grant. The proxy rejects arbitrary
-  credential endpoints, cleanup elevation and foreign file prefixes. Small native
-  Parquet uploads retain the returned immutable location; larger files use 8 MiB
-  multipart requests. Schema, Name Mapping, Manifest and Manifest List are generated
-  automatically. Integral IDs remain exact in JSON and Avro. Complete inputs,
-  checksums, upload locations and commit body/key are saved in the browser before
-  mutation, with a 4 MiB import record bound; file credentials are not persisted.
-  Reselect original files to resume. Unknown commits retain their UUID-v7 key and
-  exact body; staged-create recovery can confirm the same UUID and Snapshot
-  references. A conflict never silently rebases. Table property editing uses
-  name/value/removal rows and submits metadata without creating a data Snapshot.
-  Only changed properties are written. Advanced requirements/updates remain
-  available with a fixed Table UUID assertion and exact integral tokens.
-  Editing input is saved per Namespace creation scope or existing Table before
-  Submit, including the frozen Table base. Reload restores it and requests local
-  files again. Only file grant refresh endpoints and native-upload capability
-  survive persistence; credentials are omitted. Definite conflicts allow local
-  discard; unknown outcomes keep the exact request until resolved.
+- **ICE-08 — File table editor:** Namespace Create Table and Table/Snapshot
+  Edit as Draft open the same center editor. One row is a Parquet file, one column
+  is a Schema field. Cells show types and compatibility, not editable data records.
+  File and field selection populate Properties, including nested Schema details.
+  The first file of a new Table supplies its Schema; further files must match its
+  IDs, names, types and nullability. Existing Tables retain their durable Schema IDs.
+  No silent union, coercion or Parquet rewriting occurs. An empty Table has editable
+  field definitions in column headers and may Commit without a data Snapshot.
+  The writer supports unpartitioned format-v2 Tables and standard three-level List/Map
+  encodings; historical sources with a different Schema require an Iceberg client.
+  Authoring permits 1000 added files, 256 top-level fields, 20 files per selection
+  and 100 MiB per file. Existing file windows load one Manifest page at a time,
+  with explicit continuation; fields use twelve-column windows. No total-file count
+  or full Snapshot read is required to open the editor.
+- **ICE-09 — Draft and Commit:** choosing a file reads its bounded footer and
+  checksum, then immediately uploads it through authorized FileIO. The proxy rejects
+  foreign prefixes and arbitrary credential endpoints. Small native uploads retain
+  their returned immutable location; larger files use 8 MiB multipart parts.
+  Save Draft and autosave persist metadata and upload references only, under the API
+  origin, Namespace, Table and requested source scope. File/Blob bytes and credentials
+  are never persisted. Completed uploads survive reload without reselecting files;
+  interrupted uploads require the same bytes. Invalid references are reported, and
+  expired uncommitted uploads can be replaced under a new identity. Local revisions
+  reject stale saves/discards. A local Draft is not a server-side editable Table.
+  Stage-create supplies canonical UUID/Schema/storage material without publication.
+  Commit freezes the input and publishes generated Manifests and metadata atomically;
+  file additions/removals produce one immutable data Snapshot. Empty Table creation
+  and property-only updates do not invent data Snapshots. Remove and replace change
+  the resulting file set; they do not modify the original Snapshot or file bytes.
+  The chosen source Snapshot and expected current main are separate fixed identities.
+  Editing history publishes that source's edited file set as a new child of expected
+  main, with a visible explanation that newer files are excluded. Table UUID, Schema,
+  default spec, main and the advertised metadata-location guard protect publication.
+  Concurrent changes conflict; the editor never silently rebases. Manifest rewriting
+  preserves original data/file sequence values and rejects unpreservable layouts.
+  Pending requests retain exact body/key and immutable output paths. A lost response
+  is reconciled by Table UUID plus Snapshot/Manifest List identity before retrying;
+  no second Snapshot is created. Unknown outcomes cannot be discarded as failed.
+  Property editing remains a separate name/value/removal form with metadata-only
+  publication. Advanced updates retain exact integer tokens and UUID conditions.
+- **ICE-10 — Removal and expiry:** a live current Parquet file offers
+  `Remove from table…`, which opens the same Draft editor with that file marked
+  Removed. Undo restores it before Commit. Old Snapshots remain readable while
+  retained. Unaffected Manifests, including delete Manifests, are preserved; the
+  inspector's rewrite capability prevents losing metrics/encryption/other attributes.
+  Snapshot `Expire snapshot…` is a separate lifecycle command. Current and Branch/Tag
+  references prevent expiry; the advertised guarded commit checks metadata location
+  and UUID under head CAS, including refs created or moved after confirmation.
+  Ordinary Iceberg metadata updates retain standard semantics. Existing pending
+  maintenance requests can still resume their frozen body/key after reload.
+  Removing a file reference or expiring a Snapshot does not physically delete the
+  file. A live Table's published files are not reclaimed solely because no retained
+  Snapshot refers to them; physical cleanup follows the Table/file lifecycle.
 
-Iceberg: creation, append and metadata publication (ICE-08/09):
+Iceberg: editing and publication (ICE-08/09):
 
 ```text
-Namespace -> Create Table                 Table -> Append Parquet
-+--------------------------------------+  +--------------------------------------+
-| Name     [events................]    |  | Frozen Table UUID / main ref         |
-| Source   [Empty / Parquet]           |  | Files [choose several...]            |
-| Fields   name | type | required      |  | File | Bytes | Rows | State | Remove |
-| or Files [choose several...]         |  | Schema compatibility preview         |
-| File | Bytes | Rows | State | Remove |  |                                      |
-| Schema compatibility preview         |  |                                      |
-|                      [Create table]  |  |                      [Submit files]  |
-+--------------------------------------+  +--------------------------------------+
-Parquet -> footer/schema checks -> stage-create -> upload -> Manifest/List
-        -> one conditional Catalog commit -> Table + first Snapshot
-Empty   -> field form -> stage-create -> conditional commit -> empty Table
-Append  -> upload batch -> retain old Manifests + new Manifest -> new Snapshot
-Properties -> name/value/removal rows -> [Submit metadata] -> metadata only
+Namespace -> Create Table       Table / Snapshot -> Edit as Draft
++--------------------------+------------------------------------------------+----------------------+
+| v Catalog                | events / New Snapshot             Draft local | Properties           |
+|   v analytics            | Source: snapshot-a; expected main: snapshot-b | selected file/field  |
+|     v events             | [Upload Parquet]                              | path, size, records  |
+|       snapshot-a         | File          id       category  Change       | Schema and IDs       |
+|       snapshot-b Current | a.parquet     long     string    Kept         | nested fields        |
+|                          | b.parquet     long     string    Removed Undo|                      |
+|                          | c.parquet     long     string    Added Remove|                      |
+|                          | [Previous files] [Next files]  < fields >     |                      |
+|                          | [Close] [Discard Draft] [Save Draft] [Commit] |                      |
++--------------------------+------------------------------------------------+----------------------+
+Choose files -> infer/check Schema -> upload -> metadata-only local Draft
+Save Draft -> close/reload -> reuse uploaded files -> continue editing
+Commit -> frozen source + add/remove -> new Manifest List -> conditional main
+  existing Snapshot and its referenced bytes remain immutable
+  empty Table -> Schema and metadata, no data Snapshot
+```
+
+Iceberg: lifecycle (ICE-10):
+
+```text
+Current S2: [a.parquet, b.parquet, c.parquet]
+  b.parquet -> Remove from table -> Draft [b: Removed] -> Commit S3
+  S3: [a.parquet, c.parquet]              S2 still reads all three files
+
+S2 -> Expire snapshot -> current / Branch / Tag check on fixed metadata
+  changed base -> conflict               unchanged base -> remove S2
+  neither reference removal nor Snapshot expiry physically deletes files
 ```
 
 Iceberg: Catalog and Namespace collections (ICE-01/02/06):
@@ -1300,9 +1342,9 @@ Domain-specific scope and menu mappings:
 Iceberg                         Center on selection       Context menu
 Catalog                         Namespaces (paged)        Create namespace
   Namespace                     Tables/children (paged)   Create table/namespace; Properties; Drop
-    Table                       Overview/Schema/Files     Append Parquet; Rename; Metadata; Drop
-      Snapshot -> Manifest      Paged metadata/files      Inspection only
-        File                    Decoded metadata          Supported inspection
+    Table                       Overview/Schema/Files     Edit as Draft; Rename; Metadata; Drop
+      Snapshot                  Paged metadata/files      Edit as Draft; Expire when unreferenced
+        Manifest -> File        Decoded metadata          Current Parquet: Remove from table
 
 Dataset                         Center on selection       Context menu
 Datasets                        Datasets (paged)          Create dataset
@@ -1310,7 +1352,8 @@ Datasets                        Datasets (paged)          Create dataset
     Snapshot                    Samples x Fields          Create child; Edit Split revision;
                                                           Stable/Retain/Release/Reclaim
       Splits                    Revision/member windows   Create Split; Edit revision
-        Split                   Members (paged)           Edit / Remove in a new revision
+        Revision                Fixed Split collection    Edit as a new revision
+          Split                 Members (paged)           Edit / Remove in a new revision
   Sample/Field/Cell in center    Selected scope/value      Edit in child Snapshot; Preview
 
 S3                              Center on selection       Context menu
@@ -1363,13 +1406,18 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   Credentials stay on the Console server; no browser endpoint or bearer editor.
   The root center automatically lists Datasets. Root context menu creates a
   Dataset; a Dataset's menu starts Import / New Snapshot. All use §23; there is
-  no Session activity region. Properties render named fields rather than JSON.
+  no Session activity region. The left panel begins with the Dataset title and
+  shared Help link above the tree. Properties render named fields rather than JSON.
 - **DS-02 — Relationships:** left navigation follows declared parent links as a
   forest. Roots and each parent's children page independently; no ancestry scan
   or Snapshot-ID sorting reconstructs the tree. Latest and Stable are reference
   badges. A Snapshot's Splits group is a peer of its children. Samples and Fields
-  remain in the center. Direct Snapshot navigation preserves the exact identity;
-  bounded ancestor discovery reports incomplete paths explicitly.
+  remain in the center. Direct Snapshot navigation preserves the exact identity.
+  No separate Selected ancestry panel duplicates the tree. Split hierarchy is
+  Snapshot → Splits → immutable collection Revision → named Split. Current marks
+  the active collection revision; history pages lazily under Splits. Same-name
+  Splits in different revisions have distinct identities. Lazy nested branches
+  inherit depth, indentation and accessibility levels from the shared Tree.
   Dataset and Snapshot inventory pagination is reachable in the center. The fixed
   Datasets root retains its first bounded page plus the selected resource; the
   catalog has no Previous/Next tree-page toolbar. Snapshot branch continuation
@@ -1378,6 +1426,8 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   columns, defaulting to twenty rows and twelve fields. Required/optional is the
   actual field definition; no inferred type, MIME or nested schema. Header, Sample
   row and Sample/Field cell selections have separate properties and history.
+  Clicking a row highlights it; Properties pages through all of that row's Fields
+  independently of the center columns.
   Missing, tombstoned, inline, payload-backed and inherited values are distinct.
   Known lengths and declared checksums are metadata, not verified payloads.
 - **DS-04 — Bounds:** each catalog/row/column query carries its immutable scope and
@@ -1390,60 +1440,71 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   Complete verified values of at most 64 KiB render as UTF-8 or hex. Unknown length,
   missing/tombstoned values, oversized data, integrity failures and cancelled reads
   never appear as a successful truncated value. Browsing starts no Read Plan.
-- **DS-06 — Local import:** create Dataset, then Import / New Snapshot or Create
-  child opens the center editor. Dataset selection defaults to the Latest resolved
-  at opening; Snapshot/Split selection pins that explicit source. Any complete
-  parent may be selected. Preserve all parent data is the
-  default; Replace membership and authority-evaluated Selection are explicit.
-  A Split source freezes Snapshot/revision/name. Schema/member edits, local file
-  mappings and Split policies accumulate locally before Submit. Field forms and
-  Sample field patches are the normal path; batch mapping is optional advanced
-  input. Applying another field to the same Sample merges pending patches. Clear
-  writes a tombstone; Remove Sample changes membership. Required parent fields
-  cannot be removed or downgraded. Source Split definitions and policy are frozen
-  at opening; new Samples remain unassigned unless definitions are reevaluated.
-  A file mapping preview shows file/bytes/target Sample ID and a target Field.
-  Existing IDs require explicit permission to update. Batch files accumulate;
-  removal clears their pending bindings. Sample/Field/cell context menus open
-  child editing with that identity preselected. Independent-root toggling restores
-  the original frozen Parent and Split source when turned off.
-  External sources
-  are SDK-owned and require no connector UI.
-- **DS-07 — Client-owned publication:** uploads use immutable parts of at most
-  4 MiB, at most 10000 parts, incremental MD5 and two concurrent requests. A new
-  upload is created directly; a saved upload is observed for whole-part retries.
-  Definitively aborted uploads use a new identity. Completed fields carry their
-  existing id/length/md5 descriptor without a lookup to reconstruct it.
-  Submit runs upload, one complete Snapshot preparation and a conditional head
-  update. A complete result is immutable and readable by ID before publication;
-  preparing it writes no editing or evaluation progress. The browser freezes
-  parent/source/Split identities, immutable Dataset ID and intended head base when
-  opening. An advertised dataset-identity-fence is required for the Snapshot editor;
-  mutations carry X-Crowdb-Dataset-Id, checked again by root creation admission so
-  a same-name replacement cannot receive stale uploads or content.
-  IndexedDB saves local edits, complete input and pending request per Dataset/API origin
-  before mutation, with a 10 MiB record bound and no duplicated preparation body.
-  Concurrent tabs cannot overwrite another saved resource. Closing and reload
-  preserve these client inputs; unfinished local Files must be reselected and
-  match their digest. Unknown replies retry the same resource, complete input and
-  original head conditions, without draft/status/commit queries. Head conflicts
-  retain the returned observation for explicit review and a deliberate conditional
-  retry; the client never silently rebases. Discarding local input does not delete
-  a complete result or its payload owners. Snapshot preparation accepts at most
-  8 MiB through the proxy; upload parts retain their 4 MiB bound.
-- **DS-08 — Split revisions:** author the complete set, including an empty set,
-  with named Selection or deterministic weighted partitions and independent overlap
-  and coverage policies. Inherited membership is frozen and intersected with child
-  membership; new Samples remain unassigned. Explicit reevaluation is separate.
-  Independent Split publication compares the expected revision and head generation, preserves historical
-  members, and does not move Dataset latest or create a data Snapshot. History and
-  named membership pages stay pinned to the selected immutable revision.
-  Submit Split revision prepares and conditionally publishes that complete set.
-  Splits-group Create, and Split Edit/Remove, open the same center editor.
-  Basic Selection rules use forms with UTF-8/base64 byte inputs; nested rules
-  remain under Advanced selection JSON.
-  Closing keeps local edits; Discard removes them. Weighted partition members are
-  renamed together and removal explicitly removes their complete partition group.
+- **DS-06 — Table editor:** Dataset → New Snapshot opens one center table.
+  One row is a Sample; one column is a Field; Sample ID is a separate editable
+  row key. An empty Dataset starts with optional `content`. Add Sample generates
+  an editable ID; Upload files adds rows with filename IDs into the selected Field.
+  Duplicate IDs are rejected. Existing values are replaced explicitly through their
+  cells, preserving other pending Field changes. Empty cells show Upload file or
+  a text input directly. Choosing Upload opens the native picker immediately; text
+  is edited inline, including newly added columns, without a Text/File dialog or
+  Apply step. Inherited inline values load on focus, not for every visible cell.
+  Clear writes a tombstone and Remove changes membership. Add Field adds a column;
+  required parent Fields cannot be removed or downgraded. A selected row exposes
+  its Fields in Properties independently of the center column window.
+  Dataset selection freezes Latest at opening; Snapshot selection freezes that
+  specific parent. Original content remains immutable. Advanced controls expose
+  independent roots, parent selection, frozen Split source filtering and explicit
+  inheritance of parent Splits. Snapshot editing has no Split-definition form.
+  Creation is bounded to 1000 Sample changes, 64 Fields, 64 KiB per text value,
+  4 MiB of editable metadata, 20 files per batch and 100 MiB per file. Larger
+  committed Snapshots remain browsable with independent row/column windows.
+  Sample/cell context menus create a child Draft with that identity preselected.
+- **DS-07 — Browser Draft and Commit:** each Draft has an independent resource ID.
+  IndexedDB stores metadata, small text, fixed Dataset/parent/source identities,
+  upload references and expected head conditions under the API origin/Dataset scope.
+  The tree lists local Snapshot Drafts beneath Dataset and local Split Drafts
+  beneath their Snapshot's Splits. Save Draft and autosave retain editable input;
+  closing does not publish. Browser storage never contains File/Blob bytes. Storage
+  failure is visible; a transaction compares local revisions to reject stale-tab
+  saves and discards. A second Draft never silently resumes or replaces the first.
+  The identity fence prevents a same-name replacement Dataset receiving old input.
+  Choosing a file starts incremental MD5 and immutable 4 MiB part uploads with two
+  concurrent requests. Cells show filename, size and state; Properties includes
+  checksum and unclaimed expiry. Complete references are checked on restore and
+  Commit. An interrupted upload requires reselecting bytes; the size/digest key
+  resumes matching whole parts. Expired/aborted uploads receive a new identity.
+  No complete file must be reselected just because the editor reloads.
+  Commit freezes input, prepares the complete immutable Snapshot, then conditionally
+  selects Latest. Split Commit updates only currentSplit. Unknown replies retain
+  the exact ID, input and original conditions for explicit retry; head conflicts
+  retain the returned observation for review. Neither silently rebases. Definitive
+  preparation rejection offers Edit as new Draft with a fresh resource ID; the
+  original input is never changed under a reserved identity. Unknown outcomes must
+  first be resolved. Successful Commit removes the local Draft and selects its
+  immutable result.
+  Discard removes only local input. Uploaded data and unreferenced results follow
+  existing service expiry/GC; local Drafts do not retain parents or files on the server.
+- **DS-08 — Split Draft, View and Commit:** a committed Snapshot's Create Split
+  menu opens the complete set in the center, preserving other names. Filter rules
+  support Sample IDs, prefixes, ranges, keywords, inline Field matches, AND/OR/NOT;
+  they do not search uploaded file content. Weighted partitions, overlap and coverage
+  remain explicit. Save Draft is browser-local. Commit prepares and conditionally
+  publishes a new immutable collection revision without changing Dataset Latest.
+  Split counts are internal completeness metadata, not required navigation or
+  overview statistics. Browsing neither scans all pages to count nor labels loaded
+  rows or whole-Snapshot counts as a Split total.
+  Each rule has View. Draft View uses `split-preview`, a read-only bounded scan of
+  the fixed Snapshot, not a filter on the loaded page. A page scans up to 20 Samples
+  and can have zero matches plus a continuation. Cursors bind Snapshot and the full
+  rule; changing a rule clears the preview. View writes no draft, evaluation progress
+  or revision. The common matrix and Properties display matching rows. Committed
+  Split View reads the selected revision's frozen member pages. New Snapshots and
+  later revisions do not change old membership. Inherited membership is intersected
+  with child membership; new Samples remain unassigned until explicit reevaluation.
+  Historical revision editing retains the selected base and publishes under the
+  observed current head condition. Weighted members rename together; removing a
+  partition removes its complete group.
 - **DS-09 — Lifecycle:** stable, retain, release and reclaim name the exact
   Snapshot. Backend protection wins over an observed eligibility hint. Reclaim
   distinguishes unknown, pending logical cleanup and completed retirement; physical
@@ -1459,7 +1520,7 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   the immutable selected one in place.
 - **DS-10 — Modes:** `modules.dataset=false` hides the domain and prevents Dataset
   observation. API prefixes apply to every request. Readonly disables editing and
-  the Console API rejects direct writes; exact matrix POST remains an observation.
+  the Console API rejects direct writes; exact matrix and Split preview POSTs remain observations.
   Managed mode permits supported data operations without enabling topology changes.
 
 Dataset: catalog and Snapshot inventory (DS-01/02/06):
@@ -1485,7 +1546,7 @@ Dataset context-menu targets and immutable editing:
 ```text
 Datasets root            Dataset images                Snapshot
 +--------------------+  +---------------------------+ +-------------------------+
-| Create dataset...  |  | Import / New Snapshot...  | | Create child...         |
+| Create dataset...  |  | New Snapshot...           | | Create child...         |
 +--------------------+  | Delete Dataset...         | | Edit Split revision...  |
                         +---------------------------+ |                         |
                                                      | Set stable              |
@@ -1496,25 +1557,46 @@ Sample/Field edits -> reviewed candidate -> new published Snapshot
 Published Snapshot data are never edited in place.
 ```
 
-Dataset: center editing and Submit (DS-06–08):
+Dataset: table editing and browser Drafts (DS-06/07):
 
 ```text
-Dataset -> Import / New Snapshot              Snapshot -> Edit Split revision
-+-----------------------------------------+  +------------------------------------+
-| New Snapshot · images                   |  | Fixed Snapshot / currentSplit base |
-| Parent: fixed Latest, or selected ID    |  | Split name | selection / weights   |
-| Fields: name | required | remove        |  | Overlap  [Disjoint / Allowed]      |
-| Samples: ID | field | text/file/clear   |  | Coverage [Allow / Complete]        |
-| Files: bytes | Sample ID | target Field |  | Selection form (UTF-8 / base64)    |
-| Pending changes: upserts / removals     |  | Advanced: nested selection JSON    |
-| Splits: names / definitions / policy    |  |                                    |
-| Advanced: batch mapping / selection     |  |                                    |
-|             [Discard] [Submit Snapshot] |  |                 [Submit revision]  |
-+-----------------------------------------+  +------------------------------------+
-Local edits -> upload files -> prepare complete Snapshot -> conditional head CAS
-                   fail/unknown -> saved exact input -> explicit resume
-Snapshot Submit moves Dataset Latest; Split Submit moves only currentSplit.
-Close keeps local edits. Published data and historical revisions stay immutable.
+Dataset              Help | New Snapshot · images             Draft · local | Properties
+v Datasets                | Parent: snapshot-a (fixed)                      | Sample cat.jpg
+  v images                | [Add Sample] [Add Field] [Upload files]         | content
+    snapshot-a            | Upload into [content]                           | cat.jpg / 32 KiB
+    Snapshot Draft b      | +-------------+-------------------+-----------+ | checksum / expiry
+                          | | Sample ID   | content           | label     | | label
+                          | +-------------+-------------------+-----------+ | cat
+                          | | cat.jpg *   | cat.jpg · 32 KiB  | cat       | | other fields...
+                          | | note-001    | Upload or [text]  | [note]    | |
+                          | +-------------+-------------------+-----------+ |
+                          | [Previous rows] [Next rows]  < columns >        |
+                          | > Advanced                                     |
+                          | [Discard Draft] [Save Draft] [Commit]           |
+```
+
+```text
+Choose file -> checksum + bounded parts -> upload reference in local Draft
+                       | interrupted: reselect matching bytes to resume
+Save Draft -> browser metadata only -> close/reload -> continue editing
+Commit -> freeze input -> prepare immutable result -> conditional head update
+                          unknown: retry exact input / ID / conditions
+```
+
+Dataset: Split preview (DS-08):
+
+```text
+v images                  | Splits · Draft · local
+  v snapshot-a            | name [cats]   rule [Field label = cat]
+    v Splits              | [View cats]   overlap / coverage
+      v revision Current  | +-------------+-------------------+-----------+
+        train             | | Sample ID   | content           | label     |
+      Split Draft c       | |             |                   |           |
+                          | +-------------+-------------------+-----------+
+                          | | cat.jpg     | payload · 32 KiB  | inline    |
+                          | +-------------+-------------------+-----------+
+                          | [Next Samples] scans the next bounded window
+                          | [Discard Draft] [Save Draft] [Commit]
 ```
 
 Dataset: Samples matrix and selected cell (DS-03–05/08):
@@ -1527,8 +1609,8 @@ Dataset: Samples matrix and selected cell (DS-03–05/08):
 |       > Splits             | Sample           image          label        ...             | Field         image          |
 |       v snapshot-b *       | sample-001       <payload>      cat                          | Required      <definition>   |
 |         v Splits           | sample-002       <payload> *    dog                          | Storage       Payload        |
-|           train            | ...                                                          | Length        <observed>     |
-|           validation       |                    [Previous rows] [Next rows]               | Checksum      <declared>     |
+|           v rev Current    | ...                                                          | Length        <observed>     |
+|             validation     |                    [Previous rows] [Next rows]               | Checksum      <declared>     |
 |                            |                    [Previous fields] [Next fields]           | [Preview field]              |
 |                            |                                                              | Verified complete value      |
 |                            | Select Split -> pinned revision member window                | or explicit unavailable      |
@@ -1541,11 +1623,10 @@ Snapshot/revision/member history remains business data, independently of the
 removed browser Session activity.
 
 Local batch mapping uses version 1 JSON aligned with Sample/Field edit models,
-bounded at 8 MiB and 10000 Sample edits. `schema: null` inherits the parent Schema.
-IDs and inline bytes are canonical base64. File names identify exactly one selected
-local File; they never grant filesystem access. Ambiguous/missing files, duplicate
-Samples/fields and invalid encodings are rejected before upload. A single-Sample
-helper can create this mapping from a UTF-8 ID and text or a selected local file.
+with the same editor limits. `schema: null` inherits the parent Schema. IDs and
+inline bytes use canonical base64. File values in the submitted mapping are completed
+upload descriptors; pending file references cannot Commit. Duplicate IDs, invalid
+Fields and incomplete references fail without changing published content.
 
 ```json
 {
@@ -1559,7 +1640,7 @@ helper can create this mapping from a UTF-8 ID and text or a selected local file
 }
 ```
 
-A local payload value is `{"kind":"file","file":"selected.bin"}`. An optional
+A submitted payload value is `{"kind":"upload","id":"<upload ID>","length":"123","md5":"<checksum>"}`. Pending file tokens are local editor state only. An optional
 field tombstone is `{"kind":"tombstone"}`. Removal is
 `{"kind":"remove","id":"c2FtcGxlLTE="}`. Authority composition combines these
 bounded edits with the frozen source; the browser never constructs a partial

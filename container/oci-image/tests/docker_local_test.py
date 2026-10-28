@@ -162,7 +162,7 @@ class DockerLocalTest(unittest.TestCase):
     def test_garbage_keeps_retained_and_stopped_container_images(self):
         def call(*args):
             if args[:2] == ("image", "ls"):
-                return "retained\nforeign-used\ngarbage"
+                return "retained\nhost-retained\nforeign-used\ngarbage"
             if args[:2] == ("image", "inspect"):
                 return json.dumps([{"Id": "sha256:" + args[2], "RepoTags": [], "RepoDigests": [], "Config": {"Labels": {"org.opencontainers.image.source": "https://github.com/buzzcrow/crowdb"}}}])
             if args[:2] == ("ps", "-aq"):
@@ -170,8 +170,14 @@ class DockerLocalTest(unittest.TestCase):
             return ""
         self.docker.call.side_effect = call
         with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
+            directory = Path(temporary) / 'persistent/oci-clusters'
             seal(self.record, directory)
+            host = dict(version=1, cluster='host', name='crowdb-host-host', owner=str(uuid.uuid4()),
+                        options=dict(network='host', runtime='docker'), image_id='sha256:host-retained')
+            path = Path(temporary) / 'persistent/oci-hosts/host.json'
+            path.parent.mkdir()
+            path.write_text(json.dumps(host))
+            path.chmod(0o600)
             image_garbage(self.docker, directory)
         removals = [call.args for call in self.docker.call.call_args_list if call.args[:2] == ("image", "rm")]
         self.assertEqual(removals, [("image", "rm", "sha256:garbage")])

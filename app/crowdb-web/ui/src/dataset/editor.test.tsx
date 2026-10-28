@@ -9,7 +9,7 @@ import { SelectionProvider } from '../contexts/SelectionContext';
 import { DomainProvider } from '../contexts/DomainContext';
 import { DatasetView } from '../views/DatasetView';
 import * as api from './api';
-vi.mock('./operation/storage', () => ({ readRequest: vi.fn(async () => undefined), writeRequest: vi.fn(async () => {}), removeRequest: vi.fn(async () => {}) }));
+vi.mock('./operation/storage', () => ({ listRequests: vi.fn(async () => []), readRequest: vi.fn(async () => undefined), writeRequest: vi.fn(async () => {}), removeRequest: vi.fn(async () => {}) }));
 vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(),
   listDatasets: vi.fn(async () => ({ entries: [], after: null })),
   capabilities: vi.fn(async () => ['dataset-management', 'composition-preparation', 'snapshot-head-update', 'dataset-identity-fence']),
@@ -31,14 +31,18 @@ it('creates through the parent menu and keeps resource operations out of the cen
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh Dataset' })));
     expect(screen.queryByRole('region', { name: 'Dataset actions' })).toBeNull();
     fireEvent.contextMenu(screen.getByTestId('dataset-scope'));
-    expect(screen.getAllByRole('menuitem', { name: 'Import / New Snapshot…' })).toHaveLength(1);
-    expect(screen.getByRole('menuitem', { name: 'Import / New Snapshot…' })).toBeEnabled();
+    expect(screen.getAllByRole('menuitem', { name: 'New Snapshot…' })).toHaveLength(1);
+    expect(screen.getByRole('menuitem', { name: 'New Snapshot…' })).toBeEnabled();
     fireEvent.keyDown(document, { key: 'Escape' });
   }
   expect(api.mutate).toHaveBeenCalledTimes(1);
   fireEvent.contextMenu(screen.getByTestId('dataset-scope'));
-  await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: 'Import / New Snapshot…' })));
+  await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: 'New Snapshot…' })));
   expect(screen.getByRole('region', { name: 'Import Snapshot' })).toBeInTheDocument();
+  expect(within(screen.getByRole('region', { name: 'Dataset help' })).getByRole('link', { name: 'Help' })).toHaveAttribute('href', 'https://crowdb.dev/docs/manual/');
+  expect(screen.getByLabelText('Local payload files')).toBeVisible();
+  expect(screen.queryByRole('textbox', { name: 'Sample ID (UTF-8)' })).toBeNull();
+  expect(screen.getByText('Advanced').parentElement).not.toHaveAttribute('open');
   expect(screen.queryByRole('dialog', { name: 'Import Snapshot' })).toBeNull();
   expect(screen.queryByRole('navigation', { name: 'Dataset tree pages' })).toBeNull();
 });
@@ -74,7 +78,7 @@ it('readonly exposes inspection without creation, import or lifecycle mutations'
   expect(screen.queryByRole('button', { name: 'Create Dataset' })).toBeNull();
   fireEvent.click(within(screen.getByRole('navigation', { name: 'Dataset tree' })).getByRole('button', { name: 'readonly-demo' }));
   await act(async () => {});
-  expect(screen.queryByRole('button', { name: 'Import / New Snapshot' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'New Snapshot' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Reclaim Snapshot' })).toBeNull();
   expect(api.mutate).not.toHaveBeenCalled();
   expect(screen.queryByText('Session activity')).toBeNull();
@@ -124,11 +128,25 @@ it('waits for the selected Split base before enabling edits so loading cannot er
   vi.mocked(api.control).mockResolvedValueOnce({ id: '1'.repeat(32) }).mockReturnValueOnce(new Promise(resolve => { loaded = resolve; }));
   render(<SplitEditor dataset="demo" snapshot={'1'.repeat(32)} close={vi.fn()} complete={vi.fn()} />);
   expect(screen.getByRole('button', { name: 'Add selection Split' })).toBeDisabled();
-  expect(screen.getByRole('button', { name: 'Submit Split revision' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Commit' })).toBeDisabled();
   expect(screen.queryByLabelText('Split 1 name')).toBeNull();
+  await act(async () => {});
   await act(async () => loaded({ revision: null, generation: null }));
   fireEvent.click(screen.getByRole('button', { name: 'Add selection Split' }));
   fireEvent.change(screen.getByLabelText('Split 1 name'), { target: { value: 'train' } });
   await act(async () => {});
   expect(screen.getByLabelText('Split 1 name')).toHaveValue('train');
+});
+
+it('a rejected preparation is corrected under a new identity while unknown replies stay frozen', async () => {
+  const { correctedDraft, prepare } = await import('./operation');
+  const op: import('./operation').Operation = { version: 2, dataset: 'demo', kind: 'split', snapshot: '1'.repeat(32), resource: '2'.repeat(32), expectedHead: null,
+    input: { splits: [], policy: defaultPolicy } };
+  vi.mocked(api.mutate).mockRejectedValueOnce(new api.DatasetError(422, 'invalid policy'));
+  await expect(prepare(op)).rejects.toThrow('invalid policy');
+  expect(op.rejectedPreparation).toBe(true);
+  const next = await correctedDraft(op);
+  expect(next.resource).not.toBe(op.resource); expect(next.input).toEqual(op.input); expect(next.editing).toBe(true);
+  op.pending = { kind: 'prepare' };
+  await expect(correctedDraft(op)).rejects.toThrow('Resolve');
 });

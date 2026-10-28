@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { test, expect } from '../fixtures/realBackend';
+import { observeDeployingSteps } from '../fixtures/servicePlanObservation';
 import { step } from '../fixtures/stepTimer';
 import { observeDefaultDeployments } from '../fixtures/defaultDeployments';
 import { nativeProcessAlive } from '../fixtures/nativeProcess';
@@ -71,6 +72,7 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
 
 // Baseline: new native defaults/reopen acceptance (2026-10-04).
 // Baseline: 5.6s (2026-10-16), before adding Dataset listener.
+// Baseline: 5.9s (2026-10-27), before separating live health from registration equality.
 test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and valid dependencies', async ({ page, request }) => {
   const response = await request.get('/api/deployment-defaults?node_id=1');
   expect(response.ok(), await response.text()).toBe(true);
@@ -78,6 +80,11 @@ test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and val
   const serversResponse = await request.get('/api/servers');
   expect(serversResponse.ok()).toBe(true);
   const servers = await serversResponse.json();
+  const mutations: string[] = [];
+  page.on('request', current => {
+    const path = new URL(current.url()).pathname;
+    if (path.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(current.method())) mutations.push(`${current.method()} ${path}`);
+  });
   await page.goto('/?domain=Cluster');
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   for (const [kind, label] of [['chunkdb', 'crowdb-chunk-db'], ['diskio', 'crowdb-disk-io'], ['chunk-kv', 'crowdb-chunk-kv'], ['access-server', 'crowdb-access-server']]) {
@@ -102,7 +109,12 @@ test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and val
       await expect(dialog).toHaveCount(0);
     }
   }
-  expect(await (await request.get('/api/servers')).json()).toEqual(servers);
+  const current = await request.get('/api/servers');
+  expect(current.ok(), await current.text()).toBe(true);
+  // Live health probes may change while a dialog is open; registration and PID must not.
+  const registrations = (rows: Record<string, unknown>[]) => rows.map(({ health: _health, ...row }) => row);
+  expect(registrations(await current.json())).toEqual(registrations(servers));
+  expect(mutations).toEqual([]);
 });
 
 // Baseline: 1.3s (2026-10-04); existing instances come from the owned fixture.
@@ -162,7 +174,7 @@ test('native diagnostics: interrupted six-service plan reconciles without duplic
   });
 });
 
-// Baseline: 7.6s (2026-10-04); prerequisite services are controlled through real lifecycle APIs.
+// Baseline: 7.3s (2026-10-27); prerequisite services are controlled through real lifecycle APIs.
 test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive', async ({ page, request }) => {
   test.skip(!process.env.CROWDB_NATIVE_PLAN_PREREQUISITES, 'Requires the partial deployment fixture phase');
   const kinds = ['paxos-kv', 'diskdb', 'chunkdb', 'diskio', 'chunk-kv', 'access-server'];
@@ -215,6 +227,7 @@ test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive'
       expect(deploys).toEqual([]);
     });
     await step('native plan prerequisite arrival', async () => {
+      const rendered = await observeDeployingSteps(dialog);
       expect((await request.post(`/api/services/${diskioIds[0]}/restart`, { data: {} })).ok()).toBe(true);
       await expect.poll(async () => {
         const response = await request.get('/api/service-plans');
@@ -223,7 +236,13 @@ test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive'
       }, { timeout: 3000, intervals: [100] }).toBe('waiting');
       expect(deploys).toEqual([]);
       expect((await request.post(`/api/services/${diskioIds[1]}/restart`, { data: {} })).ok()).toBe(true);
-      await expect(dialog.getByRole('listitem').filter({ hasText: 'deploying' })).toHaveCount(1);
+      await step('native DiskIO ownership publication', () => expect.poll(async () => {
+        const response = await request.get('/api/chunk-storage-readiness');
+        expect(response.ok(), await response.text()).toBe(true);
+        return (await response.json()).ready;
+      }, { timeout: 3000, intervals: [100] }).toBe(true));
+      await expect.poll(async () => (await rendered.read()).some(steps => steps.length === 1 && steps[0].includes('crowdb-chunk-kv')),
+        { timeout: 3000, intervals: [100] }).toBe(true);
       await deployments.verify(1, 'chunk-kv');
       await expect(dialog.getByRole('listitem').filter({ hasText: 'crowdb-access-server' })).toContainText(/deploying|deployed/);
       await deployments.verify(1, 'access-server');
@@ -233,6 +252,8 @@ test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive'
         return Object.values((await response.json())['1'].steps).map((entry: any) => entry.state);
       }, { timeout: 3000, intervals: [100] }).toEqual(kinds.map(() => 'deployed'));
       await expect(dialog.getByRole('listitem').filter({ hasText: 'deployed' })).toHaveCount(6);
+      expect((await rendered.read()).every(steps => steps.length === 1)).toBe(true);
+      await rendered.stop();
       // A prerequisite may still return Waiting; only accepted requests create services.
       expect(acceptedDeploys).toEqual(['chunk-kv', 'access-server']);
       const current = await list();

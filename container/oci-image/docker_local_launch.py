@@ -38,7 +38,7 @@ def accepted(docker, args):
     try:
         metadata = json.loads(docker.call("image", "inspect", image))[0]
     except RuntimeError as error:
-        raise ValueError("image is not loaded; run pixi run oci-build and load its OCI archive first") from error
+        raise ValueError("image is not loaded; run pixi run oci-build first") from error
     if (metadata["Os"], metadata["Architecture"]) != ("linux", "amd64"):
         raise ValueError("local node image must be Linux amd64")
     if metadata.get("Config", {}).get("Labels", {}).get("org.opencontainers.image.source") != "https://github.com/buzzcrow/crowdb":

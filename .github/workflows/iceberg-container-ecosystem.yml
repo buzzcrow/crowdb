@@ -125,4 +125,4 @@ jobs:
           retention-days: 7
       - name: Clean subprocesses
         if: always()
-        run: pixi run clean-env
+        run: pixi run clean --runtime-only

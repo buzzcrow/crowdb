@@ -5,16 +5,22 @@ import { getApiBase } from '../api';
 import * as api from './api';
 import type { Head, PrepareSnapshot, PreparedSnapshot, PrepareSplit, PublicationResult, SplitHead, SplitRevision } from './types';
 import type { Mapping } from './import/mapping';
-import { readRequest, removeRequest, writeRequest } from './operation/storage';
+import { readRequest, removeRequest, writeRequest, listRequests } from './operation/storage';
+import { randomUUID } from '../utils/randomUUID';
 
 type Observation = Head | (SplitHead & { snapshot: string });
 type Pending = { kind: 'prepare' } | { kind: 'publish'; expectedHead: string | null; expectedRevision?: string | null };
 export interface Operation {
   version: 2; dataset: string; datasetId?: string; kind: 'snapshot' | 'split'; resource: string; snapshot?: string;
+  localRevision?: number; updatedAt?: number; rejectedPreparation?: boolean;
+  newSamples?: string[];
+  parentSplits?: Pick<PrepareSnapshot, 'splits' | 'policy'>;
+  uploads?: Record<string, { name: string; size: number; md5?: string; id?: string; expiresAt?: string; state: 'pending' | 'ready' | 'failed'; error?: string }>;
   editing?: boolean; parentSchema?: import('./types').Schema;
   parentMode?: 'all' | 'replace' | 'selection';
   fileChecks?: Record<string, { size: number; md5: string }>;
   fileSamples?: Array<{ file: string; sample: string }>;
+  fileField?: string; fileOverwrite?: boolean;
   expectedHead: string | null; expectedRevision?: string | null;
   source?: Omit<PrepareSnapshot, 'samples'>; mapping?: Mapping;
   inheritedSource?: Omit<PrepareSnapshot, 'samples'>;
@@ -22,8 +28,8 @@ export interface Operation {
   pending?: Pending; conflict?: Observation; fileKeys?: Record<string, string>;
 }
 const key = (dataset: string) => `${getApiBase()}:${dataset}`;
-export async function savedOperation(dataset: string): Promise<Operation | undefined> {
-  const value = await readRequest(key(dataset));
+export async function savedOperation(dataset: string, resource?: string): Promise<Operation | undefined> {
+  const value = await readRequest(key(dataset), resource);
   if (!value) return;
   if (value.version !== 2 || value.dataset !== dataset || !['snapshot', 'split'].includes(value.kind)) throw new Error('Invalid saved Dataset request.');
   api.opaqueId(value.resource); if (value.kind === 'split') api.opaqueId(value.snapshot!);
@@ -33,7 +39,17 @@ export async function saveOperation(op: Operation) {
   if (new TextEncoder().encode(JSON.stringify(op)).length > 10 * 1024 * 1024) throw new Error('Saved Dataset request exceeds 10 MiB.');
   await writeRequest(key(op.dataset), op);
 }
-export const forgetOperation = (op: Operation) => removeRequest(key(op.dataset), op.resource);
+export const forgetOperation = (op: Operation) => removeRequest(key(op.dataset), op.resource, op.localRevision);
+export const savedOperations = (dataset: string) => listRequests(key(dataset));
+/** Rejected preparation can have reserved immutable content; corrections get a fresh identity. */
+export async function correctedDraft(op: Operation): Promise<Operation> {
+  if (!op.rejectedPreparation || op.pending || op.prepared) throw new Error('Resolve the pending result before creating a corrected Draft.');
+  const next = structuredClone(op);
+  next.resource = randomUUID().replaceAll('-', ''); next.editing = true;
+  delete next.localRevision; delete next.updatedAt; delete next.rejectedPreparation; delete next.conflict;
+  if (next.kind === 'snapshot') delete next.input;
+  await saveOperation(next); await forgetOperation(op); return next;
+}
 export const resourcePath = (op: Operation) => op.kind === 'snapshot' ? api.snapshotPath(op.dataset, op.resource)
   : `${api.snapshotPath(op.dataset, op.snapshot!)}/split-revisions/${api.opaqueId(op.resource)}`;
 export const headPath = (op: Operation) => op.kind === 'snapshot' ? `${api.datasetPath(op.dataset)}/head` : `${api.snapshotPath(op.dataset, op.snapshot!)}/split-head`;
@@ -67,10 +83,11 @@ export async function retryIdentical(op: Operation, signal?: AbortSignal): Promi
       op.prepared = result as PreparedSnapshot | SplitRevision;
     } else if (op.kind === 'snapshot' ? !('latest' in result) || result.latest !== op.resource
       : !('revision' in result) || result.revision !== op.resource) throw new api.DatasetError(502, 'Published pointer does not match the request.', true);
-    delete op.pending; delete op.conflict; await saveOperation(op);
+    delete op.pending; delete op.conflict; delete op.rejectedPreparation; await saveOperation(op);
     return preparing ? undefined : target(op);
   } catch (reason) {
     if (reason instanceof api.DatasetError && reason.status >= 400 && reason.status < 500) {
+      if (preparing) op.rejectedPreparation = true;
       if (!preparing && reason.status === 409) op.conflict = observation(op, reason.observedHead);
       delete op.pending; await saveOperation(op);
     }

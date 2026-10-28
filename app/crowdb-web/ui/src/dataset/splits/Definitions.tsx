@@ -9,7 +9,7 @@ import { PredicateInput } from './Predicate';
 import { addSplit, removeSplit } from './sets';
 export { PredicateInput } from './Predicate';
 
-export function Definitions({ splits, policy, change, disabled = false }: { splits: DraftSplit[]; policy: SplitPolicy; change: (splits: DraftSplit[], policy: SplitPolicy) => void; disabled?: boolean }) {
+export function Definitions({ splits, policy, change, view, disabled = false }: { view?: (index: number) => void; splits: DraftSplit[]; policy: SplitPolicy; change: (splits: DraftSplit[], policy: SplitPolicy) => void; disabled?: boolean }) {
   const [partition, setPartition] = useState('train:80,test:20'); const [seed, setSeed] = useState('1'); const [error, setError] = useState('');
   const update = (index: number, split: DraftSplit) => change(splits.map((value, position) => index === position ? split : value), policy);
   const remove = (index: number) => change(removeSplit(splits, index), policy);
@@ -39,6 +39,7 @@ export function Definitions({ splits, policy, change, disabled = false }: { spli
     {splits.map((split, index) => <div key={index} className="tw-border-t tw-border-border tw-pt-2 tw-space-y-2">
       <label>Split name <input aria-label={`Split ${index + 1} name`} className={inputClass} value={split.name} onChange={event => rename(index, event.target.value)} /></label>
       <button type="button" className={buttonClass} onClick={() => remove(index)}>{split.definition.kind === 'weighted_partition' ? `Remove partition group ${split.definition.weights.map(value => value.name).join(', ')}` : `Remove ${split.name || 'Split'}`}</button>
+      {view && <button type="button" className={buttonClass} onClick={() => view(index)}>View {split.name || 'Split'}</button>}
       <p className="tw-text-xs">Membership: {split.origin.kind === 'inherited' ? `frozen from ${split.origin.source.snapshot}/${split.origin.source.revision}/${split.origin.source.name}` : 'evaluated on this Snapshot'}</p>
       {split.origin.kind === 'inherited' && <button type="button" className={buttonClass} onClick={() => update(index, { ...split, origin: { kind: 'evaluated' } })}>Reevaluate definition</button>}
       {split.definition.kind === 'selection' ? <PredicateInput value={split.definition.predicate} change={predicate => update(index, { ...split, definition: { kind: 'selection', predicate }, origin: { kind: 'evaluated' } })} /> : <p className="tw-text-xs">Weighted partition: seed {split.definition.seed}, index {split.definition.index}, {split.definition.weights.map(w => `${w.name}:${w.weight}`).join(', ')}. Remove and recreate the partition group to change its weights.</p>}

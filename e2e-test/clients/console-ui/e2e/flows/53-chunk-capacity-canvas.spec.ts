@@ -7,8 +7,6 @@ test('native diagnostics: Capacity retains hardware and marks interrupted DDB us
   await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'datacenter', exact: true }).click();
   const totals = page.getByTestId('capacity-summary');
   const panel = totals.locator('..');
-  await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
-  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(0);
   expect((await request.post('/api/nodes/1/diskdb/stop', { data: {} })).ok()).toBe(true);
   try {
@@ -51,8 +49,7 @@ test('native diagnostics: scanner and scoped recalc show actual completed observ
     await expect(page.getByTestId('capacity-summary').getByText(label, { exact: true })).toBeVisible();
   }
   await expect(panel.getByRole('button', { name: 'Refresh', exact: true })).toBeVisible();
-  await expect(panel.getByText('Scan status unavailable.', { exact: true })).toBeVisible();
-  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(panel.getByText('No scan has been run yet.', { exact: true })).toBeVisible();
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   const datacenter = sidebar.getByTestId('tree-node-DC-datacenter').locator(':scope > [role="treeitem"]');
   await expect(datacenter).toBeVisible();

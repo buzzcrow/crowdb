@@ -22,7 +22,7 @@ export async function icebergWorkflow(page: Page, request: APIRequestContext) {
     expect((await namespaceResponse.json()).namespace).toEqual([namespace]);
     await resourceAction(page, tree.getByRole('button', { name: namespace, exact: true }), 'Create table…');
     await page.getByLabel('Table name', { exact: true }).fill('example');
-    await page.getByRole('button', { name: 'Create table', exact: true }).click();
+    await page.getByRole('button', { name: 'Commit', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Refresh table', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Schema', exact: true }).click();
     await expect(page.getByRole('table', { name: 'Table schema', exact: true })).toContainText('long');

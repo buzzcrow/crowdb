@@ -417,7 +417,7 @@ describe('node service plans', () => {
     expect(result.current.plans[1]['paxos-kv'].state).toBe('failed');
     for (const kind of serviceOrder.filter(kind => kind !== 'paxos-kv')) expect(result.current.plans[1][kind].state).toBe('disabled');
   });
-  it('waits for live ownership even when DiskIO processes are registered and resumes when it is published', async () => {
+  it('rechecks registered DiskIO ownership promptly without requiring disk rows to be expanded', async () => {
     vi.mocked(listServers).mockResolvedValue([{ node_id: 1, service_type: 'diskio', pid: 10 }] as Awaited<ReturnType<typeof listServers>>);
     let ready = false;
     vi.mocked(serviceRequest).mockImplementation(async path => path === '/service-plans' ? {} : path === '/chunk-storage-readiness'
@@ -427,8 +427,9 @@ describe('node service plans', () => {
     await act(async () => { await result.current.start(1, ['chunkdb']); });
     expect(result.current.plans[1].chunkdb).toEqual({ state: 'waiting', detail: 'Waiting: diskio-1 must publish live disk-group ownership' });
     expect(vi.mocked(serviceRequest).mock.calls.some(([path]) => path.endsWith('/services/deploy'))).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     ready = true;
-    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     expect(result.current.plans[1].chunkdb.state).toBe('deployed');
   });
 

@@ -1,11 +1,12 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
-"""Scoped Docker stop and cleanup; retained volumes and receipts are the default."""
+"""Scoped Docker stop, cleanup and ownership-aware image garbage collection."""
 
 import json
 import stat
 
 from docker_local_state import RECORDS, check_daemon, load, record_path, require_owned
+from host_cleanup import selected_records
 
 
 def selected(cluster, all_clusters, directory=RECORDS):
@@ -15,7 +16,8 @@ def selected(cluster, all_clusters, directory=RECORDS):
         return [load(path.stem, directory) for path in sorted(directory.glob("*.json"))]
     record = load(cluster, directory)
     if record is None:
-        raise ValueError("cluster has no local Docker receipt; use Docker tools for direct containers")
+        raise ValueError(f"cluster '{cluster}' has no local Docker ownership receipt; "
+                         "use --all for recorded clusters or Docker tools for direct containers")
     return [record]
 
 
@@ -86,6 +88,7 @@ def image_garbage(docker, directory=RECORDS, runtime=None):
     if docker.identity() != runtime:
         raise ValueError("Docker endpoint/context changed before image cleanup")
     retained = {record["image_id"] for record in selected(None, True, directory)}
+    retained.update(record['image_id'] for record in selected_records(None, directory.parents[1]))
     candidates = docker.call("image", "ls", "-q", "--filter", "dangling=true", "--filter",
                              "label=org.opencontainers.image.source=https://github.com/buzzcrow/crowdb").splitlines()
     for identity in candidates:

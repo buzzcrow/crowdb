@@ -126,32 +126,25 @@ auditwheel = ">=6, <7"
 ################################################################################
 # Build — install dependencies, clean outputs and compile
 ################################################################################
+# Host setup, frontend dependencies and profiling tools.
 install-deps = { cmd = "bash tools/pixi-tasks/install-deps.sh" }
-# Frontend dependencies only; avoids installing profiling tools for UI tests.
-install-ui-deps = "test -d app/crowdb-web/ui/node_modules || (cd app/crowdb-web/ui && npm ci)"
-# Remove build products and the complete workspace runtime tree.
+# Stop services and remove build products/runtime state; --runtime-only preserves build products and persistent clusters.
 clean = { cmd = "bash tools/pixi-tasks/clean-build.sh" }
-# Stop recorded ephemeral processes and remove disposable runtime state.
-clean-env = "bash tools/pixi-tasks/clean-env.sh"
-# Standalone C++ libraries for ctest; Rust FFI builds its own C++ libraries.
-build-cpp = { cmd = "bash tools/pixi-tasks/build-cpp.sh" }
-# Full release build: C++ libraries, Rust binaries and frontend.
-build = { cmd = "bash tools/pixi-tasks/build-release.sh", depends-on = ["build-cpp", "install-ui-deps"] }
-# Optional compile-only check for all workspace test targets.
-build-tests = "cargo test --workspace --all-targets --no-run"
+# Build C++ libraries, Rust release binaries, frontend and workspace test targets.
+build = { cmd = "bash tools/pixi-tasks/build-release.sh", depends-on = ["install-deps"] }
 default = { depends-on = ["build"] }
 
 ################################################################################
 # Test — component, SDK and container acceptance suites
 ################################################################################
 test = "python tools/pixi-tasks/test.py"
-test-suite = { cmd = "python tools/pixi-tasks/test.py all", depends-on = ["build-cpp", "install-ui-deps"] }
-test-cpp = { cmd = "python tools/pixi-tasks/test.py unit cpp", depends-on = ["build-cpp"] }
+test-suite = { cmd = "python tools/pixi-tasks/test.py all", depends-on = ["build"] }
+test-cpp = { cmd = "python tools/pixi-tasks/test.py unit cpp", depends-on = ["build"] }
 test-core = { cmd = "python tools/pixi-tasks/test.py unit core" }
 test-storage = { cmd = "python tools/pixi-tasks/test.py unit storage" }
 test-access = { cmd = "python tools/pixi-tasks/test.py unit access" }
 test-console = { cmd = "python tools/pixi-tasks/test.py unit console" }
-test-console-ui = { cmd = "python tools/pixi-tasks/test.py unit ui", depends-on = ["install-ui-deps"] }
+test-console-ui = { cmd = "python tools/pixi-tasks/test.py unit ui", depends-on = ["install-deps"] }
 test-access-sdk = "python tools/pixi-tasks/test.py unit sdk"
 test-dataset-sdk = "cargo test --release --manifest-path sdk/Cargo.toml --workspace --locked"
 test-dataset-sdk-python = "python tools/sdk/package.py"
@@ -171,7 +164,7 @@ test-e2e-deployment = "python tools/pixi-tasks/test.py e2e deployment"
 test-container-e2e = "python e2e-test/run.py"
 test-container-e2e-fixture = "env PYTHONPATH=e2e-test python -m unittest discover -s e2e-test/tests -p '*_test.py' -v"
 test-oci-image = "pixi run --manifest-path container/oci-image/pixi.toml test"
-test-single-node-container = { cmd = "bash container/single-node-container/tests/release-policy.sh && bash container/single-node-container/tests/image-smoke.sh && bash container/single-node-container/tests/container-e2e.sh", depends-on = ["install-ui-deps"] }
+test-single-node-container = { cmd = "bash container/single-node-container/tests/release-policy.sh && bash container/single-node-container/tests/image-smoke.sh && bash container/single-node-container/tests/container-e2e.sh", depends-on = ["install-deps"] }
 
 ################################################################################
 # Tools — format, lint, architecture checks and source line counts
@@ -186,7 +179,7 @@ sdk-fmt-check = "cargo fmt --manifest-path sdk/Cargo.toml --all -- --check"
 tree-lint = "CPATH=$CONDA_PREFIX/include python3 tools/cpp-checks/clang-tidy.py"
 rs-lint = { cmd = "cargo clippy --all-targets -- -D warnings", depends-on = ["check-production-dashmap", "check-version"] }
 sdk-lint = "cargo clippy --release --manifest-path sdk/Cargo.toml --workspace --all-targets --locked -- -D warnings"
-ts-lint = { cmd = "python tools/pixi-tasks/check-console-types.py", depends-on = ["install-ui-deps"] }
+ts-lint = { cmd = "python tools/pixi-tasks/check-console-types.py", depends-on = ["install-deps"] }
 check-production-dashmap = "python3 tools/ci-checks/check-production-dashmap.py"
 check-version = "python3 tools/ci-checks/check-version.py"
 check-dataset-sdk-boundary = "python tools/ci-checks/check-dataset-sdk-boundary.py"
@@ -205,17 +198,17 @@ profile-write = { cmd = "bash tools/profiling/profile-write.sh", depends-on = ["
 ################################################################################
 # OCI containers — build once, run isolated clusters, stop or clean owned resources
 ################################################################################
-# Build an OCI archive. Add --load to load crowdb-node:dev into local Docker.
+# Build an OCI archive and load crowdb-node:dev into Docker; --no-load skips loading.
 oci-build = "bash container/oci-image/image-build.sh"
 # Run uses the existing image; monitors discover peers and prepare the cluster.
 oci-run = "python container/oci-image/docker-local.py run"
 oci-run-1c = "python container/oci-image/docker-local.py run --nodes 1"
 oci-run-3c = "python container/oci-image/docker-local.py run --nodes 3"
-# Scope defaults to --cluster local. Global scope requires --all explicitly.
+# Stop defaults to --cluster local; --all selects every recorded local cluster.
 oci-stop = "python container/oci-image/docker-local.py stop"
-# Remove owned containers and bridges; preserve data unless --delete-data is set.
-oci-clean = "python container/oci-image/docker-local.py clean"
-oci-host-clean = "python container/oci-image/host-clean.py"
+# Clean defaults to all recorded clusters; --cluster narrows the scope.
+# Remove owned containers, bridges and data volumes; --keep-data preserves data.
+oci-clean = "python container/oci-image/clean.py"
 
 ################################################################################
 # Test environments — isolated client dependencies; run with pixi run -e <name>
@@ -225,4 +218,3 @@ test-boto3-copy-error = { cmd = "python tools/pixi-tasks/test.py unit boto3" }
 
 [feature.iceberg-ecosystem.tasks]
 test-iceberg-container-ecosystem = "bash e2e-test/clients/ecosystem/run.sh"
-

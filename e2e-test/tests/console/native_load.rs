@@ -54,8 +54,8 @@ async fn verify(context: &TestNativeContext) {
         "[PHASE] native 32-MiB Chunk-KV load: {}ms",
         started.elapsed().as_millis()
     );
-    // Wait for a post-write heartbeat before comparing retained storage. A
-    // sample published during the load can omit its final packs and split child.
+    // Heartbeats can advance while the asynchronous tree checkpoint is still
+    // writing packs. Wait for its retained-byte observation as well as freshness.
     let load_completed_ms =
         u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()).unwrap();
     // Observe across the normal 12-second serving lease, without changing cadence.
@@ -65,7 +65,13 @@ async fn verify(context: &TestNativeContext) {
         let current = observations(&registry).await;
         assert_progress(&mut previous, current.clone());
         check_value(&client, 0).await;
+        let retained: u64 = current.iter().map(|row| row.durable_bytes).sum();
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "tree checkpoint did not publish retained bytes: {current:?}"
+        );
         if started.elapsed() >= Duration::from_secs(13)
+            && retained >= 4 * 1024 * 1024
             && current
                 .iter()
                 .all(|row| row.last_heartbeat_ms > load_completed_ms)

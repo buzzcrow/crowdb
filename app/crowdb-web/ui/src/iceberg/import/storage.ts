@@ -8,6 +8,11 @@ export interface ImportRequest {
   version: 1; namespace: string[]; name: string; create: boolean; schema: IceSchema; files: ImportFile[];
   identity: string; snapshot: string; table?: TableLoad; manifest?: string; list?: string; commit?: string; uncertain?: boolean;
   totals?: { rows: string; files: string; bytes?: string };
+  source?: string | null;
+  removed?: Array<{ manifest: string; location: string }>;
+  written?: string[];
+  timestamp?: number;
+  guarded?: boolean;
 }
 const key = (namespace: string[], name: string) => `crowdb.iceberg.import:${getApiBase()}:${JSON.stringify(namespace)}:${name}`;
 export function load(namespace: string[], name: string): ImportRequest | undefined {

@@ -1,8 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 import type { APIRequestContext, Page } from '@playwright/test';
-import { call, datasetPath } from '../dataset';
-import { expect } from '../realBackend';
+import { call, datasetPath, addField, addSample, textCell, expandEditor } from '../dataset';
+import { expect, test } from '../realBackend';
 import { datasetAction, resourceAction } from '../resourceMenus';
 import { step } from '../stepTimer';
 
@@ -12,6 +12,7 @@ export async function datasetWorkflow(page: Page, request: APIRequestContext) {
   const name = `crud-${Date.now()}`;
   await step('Dataset: create and list an empty Dataset through the tree', async () => {
     await page.getByTestId('domain-dataset').click();
+    await expect(page.getByRole('region', { name: 'Dataset help' }).getByRole('link', { name: 'Help', exact: true })).toHaveAttribute('href', 'https://crowdb.dev/docs/manual/');
     await createDataset(page, name);
     await page.getByRole('navigation', { name: 'Dataset tree', exact: true }).getByRole('button', { name: 'Datasets', exact: true }).click();
     await page.getByRole('table', { name: 'Datasets', exact: true }).getByRole('button', { name, exact: true }).click();
@@ -19,14 +20,21 @@ export async function datasetWorkflow(page: Page, request: APIRequestContext) {
     await expect(page.getByRole('navigation', { name: 'Dataset tree pages', exact: true })).toHaveCount(0);
   });
   const root = await step('Dataset: upload local content and publish two Samples', async () => {
-    await datasetAction(page, 'Import / New Snapshot…');
+    await datasetAction(page, 'New Snapshot…');
     await page.getByLabel('Local payload files', { exact: true }).setInputFiles({ name: 'first.txt', mimeType: 'text/plain', buffer: Buffer.from('Dataset file v1') });
-    await field(page, 'content', true); await field(page, 'label', false);
-    await sample(page, 'sample-1', 'content', 'file', 'first.txt');
-    await sample(page, 'sample-1', 'label', 'inline', 'original');
-    await sample(page, 'sample-2', 'content', 'inline', 'initial sample-2');
-    await sample(page, 'sample-2', 'label', 'inline', 'keep this label');
-    const snapshot = await page.getByTestId('editing-resource-id').innerText();
+    await expect(page.getByRole('button', { name: 'Commit', exact: true })).toBeEnabled();
+    await expect(page.getByLabel('Upload target field')).toHaveValue('content');
+    await expect(page.getByLabel('Field name', { exact: true })).toHaveCount(0);
+    await page.screenshot({ path: test.info().outputPath('dataset-table-editor.png') });
+    await addField(page, 'label');
+    await page.getByLabel('Sample ID for first.txt', { exact: true }).fill('sample-1');
+    await page.getByLabel('Sample ID for first.txt', { exact: true }).press('Tab');
+    await textCell(page, 'sample-1', 'label', 'original');
+    await addSample(page, 'sample-2');
+    await textCell(page, 'sample-2', 'content', 'initial sample-2');
+    await textCell(page, 'sample-2', 'label', 'keep this label');
+    await expandEditor(page, 'Advanced');
+    const snapshot = await page.getByTestId('editing-resource-id').textContent();
     expect((await call(request, `${datasetPath(name)}/head`)).latest).toBeNull();
     await submit(page);
     expect((await call(request, `${datasetPath(name)}/head`)).latest).toBe(snapshot);
@@ -53,22 +61,18 @@ export async function datasetWorkflow(page: Page, request: APIRequestContext) {
 async function appendAndRemove(page: Page, request: APIRequestContext, name: string, root: string) {
   return step('Dataset: add, replace and remove Samples in one child publication', async () => {
     await selectDataset(page, name);
-    await datasetAction(page, 'Import / New Snapshot…');
-    await expect(page.getByRole('region', { name: 'Import Snapshot', exact: true })).toContainText(`Parent ${root}`);
-    await page.getByLabel('Local payload files', { exact: true }).setInputFiles([
-      { name: 'replacement.txt', mimeType: 'text/plain', buffer: Buffer.from('Dataset file v2') },
-      { name: 'added.txt', mimeType: 'text/plain', buffer: Buffer.from('third Sample file') },
-    ]);
-    await page.getByLabel('Sample ID (UTF-8)', { exact: true }).fill('sample-1');
-    await page.getByRole('button', { name: 'Remove Sample', exact: true }).click();
-    await page.getByLabel('Sample ID for replacement.txt', { exact: true }).fill('sample-2');
+    await datasetAction(page, 'New Snapshot…');
+    await expect(page.getByRole('region', { name: 'Import Snapshot', exact: true })).toContainText(`Parent: ${root.slice(0, 12)}`);
+    await page.getByRole('button', { name: 'Remove Sample sample-1', exact: true }).click();
+    await page.getByLabel('Upload content for sample-2', { exact: true }).setInputFiles({ name: 'replacement.txt', mimeType: 'text/plain', buffer: Buffer.from('Dataset file v2') });
+    await expect(page.getByRole('button', { name: 'Commit', exact: true })).toBeEnabled();
+    await page.getByLabel('Local payload files', { exact: true }).setInputFiles({ name: 'added.txt', mimeType: 'text/plain', buffer: Buffer.from('third Sample file') });
+    await expect(page.getByRole('button', { name: 'Commit', exact: true })).toBeEnabled();
     await page.getByLabel('Sample ID for added.txt', { exact: true }).fill('sample-3');
-    await page.getByRole('button', { name: 'Apply file mappings', exact: true }).click();
-    await expect(page.getByRole('region', { name: 'Import Snapshot', exact: true }).getByRole('alert')).toContainText('already exists');
-    await page.getByLabel('Allow updating existing Sample IDs', { exact: true }).check();
-    await page.getByRole('button', { name: 'Apply file mappings', exact: true }).click();
-    await expect(page.getByRole('table', { name: 'Pending Sample changes', exact: true }).getByRole('row')).toHaveCount(4);
-    const child = await page.getByTestId('editing-resource-id').innerText();
+    await page.getByLabel('Sample ID for added.txt', { exact: true }).press('Tab');
+    await expect(page.getByLabel('Sample ID for sample-3', { exact: true })).toHaveValue('sample-3');
+    await expandEditor(page, 'Advanced');
+    const child = await page.getByTestId('editing-resource-id').textContent();
     expect((await call(request, `${datasetPath(name)}/head`)).latest).toBe(root);
     await submit(page);
     const summary = await call(request, `${datasetPath(name)}/snapshots/${child}/summary`);
@@ -121,21 +125,8 @@ async function selectDataset(page: Page, name: string) {
   await expect(page.getByRole('table', { name: 'Snapshots', exact: true })).toBeVisible();
 }
 
-async function field(page: Page, name: string, required: boolean) {
-  await page.getByLabel('Field name', { exact: true }).fill(name);
-  await page.getByLabel('New field required', { exact: true }).setChecked(required);
-  await page.getByRole('button', { name: 'Add field', exact: true }).click();
-}
-async function sample(page: Page, id: string, field: string, kind: 'file' | 'inline', value: string) {
-  await page.getByLabel('Sample ID (UTF-8)', { exact: true }).fill(id);
-  await page.getByLabel('Sample field', { exact: true }).selectOption(field);
-  await page.getByLabel('Value source', { exact: true }).selectOption(kind);
-  if (kind === 'file') await page.getByLabel('Payload file', { exact: true }).selectOption(value);
-  else await page.getByLabel('Inline text', { exact: true }).fill(value);
-  await page.getByRole('button', { name: 'Apply Sample field', exact: true }).click();
-}
 async function submit(page: Page) {
-  await page.getByRole('button', { name: 'Submit Snapshot', exact: true }).click();
+  await page.getByRole('button', { name: 'Commit', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Import Snapshot', exact: true })).toHaveCount(0);
 }
 

@@ -227,6 +227,14 @@ automatic head query or a mutation downgrade.
 
 ## 4. Bounded observation and reads
 
+`inspection_split_page` and `POST snapshots/{snapshot}/split-preview` evaluate one
+Split definition over a bounded committed membership window. They reuse the same
+rule compiler and evaluator as Split preparation, including deterministic weighted
+partitions and frozen inheritance. The cursor binds the Snapshot and full rule;
+zero matching rows may still carry a scan continuation. Preview writes no resource,
+progress or read session and reads no uploaded payload bytes. The `split-preview`
+capability advertises this operation; the console proxy permits it in readonly mode.
+
 Inspection projections contain complete summaries, Schema rows, Sample IDs, field
 metadata and separate value bindings. Ordinary inspection and indexed read planning
 do not load a complete Manifest or chunk payload. Inventory and parent/child indexes

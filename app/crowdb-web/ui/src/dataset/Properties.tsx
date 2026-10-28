@@ -7,6 +7,7 @@ import { Fields } from '../iceberg/Fields';
 import * as api from './api';
 import { useQuery } from './query';
 import type { DatasetSelection, FieldMetadata } from './types';
+import { SampleProperties } from './SampleProperties';
 
 export function Properties({ selected, active }: { selected: DatasetSelection; active: boolean }) {
   const result = useQuery(JSON.stringify(selected), active, async signal => {
@@ -17,10 +18,11 @@ export function Properties({ selected, active }: { selected: DatasetSelection; a
     if (selected.kind === 'schema') return { field: selected.field, required: selected.required, definition: 'The selected column shows required/optional. Schema fields have no type or MIME declaration.' };
     if (selected.revision) {
       const revision = await api.revision(selected.dataset, selected.snapshot, selected.revision, signal);
-      if (selected.kind !== 'split') return revision;
+      if (selected.kind !== 'split') return { ...revision, splits: revision.splits.map(({ count: _count, ...split }) => split) };
       const split = revision.splits.find(split => split.name === selected.split);
       if (!split) throw new Error('Split is unavailable in the selected revision.');
-      return { snapshot: selected.snapshot, revision: selected.revision, ...split, policy: revision.policy };
+      const { count: _count, ...details } = split;
+      return { snapshot: selected.snapshot, revision: selected.revision, ...details, policy: revision.policy };
     }
     const [summary, lifecycle] = await Promise.allSettled([api.summary(selected.dataset, selected.snapshot, signal), api.control(`${api.snapshotPath(selected.dataset, selected.snapshot)}/reclaim`, 'GET', undefined, signal)]);
     if (summary.status === 'rejected') throw summary.reason;
@@ -30,12 +32,13 @@ export function Properties({ selected, active }: { selected: DatasetSelection; a
     <h2 className="tw-font-semibold">Properties · {selected.kind}</h2>
     {selected.kind !== 'root' && <p className="tw-text-xs tw-break-all">{selected.dataset}</p>}
     {(selected.kind === 'sample' || selected.kind === 'cell') && <label className="tw-block tw-text-xs">Canonical Sample ID (select to copy)<input aria-label="Canonical Sample ID" className={`${inputClass} tw-w-full tw-font-mono`} readOnly value={selected.sample} onFocus={event => event.target.select()} /></label>}
+    {selected.kind === 'sample' && <SampleProperties selected={selected} active={active} />}
     {result.error && <p role="alert">{result.error}</p>}
     {result.value !== undefined && <><Fields stacked values={result.value && typeof result.value === 'object' ? result.value as Record<string, unknown> : { State: 'Missing' }} /><details><summary className="tw-text-xs tw-text-muted">Raw JSON</summary><JsonView value={result.value} /></details></>}
     {selected.kind === 'cell' && result.value !== undefined && <FieldPreview key={JSON.stringify(selected)} selected={selected} field={result.value as FieldMetadata | null} active={active} />}
   </section>;
 }
-function FieldPreview({ selected, field, active }: { selected: Extract<DatasetSelection, { kind: 'cell' }>; field: FieldMetadata | null; active: boolean }) {
+export function FieldPreview({ selected, field, active }: { selected: Extract<DatasetSelection, { kind: 'cell' }>; field: FieldMetadata | null; active: boolean }) {
   const [requested, setRequested] = useState(false); const [hex, setHex] = useState(false);
   useEffect(() => { if (!active) setRequested(false); }, [active]);
   const result = useQuery(JSON.stringify(selected), active && requested, async signal => {

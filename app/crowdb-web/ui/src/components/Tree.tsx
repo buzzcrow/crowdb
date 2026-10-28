@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
 import { resourceMenuKey } from './resourceMenuKey';
 import { cn } from '../utils/cn';
@@ -58,6 +58,9 @@ interface TreeNodeProps {
   onNodeClick?: (node: TreeNode) => void;
   onNodeContextMenu?: (node: TreeNode, event: React.MouseEvent) => void;
 }
+
+// Lazy domain branches may render another Tree; retain the enclosing depth.
+const TreeDepth = createContext(0);
 
 function TreeNodeComponent({
   node,
@@ -124,6 +127,7 @@ function TreeNodeComponent({
         )}
         style={{ paddingLeft: `${level * 16 + 12}px` }}
         role="treeitem"
+        aria-level={level + 1}
         aria-selected={isNodeSelected}
         aria-expanded={hasChildren ? isExpanded : undefined}
       >
@@ -165,7 +169,7 @@ function TreeNodeComponent({
       {node.footer && <div style={{ paddingLeft: `${level * 16 + 28}px` }}>{node.footer}</div>}
       {hasChildren && isExpanded && (
         <div role="group">
-          {node.childrenContent}
+          <TreeDepth.Provider value={level + 1}>{node.childrenContent}</TreeDepth.Provider>
           {node.children?.map((child) => (
             <TreeNodeComponent
               key={child.id}
@@ -186,6 +190,7 @@ function TreeNodeComponent({
 const EMPTY_EXPANSION: string[] = [];
 
 export function Tree({ nodes, defaultExpandedIds = EMPTY_EXPANSION, onNodeClick, onNodeContextMenu, className, onExpansionChange, expandedIds: controlledExpansion }: TreeProps) {
+  const level = useContext(TreeDepth);
   const [expandedState, setExpandedIds] = useState<Set<string>>(() => new Set(defaultExpandedIds));
   const expandedIds = controlledExpansion ? new Set(controlledExpansion) : expandedState;
   const expandedRef = useRef(expandedIds); expandedRef.current = expandedIds;
@@ -212,12 +217,12 @@ export function Tree({ nodes, defaultExpandedIds = EMPTY_EXPANSION, onNodeClick,
   }, [onExpansionChange]);
 
   return (
-    <div className={cn('tw-overflow-y-auto tw-flex-1', className)} role="tree">
+    <div className={cn('tw-overflow-y-auto tw-flex-1', className)} role={level ? 'group' : 'tree'}>
       {nodes.map((node) => (
         <TreeNodeComponent
           key={node.id}
           node={node}
-          level={0}
+          level={level}
           expandedIds={expandedIds}
           toggleExpanded={toggleExpanded}
           onNodeClick={onNodeClick}
