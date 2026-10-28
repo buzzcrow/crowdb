@@ -2,34 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::*;
+use crate::runtime_kv::runtime_kv;
 use crowdb_chunk_stream::{StreamPurpose, StreamViewSource};
-use crowdb_kv::cluster::{
-    group::PxGroup, kv_server::KvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
-};
-
-struct TestRuntimeKv(Arc<PxKvStore>);
-
-impl Drop for TestRuntimeKv {
-    fn drop(&mut self) {
-        self.0.stop();
-    }
-}
-
-async fn runtime_kv() -> (TestRuntimeKv, Arc<CrowdbKvClient>) {
-    let store = Arc::new(PxKvStore::new(0, "127.0.0.1:0".parse().unwrap()));
-    for group in 0..=1 {
-        store.add_group(PxGroup::new(
-            group,
-            PxLocalReplica::new(1, PxLocalReplicaRole::Leader),
-        ));
-    }
-    store.start().await.unwrap();
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![])));
-    for group in 0..=1 {
-        kv.seed_leader(0, group, store.listen_addr().unwrap().to_string());
-    }
-    (TestRuntimeKv(store), kv)
-}
 
 #[tokio::test]
 async fn runtime_captures_local_owner_and_identifies_older_remote_checkpoint() {

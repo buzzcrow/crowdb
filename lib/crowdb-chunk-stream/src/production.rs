@@ -111,6 +111,8 @@ impl ProductionStreamRuntime {
     }
 
     /// Reopens the authoritative stream record under a current writer epoch.
+    /// A higher epoch drains and releases this runtime's cached predecessor
+    /// before claiming the successor. The caller supplies assignment authority.
     ///
     /// # Errors
     ///
@@ -124,6 +126,14 @@ impl ProductionStreamRuntime {
         if let Some(owner) = self.owners.get(&(metadata_store_id, stream_name)) {
             if owner.value().writer_epoch() == writer_epoch && owner.value().writer_context().is_ok() {
                 return Ok(owner.value().clone());
+            }
+            if owner.value().writer_epoch() > writer_epoch {
+                return Err(StreamError::StaleWriter);
+            }
+            if owner.value().writer_epoch() < writer_epoch {
+                let previous = owner.value().clone();
+                drop(owner);
+                previous.release_writer().await?;
             }
         }
         let record = self.active_record(stream_name).await?;

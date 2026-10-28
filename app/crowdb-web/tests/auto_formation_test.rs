@@ -76,11 +76,18 @@ async fn known_bound_scope_and_duplicate_identity_require_explicit_attention() {
 }
 
 #[tokio::test]
-async fn production_does_not_enable_local_convenience_admission() {
-    let fixture = TestFormationFixture::start(policy(3, DeploymentMode::Production), vec![], 1).await;
-    let report = fixture.observation().await;
-    assert_eq!(report["phase"], "disabled");
-    fixture.assert_no_admission();
+async fn production_requires_complete_formation_and_an_explicit_rack() {
+    for (peer_count, phase) in [(0, "waiting"), (2, "needs-rack")] {
+        let policy = policy(3, DeploymentMode::Production);
+        let peers = vec![(policy.formation(), CandidateState::Unbound); peer_count];
+        let fixture =
+            TestFormationFixture::with_password(policy, peers, 1, Some((b"local-test-password", 0o600)))
+                .await;
+        let report = fixture.observation().await;
+        assert_eq!(report["phase"], phase, "{report}");
+        assert!(fixture.state.config.read().unwrap().racks.is_empty());
+        fixture.assert_no_admission();
+    }
 }
 
 #[tokio::test]
