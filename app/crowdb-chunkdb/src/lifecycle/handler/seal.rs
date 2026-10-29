@@ -9,6 +9,7 @@ use super::{
     StripReservationState,
 };
 use crowdb_protocol::chunkdb::rpc::{ChunkStrip, ChunkType, StripReservationGroup};
+use std::collections::HashSet;
 use tracing::info;
 
 impl LifecycleHandler {
@@ -67,6 +68,15 @@ impl LifecycleHandler {
             return Err(LifecycleError::StateConflict);
         }
         let current_state = ChunkState::from_proto(chunk.state);
+        if current_state == ChunkState::Sealed && chunk.acknowledged_cursor == seal_bytes {
+            // Metadata publication can outlive a failed block cleanup or reply.
+            // Resume the exact seal without changing its durable byte boundary.
+            self.finish_seal_cleanup(&mut chunk).await?;
+            if let Some(ref mut g) = guard {
+                g.refresh(chunk.clone());
+            }
+            return Ok(chunk);
+        }
         current_state.check_can_seal()?;
         validate_seal_bounds(&chunk, seal_bytes, seal_length)?;
 
@@ -103,23 +113,41 @@ impl LifecycleHandler {
         if let Some(ref mut g) = guard {
             g.refresh(chunk.clone());
         }
-        if let Some(operation_id) = cleanup_operation {
-            self.allocator
-                .pool()
-                .free_blocks(unused_segments)
-                .await
-                .map_err(LifecycleError::Cleanup)?;
-            chunk
-                .cleanup_intents
-                .retain(|intent| intent.operation_id != Some(operation_id));
-            chunk.modify_ts = chunk.modify_ts.saturating_add(1);
-            self.store.put_chunk(&chunk).await?;
-            if let Some(ref mut g) = guard {
-                g.refresh(chunk.clone());
-            }
+        self.finish_seal_cleanup(&mut chunk).await?;
+        if let Some(ref mut g) = guard {
+            g.refresh(chunk.clone());
         }
         info!(chunk_id = ?chunk_id, seal_length, "chunk sealed");
         Ok(chunk)
+    }
+
+    async fn finish_seal_cleanup(&self, chunk: &mut Chunk) -> Result<(), LifecycleError> {
+        let now_ms = unix_time_ms();
+        let current_segments: HashSet<_> = chunk.strips.iter().flat_map(extract_segments).collect();
+        let mut pending = Vec::new();
+        for intent in &chunk.cleanup_intents {
+            if intent.not_before_ms > now_ms {
+                pending.push(intent.clone());
+                continue;
+            }
+            let retired = intent
+                .retired_segments
+                .iter()
+                .filter(|segment| !current_segments.contains(segment))
+                .copied()
+                .collect();
+            self.allocator
+                .pool()
+                .free_blocks(retired)
+                .await
+                .map_err(LifecycleError::Cleanup)?;
+        }
+        if pending.len() != chunk.cleanup_intents.len() {
+            chunk.cleanup_intents = pending;
+            chunk.modify_ts = chunk.modify_ts.saturating_add(1);
+            self.store.put_chunk(chunk).await?;
+        }
+        Ok(())
     }
 
     async fn cancel_seal_reservations(&self, chunk_id: &ChunkId) -> Result<SealReservations, LifecycleError> {

@@ -37,6 +37,10 @@ impl AsyncCrowdbtree {
         }
     }
 
+    pub fn from_shared(tree: Arc<Crowdbtree>) -> Self {
+        Self { inner: tree }
+    }
+
     pub fn handle(&self) -> Arc<Crowdbtree> {
         Arc::clone(&self.inner)
     }

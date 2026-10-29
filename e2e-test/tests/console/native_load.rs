@@ -3,7 +3,8 @@
 
 use super::native_context::TestNativeContext;
 use crowdb_chunk_kv_client::{
-    BatchItem, ChunkKvClient, ChunkKvRpcTransport, ClientConfig, Group0ChunkKvRangeCatalogSource,
+    BatchItem, ChunkKvClient, ChunkKvRangeCatalogMap, ChunkKvRangeCatalogSource, ChunkKvRpcTransport,
+    ClientConfig, Group0ChunkKvRangeCatalogSource,
 };
 use crowdb_kv_client::ServiceRegistryClient;
 use crowdb_protocol::chunk_kv::{ChunkKvInstanceObservation, OperationResult, PointOperation};
@@ -16,9 +17,10 @@ use std::{
 async fn verify(context: &TestNativeContext) {
     let kv = context.kv.clone();
     let registry = ServiceRegistryClient::from_shared(kv.clone());
+    let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(kv));
     let client = ChunkKvClient::new(
         ClientConfig::default(),
-        Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(kv)),
+        source.clone(),
         Arc::new(ChunkKvRpcTransport::new(64, 1, 2)),
     )
     .unwrap();
@@ -54,38 +56,7 @@ async fn verify(context: &TestNativeContext) {
         "[PHASE] native 32-MiB Chunk-KV load: {}ms",
         started.elapsed().as_millis()
     );
-    // Heartbeats can advance while the asynchronous tree checkpoint is still
-    // writing packs. Wait for its retained-byte observation as well as freshness.
-    let load_completed_ms =
-        u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()).unwrap();
-    // Observe across the normal 12-second serving lease, without changing cadence.
-    let mut interval = tokio::time::interval(Duration::from_millis(100));
-    let after = loop {
-        interval.tick().await;
-        let current = observations(&registry).await;
-        assert_progress(&mut previous, current.clone());
-        check_value(&client, 0).await;
-        let retained: u64 = current.iter().map(|row| row.durable_bytes).sum();
-        assert!(
-            started.elapsed() < Duration::from_secs(30),
-            "tree checkpoint did not publish retained bytes: {current:?}"
-        );
-        if started.elapsed() >= Duration::from_secs(13)
-            && retained >= 4 * 1024 * 1024
-            && current
-                .iter()
-                .all(|row| row.last_heartbeat_ms > load_completed_ms)
-        {
-            for previous in &before {
-                let latest = current
-                    .iter()
-                    .find(|row| row.instance_id == previous.instance_id)
-                    .unwrap();
-                assert!(latest.last_heartbeat_ms > previous.last_heartbeat_ms + 6_000);
-            }
-            break current;
-        }
-    };
+    let after = loaded_observations(&registry, &client, &before, previous, started).await;
     let retained: u64 = after.iter().map(|row| row.durable_bytes).sum();
     eprintln!("[PHASE] native retained bytes before restart: {retained}");
     assert!(
@@ -96,15 +67,18 @@ async fn verify(context: &TestNativeContext) {
         retained <= 256 * 1024 * 1024,
         "advisory retained estimate must remain within pack padding scale: {after:?}"
     );
+    let (head, pages) = source.load().await.unwrap();
+    let catalog = ChunkKvRangeCatalogMap::decode(&head, &pages).unwrap();
+    let owner = catalog.route(&key(255)).unwrap().owner.instance_id;
     context
         .api(
             Method::POST,
-            "/api/services/chunk-kv-1/restart",
+            &format!("/api/services/chunk-kv-{owner}/restart"),
             serde_json::json!({}),
             200,
         )
         .await;
-    for index in [0, 255, 511] {
+    for index in 0..512 {
         check_value(&client, index).await;
     }
     let recovered = observations(&registry).await;
@@ -117,11 +91,54 @@ async fn verify(context: &TestNativeContext) {
     );
 }
 
+async fn loaded_observations(
+    registry: &ServiceRegistryClient,
+    client: &ChunkKvClient,
+    before: &[ChunkKvInstanceObservation],
+    mut previous: Vec<ChunkKvInstanceObservation>,
+    started: Instant,
+) -> Vec<ChunkKvInstanceObservation> {
+    // Retained packs describe published manifests, not uncheckpointed writes.
+    // The load supplies the keys for initial placement and its checkpoint.
+    let observation_after_ms =
+        u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()).unwrap();
+    let deadline = started + Duration::from_secs(30);
+    // Observe across the normal 12-second serving lease, without changing cadence.
+    let mut interval = tokio::time::interval(Duration::from_millis(100));
+    loop {
+        interval.tick().await;
+        let current = observations(registry).await;
+        assert_progress(&mut previous, current.clone());
+        check_value(client, 0).await;
+        assert!(
+            Instant::now() < deadline,
+            "tree checkpoint did not publish retained bytes: {current:?}"
+        );
+        if current.iter().map(|row| row.durable_bytes).sum::<u64>() >= 4 * 1024 * 1024
+            && started.elapsed() >= Duration::from_secs(13)
+            && current
+                .iter()
+                .all(|row| row.last_heartbeat_ms > observation_after_ms)
+        {
+            for previous in before {
+                let latest = current
+                    .iter()
+                    .find(|row| row.instance_id == previous.instance_id)
+                    .unwrap();
+                assert!(latest.last_heartbeat_ms > previous.last_heartbeat_ms + 6_000);
+            }
+            break current;
+        }
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires normal three-node storage and production serving leases"]
 async fn production_load_keeps_heartbeats_and_durable_bytes_across_owner_restart() {
     let context = TestNativeContext::connect().await;
-    super::native_storage::start(&context).await;
+    // Unrelated access services seed catalog keys and race the first checkpoint.
+    // Let this workload supply the initial Chunk-KV data instead.
+    super::native_storage::start_chunk_kv(&context).await;
     verify(&context).await;
 }
 

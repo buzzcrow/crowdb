@@ -77,14 +77,15 @@ struct RpcChunkTransport::Impl::AsyncWrite
             finish(this, std::move(status));
             return;
         }
-        const uint64_t unit_bytes  = static_cast<uint64_t>(strip->unit_kb) * 1024;
-        const uint64_t zone_offset = (segment.unit_offset * unit_bytes) + (cursor - strip->chunk_offset);
-        const uint64_t request_id  = owner->next_request_id();
-        const FBInt128 disk_id(segment.disk_high, segment.disk_low);
+        const uint64_t                 unit_bytes   = static_cast<uint64_t>(strip->unit_kb) * 1024;
+        const uint64_t                 segment_base = segment.unit_offset * unit_bytes;
+        const uint64_t                 zone_offset  = segment_base + (cursor - strip->chunk_offset);
+        const uint64_t                 request_id   = owner->next_request_id();
+        const FBInt128                 disk_id(segment.disk_high, segment.disk_low);
         flatbuffers::FlatBufferBuilder builder;
         auto                           request = crowdb::diskio::proto::CreateFBDiskWriteRequest(
             builder, request_id, monotonic_nanos(), &disk_id, segment.zone_index, zone_offset,
-            static_cast<uint32_t>(part), zone_offset, wall_time_ms());
+            static_cast<uint32_t>(part), segment_base, wall_time_ms());
         builder.Finish(request);
         crowdb_rpc_buffer_t control = crowdb_rpc_buffer_create(builder.GetBufferPointer(), builder.GetSize());
         crowdb_rpc_buffer_t payload = crowdb_rpc_buffer_create(data + consumed, static_cast<uint32_t>(part));
@@ -177,14 +178,15 @@ Status RpcChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, 
         if (!status.ok()) {
             return status;
         }
-        const uint64_t unit_bytes  = static_cast<uint64_t>(strip->unit_kb) * 1024;
-        const uint64_t zone_offset = (segment.unit_offset * unit_bytes) + (cursor - strip->chunk_offset);
-        const uint64_t request_id  = impl_->next_request_id();
-        const FBInt128 disk_id(segment.disk_high, segment.disk_low);
+        const uint64_t                 unit_bytes   = static_cast<uint64_t>(strip->unit_kb) * 1024;
+        const uint64_t                 segment_base = segment.unit_offset * unit_bytes;
+        const uint64_t                 zone_offset  = segment_base + (cursor - strip->chunk_offset);
+        const uint64_t                 request_id   = impl_->next_request_id();
+        const FBInt128                 disk_id(segment.disk_high, segment.disk_low);
         flatbuffers::FlatBufferBuilder builder;
         auto                           request = crowdb::diskio::proto::CreateFBDiskWriteRequest(
             builder, request_id, monotonic_nanos(), &disk_id, segment.zone_index, zone_offset,
-            static_cast<uint32_t>(part), zone_offset, wall_time_ms());
+            static_cast<uint32_t>(part), segment_base, wall_time_ms());
         builder.Finish(request);
         std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
         RpcResult            result;

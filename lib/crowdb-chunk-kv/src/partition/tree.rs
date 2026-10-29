@@ -425,9 +425,14 @@ impl PartitionTree for CrowdbPartitionTree {
                 .map_err(map_tree_read_error)?;
         }
         let tree = std::sync::Arc::clone(&self.tree);
+        let runtime = tokio::runtime::Handle::current();
         let (generation, applied_seq) = tokio::task::spawn_blocking(move || {
-            tree.flush()?;
-            tree.snapshot_info()
+            runtime.block_on(async {
+                let writer = crowdb_tree_ffi::AsyncCrowdbtree::from_shared(tree.clone());
+                writer.flush().await?;
+                writer.snapshot().await?;
+                tree.snapshot_state()
+            })
         })
         .await
         .map_err(|error| ChunkKvError::MaintenanceDegraded(error.to_string()))?

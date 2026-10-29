@@ -46,9 +46,11 @@ using crowdb::rpc::proto::FBMsgType_EDiskWriteResponse;
 
 struct AllocateHandlerState
 {
-    crowdb_rpc_server_t server = nullptr;
-    std::atomic<bool>   request_valid{false};
-    std::atomic<bool>   read_error{false};
+    crowdb_rpc_server_t   server = nullptr;
+    std::atomic<bool>     request_valid{false};
+    std::atomic<bool>     read_error{false};
+    std::atomic<uint64_t> write_zone_offset{0};
+    std::atomic<uint64_t> write_ordering_zone_offset{0};
 };
 
 TEST(RpcChunkTransport, ExplicitStripCapacityIsIndependentOfMirrorCopies)
@@ -147,6 +149,8 @@ extern "C" void handle_disk_write(uint64_t request_id, uint64_t /*unused*/, uint
         crowdb_rpc_frame_release(frame);
         return;
     }
+    state->write_zone_offset.store(request->zone_offset(), std::memory_order_release);
+    state->write_ordering_zone_offset.store(request->ordering_zone_offset(), std::memory_order_release);
     flatbuffers::FlatBufferBuilder builder;
     const auto                     response =
         CreateFBDiskWriteResponse(builder, request_id, 0, crowdb::diskio::proto::FBDiskIoRetCode_Success);
@@ -230,10 +234,16 @@ TEST(RpcChunkTransport, RequestsSmallMirrorAllocationAndPreserves128BitChunkId)
     EXPECT_EQ(transport.read_mirror(allocated, 0, 0, read.data(), read.size()).code(), Code::kInternal);
     AsyncWriteResult             write_result;
     const std::array<uint8_t, 4> write{5, 6, 7, 8};
-    transport.submit_write_mirror(allocated, 1, 0, write.data(), write.size(),
+    constexpr uint64_t           kSegmentBase = 4096ULL * 256U * 1024U * 1024U;
+    ASSERT_TRUE(transport.write_mirror(allocated, 1, 65531, write.data(), write.size()).ok());
+    EXPECT_EQ(handler.write_zone_offset.load(std::memory_order_acquire), kSegmentBase + 65531);
+    EXPECT_EQ(handler.write_ordering_zone_offset.load(std::memory_order_acquire), kSegmentBase);
+    transport.submit_write_mirror(allocated, 1, 65535, write.data(), write.size(),
                                   {.complete_fn = &complete_async_write, .context = &write_result});
     write_result.done.wait(false, std::memory_order_acquire);
     EXPECT_TRUE(write_result.status.ok()) << write_result.status.to_string();
+    EXPECT_EQ(handler.write_zone_offset.load(std::memory_order_acquire), kSegmentBase + 65535);
+    EXPECT_EQ(handler.write_ordering_zone_offset.load(std::memory_order_acquire), kSegmentBase);
 
     ChunkId mapping;
     ASSERT_TRUE(

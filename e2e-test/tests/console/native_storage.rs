@@ -23,6 +23,10 @@ pub(super) async fn start_prerequisites(context: &TestNativeContext) {
     start_through(context, None, "chunkdb").await;
 }
 
+pub(super) async fn start_chunk_kv(context: &TestNativeContext) {
+    start_through(context, None, "chunk-kv").await;
+}
+
 async fn start_through(context: &TestNativeContext, geometry: Option<u64>, last: &str) {
     start_diskdb(context, [128 * 1024; 3]).await;
     for (kind, http, rpc) in [
