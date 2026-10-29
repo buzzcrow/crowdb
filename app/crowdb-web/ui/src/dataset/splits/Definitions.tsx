@@ -1,14 +1,18 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { buttonClass, inputClass } from '../../access/Workbench';
 import { decimal } from '../api';
-import type { DraftSplit, Predicate, SplitPolicy } from '../types';
+import type { DraftSplit, SplitPolicy } from '../types';
+import { PredicateInput } from './Predicate';
+import { addSplit, removeSplit } from './sets';
+export { PredicateInput } from './Predicate';
 
-export function Definitions({ splits, policy, change, disabled = false }: { splits: DraftSplit[]; policy: SplitPolicy; change: (splits: DraftSplit[], policy: SplitPolicy) => void; disabled?: boolean }) {
+export function Definitions({ splits, policy, change, view, disabled = false }: { view?: (index: number) => void; splits: DraftSplit[]; policy: SplitPolicy; change: (splits: DraftSplit[], policy: SplitPolicy) => void; disabled?: boolean }) {
   const [partition, setPartition] = useState('train:80,test:20'); const [seed, setSeed] = useState('1'); const [error, setError] = useState('');
   const update = (index: number, split: DraftSplit) => change(splits.map((value, position) => index === position ? split : value), policy);
+  const remove = (index: number) => change(removeSplit(splits, index), policy);
   const rename = (index: number, name: string) => {
     const original = splits[index];
     const group = original.definition.kind === 'weighted_partition' ? JSON.stringify([original.definition.seed, original.definition.weights]) : null;
@@ -29,34 +33,21 @@ export function Definitions({ splits, policy, change, disabled = false }: { spli
   };
   return <fieldset disabled={disabled} className="tw-space-y-3 tw-border tw-border-border tw-p-3">
     <legend className="tw-font-semibold">Named Splits</legend>
-    <p className="tw-text-xs">One revision publishes this complete set, including an empty set. Definitions evaluate on the complete Snapshot.</p>
     <label className="tw-text-xs">Overlap <select className={inputClass} value={policy.overlap} onChange={event => change(splits, { ...policy, overlap: event.target.value as SplitPolicy['overlap'] })}><option value="disjoint">Disjoint</option><option value="allow_overlap">Allow overlap</option></select></label>
     <label className="tw-text-xs">Coverage <select className={inputClass} value={policy.coverage} onChange={event => change(splits, { ...policy, coverage: event.target.value as SplitPolicy['coverage'] })}><option value="allow_unassigned">Allow unassigned</option><option value="require_complete">Require complete</option></select></label>
     {splits.map((split, index) => <div key={index} className="tw-border-t tw-border-border tw-pt-2 tw-space-y-2">
       <label>Split name <input aria-label={`Split ${index + 1} name`} className={inputClass} value={split.name} onChange={event => rename(index, event.target.value)} /></label>
-      <button type="button" className={buttonClass} onClick={() => change(splits.filter((_, position) => position !== index), policy)}>Remove {split.name || 'Split'}</button>
+      <button type="button" className={buttonClass} onClick={() => remove(index)}>{split.definition.kind === 'weighted_partition' ? `Remove partition group ${split.definition.weights.map(value => value.name).join(', ')}` : `Remove ${split.name || 'Split'}`}</button>
+      {view && <button type="button" className={buttonClass} onClick={() => view(index)}>View {split.name || 'Split'}</button>}
       <p className="tw-text-xs">Membership: {split.origin.kind === 'inherited' ? `frozen from ${split.origin.source.snapshot}/${split.origin.source.revision}/${split.origin.source.name}` : 'evaluated on this Snapshot'}</p>
       {split.origin.kind === 'inherited' && <button type="button" className={buttonClass} onClick={() => update(index, { ...split, origin: { kind: 'evaluated' } })}>Reevaluate definition</button>}
       {split.definition.kind === 'selection' ? <PredicateInput value={split.definition.predicate} change={predicate => update(index, { ...split, definition: { kind: 'selection', predicate }, origin: { kind: 'evaluated' } })} /> : <p className="tw-text-xs">Weighted partition: seed {split.definition.seed}, index {split.definition.index}, {split.definition.weights.map(w => `${w.name}:${w.weight}`).join(', ')}. Remove and recreate the partition group to change its weights.</p>}
     </div>)}
-    <button type="button" className={buttonClass} onClick={() => change([...splits, { name: `split-${splits.length + 1}`, definition: { kind: 'selection', predicate: { kind: 'all' } }, origin: { kind: 'evaluated' } }], policy)}>Add selection Split</button>
+    <button type="button" className={buttonClass} onClick={() => change(addSplit(splits), policy)}>Add selection Split</button>
     <div className="tw-flex tw-flex-wrap tw-gap-2"><label>Partitions <input className={inputClass} value={partition} onChange={event => setPartition(event.target.value)} /></label><label>Seed <input className={inputClass} value={seed} onChange={event => setSeed(event.target.value)} /></label><button type="button" className={buttonClass} onClick={weighted}>Add weighted partitions</button></div>
     {error && <p role="alert">{error}</p>}
   </fieldset>;
 }
-export function PredicateInput({ value, change }: { value: Predicate; change: (value: Predicate) => void }) {
-  const [text, setText] = useState(JSON.stringify(value)); const [error, setError] = useState('');
-  const sent = useRef(value); const input = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { if (value !== sent.current) { setText(JSON.stringify(value)); setError(''); input.current?.setCustomValidity(''); sent.current = value; } }, [value]);
-  return <label className="tw-block tw-text-xs">Selection rule (API JSON; byte values use base64)
-    <textarea ref={input} aria-label="Selection rule" className={`${inputClass} tw-block tw-w-full`} value={text} onChange={event => {
-      setText(event.target.value);
-      try { const parsed = JSON.parse(event.target.value) as Predicate; if (!parsed || typeof parsed.kind !== 'string') throw new Error('A rule requires kind.'); sent.current = parsed; change(parsed); event.target.setCustomValidity(''); setError(''); }
-      catch (reason) { change(value); event.target.setCustomValidity('Invalid selection rule JSON.'); setError(String(reason)); }
-    }} />{error && <span role="alert">{error}</span>}
-  </label>;
-}
-
 export function validateEditor(element: HTMLElement | null) {
   const inputs = element?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select');
   for (const input of inputs ?? []) {

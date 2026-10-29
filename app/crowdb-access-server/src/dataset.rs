@@ -2,6 +2,8 @@
 //! semantics are delegated to `crowdb-access-dataset`.
 
 mod api;
+mod cleanup;
+use cleanup::start_cleanup;
 mod legacy;
 mod models;
 
@@ -11,7 +13,7 @@ use std::time::Duration;
 
 use crowdb_access_dataset::{
     AuthorityError, ChunkKvDatasetStore, ChunkPayloadStorage, DatasetAuthority, DatasetReadService,
-    DatasetSnapshotRequest, DatasetUploads, UploadExpiryCursor, UploadedChunkReader,
+    DatasetSnapshotRequest, DatasetUploads, UploadedChunkReader,
 };
 use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig as ChunkKvConfig, Group0ChunkKvRangeCatalogSource,
@@ -35,6 +37,7 @@ fn body(bytes: Bytes) -> DatasetBody {
     Full::new(bytes).map_err(|never| match never {}).boxed_unsync()
 }
 
+#[derive(Clone)]
 pub struct DatasetHttpService {
     reads: Arc<DatasetReadService>,
     bearer: Option<Arc<str>>,
@@ -91,6 +94,8 @@ fn status_for_authority(error: &AuthorityError) -> StatusCode {
     match error {
         AuthorityError::Invalid(_) => StatusCode::BAD_REQUEST,
         AuthorityError::AlreadyExists
+        | AuthorityError::DatasetNotEmpty
+        | AuthorityError::DatasetReplaced
         | AuthorityError::ParentConflict
         | AuthorityError::HeadConflict
         | AuthorityError::SnapshotHeadConflict { .. }
@@ -184,10 +189,10 @@ pub async fn run_with_shutdown(
         store.clone(),
         Arc::new(ChunkPayloadStorage::new(chunks.clone())),
     ));
-    let authority = Arc::new(DatasetAuthority::with_chunk_reader(
-        store,
-        Arc::new(UploadedChunkReader::new((*uploads).clone())),
-    ));
+    let authority = Arc::new(
+        DatasetAuthority::with_chunk_reader(store, Arc::new(UploadedChunkReader::new((*uploads).clone())))
+            .with_reclaim_grace_seconds(access.dataset.reclaim_grace_seconds),
+    );
     let identity = crowdb_access_dataset::DatasetIdentity::new(
         crowdb_access_dataset::NamespacePath::root(),
         std::env::var("CROWDB_DATASET_NAME").unwrap_or_else(|_| "default".into()),
@@ -221,102 +226,6 @@ pub async fn run_with_shutdown(
     chunks.shutdown_small_writes().await?;
     result?;
     Ok(())
-}
-
-fn start_cleanup(
-    authority: Arc<DatasetAuthority>,
-    uploads: Option<Arc<DatasetUploads>>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut snapshot_cursor = crowdb_access_dataset::SnapshotReclaimSweep::default();
-        let mut next_snapshot = tokio::time::Instant::now();
-        let mut candidate_cursor = crowdb_access_dataset::SnapshotExpirySweep::default();
-        let mut next_candidate = tokio::time::Instant::now();
-        let mut composition_cursor = crowdb_access_dataset::composition::CompositionReclaimSweep::default();
-        let mut next_composition = tokio::time::Instant::now();
-        let mut split_cursor = crowdb_access_dataset::split::SplitReclaimSweep::default();
-        let mut next_split = tokio::time::Instant::now();
-        let mut revision_cursor = crowdb_access_dataset::split::SplitRevisionReclaimSweep::default();
-        let mut next_revision = tokio::time::Instant::now();
-        let mut upload_cursor = UploadExpiryCursor::default();
-        let mut next_upload = tokio::time::Instant::now();
-        loop {
-            tokio::select! {
-                () = tokio::time::sleep_until(next_revision) => {
-                    let result = authority.reclaim_split_revisions_page(&mut revision_cursor,
-                        &crowdb_access_dataset::ReadCancellation::new()).await;
-                    let delay = if revision_cursor.has_more() {
-                        if result.is_ok() { Duration::from_millis(50) } else { Duration::from_millis(500) }
-                    } else { Duration::from_secs(15) };
-                    next_revision = tokio::time::Instant::now() + delay;
-                    if let Err(error) = result {
-                        tracing::error!(%error, "Dataset Split revision cleanup failed; deletion marks retained for retry");
-                    }
-                }
-                () = tokio::time::sleep_until(next_candidate) => {
-                    let result = authority.expire_snapshot_candidates_page(&mut candidate_cursor,
-                        &crowdb_access_dataset::ReadCancellation::new()).await;
-                    let delay = if candidate_cursor.has_more() {
-                        if result.is_ok() { Duration::from_millis(50) } else { Duration::from_millis(500) }
-                    } else { Duration::from_secs(15) };
-                    next_candidate = tokio::time::Instant::now() + delay;
-                    if let Err(error) = result {
-                        tracing::error!(%error, "Dataset candidate expiry failed; resource deadlines retained for retry");
-                    }
-                }
-                () = tokio::time::sleep_until(next_split) => {
-                    let result = authority.reclaim_splits_page(&mut split_cursor,
-                        &crowdb_access_dataset::ReadCancellation::new()).await;
-                    let delay = if split_cursor.has_more() {
-                        if result.is_ok() { Duration::from_millis(50) } else { Duration::from_millis(500) }
-                    } else { Duration::from_secs(15) };
-                    next_split = tokio::time::Instant::now() + delay;
-                    if let Err(error) = result {
-                        tracing::error!(%error, "Dataset legacy Split cleanup failed; resource facts retained for retry");
-                    }
-                }
-                () = tokio::time::sleep_until(next_composition), if uploads.is_some() => {
-                    let Some(uploads) = &uploads else { continue };
-                    let result = authority.reclaim_compositions_page(uploads, &mut composition_cursor,
-                        &crowdb_access_dataset::ReadCancellation::new()).await;
-                    let delay = if composition_cursor.has_more() {
-                        if result.is_ok() { Duration::from_millis(50) } else { Duration::from_millis(500) }
-                    } else { Duration::from_secs(15) };
-                    next_composition = tokio::time::Instant::now() + delay;
-                    if let Err(error) = result {
-                        tracing::error!(%error, "Dataset legacy Composition cleanup failed; resource facts retained for retry");
-                    }
-                }
-                () = tokio::time::sleep_until(next_snapshot), if uploads.is_some() => {
-                    let Some(uploads) = &uploads else { continue };
-                    let result = authority.reclaim_due_page(uploads, &mut snapshot_cursor,
-                        &crowdb_access_dataset::ReadCancellation::new()).await;
-                    let delay = if snapshot_cursor.has_more() {
-                        if result.is_ok() { Duration::from_millis(50) } else { Duration::from_millis(500) }
-                    } else { Duration::from_secs(15) };
-                    next_snapshot = tokio::time::Instant::now() + delay;
-                    if let Err(error) = result {
-                        if matches!(error, crowdb_access_dataset::SnapshotReclaimError::Limit) {
-                            tracing::debug!("Dataset snapshot cleanup yielded at its work deadline");
-                        } else {
-                            tracing::error!(%error, "Dataset snapshot cleanup failed; durable deletion marks retained for retry");
-                        }
-                    }
-                }
-                () = tokio::time::sleep_until(next_upload), if uploads.is_some() => {
-                    let Some(uploads) = &uploads else { continue };
-                    let result = uploads.expire_step(unix_seconds(), &mut upload_cursor).await;
-                    let delay = if upload_cursor.has_more() {
-                        if result.is_ok() { Duration::from_millis(50) } else { Duration::from_millis(500) }
-                    } else { Duration::from_secs(15) };
-                    next_upload = tokio::time::Instant::now() + delay;
-                    if let Err(error) = result {
-                        tracing::error!(%error, "Dataset upload cleanup failed; retaining cleanup records for retry");
-                    }
-                }
-            }
-        }
-    })
 }
 
 /// Starts the real bounded cleanup loop without opening a listener.

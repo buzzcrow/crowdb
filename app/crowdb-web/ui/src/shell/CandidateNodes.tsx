@@ -1,113 +1,63 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { listNodeCandidates, nodeAdmissions, cancelNodeAdmission, discardCandidateReview, type NodeAdmission, type NodeCandidates, type NodeDeploymentStatus } from '../api';
+import { Monitor, Zap, CircleHelp } from 'lucide-react';
+import { cancelNodeAdmission, discardCandidateReview, type NodeDeploymentStatus } from '../api';
 import { AdmitCandidateDialog } from './AdmitCandidateDialog';
-import { Button } from '../components/ui/Button';
-import { NodeRecoveryDialog } from './NodeRecoveryDialog';
-import type { Rack } from '../types';
+import { Tree } from '../components/Tree';
+import { ContextMenu, useContextMenu, type MenuItem } from '../components/ContextMenu';
+import { useSelection } from '../contexts/SelectionContext';
+import { Domain, type Rack } from '../types';
+import { useNodeCandidates } from './NodeCandidatesContext';
 
-const labels = {
-  unbound: 'Available', same_cluster: 'Cluster member', foreign_cluster: 'Another cluster',
-  incompatible: 'Incompatible version', identity_conflict: 'Identity conflict',
-};
-
-/** Discovery observations remain separate from the confirmed hardware tree. */
 export function CandidateNodes({ racks, readonly, onChange, addNodeRequest, deployment }: { deployment?: NodeDeploymentStatus; addNodeRequest?: { rackId: number; nonce: number }; racks: Rack[]; readonly?: boolean; onChange?: () => void }) {
   const section = useRef<HTMLElement>(null);
-  const dialogRoot = section.current?.closest('.crowdb-console');
-  const [snapshot, setSnapshot] = useState<NodeCandidates>();
-  const [actionError, setActionError] = useState('');
-  const [unavailable, setUnavailable] = useState(false);
-  const [admissions, setAdmissions] = useState<NodeAdmission[]>([]);
-  const [recovery, setRecovery] = useState<'resume' | 'cleanup'>();
-  const [selected, setSelected] = useState<string>();
-  const [updating, setUpdating] = useState(false);
-  const [clusterFilter, setClusterFilter] = useState('all');
+  const { snapshot, candidates, admissions, policy, saving, unavailable, policyUnavailable, actionError, setActionError, changeAutoJoin } = useNodeCandidates();
+  const { selectedEntity, inspectEntity } = useSelection();
+  const [admitting, setAdmitting] = useState<string>();
+  const [menuTarget, setMenuTarget] = useState<string>();
+  const { menuState, openMenu, closeMenu } = useContextMenu();
+  const inspect = (id: string) => inspectEntity({ type: 'Node', section: 'discovery', id, name: `node-${id.slice(0, 8)}`, domain: Domain.Cluster });
+  useEffect(() => { if (addNodeRequest) { section.current?.focus(); section.current?.scrollIntoView({ block: 'nearest' }); } }, [addNodeRequest]);
+  const run = async (work: () => Promise<unknown>) => {
+    setActionError('');
+    try { await work(); onChange?.(); } catch (error) { setActionError(String(error)); }
+  };
   useEffect(() => {
-    if (!addNodeRequest) return;
-    setClusterFilter('unbound');
-    section.current?.focus();
-    section.current?.scrollIntoView({ block: 'nearest' });
-  }, [addNodeRequest]);
-  useEffect(() => {
-    const controller = new AbortController();
-    const failed = [false, false];
-    const poll = <T,>(index: number, request: () => Promise<T>, update: (value: T) => void) => {
-      let timer: ReturnType<typeof setTimeout>;
-      const refresh = async () => {
-        try {
-          const value = await request();
-          if (!controller.signal.aborted) { update(value); failed[index] = false; }
-        } catch {
-          if (!controller.signal.aborted) failed[index] = true;
-        } finally {
-          if (!controller.signal.aborted) {
-            setUnavailable(failed.some(Boolean));
-            timer = setTimeout(refresh, 2000);
-          }
-        }
-      };
-      void refresh();
-      return () => clearTimeout(timer);
-    };
-    const stop = [
-      poll(0, () => listNodeCandidates({ signal: controller.signal }), setSnapshot),
-      poll(1, () => nodeAdmissions({ signal: controller.signal }), setAdmissions),
-    ];
-    return () => { controller.abort(); stop.forEach(cancel => cancel()); };
-  }, []);
-
-  return <section ref={section} tabIndex={-1} aria-label="Candidate nodes" className="tw-border-t tw-border-border tw-p-3 tw-overflow-y-auto tw-max-h-[40vh] tw-shrink-0">
-    <h3 className="tw-text-sm tw-font-semibold tw-mb-2">Candidate nodes</h3>
-    {addNodeRequest && <p className="tw-text-xs tw-mb-2">Choose a candidate for Rack {addNodeRequest.rackId}; verify access before joining.</p>}
-    {deployment && <p data-testid="deployment-phase" className="tw-text-xs tw-text-muted tw-mb-2">{deployment.phase === 'unbound_draft' ? 'Uncommitted local draft' : deployment.phase === 'active' ? 'Active cluster' : deployment.phase === 'authority_unavailable' ? 'Group 0 unavailable · confirmed view is stale' : deployment.phase === 'topology_publishing' ? 'Publishing confirmed topology' : deployment.phase === 'bootstrap_in_progress' ? 'Bootstrap in progress · submitted inputs are fixed' : 'Recovery required'}</p>}
-    {deployment?.cluster_id && <p className="tw-text-xs tw-break-all tw-text-muted tw-mb-2">Cluster {deployment.cluster_id}</p>}
-    {deployment && ['bootstrap_in_progress', 'topology_publishing'].includes(deployment.phase) && <Button size="sm" disabled={readonly} onClick={() => setRecovery('resume')}>Resume bootstrap</Button>}
-    {(deployment?.operation_id || deployment?.cleanup) && <Button size="sm" disabled={readonly} onClick={() => setRecovery('cleanup')}>{deployment.phase === 'cleanup_in_progress' ? 'Retry cleanup' : 'Clean up Group 0'}</Button>}
-    {deployment?.nodes?.map(node => <p key={node.node_id} className="tw-text-xs tw-text-muted">Node {node.node_id}: store 0 {node.store_created ? 'created' : 'pending'} · Group 0 {node.group_ready ? 'ready' : 'pending'}</p>)}
-    {deployment?.cleanup?.pending.map(id => <p key={id} className="tw-text-xs tw-text-muted">Node {id}: cleanup pending</p>)}
-    {actionError && <p role="alert" className="tw-text-xs tw-text-failed">{actionError}</p>}
-    {unavailable && <p role="status" className="tw-text-xs tw-text-muted">Discovery unavailable{snapshot ? ' — last observations shown' : ''}.</p>}
-    {!snapshot && !unavailable && <p className="tw-text-xs tw-text-muted">Discovering nodes…</p>}
-    {snapshot?.candidates.length === 0 && <p className="tw-text-xs tw-text-muted">No nodes discovered.</p>}
-    {snapshot && <label className="tw-block tw-text-xs tw-mb-2">Discovered cluster
-      <select aria-label="Discovered cluster" value={clusterFilter} onChange={event => setClusterFilter(event.target.value)} className="tw-block tw-w-full tw-bg-surface tw-border tw-border-border">
-        <option value="all">All clusters and candidates</option>
-        <option value="unbound">Unbound candidates</option>
-        {[...new Set(snapshot.candidates.map(node => node.advertisement.cluster_id).filter((id): id is string => !!id))].map(id => <option key={id} value={id}>{id}</option>)}
-      </select>
-    </label>}
-    <ul className="tw-space-y-2">
-      {snapshot?.candidates.filter(node => clusterFilter === 'all' || (node.advertisement.cluster_id ?? 'unbound') === clusterFilter).map(node => <li key={node.advertisement.discovery_id} data-testid={`candidate-${node.advertisement.discovery_id}`} className="tw-border tw-border-border tw-rounded tw-p-2 tw-text-xs">
-        <div className="tw-break-all">{node.advertisement.discovery_id}</div>
-        <div className="tw-text-muted">{labels[node.state]}{node.advertisement.discovery_id === snapshot.local.advertisement.discovery_id ? ' · This node' : ''}</div>
-        {node.state === 'foreign_cluster' && node.advertisement.monitor_endpoints[0] && <a className="tw-text-accent" href={clusterConsole(node.advertisement.monitor_endpoints[0])} target="_blank" rel="noreferrer">Open this cluster UI</a>}
-        {snapshot.prepared_access?.some(prepared => prepared.discovery_id === node.advertisement.discovery_id) && <div className="tw-text-muted">Access review pending</div>}
-        {snapshot.prepared_access?.filter(prepared => prepared.discovery_id === node.advertisement.discovery_id).map(prepared => <Button key={`review-${prepared.operation_id}`} size="sm" disabled={readonly || unavailable} onClick={async () => {
-          try { await discardCandidateReview(prepared.discovery_id, prepared.operation_id); onChange?.(); }
-          catch (cause) { setActionError(String(cause)); }
-        }}>Discard access review</Button>)}
-        {node.advertisement.cluster_id && <div className="tw-break-all tw-text-muted">Cluster {node.advertisement.cluster_id}</div>}
-        {node.advertisement.monitor_endpoints.map(endpoint => <div key={endpoint} className="tw-break-all tw-text-muted">{endpoint}</div>)}
-        {admissions.some(entry => entry.discovery_id === node.advertisement.discovery_id) && <div className="tw-text-muted">{admissions.find(entry => entry.discovery_id === node.advertisement.discovery_id)?.confirmed ? 'Admitted' : admissions.find(entry => entry.discovery_id === node.advertisement.discovery_id)?.cancelled ? 'Cancelled · cleanup can be retried' : 'Prepared or joining · retry available'}</div>}
-        {admissions.filter(entry => entry.discovery_id === node.advertisement.discovery_id && !entry.confirmed).map(entry => <Button key={entry.operation_id} size="sm" disabled={readonly || unavailable || !deployment || !['unbound_draft', 'active'].includes(deployment.phase)} onClick={async () => { try { const result = await cancelNodeAdmission(entry.discovery_id, entry.operation_id); setActionError(result.pending.length ? `Cancellation pending: ${result.pending.join('; ')}` : ''); onChange?.(); } catch (error) { setActionError(String(error)); } }}>Cancel admission</Button>)}
-        {(node.state === 'unbound' || (node.state === 'same_cluster' && admissions.some(entry => entry.discovery_id === node.advertisement.discovery_id && !entry.confirmed))) && <Button size="sm" disabled={readonly || unavailable || racks.length === 0 || !deployment || !['unbound_draft', 'active'].includes(deployment.phase)} onClick={() => { setUpdating(false); setSelected(node.advertisement.discovery_id); }}>Move to cluster</Button>}
-        {node.state === 'same_cluster' && admissions.some(entry => entry.discovery_id === node.advertisement.discovery_id && entry.confirmed && !entry.cancelled) && <Button size="sm" disabled={readonly || unavailable || deployment?.phase !== 'active'} onClick={() => { setUpdating(true); setSelected(node.advertisement.discovery_id); }}>Update node</Button>}
-      </li>)}
-    </ul>
-    {snapshot?.diagnostics.map((diagnostic, index) => <p key={index} className="tw-text-xs tw-text-muted tw-mt-2">{diagnostic}</p>)}
-    {recovery && deployment && dialogRoot && createPortal(<NodeRecoveryDialog status={deployment} cleanup={recovery === 'cleanup'} onClose={() => setRecovery(undefined)} onChange={onChange} />, dialogRoot)}
-    {selected && dialogRoot && createPortal(<AdmitCandidateDialog initialRackId={addNodeRequest?.rackId} discoveryId={selected} racks={racks} preparedNode={snapshot?.prepared_access?.find(entry => entry.discovery_id === selected)} current={updating ? admissions.find(entry => entry.discovery_id === selected) : undefined} onClose={() => setSelected(undefined)} onSuccess={onChange} />, dialogRoot)}
+    if (menuState && menuTarget && !candidates.some(node => node.advertisement.discovery_id === menuTarget)) closeMenu();
+  }, [candidates, menuTarget, menuState, closeMenu]);
+  const menuItems = (id: string): MenuItem[] => {
+    const enabled = policy ? policy.candidates?.[id] ?? policy.enabled : undefined;
+    const record = admissions.find(entry => entry.discovery_id === id);
+    const candidate = candidates.find(entry => entry.advertisement.discovery_id === id);
+    const disabled = readonly || unavailable || saving !== undefined || !candidate;
+    const items: MenuItem[] = [{ id: 'auto', label: enabled ? 'Disable Auto join' : 'Enable Auto join', disabled: disabled || policyUnavailable || enabled === undefined || candidate?.state !== 'unbound', onSelect: () => changeAutoJoin(id, !enabled) }];
+    if (!record || record.cancelled) items.push({ id: 'join', label: 'Join node…', disabled: disabled || !racks.length || !deployment || !['unbound_draft', 'active'].includes(deployment.phase), onSelect: () => setAdmitting(id) });
+    if (record && !record.confirmed && !record.cancelled) items.push({ id: 'cancel', label: 'Cancel admission', disabled, onSelect: () => run(async () => { const result = await cancelNodeAdmission(id, record.operation_id); if (result.pending.length) setActionError(`Cancellation pending: ${result.pending.join('; ')}`); }) });
+    for (const prepared of snapshot?.prepared_access?.filter(entry => entry.discovery_id === id) ?? []) items.push({ id: prepared.operation_id, label: 'Discard access review', disabled, onSelect: () => run(() => discardCandidateReview(id, prepared.operation_id)) });
+    return items;
+  };
+  return <section ref={section} tabIndex={-1} aria-label="Candidate nodes" className="tw-pl-8 tw-text-xs">
+    {actionError && <p role="alert">{actionError}</p>}
+    {unavailable && <p role="status">Candidate status unavailable{snapshot ? ' — last observations shown' : ''}.</p>}
+    {policyUnavailable && <p role="status">Auto join settings unavailable.</p>}
+    {!snapshot && !unavailable && <p>Discovering nodes…</p>}
+    <Tree nodes={candidates.map(node => {
+      const id = node.advertisement.discovery_id;
+      const enabled = policy ? policy.candidates?.[id] ?? policy.enabled : undefined;
+      return { id: `candidate-${id}`, rawId: id, type: 'Node', section: 'discovery', label: `node-${id.slice(0, 8)}`,
+        title: id, icon: <Monitor className="tw-h-4 tw-w-4 tw-text-muted" />,
+        selected: selectedEntity?.section === 'discovery' && selectedEntity.id === id,
+        activate: () => inspect(id),
+        suffix: <span title={enabled === undefined ? 'Auto join unknown' : enabled ? 'Auto join enabled' : 'Auto join disabled'} aria-label={enabled === undefined ? 'Auto join unknown' : enabled ? 'Auto join enabled' : 'Auto join disabled'}>
+          {enabled === undefined ? <CircleHelp className="tw-h-3 tw-w-3" /> : <Zap className={`tw-h-3 tw-w-3 ${enabled ? 'tw-text-accent' : 'tw-text-muted tw-opacity-40'}`} />}
+        </span> };
+    })} onNodeContextMenu={(node, event) => {
+      const id = String(node.rawId); inspect(id);
+      setMenuTarget(id); openMenu(event, []);
+    }} />
+    {menuState && menuTarget && createPortal(<ContextMenu {...menuState} items={menuItems(menuTarget)} onClose={closeMenu} />, section.current?.closest('.crowdb-console') ?? document.body)}
+    {admitting && section.current?.closest('.crowdb-console') && createPortal(<AdmitCandidateDialog initialRackId={addNodeRequest?.rackId} discoveryId={admitting} racks={racks} preparedNode={snapshot?.prepared_access?.find(entry => entry.discovery_id === admitting)} onClose={() => setAdmitting(undefined)} onSuccess={onChange} />, section.current.closest('.crowdb-console')!)}
   </section>;
-}
-
-function clusterConsole(endpoint: string): string {
-  const url = new URL(endpoint);
-  url.port = '9090';
-  url.pathname = '/';
-  url.search = '?domain=Cluster';
-  return url.toString();
 }

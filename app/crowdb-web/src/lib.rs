@@ -33,6 +33,8 @@ mod standalone;
 pub mod state;
 
 pub use node::observation::{start_node_observer, NodeObserver};
+#[cfg(feature = "test-util")]
+pub use services::observation::remote_access_health_for_tests;
 pub use state::AppState;
 
 #[cfg(feature = "test-util")]

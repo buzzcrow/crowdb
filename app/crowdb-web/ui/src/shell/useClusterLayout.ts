@@ -7,19 +7,18 @@ export function useClusterLayout(active: boolean, selected: boolean) {
   const [viewport, setViewport] = useState(window.innerWidth);
   const [sidebar, setSidebar] = useState(240);
   const [properties, setProperties] = useState(320);
-  const [collapsed, setCollapsed] = useState(window.innerWidth < 720);
   useEffect(() => {
     const resize = () => setViewport(window.innerWidth);
     window.addEventListener('resize', resize);
     return () => window.removeEventListener('resize', resize);
   }, []);
   const drawer = active && viewport < 1100;
-  const overlayNavigation = active && viewport < 720;
-  const hidden = active && collapsed;
+  const overlayNavigation = false;
+  const hidden = false;
   const sidebarMax = active ? Math.min(360, viewport - 480 - (selected && !drawer ? 280 : 0)) : 600;
   const sidebarWidth = active ? Math.max(200, Math.min(sidebar, sidebarMax)) : sidebar;
   const propertiesMax = active ? Math.min(480, viewport - 480 - (hidden ? 0 : sidebarWidth)) : 600;
   const propertiesWidth = drawer ? Math.min(properties, viewport) : Math.max(active ? 280 : 220, Math.min(properties, propertiesMax));
   return { drawer, hidden, overlayNavigation, sidebarWidth, propertiesWidth, sidebarMax,
-    propertiesMax, setSidebar, setProperties, collapsed, setCollapsed };
+    propertiesMax, setSidebar, setProperties };
 }

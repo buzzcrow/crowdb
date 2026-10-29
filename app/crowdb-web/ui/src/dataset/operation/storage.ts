@@ -1,10 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-
 import type { Operation } from '../operation';
 
-/** Store complete client inputs before network mutation, including requests larger than localStorage. */
-function transact<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore, fail: (error: Error) => void) => IDBRequest<T>): Promise<T> {
+/** Each local draft has its own identity. Transactions fence concurrent tabs. */
+function transact<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore, done: (value: T) => void, fail: (error: Error) => void) => void): Promise<T> {
   return new Promise((resolve, reject) => {
     const opening = indexedDB.open('crowdb-dataset-requests-v2', 1);
     opening.onupgradeneeded = () => opening.result.createObjectStore('requests');
@@ -14,29 +13,58 @@ function transact<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore, f
       const database = opening.result;
       try {
         const transaction = database.transaction('requests', mode);
-        let failure: Error | undefined;
-        const request = action(transaction.objectStore('requests'), error => { failure = error; transaction.abort(); });
-        transaction.oncomplete = () => { database.close(); resolve(request.result); };
-        transaction.onabort = transaction.onerror = () => { database.close(); reject(failure ?? transaction.error ?? new Error('Browser could not save the complete Dataset request.')); };
+        let value: T; let failure: Error | undefined;
+        transaction.oncomplete = () => { database.close(); resolve(value); };
+        transaction.onabort = transaction.onerror = () => { database.close(); reject(failure ?? transaction.error ?? new Error('Browser could not save the Draft.')); };
+        action(transaction.objectStore('requests'), result => { value = result; }, error => { failure = error; transaction.abort(); });
       } catch (reason) { database.close(); reject(reason); }
     };
   });
 }
-export const readRequest = (key: string) => transact<Operation | undefined>('readonly', store => store.get(key));
-export async function writeRequest(key: string, value: Operation) {
-  await transact('readwrite', (store, fail) => {
-    const current = store.get(key);
-    current.onsuccess = () => {
-      if (current.result && current.result.resource !== value.resource) { fail(new Error('Another request is saved for this Dataset. Resume or discard it first.')); return; }
-      store.put(value, key);
+const range = (key: string) => IDBKeyRange.bound(`${key}:`, `${key}:\uffff`);
+export async function listRequests(key: string): Promise<Operation[]> {
+  return transact('readonly', (store, done) => {
+    const request = store.openCursor(range(key));
+    const values: Operation[] = [];
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (cursor) {
+        if (String(cursor.key).length === key.length + 33) values.push(cursor.value);
+        cursor.continue(); return;
+      }
+      const legacy = store.get(key);
+      legacy.onsuccess = () => done([...values, ...(legacy.result ? [legacy.result] : [])].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)));
     };
-    return current;
   });
 }
-export async function removeRequest(key: string, resource: string) {
-  await transact('readwrite', store => {
-    const current = store.get(key);
-    current.onsuccess = () => { if (current.result?.resource === resource) store.delete(key); };
-    return current;
+export async function readRequest(key: string, resource?: string): Promise<Operation | undefined> {
+  const values = await listRequests(key);
+  return resource ? values.find(value => value.resource === resource) : values[0];
+}
+export async function writeRequest(key: string, value: Operation) {
+  const revision = (value.localRevision ?? 0) + 1;
+  const updatedAt = Date.now();
+  await transact<void>('readwrite', (store, done, fail) => {
+    const current = store.get(`${key}:${value.resource}`);
+    current.onsuccess = () => {
+      if ((current.result?.localRevision ?? 0) !== (value.localRevision ?? 0)) { fail(new Error('This Draft changed in another tab. Reopen it before editing.')); return; }
+      store.put({ ...value, localRevision: revision, updatedAt }, `${key}:${value.resource}`);
+      const legacy = store.get(key);
+      legacy.onsuccess = () => { if (legacy.result?.resource === value.resource) store.delete(key); done(); };
+    };
   });
+  value.localRevision = revision; value.updatedAt = updatedAt;
+  window.dispatchEvent(new Event('crowdb-dataset-drafts'));
+}
+export async function removeRequest(key: string, resource: string, revision?: number) {
+  await transact<void>('readwrite', (store, done, fail) => {
+    const current = store.get(`${key}:${resource}`);
+    current.onsuccess = () => {
+      if (current.result && (current.result.localRevision ?? 0) !== (revision ?? 0)) { fail(new Error('This Draft changed in another tab. Reopen it before discarding.')); return; }
+      store.delete(`${key}:${resource}`);
+      const legacy = store.get(key);
+      legacy.onsuccess = () => { if (legacy.result?.resource === resource) store.delete(key); done(); };
+    };
+  });
+  window.dispatchEvent(new Event('crowdb-dataset-drafts'));
 }

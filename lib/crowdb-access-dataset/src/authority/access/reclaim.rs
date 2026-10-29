@@ -123,7 +123,7 @@ impl DatasetAuthority {
                 identity,
                 snapshot,
                 owner,
-                self.reclaim_time().saturating_add(super::RECLAIM_GRACE_SECONDS),
+                self.reclaim_time().saturating_add(self.reclaim_grace_seconds),
             )
             .await?;
         }

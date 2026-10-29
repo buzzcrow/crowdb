@@ -31,9 +31,10 @@ test('native capacity: disk-group CRUD and explicit owner binding use mounted st
     return instance;
   }, { intervals: [100] }).not.toBe('');
   await page.goto('/?domain=Capacity');
+  await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'datacenter', exact: true }).click();
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   const node = sidebar.getByTestId('tree-node-N-1').locator(':scope > [role="treeitem"]');
-  await expect(sidebar.getByRole('button', { name: 'Add Rack', exact: true })).toBeEnabled();
+  await expect(sidebar.getByRole('button', { name: 'Add Rack', exact: true })).toHaveCount(0);
   await diskMenu(page, node, 'Add Disk Group');
   const create = page.getByRole('dialog', { name: 'Add Disk Group', exact: true });
   const id = create.getByLabel('Disk Group ID (auto-assigned)');
@@ -47,7 +48,7 @@ test('native capacity: disk-group CRUD and explicit owner binding use mounted st
   await expect(create).toHaveCount(0);
   await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Expand', exact: true }).click();
   const group = sidebar.getByTestId('tree-node-CH-DG-1-520').locator(':scope > [role="treeitem"]');
-  await expect(group).toContainText('mounted CRUD');
+  await expect(group).toHaveText('DG-520');
   expect(await json(request, '/api/nodes/1/disk-groups'))
     .toEqual(expect.arrayContaining([expect.objectContaining({ id: 520, node_id: 1 })]));
   await diskMenu(page, node, 'Add Disk Group');
@@ -113,6 +114,7 @@ test('native capacity: disk-group CRUD and explicit owner binding use mounted st
     expect(accepted.path).toBe(`/opt/crowdb/data/disks/managed-${accepted.request.operation_id}.img`);
   });
   await page.goto('/?domain=Capacity');
+  await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'datacenter', exact: true }).click();
   const branch = await diskBranch(page, 1, 520);
   await branch.disk.click({ button: 'right' });
   for (const name of ['Compact Zones', 'Rebuild Bitmap', 'Trigger Consistency Scan', 'Recalc Usage', 'Manage node storage']) {
@@ -141,7 +143,8 @@ test('native capacity: disk-group CRUD and explicit owner binding use mounted st
 test('KV binding recommends the least loaded group and initialization creates Group 1', async ({ page, request }) => {
   test.setTimeout(60_000);
   await page.goto('/?domain=KV');
-  await page.getByRole('button', { name: 'Initialize Cluster', exact: true }).click();
+  await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'datacenter', exact: true }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Initialize Cluster', exact: true }).click();
   const init = page.getByRole('dialog', { name: 'Initialize Cluster', exact: true });
   await expect(init).toContainText('data Group 1');
   await expect(init.getByRole('checkbox', { checked: true })).toHaveCount(3);
@@ -149,15 +152,19 @@ test('KV binding recommends the least loaded group and initialization creates Gr
   await expect(init).toHaveCount(0, { timeout: 10_000 });
   await page.getByTestId('domain-cluster').click();
   await step('observe accepted initialization completion', async () => {
-    await expect(page.getByRole('region', { name: 'Cluster initialization' }).getByRole('status'))
-      .toHaveText('Initialization complete', { timeout: 10_000 });
+    await expect.poll(async () => {
+      const response = await request.get('/api/cluster/initialization');
+      expect(response.ok(), await response.text()).toBe(true);
+      return (await response.json()).phase;
+    }, { timeout: 10_000, intervals: [100] }).toBe('active');
+    await expect(page.getByRole('region', { name: 'Cluster initialization' })).toHaveCount(0);
   });
   const group = await request.get('/api/stores/0/groups/1');
   expect(group.ok(), await group.text()).toBe(true);
-  await page.getByTestId('domain-capacity').click();
+  await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'datacenter', exact: true }).click();
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   const node = sidebar.getByTestId('tree-node-N-1').locator(':scope > [role="treeitem"]');
-  await expect(sidebar.getByRole('button', { name: 'Add Rack', exact: true })).toBeEnabled();
+  await expect(sidebar.getByRole('button', { name: 'Add Rack', exact: true })).toHaveCount(0);
   await diskMenu(page, node, 'Add Disk Group');
   const dialog = page.getByRole('dialog', { name: 'Add Disk Group', exact: true });
   const binding = dialog.getByRole('combobox', { name: 'KV group', exact: true });
@@ -217,7 +224,7 @@ test('KV binding recommends the least loaded group and initialization creates Gr
   await page.goto('/?domain=Cluster');
   await expect(sidebar.getByRole('button', { name: 'DG-593', exact: true })).toHaveCount(0);
   await page.getByTestId('domain-cluster').click();
-  await page.getByTestId('domain-capacity').click();
+  await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'datacenter', exact: true }).click();
   const physical = sidebar.getByTestId('tree-node-STORAGE-1').locator(':scope > [role="treeitem"]');
   if (await physical.getAttribute('aria-expanded') !== 'true') {
     await physical.getByRole('button', { name: 'Expand', exact: true }).click();

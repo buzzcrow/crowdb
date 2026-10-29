@@ -1,13 +1,12 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{head::decode_head, VersionedRecord};
+use super::{dataset_lifecycle::DatasetEnvelope, head::decode_head};
 use crate::{
     inspection::{work::InspectionWork, InspectionError, InspectionPage},
     key, AuthorityError, DatasetAuthority, DatasetError, DatasetId, DatasetRecord, MetadataScanBudget,
     NamespacePath, ReadCancellation,
 };
-use bincode::Options;
 
 impl DatasetAuthority {
     /// Discovers existing Dataset records directly, including records predating inspection indexes.
@@ -37,16 +36,11 @@ impl DatasetAuthority {
         let rows = work.scan(prefix, cursor.decode(after)?, budget.items).await?;
         let mut entries = Vec::new();
         for (stored_key, value) in rows.entries {
-            let record: VersionedRecord<DatasetRecord> = bincode::DefaultOptions::new()
-                .with_fixint_encoding()
-                .with_limit(value.bytes.len() as u64)
-                .reject_trailing_bytes()
-                .deserialize(&value.bytes)
-                .map_err(|_| InspectionError::Corrupt)?;
-            if record.version != 1 {
-                return Err(InspectionError::Corrupt);
+            let envelope = DatasetEnvelope::decode(&value.bytes)?;
+            if envelope.deletion.is_some() {
+                continue;
             }
-            let mut record = record.payload;
+            let mut record = envelope.record;
             record.validate().map_err(AuthorityError::from)?;
             DatasetId::from_bytes(record.id.as_bytes()).map_err(AuthorityError::from)?;
             if record.identity.namespace() != namespace

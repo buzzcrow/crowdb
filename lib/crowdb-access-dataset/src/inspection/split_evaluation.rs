@@ -2,11 +2,13 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    content::validate_page_budget, read::PreparedInspectionRead, work::InspectionWork, InspectionError,
+    content::validate_page_budget, cursor::CursorScope, key, read::PreparedInspectionRead,
+    work::InspectionWork, InspectionError, InspectionPage,
 };
 use crate::{
     split::{DraftSplit, SplitValidation},
-    DatasetAuthority, DatasetIdentity, MetadataScanBudget, ReadCancellation, SnapshotId,
+    AuthorityError, DatasetAuthority, DatasetError, DatasetIdentity, MetadataScanBudget, ReadCancellation,
+    SnapshotId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -19,6 +21,45 @@ pub(crate) struct SplitEvaluationWindow {
     pub validation: SplitValidation,
 }
 impl DatasetAuthority {
+    /// Previews a Split over a bounded window of a committed Snapshot without creating a revision.
+    /// An empty matching page can still have a continuation. Cursors bind the complete rule.
+    /// # Errors
+    /// Rejects invalid definitions, mismatched cursors, unavailable sources and read limits.
+    pub async fn inspection_split_page(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        split: &DraftSplit,
+        after: Option<Vec<u8>>,
+        budget: MetadataScanBudget,
+        cancel: &ReadCancellation,
+    ) -> Result<InspectionPage<Vec<u8>>, InspectionError> {
+        validate_page_budget(budget)?;
+        split
+            .definition
+            .validate()
+            .map_err(|_| AuthorityError::Invalid(DatasetError::InvalidManifest))?;
+        let prefix = key::scope(identity, snapshot, b'M').map_err(AuthorityError::from)?;
+        let mut query = b"split-preview:".to_vec();
+        query.extend(serde_json::to_vec(split).map_err(|_| InspectionError::Corrupt)?);
+        let cursor = CursorScope::new(&prefix, &query);
+        let mut window = self
+            .evaluate_split_window(
+                identity,
+                snapshot,
+                std::slice::from_ref(split),
+                cursor.decode(after)?,
+                budget,
+                cancel,
+                false,
+            )
+            .await?;
+        Ok(InspectionPage {
+            entries: window.members.pop().ok_or(InspectionError::Corrupt)?,
+            after: cursor.encode(window.after)?,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn evaluate_split_window(
         &self,

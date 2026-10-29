@@ -15,7 +15,8 @@ export function serviceInstanceLabel(kind: string | undefined, id: string): stri
   if (!prefix) return id;
   const suffix = kind === 'paxos-kv' && id.startsWith('kv-')
     ? id.slice(3)
-    : id.startsWith(`${kind}-`) ? id.slice(kind!.length + 1) : id;
+    : id.startsWith(`${kind}-`) ? id.slice(kind!.length + 1)
+    : kind === 'access-server' && id.startsWith('access-') ? id.slice(7) : id;
   return `${prefix}-${suffix}`;
 }
 export async function serviceRequest(path: string, method: string, body?: object): Promise<unknown> {

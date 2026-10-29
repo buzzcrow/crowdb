@@ -2,10 +2,12 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { test, expect } from '../fixtures/realBackend';
+import { observeDeployingSteps } from '../fixtures/servicePlanObservation';
 import { step } from '../fixtures/stepTimer';
 import { observeDefaultDeployments } from '../fixtures/defaultDeployments';
 import { nativeProcessAlive } from '../fixtures/nativeProcess';
 
+// Baseline: 20.7s (2026-10-29), including external stop/start observation without Refresh.
 test('native diagnostics: auxiliary menus stop and restart the actual typed process', async ({ page, request }) => {
   const alive = (pid: number) => nativeProcessAlive(0, pid);
   const list = async () => {
@@ -15,13 +17,16 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
   };
   await page.goto('/?domain=Cluster');
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  await expect(page.locator('header').getByTitle('Cluster health: Healthy', { exact: true })).toBeVisible();
   for (const [kind, label, prefix] of [['chunkdb', 'crowdb-chunk-db', 'CDB'], ['diskio', 'crowdb-disk-io', 'DIO'], ['chunk-kv', 'crowdb-chunk-kv', 'CKV'], ['access-server', 'crowdb-access-server', 'AS']]) {
     const original = (await list()).find((row: { node_id: number; service_type: string }) => row.node_id === 1 && row.service_type === kind);
     expect(original.pid_node_id).toBe(original.node_id);
+    if (kind === 'access-server') expect(original.health).toBe('up');
     expect(original.pid).toBeGreaterThan(0); expect(await alive(original.pid)).toBe(true);
     const node = sidebar.getByRole('button', { name: 'N-1', exact: true });
     const item = sidebar.getByText(`${prefix}-1`, { exact: true });
     await expect(item).toBeVisible();
+    if (kind === 'access-server') await expect(sidebar.getByRole('button', { name: 'AS-access-1', exact: true })).toHaveCount(0);
     await node.click({ button: 'right' });
     await page.getByRole('menuitem', { name: `${prefix}-1 Running`, exact: true }).hover();
     const stopped = page.waitForResponse(response =>
@@ -30,12 +35,12 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
     await page.getByRole('menuitem', { name: `Stop ${label}`, exact: true }).click();
     const stopResponse = await stopped;
     expect(stopResponse.status(), await stopResponse.text()).toBe(200);
-    await expect(page.getByRole('button', { name: 'Refresh', exact: true }).locator('svg')).not.toHaveClass(/tw-animate-spin/);
+    await expect(page.locator('header').getByRole('button', { name: 'Refresh', exact: true }).locator('svg')).not.toHaveClass(/tw-animate-spin/);
     await expect.poll(() => alive(original.pid), { intervals: [100] }).toBe(false);
     await expect.poll(async () => {
       const stopped = (await list()).find((row: { id: string }) => row.id === original.id);
-      return { id: stopped?.id, pid: stopped?.pid ?? null };
-    }, { intervals: [100] }).toEqual({ id: original.id, pid: null });
+      return { id: stopped?.id, pid: stopped?.pid ?? null, ...(kind === 'access-server' ? { health: stopped?.health } : {}) };
+    }, { intervals: [100] }).toEqual({ id: original.id, pid: null, ...(kind === 'access-server' ? { health: 'down' } : {}) });
     let startSubmitted = false;
     try {
       await node.click({ button: 'right' });
@@ -55,7 +60,7 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
       expect(response.status(), await response.text()).toBe(200);
       await step(`native lifecycle: ${original.id} new process`, () => expect.poll(async () => {
         const current = (await list()).find((row: { id: string }) => row.id === original.id);
-        return current?.pid && current.pid !== original.pid && await alive(current.pid);
+        return current?.pid && current.pid !== original.pid && await alive(current.pid) && (kind !== 'access-server' || current.health === 'up');
       }, { intervals: [100] }).toBe(true));
       expect((await list()).filter((row: { id: string }) => row.id === original.id)).toHaveLength(1);
     } finally {
@@ -63,11 +68,25 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
       if (!startSubmitted && !current?.pid) expect((await request.post(`/api/services/${original.id}/restart`, { data: {} })).ok()).toBe(true);
     }
   }
+  await step('native lifecycle: observe external service changes without browser refresh', async () => {
+    const access = (await list()).find((row: { node_id: number; service_type: string }) => row.node_id === 1 && row.service_type === 'access-server');
+    const stopped = await request.post(`/api/services/${access.id}/stop`, { data: {} });
+    expect(stopped.ok(), await stopped.text()).toBe(true);
+    try {
+      await expect.poll(() => alive(access.pid), { intervals: [100] }).toBe(false);
+      await expect(page.locator('header').getByTitle('Cluster health: Failed', { exact: true })).toBeVisible();
+    } finally {
+      const started = await request.post(`/api/services/${access.id}/restart`, { data: {} });
+      expect(started.ok(), await started.text()).toBe(true);
+    }
+    await expect(page.locator('header').getByTitle('Cluster health: Healthy', { exact: true })).toBeVisible();
+  });
   expect(await list()).toHaveLength(18);
 });
 
 // Baseline: new native defaults/reopen acceptance (2026-10-04).
 // Baseline: 5.6s (2026-10-16), before adding Dataset listener.
+// Baseline: 5.9s (2026-10-27), before separating live health from registration equality.
 test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and valid dependencies', async ({ page, request }) => {
   const response = await request.get('/api/deployment-defaults?node_id=1');
   expect(response.ok(), await response.text()).toBe(true);
@@ -75,6 +94,11 @@ test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and val
   const serversResponse = await request.get('/api/servers');
   expect(serversResponse.ok()).toBe(true);
   const servers = await serversResponse.json();
+  const mutations: string[] = [];
+  page.on('request', current => {
+    const path = new URL(current.url()).pathname;
+    if (path.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(current.method())) mutations.push(`${current.method()} ${path}`);
+  });
   await page.goto('/?domain=Cluster');
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   for (const [kind, label] of [['chunkdb', 'crowdb-chunk-db'], ['diskio', 'crowdb-disk-io'], ['chunk-kv', 'crowdb-chunk-kv'], ['access-server', 'crowdb-access-server']]) {
@@ -99,7 +123,12 @@ test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and val
       await expect(dialog).toHaveCount(0);
     }
   }
-  expect(await (await request.get('/api/servers')).json()).toEqual(servers);
+  const current = await request.get('/api/servers');
+  expect(current.ok(), await current.text()).toBe(true);
+  // Live health probes may change while a dialog is open; registration and PID must not.
+  const registrations = (rows: Record<string, unknown>[]) => rows.map(({ health: _health, ...row }) => row);
+  expect(registrations(await current.json())).toEqual(registrations(servers));
+  expect(mutations).toEqual([]);
 });
 
 // Baseline: 1.3s (2026-10-04); existing instances come from the owned fixture.
@@ -159,7 +188,7 @@ test('native diagnostics: interrupted six-service plan reconciles without duplic
   });
 });
 
-// Baseline: 7.6s (2026-10-04); prerequisite services are controlled through real lifecycle APIs.
+// Baseline: 7.3s (2026-10-27); prerequisite services are controlled through real lifecycle APIs.
 test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive', async ({ page, request }) => {
   test.skip(!process.env.CROWDB_NATIVE_PLAN_PREREQUISITES, 'Requires the partial deployment fixture phase');
   const kinds = ['paxos-kv', 'diskdb', 'chunkdb', 'diskio', 'chunk-kv', 'access-server'];
@@ -212,6 +241,7 @@ test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive'
       expect(deploys).toEqual([]);
     });
     await step('native plan prerequisite arrival', async () => {
+      const rendered = await observeDeployingSteps(dialog);
       expect((await request.post(`/api/services/${diskioIds[0]}/restart`, { data: {} })).ok()).toBe(true);
       await expect.poll(async () => {
         const response = await request.get('/api/service-plans');
@@ -220,7 +250,13 @@ test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive'
       }, { timeout: 3000, intervals: [100] }).toBe('waiting');
       expect(deploys).toEqual([]);
       expect((await request.post(`/api/services/${diskioIds[1]}/restart`, { data: {} })).ok()).toBe(true);
-      await expect(dialog.getByRole('listitem').filter({ hasText: 'deploying' })).toHaveCount(1);
+      await step('native DiskIO ownership publication', () => expect.poll(async () => {
+        const response = await request.get('/api/chunk-storage-readiness');
+        expect(response.ok(), await response.text()).toBe(true);
+        return (await response.json()).ready;
+      }, { timeout: 3000, intervals: [100] }).toBe(true));
+      await expect.poll(async () => (await rendered.read()).some(steps => steps.length === 1 && steps[0].includes('crowdb-chunk-kv')),
+        { timeout: 3000, intervals: [100] }).toBe(true);
       await deployments.verify(1, 'chunk-kv');
       await expect(dialog.getByRole('listitem').filter({ hasText: 'crowdb-access-server' })).toContainText(/deploying|deployed/);
       await deployments.verify(1, 'access-server');
@@ -230,6 +266,8 @@ test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive'
         return Object.values((await response.json())['1'].steps).map((entry: any) => entry.state);
       }, { timeout: 3000, intervals: [100] }).toEqual(kinds.map(() => 'deployed'));
       await expect(dialog.getByRole('listitem').filter({ hasText: 'deployed' })).toHaveCount(6);
+      expect((await rendered.read()).every(steps => steps.length === 1)).toBe(true);
+      await rendered.stop();
       // A prerequisite may still return Waiting; only accepted requests create services.
       expect(acceptedDeploys).toEqual(['chunk-kv', 'access-server']);
       const current = await list();

@@ -1,7 +1,5 @@
 #!/bin/bash
 
-repo_root=$(git rev-parse --show-toplevel)
-
 echo "Running pre-commit checks..."
 
 # Check Rust formatting
@@ -18,7 +16,7 @@ if ! pixi run cargo fmt --all -- --check; then
 fi
 
 # Collect staged C++ files
-staged_cpp=$(git diff --cached --name-only --diff-filter=ACM -- 'lib/crowdb-tree/src/*.cpp' 'lib/crowdb-tree/include/crowdb-tree/*.h')
+staged_cpp=$(git diff --cached --name-only --diff-filter=ACM -- 'lib/crowdb-tree/*.cpp' 'lib/crowdb-tree/*.h')
 
 # Check C++ formatting (only staged files)
 if [ -n "$staged_cpp" ]; then
@@ -39,63 +37,14 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Run clang-tidy (only on staged .cpp files)
-staged_cpp_src=$(git diff --cached --name-only --diff-filter=ACM -- 'lib/crowdb-tree/src/*.cpp')
-if [ -n "$staged_cpp_src" ] && [ -d lib/crowdb-tree/build ]; then
-    echo "Running clang-tidy on staged C++ files..."
-    # Mirror CMake's liburing gate: reactor.cpp, block_async_page_store.cpp,
-    # and any file that includes reactor.h require liburing headers; on macOS
-    # (and anywhere liburing is missing) they are excluded from the build, so
-    # clang-tidy must skip them too. clang-tidy uses clang (not GCC) and can't
-    # find liburing.h in the pixi env, so skip these files when liburing.h is
-    # not at a system path. Most crowdb-tree source files transitively include
-    # reactor.h via crowdb-tree.h → options.h, so when liburing.h is not at a
-    # system path, skip clang-tidy entirely for crowdb-tree sources.
-    have_liburing=false
-    if [ -f /opt/homebrew/include/liburing.h ] || [ -f /usr/local/include/liburing.h ] || [ -f /usr/include/liburing.h ]; then
-        have_liburing=true
+# Use the same compile database, dependency include paths and changed-header
+# scope as the repository C++ gate. Preserve warnings as commit failures.
+if [ -n "$staged_cpp" ]; then
+    echo "Running tree-lint on staged C++ files..."
+    if ! CT_LINT_WARNINGS_AS_ERRORS=1 pixi run tree-lint $staged_cpp; then
+        echo "❌ tree-lint failed. Fix diagnostics before committing."
+        exit 1
     fi
-    cpp_files=()
-    for f in $staged_cpp_src; do
-        case "$f" in
-            */reactor.cpp | */file_async_page_store.cpp | */block_async_page_store.cpp)
-                $have_liburing && cpp_files+=("$f")
-                ;;
-            *)
-                if $have_liburing; then
-                    cpp_files+=("$f")
-                else
-                    # Skip: clang-tidy can't find liburing.h (transitively
-                    # included via crowdb-tree.h → options.h → reactor.h).
-                    echo "   Skipping clang-tidy for $f (liburing.h not at system path)"
-                fi
-                ;;
-        esac
-    done
-    if [ ${#cpp_files[@]} -gt 0 ]; then
-        tmpdir="$repo_root/.crowdb-runtime/artifacts/pre-commit/clang-tidy-$$"
-        mkdir -p "$tmpdir"
-        fail=0
-        for f in "${cpp_files[@]}"; do
-            base=$(basename "$f")
-            (pixi run clang-tidy "$f" -p lib/crowdb-tree/build 2>&1 | grep -E '^(error:|warning:|/.*: error:|/.*: warning:)' > "$tmpdir/$base.out") &
-        done
-        wait
-        for f in "${cpp_files[@]}"; do
-            base=$(basename "$f")
-            if [ -s "$tmpdir/$base.out" ]; then
-                cat "$tmpdir/$base.out"
-                fail=1
-            fi
-        done
-        rm -rf "$tmpdir"
-        if [ $fail -ne 0 ]; then
-            echo "❌ clang-tidy failed. Fix warnings before committing."
-            exit 1
-        fi
-    fi
-elif [ -n "$staged_cpp_src" ] && [ ! -d lib/crowdb-tree/build ]; then
-    echo "⚠️  Skipping clang-tidy: lib/crowdb-tree/build not found. Run 'pixi run build' first."
 fi
 
 echo "✅ All checks passed!"

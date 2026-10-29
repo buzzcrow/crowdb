@@ -27,4 +27,5 @@ it('header, Sample and cell selections retain their type without reloading the s
     expect(screen.getByRole('table', { name: 'Sample field matrix' })).toBeVisible();
   }
   expect(api.matrix).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText(/20 Samples × 12 Schema fields/)).toBeNull();
 });

@@ -23,6 +23,10 @@ pub(super) async fn start_prerequisites(context: &TestNativeContext) {
     start_through(context, None, "chunkdb").await;
 }
 
+pub(super) async fn start_chunk_kv(context: &TestNativeContext) {
+    start_through(context, None, "chunk-kv").await;
+}
+
 async fn start_through(context: &TestNativeContext, geometry: Option<u64>, last: &str) {
     start_diskdb(context, [128 * 1024; 3]).await;
     for (kind, http, rpc) in [
@@ -64,6 +68,8 @@ async fn start_through(context: &TestNativeContext, geometry: Option<u64>, last:
 
 pub(super) async fn start_diskdb(context: &TestNativeContext, units: [u64; 3]) {
     groups(context).await;
+    // Initial ownership claims and disk admission share the Rack CAS guard.
+    wait_diskdb(context).await;
     disks(context, units).await;
     wait_diskdb(context).await;
 }

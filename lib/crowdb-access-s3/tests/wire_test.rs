@@ -25,6 +25,18 @@ fn list_buckets_escapes_names_and_uses_the_s3_namespace() {
 }
 
 #[test]
+fn bucket_page_emits_the_applied_prefix_and_next_continuation() {
+    let page = crowdb_access_s3::bucket::BucketListPage {
+        buckets: vec![],
+        continuation: Some("opaque&next".into()),
+    };
+    let xml = wire::list_bucket_page(b"tenant", b"name&", &page);
+    assert!(xml.contains("<Prefix>name&amp;</Prefix>"));
+    assert!(xml.contains("<ContinuationToken>opaque&amp;next</ContinuationToken>"));
+    assert!(xml.ends_with("</ListAllMyBucketsResult>"));
+}
+
+#[test]
 fn list_objects_serializes_stable_etag_time_and_continuation() {
     let page = ListObjectsV2Page {
         objects: vec![ObjectRecord {

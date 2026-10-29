@@ -96,6 +96,12 @@ impl From<crowdb_access_dataset::UploadError> for ApiError {
 }
 impl From<AuthorityError> for ApiError {
     fn from(error: AuthorityError) -> Self {
+        if matches!(error, AuthorityError::DatasetNotEmpty) {
+            return Self::new(StatusCode::CONFLICT, "dataset_not_empty");
+        }
+        if matches!(error, AuthorityError::DatasetReplaced) {
+            return Self::new(StatusCode::CONFLICT, "dataset_replaced");
+        }
         if let AuthorityError::SnapshotHeadConflict { observed } = error {
             return Self::conflict().with_observed_head(serde_json::json!({
                 "latest":observed.latest.map(|id|id.to_string()),

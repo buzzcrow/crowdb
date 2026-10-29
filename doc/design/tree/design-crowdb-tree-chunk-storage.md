@@ -80,8 +80,17 @@ format-6 manifests accept only legacy references. Exact reads derive physical
 length from the reference's revision without a separate header probe. Reused
 packs and immutable reference segments retain their original revisions.
 
-The backend allocates three-way mirror strips. One B+tree chunk carries at most
-256 MiB of logical pack data. A pack never crosses that limit: the current chunk
+The backend uses the configured number of mirror copies. One B+tree chunk carries
+at most 256 MiB of logical pack data; this is a ceiling, not an initial reservation.
+BtreePage and PageIndex chunks initially allocate at most 4 MiB of logical strip
+capacity with the default 1 MiB strips. The ordered pack planner appends strips
+in 4 MiB growth windows as writes require them, before submitting mirror I/O.
+Physical allocation counts every replica of the allocated strips, not replicas
+of the maximum chunk size. Growth uses the observed ChunkDB revision, preserves
+writer authority, and cannot advance the acknowledged cursor. A failed or
+uncertain append never authorizes a write beyond the confirmed physical layout.
+
+A pack never crosses the logical limit: the current chunk
 is sealed and the whole pack is appended to a new chunk. A reopened store starts
 with a fresh writable chunk. DiskIO owns device alignment; tree page records are
 tail-padded to the configured page alignment while logical lengths and checksums

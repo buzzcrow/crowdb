@@ -20,7 +20,7 @@ interface DiskGroupViewProps {
   onSelectDisk: (diskId: string, dgId: number, rackId: number, nodeId: number) => void;
 }
 
-export function DiskGroupView({ dgId, usage, hardwareCapacity, onSelectDisk, onInspectDisk, selectedId }: DiskGroupViewProps) {
+export function DiskGroupView({ dgId, usage, hardwareCapacity, onSelectDisk, selectedId }: DiskGroupViewProps) {
   const disks = useMemo<DiskInfoDto[]>(() => {
     const usageDg = usage?.disk_groups.find((g) => g.disk_group_id === dgId);
     const hwDg = hardwareCapacity?.disk_groups.find((g) => g.disk_group_id === dgId);
@@ -62,12 +62,12 @@ export function DiskGroupView({ dgId, usage, hardwareCapacity, onSelectDisk, onI
             <article
               key={d.disk_id}
               aria-label={`Disk ${d.disk_id}`}
-              onClick={() => onInspectDisk?.(d.disk_id, dgId, rackId, nodeId)}
+              onClick={() => onSelectDisk(d.disk_id, dgId, rackId, nodeId)}
               className="tw-flex tw-flex-col tw-items-center tw-gap-1 tw-p-2 tw-rounded-lg hover:tw-bg-bg/50"
               title={`${d.disk_id.slice(0, 12)}… · ${diskTypeLabel(d.disk_type)} · ${dpct === null ? "Usage unknown" : `${dpct}% busy`} · ${formatBytes(d.capacity_bytes)}`}
             >
-              <button aria-label={`Inspect disk ${d.disk_id}`} aria-pressed={selectedId === d.disk_id} onClick={event => {
-                event.stopPropagation(); onInspectDisk?.(d.disk_id, dgId, rackId, nodeId);
+              <button aria-label={`Open disk ${d.disk_id}`} aria-pressed={selectedId === d.disk_id} onClick={event => {
+                event.stopPropagation(); onSelectDisk(d.disk_id, dgId, rackId, nodeId);
               }}
                 className="tw-w-12 tw-h-12 tw-rounded tw-flex tw-items-center tw-justify-center tw-text-sm tw-text-white tw-font-medium"
                 style={{ backgroundColor: color }}

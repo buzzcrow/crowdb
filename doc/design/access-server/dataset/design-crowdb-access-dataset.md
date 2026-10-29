@@ -27,6 +27,7 @@ selection, or reclamation authority.
 9. [Correctness invariants](#9-correctness-invariants)
 10. [Implementation and I/O flows](#10-implementation-and-io-flows)
 11. [Risks and open questions](#11-risks-and-open-questions)
+12. [Empty Dataset retirement](#12-empty-dataset-retirement)
 
 ## 1. Scope and boundary
 
@@ -142,8 +143,8 @@ may replay the last unconfirmed batch, but may not skip or change the snapshot.
 Epoch and sampler state remain client state.
 
 Read admission checks the selected snapshot's authoritative deletion state without
-registering a reader. Deletion durably fences new reads and records a twenty-minute
-`reclaim_after` deadline; retries and restarts preserve that deadline. Existing
+registering a reader. Deletion durably fences new reads and records a configured grace-period
+`reclaim_after` deadline (twenty minutes by default); retries and restarts preserve that deadline. Existing
 streams can finish using resolved metadata and payloads during the grace period.
 Unusually long reads may fail after reclamation; partial delivery is never complete
 success. Access Servers and native clients do not acknowledge deletion. Client
@@ -308,7 +309,7 @@ before the content binding exists. Each page has at most twenty rows, nine MiB
 and a two-second deadline; its position is discardable and restarts from the
 beginning. Head, retention and ancestry checks protect referenced resources
 without writes. Eligible resources use the ordinary authoritative reclamation
-fence and twenty-minute deletion grace. Eligibility alone does not revoke reads.
+fence and configured deletion grace. Eligibility alone does not revoke reads.
 An old resource inherits its existing content-binding deadline. If neither
 record has one, the worker assigns a fixed deadline twenty-four hours after its
 first observation. Legacy opaque resources without a supported Manifest remain
@@ -561,3 +562,28 @@ configured default/root namespace in every identity.
 Manifest partitioning, predicate indexes, cache invalidation, and direct GPU
 transport require workload measurements. They are independent extensions and do
 not alter the Dataset identity or snapshot contract.
+
+## 12. Empty Dataset retirement
+
+- Dataset root records carry a deletion receipt and bounded creation reservations.
+  Snapshot/upload creation reserves its child key through the root CAS before the
+  first child CAS. Deletion settles materialized reservations, checks all live
+  content, then compares the same root version. Concurrent new creation therefore
+  invalidates the emptiness decision. No per-Dataset lock is required.
+- At most 32 outstanding creation reservations are admitted. An abandoned reservation
+  expires after twenty minutes, independently of deletion grace. Before removing an
+  expired reservation, the worker CAS-installs a permanent child tombstone if the
+  child is still absent. A late creator cannot revive an operation after name reuse.
+- Marked roots are hidden from discovery and normal opens. The cleanup worker uses
+  bounded pages and an expendable cursor; roots own durable deadlines and progress.
+  Because acceptance requires no live content, due cleanup only retires the namespace
+  reservation. It preserves the minimal root receipt and existing child fences.
+- `dataset.reclaim_grace_seconds` is shared by Dataset, Snapshot and Split revision
+  deletion, defaults to 1200, and is positive in Access Server configuration. The
+  worker polls Dataset/Snapshot marks at min(grace, 15) seconds. Configuration changes
+  affect future marks; persisted deadlines never move. Restarted workers can resume
+  from the start, and duplicate workers use CAS rather than unconditional deletion.
+- HTTP v2 advertises `dataset-delete`. DELETE of the Dataset requires `{id}`;
+  `GET .../deletion/{id}` reconciles its receipt. Nonempty returns 409
+  `dataset_not_empty`; an identity mismatch returns 409. Native `DatasetClient::delete`
+  uses the same authority and expected-ID contract.

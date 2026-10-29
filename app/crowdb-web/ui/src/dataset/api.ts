@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { getApiBase } from '../api';
-import type { Page, DatasetInfo, Head, SnapshotSummary, FieldDefinition, MatrixRow, Preview, SplitHead, SplitRevision, RevisionSummary } from './types';
+import type { Page, DatasetInfo, Head, SnapshotSummary, FieldDefinition, MatrixRow, Preview, SplitHead, SplitRevision, RevisionSummary, DraftSplit } from './types';
 
 export const controlPath = '/access/dataset/api/dataset/v2';
 export const namespacePath = '/namespaces/dataset-ns/datasets';
@@ -42,13 +42,14 @@ async function readBounded(response: Response): Promise<unknown> {
   }
   return result;
 }
-export async function control<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
+export async function control<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal, datasetId?: string): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${getApiBase()}${controlPath}${path}`, {
       method, signal, cache: 'no-store',
-      ...(body === undefined ? {} : { body: body instanceof Blob ? body : JSON.stringify(body),
-        headers: { 'Content-Type': body instanceof Blob ? 'application/octet-stream' : 'application/json' } }),
+      headers: { ...(datasetId ? { 'X-Crowdb-Dataset-Id': opaqueId(datasetId) } : {}),
+        ...(body === undefined ? {} : { 'Content-Type': body instanceof Blob ? 'application/octet-stream' : 'application/json' }) },
+      ...(body === undefined ? {} : { body: body instanceof Blob ? body : JSON.stringify(body) }),
     });
   } catch (reason) {
     if (signal?.aborted) throw reason;
@@ -63,9 +64,9 @@ export async function capabilities(signal?: AbortSignal): Promise<string[]> {
   }
   return result.capabilities;
 }
-export async function mutate<T>(capability: string, path: string, method: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+export async function mutate<T>(capability: string, path: string, method: string, body?: unknown, signal?: AbortSignal, datasetId?: string): Promise<T> {
   if (!(await capabilities(signal)).includes(capability)) throw new DatasetError(501, `Dataset capability unavailable: ${capability}`);
-  return control<T>(path, method, body, signal);
+  return control<T>(path, method, body, signal, datasetId);
 }
 export async function page<T>(path: string, after?: string, limit = 20, signal?: AbortSignal): Promise<Page<T>> {
   if (limit < 1 || limit > 100 || !Number.isInteger(limit) || (after && after.length > 43692)) throw new Error('Invalid Dataset page request.');
@@ -85,6 +86,7 @@ export const samplePage = (name: string, snapshot: string, after?: string, revis
   `${snapshotPath(name, snapshot)}${revision && split !== undefined ? `/split-revisions/${opaqueId(revision)}/splits/${encodeURIComponent(split)}/members` : '/samples'}`, after, 20, signal);
 export async function matrix(name: string, snapshot: string, samples: string[], fields: string[], signal?: AbortSignal): Promise<MatrixRow[]> {
   if (samples.length > 20 || fields.length > 12) throw new Error('Matrix window exceeds 20 Samples × 12 fields.');
+  if (!samples.length || !fields.length) return samples.map(id => ({ id, fields: [] }));
   const result = await control<{ entries: MatrixRow[] }>(`${snapshotPath(name, snapshot)}/matrix`, 'POST', { sample_ids: samples, fields }, signal);
   if (!Array.isArray(result.entries) || result.entries.length !== samples.length || result.entries.some((row, index) => row.id !== samples[index] || row.fields.length !== fields.length)) {
     throw new DatasetError(502, 'Dataset matrix identities do not match the requested window.');
@@ -96,3 +98,12 @@ export const preview = (name: string, snapshot: string, sample: string, field: s
 export const splitHead = (name: string, snapshot: string, signal?: AbortSignal) => control<SplitHead>(`${snapshotPath(name, snapshot)}/split-head`, 'GET', undefined, signal);
 export const revision = (name: string, snapshot: string, id: string, signal?: AbortSignal) => control<SplitRevision>(`${snapshotPath(name, snapshot)}/split-revisions/${opaqueId(id)}`, 'GET', undefined, signal);
 export const history = (name: string, snapshot: string, after?: string, signal?: AbortSignal) => page<RevisionSummary>(`${snapshotPath(name, snapshot)}/split-revisions`, after, 20, signal);
+
+/** Bounded rule evaluation; an empty page may carry a continuation. */
+export async function splitPreview(name: string, snapshot: string, split: DraftSplit, after?: string, signal?: AbortSignal): Promise<Page<string>> {
+  const query = new URLSearchParams({ limit: '20' }); if (after) query.set('after', after);
+  const result = await control<Page<string>>(`${snapshotPath(name, snapshot)}/split-preview?${query}`, 'POST', split, signal);
+  if (!Array.isArray(result.entries) || result.entries.length > 20 || !(result.after === null || typeof result.after === 'string')
+    || result.after !== null && (!result.after || result.after.length > 43692 || result.after === after)) throw new DatasetError(502, 'Invalid Split preview page. Run View again.');
+  return result;
+}

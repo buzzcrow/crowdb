@@ -31,15 +31,16 @@ impl DatasetHttpService {
         let now = crate::dataset::unix_seconds();
         if tail == ["uploads"] && request.method() == Method::POST {
             let input: Create = read_json(request).await?;
+            let length = decimal(&input.length)?;
+            let md5 = digest(&input.md5)?;
+            DatasetUploads::validate_creation(length, input.part_size)?;
             let location = DatasetUploads::location(identity, operation(&input.id)?)?;
+            self.reads
+                .authority()
+                .reserve_upload_creation(identity, operation(&input.id)?)
+                .await?;
             let record = uploads
-                .create(
-                    &location,
-                    decimal(&input.length)?,
-                    input.part_size,
-                    digest(&input.md5)?,
-                    now.saturating_add(86400),
-                )
+                .create(&location, length, input.part_size, md5, now.saturating_add(86400))
                 .await?;
             return json(&wire(&input.id, record));
         }

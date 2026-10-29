@@ -69,6 +69,7 @@ class StorageReadinessTest(unittest.TestCase):
                 cluster.start()
             self.assertEqual(events, ["seed",
                 *(("diskdb", node) for node in range(3)),
+                "storage-seed",
                 *(("diskio", node) for node in range(3)),
                 "storage-ready",
                 *(("chunkdb", node) for node in range(3)),
@@ -88,6 +89,10 @@ class StorageReadinessTest(unittest.TestCase):
                 cluster.servers.append(f"{cluster.run_id}-node{index}")
                 return address
             def ready(_bundle, phase, _case):
+                if phase == "seed":
+                    self.assertEqual(cluster.addresses, [base + str(i + 2) for i in range(3)])
+                if phase == "storage-seed":
+                    self.assertEqual(cluster.servers, [f"{cluster.run_id}-node{i}" for i in range(6)])
                 if phase == "storage-ready":
                     self.assertEqual(len(cluster.addresses), 14)
                     self.assertEqual(cluster.addresses[9:12], [base + str(i + 2) for i in range(9, 12)])

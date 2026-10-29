@@ -20,6 +20,7 @@ use crate::state::AppState;
 
 mod credentials;
 pub(crate) mod dataset;
+mod iceberg_files;
 mod inspection;
 mod signing;
 
@@ -179,9 +180,16 @@ pub(crate) async fn configure(
 
 fn request_headers(source: &HeaderMap) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    for name in ["content-type", "range", "if-match", "if-none-match"] {
-        if let Some(value) = source.get(name) {
-            headers.insert(name, value.clone());
+    for name in [
+        "content-type",
+        "range",
+        "if-match",
+        "if-none-match",
+        "idempotency-key",
+        "x-crowdb-dataset-id",
+    ] {
+        for value in source.get_all(name) {
+            headers.append(name, value.clone());
         }
     }
     headers
@@ -193,6 +201,9 @@ pub(crate) async fn proxy(
     request: Request,
 ) -> Result<Response, ApiError> {
     let protocol = &parameters[0];
+    if protocol == "iceberg-files" {
+        return iceberg_files::proxy(state, request).await;
+    }
     if protocol == "dataset" {
         return dataset::proxy(state, request).await;
     }

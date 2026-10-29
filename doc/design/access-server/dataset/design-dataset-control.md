@@ -21,6 +21,16 @@ bounded control operations. Payload delivery retains the existing binary framing
 
 ## 1. Identity and authority
 
+Control v2 advertises `dataset-identity-fence`. A caller may bind a named route to
+one active Dataset ID with `X-Crowdb-Dataset-Id`, a single canonical nonzero
+32-character lowercase hex value. The request-owned authority carries that
+expected ID through Dataset reads and root resource reservation CAS; checking
+only the initial HTTP observation would leave a deletion/name-reuse race. A
+replacement returns 409 `dataset_replaced`, a marked/missing Dataset returns
+404, and malformed/duplicate headers return 400. Omission preserves existing
+clients. This active-instance guard is omitted when retrying deletion receipts
+after a successful mark; those operations already bind their immutable ID.
+
 A Dataset has opaque latest/stable Snapshot references. A Snapshot may declare any
 complete available same-Dataset parent or no parent. Its parent is independent of the head
 generation used for publication CAS. Multiple roots and off-latest branches remain
@@ -217,6 +227,14 @@ automatic head query or a mutation downgrade.
 
 ## 4. Bounded observation and reads
 
+`inspection_split_page` and `POST snapshots/{snapshot}/split-preview` evaluate one
+Split definition over a bounded committed membership window. They reuse the same
+rule compiler and evaluator as Split preparation, including deterministic weighted
+partitions and frozen inheritance. The cursor binds the Snapshot and full rule;
+zero matching rows may still carry a scan continuation. Preview writes no resource,
+progress or read session and reads no uploaded payload bytes. The `split-preview`
+capability advertises this operation; the console proxy permits it in readonly mode.
+
 Inspection projections contain complete summaries, Schema rows, Sample IDs, field
 metadata and separate value bindings. Ordinary inspection and indexed read planning
 do not load a complete Manifest or chunk payload. Inventory and parent/child indexes
@@ -349,7 +367,7 @@ read limits still apply and may return a limit error before the closed record is
 decoded. Previously admitted
 work may continue until cleanup, and may fail if it outlives the grace period.
 
-Deletion state and the fixed twenty-minute deadline replace the complete root on
+Deletion state and the fixed configured (default twenty-minute) deadline replace the complete root on
 the same revision key, retaining its page bindings for cleanup. The head generation
 is fenced against a publisher that observed the revision before deletion. There
 is no separate deletion task, reader session or request ledger. Repeating DELETE
@@ -358,7 +376,7 @@ read, and the client retries the same two IDs. The bounded background worker sca
 revision resources using discardable local cursors, seals membership metadata and
 rescans terminal resources for delayed member writes. It does not delete Samples,
 upload owners or chunk payloads. If Snapshot deletion has already closed every
-owner read and its own twenty-minute grace has elapsed, revision cleanup may use
+owner read and its own configured (default twenty-minute) grace has elapsed, revision cleanup may use
 that earlier owner fence without waiting for the revision's later deadline.
 
 DELETE returns 200 with `snapshot`, `revision`, `complete` and `reclaim_after`.
@@ -372,7 +390,7 @@ legacy draft abandonment. The native adapter calls the same authority under loca
 admission with no additional metadata GET and no automatic unknown-outcome retry.
 
 Snapshot reclaim checks latest/stable, retained Snapshots, live children, candidate
-ownership under a terminal owner fence. New deletion marks have a durable twenty-minute grace deadline;
+ownership under a terminal owner fence. New deletion marks have a durable configured (default twenty-minute) grace deadline;
 existing marks keep their persisted absolute deadline. The grace period
 separates deletion admission from cleanup. After that deadline it retires upload owners,
 Snapshot-scoped Split drafts, possible index writes and ordinary metadata in phases.

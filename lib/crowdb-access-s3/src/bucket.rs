@@ -3,6 +3,9 @@
 
 //! Durable bucket-name lifecycle on the deliberately slow control path.
 
+mod listing;
+pub use listing::{BucketListPage, BucketListRequest, BucketListSigner};
+
 use crate::metadata::{
     BucketId, BucketNameRecord, ChunkKvMetadataStore, MetadataKey, MetadataRecordError, MetadataStoreError,
     ObjectRecord, PutIfAbsentOutcome, TenantId,
@@ -32,6 +35,8 @@ pub enum DeleteBucketResult {
 
 #[derive(Debug, thiserror::Error)]
 pub enum BucketError {
+    #[error("invalid bucket listing parameters or continuation")]
+    InvalidListRequest,
     #[error("bucket metadata key is invalid: {0}")]
     Key(#[from] crate::metadata::MetadataKeyError),
     #[error("bucket metadata is invalid: {0}")]

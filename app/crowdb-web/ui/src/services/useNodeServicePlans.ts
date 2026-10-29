@@ -124,6 +124,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
     async function tick() {
+      let waitingForStorage = false;
       if (!busy.current && input.current.enabled && !stopped.current) {
         busy.current = true;
         try {
@@ -201,8 +202,8 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
               if (!waiting && (kind === 'chunkdb' || kind === 'chunk-kv' || kind === 'access-server')) {
                 try {
                   const ownership = await serviceRequest('/chunk-storage-readiness', 'GET') as { ready: boolean; reason?: string };
-                  if (!ownership.ready) waiting = ownership.reason ?? 'Waiting: publish live DiskIO disk-group ownership';
-                } catch (error) { waiting = `Waiting: DiskIO ownership unavailable: ${String(error)}`; }
+                  if (!ownership.ready) { waitingForStorage = true; waiting = ownership.reason ?? 'Waiting: publish live DiskIO disk-group ownership'; }
+                } catch (error) { waitingForStorage = true; waiting = `Waiting: DiskIO ownership unavailable: ${String(error)}`; }
               }
               if (waiting) { if (plan[kind].state !== 'waiting' || plan[kind].detail !== waiting) await write(kind, { state: 'waiting', detail: waiting }); continue; }
               if (deploymentStarted) continue;
@@ -228,6 +229,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
                 // A rejected prerequisite has not launched a service; keep it queued.
                 const dependency = String(error).match(/^Error: HTTP 409: (Waiting: .+)$/);
                 if (dependency && (kind === 'chunkdb' || kind === 'chunk-kv')) {
+                  waitingForStorage = true;
                   await write(kind, { state: 'waiting', detail: dependency[1] });
                   continue;
                 }
@@ -253,7 +255,8 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
         const waitingForRestart = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].detail?.startsWith('Waiting: restart registered DiskIO services')));
         const waitingForStart = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].detail === startingService));
         const hasDisks = Object.values(input.current.groups).some(node => Object.values(node.disksByDg).some(disks => disks.length > 0));
-        const delay = wakePending.current ? 0 : hasQueuedWork && !hasDisks && !waitingForAuthority && !waitingForRestart && !waitingForStart ? 10000 : 2000;
+        // Collapsed disk rows are not evidence that registered storage is absent.
+        const delay = wakePending.current ? 0 : hasQueuedWork && !hasDisks && !waitingForAuthority && !waitingForRestart && !waitingForStart && !waitingForStorage ? 10000 : 2000;
         wakePending.current = false;
         timer = setTimeout(() => { running.current = tick(); }, delay);
       }

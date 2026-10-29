@@ -113,3 +113,19 @@ it('only probes global runtime on an explicit refresh and then retains that cach
   expect(result.current.observations.find(row => row.source === 'Usage')).toMatchObject({ cached: true });
   unmount();
 });
+
+it('loads the complete overview when returning from a Disk to a selected parent scope', async () => {
+  setup();
+  const { result, rerender, unmount } = renderHook(({ diskGroupId, diskId }) => useCapacityTree({ observeRuntime: true, diskGroupId, diskId }), {
+    initialProps: { diskGroupId: 7 as number | undefined, diskId: 'disk' as string | undefined },
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  let finish!: (value: { disk_groups: [] }) => void;
+  vi.mocked(api.getDiskdbUsage).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  rerender({ diskGroupId: undefined, diskId: undefined });
+  expect(result.current.usage).toBeNull();
+  expect(api.getDiskdbUsage).toHaveBeenLastCalledWith(undefined, undefined, undefined, expect.any(Object));
+  await act(async () => { finish({ disk_groups: [] }); });
+  expect(result.current.usage).toEqual({ disk_groups: [] });
+  unmount();
+});

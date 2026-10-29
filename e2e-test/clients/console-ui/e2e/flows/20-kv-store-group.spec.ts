@@ -21,7 +21,8 @@ test.describe('kv cluster · store + group CRUD', () => {
         await page.getByTestId('domain-kv').click();
         const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
 
-        await aside.getByRole('button', { name: 'Add Store' }).click();
+        await aside.getByRole('button', { name: 'datacenter', exact: true }).click({ button: 'right' });
+        await page.getByRole('menuitem', { name: 'Add Store', exact: true }).click();
         await expect(page.getByRole('dialog', { name: 'Add KV Store' })).toBeVisible();
         await page.getByLabel('KV Store ID (numeric)').fill('57');
         await page.getByLabel(/^1\b/).check();

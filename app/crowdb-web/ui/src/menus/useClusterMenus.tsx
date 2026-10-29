@@ -11,7 +11,7 @@ import type { MenuItemOrSeparator } from '../components/ContextMenu';
 import { buildStatusSubmenu } from './status';
 import type { MenuContext } from './context';
 import { isAuxiliaryKind, serviceNames, serviceInstanceLabel, type AuxiliaryKind } from '../services/client';
-export function useClusterMenus({ readonly, managed, nodeManagement, onManageNodeStorage, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog }: MenuContext) {
+export function useClusterMenus({ readonly, managed, nodeManagement, onAddNodeCandidate, onManageNodeStorage, managementAuthorized, draftEditable, clusterInitialized = true, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog }: MenuContext) {
   /** Build per-layer context menu items for a normalized target. */
   return useCallback(
     (t: MenuTarget): MenuItemOrSeparator[] => {
@@ -20,7 +20,7 @@ export function useClusterMenus({ readonly, managed, nodeManagement, onManageNod
       // unavailable, but restart/stop/delete are exactly the recovery actions
       // needed to bring the authority back.
       const isServiceTarget = t.type === 'Server' && t.serviceType != null;
-      if (readonly || managed || (!managementAuthorized && !isServiceTarget)) return [];
+      if (readonly || managed || (!managementAuthorized && !draftEditable && !isServiceTarget)) return [];
       const items: MenuItemOrSeparator[] = [];
       const p = t.parentIds || {};
       if (physicalActive && t.type === 'Server' && isAuxiliaryKind(t.serviceType)) {
@@ -30,10 +30,10 @@ export function useClusterMenus({ readonly, managed, nodeManagement, onManageNod
 
       if (domain === Domain.KV && t.type === 'Datacenter') {
         items.push({
-          id: 'add-store',
-          label: 'Add Storage',
+          id: clusterInitialized ? 'add-store' : 'initialize-cluster',
+          label: clusterInitialized ? 'Add Store' : 'Initialize Cluster',
           icon: <Database className="tw-h-4 tw-w-4" />,
-          onSelect: () => setDialog((d) => ({ ...d, addStore: true })),
+          onSelect: () => setDialog((d) => ({ ...d, ...(clusterInitialized ? { addStore: true } : { initCluster: true }) })),
         });
         return items;
       }
@@ -52,7 +52,7 @@ export function useClusterMenus({ readonly, managed, nodeManagement, onManageNod
             id: 'add-node',
             label: 'Add Node',
             icon: <Server className="tw-h-4 tw-w-4" />,
-            onSelect: () => setDialog((d) => ({ ...d, addNode: { rackId } })),
+            onSelect: () => nodeManagement && onAddNodeCandidate ? onAddNodeCandidate(rackId) : setDialog((d) => ({ ...d, addNode: { rackId } })),
           });
           items.push({ id: 's1', separator: true });
           items.push({
@@ -313,7 +313,7 @@ export function useClusterMenus({ readonly, managed, nodeManagement, onManageNod
       }
       return storageLifecycleMenu(items, t, onManageNodeStorage);
     },
-    [readonly, managed, nodeManagement, onManageNodeStorage, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, buildStatusSubmenu],
+    [readonly, managed, nodeManagement, onAddNodeCandidate, onManageNodeStorage, managementAuthorized, draftEditable, clusterInitialized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, buildStatusSubmenu],
   );
 
 }

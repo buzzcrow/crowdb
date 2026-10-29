@@ -874,7 +874,7 @@ pixi run taskset -c 2 cargo test --release --locked -p crowdb-access-dataset --t
 ## Verification and execution notes
 
 - Library: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`.
-- HTTP: `pixi run clean-env && pixi run -- cargo test -p crowdb-access-server --all-targets`.
+- HTTP: `pixi run clean --runtime-only && pixi run -- cargo test -p crowdb-access-server --all-targets`.
   Default server tests alone skip the Iceberg suites.
 - SDK: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_table_sdk_test -- --ignored --nocapture --test-threads=1`.
 - Namespace SDK: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_namespace_sdk_test -- --ignored --nocapture`.
@@ -890,7 +890,7 @@ pixi run taskset -c 2 cargo test --release --locked -p crowdb-access-dataset --t
 - For Java tests, use default Pixi for Cargo; set
   `JAVA_HOME=$PWD/.pixi/envs/iceberg-e2e/lib/jvm` and
   `CROWDB_ICEBERG_E2E_MVN=$PWD/.pixi/envs/iceberg-e2e/bin/mvn`.
-- Prefix native tests with clean-env using the same isolated
+- Prefix native tests with `clean --runtime-only` using the same isolated
   `CROWDB_RUNTIME_ROOT=$PWD/.crowdb-runtime/ephemeral/iceberg-catalog-e2e`;
   preserve unrelated persistent port claims. Do not clean while another test runs.
 - Gates: `pixi run -- cargo fmt --all -- --check`, `pixi run rs-lint`, and

@@ -6,14 +6,14 @@
 import argparse
 import sys
 
-from docker_local_cleanup import clean, image_garbage, selected, stop
+from docker_local_cleanup import selected, stop
 from docker_local_launch import accepted, run
 from docker_local_state import Docker, check_daemon, record_path
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("run", "stop", "clean"))
+    parser.add_argument("operation", choices=("run", "stop"))
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument("--cluster")
     scope.add_argument("--all", action="store_true", help="explicitly select every recorded local cluster")
@@ -22,15 +22,12 @@ def main():
     parser.add_argument("--port-base", type=int)
     parser.add_argument("--cpus", type=float)
     parser.add_argument("--memory-mib", type=int)
-    parser.add_argument("--delete-data", action="store_true", help="clean also deletes owned persistent volumes")
     args = parser.parse_args()
-    if args.operation == "run" and (args.all or args.delete_data):
+    if args.operation == "run" and args.all:
         parser.error("run selects one cluster and preserves its data")
     if args.operation != "run" and any(value is not None for value in
             (args.nodes, args.image, args.port_base, args.cpus, args.memory_mib)):
         parser.error("launch inputs apply only to run")
-    if args.delete_data and args.operation != "clean":
-        parser.error("--delete-data applies only to clean")
     args.cluster = args.cluster or "local"
     record_path(args.cluster)
     docker = Docker()
@@ -41,12 +38,7 @@ def main():
     for record in records:
         check_daemon(docker, record)
     for record in records:
-        if args.operation == "stop":
-            stop(docker, record)
-        else:
-            clean(docker, record, args.delete_data)
-    if args.operation == "clean":
-        image_garbage(docker, runtime=records[0]["runtime"] if records else docker.identity())
+        stop(docker, record)
 
 
 if __name__ == "__main__":

@@ -14,11 +14,12 @@ struct RpcChunkAllocation
     uint32_t strip_count;
 };
 
-[[nodiscard]] inline RpcChunkAllocation rpc_chunk_allocation(uint64_t capacity, uint32_t strip_bytes, uint32_t copies)
+[[nodiscard]] inline RpcChunkAllocation rpc_chunk_allocation(uint64_t capacity, uint32_t strip_bytes,
+                                                             uint32_t /*copies*/)
 {
     constexpr uint64_t kMiB  = 1024U * 1024U;
     uint64_t           bytes = strip_bytes;
-    if (bytes == 0 && copies == 1) {
+    if (bytes == 0) {
         bytes = kMiB;
     }
     if (bytes != 0) {

@@ -3,8 +3,8 @@
 
 use super::{decode, AuthorityError, VersionedRecord};
 use crate::{
-    key, CommitAttempt, CommitGeneration, DatasetAuthority, DatasetIdentity, DatasetRecord, HeadRecord,
-    OperationId, SnapshotId, StoredValue,
+    key, CommitAttempt, CommitGeneration, DatasetAuthority, DatasetIdentity, HeadRecord, OperationId,
+    SnapshotId, StoredValue,
 };
 use serde::{Deserialize, Serialize};
 
@@ -59,7 +59,8 @@ impl DatasetAuthority {
             .get(&key::dataset(identity)?)
             .await?
             .ok_or(AuthorityError::NotFound)?;
-        let _: DatasetRecord = decode(&dataset.bytes)?;
+        let record = super::dataset_lifecycle::DatasetEnvelope::decode(&dataset.bytes)?.active()?;
+        self.check_dataset_instance(record.id)?;
         let stored = self.store.get(&key::head(identity)?).await?;
         reference(stored.as_ref())
     }

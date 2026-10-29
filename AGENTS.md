@@ -45,6 +45,11 @@ and transport exposed through FFI.
 - Markdown is primarily read raw. Prefer bullets; use tables for real
   comparisons only. `doc/doc_index.md` always uses tables. When a table is
   used, pad columns with spaces so the raw markdown aligns visually.
+- Console UI changes follow `doc/design/console/design-crowdb-console-ui.md`.
+  Before changing visible behavior, update the UI spec and its ASCII layout
+  after agreement with the user; only then implement the UI change. Do not
+  unilaterally change the spec or introduce UI behavior that is absent from
+  the agreed spec. Each visible UI change needs focused test or E2E coverage.
 
 ## Skill dispatch
 

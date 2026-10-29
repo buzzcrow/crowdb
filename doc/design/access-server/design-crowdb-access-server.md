@@ -166,18 +166,13 @@ buffer ownership in the application. It resolves one immutable dataset
 snapshot and distributes work directly to responsible CROWDB services. A
 topology view routes work but never grants placement authority.
 
-The accelerated direction is an end-to-end path from storage to the final
-consumer buffer. For AI workloads, the intended destination is GPU memory:
-
-```text
-storage media -> DiskIO-owned buffer -> RDMA fabric -> client GPU memory
-```
-
-GPUDirect Storage, GPUDirect RDMA, cuObject-compatible transfer, and native
-CROWDB RDMA are possible mechanisms. The stable architectural goal is no
-Access Server payload bounce and no Dataset-client CPU staging for a direct GPU
-transfer. CPU streaming is the mandatory fallback, and transport choice never
-changes the logical result.
+Native S3 and Dataset access use the shared CROWDB runtime and RC SEND/RECV
+transport with registered host buffers. This path avoids an Access Server payload
+bounce while preserving metadata authority, publication and integrity rules.
+Host-memory ownership and admission remain explicit. GPU destinations, cuObject
+negotiation and one-sided client-memory transfer are outside the current contract.
+See [Native RDMA access](s3/design-crowdb-access-s3-rdma.md) and
+[RPC RDMA](../rpc/design-crowdb-rpc-rdma.md).
 
 ## 6. Shared storage boundary
 

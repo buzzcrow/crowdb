@@ -21,6 +21,8 @@ pub struct CommitTableIdentifier {
 
 #[derive(Debug, Deserialize)]
 pub struct CommitRequest {
+    #[serde(rename = "x-crowdb-base-metadata-location")]
+    pub base_metadata_location: Option<String>,
     pub identifier: Option<CommitTableIdentifier>,
     pub requirements: Vec<TableRequirement>,
     pub updates: Vec<TableUpdate>,
@@ -65,6 +67,17 @@ impl CommitRequest {
             }
         }
         let mut request: Self = serde_json::from_value(value)?;
+        if let Some(base) = &request.base_metadata_location {
+            base.parse::<crate::file::FileLocation>()
+                .map_err(|_| Error::Field("x-crowdb-base-metadata-location"))?;
+            if request
+                .requirements
+                .iter()
+                .any(|value| matches!(value, super::TableRequirement::AssertCreate))
+            {
+                return Err(Error::Field("x-crowdb-base-metadata-location"));
+            }
+        }
         let raw: RawRequest<'_> = serde_json::from_slice(bytes)?;
         for (update, raw) in request.updates.iter_mut().zip(raw.updates) {
             update.validate_parameters()?;

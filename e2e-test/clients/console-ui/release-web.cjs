@@ -7,6 +7,7 @@ const { randomUUID } = require('node:crypto');
 const { resolve } = require('node:path');
 const { chromium, expect } = require('@playwright/test');
 
+// Baseline: 9.7s (2026-10-29), including the host browser launch.
 async function main() {
   const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || [
     '/snap/bin/chromium', '/usr/bin/chromium', '/usr/bin/chromium-browser',
@@ -41,11 +42,13 @@ async function main() {
     });
     await page.goto(process.argv[2]);
     await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible({ timeout: 3000 });
-    for (const domain of ['cluster', 'kv', 'capacity', 'chunk', 'chunk-kv', 'iceberg', 's3']) {
+    for (const domain of ['cluster', 'kv', 'chunk', 'chunk-kv', 'iceberg', 'dataset', 's3']) {
       await expect(page.getByTestId(`domain-${domain}`)).toBeVisible({ timeout: 3000 });
     }
-    await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })
-      .getByRole('button', { name: 'Add Rack', exact: true })).toBeEnabled({ timeout: 3000 });
+    const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+    await sidebar.getByRole('button', { name: 'datacenter', exact: true }).click({ button: 'right' });
+    await expect(page.getByRole('menuitem', { name: 'Add Rack', exact: true })).toBeEnabled({ timeout: 3000 });
+    await page.keyboard.press('Escape');
     const capabilities = await page.request.get(new URL('/api/mode', process.argv[2]).href);
     expect(capabilities.ok()).toBe(true);
     expect(await capabilities.json()).toEqual({ mode: 'node', readonly: false });
@@ -78,7 +81,8 @@ async function verifyAuthorityOutage(page, container) {
     { timeout: 10000 });
     await page.clock.runFor(3001);
     expect((await (await observed).json()).phase).toBe('authority_unavailable');
-    await expect(page.getByTestId('deployment-phase')).toHaveText('Group 0 unavailable · confirmed view is stale', { timeout: 3000 });
+    await expect(page.getByRole('alert').filter({ hasText: 'Group 0 unavailable · confirmed view is stale' }))
+      .toBeVisible({ timeout: 3000 });
     const mutation = await page.request.post(new URL('/api/racks', process.argv[2]).href,
       { data: { id: 2, name: 'must-not-commit' } });
     expect(mutation.status()).toBe(502);
@@ -88,7 +92,13 @@ async function verifyAuthorityOutage(page, container) {
     await signalService('CONT', pid);
     await page.clock.resume();
   }
-  await expect(page.getByTestId('deployment-phase')).toHaveText('Active cluster', { timeout: 3000 });
+  await expect.poll(async () => {
+    const response = await page.request.get(new URL('/api/node/status', process.argv[2]).href);
+    expect(response.ok()).toBe(true);
+    return (await response.json()).phase;
+  }, { timeout: 3000, intervals: [100] }).toBe('active');
+  await expect(page.getByRole('alert').filter({ hasText: 'Group 0 unavailable · confirmed view is stale' }))
+    .toHaveCount(0, { timeout: 3000 });
   const racks = await page.request.get(new URL('/api/racks', process.argv[2]).href);
   expect(racks.ok()).toBe(true);
   expect((await racks.json()).some(rack => rack.id === 2)).toBe(false);

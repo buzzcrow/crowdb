@@ -23,7 +23,12 @@ beforeEach(() => {
 it('keeps an exact-revision Online action clickable during a refresh and ignores its old response', async () => {
   read.mockResolvedValue({ ...excluded, remove_conditions: [] });
   const operation = { operation_id: `online/disk/${excluded.disk_revision}`, offline_revision: excluded.disk_revision!, state: 'pending' as const, error: null };
-  vi.mocked(onlineNodeDisk).mockResolvedValue(operation);
+  vi.mocked(onlineNodeDisk).mockImplementation(async () => {
+    // Subsequent authority polls include the accepted operation; only the
+    // explicitly held response below represents the pre-submission state.
+    read.mockResolvedValue({ ...excluded, remove_conditions: [], online: operation });
+    return operation;
+  });
   const { onClose } = setup();
   await screen.findByText(/Owner and DiskIO exclusion confirmed/);
   fireEvent.click(screen.getByRole('button', { name: 'Bring Online…' }));

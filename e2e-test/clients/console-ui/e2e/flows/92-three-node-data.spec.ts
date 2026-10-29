@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: 68.0s (2026-10-12), six release nodes and real data round trips.
+import { resourceAction } from '../fixtures/resourceMenus';
+// Baseline: 78.9s (2026-10-29), six release nodes and real data round trips.
+import { parquetUploads } from '../fixtures/parquetUploads';
 import { test, expect } from '../fixtures/realBackend';
 import { waitForLeader } from '../fixtures/localSetup';
 import { queueFullPlans } from '../fixtures/fullServicePlans';
@@ -32,7 +34,8 @@ async function createCluster({ page, request, baseURL, deployments }: UIContext)
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   await step('three-node: initialize both KV groups through UI', async () => {
     await page.getByTestId('domain-kv').click();
-    await page.getByLabel('Initialize Cluster', { exact: true }).click();
+    await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'datacenter', exact: true }).click({ button: 'right' });
+    await page.getByRole('menuitem', { name: 'Initialize Cluster', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Initialize Cluster', exact: true });
     await expect(dialog.getByRole('checkbox', { checked: true })).toHaveCount(3);
     const initialized = page.waitForResponse(response => response.url().endsWith('/api/cluster/init') && response.request().method() === 'POST', { timeout: 10_000 });
@@ -77,7 +80,7 @@ async function addDisks({ page, request }: UIContext) {
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   await step('three-node: disk groups and disks through UI', async () => {
     await page.getByTestId('domain-cluster').click();
-    await page.getByTestId('domain-capacity').click();
+    await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'datacenter', exact: true }).click();
     for (const id of [1, 2, 3]) {
       const node = sidebar.getByRole('button', { name: `N-${id}`, exact: true });
       await node.click({ button: 'right' });
@@ -164,7 +167,7 @@ async function s3RoundTrip({ page, request }: UIContext) {
   await step('three-node: S3 upload and exact read through UI', async () => {
     const content = 'CROWDB three-node UI round trip\n雪\n';
     await page.getByTestId('domain-s3').click();
-    await page.getByText('S3 actions', { exact: true }).click();
+    await resourceAction(page, page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: 'S3', exact: true }), 'Create bucket…');
     await page.getByLabel('New bucket', { exact: true }).fill('ui-three-node');
     const created = page.waitForResponse(response => new URL(response.url()).pathname === '/api/access/s3/ui-three-node'
       && response.request().method() === 'PUT');
@@ -172,19 +175,17 @@ async function s3RoundTrip({ page, request }: UIContext) {
     const bucketResponse = await created;
     expect(bucketResponse.status(), bucketResponse.statusText()).toBe(200);
     await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: 'ui-three-node', exact: true }).click();
-    await page.getByText('Bucket actions', { exact: true }).click();
-    await page.getByLabel('Object key', { exact: true }).fill('round-trip.txt');
-    await page.getByLabel('Object file').setInputFiles({ name: 'round-trip.txt', mimeType: 'text/plain', buffer: Buffer.from(content) });
+    await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Upload object…');
+    await page.getByLabel('Object files', { exact: true }).setInputFiles({ name: 'round-trip.txt', mimeType: 'text/plain', buffer: Buffer.from(content) });
     await step('three-node: S3 upload mutation', async () => {
       const uploaded = page.waitForResponse(response => response.request().method() === 'PUT'
         && new URL(response.url()).pathname === '/api/access/s3/ui-three-node/round-trip.txt');
-      await page.getByRole('button', { name: 'Upload', exact: true }).click();
+      await page.getByRole('button', { name: 'Upload object', exact: true }).click();
       const response = await uploaded;
       expect(response.status(), response.statusText()).toBe(200);
     });
     await page.getByRole('button', { name: 'round-trip.txt', exact: true }).click();
-    await page.getByText('Object actions', { exact: true }).click();
-    await page.getByRole('button', { name: 'Preview first 4 KiB', exact: true }).click();
+    await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Preview first 4 KiB');
     await expect(page.getByLabel('Object preview')).toHaveText(content);
     const response = await request.get('/api/access/s3/ui-three-node/round-trip.txt');
     expect(response.ok(), await response.text()).toBe(true);
@@ -195,7 +196,7 @@ async function s3RoundTrip({ page, request }: UIContext) {
 async function icebergRoundTrip({ page, baseURL }: UIContext) {
   await step('three-node: Iceberg table through UI, actual SDK append and read', async () => {
     await page.getByTestId('domain-iceberg').click();
-    await page.getByText('Catalog actions', { exact: true }).click();
+    await resourceAction(page, page.getByRole('navigation', { name: 'Iceberg tree' }).getByRole('button', { name: 'Catalog', exact: true }), 'Create namespace…');
     await page.getByLabel('Namespace name', { exact: true }).fill('ui_three_node');
     const createdNamespace = page.waitForResponse(response => new URL(response.url()).pathname === '/api/access/iceberg/v1/namespaces' && response.request().method() === 'POST');
     await page.getByRole('button', { name: 'Create namespace', exact: true }).click();
@@ -204,14 +205,18 @@ async function icebergRoundTrip({ page, baseURL }: UIContext) {
     expect((await namespaceResponse.json()).namespace).toEqual(['ui_three_node']);
     const tree = page.getByRole('navigation', { name: 'Iceberg tree' });
     await tree.getByRole('button', { name: 'ui_three_node', exact: true }).click();
-    await page.getByText('Namespace actions', { exact: true }).click();
+    await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Create table…');
     await page.getByLabel('Table name', { exact: true }).fill('events');
-    await page.getByLabel('Schema fields (JSON)', { exact: true }).fill(JSON.stringify([{ id: 1, name: 'id', required: false, type: 'long' }, { id: 2, name: 'message', required: false, type: 'string' }]));
+    const file = await parquetUploads();
     const createdTable = page.waitForResponse(response => new URL(response.url()).pathname === '/api/access/iceberg/v1/namespaces/ui_three_node/tables' && response.request().method() === 'POST');
-    await page.getByRole('button', { name: 'Create table', exact: true }).click();
+    await page.getByLabel('Parquet files', { exact: true }).setInputFiles(file('empty.parquet', 'empty'));
     const created = await createdTable;
     expect(created.status(), await created.text()).toBe(200);
+    await expect(page.getByRole('table', { name: 'Parquet editor table', exact: true })).toContainText('Uploaded');
+    await expect(page.getByRole('region', { name: 'Schema preview', exact: true })).toContainText('message');
+    await page.getByRole('button', { name: 'Commit', exact: true }).click();
     const writerConfig = (await created.json()).config;
+    await expect(page.getByRole('region', { name: 'Create Table', exact: true })).toHaveCount(0);
     await tree.getByRole('button', { name: 'events', exact: true }).click();
     const execution = promisify(execFile)('pixi', ['run', '-e', 'iceberg-e2e', 'python', resolve('e2e/fixtures/icebergRoundTrip.py'), `${baseURL}/api/access/iceberg`, 'ui_three_node'], { env: { ...process.env, PYICEBERG_MAX_WORKERS: '4' }, timeout: 300_000 });
     execution.child.stdin!.end(JSON.stringify(writerConfig));

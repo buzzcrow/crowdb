@@ -15,6 +15,5 @@ INSPECTION_CASES = (
     'native diagnostics: Iceberg committed references and Parquet footer',
     'native diagnostics: Iceberg actual catalog tables and nested schema preserve scope',
     'native diagnostics: unavailable catalog retries the actual Access services',
-    'native diagnostics: S3 bucket windows and multipart markers replace rows',
     'native diagnostics: browser history preserves S3 windows and rejects replaced or deleted resources',
 )

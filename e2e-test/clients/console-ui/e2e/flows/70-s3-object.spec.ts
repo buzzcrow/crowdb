@@ -1,5 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+import { resourceAction } from '../fixtures/resourceMenus';
 import { test, expect } from '../fixtures/realBackend';
 import { step } from '../fixtures/stepTimer';
 
@@ -29,7 +30,8 @@ test('native diagnostics: S3 bucket windows and multipart markers replace rows',
       }
     });
     await page.goto('/?domain=S3');
-    await page.getByLabel('Filter loaded buckets', { exact: true }).fill(prefix);
+    await page.getByLabel('Bucket prefix', { exact: true }).fill(prefix);
+    await page.getByRole('form', { name: 'Bucket list query', exact: true }).getByRole('button', { name: 'List', exact: true }).click();
     const table = page.getByRole('table', { name: 'S3 bucket list', exact: true });
     await expect(table.getByRole('row')).toHaveCount(21);
     expect(await table.getByRole('button').allTextContents()).toEqual(buckets.slice(0, 20));
@@ -39,9 +41,8 @@ test('native diagnostics: S3 bucket windows and multipart markers replace rows',
     await page.goBack(); await expect(table.getByRole('row')).toHaveCount(21);
     await page.goForward(); await expect(table.getByRole('row')).toHaveCount(2);
     await page.getByRole('navigation', { name: 'S3 buckets', exact: true }).getByRole('button', { name: buckets[20], exact: true }).click();
-    await page.getByText('Bucket actions', { exact: true }).click();
-    await page.getByRole('button', { name: 'List multipart uploads', exact: true }).click();
-    await page.getByRole('button', { name: 'Inspect parts', exact: true }).click();
+    await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Multipart uploads');
+    await page.getByRole('button', { name: /^Inspect parts / }).click();
     const parts = page.getByRole('region', { name: 'Object metadata', exact: true });
     await expect(parts.getByRole('table', { name: 'Multipart parts', exact: true }).getByRole('row')).toHaveCount(101);
     await page.getByRole('button', { name: 'Next parts page', exact: true }).click();

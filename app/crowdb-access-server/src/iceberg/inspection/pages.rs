@@ -27,6 +27,7 @@ impl Selection<'_> {
         )
         .await
         .map_err(failed)?;
+        let rewritable = present::rewritable_schema(reader.metadata(), false);
         let mut cursor = self.cursor(&record)?;
         if cursor.block > 0 {
             reader
@@ -41,7 +42,7 @@ impl Selection<'_> {
             let block_start = reader.position();
             let Some(block) = reader.next().await.map_err(failed)? else {
                 return Ok(
-                    json!({"kind":"manifest-list","location":record.location.to_string(),"size":record.length,"rows":rows,"next":null,"offset":start}),
+                    json!({"kind":"manifest-list","location":record.location.to_string(),"size":record.length,"rows":rows,"rewrite_safe":rewritable,"next":null,"offset":start}),
                 );
             };
             bytes += block.payload.length;
@@ -84,7 +85,7 @@ impl Selection<'_> {
                         },
                     )?;
                     return Ok(
-                        json!({"kind":"manifest-list","location":record.location.to_string(),"size":record.length,"rows":rows,"next":next,"offset":start}),
+                        json!({"kind":"manifest-list","location":record.location.to_string(),"size":record.length,"rows":rows,"rewrite_safe":rewritable,"next":next,"offset":start}),
                     );
                 }
                 size += cost;
@@ -117,6 +118,7 @@ impl Selection<'_> {
         let writer = ManifestMetadata::parse(reader.metadata()).map_err(failed)?;
         let version = writer.version;
         let schema: Value = serde_json::from_slice(writer.schema_json).map_err(failed)?;
+        let rewritable = present::rewritable_schema(reader.metadata(), true);
         let mut cursor = self.cursor(&record)?;
         let start = cursor.index;
         let mut state =
@@ -143,7 +145,7 @@ impl Selection<'_> {
             let row_id = state.next_row_id();
             let Some(block) = reader.next().await.map_err(failed)? else {
                 return Ok(
-                    json!({"kind":"manifest","location":record.location.to_string(),"descriptor":present::manifest(list),"codec":codec,"schema":schema,"rows":rows,"next":null,"offset":start}),
+                    json!({"kind":"manifest","location":record.location.to_string(),"descriptor":present::manifest(list),"codec":codec,"schema":schema,"rows":rows,"rewrite_safe":rewritable,"next":null,"offset":start}),
                 );
             };
             bytes += block.payload.length;
@@ -189,7 +191,7 @@ impl Selection<'_> {
                         },
                     )?;
                     return Ok(
-                        json!({"kind":"manifest","location":record.location.to_string(),"descriptor":present::manifest(list),"codec":codec,"schema":schema,"rows":rows,"next":next,"offset":start}),
+                        json!({"kind":"manifest","location":record.location.to_string(),"descriptor":present::manifest(list),"codec":codec,"schema":schema,"rows":rows,"rewrite_safe":rewritable,"next":next,"offset":start}),
                     );
                 }
                 size += cost;

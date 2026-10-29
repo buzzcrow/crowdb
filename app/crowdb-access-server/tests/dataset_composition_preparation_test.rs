@@ -41,7 +41,8 @@ async fn complete_resource_reuses_the_snapshot_id_across_restart_without_advanci
     let before = counts(&store);
     let prepared = response(client.put(&url).json(&input()), 200).await;
     let after = counts(&store);
-    assert_eq!((after.0 - before.0, after.1 - before.1), (12, 16));
+    // Creation reserves the Dataset root: two admission reads and one root CAS.
+    assert_eq!((after.0 - before.0, after.1 - before.1), (14, 17));
     assert_eq!(prepared["snapshot"], id);
     assert_eq!(prepared["sample_count"], "1");
     assert!(prepared["initial_split"].is_string());

@@ -22,16 +22,16 @@ export async function seed(request: APIRequestContext, name: string, parent: str
 }
 export async function openDataset(page: Page, name: string) {
   await page.goto('/?domain=Dataset');
-  await page.getByRole('navigation', { name: 'Dataset tree' }).getByRole('button', { name, exact: true }).click();
+  await page.getByRole('navigation', { name: 'Dataset tree', exact: true }).getByRole('button', { name, exact: true }).click();
 }
-export async function preparedResult(page: Page, kind: 'Snapshot' | 'Split revision') {
-  const region = page.getByRole('region', { name: 'Resource publication' });
-  await expect(region.getByRole('button', { name: `Publish ${kind}`, exact: true })).toBeEnabled();
+export async function publishResult(page: Page, kind: 'Dataset' | 'Snapshot' | 'Split revision') {
+  await page.getByRole('button', { name: kind === 'Dataset' ? 'Create Dataset' : kind === 'Snapshot' ? 'Create Snapshot' : 'Commit', exact: true }).click();
+  await expect(page.getByRole('region', { name: kind === 'Split revision' ? 'Edit Split revision' : 'Import Snapshot', exact: true })).toHaveCount(0);
 }
-export async function publishResult(page: Page, kind: 'Snapshot' | 'Split revision') {
-  await preparedResult(page, kind);
-  await page.getByRole('region', { name: 'Resource publication' }).getByRole('button', { name: `Publish ${kind}`, exact: true }).click();
-  await expect(page.getByRole('dialog')).toHaveCount(0);
+export async function mapping(page: Page, value: unknown) {
+  await expandEditor(page, 'Advanced');
+  await page.getByRole('textbox', { name: 'Sample mapping JSON', exact: true }).fill(JSON.stringify(value));
+  await page.getByRole('button', { name: 'Apply batch mapping', exact: true }).click();
 }
 export async function publishSplits(request: APIRequestContext, name: string, snapshot: string, splits: unknown[]) {
   const path = `${datasetPath(name)}/snapshots/${snapshot}`; const revision = id();
@@ -40,4 +40,44 @@ export async function publishSplits(request: APIRequestContext, name: string, sn
     splits, policy: { overlap: 'disjoint', coverage: 'allow_unassigned' },
   });
   return call(request, `${path}/split-head`, 'PUT', { revision, expected_revision: head.revision, expected_head: head.generation });
+}
+
+export async function expandEditor(page: Page, title: string) {
+  const summary = page.locator('summary').filter({ hasText: new RegExp(`^${title}$`) });
+  if (await summary.locator('..').getAttribute('open') === null) await summary.click();
+}
+
+export async function addField(page: Page, name: string, required = false) {
+  await page.getByRole('button', { name: 'Add Field', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add Field', exact: true });
+  await dialog.getByLabel('Field name', { exact: true }).fill(name);
+  await dialog.getByLabel('New field required').setChecked(required);
+  await dialog.getByRole('button', { name: 'Add Field', exact: true }).click();
+}
+export async function addSample(page: Page, name: string) {
+  const table = page.getByRole('table', { name: 'Snapshot editor table', exact: true });
+  await page.getByRole('button', { name: 'Add Sample', exact: true }).click();
+  const input = table.getByRole('textbox', { name: /^Sample ID for sample-[0-9a-f]{8}$/ });
+  await input.fill(name); await input.press('Tab');
+  await expect(table.getByLabel(`Sample ID for ${name}`, { exact: true })).toHaveValue(name);
+}
+export async function textCell(page: Page, sample: string, field: string, value: string) {
+  const input = page.getByRole('textbox', { name: `${field} for ${sample}`, exact: true });
+  await input.focus();
+  await expect(input).not.toHaveAttribute('readonly', '');
+  await input.fill(value);
+  await expect(page.getByRole('dialog', { name: `Edit ${field}`, exact: true })).toHaveCount(0);
+}
+export async function resumeDraft(page: Page, name: string, resource: string, creating = false) {
+  const tree = page.getByRole('navigation', { name: 'Dataset tree', exact: true });
+  if (creating) { await tree.getByRole('button', { name: `Dataset Draft ${name} · ${resource.slice(0, 8)}`, exact: true }).click(); return; }
+  await tree.getByRole('button', { name, exact: true }).click();
+  await tree.getByRole('button', { name: `Snapshot Draft ${resource.slice(0, 8)}`, exact: true }).click();
+}
+
+export async function uploadFiles(page: Page, files: { name: string; mimeType: string; buffer: Buffer }, field?: string) {
+  const picker = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Upload files', exact: true }).click();
+  if (field) await page.getByRole('dialog', { name: 'Choose upload Field', exact: true }).getByRole('button', { name: field, exact: true }).click();
+  await (await picker).setFiles(files);
 }

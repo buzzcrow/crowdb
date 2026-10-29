@@ -340,6 +340,7 @@ async fn default_file_waits_for_metadata_then_reuses_one_durable_request_and_gro
     assert_eq!(requests[0].reserve_bytes, 1024 * 1024 * 1024);
     assert!(!requests[0].sparse);
     let placement = requests[0].admission.as_ref().unwrap();
+    assert_eq!(placement.zone_size_bytes, 16 * 1024 * 1024 * 1024);
     let groups = hardware.list_disk_groups_on_node(1, 2).await.unwrap();
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].dg_id, placement.disk_group_id);

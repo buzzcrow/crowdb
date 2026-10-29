@@ -19,10 +19,11 @@ test('full deploy flow: deploy diskdb via UI, restart, stop, delete via context 
 async function deployDiskDb(page: Page, request: APIRequestContext, kv: LiveService) {
   expect(await service(request, 'diskdb')).toBeUndefined();
   await page.goto('/?domain=Capacity');
+  await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'datacenter', exact: true }).click();
   const node = page.getByRole('complementary', { name: 'Cluster tree sidebar' })
     .getByTestId('tree-node-N-1').locator(':scope > [role="treeitem"]');
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  await expect(sidebar.getByRole('button', { name: 'Add Rack', exact: true })).toBeVisible();
+  await expect(sidebar.getByRole('button', { name: 'Add Rack', exact: true })).toHaveCount(0);
   await node.click({ button: 'right' });
   for (const label of ['Add Disk Group', 'Deploy DiskDB', 'Delete Node']) {
     await expect(page.getByRole('menuitem', { name: label, exact: true })).toBeVisible();

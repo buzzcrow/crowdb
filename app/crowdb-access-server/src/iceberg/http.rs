@@ -387,6 +387,11 @@ impl IcebergHttpService {
         let warehouse = warehouse(query)?;
         let mut config = CatalogConfig::for_capabilities(warehouse.as_deref(), capabilities)?;
         config.endpoints = Route::endpoints(&self.installed_routes(), capabilities);
+        if self.table_writes.is_some() {
+            config
+                .overrides
+                .insert("crowdb.guarded-maintenance".into(), "true".into());
+        }
         Ok(response(
             200,
             serde_json::to_vec(&config).map_err(|_| service_unavailable())?,

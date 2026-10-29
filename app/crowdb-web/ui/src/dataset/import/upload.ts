@@ -4,28 +4,28 @@
 import * as api from '../api';
 import type { UploadDescriptor, UploadStatus } from '../types';
 import { randomUUID } from '../../utils/randomUUID';
-import { digest } from './digest';
+import { digest } from '../../access/digest';
 import { getApiBase } from '../../api';
 export const newId = () => randomUUID().replaceAll('-', '');
 const partSize = 4 * 1024 * 1024;
-export async function upload(dataset: string, file: File, progress: (text: string) => void, signal?: AbortSignal, register?: (id: string, key: string) => Promise<void>): Promise<UploadDescriptor> {
+export async function upload(dataset: string, file: File, progress: (text: string) => void, signal?: AbortSignal, register?: (id: string, key: string) => Promise<void>, datasetId?: string): Promise<UploadDescriptor> {
   if (Math.ceil(file.size / partSize) > 10000) throw new Error('File exceeds 10000 upload parts.');
   const md5 = await digest(file, signal, count => progress(`${file.name}: checksum ${count}/${file.size}`));
-  const key = `crowdb.dataset.upload:${getApiBase()}:${dataset}:${file.size}:${md5}`;
+  const key = `crowdb.dataset.upload:${getApiBase()}:${dataset}:${datasetId ?? 'legacy'}:${file.size}:${md5}`;
   const saved = localStorage.getItem(key);
   let id = saved ?? newId();
   localStorage.setItem(key, id); await register?.(id, key);
   let path = `${api.datasetPath(dataset)}/uploads/${id}`;
-  const create = () => api.mutate<UploadStatus>('uploads', `${api.datasetPath(dataset)}/uploads`, 'POST', { id, length: String(file.size), part_size: partSize, md5 }, signal);
+  const create = () => api.mutate<UploadStatus>('uploads', `${api.datasetPath(dataset)}/uploads`, 'POST', { id, length: String(file.size), part_size: partSize, md5 }, signal, datasetId);
   let status: UploadStatus;
   if (!saved) status = await create();
   else {
-    try { status = await api.control<UploadStatus>(path, 'GET', undefined, signal); }
+    try { status = await api.control<UploadStatus>(path, 'GET', undefined, signal, datasetId); }
     catch (reason) {
       if (!(reason instanceof api.DatasetError) || reason.status !== 404) throw reason;
       status = await create();
     }
-    if (status.state === 'aborted') {
+    if (status.state === 'aborted' || (status.state !== 'claimed' && Number(status.expires_at) * 1000 <= Date.now())) {
       id = newId(); localStorage.setItem(key, id); await register?.(id, key);
       path = `${api.datasetPath(dataset)}/uploads/${id}`; status = await create();
     }
@@ -40,11 +40,11 @@ export async function upload(dataset: string, file: File, progress: (text: strin
     await Promise.all(Array.from({ length: Math.min(2, count - offset) }, async (_, position) => {
       const index = offset + position; if (received.has(index)) return;
       signal?.throwIfAborted();
-      await api.mutate('uploads', `${path}/parts/${index}`, 'PUT', file.slice(index * partSize, Math.min((index + 1) * partSize, file.size)), signal);
+      await api.mutate('uploads', `${path}/parts/${index}`, 'PUT', file.slice(index * partSize, Math.min((index + 1) * partSize, file.size)), signal, datasetId);
     }));
     progress(`${file.name}: uploaded ${Math.min(offset + 2, count)}/${count} parts`);
   }
-  status = await api.mutate<UploadStatus>('uploads', `${path}/complete`, 'POST', undefined, signal);
+  status = await api.mutate<UploadStatus>('uploads', `${path}/complete`, 'POST', undefined, signal, datasetId);
   if (status.state !== 'complete' && status.state !== 'claimed') throw new Error('Upload did not complete. Inspect status before retrying.');
   progress(`${file.name}: complete`); return descriptor(status);
 }

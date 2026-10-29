@@ -54,6 +54,8 @@ impl DatasetAuthority {
         }
         let gc_after = Some(self.reclaim_time().saturating_add(CANDIDATE_LIFETIME_SECONDS));
         let bytes = encode_snapshot(prepared, gc_after)?;
+        self.reserve_dataset_resource(identity, snapshot_key.clone())
+            .await?;
         match self.store.compare_exchange(&snapshot_key, None, &bytes).await? {
             CasOutcome::Applied(_) => Ok(PublicationResource {
                 reused: None,

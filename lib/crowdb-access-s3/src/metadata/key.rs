@@ -89,6 +89,29 @@ impl MetadataKey {
         key
     }
 
+    /// Bounds bucket names sharing the requested binary prefix.
+    /// # Errors
+    /// Rejects prefixes beyond the metadata component limit.
+    pub fn bucket_name_bounds(
+        tenant: &TenantId,
+        prefix: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>), MetadataKeyError> {
+        if prefix.len() > MAX_KEY_BYTES {
+            return Err(MetadataKeyError::TooLong("bucket name prefix"));
+        }
+        let mut start = Self::bucket_name_prefix(tenant);
+        append_ordered_bytes_prefix(&mut start, prefix);
+        let mut end = if prefix.is_empty() {
+            Self::bucket_name_end(tenant)
+        } else {
+            start.clone()
+        };
+        if !prefix.is_empty() {
+            increment_lexicographic(&mut end);
+        }
+        Ok((start, end))
+    }
+
     /// # Errors
     ///
     /// Returns an error when the bucket name is not a valid metadata component.

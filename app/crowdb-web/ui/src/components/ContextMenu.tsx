@@ -142,11 +142,12 @@ export function ContextMenu({ items, position, onClose }: ContextMenuProps) {
   }, [onClose]);
 
   // Focus the menu when it opens
+  useEffect(() => { containerRef.current?.focus(); }, []);
   useEffect(() => {
-    if (containerRef.current) {
-      containerRef.current.focus();
-      setFocusedIndex(getFirstEnabledIndex());
-    }
+    setFocusedIndex(current => {
+      const item = items[current];
+      return item && !('separator' in item) && !item.disabled ? current : getFirstEnabledIndex();
+    });
   }, [getFirstEnabledIndex]);
 
   // Adjust position to fit in viewport. Re-runs when a submenu
@@ -282,6 +283,7 @@ export function ContextMenu({ items, position, onClose }: ContextMenuProps) {
  * Hook for managing context menu state in a component.
  */
 export function useContextMenu() {
+  const returnFocus = useRef<HTMLElement | null>(null);
   const [menuState, setMenuState] = useState<{
     items: MenuItemOrSeparator[];
     position: { x: number; y: number };
@@ -291,6 +293,7 @@ export function useContextMenu() {
     (e: React.MouseEvent, items: MenuItemOrSeparator[]) => {
       e.preventDefault();
       e.stopPropagation();
+      returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setMenuState({
         items,
         position: { x: e.clientX, y: e.clientY },
@@ -301,6 +304,7 @@ export function useContextMenu() {
 
   const closeMenu = useCallback(() => {
     setMenuState(null);
+    if (returnFocus.current?.isConnected) returnFocus.current.focus();
   }, []);
 
   return {

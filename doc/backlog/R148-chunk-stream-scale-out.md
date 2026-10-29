@@ -139,7 +139,7 @@ Required gates:
 - `pixi run -- cargo test -p crowdb-chunk-stream --all-targets`
 - `pixi run -- cargo test -p crowdb-chunk-kv --all-targets`
 - `pixi run -- cargo test -p crowdb-chunkdb --all-targets`
-- `pixi run clean-env && pixi run test-server`
+- `pixi run clean --runtime-only && pixi run test-server`
 
 ## Open Issues
 

@@ -5,35 +5,50 @@ import { useState } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { Definitions, validateEditor } from './splits/Definitions';
 import { defaultPolicy, type DraftSplit } from './types';
+import { SelectionProvider } from '../contexts/SelectionContext';
 import { DomainProvider } from '../contexts/DomainContext';
 import { DatasetView } from '../views/DatasetView';
 import * as api from './api';
-vi.mock('./operation/storage', () => ({ readRequest: vi.fn(async () => undefined), writeRequest: vi.fn(async () => {}), removeRequest: vi.fn(async () => {}) }));
+vi.mock('./operation/storage', () => ({ listRequests: vi.fn(async () => []), readRequest: vi.fn(async () => undefined), writeRequest: vi.fn(async () => {}), removeRequest: vi.fn(async () => {}) }));
 vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(),
   listDatasets: vi.fn(async () => ({ entries: [], after: null })),
-  capabilities: vi.fn(async () => ['dataset-management', 'composition-preparation', 'snapshot-head-update']),
+  capabilities: vi.fn(async () => ['dataset-management', 'composition-preparation', 'snapshot-head-update', 'dataset-identity-fence']),
   mutate: vi.fn(async () => ({})),
   page: vi.fn(async () => ({ entries: [], after: null })),
   splitHead: vi.fn(async () => ({ revision: null, generation: null })),
   head: vi.fn(async () => ({ generation: null, latest: null, stable: null })),
-  control: vi.fn(async () => ({})),
+  control: vi.fn(async (path: string) => path.endsWith('/head') ? { latest: null, stable: null, generation: null } : { id: '1'.repeat(32) }),
 }));
 afterEach(() => { vi.clearAllMocks(); localStorage.clear(); });
-it('keeps one action region across creation, capability refresh and inventory reconciliation', async () => {
-  render(<DomainProvider><DatasetView active readonly={false} showActivity={false} /></DomainProvider>);
+it('creates through the parent menu and keeps resource operations out of the center toolbar', async () => {
+  render(<DomainProvider><SelectionProvider><DatasetView active readonly={false} showActivity={false} /></SelectionProvider></DomainProvider>);
   await act(async () => {});
-  fireEvent.change(screen.getByLabelText('New Dataset name'), { target: { value: 'demo' } });
-  await act(async () => fireEvent.click(screen.getByRole('button', { name: /^Create Dataset$/ })));
-  for (let index = 0; index < 3; index++) {
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh Dataset' })));
-    expect(screen.getAllByRole('region', { name: 'Dataset actions' })).toHaveLength(1);
-    expect(screen.getAllByRole('button', { name: 'Import / New Snapshot' })).toHaveLength(1);
-  }
-  expect(api.mutate).toHaveBeenCalledTimes(1);
+  fireEvent.contextMenu(screen.getByRole('button', { name: 'Datasets' }));
+  await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: 'Create Dataset…' })));
+  expect((screen.getByLabelText('New Dataset name') as HTMLInputElement).value).toMatch(/^dataset-[0-9a-f]{8}$/);
+  await act(async () => {});
+  expect(api.mutate).not.toHaveBeenCalled();
+  expect(screen.queryByRole('dialog', { name: 'Create Dataset' })).toBeNull();
+  const editor = screen.getByRole('region', { name: 'Import Snapshot' });
+  expect(within(editor).getByRole('button', { name: 'Create Dataset' })).toBeEnabled();
+  expect(within(editor).getByRole('table', { name: 'Snapshot editor table' })).toBeVisible();
+  expect(screen.queryByLabelText('Upload target field')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Add Sample' }).closest('tfoot')).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'Add Field' }).closest('thead')).not.toBeNull();
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Create Dataset' })));
+  expect(screen.getByRole('alert')).toHaveTextContent('at least one Sample');
+  expect(api.mutate).not.toHaveBeenCalled();
+  expect(within(screen.getByRole('region', { name: 'Dataset help' })).getByRole('link', { name: 'Help' })).toHaveAttribute('href', 'https://crowdb.dev/docs/manual/');
+  expect(screen.getByLabelText('Local payload files')).toBeVisible();
+  expect(screen.queryByRole('textbox', { name: 'Sample ID (UTF-8)' })).toBeNull();
+  expect(screen.getByText('Advanced').parentElement).not.toHaveAttribute('open');
+  expect(screen.queryByRole('dialog', { name: 'Import Snapshot' })).toBeNull();
+  expect(screen.queryByRole('navigation', { name: 'Dataset tree pages' })).toBeNull();
 });
 it('invalid rule text blocks saving and invalidates the previously reviewed rule', () => {
   const change = vi.fn();
   const { container } = render(<Definitions splits={[{ name: 'train', origin: { kind: 'evaluated' }, definition: { kind: 'selection', predicate: { kind: 'all' } } }]} policy={defaultPolicy} change={change} />);
+  fireEvent.click(screen.getByText('Advanced selection JSON'));
   fireEvent.change(screen.getByRole('textbox', { name: 'Selection rule' }), { target: { value: '{broken' } });
   expect(change).toHaveBeenCalled();
   expect(() => validateEditor(container)).toThrow('Correct the invalid editor input');
@@ -57,12 +72,12 @@ it('renaming a weighted member keeps every partition definition on the same weig
 });
 it('readonly exposes inspection without creation, import or lifecycle mutations', async () => {
   vi.mocked(api.listDatasets).mockResolvedValueOnce({ entries: [{ id: '1'.repeat(32), name: 'readonly-demo', namespace: 'dataset-ns', latest: null, stable: null }], after: null });
-  render(<DomainProvider><DatasetView active readonly showActivity={false} /></DomainProvider>);
+  render(<DomainProvider><SelectionProvider><DatasetView active readonly showActivity={false} /></SelectionProvider></DomainProvider>);
   await act(async () => {});
   expect(screen.queryByRole('button', { name: 'Create Dataset' })).toBeNull();
   fireEvent.click(within(screen.getByRole('navigation', { name: 'Dataset tree' })).getByRole('button', { name: 'readonly-demo' }));
   await act(async () => {});
-  expect(screen.queryByRole('button', { name: 'Import / New Snapshot' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'New Snapshot' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Reclaim Snapshot' })).toBeNull();
   expect(api.mutate).not.toHaveBeenCalled();
   expect(screen.queryByText('Session activity')).toBeNull();
@@ -98,9 +113,8 @@ it('storage failure stops a preparation before its network mutation', async () =
 it('reclamation confirmation keeps its exact Snapshot target across navigation', async () => {
   const { Actions } = await import('./Actions');
   const complete = vi.fn();
-  const props = { readonly: false, capabilities: ['snapshot-reclaim'], complete };
+  const props = { action: 'reclaim' as const, readonly: false, capabilities: ['snapshot-reclaim'], complete };
   const { rerender } = render(<Actions {...props} selected={{ kind: 'snapshot', dataset: 'demo', snapshot: '1'.repeat(32) }} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Reclaim Snapshot' }));
   rerender(<Actions {...props} selected={{ kind: 'snapshot', dataset: 'demo', snapshot: '2'.repeat(32) }} />);
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Confirm reclamation' })));
   expect(api.mutate).toHaveBeenCalledWith('snapshot-reclaim', expect.stringContaining(`/snapshots/${'1'.repeat(32)}/reclaim`), 'POST');
@@ -110,14 +124,28 @@ it('reclamation confirmation keeps its exact Snapshot target across navigation',
 it('waits for the selected Split base before enabling edits so loading cannot erase input', async () => {
   const { SplitEditor } = await import('./splits/Editor');
   let loaded!: (value: import('./types').SplitHead) => void;
-  vi.mocked(api.splitHead).mockReturnValueOnce(new Promise(resolve => { loaded = resolve; }));
+  vi.mocked(api.control).mockResolvedValueOnce({ id: '1'.repeat(32) }).mockReturnValueOnce(new Promise(resolve => { loaded = resolve; }));
   render(<SplitEditor dataset="demo" snapshot={'1'.repeat(32)} close={vi.fn()} complete={vi.fn()} />);
   expect(screen.getByRole('button', { name: 'Add selection Split' })).toBeDisabled();
-  expect(screen.getByRole('button', { name: 'Prepare Split revision' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Commit' })).toBeDisabled();
   expect(screen.queryByLabelText('Split 1 name')).toBeNull();
+  await act(async () => {});
   await act(async () => loaded({ revision: null, generation: null }));
   fireEvent.click(screen.getByRole('button', { name: 'Add selection Split' }));
   fireEvent.change(screen.getByLabelText('Split 1 name'), { target: { value: 'train' } });
   await act(async () => {});
   expect(screen.getByLabelText('Split 1 name')).toHaveValue('train');
+});
+
+it('a rejected preparation is corrected under a new identity while unknown replies stay frozen', async () => {
+  const { correctedDraft, prepare } = await import('./operation');
+  const op: import('./operation').Operation = { version: 2, dataset: 'demo', kind: 'split', snapshot: '1'.repeat(32), resource: '2'.repeat(32), expectedHead: null,
+    input: { splits: [], policy: defaultPolicy } };
+  vi.mocked(api.mutate).mockRejectedValueOnce(new api.DatasetError(422, 'invalid policy'));
+  await expect(prepare(op)).rejects.toThrow('invalid policy');
+  expect(op.rejectedPreparation).toBe(true);
+  const next = await correctedDraft(op);
+  expect(next.resource).not.toBe(op.resource); expect(next.input).toEqual(op.input); expect(next.editing).toBe(true);
+  op.pending = { kind: 'prepare' };
+  await expect(correctedDraft(op)).rejects.toThrow('Resolve');
 });

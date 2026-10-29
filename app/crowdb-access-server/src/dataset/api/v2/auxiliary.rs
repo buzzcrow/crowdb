@@ -14,6 +14,18 @@ use serde::Deserialize;
 struct Stable {
     snapshot: String,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteDataset {
+    id: String,
+}
+fn dataset_id(value: &str) -> Result<crowdb_access_dataset::DatasetId, ApiError> {
+    crowdb_access_dataset::DatasetId::from_bytes(operation(value)?.as_bytes())
+        .map_err(|_| ApiError::invalid())
+}
+fn deletion(value: &crowdb_access_dataset::DatasetDeletion) -> serde_json::Value {
+    serde_json::json!({"id":value.id.to_string(), "reclaim_after":value.reclaim_after.to_string(), "complete":value.complete})
+}
 impl DatasetHttpService {
     pub(super) async fn v2_auxiliary(
         &self,
@@ -24,6 +36,19 @@ impl DatasetHttpService {
         Query::parse(request.uri().query(), &[])?;
         let authority = self.reads.authority();
         match (request.method().clone(), tail) {
+            (Method::DELETE, []) => {
+                let input: DeleteDataset = read_json(request).await?;
+                let result = authority
+                    .delete_dataset(identity, dataset_id(&input.id)?, &ReadCancellation::new())
+                    .await?;
+                return json(&deletion(&result));
+            }
+            (Method::GET, ["deletion", id]) => {
+                read_body(request, false).await?;
+                return json(
+                    &serde_json::json!({"deletion":authority.dataset_deletion(identity, dataset_id(id)?).await?.as_ref().map(deletion)}),
+                );
+            }
             (Method::PUT, []) => {
                 read_body(request, false).await?;
                 authority.create_dataset(identity.clone()).await?;

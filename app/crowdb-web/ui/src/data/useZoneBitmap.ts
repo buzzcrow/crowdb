@@ -13,14 +13,16 @@ interface ZoneBitmapState {
   refresh: () => Promise<void>;
 }
 
-/** Load only the selected zone, cancel stale observations and clear old bitmap data. */
+/** Load only the selected zone, cancel stale observations and retain the last successful observation only for the same identity. */
 export function useZoneBitmap(
   dgId: number | undefined,
   diskId: string | undefined,
   zoneIndex: number | null,
   active = true,
 ): ZoneBitmapState {
-  const [zone, setZone] = useState<ZoneUsageDto | null>(null);
+  const identity = active && dgId !== undefined && diskId !== undefined && zoneIndex !== null
+    ? JSON.stringify([dgId, diskKey(diskId), zoneIndex]) : null;
+  const [observed, setObserved] = useState<{ identity: string; zone: ZoneUsageDto } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const reqIdRef = useRef(0);
@@ -29,9 +31,9 @@ export function useZoneBitmap(
   const fetchBitmap = useCallback(async () => {
     const myReq = ++reqIdRef.current;
     requestRef.current?.abort();
-    setZone(null); setError(null); setLoading(false);
+    setError(null); setLoading(false);
     if (!active || dgId === undefined || diskId === undefined || zoneIndex === null) {
-      setZone(null);
+      setObserved(null);
       setError(null);
       return;
     }
@@ -48,24 +50,24 @@ export function useZoneBitmap(
       if (myReq !== reqIdRef.current) return;
       if (!zu) {
         setError(new Error(`zone ${zoneIndex} not found on disk ${diskId}`));
-        setZone(null);
+
       } else {
-        setZone(zu);
+        setObserved({ identity: identity!, zone: zu });
         setError(null);
       }
     } catch (err) {
       if (myReq !== reqIdRef.current) return;
       setError(err instanceof Error ? err : new Error('Unknown error fetching zone bitmap'));
-      setZone(null);
+
     } finally {
       if (myReq === reqIdRef.current) setLoading(false);
     }
-  }, [dgId, diskId, zoneIndex, active]);
+  }, [dgId, diskId, zoneIndex, active, identity]);
 
   useEffect(() => {
     void fetchBitmap();
     return () => { ++reqIdRef.current; requestRef.current?.abort(); };
   }, [fetchBitmap]);
 
-  return { zone, loading, error, refresh: fetchBitmap };
+  return { zone: observed?.identity === identity ? observed.zone : null, loading, error, refresh: fetchBitmap };
 }

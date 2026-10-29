@@ -25,7 +25,7 @@ design and testable contract; do not create a separate design draft.
    commit.
 
 Find tests with `pixi task list`; prefix server-spawning tests with
-`pixi run clean-env &&`. Before push run fmt and `pixi run rs-lint`.
+`pixi run clean --runtime-only &&`. Before push run fmt and `pixi run rs-lint`.
 
 Proceed autonomously except when a design has multiple valid choices with no
 clear winner, or a test still fails after five root-cause-driven attempts.

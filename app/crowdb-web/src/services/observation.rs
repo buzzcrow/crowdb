@@ -1,6 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+mod access;
+#[cfg(feature = "test-util")]
+pub use access::remote_access_health_for_tests;
+
 use crate::state::AppState;
 use axum::{extract::State, Json};
 use crowdb_console_shared::{cluster::NodeHealth, config::ServiceType};
@@ -72,6 +76,7 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
         let cfg = &cfg;
         let snap = &snap;
         let remote_pids = &remote_pids;
+        let intents = &intents;
         async move {
             let runtime_pid = match s.node_id {
                 Some(node_id) if s.service_type == ServiceType::Diskdb => {
@@ -96,7 +101,7 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
                         .filter(|pid| crowdb_console_shared::lifecycle::process_is_alive(*pid))
                 })
             };
-            let health = observe_health(state, cfg, s, pid, snap).await;
+            let health = observe_health(state, cfg, s, pid, snap, intents).await;
             ServerSummary {
                 id: s.id.clone(),
                 node_id: s.node_id,
@@ -132,27 +137,10 @@ async fn observe_health(
     s: &crowdb_console_shared::config::ServerEntry,
     pid: Option<u32>,
     snap: &std::collections::BTreeMap<u64, crowdb_console_shared::monitor::NodeRecord>,
+    intents: &[crowdb_protocol::mgmt::node::NodeServiceIntent],
 ) -> NodeHealth {
     if s.service_type == ServiceType::AccessServer {
-        if let Some(url) = cfg
-            .local_launches
-            .get(&s.id)
-            .and_then(crowdb_console_shared::config::LocalLaunchSpec::access_health_url)
-        {
-            let healthy = reqwest::Client::new()
-                .get(url)
-                .timeout(std::time::Duration::from_secs(1))
-                .send()
-                .await
-                .is_ok_and(|response| response.status().is_success());
-            if healthy {
-                NodeHealth::Up
-            } else {
-                NodeHealth::Down
-            }
-        } else {
-            NodeHealth::Unknown
-        }
+        access::observe(cfg, s, state.node_monitor_url.is_some(), intents).await
     } else if s.service_type == ServiceType::PaxosKv
         && pid.is_some()
         && s.node_id.is_some_and(|id| {

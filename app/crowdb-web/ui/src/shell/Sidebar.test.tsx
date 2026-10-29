@@ -16,6 +16,8 @@ import {
 } from '../types';
 import type { NodeDiskGroups } from '../data/useCapacityTree';
 
+vi.mock('./CandidateNodes', () => ({ CandidateNodes: () => <div>Candidate children</div> }));
+
 const rack: Rack = {
   id: 1,
   name: 'r1',
@@ -86,6 +88,25 @@ function renderSidebar(domain: Domain, props: Record<string, unknown> = {}) {
 }
 
 describe('Sidebar · Cluster tree projection', () => {
+  it('places candidate nodes beside racks under Datacenter and toggles without selecting a resource', () => {
+    const onNodeClick = vi.fn();
+    const { getByTestId, getByText, queryByText } = renderSidebar(Domain.Cluster, { nodeManagement: true, onNodeClick });
+    const candidates = getByTestId('tree-node-NODE-CANDIDATES');
+    expect(candidates.parentElement).toBe(getByTestId('tree-node-R-1').parentElement);
+    expect(getByTestId('tree-node-DC-datacenter')).toContainElement(candidates);
+    expect(getByText('Candidate children')).toBeVisible();
+    fireEvent.click(within(candidates).getByRole('button', { name: 'Candidate nodes' }));
+    expect(queryByText('Candidate children')).toBeNull();
+    expect(onNodeClick).not.toHaveBeenCalled();
+    fireEvent.click(within(candidates).getByRole('button', { name: 'Expand' }));
+    expect(getByText('Candidate children')).toBeVisible();
+  });
+  it('keeps an empty candidate branch compact without a placeholder or expand arrow', () => {
+    const { getByTestId, queryByText } = renderSidebar(Domain.Cluster, { nodeManagement: true, candidateHasNodes: false });
+    const candidates = getByTestId('tree-node-NODE-CANDIDATES');
+    expect(within(candidates).queryByRole('button', { name: 'Expand' })).toBeNull();
+    expect(queryByText('No candidate nodes')).toBeNull();
+  });
   it('renders rack → node → PKV server under the node', () => {
     const { getByText, queryByText } = renderSidebar(Domain.Cluster);
     expect(getByText(/R-1/)).toBeTruthy();
@@ -114,14 +135,28 @@ describe('Sidebar · Cluster tree projection', () => {
     const { getByTestId, getByText, queryByText } = renderSidebar(Domain.Cluster, { onLoadNodeDisks });
     const diskdb = getByTestId('tree-node-DDB-10');
     const storage = getByTestId('tree-node-STORAGE-10');
-    expect(queryByText(/Physical Group.*DG-100/)).toBeNull();
+    expect(queryByText('DG-100')).toBeNull();
     expect(onLoadNodeDisks).not.toHaveBeenCalled();
     fireEvent.click(within(storage).getByRole('button', { name: 'Expand' }));
     expect(onLoadNodeDisks).toHaveBeenCalledWith(10);
     fireEvent.click(within(getByTestId('tree-node-CH-DG-10-100')).getByRole('button', { name: 'Expand' }));
-    expect(storage.contains(getByText(/Physical Group.*DG-100/))).toBe(true);
+    expect(storage.contains(getByText('DG-100'))).toBe(true);
     expect(storage.contains(getByText('0123456789ab…'))).toBe(true);
     expect(diskdb.contains(getByText('0123456789ab…'))).toBe(false);
+  });
+
+  it('uses actual ownership for DiskDB children including disks on another Node', () => {
+    const onNodeClick = vi.fn();
+    const { getByTestId } = renderSidebar(Domain.Cluster, { onNodeClick,
+      diskdbInstanceIdByNodeId: new Map([[11, 'remote-owner']]), diskdbNodeIds: new Set([10, 11]),
+      diskdbInstances: [{ instance_id: 'remote-owner', rpc_endpoint: 'n11:7100', last_heartbeat_ms: 0, owned_dg_ids: [100], group_usages: [] }],
+      hardwareCapacity: { disk_groups: [{ rack_id: 1, node_id: 10, disk_group_id: 100, status: 1, disks: [] }] },
+    });
+    fireEvent.click(within(getByTestId('tree-node-DDB-11')).getByRole('button', { name: 'Expand' }));
+    const owned = getByTestId('tree-node-OWNER-remote-owner-CH-DG-10-100');
+    fireEvent.click(within(owned).getByRole('button', { name: 'DG-100' }));
+    expect(onNodeClick.mock.calls[0][0]).toMatchObject({ type: 'DiskGroup', rawId: 100, parentIds: { node_id: 10 } });
+    expect(within(getByTestId('tree-node-DDB-10')).queryByText(/Physical Group/)).toBeNull();
   });
 
   it('exposes candidate scope with honest unknown and stale observed counts', () => {
@@ -133,7 +168,7 @@ describe('Sidebar · Cluster tree projection', () => {
     fireEvent.click(getByText('Candidates (2)'));
     expect(onNodeClick.mock.calls[0][0]).toMatchObject({ type: 'Node', section: 'candidates', rawId: 10 });
     fireEvent.click(within(getByTestId('tree-node-STORAGE-11')).getByRole('button', { name: 'Expand' }));
-    expect(getByText('Candidates (?)')).toBeTruthy();
+    expect(getByText('Candidates')).toBeTruthy();
   });
 
   it('shows unassigned physical disk groups under Storage', () => {
@@ -141,7 +176,7 @@ describe('Sidebar · Cluster tree projection', () => {
       diskdbInstances: [], diskdbNodeIds: new Set(),
     });
     fireEvent.click(within(getByTestId('tree-node-STORAGE-10')).getByRole('button', { name: 'Expand' }));
-    expect(getByText(/Physical Group.*DG-100/)).toBeTruthy();
+    expect(getByText('DG-100')).toBeTruthy();
   });
 });
 
@@ -158,10 +193,10 @@ describe('Sidebar · KV logical projection', () => {
     expect(queryByText('N-10')).toBeNull();
   });
 
-  it('offers documentation beside the title and an Add Store action', () => {
-    const { getByRole } = renderSidebar(Domain.KV, { onAdd: vi.fn() });
+  it('offers documentation beside the title without a duplicate Add Store action', () => {
+    const { getByRole, queryByRole } = renderSidebar(Domain.KV, { onAdd: vi.fn() });
     expect(getByRole('link', { name: 'Help' })).toHaveAttribute('href', 'https://crowdb.dev/docs/manual/console/ui/tab/kv/');
-    expect(getByRole('button', { name: 'Add Store' })).toBeTruthy();
+    expect(queryByRole('button', { name: 'Add Store' })).toBeNull();
   });
 });
 
@@ -171,7 +206,7 @@ describe('Sidebar · shared Capacity hierarchy', () => {
     fireEvent.click(within(getByTestId('tree-node-STORAGE-10')).getByRole('button', { name: 'Expand' }));
     fireEvent.click(within(getByTestId('tree-node-CH-DG-10-100')).getByRole('button', { name: 'Expand' }));
     expect(getByText('N-10', { exact: true })).toBeTruthy();
-    expect(getByText(/Physical Group.*DG-100/)).toBeTruthy();
+    expect(getByText('DG-100')).toBeTruthy();
     expect(getByText('0123456789ab…')).toBeTruthy();
     expect(getByText('DDB-10')).toBeTruthy();
     expect(getByText('PKV-10')).toBeTruthy();

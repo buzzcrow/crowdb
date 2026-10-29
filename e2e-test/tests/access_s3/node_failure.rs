@@ -90,21 +90,30 @@ async fn seed() {
         recovery::storage_ready().await;
         return;
     }
-    crate::chunkdb::voting::register_actual_voters().await;
-    let maps =
-        crowdb_kv_client::ChunkSlotMapClient::new(std::sync::Arc::new(crate::common::hardware::kv_client()));
-    maps.initialize_layout(&crowdb_protocol::chunk_slot::ChunkSlotBootstrap {
-        service_instances: vec![20000, 20001, 20002],
-        storage_groups: (1..=3)
-            .map(|group_id| crowdb_protocol::chunk_slot::ChunkStorageGroup {
-                store_id: 0,
-                group_id,
-            })
-            .collect(),
-    })
-    .await
-    .unwrap();
-    maps.initialize_service_epochs().await.unwrap();
+    if std::env::var("CROWDB_E2E_PHASE").as_deref() == Ok("seed") {
+        crate::chunkdb::voting::register_actual_voters().await;
+        let maps = crowdb_kv_client::ChunkSlotMapClient::new(std::sync::Arc::new(
+            crate::common::hardware::kv_client(),
+        ));
+        maps.initialize_layout(&crowdb_protocol::chunk_slot::ChunkSlotBootstrap {
+            service_instances: vec![20000, 20001, 20002],
+            storage_groups: (1..=3)
+                .map(|group_id| crowdb_protocol::chunk_slot::ChunkStorageGroup {
+                    store_id: 0,
+                    group_id,
+                })
+                .collect(),
+        })
+        .await
+        .unwrap();
+        maps.initialize_service_epochs().await.unwrap();
+        return;
+    }
+    assert_eq!(std::env::var("CROWDB_E2E_PHASE").as_deref(), Ok("storage-seed"));
+    seed_hardware().await;
+}
+
+async fn seed_hardware() {
     let hardware = HardwareClient::new(crate::common::hardware::kv_client());
     for node in 1..=3 {
         let disk = DiskId { high: 0, low: node };

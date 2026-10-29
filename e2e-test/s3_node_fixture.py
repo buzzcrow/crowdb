@@ -25,6 +25,9 @@ class S3NodeCluster(Cluster):
         self.addresses = [str(base + index) for index in range(14)]
         for logical in range(3):
             self.diskdb(logical)
+        # Publish bound groups only after every intended owner is live. Otherwise
+        # the placement monitor replaces not-yet-started owners during bootstrap.
+        self.client(self.bundle, "storage-seed", "access_s3::node_failure::seed")
         for logical in range(3):
             self.diskio(logical)
         self.client(self.bundle, "storage-ready", "access_s3::node_failure::seed")

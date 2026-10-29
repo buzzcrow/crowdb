@@ -49,6 +49,8 @@ impl DatasetAuthority {
             &publication,
             Some(self.reclaim_time().saturating_add(CANDIDATE_LIFETIME_SECONDS)),
         )?;
+        self.reserve_dataset_resource(identity, key::snapshot(identity, snapshot)?)
+            .await?;
         match self
             .store
             .compare_exchange(&key::snapshot(identity, snapshot)?, None, &bytes)

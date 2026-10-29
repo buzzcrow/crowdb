@@ -58,6 +58,28 @@ impl DatasetClient {
         .await
     }
 
+    /// Marks an empty Dataset deleted; cleanup follows the twenty-minute grace period.
+    /// Retain the Dataset ID for safe retries, including after name reuse.
+    /// # Errors
+    /// Rejects nonempty, missing or replaced Datasets, admission and storage failures.
+    pub async fn delete(
+        &self,
+        context: OperationContext,
+        id: DatasetId,
+    ) -> Result<crowdb_access_dataset::DatasetDeletion> {
+        self.control(context, |scope| async move {
+            Ok(scope
+                .authority
+                .delete_dataset(
+                    &scope.identity,
+                    id,
+                    &crowdb_access_dataset::ReadCancellation::new(),
+                )
+                .await?)
+        })
+        .await
+    }
+
     /// # Errors
     /// Returns missing identity, admission or storage failure.
     pub async fn open(&self, context: OperationContext) -> Result<DatasetRecord> {

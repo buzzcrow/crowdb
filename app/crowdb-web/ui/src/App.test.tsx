@@ -5,6 +5,11 @@ import { afterEach, expect, it, vi } from 'vitest';
 import App from './App';
 import { Domain } from './types';
 import * as api from './api';
+const capacityRequests = vi.hoisted(() => vi.fn());
+const diskdbInstances = vi.hoisted(() => []);
+vi.mock('./shell/NodeCandidatesContext', () => ({ CandidateProvider: ({ children }: { children: import('react').ReactNode }) => children,
+  useNodeCandidates: () => ({ snapshot: undefined, candidates: [] }) }));
+vi.mock('./shell/CandidateNodes', () => ({ CandidateNodes: () => null }));
 
 vi.mock('./api', async importOriginal => ({
   ...await importOriginal<typeof import('./api')>(),
@@ -19,10 +24,10 @@ vi.mock('./data/useLogicalTree', () => ({ useLogicalTree: () => ({
   stores: [{ store_id: 0, name: 'System', groups: [], nodes: [] }], groups: [], loading: false,
   error: null, refresh: vi.fn(),
 }) }));
-vi.mock('./data/useCapacityTree', () => ({ useCapacityTree: () => ({
-  instances: [], usage: null, hardwareCapacity: null, scanStatus: null, loading: false,
+vi.mock('./data/useCapacityTree', () => ({ useCapacityTree: (options: unknown) => { capacityRequests(options); return ({
+  instances: diskdbInstances, usage: null, hardwareCapacity: null, scanStatus: null, loading: false,
   error: null, refresh: vi.fn(),
-}) }));
+}); } }));
 vi.mock('./services/useNodeServicePlans', () => ({ useNodeServicePlans: () => ({ plans: {}, stop: vi.fn() }) }));
 vi.mock('./views/ClusterView', () => ({ ClusterView: () => null }));
 vi.mock('./views/KvView', () => ({ KvView: () => null }));
@@ -32,7 +37,20 @@ vi.mock('./chunk-kv/ChunkKvView', () => ({ ChunkKvView: () => null }));
 vi.mock('./views/IcebergView', () => ({ IcebergView: () => null }));
 vi.mock('./views/S3View', () => ({ S3View: () => null }));
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.resetAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.resetAllMocks(); });
+
+it('updates service health without waiting for a capacity observation or browser reload', async () => {
+  vi.useFakeTimers();
+  vi.mocked(api.nodeDeploymentStatus).mockResolvedValue({ available: true, phase: 'active' });
+  vi.mocked(api.listServers).mockResolvedValue([{ id: 'access-server-1', service_type: 'access-server', health: 'down' }]);
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ mode: 'node' }))));
+  render(<App initialDomain={Domain.Cluster} />);
+  await act(async () => {});
+  expect(screen.getByRole('banner')).toHaveTextContent('Failed');
+  vi.mocked(api.listServers).mockResolvedValue([{ id: 'access-server-1', service_type: 'access-server', health: 'up' }]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(screen.getByRole('banner')).toHaveTextContent('Healthy');
+});
 
 it('waits for initial node authority before offering store actions', async () => {
   let resolve!: (status: api.NodeDeploymentStatus) => void;
@@ -42,7 +60,8 @@ it('waits for initial node authority before offering store actions', async () =>
   await act(async () => {});
   expect(screen.queryByRole('button', { name: 'Add Store' })).not.toBeInTheDocument();
   await act(async () => resolve({ available: true, phase: 'active' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Add Store' }));
+  fireEvent.contextMenu(screen.getByRole('button', { name: /^datacenter$/ }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Add Store' }));
   expect(screen.getByRole('dialog', { name: 'Add KV Store' })).toBeVisible();
 });
 
@@ -54,4 +73,17 @@ it('shows a read-only console when the initial authority check fails', async () 
   expect(screen.queryByText('Loading cluster authority…')).not.toBeInTheDocument();
   expect(screen.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible();
   expect(screen.queryByRole('button', { name: 'Add Store' })).not.toBeInTheDocument();
+  expect(screen.getByRole('alert')).toHaveTextContent('Group 0 unavailable · confirmed view is stale');
+});
+
+it('automatically observes runtime capacity after selecting a Datacenter', async () => {
+  vi.mocked(api.listServers).mockResolvedValue([]);
+  vi.mocked(api.nodeDeploymentStatus).mockResolvedValue({ available: true, phase: 'active' });
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ mode: 'node' }))));
+  render(<App initialDomain={Domain.Cluster} />);
+  await act(async () => {});
+  expect(capacityRequests).toHaveBeenLastCalledWith(expect.objectContaining({ observeRuntime: false }));
+  fireEvent.click(screen.getByRole('button', { name: /^datacenter$/ }));
+  await act(async () => {});
+  expect(capacityRequests).toHaveBeenLastCalledWith(expect.objectContaining({ observeRuntime: true, diskGroupId: undefined, diskId: undefined }));
 });

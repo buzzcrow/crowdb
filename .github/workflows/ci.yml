@@ -62,9 +62,9 @@ jobs:
     - name: Cache compilation
       uses: ./.github/actions/compilation-cache
     - name: Clean env
-      run: pixi run clean-env
+      run: pixi run clean --runtime-only
     - name: Build C++ libs
-      run: pixi run build-cpp
+      run: pixi run build
     - name: Run C++ and FFI tests
       run: pixi run test-cpp
     - name: Capture runner state on failure
@@ -117,7 +117,7 @@ jobs:
     - name: Cache compilation
       uses: ./.github/actions/compilation-cache
     - name: Clean env
-      run: pixi run clean-env
+      run: pixi run clean --runtime-only
     - name: Run core component tests
       run: pixi run test-core
     - name: Capture runner state on failure
@@ -170,9 +170,9 @@ jobs:
     - name: Cache compilation
       uses: ./.github/actions/compilation-cache
     - name: Clean env
-      run: pixi run clean-env
+      run: pixi run clean --runtime-only
     - name: Build C++ libs (crowdb-diskio subprocess)
-      run: pixi run build-cpp
+      run: pixi run build
     - name: Run storage component tests
       run: pixi run test-storage
     - name: Capture runner state on failure
@@ -207,7 +207,7 @@ jobs:
         retention-days: 7
     - name: Clean subprocesses
       if: always()
-      run: pixi run clean-env
+      run: pixi run clean --runtime-only
 
   AccessTests:
     timeout-minutes: 90
@@ -228,7 +228,7 @@ jobs:
         pixi-version: v0.77.0
     - uses: ./.github/actions/compilation-cache
     - name: Clean env
-      run: pixi run clean-env
+      run: pixi run clean --runtime-only
     - name: Run access component tests
       run: |
         pixi run test-access
@@ -272,7 +272,7 @@ jobs:
         retention-days: 7
     - name: Clean subprocesses
       if: always()
-      run: pixi run clean-env
+      run: pixi run clean --runtime-only
 
   S3E2E:
     env:
@@ -301,7 +301,7 @@ jobs:
         artifact: ${{ needs.BuildClients.outputs.artifact }}
         kind: clients
     - name: Clean env
-      run: pixi run clean-env
+      run: pixi run clean --runtime-only
     - uses: actions/download-artifact@v4
       with:
         name: ${{ needs.ContainerImage.outputs.artifact }}
@@ -335,7 +335,7 @@ jobs:
         retention-days: 7
     - name: Clean subprocesses
       if: always()
-      run: pixi run clean-env
+      run: pixi run clean --runtime-only
 
   IcebergE2E:
     strategy:
@@ -391,7 +391,7 @@ jobs:
         retention-days: 7
     - name: Clean subprocesses
       if: always()
-      run: pixi run clean-env
+      run: pixi run clean --runtime-only
 
   ConsoleTests:
     runs-on: ubuntu-24.04
@@ -412,7 +412,7 @@ jobs:
     - name: Cache compilation
       uses: ./.github/actions/compilation-cache
     - name: Clean env
-      run: pixi run clean-env
+      run: pixi run clean --runtime-only
     - name: Run console tests
       run: pixi run test-console
     - name: Capture runner state on failure
@@ -447,7 +447,7 @@ jobs:
         retention-days: 7
     - name: Clean subprocesses
       if: always()
-      run: pixi run clean-env
+      run: pixi run clean --runtime-only
 
   UITests:
     runs-on: ubuntu-24.04
@@ -497,7 +497,7 @@ jobs:
         retention-days: 7
     - name: Clean subprocesses
       if: always()
-      run: pixi run clean-env
+      run: pixi run clean --runtime-only
 
   BuildClients:
     runs-on: ubuntu-24.04
@@ -625,7 +625,7 @@ jobs:
     - name: Verify centralized KV fixtures and protocol layer
       run: |
         pixi run test-container-e2e-fixture
-        pixi run clean-env
+        pixi run clean --runtime-only
         pixi run test-e2e-kv
     - name: Record KV verified digest
       id: artifact

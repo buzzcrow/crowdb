@@ -26,9 +26,6 @@ live in the linked document; implementation follows
   collection. **Area:** access server / S3 / crowdb-tree / chunkdb.
   **Complexity:** High. **Status:** Deferred until R147, R168, and workload
   measurements are complete.
-- **[R170](R170-s3-cuobject-rdma.md)** — optional cuObject RDMA data plane.
-  **Area:** access server / S3 / DiskIO / RDMA. **Complexity:** High.
-  **Status:** Deferred until the basic TCP S3 path is stable and measured.
 - **[R185](R185-access-iceberg-cache-invalidation.md)** — bounded Iceberg cache
   and invalidation. **Area:** access server / Iceberg / Group 0 / Chunk-KV.
   **Complexity:** Medium. **Status:** Deferred pending focused cache measurements.

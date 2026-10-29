@@ -110,7 +110,7 @@ def bundle_client(output):
     # the deployed UI. Snapshot them with the host client before recording its
     # digest, without copying UI launchers or maintaining a second source.
     ui = Path(__file__).resolve().parents[1] / "app/crowdb-web/ui/src"
-    for relative in ("chunk-kv/catalog.ts", "iceberg/json.ts", "iceberg/types.ts"):
+    for relative in ("chunk-kv/catalog.ts", "iceberg/json.ts", "iceberg/types.ts", "utils/capacity.ts"):
         target = output / "clients/console-ui/src" / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ui / relative, target)

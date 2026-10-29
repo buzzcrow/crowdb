@@ -209,3 +209,12 @@ clock/capture work remains in the measured client window. Transport groups stay
 separate; service windows include background work. All-copy totals, TCP receive
 traffic, exact per-trial memory peaks and GC CPU attribution remain unmeasured.
 Do not overlap these owned fixtures or run builds during measured trials.
+
+Dataset `delete(context, dataset_id)` marks only an empty Dataset deleted. It
+rejects live Snapshots, uploads and pending creation/cleanup. Keep the immutable
+Dataset ID for retries; same-name replacements have a new ID. Native authorities
+use a 1200-second grace by default. Access Server operations use
+`dataset.reclaim_grace_seconds` (positive seconds, default 1200; tests can use 1).
+Already marked Dataset/Snapshot/Split deadlines remain fixed across restart and
+configuration changes. Cleanup preserves minimal identity receipts and operation
+fences; it releases the Dataset name after the grace period.

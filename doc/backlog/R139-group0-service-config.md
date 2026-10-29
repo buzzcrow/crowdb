@@ -143,5 +143,5 @@ Required gates:
 - `pixi run rs-lint`
 - `pixi run test-core`
 - `pixi run test-storage`
-- `pixi run clean-env && pixi run test-container-e2e --scope console.operations`
+- `pixi run clean --runtime-only && pixi run test-container-e2e --scope console.operations`
 - `pixi run test-suite`

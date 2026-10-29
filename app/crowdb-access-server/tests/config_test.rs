@@ -218,3 +218,13 @@ fn local_one_and_three_node_mirrors_are_explicit_and_never_relax_production() {
         );
     }
 }
+
+#[test]
+fn dataset_reclaim_grace_is_configurable() {
+    let mut config = crowdb_access_server::config::AccessConfig::default();
+    assert_eq!(config.dataset.reclaim_grace_seconds, 1200);
+    config.dataset.reclaim_grace_seconds = 1;
+    config.validate().unwrap();
+    config.dataset.reclaim_grace_seconds = 0;
+    assert!(config.validate().unwrap_err().contains("reclaim_grace_seconds"));
+}

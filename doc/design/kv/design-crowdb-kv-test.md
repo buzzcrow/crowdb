@@ -176,7 +176,7 @@ Ephemeral claims include the owning PID and process-start identity so stale
 claims can be reclaimed without confusing PID reuse. Persistent assignments
 remain claimed across stop/restart and a conflicting port is reported rather
 than silently renumbered. Successful tests release their namespace; a panic
-preserves its tree for diagnosis. `pixi run clean-env` removes only recorded
+preserves its tree for diagnosis. `pixi run clean --runtime-only` removes only recorded
 ephemeral processes and state. `pixi run clean` additionally removes
 rebuildable artifacts, build output, and the complete `.crowdb-runtime/` tree.
 

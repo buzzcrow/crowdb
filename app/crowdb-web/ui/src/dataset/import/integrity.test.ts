@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 import { describe, expect, it } from 'vitest';
-import { Md5 } from './digest';
+import { Md5 } from '../../access/digest';
 import { validatePreparation, parseMapping } from './mapping';
 import { bytes, sampleLabel } from '../identity';
 

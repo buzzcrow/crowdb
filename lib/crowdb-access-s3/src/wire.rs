@@ -26,6 +26,18 @@ pub fn list_buckets(tenant: &[u8], buckets: &[BucketNameRecord]) -> String {
 }
 
 #[must_use]
+pub fn list_bucket_page(tenant: &[u8], prefix: &[u8], page: &crate::bucket::BucketListPage) -> String {
+    let mut output = list_buckets(tenant, &page.buckets);
+    output.truncate(output.len() - "</ListAllMyBucketsResult>".len());
+    element(&mut output, "Prefix", &String::from_utf8_lossy(prefix));
+    if let Some(token) = &page.continuation {
+        element(&mut output, "ContinuationToken", token);
+    }
+    output.push_str("</ListAllMyBucketsResult>");
+    output
+}
+
+#[must_use]
 pub fn create_multipart_upload(bucket: &[u8], key: &[u8], upload_id: &[u8; 16]) -> String {
     let mut output = xml_start("InitiateMultipartUploadResult");
     element(&mut output, "Bucket", &String::from_utf8_lossy(bucket));

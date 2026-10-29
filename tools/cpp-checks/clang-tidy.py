@@ -141,6 +141,8 @@ def run_batch(batch: list[tuple[str, str]]) -> subprocess.CompletedProcess[str]:
     # its own batch.
     batch_header_filter = r"^(?:" + "|".join(re.escape(str(Path(f).resolve())) for f in filepaths) + r")$"
     extra_args = ["--extra-arg=-Wno-unknown-warning-option"]
+    if os.environ.get("CT_LINT_WARNINGS_AS_ERRORS") == "1":
+        extra_args.append("--warnings-as-errors=*")
     if any(TEST_PATH_MARKER in f"/{filepath}/" for filepath in filepaths):
         # GoogleTest assertions expand into several nested macros. Keep the
         # test source diagnostic, but avoid dumping the whole third-party

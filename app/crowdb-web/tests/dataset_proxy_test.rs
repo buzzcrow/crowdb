@@ -100,6 +100,7 @@ async fn readonly_allows_exact_matrix_but_rejects_all_mutations() {
     let snapshot = "11111111111111111111111111111111";
     for (method, suffix, status) in [
         ("POST", format!("/snapshots/{snapshot}/matrix"), 200),
+        ("POST", format!("/snapshots/{snapshot}/split-preview"), 200),
         ("GET", format!("/snapshots/{snapshot}/contains"), 200),
         ("POST", "/compositions".into(), 403),
         ("PUT", format!("/snapshots/{snapshot}"), 403),
@@ -112,6 +113,7 @@ async fn readonly_allows_exact_matrix_but_rejects_all_mutations() {
         ("PUT", String::new(), 403),
         ("DELETE", "/uploads/123".into(), 403),
         ("POST", format!("/snapshots/{snapshot}/matrix/extra"), 403),
+        ("POST", format!("/snapshots/{snapshot}/split-preview/extra"), 403),
     ] {
         let response = app
             .clone()

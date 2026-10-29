@@ -4,6 +4,15 @@
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 
+if [[ $# -gt 1 || ( $# -eq 1 && $1 != --runtime-only ) ]]; then
+    echo 'usage: pixi run clean [--runtime-only]' >&2
+    exit 2
+fi
+bash tools/pixi-tasks/clean-env.sh
+if [[ $# -eq 1 ]]; then
+    exit 0
+fi
+
 # Stop all CROWDB services owned by this user, including unrecorded children.
 # Match executable names so a shell or editor mentioning CROWDB is not killed.
 crowdb_pids() {

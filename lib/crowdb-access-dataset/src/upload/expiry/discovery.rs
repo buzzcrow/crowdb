@@ -45,6 +45,9 @@ impl DatasetUploads {
             let mut end = key.clone();
             end.push(0xff);
             cursor.after = Some(end);
+            if stored.bytes == crate::authority::dataset_lifecycle::RETIRED_RESOURCE {
+                continue;
+            }
             let session = super::decode_session(&stored.bytes)?;
             if !session.cleanup_complete
                 && session.owners.is_empty()

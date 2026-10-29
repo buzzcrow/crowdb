@@ -4,7 +4,8 @@
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 
+bash tools/pixi-tasks/build-cpp.sh
 cargo build --release --workspace --exclude crowdb-kv-client
 cargo build --release -p crowdb-kv-client --features ffi
-cd app/crowdb-web/ui
-npm run build
+(cd app/crowdb-web/ui && npm run build)
+cargo test --workspace --all-targets --no-run

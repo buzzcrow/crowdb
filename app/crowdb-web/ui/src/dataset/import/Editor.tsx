@@ -1,98 +1,129 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-
-import { useEffect, useRef, useState } from 'react';
-import { buttonClass, inputClass, JsonView } from '../../access/Workbench';
+import { useContext, useEffect, useRef, useState } from 'react';
+import { buttonClass, inputClass } from '../../access/Workbench';
+import { Dialog } from '../../components/Dialog';
 import * as api from '../api';
-import { encoded } from '../identity';
-import { defaultPolicy, type DraftSplit, type Predicate, type PublicationResult, type SplitPolicy, type SplitSource } from '../types';
+import { defaultPolicy, type MatrixRow, type PublicationResult, type SplitSource } from '../types';
 import { forgetOperation, type Operation } from '../operation';
-import { Definitions, PredicateInput, validateEditor } from '../splits/Definitions';
+import { useDraft } from '../operation/useDraft';
 import { Publication } from '../Publication';
-import { parseMapping, type Mapping } from './mapping';
-import { saveImport } from './transfer';
+import { independentRoot, patchSample } from './draft';
+import { parseMapping } from './mapping';
+import { bytes, encoded } from '../identity';
+import { newId } from './upload';
+import { checkLimits, limits, parentRows, setCell } from '../editor/model';
+import { Grid } from '../editor/Grid';
+import { DraftDetails } from '../editor/Details';
+import { EditorDetails } from '../EditorDetails';
+import { useUploads } from '../editor/uploads';
+import { commitDraft, loadSnapshotDraft } from '../editor/session';
+import { useQuery } from '../query';
+import { SourceSelection } from '../editor/SourceSelection';
+import { validateEditor } from '../splits/Definitions';
+import { UploadFiles } from '../editor/UploadFiles';
 
-const emptyMapping = JSON.stringify({ version: 1, schema: { version: 1, fields: [] }, samples: [] }, null, 2);
-export function ImportEditor({ dataset, parent: initialParent, source: initialSource, recovery, close, complete }: {
-  dataset: string; parent?: string; source?: SplitSource; recovery?: Operation; close: () => void; complete: (result: PublicationResult) => void;
+export function ImportEditor({ dataset: initialDataset, creatingDataset = false, parent, source, initialSample, initialField, recovery, close, complete }: {
+  embedded?: boolean; dataset: string; creatingDataset?: boolean; parent?: string | null; source?: SplitSource; initialSample?: string; initialField?: string; recovery?: Operation; close: () => void; complete: (result: PublicationResult, dataset: string) => void;
 }) {
-  const transfer = useRef<AbortController>();
-  useEffect(() => () => transfer.current?.abort(), []);
-  const [parent, setParent] = useState(initialParent ?? '');
-  const [frozenSource, setFrozenSource] = useState(initialSource);
-  const [mode, setMode] = useState(initialSource ? 'split' : 'all');
-  const [filterSplit, setFilterSplit] = useState(false);
-  const [predicate, setPredicate] = useState<Predicate>({ kind: 'all' });
-  const [inherit, setInherit] = useState(!!initialParent);
-  const [text, setText] = useState(initialParent ? JSON.stringify({ version: 1, schema: null, samples: [] }, null, 2) : emptyMapping);
-  const [files, setFiles] = useState<File[]>([]); const [mapping, setMapping] = useState<Mapping>();
-  const [splits, setSplits] = useState<DraftSplit[]>([]); const [policy, setPolicy] = useState<SplitPolicy>(defaultPolicy);
   const element = useRef<HTMLElement>(null);
-  const [op, setOp] = useState<Operation | undefined>(recovery);
-  const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [progress, setProgress] = useState('');
+  const draft = useDraft(recovery); const { op, change, install, setError } = draft;
+  const dataset = op?.dataset ?? initialDataset;
+  const creating = creatingDataset || !!op?.creatingDataset;
+  const finish = (result: PublicationResult) => complete(result, draft.current.current?.dataset ?? dataset);
+  const uploads = useUploads(draft); const [busy, setBusy] = useState(false); const [ready, setReady] = useState(false);
+  const transfer = useRef<AbortController>(); const details = useContext(EditorDetails);
+  const [selection, setSelection] = useState<{ id?: string; field?: string }>({ id: initialSample, field: initialField });
+  const [fieldDialog, setFieldDialog] = useState(false); const [fieldName, setFieldName] = useState(''); const [required, setRequired] = useState(false);
+  const [page, setPage] = useState(0); const [column, setColumn] = useState(0); const [showParent, setShowParent] = useState(!initialSample);
+  const [parentCursor, setParentCursor] = useState<string>(); const [parentPrevious, setParentPrevious] = useState<Array<string | undefined>>([]);
+  const [advanced, setAdvanced] = useState('');
   const run = (action: () => Promise<void>) => { setBusy(true); setError(''); void action().catch(reason => setError(String(reason))).finally(() => setBusy(false)); };
   useEffect(() => {
-    const input = recovery?.input && 'parent' in recovery.input ? recovery.input : recovery?.source;
-    if (!input) return;
-    setParent(input.parent ?? ''); setSplits(input.splits); setPolicy(input.policy);
-    setMode(input.source.kind);
-    if (input.source.kind === 'split') { setFrozenSource(input.source.source); setFilterSplit(!!input.source.selection); if (input.source.selection) setPredicate(input.source.selection); }
-    if (input.source.kind === 'selection') setPredicate(input.source.predicate);
-    if (recovery?.mapping) setText(JSON.stringify(recovery.mapping, null, 2));
-  }, [recovery]);
-  const review = () => {
-    try { validateEditor(element.current); const value = parseMapping(text, files); if (parent) api.opaqueId(parent); setMapping(value); setError(''); }
-    catch (reason) { setError(String(reason)); }
+    const controller = new AbortController();
+    void loadSnapshotDraft(dataset, parent, source, recovery, controller.signal, creatingDataset).then(({ value, error }) => {
+      if (!controller.signal.aborted) { install(value); setError(error); setShowParent(!!value.source?.parent); setReady(true); }
+    }).catch(reason => { if (!controller.signal.aborted) setError(String(reason)); });
+    return () => { controller.abort(); transfer.current?.abort(); };
+  }, []);
+  useEffect(() => {
+    details(op?.editing ? <DraftDetails key={JSON.stringify(selection)} op={op} {...selection} /> : null);
+    return () => details(null);
+  }, [op, selection, details]);
+  const fields = op?.mapping?.schema?.fields ?? [];
+  const visible = fields.slice(column * 12, column * 12 + 12).map(field => field.name);
+  const base = op?.source?.parent;
+  const inherited = useQuery(JSON.stringify([dataset, base, parentCursor, visible, initialSample]), ready && !!base && showParent, async signal => {
+    const samples = initialSample ? { entries: [initialSample], after: null } : await api.samplePage(dataset, base!, parentCursor, undefined, undefined, signal);
+    const rows = await parentRows(op!, samples.entries, visible, signal);
+    return { samples, rows };
+  });
+  const changes = op?.mapping?.samples ?? [];
+  const rows: MatrixRow[] = showParent && base ? inherited.value?.rows ?? [] : changes.slice(page * 20, page * 20 + 20).map(sample => ({ id: sample.id, fields: visible.map(() => null) }));
+  const checkId = async (id: string) => {
+    bytes(id);
+    if (!id || changes.some(sample => sample.id === id)) throw new Error('Sample ID already exists in this Draft. Choose another ID.');
+    if (base && (await api.control<{ contains: boolean }>(`${api.snapshotPath(dataset, base)}/contains?${new URLSearchParams({ sample: id })}`)).contains) throw new Error('Sample ID already exists in the parent. Edit that row explicitly.');
   };
-  const save = async () => {
-    validateEditor(element.current);
-    transfer.current = new AbortController(); const signal = transfer.current.signal;
-    try { await saveImport({ dataset, parent, inherit, mode, predicate, frozenSource, filterSplit, splits, policy, op, mapping, files, signal, setOp, setProgress }); }
+  const add = async () => {
+    const id = encoded(new TextEncoder().encode(`sample-${newId().slice(0, 8)}`)); await checkId(id);
+    change(value => { const next = { ...value, newSamples: [...value.newSamples ?? [], id], mapping: patchSample(value.mapping!, { kind: 'upsert', id, fields: [] }) }; checkLimits(next); return next; }); setShowParent(false); setPage(Math.floor(changes.length / 20));
+  };
+  const choose = async (files: File[], targetField: string | undefined) => {
+    if (!fields.length) throw new Error('Add a Field first.');
+    if (!targetField || !fields.some(field => field.name === targetField)) throw new Error('Choose a target Field before uploading files.');
+    if (files.length > limits.batch) throw new Error(`Choose at most ${limits.batch} files at once.`);
+    if (files.some(file => !file.size || file.size > limits.fileBytes)) throw new Error('Files must be nonempty and at most 100 MiB.');
+    const ids = files.map(file => encoded(new TextEncoder().encode(file.name)));
+    if (new Set(ids).size !== ids.length) throw new Error('Files need distinct names for automatic Sample IDs.');
+    for (const id of ids) await checkId(id);
+    if (changes.length + files.length > limits.edits) throw new Error('The Draft exceeds 1000 Sample changes.');
+    change(value => ({ ...value, newSamples: [...value.newSamples ?? [], ...ids] }));
+    setShowParent(false); setPage(Math.floor(changes.length / 20));
+    await uploads.transfer(files.map((file, index) => ({ id: ids[index], field: targetField, file })));
+  };
+  const commit = async () => {
+    validateEditor(element.current); transfer.current = new AbortController();
+    try { finish(await commitDraft(draft, transfer.current.signal)); }
     finally { transfer.current = undefined; }
   };
-  return <section ref={element} role="dialog" aria-label="Import Snapshot" className="tw-space-y-3 tw-border tw-border-border tw-p-4">
-    <h2 className="tw-font-semibold">Import / New Snapshot</h2>
-    <p className="tw-text-xs">Local test/demo import · namespace dataset-ns · {dataset}</p>
-    {(!op || !op.input) && <>
-      <label>Parent Snapshot (empty for independent root) <input className={`${inputClass} tw-w-full`} disabled={!!op} value={parent} onChange={event => { setParent(event.target.value); setMapping(undefined); }} /></label>
-      <label>Parent data <select className={inputClass} disabled={!!op} value={mode} onChange={event => { setMode(event.target.value); setMapping(undefined); }}>
-        <option value="all">Preserve all parent data</option><option value="replace">Replace membership with imported Samples</option><option value="selection">Filter parent data</option>{frozenSource && <option value="split">Frozen Split {frozenSource.name} / {frozenSource.revision}</option>}
-      </select></label>
-      {mode === 'split' && <label className="tw-block"><input type="checkbox" checked={filterSplit} disabled={!!op} onChange={event => { setFilterSplit(event.target.checked); setMapping(undefined); }} /> Filter frozen Split membership</label>}
-      {(mode === 'selection' || mode === 'split' && filterSplit) && !op && <PredicateInput value={predicate} change={value => { setPredicate(value); setMapping(undefined); }} />}
-      <label className="tw-block"><input type="checkbox" checked={inherit} disabled={!parent || !!op} onChange={event => { setInherit(event.target.checked); setMapping(undefined); }} /> Inherit parent Splits, intersected with surviving Samples; additions remain unassigned</label>
-      <label className="tw-block">Local payload files <input type="file" multiple onChange={event => { setFiles(Array.from(event.target.files ?? [])); setMapping(undefined); }} /></label>
-      <QuickMapping add={value => { setText(JSON.stringify(value, null, 2)); setMapping(undefined); }} files={files} />
-      <label className="tw-block">Batch mapping JSON (version 1, ≤8 MiB)<input type="file" accept=".json,application/json" onChange={event => {
-        const file = event.target.files?.[0]; if (!file) return;
-        if (file.size > 8 * 1024 * 1024) { setError('Mapping exceeds 8 MiB.'); return; }
-        run(async () => { setText(await file.text()); setMapping(undefined); });
-      }} /></label>
-      <label className="tw-block tw-text-xs">Schema and Sample edits<textarea aria-label="Sample mapping JSON" className={`${inputClass} tw-w-full tw-font-mono`} rows={8} value={text} onChange={event => { setText(event.target.value); setMapping(undefined); }} /></label>
-      <p className="tw-text-xs">Schema null inherits parent schema. Sample IDs and inline data are canonical base64. Fields accept inline, file or tombstone; Sample edits accept upsert or remove. Omitted optional fields inherit only for surviving Samples.</p>
-      <Definitions splits={splits} policy={policy} disabled={busy || !!op} change={(values, rules) => { setSplits(values); setPolicy(rules); setMapping(undefined); }} />
-      <button className={buttonClass} disabled={busy} onClick={review}>Review mapping</button>
-      {mapping && <><p>{mapping.samples.filter(s => s.kind === 'upsert').length} additions/replacements · {mapping.samples.filter(s => s.kind === 'remove').length} removals · parent mode: {mode}.</p>
-        <JsonView value={{ schema: mapping.schema, first_edits: mapping.samples.slice(0, 20), total_edits: mapping.samples.length, splits, policy }} />
-        <button className={buttonClass} disabled={busy || !!op?.pending} onClick={() => run(save)}>{op ? 'Retry reviewed import' : 'Prepare Snapshot and upload local data'}</button></>}
-    </>}
-    {op?.input && 'parent' in op.input && <details><summary>Frozen source and inherited Split definitions</summary><JsonView value={{ parent: op.input.parent, source: op.input.source, splits: op.input.splits }} /></details>}
-    {error && <p role="alert">{error}</p>}{progress && <p role="status">{progress}</p>}
-    {op && !op.input && <button className={buttonClass} disabled={busy} onClick={() => run(async () => { await forgetOperation(op); close(); })}>Discard local request</button>}
-    {op?.input && <Publication operation={op} update={setOp} complete={complete} close={close} busy={busy} run={run} />}
-    {busy && transfer.current && <button className={buttonClass} onClick={() => transfer.current?.abort()}>Cancel local transfer</button>}
-    <button className={buttonClass} disabled={busy} onClick={close}>Close import</button><p className="tw-text-xs">Closing keeps complete inputs in this browser. Resume the saved request from this Dataset; reselect local files if their upload has not completed.</p>
+  return <section ref={element} aria-label="Import Snapshot" className="tw-space-y-4">
+    <div className="tw-flex tw-items-center tw-justify-between"><h2 className="tw-text-lg tw-font-semibold">{creating ? 'Create Dataset' : `${base ? 'Edit Snapshot' : 'New empty Snapshot'} · ${dataset}`}</h2><button className={buttonClass} disabled={busy} onClick={close}>Close editor</button></div>
+    {!ready && !draft.error && <p role="status">Loading Draft…</p>}
+    {op && base && <p className="tw-text-xs tw-text-muted">Parent: {base.slice(0, 12)}…</p>}
+    {op?.editing && <fieldset disabled={!ready || busy || uploads.busy} className="tw-min-w-0 tw-space-y-4">
+      {creating && <label className="tw-block">Name<input aria-label="New Dataset name" className={`${inputClass} tw-ml-3`} maxLength={255} readOnly={!!op.datasetId} value={dataset} onChange={event => change(value => ({ ...value, dataset: event.target.value, creationAttempt: undefined }))} /></label>}
+      <UploadFiles fields={fields.map(field => field.name)} choose={(files, field) => run(() => choose(files, field))} />
+      {base && <nav aria-label="Draft rows" className="tw-flex tw-gap-2"><button className={buttonClass} aria-pressed={showParent} onClick={() => setShowParent(true)}>Parent Samples</button><button className={buttonClass} aria-pressed={!showParent} onClick={() => setShowParent(false)}>Changes ({changes.length})</button></nav>}
+      {inherited.error && showParent && <p role="alert">{inherited.error}</p>}
+      <Grid op={op} selectedId={selection.id} rows={rows} fields={visible} apply={(id, field, value) => change(current => setCell(current, id, field, value))} upload={(id, field, file) => run(() => uploads.transfer([{ id, field, file }]))} select={(id, field) => setSelection({ id, field })} selectField={field => setSelection({ field })}
+        addSample={() => run(add)} addField={() => { setFieldName(''); setRequired(false); setFieldDialog(true); }}
+        rename={(id, next) => run(async () => { await checkId(next); change(value => ({ ...value, newSamples: value.newSamples?.map(value => value === id ? next : value), mapping: { ...value.mapping!, samples: value.mapping!.samples.map(sample => sample.id === id ? { ...sample, id: next } : sample) } })); setSelection(value => value.id === id ? { ...value, id: next } : value); })}
+        remove={id => change(value => ({ ...value, mapping: !base || value.newSamples?.includes(id) ? { ...value.mapping!, samples: value.mapping!.samples.filter(sample => sample.id !== id) } : patchSample(value.mapping!, { kind: 'remove', id }) }))}
+        restore={id => change(value => ({ ...value, mapping: { ...value.mapping!, samples: value.mapping!.samples.filter(sample => sample.id !== id) } }))}
+        removeField={name => change(value => ({ ...value, mapping: { ...value.mapping!, schema: { ...value.mapping!.schema!, fields: fields.filter(field => field.name !== name) }, samples: value.mapping!.samples.map(sample => sample.kind === 'upsert' ? { ...sample, fields: sample.fields.filter(field => field.name !== name) } : sample) } }))} />
+      <div className="tw-flex tw-flex-wrap tw-gap-2"><button className={buttonClass} disabled={showParent && !!base ? !parentPrevious.length : !page} onClick={() => { if (showParent && base) { setParentCursor(parentPrevious.at(-1)); setParentPrevious(parentPrevious.slice(0, -1)); } else setPage(page - 1); }}>Previous rows</button>
+        <button className={buttonClass} disabled={showParent && !!base ? !inherited.value?.samples.after : (page + 1) * 20 >= changes.length} onClick={() => { if (showParent && base) { setParentPrevious([...parentPrevious, parentCursor]); setParentCursor(inherited.value!.samples.after!); } else setPage(page + 1); }}>Next rows</button>
+        <button className={buttonClass} disabled={!column} onClick={() => setColumn(column - 1)}>Previous columns</button><button className={buttonClass} disabled={(column + 1) * 12 >= fields.length} onClick={() => setColumn(column + 1)}>Next columns</button></div>
+      <details><summary className="tw-text-xs tw-text-muted">Advanced</summary><div className="tw-space-y-3 tw-pt-3">
+        {(op.snapshot || op.inheritedSource) && <label className="tw-block"><input type="checkbox" aria-label="Independent root" checked={!op.source?.parent} onChange={event => { change(value => independentRoot(value, event.target.checked)); setShowParent(!event.target.checked); }} /> Independent root (only edited rows)</label>}
+        <SourceSelection op={op} change={change} />
+        {!!base && !!op.parentSplits?.splits.length && <label className="tw-block"><input type="checkbox" aria-label="Keep parent Splits" checked={!!op.source?.splits.length} onChange={event => change(value => ({ ...value, source: { ...value.source!, ...(event.target.checked ? value.parentSplits! : { splits: [], policy: defaultPolicy }) } }))} /> Keep frozen parent Splits</label>}
+        <label className="tw-block">Sample mapping JSON<textarea aria-label="Sample mapping JSON" className={`${inputClass} tw-w-full tw-font-mono`} rows={5} value={advanced || JSON.stringify(op.mapping)} onChange={event => setAdvanced(event.target.value)} /></label>
+        <button className={buttonClass} onClick={() => { try { const mapping = parseMapping(advanced || JSON.stringify(op.mapping), []); if (mapping.schema === null) mapping.schema = op.parentSchema!; change(value => { const next = { ...value, mapping }; checkLimits(next); return next; }); setAdvanced(''); setShowParent(false); } catch (reason) { setError(String(reason)); } }}>Apply batch mapping</button>
+        <p>Snapshot <span data-testid="editing-resource-id">{op.resource}</span></p>
+      </div></details>
+    </fieldset>}
+    {draft.error && <p role="alert">{draft.error}</p>}
+    {uploads.busy && <p role="status">{uploads.progress || 'Uploading…'} <button className={buttonClass} onClick={uploads.cancel}>Cancel upload</button></p>}
+    {op && <div className="tw-flex tw-gap-3 tw-border-t tw-border-border tw-pt-4"><button className={buttonClass} disabled={busy || !ready || uploads.busy || !op.editing} onClick={() => run(async () => { await draft.persist(); })}>Save Draft</button>
+      <button className={`${buttonClass} tw-bg-accent tw-text-white`} disabled={busy || !ready || uploads.busy || !!op.conflict} onClick={() => run(commit)}>{busy && !uploads.busy ? 'Creating…' : creating ? 'Create Dataset' : 'Create Snapshot'}</button>
+      {!op.pending && <button className={buttonClass} disabled={busy || uploads.busy} onClick={() => run(async () => { await draft.saving.current; await forgetOperation(draft.current.current!); close(); })}>Discard Draft</button>}</div>}
+    {ready && op?.editing && !draft.error && <p role="status" className="tw-text-xs tw-text-muted">{draft.dirty ? 'Saving…' : 'Saved locally'}</p>}
+    {op && !op.editing && <Publication operation={op} update={install} complete={finish} close={close} busy={busy} run={run} />}
+    {fieldDialog && <Dialog isOpen title="Add Field" onClose={() => setFieldDialog(false)} confirmLabel="Add Field" onConfirm={() => { try {
+      if (!fieldName.trim() || new TextEncoder().encode(fieldName).length > 1024 || fields.some(field => field.name === fieldName)) throw new Error('Use a unique, nonempty Field name of at most 1024 bytes.');
+      change(value => { const next = { ...value, mapping: { ...value.mapping!, schema: { ...value.mapping!.schema!, fields: [...fields, { name: fieldName, required }] } } }; checkLimits(next); return next; }); setFieldDialog(false);
+    } catch (reason) { setError(String(reason)); } }}><label>Field name<input aria-label="Field name" className={`${inputClass} tw-w-full`} value={fieldName} onChange={event => setFieldName(event.target.value)} /></label><label><input type="checkbox" aria-label="New field required" checked={required} onChange={event => setRequired(event.target.checked)} /> Required</label></Dialog>}
   </section>;
-}
-function QuickMapping({ add, files }: { add: (value: Mapping) => void; files: File[] }) {
-  const [sample, setSample] = useState('sample-1'); const [field, setField] = useState('text');
-  const [text, setText] = useState(''); const [file, setFile] = useState(''); const [required, setRequired] = useState(true);
-  return <fieldset className="tw-space-y-2 tw-border tw-border-border tw-p-3"><legend>Single Sample helper</legend>
-    <label>Sample ID (UTF-8) <input className={inputClass} value={sample} onChange={event => setSample(event.target.value)} /></label>
-    <label>Field name <input className={inputClass} value={field} onChange={event => setField(event.target.value)} /></label>
-    <label><input type="checkbox" checked={required} onChange={event => setRequired(event.target.checked)} /> Required</label>
-    <label>Local field source <select className={inputClass} value={file} onChange={event => setFile(event.target.value)}><option value="">Inline UTF-8 text</option>{files.map((value, index) => <option key={index} value={value.webkitRelativePath || value.name}>{value.webkitRelativePath || value.name}</option>)}</select></label>
-    {!file && <label>Inline text <input className={inputClass} value={text} onChange={event => setText(event.target.value)} /></label>}
-    <button className={buttonClass} type="button" disabled={!sample || !field} onClick={() => add({ version: 1, schema: { version: 1, fields: [{ name: field, required }] }, samples: [{ kind: 'upsert', id: encoded(new TextEncoder().encode(sample)), fields: [{ name: field, value: file ? { kind: 'file', file } : { kind: 'inline', data: encoded(new TextEncoder().encode(text)) } }] }] })}>Use single Sample mapping</button>
-  </fieldset>;
 }

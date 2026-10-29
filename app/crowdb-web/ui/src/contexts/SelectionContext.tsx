@@ -5,7 +5,7 @@ import { createContext, useContext, useState, useCallback, useRef, ReactNode } f
 import { Domain, type ServiceKind } from '../types';
 import { canonicalDomain, useDomain, useNavigationSnapshot } from './DomainContext';
 
-export type EntityType = 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk' | 'Partition' | 'Iceberg' | 'S3';
+export type EntityType = 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk' | 'Partition' | 'Iceberg' | 'S3' | 'Dataset';
 
 /**
  * The single selected entity. `parentIds` carries the ancestor chain in
@@ -13,12 +13,13 @@ export type EntityType = 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | '
  * cross-jumps can resolve the full path.
  */
 export interface SelectedEntity {
+  allocationBlock?: { index: number; zone: number; state: string; unitBytes?: number; zoneOffset?: number; diskOffset?: number; stale?: boolean };
   type: EntityType;
   id: string;
   parentIds?: Record<string, string | number>;
   domain: Domain;
   name?: string;
-  section?: 'services' | 'storage' | 'candidates';
+  section?: 'services' | 'storage' | 'candidates' | 'discovery';
   /** Service flavor for `Server` entities: KV vs DiskDB. */
   serviceType?: ServiceKind;
 }

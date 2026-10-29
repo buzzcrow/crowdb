@@ -1,8 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useState, useMemo } from 'react';
-import { FolderTree, Monitor, Database, Boxes, HardDrive, Cog, Plus, Rocket, Building2, ExternalLink } from 'lucide-react';
+import { useEffect, useState, useMemo } from 'react';
+import { FolderTree, Monitor, Database, Boxes, HardDrive, Cog, Rocket, Building2, ExternalLink } from 'lucide-react';
 import { useDomain, useNavigationSnapshot } from '../contexts/DomainContext';
 import { Tree, TreeNode } from '../components/Tree';
 import { Button } from '../components/ui/Button';
@@ -46,6 +46,8 @@ interface SidebarProps {
   loading?: boolean;
   readonly?: boolean;
   candidateReadonly?: boolean;
+  /** Candidate branch stays expandable while loading, but not when its list is empty. */
+  candidateHasNodes?: boolean;
   width?: number;
   clusterInitialized?: boolean;
   onNodeClick?: (node: TreeNode) => void;
@@ -80,6 +82,7 @@ export function Sidebar({
   loading,
   readonly,
   candidateReadonly,
+  candidateHasNodes = true,
   width = 280,
   clusterInitialized = true,
   onNodeClick,
@@ -105,7 +108,7 @@ export function Sidebar({
   const treeNodes = useMemo<TreeNode[]>(() => {
     if (domain === Domain.Cluster) {
       // One physical tree shared by Topology and Capacity.
-      return [datacenterRoot(racks.map((rack) => ({
+      const root = datacenterRoot(racks.map((rack) => ({
         id: `R-${rack.id}`,
         rawId: rack.id,
         label: rack.name ? `${rackLabel(String(rack.id))} (${rack.name})` : rackLabel(String(rack.id)),
@@ -146,7 +149,23 @@ export function Sidebar({
               title: step?.detail ? `${serviceInstanceLabel(kind, rawId)} · ${step.detail}` : undefined,
               parentIds: { rack_id: rack.id, node_id: nodeId },
             };
-            if (kind === 'diskdb') childrenEntry.health = toUiHealth(diskdbHealthById?.get(nodeId));
+            if (kind === 'diskdb') {
+              childrenEntry.health = toUiHealth(diskdbHealthById?.get(nodeId));
+              const instance = diskdbInstances.find(item => item.instance_id === diskdbInstanceIdByNodeId?.get(nodeId));
+              childrenEntry.children = (instance?.owned_dg_ids ?? []).flatMap(groupId => {
+                const physical = hardwareCapacity?.disk_groups.find(group => group.disk_group_id === groupId)
+                  ?? capacityUsage?.disk_groups.find(group => group.disk_group_id === groupId);
+                if (!physical) return [];
+                const loaded = nodeDiskGroups[physical.node_id];
+                const disks = { diskGroups: loaded?.diskGroups.some(group => group.id === groupId)
+                  ? loaded.diskGroups : [{ id: groupId, rack_id: physical.rack_id, node_id: physical.node_id }],
+                  disksByDg: loaded?.disksByDg ?? {} };
+                return storageTree({ rackId: physical.rack_id, nodeId: physical.node_id, disks, hardwareCapacity, capacityUsage, onLoadGroupDisks })
+                  .filter(item => item.type === 'DiskGroup' && item.rawId === groupId)
+                  .map(item => ({ ...item, label: `DG-${groupId}`, id: `OWNER-${instance!.instance_id}-${item.id}`,
+                    children: item.children?.map(disk => ({ ...disk, id: `OWNER-${instance!.instance_id}-${disk.id}` })) }));
+              });
+            }
             children.push(childrenEntry);
           }
 
@@ -170,7 +189,14 @@ export function Sidebar({
             ],
           };
         }),
-      })))];
+      })));
+      if (nodeManagement) root.children!.push({
+        id: 'NODE-CANDIDATES', label: 'Candidate nodes', type: 'Datacenter', navigationOnly: true,
+        icon: <Monitor className="tw-h-4 tw-w-4 tw-text-muted" />,
+        childrenContent: candidateHasNodes ? <CandidateNodes deployment={nodeAuthority} addNodeRequest={addNodeRequest} racks={racks}
+          readonly={candidateReadonly} onChange={onCandidatesChanged} /> : undefined,
+      });
+      return [root];
     }
 
     if (domain === Domain.KV) {
@@ -240,7 +266,7 @@ export function Sidebar({
         }),
       };
     }))];
-  }, [allServers, nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId, onLoadNodeDisks, onLoadGroupDisks, servicePlans, candidateSummaries]);
+  }, [allServers, nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId, onLoadNodeDisks, onLoadGroupDisks, servicePlans, candidateSummaries, nodeManagement, nodeAuthority, addNodeRequest, candidateReadonly, candidateHasNodes, onCandidatesChanged]);
 
   const expandedIds = useMemo(() => {
     const ids: string[] = [];
@@ -253,6 +279,13 @@ export function Sidebar({
     collect(treeNodes);
     return ids;
   }, [treeNodes, domain]);
+
+  useEffect(() => {
+    if (!addNodeRequest) return;
+    setExpansions(previous => ({ ...previous, [Domain.Cluster]: [...new Set([
+      ...(previous[Domain.Cluster] ?? expandedIds), `DC-${DEFAULT_DC_ID}`, 'NODE-CANDIDATES',
+    ])] }));
+  }, [addNodeRequest]);
 
   useNavigationSnapshot(domain, 'shared-sidebar', () => {
     const source = domain; const expanded = [...(expansions[source] ?? expandedIds)];
@@ -267,11 +300,6 @@ export function Sidebar({
         <div className="tw-flex tw-items-center tw-justify-between tw-gap-2">
           <h3 className="tw-text-sm tw-font-semibold tw-text-text">{helpTitle}</h3>
           <div className="tw-flex tw-items-center tw-gap-2">
-            {!readonly && onAdd && domain !== Domain.Capacity && (
-              <Button variant="ghost" size="sm" onClick={onAdd} aria-label={domain === Domain.KV && !clusterInitialized ? 'Initialize Cluster' : domain === Domain.KV ? 'Add Store' : 'Add Rack'} className="tw-h-7 tw-px-2">
-                <Plus className="tw-h-3.5 tw-w-3.5" />
-              </Button>
-            )}
             {help && <a className="tw-inline-flex tw-items-center tw-gap-1 tw-text-xs tw-text-accent tw-underline" href={help.docs} target="_blank" rel="noreferrer">Help <ExternalLink className="tw-h-3 tw-w-3" /></a>}
           </div>
         </div>
@@ -312,7 +340,6 @@ export function Sidebar({
                 )}
         </div>
       )}</div>
-      {nodeManagement && domain === Domain.Cluster && <CandidateNodes deployment={nodeAuthority} addNodeRequest={addNodeRequest} racks={racks} readonly={candidateReadonly} onChange={onCandidatesChanged} />}
     </aside>
   );
 }

@@ -355,7 +355,8 @@ pixi run test-container-e2e --scope console.native --cpus 8 --memory-mib 16384 -
 - Backend-unavailable checks use a closed container listener at port 9091 so
   Chromium does not need to authorize a private-IP page accessing loopback.
 - `console.managed` runs both full-stack managed browser flows. Its mounted Web
-  template sets readonly false while the public release template remains true.
+  template sets readonly false, matching the editable single-container default;
+  an explicit readonly template remains available for the release browser case.
   Both use the same image; physical capabilities remain restricted. The host
   control channel pauses/resumes only the current owned KV service PID.
 - These accepted cases are included once in `console.operations`; managed

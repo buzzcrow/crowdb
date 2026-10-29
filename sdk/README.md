@@ -177,7 +177,7 @@ pixi run test-dataset-sdk-python
 pixi run sdk-fmt-check
 pixi run sdk-lint
 pixi run check-dataset-sdk-boundary
-pixi run clean-env && pixi run test-e2e-dataset
+pixi run clean --runtime-only && pixi run test-e2e-dataset
 ```
 
 The packaging gate builds an sdist outside the repository and installs its wheel

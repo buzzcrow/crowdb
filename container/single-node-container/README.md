@@ -60,9 +60,10 @@ before first startup produces unreachable references. Internal service addresses
 remain independent of public origins.
 
 All members of one local cluster share the accepted client credential set.
-Retain each member's own data volume across stop, clean and image replacement.
-Default `oci-clean` removes the containers and their unused owned bridge;
-`--delete-data` additionally deletes the selected helper's owned volumes.
+Retain each member's own data volume across stop and image replacement.
+Default `oci-clean` removes all recorded clusters, their unused owned bridges
+and owned data. Use `--cluster NAME` to select one cluster and `--keep-data` to
+retain its volumes and restart receipts.
 Ordinary `docker compose down` also preserves its named volumes.
 
 ## Tested S3 client recipes

@@ -11,7 +11,7 @@ use axum::{
 use crowdb_console_shared::deployment::admission::remote_control;
 use crowdb_protocol::mgmt::node::{
     storage::{
-        FileDiskAdmission, FilePreparation, FilePreparationPage, PrepareDiskFile,
+        managed_file_zone_bytes, FileDiskAdmission, FilePreparation, FilePreparationPage, PrepareDiskFile,
         DEFAULT_FILE_CAPACITY_BYTES, DEFAULT_FILE_RESERVE_BYTES,
     },
     NodeControl,
@@ -26,7 +26,6 @@ use crate::{
 use super::{remote_node, Failure};
 
 const UNIT_SIZE: u32 = 1024 * 1024;
-const ZONE_SIZE: u64 = 32 * 1024 * 1024 * 1024;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,15 +63,8 @@ pub(crate) async fn create(
 ) -> Result<(StatusCode, Json<FilePreparation>), Failure> {
     let node = remote_node(&state, node_id)?;
     canonical_operation(&body.operation_id)?;
-    if body.capacity_bytes == 0
-        || body.capacity_bytes > i64::MAX as u64
-        || body.capacity_bytes % (64 * u64::from(UNIT_SIZE)) != 0
-        || (body.capacity_bytes > ZONE_SIZE && body.capacity_bytes % ZONE_SIZE != 0)
-    {
-        return Err(err_400(
-            "File capacity must be a positive multiple of 64 MiB within signed 64-bit bounds; above 32 GiB it must contain whole 32 GiB zones",
-        ));
-    }
+    let zone_size_bytes = managed_file_zone_bytes(body.capacity_bytes)
+        .ok_or_else(|| err_400("File capacity must be a positive multiple of 64 MiB within signed 64-bit bounds; above 32 GiB it must contain whole 32 GiB zones"))?;
     let binding = crate::node::cluster_binding(&state)?
         .ok_or_else(|| err_409("File disk creation is waiting for Group 0"))?;
     let request = PrepareDiskFile {
@@ -86,7 +78,7 @@ pub(crate) async fn create(
             rack_id: node.rack_id,
             disk_group_id: body.disk_group_id,
             unit_size_bytes: UNIT_SIZE,
-            zone_size_bytes: ZONE_SIZE.min(body.capacity_bytes),
+            zone_size_bytes,
             media_type: None,
         }),
     };

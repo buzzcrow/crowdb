@@ -12,6 +12,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from builder_host import apparmor_denied, setup_apparmor
+
 
 def tool(name):
     prefix = Path(os.environ["CONDA_PREFIX"])
@@ -21,7 +23,36 @@ def tool(name):
     return str(binary)
 
 
-def preflight(privileged):
+def rootless_probe():
+    command = [tool('rootlesskit'), '--net=host', '--copy-up=/etc', '--copy-up=/run', '/bin/true']
+    try:
+        result = subprocess.run(command, text=True, capture_output=True, timeout=15)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError('RootlessKit user namespace probe exceeded 15 seconds') from error
+    return result
+
+
+def check_rootless(setup_host=False):
+    result = rootless_probe()
+    if result.returncode == 0:
+        return
+    diagnostics = '\n'.join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+    if setup_host and apparmor_denied(diagnostics):
+        print(diagnostics, flush=True)
+        setup_apparmor(tool('rootlesskit'))
+        result = rootless_probe()
+        if result.returncode == 0:
+            return
+        diagnostics = '\n'.join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+    raise RuntimeError(
+        'RootlessKit cannot start a user namespace; fix host prerequisites before building.\n'
+        + diagnostics + '\n'
+        'pixi run oci-build automatically sets up its per-executable AppArmor profile when needed. '
+        'Run it in an interactive terminal for sudo authentication. '
+        'Other user namespace or UID/GID mapping errors require the reported host prerequisite.')
+
+
+def preflight(privileged, setup_host=False):
     if (platform.system(), platform.machine()) != ("Linux", "x86_64"):
         raise RuntimeError("Linux amd64 builder required; macOS Linux-VM backend is reserved")
     for name in ("buildctl", "buildkitd", "runc"):
@@ -34,6 +65,7 @@ def preflight(privileged):
         for name in ("newuidmap", "newgidmap"):
             if not shutil.which(name):
                 raise RuntimeError(f"rootless builds require host setuid {name} and subordinate UID/GID ranges")
+        check_rootless(setup_host)
 
 
 @contextlib.contextmanager
@@ -71,7 +103,12 @@ def running(cache, privileged=False, mirrors=()):
                 raise TimeoutError("BuildKit socket readiness exceeded 30 seconds")
             finally:
                 if process.poll() is None:
-                    os.killpg(process.pid, signal.SIGTERM)
+                    if privileged:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    else:
+                        # RootlessKit forwards the signal to BuildKit. Signalling
+                        # both directly makes BuildKit receive it repeatedly.
+                        process.terminate()
                     try:
                         process.wait(timeout=10)
                     except subprocess.TimeoutExpired:

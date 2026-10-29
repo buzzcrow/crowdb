@@ -4,9 +4,9 @@
 //! Snapshot compaction engine (R73 strategy 3) + preparatory thread.
 //!
 //! `CompactionEngine` runs as a background task, periodically
-//! compacting zones whose `uncompacted_free_record_count` exceeds the
-//! threshold. `PreparatoryThread` pre-compacts the next batch of zones
-//! in the rotation order so rotation is instant. Both call the shared
+//! compacting non-active zones when their free-record backlog reaches the
+//! threshold or the full sweep cadence expires. `PreparatoryThread` pre-compacts
+//! the next batch of zones in the rotation order so rotation is instant. Both call the shared
 //! `compact_zone` function.
 //!
 //! Crash safety: the `ZoneValue` snapshot + free-record deletes are one
@@ -28,6 +28,10 @@ use crate::model::disk_group_container::DdbDiskGroupContainer;
 use crate::model::records::ZoneRecords;
 use crate::model::zone::DdbZone;
 use crate::recovery::ZoneLoadError;
+
+mod schedule;
+#[cfg(feature = "test-util")]
+pub use schedule::CompactionSchedule as CompactionScheduleForTests;
 
 /// RAII guard that clears the `compacting` flag on drop. Ensures the
 /// flag is cleared even on panic or early return (HIGH-5).
@@ -209,10 +213,11 @@ pub fn matching_free_records_for_tests(
 pub struct CompactionEngine {
     kv: Arc<DdbKvClient>,
     config: CompactionConfig,
+    started: std::time::Instant,
+    schedule: schedule::CompactionSchedule,
     /// Optional shared config handle for live-apply of the timer
-    /// cadence. When set, `trigger()` returns `TimerFn` reading
-    /// `persistence.compaction_cadence_secs` from this handle each
-    /// tick; when `None`, falls back to the fixed snapshot.
+    /// cadence. Polling checks the threshold at most every five seconds;
+    /// the independent sweep deadline comes from the current persistence config.
     config_handle: Option<Arc<arc_swap::ArcSwap<crate::ddb_config::DdbConfig>>>,
 }
 
@@ -223,6 +228,8 @@ impl CompactionEngine {
         Self {
             kv,
             config,
+            started: std::time::Instant::now(),
+            schedule: schedule::CompactionSchedule::default(),
             config_handle: None,
         }
     }
@@ -312,7 +319,13 @@ impl CompactionEngine {
 impl BackgroundTask for CompactionEngine {
     fn run_cycle<'a>(&'a self, ctx: &'a BgCtx) -> CycleFut<'a> {
         Box::pin(async move {
-            let threshold = ctx.config.load().persistence.snapshot_compaction_threshold;
+            let config = ctx.config.load();
+            let threshold = self.schedule.threshold(
+                self.started.elapsed().as_secs(),
+                u64::from(config.persistence.compaction_cadence_secs),
+                config.persistence.snapshot_compaction_threshold,
+            );
+            drop(config);
             self.compaction_cycle(&ctx.container, threshold, &ctx.metrics)
                 .await;
             Ok(())
@@ -325,11 +338,15 @@ impl BackgroundTask for CompactionEngine {
                 let handle = Arc::clone(handle);
                 Trigger::TimerFn(Box::new(move || {
                     std::time::Duration::from_secs(u64::from(
-                        handle.load().persistence.compaction_cadence_secs,
+                        handle.load().persistence.compaction_cadence_secs.min(5),
                     ))
                 }))
             }
-            None => Trigger::Timer(self.config.compaction_cadence),
+            None => Trigger::Timer(
+                self.config
+                    .compaction_cadence
+                    .min(std::time::Duration::from_secs(5)),
+            ),
         }
     }
 

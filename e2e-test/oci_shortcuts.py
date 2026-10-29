@@ -30,7 +30,7 @@ def named_clusters(cluster, invoke, ready, container_ids, credentials, one, othe
     credentials_before = credentials(0)
     request(f'http://127.0.0.1:{port}', '/api/racks', {'id':67,'name':'Pixi retained'})
     invoke('oci-stop', '--cluster', one)
-    invoke('oci-clean', '--cluster', one)
+    invoke('oci-clean', '--cluster', one, '--keep-data')
     assert not container_ids(one) and container_ids(other)==unrelated
     assert ready(10)['observation']['cluster_id']==second_id
     invoke('oci-run', '--cluster', one)
@@ -103,7 +103,7 @@ def verify(cluster):
             retained_credentials=True, retained_management_write=True,
             unrelated_container_ids=unrelated, actions=actions)
     finally:
-        invoke('oci-clean', '--all', *(['--delete-data'] if success else []))
+        invoke('oci-clean', '--all', '--delete-data' if success else '--keep-data')
     assert all(not container_ids(name) for name in (one,other,three,missing))
     (cluster.artifacts/'shortcuts-proof.json').write_text(json.dumps(proof,indent=2))
     print('PASS real Pixi one/three-node shortcuts, retained data and independent scoped cleanup without CLI',flush=True)

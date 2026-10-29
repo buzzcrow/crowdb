@@ -46,9 +46,11 @@ using crowdb::rpc::proto::FBMsgType_EDiskWriteResponse;
 
 struct AllocateHandlerState
 {
-    crowdb_rpc_server_t server = nullptr;
-    std::atomic<bool>   request_valid{false};
-    std::atomic<bool>   read_error{false};
+    crowdb_rpc_server_t   server = nullptr;
+    std::atomic<bool>     request_valid{false};
+    std::atomic<bool>     read_error{false};
+    std::atomic<uint64_t> write_zone_offset{0};
+    std::atomic<uint64_t> write_ordering_zone_offset{0};
 };
 
 TEST(RpcChunkTransport, ExplicitStripCapacityIsIndependentOfMirrorCopies)
@@ -60,8 +62,8 @@ TEST(RpcChunkTransport, ExplicitStripCapacityIsIndependentOfMirrorCopies)
         EXPECT_EQ(geometry.strip_count, 256U);
     }
     const auto automatic = rpc_chunk_allocation(256U * kMiB, 0, 2);
-    EXPECT_EQ(automatic.granularity_kb, 256U * 1024U);
-    EXPECT_EQ(automatic.strip_count, 1U);
+    EXPECT_EQ(automatic.granularity_kb, 1024U);
+    EXPECT_EQ(automatic.strip_count, 256U);
 }
 
 extern "C" void handle_allocate(uint64_t request_id, uint64_t /*unused*/, uint16_t /*unused*/, const uint8_t *control,
@@ -75,8 +77,8 @@ extern "C" void handle_allocate(uint64_t request_id, uint64_t /*unused*/, uint16
         return;
     }
     const auto *request = flatbuffers::GetRoot<FBAllocateChunkRequest>(control);
-    state->request_valid.store(request->chunk_id() == nullptr && request->write_granularity() == 256U * 1024U &&
-                                   request->strip_count() == 1 && request->strip_type() == FBStripType_Mirror &&
+    state->request_valid.store(request->chunk_id() == nullptr && request->write_granularity() == 1024U &&
+                                   request->strip_count() == 4 && request->strip_type() == FBStripType_Mirror &&
                                    request->copy_count() == 3 &&
                                    (request->chunk_type() == FBChunkType_BtreePage ||
                                     request->chunk_type() == crowdb::chunkdb::proto::FBChunkType_PageIndex) &&
@@ -147,6 +149,8 @@ extern "C" void handle_disk_write(uint64_t request_id, uint64_t /*unused*/, uint
         crowdb_rpc_frame_release(frame);
         return;
     }
+    state->write_zone_offset.store(request->zone_offset(), std::memory_order_release);
+    state->write_ordering_zone_offset.store(request->ordering_zone_offset(), std::memory_order_release);
     flatbuffers::FlatBufferBuilder builder;
     const auto                     response =
         CreateFBDiskWriteResponse(builder, request_id, 0, crowdb::diskio::proto::FBDiskIoRetCode_Success);
@@ -180,7 +184,7 @@ TEST(RpcChunkTransport, RejectsWriteWithoutLocalLivenessAuthority)
     EXPECT_EQ(status.code(), Code::kUnavailable);
 }
 
-TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
+TEST(RpcChunkTransport, RequestsSmallMirrorAllocationAndPreserves128BitChunkId)
 {
     crowdb_rpc_pool_t   pool   = crowdb_rpc_pool_create(128);
     crowdb_rpc_server_t server = crowdb_rpc_server_create(pool);
@@ -230,10 +234,16 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
     EXPECT_EQ(transport.read_mirror(allocated, 0, 0, read.data(), read.size()).code(), Code::kInternal);
     AsyncWriteResult             write_result;
     const std::array<uint8_t, 4> write{5, 6, 7, 8};
-    transport.submit_write_mirror(allocated, 1, 0, write.data(), write.size(),
+    constexpr uint64_t           kSegmentBase = 4096ULL * 256U * 1024U * 1024U;
+    ASSERT_TRUE(transport.write_mirror(allocated, 1, 65531, write.data(), write.size()).ok());
+    EXPECT_EQ(handler.write_zone_offset.load(std::memory_order_acquire), kSegmentBase + 65531);
+    EXPECT_EQ(handler.write_ordering_zone_offset.load(std::memory_order_acquire), kSegmentBase);
+    transport.submit_write_mirror(allocated, 1, 65535, write.data(), write.size(),
                                   {.complete_fn = &complete_async_write, .context = &write_result});
     write_result.done.wait(false, std::memory_order_acquire);
     EXPECT_TRUE(write_result.status.ok()) << write_result.status.to_string();
+    EXPECT_EQ(handler.write_zone_offset.load(std::memory_order_acquire), kSegmentBase + 65535);
+    EXPECT_EQ(handler.write_ordering_zone_offset.load(std::memory_order_acquire), kSegmentBase);
 
     ChunkId mapping;
     ASSERT_TRUE(

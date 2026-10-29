@@ -21,6 +21,8 @@ pub enum DirectCommitError {
     Conflict,
     #[error("table commit outcome is uncertain; reload the table before retrying")]
     Uncertain,
+    #[error("cannot expire a current or referenced snapshot")]
+    ReferencedSnapshot,
     #[error(transparent)]
     Catalog(#[from] CatalogError),
     #[error(transparent)]
@@ -84,6 +86,7 @@ pub async fn publish_direct_commit(
     if replay {
         return Ok(publication::metadata_response(&before, prior.canonical())?);
     }
+    validate_guard(&store, context, &before, request, identity, &prior).await?;
     let mut candidate = before.clone();
     candidate.commit_binding = Some(binding);
     candidate.generation = candidate
@@ -146,4 +149,48 @@ pub async fn publish_direct_commit(
         }
         CasOutcome::Conflict(None) => Err(DirectCommitError::Uncertain),
     }
+}
+
+async fn validate_guard(
+    store: &Arc<dyn CatalogStore>,
+    context: CatalogContext,
+    before: &TableHead,
+    request: &CommitRequest,
+    identity: RequestIdentity,
+    prior: &crate::table::TableMetadataDocument,
+) -> Result<(), DirectCommitError> {
+    if let Some(base) = &request.base_metadata_location {
+        let operation_location = before
+            .metadata_location
+            .table()
+            .file(&format!("metadata/{}.metadata.json", identity.operation))?;
+        // A later generation can conceal an earlier successful publication.
+        if *base != before.metadata_location.to_string() {
+            if FileRepository::new(store.clone())
+                .load(context, &operation_location)
+                .await?
+                .is_some()
+            {
+                return Err(DirectCommitError::Uncertain);
+            }
+            return Err(DirectCommitError::Conflict);
+        }
+        let metadata: serde_json::Value =
+            serde_json::from_slice(prior.canonical()).map_err(TableMetadataError::from)?;
+        for update in &request.updates {
+            if let super::TableUpdate::RemoveSnapshots { snapshot_ids } = update {
+                for id in snapshot_ids {
+                    if metadata["current-snapshot-id"].as_i64() == Some(*id)
+                        || metadata["refs"].as_object().is_some_and(|refs| {
+                            refs.values()
+                                .any(|reference| reference["snapshot-id"].as_i64() == Some(*id))
+                        })
+                    {
+                        return Err(DirectCommitError::ReferencedSnapshot);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }

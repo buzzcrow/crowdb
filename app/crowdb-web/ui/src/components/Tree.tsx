@@ -1,8 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
+import { resourceMenuKey } from './resourceMenuKey';
 import { cn } from '../utils/cn';
 import { useSelection } from '../contexts/SelectionContext';
 import { useDomain } from '../contexts/DomainContext';
@@ -16,12 +17,17 @@ export interface TreeNode {
   rawId?: string | number;
   label: string;
   title?: string;
-  section?: 'services' | 'storage' | 'candidates';
+  section?: 'services' | 'storage' | 'candidates' | 'discovery';
   selected?: boolean;
   footer?: React.ReactNode;
-  type: 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk' | 'Partition' | 'Iceberg' | 'S3';
+  type: 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk' | 'Partition' | 'Iceberg' | 'S3' | 'Dataset';
   icon?: React.ReactNode;
   children?: TreeNode[];
+  childrenContent?: React.ReactNode;
+  navigationOnly?: boolean;
+  /** Domain workbenches own their selection independently of the shell. */
+  activate?: () => void;
+  suffix?: React.ReactNode;
   /** Load children when this branch is first opened. */
   onExpand?: () => void;
   expandable?: boolean;
@@ -53,6 +59,9 @@ interface TreeNodeProps {
   onNodeContextMenu?: (node: TreeNode, event: React.MouseEvent) => void;
 }
 
+// Lazy domain branches may render another Tree; retain the enclosing depth.
+const TreeDepth = createContext(0);
+
 function TreeNodeComponent({
   node,
   level,
@@ -64,7 +73,7 @@ function TreeNodeComponent({
   const { selectedEntity: inspectedEntity, scopeEntity, selectEntity, inspectEntity } = useSelection();
   const { domain } = useDomain();
   const selectedEntity = domain === Domain.Cluster ? scopeEntity : inspectedEntity;
-  const hasChildren = node.expandable || (!!node.children && node.children.length > 0);
+  const hasChildren = node.expandable || !!node.childrenContent || (!!node.children && node.children.length > 0);
   const isExpanded = expandedIds.has(node.id);
   const entityId = node.rawId ?? node.id;
   const sameOwner = node.type !== 'Group' && node.type !== 'Replica' ||
@@ -78,15 +87,19 @@ function TreeNodeComponent({
   }, [node, entityId, selectEntity, domain]);
 
   const handleSelectClick = useCallback(() => {
+    if (node.navigationOnly) { if (!isExpanded) node.onExpand?.(); toggleExpanded(node.id); return; }
+    if (node.activate) { node.activate(); return; }
     select();
     onNodeClick?.(node);
-  }, [node, select, onNodeClick]);
+  }, [node, select, onNodeClick, toggleExpanded, isExpanded]);
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
-      if (domain === Domain.Cluster) inspectEntity({ type: node.type, id: String(entityId), name: node.label, parentIds: node.parentIds, domain, section: node.section, serviceType: node.serviceType });
-      else select();
+      if (node.navigationOnly) return;
+      (e.currentTarget as HTMLElement).querySelector<HTMLButtonElement>('button[data-tree-label]')?.focus();
+      if (!node.activate && domain === Domain.Cluster) inspectEntity({ type: node.type, id: String(entityId), name: node.label, parentIds: node.parentIds, domain, section: node.section, serviceType: node.serviceType });
+      else if (!node.activate) select();
       onNodeContextMenu?.(node, e);
     },
     [select, node, domain, entityId, inspectEntity, onNodeContextMenu],
@@ -104,7 +117,9 @@ function TreeNodeComponent({
   return (
     <div data-testid={`tree-node-${node.id}`}>
       <div
+        onClick={handleSelectClick}
         onContextMenu={handleContextMenu}
+        onKeyDown={resourceMenuKey}
         className={cn(
           'tw-flex tw-items-center tw-gap-2 tw-px-3 tw-py-1.5 tw-transition-colors',
           isNodeSelected ? 'tw-bg-accent/10 tw-text-accent' : 'tw-text-text hover:tw-bg-panel',
@@ -112,6 +127,7 @@ function TreeNodeComponent({
         )}
         style={{ paddingLeft: `${level * 16 + 12}px` }}
         role="treeitem"
+        aria-level={level + 1}
         aria-selected={isNodeSelected}
         aria-expanded={hasChildren ? isExpanded : undefined}
       >
@@ -134,7 +150,8 @@ function TreeNodeComponent({
         {node.icon && <span className="tw-flex-shrink-0">{node.icon}</span>}
         <button
           type="button"
-          onClick={handleSelectClick}
+          data-tree-label
+          onClick={event => { event.stopPropagation(); handleSelectClick(); }}
           title={node.title ?? node.label}
           className="tw-flex-1 tw-min-w-0 tw-truncate tw-text-left tw-cursor-pointer"
         >
@@ -142,6 +159,7 @@ function TreeNodeComponent({
         </button>
 
         <div className="tw-flex tw-items-center tw-gap-0.5 tw-flex-shrink-0">
+          {node.suffix}
           {node.role && <RoleBadge role={node.role} size="sm" compact />}
           {node.hwStatus != null && <HwStatusBadge status={node.hwStatus} size="sm" compact />}
           {node.health && <HealthBadge status={node.health} size="sm" compact />}
@@ -151,6 +169,7 @@ function TreeNodeComponent({
       {node.footer && <div style={{ paddingLeft: `${level * 16 + 28}px` }}>{node.footer}</div>}
       {hasChildren && isExpanded && (
         <div role="group">
+          <TreeDepth.Provider value={level + 1}>{node.childrenContent}</TreeDepth.Provider>
           {node.children?.map((child) => (
             <TreeNodeComponent
               key={child.id}
@@ -171,6 +190,7 @@ function TreeNodeComponent({
 const EMPTY_EXPANSION: string[] = [];
 
 export function Tree({ nodes, defaultExpandedIds = EMPTY_EXPANSION, onNodeClick, onNodeContextMenu, className, onExpansionChange, expandedIds: controlledExpansion }: TreeProps) {
+  const level = useContext(TreeDepth);
   const [expandedState, setExpandedIds] = useState<Set<string>>(() => new Set(defaultExpandedIds));
   const expandedIds = controlledExpansion ? new Set(controlledExpansion) : expandedState;
   const expandedRef = useRef(expandedIds); expandedRef.current = expandedIds;
@@ -197,12 +217,12 @@ export function Tree({ nodes, defaultExpandedIds = EMPTY_EXPANSION, onNodeClick,
   }, [onExpansionChange]);
 
   return (
-    <div className={cn('tw-overflow-y-auto tw-flex-1', className)} role="tree">
+    <div className={cn('tw-overflow-y-auto tw-flex-1', className)} role={level ? 'group' : 'tree'}>
       {nodes.map((node) => (
         <TreeNodeComponent
           key={node.id}
           node={node}
-          level={0}
+          level={level}
           expandedIds={expandedIds}
           toggleExpanded={toggleExpanded}
           onNodeClick={onNodeClick}

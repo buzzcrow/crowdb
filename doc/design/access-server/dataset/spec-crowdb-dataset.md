@@ -54,7 +54,7 @@ The following terms have one meaning throughout this specification:
   shuffle to one immutable Snapshot.
 - **Cursor** records progress for one Read Plan and is acknowledged only after
   the corresponding batch is accepted by the caller.
-- **Deletion grace period** separates a durable Snapshot or Split revision deletion
+- **Deletion grace period** separates a durable Dataset, Snapshot or Split revision deletion
   mark from destructive cleanup; it does not guarantee completion of every admitted read.
 
 Dataset does not infer semantics from a locator, a Snapshot ID's numeric
@@ -81,7 +81,30 @@ as canonical padded base64 in JSON; they MUST NOT be normalized as text or paths
 
 A Dataset record establishes that the identity exists and owns its metadata.
 Creating an existing identity is a conflict. Opening a missing identity is a
-not-found error. Dataset deletion is outside this specification.
+not-found error. Whole-Dataset deletion requires the expected immutable Dataset ID.
+A nonempty Dataset MUST be rejected: latest/stable, unreclaimed Snapshots (including
+unpublished candidates), uploads, legacy drafts, or pending creation all count as
+content. Empty deletion atomically marks the Dataset unavailable and persists a
+`reclaim_after` deadline. Read/list hide it immediately; creation at that name is
+rejected until the background worker completes retirement. Repetition preserves
+the receipt and deadline. Name reuse creates a different Dataset ID; a stale
+DELETE MUST conflict. Minimal identity receipts and retired child fences remain
+for retry safety, rather than resurrecting old operations.
+
+Control v2's optional `X-Crowdb-Dataset-Id` active-instance guard MUST reject a
+same-name replacement with 409 `dataset_replaced`. Malformed, zero, noncanonical
+or duplicated values MUST fail with 400. Missing/marked identities return 404.
+The advertised `dataset-identity-fence` capability covers both request admission
+and creation reservation CAS, so deletion/name reuse cannot redirect a delayed
+upload or Snapshot creator after its initial identity observation. Requests that
+omit the header retain their existing contracts; deletion receipt/status retries
+after marking use their own immutable ID without this active-instance guard.
+
+The Access Server setting `dataset.reclaim_grace_seconds` defaults to 1200 and
+must be positive. Dataset, Snapshot and Split revision deletion use this value
+when first marked. Existing deadlines are immutable across configuration changes
+and restarts. Tests may set it to 1. Direct authorities expose
+`with_reclaim_grace_seconds`; native clients default to 1200.
 
 A Snapshot record contains the Snapshot ID, optional parent, publication
 operation identity, Manifest binding, and publication state. Publication states
@@ -336,7 +359,7 @@ Legacy resources inherit an existing binding deadline; otherwise their first
 background observation assigns a fixed twenty-four-hour deadline. Unsupported
 legacy opaque Manifest formats remain excluded from automatic retirement.
 
-Snapshot deletion first persists a terminal mark and a twenty-minute
+Snapshot deletion first persists a terminal mark and a configured (default twenty-minute)
 `reclaim_after` deadline.
 Cleanup MUST NOT remove snapshot-owned metadata or payload references before
 that deadline. The default applies to new marks; existing persisted absolute
@@ -360,7 +383,7 @@ they MUST NOT acquire an independent automatic TTL. Explicit revision deletion
 MUST name both Snapshot and revision IDs. The current Split head and the Snapshot's
 initial Split revision MUST be protected, even when the initial revision is no
 longer current. Deletion MUST close new revision reads and source admission,
-preserve its fixed twenty-minute grace across retries and restart, and fence
+preserve its fixed configured (default twenty-minute) grace across retries and restart, and fence
 publishers admitted against an older head generation. Deletion state and exact
 page bindings MUST reside on the existing revision resource. Deletion MUST NOT
 create a reader session, request ledger or separate deletion task.
@@ -368,7 +391,7 @@ create a reader session, request ledger or separate deletion task.
 Background cleanup MUST discover marked and terminal revision resources in bounded
 pages with local cursors and preserve permanent fences against delayed member
 writes. If the owning Snapshot has closed all read admission and completed its
-own twenty-minute grace, cleanup MAY use that owner fence before the revision's
+own configured (default twenty-minute) grace, cleanup MAY use that owner fence before the revision's
 later deadline. Revision deletion removes only Split membership and revision
 metadata; it MUST NOT delete Samples, payload ownership or chunk data.
 

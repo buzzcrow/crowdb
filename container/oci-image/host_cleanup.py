@@ -32,12 +32,14 @@ def read_private(path):
     return json.loads(content)
 
 
-def selected(cluster, root):
+def selected(cluster, root, missing_ok=False):
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,47}', cluster):
         raise ValueError('invalid cluster name')
     record = read_private(root / 'persistent/oci-hosts' / (cluster + '.json'))
     if record is None:
-        raise ValueError('no accepted host ownership receipt')
+        if missing_ok:
+            return None
+        raise ValueError(f"no accepted host ownership receipt for cluster '{cluster}'")
     owner = uuid.UUID(record['owner'])
     if (record['version'] != 1 or record['cluster'] != cluster
             or record['name'] != 'crowdb-' + cluster + '-host'
@@ -54,6 +56,16 @@ def selected(cluster, root):
             or binding.get('runtime') != dict(selection=record['runtime']['selection'], owner=record['owner'])):
         raise ValueError('application target conflicts with accepted host ownership')
     return record
+
+
+def selected_records(cluster, root):
+    if cluster is not None:
+        record = selected(cluster, root, missing_ok=True)
+        return [record] if record else []
+    directory = root / 'persistent/oci-hosts'
+    if any(part.is_symlink() for part in (directory, *directory.parents)):
+        raise ValueError('host receipt path cannot contain symlinks')
+    return [selected(path.stem, root) for path in sorted(directory.glob('*.json'))]
 
 
 def clean(record):
@@ -73,3 +85,22 @@ def clean(record):
         raise ValueError('owned container is still running; refusing removal')
     runtime.check(record)
     runtime.invoke('rm', identity)
+
+
+def check_data_users(runtime, record):
+    root = Path(record['options']['data_root'])
+    identities = runtime.invoke('ps', '-aq').splitlines()
+    if len(identities) > 4096:
+        raise ValueError('runtime inventory exceeds the host inspection bound')
+    for identity in identities:
+        current = runtime.inspect(identity)
+        if current.get('Name', '').lstrip('/') == record['name']:
+            require_owned(current, record)
+            continue
+        for mount in current.get('Mounts', []):
+            if mount.get('Type') != 'bind' or not mount.get('Source'):
+                continue
+            source = Path(mount['Source']).resolve()
+            if source == root or root in source.parents or source in root.parents:
+                raise ValueError('host data directory is referenced by another container')
+    runtime.check(record)

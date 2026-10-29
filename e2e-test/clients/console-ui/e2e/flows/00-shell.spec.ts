@@ -24,12 +24,23 @@ test.describe("shell · embedding", () => {
     await expect(page).toHaveTitle('CrowDB Console');
     await expect(page.getByLabel('CrowDB Console', { exact: true })).toBeVisible();
 
+    await expect(page.getByLabel('CrowDB Console', { exact: true })).toHaveText('CrowDB');
+    const domainsBox = await page.getByRole('navigation', { name: 'Console domains' }).boundingBox();
+    const historyBox = await page.getByRole('navigation', { name: 'Navigation history' }).boundingBox();
+    expect(historyBox!.x).toBeGreaterThan(domainsBox!.x + domainsBox!.width);
+    await expect(page.getByRole('region', { name: 'Topology', exact: true })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Capacity', exact: true })).toBeHidden();
+    for (const name of ['Hide navigation', 'Show navigation', 'Show diagram', 'Show node cards']) {
+      await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0);
+    }
+    await expect(page.getByText('Capacity observation times')).toHaveCount(0);
+
     // Domain toggle buttons are visible.
     await expect(page.getByTestId('domain-cluster')).toBeVisible({ timeout: 3_000 });
     await expect(page.getByTestId('domain-kv')).toBeVisible();
     await expect(page.getByTestId('domain-chunk')).toBeVisible();
 
-    for (const domain of ['capacity', 'chunk-kv', 'iceberg', 'dataset', 's3']) await expect(page.getByTestId(`domain-${domain}`)).toBeVisible();
+    for (const domain of ['chunk-kv', 'iceberg', 'dataset', 's3']) await expect(page.getByTestId(`domain-${domain}`)).toBeVisible();
 
     // Default domain is Cluster.
     await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
@@ -38,10 +49,10 @@ test.describe("shell · embedding", () => {
     await expect(domains.getByRole('button')).toHaveCount(7);
     await expect(domains.getByRole('button', { name: 'Capacity', exact: true })).toHaveCount(0);
     await expect(domains.getByRole('button')).toHaveText(['Cluster', 'PaxosKV', 'Chunk', 'ChunkKV', 'Iceberg', 'Dataset', 'S3']);
-    await page.getByTestId('domain-capacity').click();
-    await expect(page.getByTestId('domain-capacity')).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'datacenter', exact: true }).click();
     await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
-    await expect(page).toHaveURL(/domain=Cluster&view=capacity/);
+    await expect(page.getByRole('region', { name: 'Topology', exact: true })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Capacity', exact: true })).toBeVisible();
 
     // Switch to KV.
     await page.getByTestId('domain-kv').click();
@@ -54,9 +65,8 @@ test.describe("shell · embedding", () => {
     // Switch back to Cluster.
     await page.getByTestId('domain-cluster').click();
     await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.getByTestId('domain-capacity')).toHaveAttribute('aria-pressed', 'true');
-    await page.getByTestId('cluster-topology').click();
-    await expect(page.getByTestId('cluster-topology')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('cluster-topology')).toHaveCount(0);
+    await expect(page.getByTestId('domain-capacity')).toHaveCount(0);
   });
   test('embedding honors apiPrefix, readonly, and module opt-out', async ({ page, baseURL, request }) => {
     const post = async (path: string, data: Record<string, unknown>, status = 201) => {

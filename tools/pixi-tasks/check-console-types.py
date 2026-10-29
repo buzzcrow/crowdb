@@ -11,7 +11,7 @@ with tempfile.TemporaryDirectory(prefix="crowdb-console-types-") as temporary:
     project = pathlib.Path(temporary) / "console-ui"
     shutil.copytree(root / "e2e-test/clients/console-ui", project,
                     ignore=shutil.ignore_patterns("node_modules", "test-results", "playwright-report"))
-    for relative in ("chunk-kv/catalog.ts", "iceberg/json.ts", "iceberg/types.ts"):
+    for relative in ("chunk-kv/catalog.ts", "iceberg/json.ts", "iceberg/types.ts", "utils/capacity.ts"):
         target = project / "src" / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(root / "app/crowdb-web/ui/src" / relative, target)

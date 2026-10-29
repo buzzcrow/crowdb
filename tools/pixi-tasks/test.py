@@ -182,7 +182,7 @@ def main():
         for task in ("test-cpp", "test-core", "test-storage", "test-access",
                      "test-access-sdk", "test-console", "test-console-ui"):
             subprocess.run(["pixi", "run", task], cwd=ROOT, check=True)
-        subprocess.run(["pixi", "run", "clean-env"], cwd=ROOT, check=True)
+        subprocess.run(["pixi", "run", "clean", "--runtime-only"], cwd=ROOT, check=True)
         subprocess.run(container_command("e2e", "all", []), cwd=ROOT, check=True)
     else:
         subprocess.run(container_command(args.command, args.selection, extra), cwd=ROOT, check=True)

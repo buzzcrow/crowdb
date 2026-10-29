@@ -67,7 +67,8 @@ async fn inline_publication_and_identical_replay_have_bounded_metadata_cost() {
         let after = counts(&store);
         assert_eq!(
             (after.0 - before.0, after.1 - before.1),
-            (12, 11 + 3 * u64::from(samples))
+            // Dataset deletion admission adds two reads and one root CAS.
+            (14, 12 + 3 * u64::from(samples))
         );
         println!(
             "cold publication: {} reads, {} mutations",

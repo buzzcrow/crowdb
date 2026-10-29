@@ -61,19 +61,27 @@ test('native diagnostics: browser history preserves S3 windows and rejects repla
       await expect(page.getByRole('heading', { level: 1 })).toHaveText('item-20');
       await expect(locations.getByRole('button', { name: /^Open Chunk/ })).toBeDisabled();
     } finally {
-      for (const id of stopped) expect((await request.post(`/api/services/${id}/restart`, { data: {} })).ok()).toBe(true);
+      for (const id of stopped) {
+        const response = await request.post(`/api/services/${id}/restart`, { data: {} });
+        expect(response.ok(), `${id} restart: ${response.status()} ${await response.text()}`).toBe(true);
+      }
     }
     await locations.getByRole('button', { name: 'Refresh locations', exact: true }).click();
     await expect(locations.getByRole('alert')).toHaveCount(0);
 
     await page.getByTestId('domain-kv').click();
     expect((await request.delete(`${path}/item-20`)).status()).toBe(204);
-    await page.goBack();
+    const [restored] = await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === '/api/access/s3/' && response.request().method() === 'GET'),
+      page.goBack(),
+    ]);
+    expect(restored.status(), await restored.text()).toBe(200);
+    expect(await restored.text()).toContain(bucket);
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('item-20');
     await expect(locations.getByRole('alert')).toContainText('404');
     await expect(page.getByLabel('Object metadata')).not.toContainText('content-length');
-    await page.getByRole('navigation', { name: 'S3 breadcrumbs' }).getByRole('button', { name: bucket, exact: true }).click();
-    await page.getByRole('button', { name: 'List objects', exact: true }).click();
+    await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: bucket, exact: true }).click();
+    await page.getByRole('form', { name: 'Object list query', exact: true }).getByRole('button', { name: 'List', exact: true }).click();
     await expect(objects.getByRole('button', { name: 'item-20', exact: true })).toHaveCount(0);
   } finally {
     for (let start = 0; start < keys.length; start += 4) {

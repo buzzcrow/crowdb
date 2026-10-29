@@ -95,8 +95,8 @@ pub(in crate::node::runtime) async fn ready(
         let client = crowdb_chunk_kv_client::ChunkKvClient::new(
             crowdb_chunk_kv_client::ClientConfig {
                 operation_timeout: Duration::from_secs(1),
-                max_attempts: 1,
-                max_route_refreshes: 1,
+                // Keep normal routed-read redirects within this probe's deadline:
+                // catalog ownership may change between discovery and the read.
                 max_owner_connections: 1,
                 ..Default::default()
             },
