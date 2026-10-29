@@ -68,6 +68,8 @@ async fn start_through(context: &TestNativeContext, geometry: Option<u64>, last:
 
 pub(super) async fn start_diskdb(context: &TestNativeContext, units: [u64; 3]) {
     groups(context).await;
+    // Initial ownership claims and disk admission share the Rack CAS guard.
+    wait_diskdb(context).await;
     disks(context, units).await;
     wait_diskdb(context).await;
 }
