@@ -8,15 +8,23 @@ use reqwest::Method;
 async fn thirty_two_concurrent_direct_puts() {
     let (_stack, _process, client, table) = setup().await;
     let payload = vec![0x5a; 8 * 1024 * 1024];
+    // Prime one large writer before releasing the synchronized burst. The
+    // first foreground allocation also settles the ChunkDB/DiskIO route after
+    // the listener becomes reachable, so the burst measures concurrent writes
+    // instead of startup discovery.
+    let warmup = path(table, "data/parallel-warmup.parquet");
+    let response = client.send(Method::PUT, &warmup, "", &payload, false).await;
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     let mut requests = tokio::task::JoinSet::new();
     let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(33));
     for index in 0..32 {
         let object = path(table, &format!("data/parallel-{index}.parquet"));
-        let request = client.request(Method::PUT, &object, "", &payload, false, None);
+        let payload = payload.clone();
+        let client = client.clone();
         let barrier = barrier.clone();
         requests.spawn(async move {
             barrier.wait().await;
-            let response = request.send().await.unwrap();
+            let response = client.send(Method::PUT, &object, "", &payload, false).await;
             (index, response.status(), response.text().await.unwrap())
         });
     }

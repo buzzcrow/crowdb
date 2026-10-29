@@ -53,6 +53,7 @@ fn canonical_query(query: &str) -> String {
         .join("&")
 }
 
+#[derive(Clone)]
 pub struct TestFileClient {
     pub client: Client,
     pub credentials: crowdb_access_iceberg::file::FileCredentials,

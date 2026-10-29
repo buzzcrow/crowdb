@@ -157,7 +157,13 @@ fn unique(endpoints: impl Iterator<Item = MemberEndpoint>) -> (Vec<MemberEndpoin
     let mut conflicts = BTreeSet::new();
     for endpoint in endpoints {
         if let Some(prior) = members.get(&endpoint.node_id) {
-            if prior.boot_id != endpoint.boot_id || prior.discovery_id != endpoint.discovery_id {
+            // A node keeps its discovery identity across process restarts, but
+            // publishes a fresh boot id. The local observation is emitted
+            // before peer observations, so retain that authenticated identity
+            // instead of treating the restart as a conflicting member and
+            // pinning the route to the old address.
+            if prior.discovery_id != endpoint.discovery_id {
+                conflicts.insert(prior.discovery_id.clone());
                 conflicts.insert(endpoint.discovery_id.clone());
             }
         } else {

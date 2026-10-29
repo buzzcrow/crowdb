@@ -13,7 +13,7 @@ mod run_root;
 use run_root::TestRunRoot;
 
 #[test]
-fn duplicate_authenticated_incarnations_remove_the_route_in_any_order() {
+fn restarted_authenticated_member_keeps_the_current_route() {
     use crowdb_protocol::mgmt::node::recovery::MemberEndpoint;
     let first = MemberEndpoint {
         node_id: 1,
@@ -24,11 +24,22 @@ fn duplicate_authenticated_incarnations_remove_the_route_in_any_order() {
     let mut cloned = first.clone();
     cloned.boot_id = uuid::Uuid::new_v4().to_string();
     cloned.addresses = vec!["192.0.2.2".parse().unwrap()];
-    for records in [vec![first.clone(), cloned.clone()], vec![cloned, first.clone()]] {
+    for records in [
+        vec![first.clone(), cloned.clone()],
+        vec![cloned.clone(), first.clone()],
+    ] {
         let (members, conflicts) = crowdb_monitor::unique_member_endpoints_for_tests(records);
-        assert!(members.is_empty());
-        assert_eq!(conflicts, vec![first.discovery_id.clone()]);
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].discovery_id, first.discovery_id);
+        assert!(conflicts.is_empty());
     }
+    let mut foreign = first.clone();
+    foreign.discovery_id = uuid::Uuid::new_v4().to_string();
+    let (members, conflicts) =
+        crowdb_monitor::unique_member_endpoints_for_tests(vec![first.clone(), foreign]);
+    assert!(members.is_empty());
+    assert_eq!(conflicts.len(), 2);
+    assert!(conflicts.contains(&first.discovery_id));
     let (members, conflicts) =
         crowdb_monitor::unique_member_endpoints_for_tests(vec![first.clone(), first.clone()]);
     assert_eq!(members, vec![first]);

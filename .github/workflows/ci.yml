@@ -63,8 +63,6 @@ jobs:
       uses: ./.github/actions/compilation-cache
     - name: Clean env
       run: pixi run clean --runtime-only
-    - name: Build C++ libs
-      run: pixi run build
     - name: Run C++ and FFI tests
       run: pixi run test-cpp
     - name: Capture runner state on failure
@@ -171,8 +169,6 @@ jobs:
       uses: ./.github/actions/compilation-cache
     - name: Clean env
       run: pixi run clean --runtime-only
-    - name: Build C++ libs (crowdb-diskio subprocess)
-      run: pixi run build
     - name: Run storage component tests
       run: pixi run test-storage
     - name: Capture runner state on failure
