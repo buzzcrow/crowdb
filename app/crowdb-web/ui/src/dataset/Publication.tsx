@@ -16,7 +16,6 @@ export function Publication({ operation: op, update, complete, close, busy, run 
   return <section role="region" aria-label="Resource publication" className="tw-space-y-3 tw-border-t tw-border-border tw-pt-3">
     <h3 className="tw-font-semibold">{op.prepared ? 'Complete result' : 'Complete input ready'}</h3>
     <p className="tw-text-xs tw-break-all">{op.kind === 'snapshot' ? 'Snapshot' : 'Split revision'} <span data-testid="prepared-resource-id">{op.resource}</span></p>
-    <p className="tw-text-xs">{op.kind === 'snapshot' ? 'Publishing selects this Snapshot as latest. Stable and the parent keep their current values.' : 'Publishing replaces the current Split set. Historical revisions remain available.'}</p>
     {op.prepared && <JsonView value={op.prepared} />}
     {op.pending ? <div className="tw-space-y-2">
       <p role="status">Reply unavailable. The complete request is saved in this browser.</p>
@@ -30,6 +29,5 @@ export function Publication({ operation: op, update, complete, close, busy, run 
       </div>}
       <button className={buttonClass} disabled={busy} onClick={() => run(async () => { await forgetOperation(op); close(); })}>Discard local request</button>
     </div>}
-    <p className="tw-text-xs">Complete results can be read by ID before publication. Discarding local input leaves unreferenced results for GC.</p>
   </section>;
 }

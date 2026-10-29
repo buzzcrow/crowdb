@@ -42,7 +42,6 @@ interface UseClusterTreeResult {
  */
 export function useClusterTree({
   pollIntervalActive = 3000,
-  pollIntervalInactive = 30000,
   enabled = true,
   recursive = 3,
   managed = false,
@@ -56,8 +55,6 @@ export function useClusterTree({
   const [managedDiskGroups, setManagedDiskGroups] = useState<Record<number, NodeDiskGroups>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
-  const isActiveRef = useRef(true);
-  const pollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const hasLoadedRef = useRef(false);
   const requestRef = useRef<AbortController | null>(null);
 
@@ -117,40 +114,32 @@ export function useClusterTree({
   }, [enabled, recursive, managed]);
 
   useEffect(() => {
-    void fetchData();
-    return () => { requestRef.current?.abort(); };
-  }, [fetchData]);
-
-  useEffect(() => {
     if (!enabled) return;
-
-    const scheduleNextPoll = () => {
-      if (pollTimeoutRef.current) {
-        clearTimeout(pollTimeoutRef.current);
-      }
-      const interval = isActiveRef.current ? pollIntervalActive : pollIntervalInactive;
-      pollTimeoutRef.current = setTimeout(async () => {
-        await fetchData();
-        scheduleNextPoll();
-      }, interval);
+    let stopped = false;
+    let generation = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async (version = generation) => {
+      if (document.visibilityState === 'hidden') return;
+      // Inventory failures or slow disk observations must not stall topology.
+      if (!managed) void disks.refresh();
+      await fetchData();
+      if (!stopped && version === generation) timer = setTimeout(() => void poll(version), pollIntervalActive);
     };
-
-    scheduleNextPoll();
-
+    const visibility = () => {
+      generation++;
+      clearTimeout(timer);
+      requestRef.current?.abort();
+      void poll();
+    };
+    void poll();
+    document.addEventListener('visibilitychange', visibility);
     return () => {
-      if (pollTimeoutRef.current) {
-        clearTimeout(pollTimeoutRef.current);
-      }
+      stopped = true;
+      clearTimeout(timer);
+      requestRef.current?.abort();
+      document.removeEventListener('visibilitychange', visibility);
     };
-  }, [enabled, pollIntervalActive, pollIntervalInactive, fetchData]);
-
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      isActiveRef.current = document.visibilityState === 'visible';
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, []);
+  }, [enabled, managed, pollIntervalActive, fetchData, disks.refresh]);
 
   const getNodeById = useCallback(
     (nodeId: number): Node | undefined => {

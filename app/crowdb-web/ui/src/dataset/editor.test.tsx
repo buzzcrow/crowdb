@@ -24,22 +24,20 @@ it('creates through the parent menu and keeps resource operations out of the cen
   render(<DomainProvider><SelectionProvider><DatasetView active readonly={false} showActivity={false} /></SelectionProvider></DomainProvider>);
   await act(async () => {});
   fireEvent.contextMenu(screen.getByRole('button', { name: 'Datasets' }));
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Create Dataset…' }));
+  await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: 'Create Dataset…' })));
   expect((screen.getByLabelText('New Dataset name') as HTMLInputElement).value).toMatch(/^dataset-[0-9a-f]{8}$/);
-  await act(async () => fireEvent.click(screen.getByRole('button', { name: /^Create Dataset$/ })));
-  for (let index = 0; index < 3; index++) {
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh Dataset' })));
-    expect(screen.queryByRole('region', { name: 'Dataset actions' })).toBeNull();
-    fireEvent.contextMenu(screen.getByTestId('dataset-scope'));
-    expect(screen.getAllByRole('menuitem', { name: 'New Snapshot…' })).toHaveLength(1);
-    expect(screen.getByRole('menuitem', { name: 'New Snapshot…' })).toBeEnabled();
-    fireEvent.keyDown(document, { key: 'Escape' });
-  }
-  expect(api.mutate).toHaveBeenCalledTimes(1);
-  expect(vi.mocked(api.mutate).mock.calls[0][1]).toMatch(/\/datasets\/dataset-[0-9a-f]{8}$/);
-  fireEvent.contextMenu(screen.getByTestId('dataset-scope'));
-  await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: 'New Snapshot…' })));
-  expect(screen.getByRole('region', { name: 'Import Snapshot' })).toBeInTheDocument();
+  await act(async () => {});
+  expect(api.mutate).not.toHaveBeenCalled();
+  expect(screen.queryByRole('dialog', { name: 'Create Dataset' })).toBeNull();
+  const editor = screen.getByRole('region', { name: 'Import Snapshot' });
+  expect(within(editor).getByRole('button', { name: 'Create Dataset' })).toBeEnabled();
+  expect(within(editor).getByRole('table', { name: 'Snapshot editor table' })).toBeVisible();
+  expect(screen.queryByLabelText('Upload target field')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Add Sample' }).closest('tfoot')).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'Add Field' }).closest('thead')).not.toBeNull();
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Create Dataset' })));
+  expect(screen.getByRole('alert')).toHaveTextContent('at least one Sample');
+  expect(api.mutate).not.toHaveBeenCalled();
   expect(within(screen.getByRole('region', { name: 'Dataset help' })).getByRole('link', { name: 'Help' })).toHaveAttribute('href', 'https://crowdb.dev/docs/manual/');
   expect(screen.getByLabelText('Local payload files')).toBeVisible();
   expect(screen.queryByRole('textbox', { name: 'Sample ID (UTF-8)' })).toBeNull();

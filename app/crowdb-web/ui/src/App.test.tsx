@@ -6,6 +6,7 @@ import App from './App';
 import { Domain } from './types';
 import * as api from './api';
 const capacityRequests = vi.hoisted(() => vi.fn());
+const diskdbInstances = vi.hoisted(() => []);
 vi.mock('./shell/NodeCandidatesContext', () => ({ CandidateProvider: ({ children }: { children: import('react').ReactNode }) => children,
   useNodeCandidates: () => ({ snapshot: undefined, candidates: [] }) }));
 vi.mock('./shell/CandidateNodes', () => ({ CandidateNodes: () => null }));
@@ -24,7 +25,7 @@ vi.mock('./data/useLogicalTree', () => ({ useLogicalTree: () => ({
   error: null, refresh: vi.fn(),
 }) }));
 vi.mock('./data/useCapacityTree', () => ({ useCapacityTree: (options: unknown) => { capacityRequests(options); return ({
-  instances: [], usage: null, hardwareCapacity: null, scanStatus: null, loading: false,
+  instances: diskdbInstances, usage: null, hardwareCapacity: null, scanStatus: null, loading: false,
   error: null, refresh: vi.fn(),
 }); } }));
 vi.mock('./services/useNodeServicePlans', () => ({ useNodeServicePlans: () => ({ plans: {}, stop: vi.fn() }) }));
@@ -36,7 +37,20 @@ vi.mock('./chunk-kv/ChunkKvView', () => ({ ChunkKvView: () => null }));
 vi.mock('./views/IcebergView', () => ({ IcebergView: () => null }));
 vi.mock('./views/S3View', () => ({ S3View: () => null }));
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.resetAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.resetAllMocks(); });
+
+it('updates service health without waiting for a capacity observation or browser reload', async () => {
+  vi.useFakeTimers();
+  vi.mocked(api.nodeDeploymentStatus).mockResolvedValue({ available: true, phase: 'active' });
+  vi.mocked(api.listServers).mockResolvedValue([{ id: 'access-server-1', service_type: 'access-server', health: 'down' }]);
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ mode: 'node' }))));
+  render(<App initialDomain={Domain.Cluster} />);
+  await act(async () => {});
+  expect(screen.getByRole('banner')).toHaveTextContent('Failed');
+  vi.mocked(api.listServers).mockResolvedValue([{ id: 'access-server-1', service_type: 'access-server', health: 'up' }]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(screen.getByRole('banner')).toHaveTextContent('Healthy');
+});
 
 it('waits for initial node authority before offering store actions', async () => {
   let resolve!: (status: api.NodeDeploymentStatus) => void;

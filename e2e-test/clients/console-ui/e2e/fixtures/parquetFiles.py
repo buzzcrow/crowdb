@@ -14,6 +14,7 @@ def encode(table):
 
 
 print(json.dumps({
+    "empty": encode(pa.table({"id": pa.array([], type=pa.int64()), "message": pa.array([], type=pa.string())})),
     "a": encode(pa.table({"id": [1, 2], "message": ["alpha", "雪"]})),
     "b": encode(pa.table({"id": [3, 4], "message": ["beta", "gamma"]})),
     "bad": encode(pa.table({"id": ["wrong type"], "message": ["reject"]})),

@@ -10,18 +10,18 @@ import { savedOperation, type Operation } from './operation';
 import { ImportEditor } from './import/Editor';
 import { SplitEditor } from './splits/Editor';
 
-export type DatasetAction = 'delete' | 'composition' | 'split' | 'create-split' | 'remove-split' | 'resume' | 'stable' | 'retain' | 'release' | 'reclaim' | 'inspect';
+export type DatasetAction = 'delete' | 'empty-snapshot' | 'composition' | 'split' | 'create-split' | 'remove-split' | 'resume' | 'stable' | 'retain' | 'release' | 'reclaim' | 'inspect';
 export function Actions({ selected: target, action, draftId, readonly, capabilities, complete, close = () => {} }: { selected: Exclude<DatasetSelection, { kind: 'root' }>; action: DatasetAction; draftId?: string; readonly: boolean; capabilities: string[]; complete: (receipt?: PublicationResult) => void; close?: () => void }) {
   const [selected] = useState(target);
   const started = useRef(false);
-  const [editor, setEditor] = useState<{ kind: 'snapshot' | 'split'; parent?: string; revision?: string; source?: SplitSource; recovery?: Operation; sample?: string; field?: string }>();
+  const [editor, setEditor] = useState<{ kind: 'snapshot' | 'split'; parent?: string | null; revision?: string; source?: SplitSource; recovery?: Operation; sample?: string; field?: string }>();
   const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [observation, setObservation] = useState<unknown>(); const [confirm, setConfirm] = useState<string>(); const [unknown, setUnknown] = useState<string>();
   const dataset = selected.dataset; const snapshot = 'snapshot' in selected ? selected.snapshot : undefined;
   const run = async (action: () => Promise<void>) => { setBusy(true); setError(''); try { await action(); } catch (reason) { setError(String(reason)); } finally { setBusy(false); } };
   const open = async (kind: 'snapshot' | 'split') => {
     try {
       const source = 'split' in selected && selected.split !== undefined && selected.revision && snapshot ? { snapshot, revision: selected.revision, name: selected.split } : undefined;
-      setEditor({ kind, parent: snapshot, source, revision: 'revision' in selected ? selected.revision : undefined, sample: 'sample' in selected ? selected.sample : undefined, field: 'field' in selected ? selected.field : undefined });
+      setEditor({ kind, parent: action === 'empty-snapshot' ? null : snapshot, source, revision: 'revision' in selected ? selected.revision : undefined, sample: 'sample' in selected ? selected.sample : undefined, field: 'field' in selected ? selected.field : undefined });
     } catch (reason) { setError(String(reason)); }
   };
   const done = (receipt: PublicationResult) => { setEditor(undefined); complete(receipt); };
@@ -34,7 +34,7 @@ export function Actions({ selected: target, action, draftId, readonly, capabilit
     if (started.current) return;
     started.current = true;
     if (readonly && action !== 'inspect') return;
-    if (action === 'composition' && capabilities.includes('composition-preparation') && capabilities.includes('snapshot-head-update')) void run(() => open('snapshot'));
+    if (['composition', 'empty-snapshot'].includes(action) && capabilities.includes('composition-preparation') && capabilities.includes('snapshot-head-update')) void run(() => open('snapshot'));
     if (['split', 'create-split', 'remove-split'].includes(action) && snapshot && capabilities.includes('split-preparation') && capabilities.includes('split-head-update')) void run(() => open('split'));
     if (action === 'resume') void run(async () => { const recovery = await savedOperation(dataset, draftId); if (!recovery) throw new Error('No saved Draft for this Dataset.'); setEditor({ kind: recovery.kind, recovery, parent: recovery.snapshot }); });
     if (snapshot && action === 'stable' && capabilities.includes('dataset-management')) void run(async () => { setObservation(await api.mutate('dataset-management', `${api.datasetPath(dataset)}/names/stable`, 'PUT', { snapshot })); complete(); });

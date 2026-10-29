@@ -12,7 +12,8 @@ import { step } from '../fixtures/stepTimer';
 
 test.use({ actionTimeout: 3000 });
 
-// Baseline: 41.6s (2026-10-27), shared CRUD/Parquet/recovery coverage on one managed cluster.
+// Baseline: 67.5s (2026-10-29), including field parameter, focus, scroll and Draft recovery assertions.
+// Prior measurement: 41.6s (2026-10-27), shared CRUD/Parquet/recovery coverage.
 // Previously 17.9s before the added namespace, S3 and Dataset authoring assertions.
 test('Managed native KV, Iceberg, S3, Dataset and Chunk operations retain hardware boundaries', async ({ page, request }) => {
   await step('managed node authority and editing capabilities', async () => {

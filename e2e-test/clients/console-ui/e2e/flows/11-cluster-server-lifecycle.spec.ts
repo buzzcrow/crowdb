@@ -7,6 +7,7 @@ import { step } from '../fixtures/stepTimer';
 import { observeDefaultDeployments } from '../fixtures/defaultDeployments';
 import { nativeProcessAlive } from '../fixtures/nativeProcess';
 
+// Baseline: 20.7s (2026-10-29), including external stop/start observation without Refresh.
 test('native diagnostics: auxiliary menus stop and restart the actual typed process', async ({ page, request }) => {
   const alive = (pid: number) => nativeProcessAlive(0, pid);
   const list = async () => {
@@ -67,6 +68,19 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
       if (!startSubmitted && !current?.pid) expect((await request.post(`/api/services/${original.id}/restart`, { data: {} })).ok()).toBe(true);
     }
   }
+  await step('native lifecycle: observe external service changes without browser refresh', async () => {
+    const access = (await list()).find((row: { node_id: number; service_type: string }) => row.node_id === 1 && row.service_type === 'access-server');
+    const stopped = await request.post(`/api/services/${access.id}/stop`, { data: {} });
+    expect(stopped.ok(), await stopped.text()).toBe(true);
+    try {
+      await expect.poll(() => alive(access.pid), { intervals: [100] }).toBe(false);
+      await expect(page.locator('header').getByTitle('Cluster health: Failed', { exact: true })).toBeVisible();
+    } finally {
+      const started = await request.post(`/api/services/${access.id}/restart`, { data: {} });
+      expect(started.ok(), await started.text()).toBe(true);
+    }
+    await expect(page.locator('header').getByTitle('Cluster health: Healthy', { exact: true })).toBeVisible();
+  });
   expect(await list()).toHaveLength(18);
 });
 

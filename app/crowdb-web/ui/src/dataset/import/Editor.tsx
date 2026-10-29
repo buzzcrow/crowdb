@@ -21,23 +21,27 @@ import { commitDraft, loadSnapshotDraft } from '../editor/session';
 import { useQuery } from '../query';
 import { SourceSelection } from '../editor/SourceSelection';
 import { validateEditor } from '../splits/Definitions';
+import { UploadFiles } from '../editor/UploadFiles';
 
-export function ImportEditor({ dataset, parent, source, initialSample, initialField, recovery, close, complete }: {
-  embedded?: boolean; dataset: string; parent?: string; source?: SplitSource; initialSample?: string; initialField?: string; recovery?: Operation; close: () => void; complete: (result: PublicationResult) => void;
+export function ImportEditor({ dataset: initialDataset, creatingDataset = false, parent, source, initialSample, initialField, recovery, close, complete }: {
+  embedded?: boolean; dataset: string; creatingDataset?: boolean; parent?: string | null; source?: SplitSource; initialSample?: string; initialField?: string; recovery?: Operation; close: () => void; complete: (result: PublicationResult, dataset: string) => void;
 }) {
   const element = useRef<HTMLElement>(null);
   const draft = useDraft(recovery); const { op, change, install, setError } = draft;
+  const dataset = op?.dataset ?? initialDataset;
+  const creating = creatingDataset || !!op?.creatingDataset;
+  const finish = (result: PublicationResult) => complete(result, draft.current.current?.dataset ?? dataset);
   const uploads = useUploads(draft); const [busy, setBusy] = useState(false); const [ready, setReady] = useState(false);
   const transfer = useRef<AbortController>(); const details = useContext(EditorDetails);
   const [selection, setSelection] = useState<{ id?: string; field?: string }>({ id: initialSample, field: initialField });
   const [fieldDialog, setFieldDialog] = useState(false); const [fieldName, setFieldName] = useState(''); const [required, setRequired] = useState(false);
   const [page, setPage] = useState(0); const [column, setColumn] = useState(0); const [showParent, setShowParent] = useState(!initialSample);
   const [parentCursor, setParentCursor] = useState<string>(); const [parentPrevious, setParentPrevious] = useState<Array<string | undefined>>([]);
-  const [advanced, setAdvanced] = useState(''); const [uploadField, setUploadField] = useState(''); const [notice, setNotice] = useState('');
-  const run = (action: () => Promise<void>) => { setBusy(true); setError(''); setNotice(''); void action().catch(reason => setError(String(reason))).finally(() => setBusy(false)); };
+  const [advanced, setAdvanced] = useState('');
+  const run = (action: () => Promise<void>) => { setBusy(true); setError(''); void action().catch(reason => setError(String(reason))).finally(() => setBusy(false)); };
   useEffect(() => {
     const controller = new AbortController();
-    void loadSnapshotDraft(dataset, parent, source, recovery, controller.signal).then(({ value, error }) => {
+    void loadSnapshotDraft(dataset, parent, source, recovery, controller.signal, creatingDataset).then(({ value, error }) => {
       if (!controller.signal.aborted) { install(value); setError(error); setShowParent(!!value.source?.parent); setReady(true); }
     }).catch(reason => { if (!controller.signal.aborted) setError(String(reason)); });
     return () => { controller.abort(); transfer.current?.abort(); };
@@ -56,7 +60,6 @@ export function ImportEditor({ dataset, parent, source, initialSample, initialFi
   });
   const changes = op?.mapping?.samples ?? [];
   const rows: MatrixRow[] = showParent && base ? inherited.value?.rows ?? [] : changes.slice(page * 20, page * 20 + 20).map(sample => ({ id: sample.id, fields: visible.map(() => null) }));
-  const targetField = uploadField || fields[0]?.name || 'content';
   const checkId = async (id: string) => {
     bytes(id);
     if (!id || changes.some(sample => sample.id === id)) throw new Error('Sample ID already exists in this Draft. Choose another ID.');
@@ -66,8 +69,9 @@ export function ImportEditor({ dataset, parent, source, initialSample, initialFi
     const id = encoded(new TextEncoder().encode(`sample-${newId().slice(0, 8)}`)); await checkId(id);
     change(value => { const next = { ...value, newSamples: [...value.newSamples ?? [], id], mapping: patchSample(value.mapping!, { kind: 'upsert', id, fields: [] }) }; checkLimits(next); return next; }); setShowParent(false); setPage(Math.floor(changes.length / 20));
   };
-  const choose = async (files: File[]) => {
+  const choose = async (files: File[], targetField: string | undefined) => {
     if (!fields.length) throw new Error('Add a Field first.');
+    if (!targetField || !fields.some(field => field.name === targetField)) throw new Error('Choose a target Field before uploading files.');
     if (files.length > limits.batch) throw new Error(`Choose at most ${limits.batch} files at once.`);
     if (files.some(file => !file.size || file.size > limits.fileBytes)) throw new Error('Files must be nonempty and at most 100 MiB.');
     const ids = files.map(file => encoded(new TextEncoder().encode(file.name)));
@@ -80,21 +84,20 @@ export function ImportEditor({ dataset, parent, source, initialSample, initialFi
   };
   const commit = async () => {
     validateEditor(element.current); transfer.current = new AbortController();
-    try { complete(await commitDraft(draft, transfer.current.signal)); }
+    try { finish(await commitDraft(draft, transfer.current.signal)); }
     finally { transfer.current = undefined; }
   };
   return <section ref={element} aria-label="Import Snapshot" className="tw-space-y-4">
-    <div className="tw-flex tw-items-center tw-justify-between"><h2 className="tw-text-lg tw-font-semibold">New Snapshot · {dataset} <span className="tw-text-sm tw-text-muted">{op?.editing ? 'Draft · local' : 'Commit'}</span></h2><button className={buttonClass} disabled={busy && !uploads.busy} onClick={close}>Close editor</button></div>
+    <div className="tw-flex tw-items-center tw-justify-between"><h2 className="tw-text-lg tw-font-semibold">{creating ? 'Create Dataset' : `${base ? 'Edit Snapshot' : 'New empty Snapshot'} · ${dataset}`}</h2><button className={buttonClass} disabled={busy} onClick={close}>Close editor</button></div>
     {!ready && !draft.error && <p role="status">Loading Draft…</p>}
-    {op && <p className="tw-text-xs tw-text-muted">{base ? `Parent: ${base.slice(0, 12)}… · existing Samples and fields are kept` : 'Add rows and columns, then Commit an immutable Snapshot.'}</p>}
-    {op?.editing && <fieldset disabled={!ready || busy || uploads.busy} className="tw-space-y-4">
-      <div className="tw-flex tw-flex-wrap tw-items-center tw-gap-2"><button className={buttonClass} onClick={() => run(add)}>Add Sample</button><button className={buttonClass} onClick={() => { setFieldName(''); setRequired(false); setFieldDialog(true); }}>Add Field</button>
-        <label className="tw-text-xs">Upload into <select aria-label="Upload target field" className={inputClass} value={targetField} onChange={event => setUploadField(event.target.value)}>{fields.map(field => <option key={field.name}>{field.name}</option>)}</select></label>
-        <label className={`${buttonClass} tw-cursor-pointer`}>Upload files<input aria-label="Local payload files" className="tw-sr-only" type="file" multiple onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; run(() => choose(files)); }} /></label>
-      </div>
+    {op && base && <p className="tw-text-xs tw-text-muted">Parent: {base.slice(0, 12)}…</p>}
+    {op?.editing && <fieldset disabled={!ready || busy || uploads.busy} className="tw-min-w-0 tw-space-y-4">
+      {creating && <label className="tw-block">Name<input aria-label="New Dataset name" className={`${inputClass} tw-ml-3`} maxLength={255} readOnly={!!op.datasetId} value={dataset} onChange={event => change(value => ({ ...value, dataset: event.target.value, creationAttempt: undefined }))} /></label>}
+      <UploadFiles fields={fields.map(field => field.name)} choose={(files, field) => run(() => choose(files, field))} />
       {base && <nav aria-label="Draft rows" className="tw-flex tw-gap-2"><button className={buttonClass} aria-pressed={showParent} onClick={() => setShowParent(true)}>Parent Samples</button><button className={buttonClass} aria-pressed={!showParent} onClick={() => setShowParent(false)}>Changes ({changes.length})</button></nav>}
       {inherited.error && showParent && <p role="alert">{inherited.error}</p>}
       <Grid op={op} selectedId={selection.id} rows={rows} fields={visible} apply={(id, field, value) => change(current => setCell(current, id, field, value))} upload={(id, field, file) => run(() => uploads.transfer([{ id, field, file }]))} select={(id, field) => setSelection({ id, field })} selectField={field => setSelection({ field })}
+        addSample={() => run(add)} addField={() => { setFieldName(''); setRequired(false); setFieldDialog(true); }}
         rename={(id, next) => run(async () => { await checkId(next); change(value => ({ ...value, newSamples: value.newSamples?.map(value => value === id ? next : value), mapping: { ...value.mapping!, samples: value.mapping!.samples.map(sample => sample.id === id ? { ...sample, id: next } : sample) } })); setSelection(value => value.id === id ? { ...value, id: next } : value); })}
         remove={id => change(value => ({ ...value, mapping: !base || value.newSamples?.includes(id) ? { ...value.mapping!, samples: value.mapping!.samples.filter(sample => sample.id !== id) } : patchSample(value.mapping!, { kind: 'remove', id }) }))}
         restore={id => change(value => ({ ...value, mapping: { ...value.mapping!, samples: value.mapping!.samples.filter(sample => sample.id !== id) } }))}
@@ -108,16 +111,16 @@ export function ImportEditor({ dataset, parent, source, initialSample, initialFi
         {!!base && !!op.parentSplits?.splits.length && <label className="tw-block"><input type="checkbox" aria-label="Keep parent Splits" checked={!!op.source?.splits.length} onChange={event => change(value => ({ ...value, source: { ...value.source!, ...(event.target.checked ? value.parentSplits! : { splits: [], policy: defaultPolicy }) } }))} /> Keep frozen parent Splits</label>}
         <label className="tw-block">Sample mapping JSON<textarea aria-label="Sample mapping JSON" className={`${inputClass} tw-w-full tw-font-mono`} rows={5} value={advanced || JSON.stringify(op.mapping)} onChange={event => setAdvanced(event.target.value)} /></label>
         <button className={buttonClass} onClick={() => { try { const mapping = parseMapping(advanced || JSON.stringify(op.mapping), []); if (mapping.schema === null) mapping.schema = op.parentSchema!; change(value => { const next = { ...value, mapping }; checkLimits(next); return next; }); setAdvanced(''); setShowParent(false); } catch (reason) { setError(String(reason)); } }}>Apply batch mapping</button>
-        <p>Up to 1000 changes, 64 Fields, 64 KiB per text value and 100 MiB per file.</p><p>Snapshot <span data-testid="editing-resource-id">{op.resource}</span></p>
+        <p>Snapshot <span data-testid="editing-resource-id">{op.resource}</span></p>
       </div></details>
     </fieldset>}
-    {draft.error && <p role="alert">{draft.error}</p>}{notice && <p role="status">{notice}</p>}
+    {draft.error && <p role="alert">{draft.error}</p>}
     {uploads.busy && <p role="status">{uploads.progress || 'Uploading…'} <button className={buttonClass} onClick={uploads.cancel}>Cancel upload</button></p>}
-    {op && <div className="tw-flex tw-gap-3 tw-border-t tw-border-border tw-pt-4"><button className={buttonClass} disabled={busy || !ready || uploads.busy || !op.editing} onClick={() => run(async () => { await draft.persist(); setNotice('Draft saved in this browser.'); })}>Save Draft</button>
-      <button className={`${buttonClass} tw-bg-accent tw-text-white`} disabled={busy || !ready || uploads.busy || !!op.conflict} onClick={() => run(commit)}>{busy && !op.editing ? 'Committing…' : 'Commit'}</button>
+    {op && <div className="tw-flex tw-gap-3 tw-border-t tw-border-border tw-pt-4"><button className={buttonClass} disabled={busy || !ready || uploads.busy || !op.editing} onClick={() => run(async () => { await draft.persist(); })}>Save Draft</button>
+      <button className={`${buttonClass} tw-bg-accent tw-text-white`} disabled={busy || !ready || uploads.busy || !!op.conflict} onClick={() => run(commit)}>{busy && !uploads.busy ? 'Creating…' : creating ? 'Create Dataset' : 'Create Snapshot'}</button>
       {!op.pending && <button className={buttonClass} disabled={busy || uploads.busy} onClick={() => run(async () => { await draft.saving.current; await forgetOperation(draft.current.current!); close(); })}>Discard Draft</button>}</div>}
-    {op?.editing && <p role="status" className="tw-text-xs tw-text-muted">{draft.dirty ? 'Saving edits…' : 'Draft saved locally. Files upload separately; Commit publishes the Snapshot.'}</p>}
-    {op && !op.editing && <Publication operation={op} update={install} complete={complete} close={close} busy={busy} run={run} />}
+    {ready && op?.editing && !draft.error && <p role="status" className="tw-text-xs tw-text-muted">{draft.dirty ? 'Saving…' : 'Saved locally'}</p>}
+    {op && !op.editing && <Publication operation={op} update={install} complete={finish} close={close} busy={busy} run={run} />}
     {fieldDialog && <Dialog isOpen title="Add Field" onClose={() => setFieldDialog(false)} confirmLabel="Add Field" onConfirm={() => { try {
       if (!fieldName.trim() || new TextEncoder().encode(fieldName).length > 1024 || fields.some(field => field.name === fieldName)) throw new Error('Use a unique, nonempty Field name of at most 1024 bytes.');
       change(value => { const next = { ...value, mapping: { ...value.mapping!, schema: { ...value.mapping!.schema!, fields: [...fields, { name: fieldName, required }] } } }; checkLimits(next); return next; }); setFieldDialog(false);

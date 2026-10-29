@@ -1,7 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 import { resourceAction } from '../fixtures/resourceMenus';
-// Baseline: 68.0s (2026-10-12), six release nodes and real data round trips.
+// Baseline: 78.9s (2026-10-29), six release nodes and real data round trips.
+import { parquetUploads } from '../fixtures/parquetUploads';
 import { test, expect } from '../fixtures/realBackend';
 import { waitForLeader } from '../fixtures/localSetup';
 import { queueFullPlans } from '../fixtures/fullServicePlans';
@@ -206,14 +207,14 @@ async function icebergRoundTrip({ page, baseURL }: UIContext) {
     await tree.getByRole('button', { name: 'ui_three_node', exact: true }).click();
     await resourceAction(page, page.getByRole('heading', { level: 1 }), 'Create table…');
     await page.getByLabel('Table name', { exact: true }).fill('events');
-    await page.getByLabel('Field 1 required', { exact: true }).uncheck();
-    await page.getByRole('button', { name: 'Add field', exact: true }).click();
-    await page.getByLabel('Field 2 name', { exact: true }).fill('message');
-    await page.getByLabel('Field 2 type', { exact: true }).selectOption('string');
+    const file = await parquetUploads();
     const createdTable = page.waitForResponse(response => new URL(response.url()).pathname === '/api/access/iceberg/v1/namespaces/ui_three_node/tables' && response.request().method() === 'POST');
-    await page.getByRole('button', { name: 'Commit', exact: true }).click();
+    await page.getByLabel('Parquet files', { exact: true }).setInputFiles(file('empty.parquet', 'empty'));
     const created = await createdTable;
     expect(created.status(), await created.text()).toBe(200);
+    await expect(page.getByRole('table', { name: 'Parquet editor table', exact: true })).toContainText('Uploaded');
+    await expect(page.getByRole('region', { name: 'Schema preview', exact: true })).toContainText('message');
+    await page.getByRole('button', { name: 'Commit', exact: true }).click();
     const writerConfig = (await created.json()).config;
     await expect(page.getByRole('region', { name: 'Create Table', exact: true })).toHaveCount(0);
     await tree.getByRole('button', { name: 'events', exact: true }).click();

@@ -11,6 +11,7 @@ import { ToastProvider, useToast } from './contexts/ToastContext';
 import { ActivityProvider, useActivity } from './contexts/ActivityContext';
 import { useNodeAuthority } from './data/useNodeAuthority';
 import { useClusterTree } from './data/useClusterTree';
+import { useServiceObservations } from './data/useServiceObservations';
 import { useLogicalTree } from './data/useLogicalTree';
 import { useCapacityTree } from './data/useCapacityTree';
 import { MonitorSummary } from './managed/MonitorSummary';
@@ -44,7 +45,7 @@ import { Domain } from './types';
 import type { ConsoleDialogState } from './menus/context';
 import { useClusterMenus } from './menus/useClusterMenus';
 import { useCapacityMenus } from './menus/useCapacityMenus';
-import { setApiBase, resetCluster, compactDiskdbZones, rebuildDiskdbZoneBitmap, listServers } from './api';
+import { setApiBase, resetCluster, compactDiskdbZones, rebuildDiskdbZoneBitmap } from './api';
 import { deployPortDefaultsForNode, diskdbPortDefaultsForNode, nextIdFromSuffix, nextNumericId } from './components/dialogs/defaults';
 import { buildCrowdbKVServers, crowdbKvServerNodeIds } from './data/crowdbKvServers';
 import { isCrowdbKVServerAvailable } from './data/crowdbKvServers';
@@ -200,29 +201,9 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const dataError = (domain === Domain.Cluster ? physError ?? (capacityActive ? capError : null) : domain === Domain.KV ? logError : null);
   const servers = useMemo(() => buildCrowdbKVServers(nodes, racks), [nodes, racks]);
   const serverNodeIds = useMemo(() => crowdbKvServerNodeIds(servers), [servers]);
-  const [standaloneServers, setAllServers] = useState<import('./api').ServerSummary[]>([]);
+  const { servers: standaloneServers, refresh: refreshAllServers } = useServiceObservations(
+    !managed && (physicalActive || capacityActive || domain === Domain.Chunk || domain === Domain.ChunkKV), error);
   const allServers = managed ? managedServers : standaloneServers;
-  const serverErrorShownRef = useRef(false);
-  const refreshAllServers = useCallback(async () => {
-    try {
-      setAllServers(await listServers());
-      serverErrorShownRef.current = false;
-    } catch (err) {
-      setAllServers([]);
-      // Only show the toast once per failure streak — polling retries
-      // every few seconds and would otherwise flood the UI with
-      // identical "backend unreachable" toasts.
-      if (!serverErrorShownRef.current) {
-        serverErrorShownRef.current = true;
-        error(`Failed to load server list: ${err instanceof Error ? err.message : 'backend unreachable'}`);
-      }
-    }
-  }, [error]);
-  useEffect(() => {
-    if (!managed && (physicalActive || capacityActive || domain === Domain.Chunk || domain === Domain.ChunkKV)) {
-      refreshAllServers();
-    }
-  }, [managed, physicalActive, capacityActive, domain, diskdbInstances, refreshAllServers]);
   const diskdbNodeIds = useMemo(
     () => new Set([...allServers.filter((s) => s.service_type === 'diskdb' && s.node_id != null).map((s) => s.node_id!), ...nodes.filter(node => node.diskdb_server).map(node => node.id)]),
     [allServers, nodes],

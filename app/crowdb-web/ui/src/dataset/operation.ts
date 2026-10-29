@@ -13,6 +13,7 @@ type Pending = { kind: 'prepare' } | { kind: 'publish'; expectedHead: string | n
 export interface Operation {
   version: 2; dataset: string; datasetId?: string; kind: 'snapshot' | 'split'; resource: string; snapshot?: string;
   localRevision?: number; updatedAt?: number; rejectedPreparation?: boolean;
+  creatingDataset?: boolean; creationAttempt?: string;
   newSamples?: string[];
   parentSplits?: Pick<PrepareSnapshot, 'splits' | 'policy'>;
   uploads?: Record<string, { name: string; size: number; md5?: string; id?: string; expiresAt?: string; state: 'pending' | 'ready' | 'failed'; error?: string }>;
@@ -28,6 +29,9 @@ export interface Operation {
   pending?: Pending; conflict?: Observation; fileKeys?: Record<string, string>;
 }
 const key = (dataset: string) => `${getApiBase()}:${dataset}`;
+// Dataset names reject U+001F, so this scope cannot alias a real Dataset.
+const creationKey = () => `${getApiBase()}:\u001fcreate-dataset`;
+const operationKey = (op: Operation) => op.creatingDataset ? creationKey() : key(op.dataset);
 export async function savedOperation(dataset: string, resource?: string): Promise<Operation | undefined> {
   const value = await readRequest(key(dataset), resource);
   if (!value) return;
@@ -37,10 +41,11 @@ export async function savedOperation(dataset: string, resource?: string): Promis
 }
 export async function saveOperation(op: Operation) {
   if (new TextEncoder().encode(JSON.stringify(op)).length > 10 * 1024 * 1024) throw new Error('Saved Dataset request exceeds 10 MiB.');
-  await writeRequest(key(op.dataset), op);
+  await writeRequest(operationKey(op), op);
 }
-export const forgetOperation = (op: Operation) => removeRequest(key(op.dataset), op.resource, op.localRevision);
+export const forgetOperation = (op: Operation) => removeRequest(operationKey(op), op.resource, op.localRevision);
 export const savedOperations = (dataset: string) => listRequests(key(dataset));
+export const savedDatasetCreations = () => listRequests(creationKey());
 /** Rejected preparation can have reserved immutable content; corrections get a fresh identity. */
 export async function correctedDraft(op: Operation): Promise<Operation> {
   if (!op.rejectedPreparation || op.pending || op.prepared) throw new Error('Resolve the pending result before creating a corrected Draft.');

@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 import type { APIRequestContext, Page } from '@playwright/test';
-import { call, datasetPath, addField, addSample, textCell, expandEditor } from '../dataset';
+import { call, datasetPath, addField, addSample, textCell, expandEditor, uploadFiles } from '../dataset';
 import { expect, test } from '../realBackend';
 import { datasetAction, resourceAction } from '../resourceMenus';
 import { step } from '../stepTimer';
@@ -10,20 +10,20 @@ const matrix = (page: Page) => page.getByRole('table', { name: 'Sample field mat
 
 export async function datasetWorkflow(page: Page, request: APIRequestContext) {
   let name: string;
-  await step('Dataset: create and list an empty Dataset through the tree', async () => {
+  await step('Dataset: open the first Snapshot editor with a default name', async () => {
     await page.getByTestId('domain-dataset').click();
     await expect(page.getByRole('region', { name: 'Dataset help' }).getByRole('link', { name: 'Help', exact: true })).toHaveAttribute('href', 'https://crowdb.dev/docs/manual/');
     name = await createDataset(page);
-    await page.getByRole('navigation', { name: 'Dataset tree', exact: true }).getByRole('button', { name: 'Datasets', exact: true }).click();
-    await page.getByRole('table', { name: 'Datasets', exact: true }).getByRole('button', { name, exact: true }).click();
-    await expect(page.getByRole('table', { name: 'Snapshots', exact: true }).getByRole('row')).toHaveCount(1);
+    await expect(page.getByRole('region', { name: 'Import Snapshot', exact: true })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: 'Create Dataset', exact: true })).toHaveCount(0);
+    expect((await request.get(datasetPath(name))).status()).toBe(404);
     await expect(page.getByRole('navigation', { name: 'Dataset tree pages', exact: true })).toHaveCount(0);
   });
   const root = await step('Dataset: upload local content and publish two Samples', async () => {
-    await datasetAction(page, 'New Snapshot…');
-    await page.getByLabel('Local payload files', { exact: true }).setInputFiles({ name: 'first.txt', mimeType: 'text/plain', buffer: Buffer.from('Dataset file v1') });
-    await expect(page.getByRole('button', { name: 'Commit', exact: true })).toBeEnabled();
-    await expect(page.getByLabel('Upload target field')).toHaveValue('content');
+    await uploadFiles(page, { name: 'first.txt', mimeType: 'text/plain', buffer: Buffer.from('Dataset file v1') });
+    await expect(page.getByRole('button', { name: 'Create Dataset', exact: true })).toBeEnabled();
+    await expect(page.getByLabel('Upload target field')).toHaveCount(0);
+    await expect(page.getByLabel('New Dataset name')).toHaveAttribute('readonly', '');
     await expect(page.getByLabel('Field name', { exact: true })).toHaveCount(0);
     await page.screenshot({ path: test.info().outputPath('dataset-table-editor.png') });
     await addField(page, 'label');
@@ -36,7 +36,7 @@ export async function datasetWorkflow(page: Page, request: APIRequestContext) {
     await expandEditor(page, 'Advanced');
     const snapshot = await page.getByTestId('editing-resource-id').textContent();
     expect((await call(request, `${datasetPath(name)}/head`)).latest).toBeNull();
-    await submit(page);
+    await submit(page, 'Create Dataset');
     expect((await call(request, `${datasetPath(name)}/head`)).latest).toBe(snapshot);
     await expect(matrix(page).getByRole('row')).toHaveCount(3);
     await preview(page, 'sample-1', 0, 'Dataset file v1');
@@ -61,13 +61,14 @@ export async function datasetWorkflow(page: Page, request: APIRequestContext) {
 async function appendAndRemove(page: Page, request: APIRequestContext, name: string, root: string) {
   return step('Dataset: add, replace and remove Samples in one child publication', async () => {
     await selectDataset(page, name);
-    await datasetAction(page, 'New Snapshot…');
+    await page.getByRole('table', { name: 'Snapshots', exact: true }).getByRole('button', { name: root, exact: true }).click();
+    await datasetAction(page, 'Edit Snapshot…');
     await expect(page.getByRole('region', { name: 'Import Snapshot', exact: true })).toContainText(`Parent: ${root.slice(0, 12)}`);
     await page.getByRole('button', { name: 'Remove Sample sample-1', exact: true }).click();
     await page.getByLabel('Upload content for sample-2', { exact: true }).setInputFiles({ name: 'replacement.txt', mimeType: 'text/plain', buffer: Buffer.from('Dataset file v2') });
-    await expect(page.getByRole('button', { name: 'Commit', exact: true })).toBeEnabled();
-    await page.getByLabel('Local payload files', { exact: true }).setInputFiles({ name: 'added.txt', mimeType: 'text/plain', buffer: Buffer.from('third Sample file') });
-    await expect(page.getByRole('button', { name: 'Commit', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Create Snapshot', exact: true })).toBeEnabled();
+    await uploadFiles(page, { name: 'added.txt', mimeType: 'text/plain', buffer: Buffer.from('third Sample file') }, 'content');
+    await expect(page.getByRole('button', { name: 'Create Snapshot', exact: true })).toBeEnabled();
     await page.getByLabel('Sample ID for added.txt', { exact: true }).fill('sample-3');
     await page.getByLabel('Sample ID for added.txt', { exact: true }).press('Tab');
     await expect(page.getByLabel('Sample ID for sample-3', { exact: true })).toHaveValue('sample-3');
@@ -98,7 +99,10 @@ async function deleteProtection(page: Page, request: APIRequestContext, name: st
     expect((await call(request, `${datasetPath(name)}/head`)).latest).toBe(child);
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     const empty = `${name}-empty`;
-    await createDataset(page, empty);
+    // Empty SDK-created Datasets remain deletable; the Console create flow publishes its first Snapshot.
+    await call(request, datasetPath(empty), 'PUT');
+    await page.getByRole('button', { name: 'Refresh Dataset', exact: true }).click();
+    await selectDataset(page, empty);
     await datasetAction(page, 'Delete Dataset…');
     await dialog.getByRole('button', { name: 'Delete Dataset', exact: true }).click();
     await expect(dialog).toHaveCount(0);
@@ -118,8 +122,7 @@ async function createDataset(page: Page, name?: string) {
   const input = page.getByRole('textbox', { name: 'New Dataset name', exact: true });
   if (name) await input.fill(name);
   else { name = await input.inputValue(); expect(name).toMatch(/^dataset-[a-f0-9]{8}$/); }
-  await page.getByRole('dialog', { name: 'Create Dataset', exact: true }).getByRole('button', { name: 'Create Dataset', exact: true }).click();
-  await expect(page.getByRole('heading', { name: `Dataset · ${name}`, exact: true })).toBeVisible();
+  await expect(page.getByRole('table', { name: 'Snapshot editor table', exact: true })).toBeVisible();
   return name;
 }
 
@@ -128,8 +131,8 @@ async function selectDataset(page: Page, name: string) {
   await expect(page.getByRole('table', { name: 'Snapshots', exact: true })).toBeVisible();
 }
 
-async function submit(page: Page) {
-  await page.getByRole('button', { name: 'Commit', exact: true }).click();
+async function submit(page: Page, name = 'Create Snapshot') {
+  await page.getByRole('button', { name, exact: true }).click();
   await expect(page.getByRole('region', { name: 'Import Snapshot', exact: true })).toHaveCount(0);
 }
 

@@ -1,20 +1,15 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { resolve } from 'node:path';
+import { parquetUploads } from '../parquetUploads';
 import type { APIRequestContext, Page } from '@playwright/test';
 import { parseIcebergJson } from '../../../src/iceberg/json';
-import { expect } from '../realBackend';
+import { expect, test } from '../realBackend';
 import { resourceAction } from '../resourceMenus';
 import { step } from '../stepTimer';
 import { maintenanceWorkflow } from './maintenance';
 
 export async function parquetWorkflow(page: Page, request: APIRequestContext, namespace: string) {
-  const result = await step('Iceberg: generate local Parquet upload inputs', () => promisify(execFile)('pixi', ['run', '-e', 'iceberg-e2e', 'python', resolve('e2e/fixtures/parquetFiles.py')]));
-  if (result.stderr) console.log(result.stderr);
-  const inputs = JSON.parse(result.stdout) as Record<string, string>;
-  const file = (name: string, key: string) => ({ name, mimeType: 'application/octet-stream', buffer: Buffer.from(inputs[key], 'base64') });
+  const file = await parquetUploads();
   const tree = page.getByRole('navigation', { name: 'Iceberg tree', exact: true });
   const path = `/api/access/iceberg/v1/namespaces/${encodeURIComponent(namespace)}/tables/imported`;
   await step('Iceberg: create one Table and Snapshot from two Parquet files', async () => {
@@ -31,21 +26,38 @@ export async function parquetWorkflow(page: Page, request: APIRequestContext, na
     await page.getByLabel('Parquet files', { exact: true }).setInputFiles(file('b.parquet', 'b'));
     await expect(page.getByRole('table', { name: 'Parquet editor table', exact: true }).getByRole('row')).toHaveCount(3);
     await expect(page.getByRole('table', { name: 'Parquet editor table', exact: true }).getByRole('cell', { name: 'Uploaded', exact: true })).toHaveCount(2);
-    await page.getByRole('button', { name: 'Add field', exact: true }).click();
-    await page.getByLabel('Field 3 name', { exact: true }).fill('note');
-    await page.getByLabel('Field 3 type', { exact: true }).selectOption('string');
+    const preview = page.getByRole('region', { name: 'Schema preview', exact: true });
+    await expect(preview.getByRole('table', { name: 'Table schema', exact: true }).getByRole('row')).toHaveCount(3);
+    await expect(preview).toContainText('message');
+    await expect(preview.getByRole('textbox')).toHaveCount(0);
+    await expect(preview.getByRole('combobox')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Add field', exact: true })).toHaveCount(0);
+    const center = page.locator('[data-navigation-scroll="workbench-center"]').filter({ has: page.getByRole('region', { name: 'Create Table', exact: true }) });
+    expect(await center.evaluate(element => element.scrollLeft)).toBe(0);
+    const grid = page.getByRole('table', { name: 'Parquet editor table', exact: true });
+    await expect(grid.getByRole('columnheader', { name: 'Status', exact: true })).toBeVisible();
+    await expect(grid.getByRole('columnheader', { name: 'Change', exact: true })).toHaveCount(0);
+    await expect(grid.getByRole('columnheader', { name: 'Upload', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Create Table', exact: true })).not.toContainText('Files upload separately.');
+    await expect(grid).not.toContainText(/long|string/);
+    await page.screenshot({ path: test.info().outputPath('iceberg-parquet-import.png'), fullPage: true });
     await page.getByRole('button', { name: 'Save Draft', exact: true }).click();
-    await expect(page.getByText('Draft saved in this browser.', { exact: true })).toBeVisible();
+    await expect(page.getByText('Saved locally', { exact: true })).toBeVisible();
     expect((await request.get(path)).status()).toBe(404);
     await page.reload();
     await resourceAction(page, tree.getByRole('button', { name: namespace, exact: true }), 'Create table…');
     await expect(page.getByLabel('Table name', { exact: true })).toHaveValue('imported');
+    await expect(page.getByRole('region', { name: 'Schema preview', exact: true })).toContainText('message');
     await expect(page.getByRole('table', { name: 'Parquet editor table', exact: true })).not.toContainText('Reselect');
     await expect(page.getByRole('table', { name: 'Parquet editor table', exact: true }).getByRole('cell', { name: 'Uploaded', exact: true })).toHaveCount(2);
     await page.getByRole('button', { name: 'Commit', exact: true }).click();
     await expect(page.getByRole('region', { name: 'Create Table', exact: true })).toHaveCount(0);
     await expect(page.getByRole('table', { name: 'Table snapshots', exact: true }).getByRole('row')).toHaveCount(2);
     await inspect(request, path, 1, 2, '4');
+    const created = parseIcebergJson(await (await request.get(path)).text()) as any;
+    expect(created.metadata.schemas.find((schema: any) => schema['schema-id'] === created.metadata['current-schema-id']).fields).toEqual([
+      { id: 1, name: 'id', type: 'long', required: false }, { id: 2, name: 'message', type: 'string', required: false },
+    ]);
     await expect(tree).not.toContainText(/Manifest|\d+ (tables )?loaded/);
     await page.getByRole('button', { name: 'Inspect current snapshot', exact: true }).click();
     await expect(page.getByRole('table', { name: 'Manifest list records', exact: true })).toBeVisible();
@@ -53,7 +65,9 @@ export async function parquetWorkflow(page: Page, request: APIRequestContext, na
   await step('Iceberg: reject an incompatible file before upload or commit', async () => {
     await resourceAction(page, tree.getByRole('button', { name: 'imported', exact: true }), 'Edit as Draft…');
     await page.getByLabel('Parquet files', { exact: true }).setInputFiles(file('bad.parquet', 'bad'));
-    await expect(page.getByRole('region', { name: 'Edit Table Draft', exact: true }).getByRole('alert')).toContainText('does not match');
+    await expect(page.getByRole('region', { name: 'Edit Table Draft', exact: true }).getByRole('alert')).toContainText('bad.parquet: id: string does not match');
+    await expect(page.getByRole('table', { name: 'Parquet editor table', exact: true })).not.toContainText('bad.parquet');
+    await expect(page.getByRole('button', { name: 'Commit', exact: true })).toBeDisabled();
     await page.getByRole('button', { name: 'Close editor', exact: true }).click();
     await inspect(request, path, 1, 2, '4');
   });
@@ -97,21 +111,18 @@ export async function parquetWorkflow(page: Page, request: APIRequestContext, na
     expect(current.summary['crowdb.source-snapshot-id']).toBe(first);
     await inspect(request, path, 3, 3, '6');
   });
-  await step('Iceberg: edit existing field definitions without changing committed Snapshots', async () => {
+  await step('Iceberg: Snapshot editing preserves the Table Schema and requires a file change', async () => {
     const before = parseIcebergJson(await (await request.get(path)).text()) as any;
     await resourceAction(page, tree.getByRole('button', { name: 'imported', exact: true }), 'Edit as Draft…');
-    await page.getByLabel('Field 1 type', { exact: true }).selectOption('string');
-    await page.getByRole('button', { name: 'Commit', exact: true }).click();
-    await expect(page.getByRole('region', { name: 'Edit Table Draft', exact: true }).getByRole('alert')).toContainText('incompatible');
-    expect((parseIcebergJson(await (await request.get(path)).text()) as any)['metadata-location']).toBe(before['metadata-location']);
-    await page.getByLabel('Field 1 type', { exact: true }).selectOption('long');
-    await page.getByLabel('Field 3 name', { exact: true }).fill('annotation');
-    await page.getByRole('button', { name: 'Commit', exact: true }).click();
-    await expect(page.getByRole('region', { name: 'Edit Table Draft', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Commit', exact: true })).toBeDisabled();
+    await expect(page.getByRole('region', { name: 'Schema preview', exact: true })).toContainText('message');
+    await expect(page.getByRole('button', { name: 'Add field', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Edit Table Draft', exact: true }).getByRole('combobox')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Close editor', exact: true }).click();
     const after = parseIcebergJson(await (await request.get(path)).text()) as any;
-    expect(after['metadata-location']).not.toBe(before['metadata-location']);
+    expect(after['metadata-location']).toBe(before['metadata-location']);
+    expect(after.metadata.schemas).toEqual(before.metadata.schemas);
     expect(after.metadata.snapshots).toEqual(before.metadata.snapshots);
-    expect(after.metadata.schemas.find((schema: any) => schema['schema-id'] === after.metadata['current-schema-id']).fields[2].name).toBe('annotation');
   });
   await maintenanceWorkflow(page, request, path);
   await step('Iceberg: drop the maintained Table', async () => {
@@ -126,6 +137,10 @@ async function inspect(request: APIRequestContext, path: string, snapshots: numb
   const response = await request.get(path); expect(response.ok(), await response.text()).toBe(true);
   const table = parseIcebergJson(await response.text()) as any;
   expect(table.metadata.snapshots).toHaveLength(snapshots);
+  expect(table.metadata.schemas).toHaveLength(1);
+  expect(table.metadata.schemas[0].fields).toEqual([
+    { id: 1, name: 'id', type: 'long', required: false }, { id: 2, name: 'message', type: 'string', required: false },
+  ]);
   const snapshot = table.metadata.snapshots.find((value: any) => String(value['snapshot-id']) === String(table.metadata['current-snapshot-id']));
   const query = new URLSearchParams({ metadata: table['metadata-location'], snapshot: String(snapshot['snapshot-id']) });
   const list = await request.get(`${path}/inspect?${query}`); expect(list.ok(), await list.text()).toBe(true);

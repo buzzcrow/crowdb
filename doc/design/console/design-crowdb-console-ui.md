@@ -67,6 +67,14 @@ does not establish that a native service operation succeeds.
   ASCII layout when applicable; implementation follows the agreed spec and may
   not silently introduce a conflicting control or tree level. Focused tests or
   E2E coverage accompany the implementation.
+- **UI-07:** Iceberg and Dataset work areas and Properties show resource data,
+  controls and concise current state. Do not keep tutorials, pagination limits,
+  upload/publication internals, immutability explanations or GC explanations as
+  permanent prose around tables and editors. General guidance belongs in the
+  existing Help documentation. Keep field labels, identities, measured values,
+  empty states, upload progress, validation errors and contextual conflict or
+  destructive-action information. Draft feedback uses one short status:
+  `Saving…` or `Saved locally`; a failed save must not display success.
 
 ## 2. Reference environment
 
@@ -247,6 +255,11 @@ remain subject to the resource capabilities and lifecycle rules in the text.
   closes; restart resumes the same intent. Node progress polls every two seconds
   and retains last confirmed rows on observation failure. A completed setup
   receipt is separate from current service or I/O health.
+- During creation, visible topology and service health refresh independently
+  every second; a slow capacity request must not stop service observations.
+  Opened Storage branches refresh without collapsing or reopening them.
+  Returning to the browser immediately observes current state without F5.
+  Polls preserve selection, expansion and the topology viewport.
 - Storage waits for Group 0 and an ordinary metadata binding. Dependent services
   wait for real prerequisites. A failed disk/service retains successful siblings;
   explicit retry uses their original operations and fixed placement. Later
@@ -326,6 +339,7 @@ Cluster: Datacenter/Rack/Node scope (CLU-01/05):
 |                            | Resource             Capacity       Usage                    |                              |
 |                            | R-1                  ...            ...                      |                              |
 +----------------------------+--------------------------------------------------------------+------------------------------+
+Nodes / services / opened Storage: live updates; returning to browser -> refresh
 ```
 
 Cluster: candidate selection and effective Auto policy (CLU-06/07):
@@ -841,7 +855,7 @@ plan, never edited out of this specification to make a run pass.
 - **A13 / resource interaction:** parent context menu creates a supported child;
   selecting it reads details; its own context menu exposes supported lifecycle
   operations. Create Dataset, Iceberg Table and S3 Bucket with their prefilled
-  default names without typing, including ordinary HTTP container origins. Verify tree/list/property refresh, keyboard
+  default names without typing (add data for Dataset; upload Parquet for Iceberg), including ordinary HTTP container origins. Verify tree/list/property refresh, keyboard
   access, readonly and unknown capability/outcome states across Iceberg, Dataset
   and S3.
 - **A14 / Dataset:** create/import, parent-linked Snapshots, paged Samples/Fields,
@@ -1029,14 +1043,11 @@ uses real bounded base-page inspection; the graph does not scan records for weig
 - **ICE-03:** Schema is an expanded tree table with field ID/name/type/required
   and hierarchy for structs, lists and maps. Element/key/value identities stay
   visible. Large schemas use bounded row windows; collapse is optional, not a
-  prerequisite to seeing ordinary fields. The Table Draft editor keeps field
-  name, type and required controls editable while a draft is open, including
-  when editing an existing Table from a selected Snapshot. A schema edit is
-  published as a new metadata version; changing the file set also creates an
-  immutable Snapshot. A committed Snapshot never becomes editable in place.
-  Existing field IDs survive renames; added IDs exceed all historical field IDs.
-  Incompatible type/required changes are rejected before publication. Name mapping
-  retains historical aliases so files without embedded field IDs remain readable.
+  prerequisite to seeing ordinary fields. Create Table and Snapshot Drafts show
+  this Schema as a separate read-only preview. Field names, types, required flags
+  and nested definitions come from the first uploaded Parquet for a new Table,
+  or the current Table Schema for an existing Table. These workflows have no
+  Add/Remove Field or field-definition inputs and do not publish Schema edits.
 - **ICE-04:** Selecting a Snapshot keeps the left tree at the Snapshot level and
   shows one scoped summary plus bounded center inspection levels:
   `Manifest List → Manifest File list → Data/Delete File list`. These are center
@@ -1064,7 +1075,7 @@ uses real bounded base-page inspection; the graph does not scan records for weig
   exposes supported Edit as Draft, Rename, Commit metadata and Drop table operations. A new
   Namespace form is prefilled with an editable unique name such as
   `namespace-<short-id>`. A new Table form is prefilled with an editable unique name such as `table-<short-id>`,
-  so the default Create action completes without manual typing. Drop
+  so creation needs no manual name entry; a new Table requires a Parquet upload. Drop
   removes the catalog reference; physical reclamation follows service GC.
   Snapshot and Parquet menus expose table-managed maintenance as defined in ICE-10.
   Manifest and metadata files have no arbitrary physical Delete action. Demo operations are not primary
@@ -1077,24 +1088,31 @@ uses real bounded base-page inspection; the graph does not scan records for weig
   Cached branches do not bypass revalidation. A failed or stale inspection
   preserves selection context but removes data and continuation actions.
 
-- **ICE-08 — File table editor:** Namespace Create Table and Table/Snapshot
-  Edit as Draft open the same center editor. One row is a Parquet file, one column
-  is a Schema field. Cells show types and compatibility, not editable data records.
-  File and field selection populate Properties, including nested Schema details.
-  The first file of a new Table supplies its Schema; further files must match its
-  IDs, names, types and nullability. Existing Tables retain their durable field IDs;
-  compatible Schema evolution selects a new Schema version. Uploaded files are
-  checked again against edited definitions before Commit; adding an optional
-  column does not require rewriting older Parquet files.
-  No silent union, coercion or Parquet rewriting occurs. An empty Table has editable
-  field definitions in column headers and may Commit without a data Snapshot.
+- **ICE-08 — Parquet import:** Namespace Create Table and Table/Snapshot
+  Edit as Draft open the same center editor. A new Table starts with a name and
+  Upload Parquet action, without a fabricated default Schema. The first uploaded
+  file supplies the Schema; a separate read-only tree table previews it once.
+  A file list below it contains file name, record count, exact byte size, Status and
+  removal actions. It has no Schema columns or repeated type cells.
+  One Status column replaces Change and Upload: Uploaded for additions, Kept for
+  existing files, Removed for pending removal, and Reselect to resume for unfinished
+  uploads. Remove and Undo removal remain row actions.
+  File selection populates Properties; nested Schema details remain in the preview.
+  Further files are checked against the inferred Schema; an incompatible file
+  reports its name and the mismatched field before upload. Existing Tables keep
+  their current Schema and durable field IDs, including when editing history.
+  No silent union, coercion or Parquet rewriting occurs. Create Table requires
+  at least one uploaded file; a zero-record Parquet is valid. Removing every added
+  file from a new Table resets its inferred Schema, ready for a different upload.
+  Commit is disabled until there is a file change and, for a new Table, an upload.
+  Existing Tables may remove every data file while retaining their Schema.
   The writer supports unpartitioned format-v2 Tables and standard three-level List/Map
   encodings; source Snapshots may retain an older compatible Schema. Incompatible
   historical Schemas require an Iceberg client; metadata-only evolution must not
   block subsequent file edits of the current Snapshot.
   Authoring permits 1000 added files, 256 top-level fields, 20 files per selection
   and 100 MiB per file. Existing file windows load one Manifest page at a time,
-  with explicit continuation; fields use twelve-column windows. No total-file count
+  with explicit continuation; Schema previews use bounded row windows. No total-file count
   or full Snapshot read is required to open the editor.
 - **ICE-09 — Draft and Commit:** choosing a file reads its bounded footer and
   checksum, then immediately uploads it through authorized FileIO. The proxy rejects
@@ -1107,9 +1125,13 @@ uses real bounded base-page inspection; the graph does not scan records for weig
   expired uncommitted uploads can be replaced under a new identity. Local revisions
   reject stale saves/discards. A local Draft is not a server-side editable Table.
   Stage-create supplies canonical UUID/Schema/storage material without publication.
+  Saved Drafts retain their inferred Schema and upload references. Legacy Drafts
+  with manual Schema edits must be discarded explicitly before starting this flow;
+  those edits must never be published silently. Frozen pending submissions retain
+  their exact request and recovery semantics.
   Commit freezes the input and publishes generated Manifests and metadata atomically;
-  file additions/removals produce one immutable data Snapshot. Empty Table creation
-  and property-only updates do not invent data Snapshots. Remove and replace change
+  file additions/removals produce one immutable data Snapshot. Property-only updates
+  do not invent data Snapshots. Remove and replace change
   the resulting file set; they do not modify the original Snapshot or file bytes.
   The chosen source Snapshot and expected current main are separate fixed identities.
   Editing history publishes that source's edited file set as a new child of expected
@@ -1141,21 +1163,27 @@ Iceberg: editing and publication (ICE-08/09):
 ```text
 Namespace -> Create Table       Table / Snapshot -> Edit as Draft
 +--------------------------+------------------------------------------------+----------------------+
-| v Catalog                | events / New Snapshot             Draft local | Properties           |
-|   v analytics            | Source: snapshot-a; expected main: snapshot-b | selected file/field  |
-|     v events             | [Upload Parquet] [Add field]                  | path, size, records  |
-|       snapshot-a         | File          id       category  Change       | Schema and IDs       |
-|       snapshot-b Current | a.parquet     long     string    Kept         | nested fields        |
-|                          | b.parquet     long     string    Removed Undo|                      |
-|                          | c.parquet     long     string    Added Remove|                      |
-|                          | [Previous files] [Next files]  < fields >     |                      |
+| v Catalog                | Create Table / events · New Snapshot           | Properties           |
+|   v analytics            | Table name [table-abc123] (new Table only)     | selected file        |
+|     v events             | [Upload Parquet]                              | path, size, records  |
+|       snapshot-a         | Schema                                        |                      |
+|                          | Field       ID    Type       Required         |                      |
+|                          | id          1     long       No               |                      |
+|                          | message     2     string     No               |                      |
+|                          | Files                                         |                      |
+|       snapshot-b Current | File        Records  Size    Status           |                      |
+|                          | a.parquet   100      4 KiB   Kept      Remove |                      |
+|                          | b.parquet   100      4 KiB   Removed   Undo   |                      |
+|                          | c.parquet   100      4 KiB   Uploaded  Remove |                      |
+|                          | [Previous files] [Next files]                 |                      |
 |                          | [Close] [Discard Draft] [Save Draft] [Commit] |                      |
 +--------------------------+------------------------------------------------+----------------------+
-Choose files -> infer/check Schema -> upload -> metadata-only local Draft
-Save Draft -> close/reload -> reuse uploaded files -> continue editing
+New Table: upload first Parquet -> infer Schema -> read-only preview -> Commit
+Existing Table: retain Schema -> check uploads / remove files -> Commit
+Before first upload: "Upload Parquet to create a Table."; Commit disabled
+Save Draft -> close/reload -> reuse uploaded files and inferred Schema
 Commit -> frozen source + add/remove -> new Manifest List -> conditional main
   existing Snapshot and its referenced bytes remain immutable
-  empty Table -> Schema and metadata, no data Snapshot
 ```
 
 Iceberg: Snapshot file inspection (ICE-04):
@@ -1476,9 +1504,11 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   missing configuration, unavailable service and denied access remain distinct.
   Credentials stay on the Console server; no browser endpoint or bearer editor.
   The root center automatically lists Datasets. Root context menu creates a
-  Dataset; the create form is prefilled with an editable unique name such as
-  `dataset-<short-id>`, so the default Create action completes without manual
-  typing. A Dataset's menu starts Import / New Snapshot. All use §23; there is
+  Dataset in the center table editor, with an editable unique name such as
+  `dataset-<short-id>`. Adding data and submitting Create Dataset publishes its
+  first Snapshot in the same flow. There is no name-only creation dialog or
+  second creation step. A Dataset menu offers New empty Snapshot; a Snapshot
+  menu offers Edit Snapshot to open a child Draft. All use §23; there is
   no Session activity region. The left panel begins with the Dataset title and
   shared Help link above the tree. Properties render named fields rather than JSON.
 - **DS-02 — Relationships:** left navigation follows declared parent links as a
@@ -1517,18 +1547,22 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   Complete verified values of at most 64 KiB render as UTF-8 or hex. Unknown length,
   missing/tombstoned values, oversized data, integrity failures and cancelled reads
   never appear as a successful truncated value. Browsing starts no Read Plan.
-- **DS-06 — Table editor:** Dataset → New Snapshot opens one center table.
+- **DS-06 — Table editor:** Create Dataset and Edit Snapshot use one center table.
   One row is a Sample; one column is a Field; Sample ID is a separate editable
-  row key. An empty Dataset starts with optional `content`. Add Sample generates
+  row key. New input starts with optional `content`. The sole top toolbar action
+  is Upload files. With one Field it opens the picker directly; with multiple
+  Fields it first asks for an explicit target in a temporary chooser. There is
+  no persistent Upload into selector. `+ Sample` at the table bottom generates
   an editable ID; Upload files adds rows with the file's exact filename as the
   default Sample ID into the selected Field, without a type or `string` prefix.
+  Sample ID and `+ Sample` remain visible while scrolling across Fields.
   Duplicate IDs are rejected. Existing values are replaced explicitly through their
   cells, preserving other pending Field changes. Empty cells show Upload file or
   a text input directly. Choosing Upload opens the native picker immediately; text
   is edited inline, including newly added columns, without a Text/File dialog or
   Apply step. Inherited inline values load on focus, not for every visible cell.
-  Clear writes a tombstone and Remove changes membership. Add Field adds a
-  column and remains available after files are added; a Field is not itself a
+  Clear writes a tombstone and Remove changes membership. `+ Field` at the
+  right edge of the table header adds a column and remains available after files are added; a Field is not itself a
   standalone file. A file or inline text is a value in a Sample × Field cell,
   so every cell in a new file-valued Field keeps the direct Upload file or text
   input. A field-level bulk upload, if later needed, must be a separate explicit operation and
@@ -1540,8 +1574,10 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   its Fields in Properties independently of the center column window. Editing a
   cell preserves the Draft's Sample row order; changing a value must not move
   that Sample to the end of the table or change the target of the next edit.
-  Dataset selection freezes Latest at opening; Snapshot selection freezes that
-  specific parent. Original content remains immutable. Advanced controls expose
+  Edit Snapshot freezes that specific parent and submits with Create Snapshot.
+  New empty Snapshot opens blank input with no parent, even when Latest exists;
+  it inherits no Schema, Samples or Splits. Original content remains immutable.
+  Advanced controls expose
   independent roots, parent selection, frozen Split source filtering and explicit
   inheritance of parent Splits. Snapshot editing has no Split-definition form.
   Creation is bounded to 1000 Sample changes, 64 Fields, 64 KiB per text value,
@@ -1551,7 +1587,14 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
 - **DS-07 — Browser Draft and Commit:** each Draft has an independent resource ID.
   IndexedDB stores metadata, small text, fixed Dataset/parent/source identities,
   upload references and expected head conditions under the API origin/Dataset scope.
-  The tree lists local Snapshot Drafts beneath Dataset and local Split Drafts
+  Dataset creation Drafts use a stable browser scope independent of the editable
+  name and appear beneath Datasets as Dataset Draft entries. Uploading the first
+  file, or submitting inline data, creates the server Dataset automatically and
+  pins its returned identity; its name then becomes read-only. Subsequent failures
+  retain the same editor and identity. A conflicting name or unknown creation
+  response never causes an existing Dataset to be adopted. The user can correct
+  an unallocated name; an allocated Dataset is not silently deleted on discard.
+  The tree lists other local Snapshot Drafts beneath Dataset and local Split Drafts
   beneath their Snapshot's Splits. Save Draft and autosave retain editable input;
   closing does not publish. Browser storage never contains File/Blob bytes. Storage
   failure is visible; a transaction compares local revisions to reject stale-tab
@@ -1563,7 +1606,7 @@ Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-
   Commit. An interrupted upload requires reselecting bytes; the size/digest key
   resumes matching whole parts. Expired/aborted uploads receive a new identity.
   No complete file must be reselected just because the editor reloads.
-  Commit freezes input, prepares the complete immutable Snapshot, then conditionally
+  Create Dataset / Create Snapshot freezes input, prepares the complete immutable Snapshot, then conditionally
   selects Latest. Split Commit updates only currentSplit. Unknown replies retain
   the exact ID, input and original conditions for explicit retry; head conflicts
   retain the returned observation for review. Neither silently rebases. Definitive
@@ -1634,7 +1677,7 @@ Dataset context-menu targets and immutable editing:
 ```text
 Datasets root            Dataset images                Snapshot
 +--------------------+  +---------------------------+ +-------------------------+
-| Create dataset...  |  | New Snapshot...           | | Create child...         |
+| Create dataset...  |  | New empty Snapshot...     | | Edit Snapshot...        |
 +--------------------+  | Delete Dataset...         | | Edit Split revision...  |
                         +---------------------------+ |                         |
                                                      | Set stable              |
@@ -1648,26 +1691,31 @@ Published Snapshot data are never edited in place.
 Dataset: table editing and browser Drafts (DS-06/07):
 
 ```text
-Dataset              Help | New Snapshot · images             Draft · local | Properties
-v Datasets                | Parent: snapshot-a (fixed)                      | Sample cat.jpg
-  v images                | [Add Sample] [Add Field] [Upload files]         | content
-    snapshot-a            | Upload into [content]                           | cat.jpg / 32 KiB
-    Snapshot Draft b      | +-------------+-------------------+-----------+ | checksum / expiry
-                          | | Sample ID   | content           | label     | | label
-                          | +-------------+-------------------+-----------+ | cat
-                          | | cat.jpg *   | cat.jpg · 32 KiB  | cat       | | other fields...
-                          | | note-001    | Upload or [text]  | [note]    | |
-                          | +-------------+-------------------+-----------+ |
-                          | [Previous rows] [Next rows]  < columns >        |
+Dataset              Help | Create Dataset                                 | Properties
+v Datasets                | Name [dataset-xxxx]                            | Selected Sample / Field
+  Dataset Draft xxxx      | [Upload files]                                 |
+  v images                | +-------------+-------------------+-----------+|
+    snapshot-a            | | Sample ID   | content           | + Field   ||
+    Snapshot Draft b      | +-------------+-------------------+-----------+|
+                          | | cat.jpg     | cat.jpg · 32 KiB  | Remove    ||
+                          | | note-001    | Upload or [text]  | Remove    ||
+                          | | + Sample                                    ||
+                          | +-------------+-------------------+-----------+|
+                          | [Previous rows] [Next rows]  < columns >       |
                           | > Advanced                                     |
-                          | [Discard Draft] [Save Draft] [Commit]           |
+                          | [Save Draft] [Create Dataset] [Discard Draft]  |
+                          | Saved locally                                  |
+
+Edit Snapshot: fixed Parent shown; submit = Create Snapshot.
+New empty Snapshot: blank content column; no Parent; submit = Create Snapshot.
+Upload files with multiple Fields -> choose target Field -> native file picker.
 ```
 
 ```text
 Choose file -> checksum + bounded parts -> upload reference in local Draft
                        | interrupted: reselect matching bytes to resume
 Save Draft -> browser metadata only -> close/reload -> continue editing
-Commit -> freeze input -> prepare immutable result -> conditional head update
+Create Dataset / Create Snapshot -> freeze input -> prepare result -> conditional head update
                           unknown: retry exact input / ID / conditions
 ```
 
@@ -1683,8 +1731,9 @@ v images                  | Splits · Draft · local
                           | +-------------+-------------------+-----------+
                           | | cat.jpg     | payload · 32 KiB  | inline    |
                           | +-------------+-------------------+-----------+
-                          | [Next Samples] scans the next bounded window
+                          | [Next Samples]
                           | [Discard Draft] [Save Draft] [Commit]
+                          | Saved locally
 ```
 
 Dataset: Samples matrix and selected cell (DS-03–05/08):

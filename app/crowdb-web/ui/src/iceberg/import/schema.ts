@@ -83,7 +83,14 @@ export function schemaFromParquet(metadata: Pick<FileMetaData, 'schema'>, expect
     return result;
   };
   const fields = (nodes: Node[], base?: IceField[]): IceField[] => {
-    if (new Set(nodes.map(value => value.element.name)).size !== nodes.length || base && (nodes.some(node => !base.some(value => value.name === node.element.name)) || base.some(value => value.required && !nodes.some(node => node.element.name === value.name)))) throw new Error('Parquet field names do not match the Table schema.');
+    const names = new Set<string>();
+    for (const { element } of nodes) {
+      if (names.has(element.name)) throw new Error(`${element.name}: duplicate Parquet field name.`);
+      if (base && !base.some(field => field.name === element.name)) throw new Error(`${element.name}: field does not match the Table schema.`);
+      names.add(element.name);
+    }
+    const missing = base?.find(field => field.required && !names.has(field.name));
+    if (missing) throw new Error(`${missing.name}: missing required Parquet field.`);
     return nodes.map(node => {
       const field = base?.find(value => value.name === node.element.name); const required = node.element.repetition_type === 'REQUIRED';
       if (field?.required && !required) throw new Error(`${node.element.name}: optional Parquet field cannot fill a required Table field.`);

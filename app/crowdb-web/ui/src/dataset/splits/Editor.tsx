@@ -18,8 +18,7 @@ export function SplitEditor({ embedded = false, dataset, snapshot, initialRevisi
 }) {
   const element = useRef<HTMLElement>(null); const draft = useDraft(recovery); const { op, install, setError } = draft;
   const [ready, setReady] = useState(false); const [busy, setBusy] = useState(false); const [preview, setPreview] = useState<DraftSplit>(); const [previewEnabled, setPreviewEnabled] = useState(false);
-  const [notice, setNotice] = useState('');
-  const run = (action: () => Promise<void>) => { setBusy(true); setError(''); setNotice(''); void action().catch(reason => setError(String(reason))).finally(() => setBusy(false)); };
+  const run = (action: () => Promise<void>) => { setBusy(true); setError(''); void action().catch(reason => setError(String(reason))).finally(() => setBusy(false)); };
   useEffect(() => {
     const cancel = new AbortController();
     void (async () => {
@@ -46,19 +45,19 @@ export function SplitEditor({ embedded = false, dataset, snapshot, initialRevisi
   const commit = async () => { validateEditor(element.current); complete(await commitDraft(draft)); };
   return <section ref={element} role={embedded ? 'region' : 'dialog'} aria-label="Edit Split revision" className="tw-space-y-4">
     <div className="tw-flex tw-items-center tw-justify-between"><h2 className="tw-font-semibold">Splits · {op?.editing ? 'Draft · local' : 'Commit'}</h2><button className={buttonClass} disabled={busy} onClick={close}>Close editor</button></div>
-    <p className="tw-text-xs tw-text-muted">Snapshot {snapshot} · Committing publishes an immutable Split revision. Historical revisions remain available.</p>
+    <p className="tw-text-xs tw-text-muted">Snapshot {snapshot}</p>
     <Definitions splits={op?.input?.splits ?? []} policy={op?.input?.policy ?? defaultPolicy} disabled={!ready || busy || !op?.editing} change={(splits, policy) => {
       setPreview(undefined); draft.change(value => ({ ...value, input: { splits, policy } }));
     }} view={previewEnabled ? index => { try { validateEditor(element.current); setPreview(structuredClone(op!.input!.splits[index])); setError(''); } catch (reason) { setError(String(reason)); } } : undefined} />
     {!previewEnabled && ready && <p>Split View requires a service with split-preview capability.</p>}
     {preview && <SplitPreview key={JSON.stringify(preview)} dataset={dataset} snapshot={snapshot} split={preview} />}
-    {!ready && !draft.error && <p role="status">Loading Split revision…</p>}{draft.error && <p role="alert">{draft.error}</p>}{notice && <p role="status">{notice}</p>}
+    {!ready && !draft.error && <p role="status">Loading Split revision…</p>}{draft.error && <p role="alert">{draft.error}</p>}
     <div className="tw-flex tw-gap-3 tw-border-t tw-border-border tw-pt-4">
-      <button className={buttonClass} disabled={!ready || busy || !op?.editing} onClick={() => run(async () => { await draft.persist(); setNotice('Draft saved in this browser.'); })}>Save Draft</button>
+      <button className={buttonClass} disabled={!ready || busy || !op?.editing} onClick={() => run(async () => { await draft.persist(); })}>Save Draft</button>
       <button className={`${buttonClass} tw-bg-accent tw-text-white`} disabled={!ready || busy || !!op?.conflict} onClick={() => run(commit)}>Commit</button>
       {op?.editing && <button className={buttonClass} disabled={busy} onClick={() => run(async () => { await draft.saving.current; await forgetOperation(draft.current.current!); close(); })}>Discard Draft</button>}
     </div>
-    {op?.editing && <p role="status" className="tw-text-xs tw-text-muted">{draft.dirty ? 'Saving edits…' : 'Draft saved locally.'}</p>}
+    {ready && op?.editing && !draft.error && <p role="status" className="tw-text-xs tw-text-muted">{draft.dirty ? 'Saving…' : 'Saved locally'}</p>}
     {op?.input && !op.editing && <Publication operation={op} update={install} complete={complete} close={close} busy={busy} run={run} />}
   </section>;
 }

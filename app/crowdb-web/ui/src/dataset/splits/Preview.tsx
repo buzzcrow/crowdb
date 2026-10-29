@@ -13,7 +13,6 @@ export function SplitPreview({ dataset, snapshot, split }: { dataset: string; sn
   useEffect(() => { details(<Properties selected={selected} active />); return () => details(null); }, [selected, details]);
   return <section aria-label="Split preview" className="tw-space-y-3">
     <h3 className="tw-font-semibold">View · {split.name}</h3>
-    <p className="tw-text-xs tw-text-muted">Draft preview on the complete Snapshot. Pages scan up to 20 Samples; Commit freezes membership.</p>
     <Matrix scope={{ dataset, snapshot }} preview={split} active refresh={0} window={window} updateWindow={setWindow} select={setSelected} selectedId={'sample' in selected ? selected.sample : undefined} />
   </section>;
 }

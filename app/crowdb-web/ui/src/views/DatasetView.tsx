@@ -16,7 +16,8 @@ import { SnapshotTree, type TreeState, type TreeEntry } from '../dataset/Tree';
 import { Matrix, emptyWindow, type MatrixWindow } from '../dataset/Matrix';
 import { InspectionPreparation } from '../dataset/InspectionPreparation';
 import { Tree } from '../components/Tree';
-import { Dialog } from '../components/Dialog';
+import { ImportEditor } from '../dataset/import/Editor';
+import { Drafts } from '../dataset/Drafts';
 import { useDatasetMenu } from '../dataset/ResourceMenu';
 import type { DatasetAction } from '../dataset/Actions';
 import { Actions } from '../dataset/Actions';
@@ -34,14 +35,13 @@ export function DatasetView({ active, readonly }: { active: boolean; readonly: b
   const windowKey = JSON.stringify('snapshot' in selected ? [selected.dataset, selected.snapshot, selected.revision, selected.split] : []);
   const updateWindow = (value: MatrixWindow) => setWindows(previous => Object.fromEntries([...Object.entries(previous).filter(([key]) => key !== windowKey).slice(-31), [windowKey, value]]));
   const [editorDetails, setEditorDetails] = useState<ReactNode>(null);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState<{ name: string; recovery?: Operation; nonce: number }>();
   const [operation, setOperation] = useState<{ selected: Exclude<DatasetSelection, { kind: 'root' }>; action: DatasetAction; draftId?: string; nonce: number }>();
   const [previous, setPrevious] = useState<Array<string | undefined>>([]);
   const [cursor, setCursor] = useState<string>(); const [refresh, setRefresh] = useState(0);
   const [inventories, setInventories] = useState<Record<string, PageWindow>>({});
-  const [name, setName] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
   const { checkpoint } = useDomain();
-  const select = (value: DatasetSelection) => { checkpoint(); setSelected(value); setOperation(undefined); };
+  const select = (value: DatasetSelection) => { checkpoint(); setSelected(value); setOperation(undefined); setCreating(undefined); };
   useNavigationSnapshot(Domain.Dataset, 'workspace', () => () => { setSelected(selected); setCursor(cursor); setPrevious(previous); setWindows(windows); setTree(tree); setInventories(inventories); });
   const treeCatalog = useQuery(`tree:${refresh}`, active, signal => api.listDatasets(undefined, signal));
   const pagedCatalog = useQuery(`${cursor}:${refresh}`, active && !!cursor, signal => api.listDatasets(cursor, signal));
@@ -49,30 +49,24 @@ export function DatasetView({ active, readonly }: { active: boolean; readonly: b
   const treeNames = (treeCatalog.value?.entries ?? []).map(dataset => dataset.name);
   if (selected.kind !== 'root' && !treeNames.includes(selected.dataset)) treeNames.push(selected.dataset);
   const capabilities = useQuery(`capabilities:${refresh}`, active, signal => api.capabilities(signal));
-  const create = async () => {
-    setBusy(true); setError('');
-    try { await api.mutate('dataset-management', api.datasetPath(name), 'PUT'); setRefresh(value => value + 1); select({ kind: 'dataset', dataset: name }); setCreating(false); }
-    catch (reason) { setError(String(reason)); } finally { setBusy(false); }
-  };
-  const resourceMenu = useDatasetMenu(readonly, capabilities.value ?? [], () => { setName(`dataset-${newId().slice(0, 8)}`); setError(''); setCreating(true); }, (selected, action) => { select(selected); setOperation({ selected, action, nonce: Date.now() }); });
-  const editing = operation && ['composition', 'split', 'create-split', 'remove-split', 'resume'].includes(operation.action);
+  const resourceMenu = useDatasetMenu(readonly, capabilities.value ?? [], () => { select({ kind: 'root' }); setCreating({ name: `dataset-${newId().slice(0, 8)}`, nonce: Date.now() }); }, (selected, action) => { select(selected); setOperation({ selected, action, nonce: Date.now() }); });
+  const editing = !!creating || operation && ['composition', 'empty-snapshot', 'split', 'create-split', 'remove-split', 'resume'].includes(operation.action);
   const openDraft = (op: Operation) => {
+    if (op.creatingDataset) { select({ kind: 'root' }); setCreating({ name: op.dataset, recovery: op, nonce: Date.now() }); return; }
     const target: Exclude<DatasetSelection, { kind: 'root' }> = op.kind === 'snapshot' ? { kind: 'dataset', dataset: op.dataset } : { kind: 'snapshot', dataset: op.dataset, snapshot: op.snapshot! };
     select(target); setOperation({ selected: target, action: 'resume', draftId: op.resource, nonce: Date.now() });
   };
   return <EditorDetails.Provider value={setEditorDetails}><Workbench showActivity={false} help={<DocsHelp title="Dataset" href={domainTabs.find(tab => tab.domain === Domain.Dataset)!.docs} />} sidebar={<nav aria-label="Dataset tree" className="tw-text-sm -tw-mx-4">
     {treeCatalog.error && <p role="alert">{treeCatalog.error}</p>}
-    <Tree nodes={[{ id: 'datasets', type: 'Dataset', label: 'Datasets', selected: selected.kind === 'root', activate: () => select({ kind: 'root' }), children: treeNames.map(name => ({ id: `dataset-${name}`, type: 'Dataset', label: name, selected: selected.kind === 'dataset' && selected.dataset === name, activate: () => select({ kind: 'dataset', dataset: name }), expandable: true, childrenContent: <SnapshotTree openDraft={readonly ? undefined : openDraft} tree={tree} updateTree={updateTree} dataset={name} active={active} refresh={refresh} select={select} selected={selected} onContextMenu={resourceMenu.open} onSplitsContextMenu={resourceMenu.openSplits} /> })) }]} defaultExpandedIds={['datasets', ...(selected.kind !== 'root' ? [`dataset-${selected.dataset}`] : [])]} onNodeContextMenu={(node, event) => resourceMenu.open(event, node.id === 'datasets' ? { kind: 'root' } : { kind: 'dataset', dataset: node.label })} />
+    <Tree nodes={[{ id: 'datasets', type: 'Dataset', label: 'Datasets', selected: selected.kind === 'root', activate: () => select({ kind: 'root' }), childrenContent: !readonly && <Drafts active={active} open={openDraft} />, children: treeNames.map(name => ({ id: `dataset-${name}`, type: 'Dataset', label: name, selected: selected.kind === 'dataset' && selected.dataset === name, activate: () => select({ kind: 'dataset', dataset: name }), expandable: true, childrenContent: <SnapshotTree openDraft={readonly ? undefined : openDraft} tree={tree} updateTree={updateTree} dataset={name} active={active} refresh={refresh} select={select} selected={selected} onContextMenu={resourceMenu.open} onSplitsContextMenu={resourceMenu.openSplits} /> })) }]} defaultExpandedIds={['datasets', ...(selected.kind !== 'root' ? [`dataset-${selected.dataset}`] : [])]} onNodeContextMenu={(node, event) => resourceMenu.open(event, node.id === 'datasets' ? { kind: 'root' } : { kind: 'dataset', dataset: node.label })} />
   </nav>} detail={editing && editorDetails ? editorDetails : <Properties selected={selected} active={active} />}>
     <div className="tw-flex tw-items-center tw-justify-between"><h1 tabIndex={0} onKeyDown={resourceMenuKey} data-testid="dataset-scope" onContextMenu={event => resourceMenu.open(event, selected)} className="tw-text-xl tw-font-semibold">Dataset{selected.kind !== 'root' && ` · ${selected.dataset}`}</h1>
       <button className={buttonClass} onClick={() => { setCursor(undefined); setPrevious([]); setWindows({}); setRefresh(value => value + 1); }}>Refresh Dataset</button></div>
-    {(catalog.error || capabilities.error || error) && <p role="alert">{catalog.error || capabilities.error || error}</p>}
+    {(catalog.error || capabilities.error) && <p role="alert">{catalog.error || capabilities.error}</p>}
     {resourceMenu.overlay}
     {operation?.action === 'delete' && <DeleteDataset key={operation.nonce} dataset={operation.selected.dataset} readonly={readonly || !capabilities.value?.includes('dataset-delete')} close={() => setOperation(undefined)} complete={() => { setOperation(undefined); setTree({}); setCursor(undefined); setPrevious([]); setRefresh(value => value + 1); if (selected.kind !== 'root' && selected.dataset === operation.selected.dataset) select({ kind: 'root' }); }} />}
     {operation && operation.action !== 'delete' && <Actions key={operation.nonce} selected={operation.selected} action={operation.action} draftId={operation.draftId} readonly={readonly} capabilities={capabilities.value ?? []} close={() => setOperation(undefined)} complete={receipt => { setRefresh(value => value + 1); if (receipt) { setOperation(undefined); select({ kind: receipt.target.kind === 'snapshot' ? 'snapshot' : 'revision', dataset: operation.selected.dataset, snapshot: receipt.target.snapshot, ...(receipt.target.kind === 'split_revision' ? { revision: receipt.target.revision } : {}) }); } }} />}
-    {creating && <Dialog isOpen title="Create Dataset" onClose={() => { if (!busy) setCreating(false); }} onConfirm={create} confirmLabel="Create Dataset" confirmLoading={busy} confirmDisabled={readonly || !name || !capabilities.value?.includes('dataset-management')}>
-      <label>New Dataset name<input className={`${inputClass} tw-w-full`} maxLength={255} value={name} onChange={event => setName(event.target.value)} /></label>{error && <p role="alert">{error}</p>}
-    </Dialog>}
+    {creating && !readonly && <ImportEditor key={creating.nonce} dataset={creating.name} creatingDataset recovery={creating.recovery} close={() => { setCreating(undefined); setRefresh(value => value + 1); }} complete={(receipt, dataset) => { setRefresh(value => value + 1); select({ kind: 'snapshot', dataset, snapshot: receipt.target.snapshot }); }} />}
     {!editing && (selected.kind === 'root' ? <>
       <p className="tw-text-sm tw-text-muted">Namespace: dataset-ns</p>
       {catalog.loading && <p role="status">Loading Datasets…</p>}
@@ -93,7 +87,6 @@ function Inventory({ dataset, active, refresh, select, onContextMenu, window, ch
   const result = useQuery(`${dataset}:${cursor}:${refresh}`, active, signal => api.page<SnapshotSummary>(`${api.datasetPath(dataset)}/snapshot-inventory`, cursor, 20, signal));
   const head = useQuery(`${dataset}:${refresh}`, active, signal => api.head(dataset, signal));
   return <section className="tw-space-y-3">
-    <p className="tw-text-sm">Complete Snapshots · Latest and Stable mark published references.</p>
     <form className="tw-flex tw-gap-2" onSubmit={event => { event.preventDefault(); try { api.opaqueId(direct); select({ kind: 'snapshot', dataset, snapshot: direct }); setError(''); } catch (reason) { setError(String(reason)); } }}>
       <input className={inputClass} aria-label="Snapshot ID" value={direct} onChange={event => setDirect(event.target.value)} /><button className={buttonClass}>Open Snapshot</button>
     </form>

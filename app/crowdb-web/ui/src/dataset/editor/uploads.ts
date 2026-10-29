@@ -6,6 +6,7 @@ import type { UploadStatus } from '../types';
 import type { useDraft } from '../operation/useDraft';
 import { newId, upload } from '../import/upload';
 import { cell, limits, setCell } from './model';
+import { ensureDataset } from './createDataset';
 
 export async function checkUpload(dataset: string, datasetId: string | undefined, id: string, length: string, md5: string, signal?: AbortSignal) {
   const status = await api.control<UploadStatus>(`${api.datasetPath(dataset)}/uploads/${id}`, 'GET', undefined, signal, datasetId);
@@ -22,6 +23,7 @@ export function useUploads(draft: ReturnType<typeof useDraft>) {
     if (files.some(({ file }) => !file.size || file.size > limits.fileBytes)) throw new Error('Files must be nonempty and at most 100 MiB.');
     setBusy(true); const request = new AbortController(); controller.current = request;
     try {
+      await ensureDataset(draft, request.signal);
       for (const { id, field, file } of files) {
         const token = newId();
         draft.change(op => ({ ...setCell(op, id, field, { kind: 'file', file: token }), uploads: { ...op.uploads, [token]: { name: file.name, size: file.size, state: 'pending' } } }));

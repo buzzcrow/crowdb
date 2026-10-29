@@ -24,9 +24,9 @@ export async function openDataset(page: Page, name: string) {
   await page.goto('/?domain=Dataset');
   await page.getByRole('navigation', { name: 'Dataset tree', exact: true }).getByRole('button', { name, exact: true }).click();
 }
-export async function publishResult(page: Page, kind: 'Snapshot' | 'Split revision') {
-  await page.getByRole('button', { name: 'Commit', exact: true }).click();
-  await expect(page.getByRole('region', { name: kind === 'Snapshot' ? 'Import Snapshot' : 'Edit Split revision', exact: true })).toHaveCount(0);
+export async function publishResult(page: Page, kind: 'Dataset' | 'Snapshot' | 'Split revision') {
+  await page.getByRole('button', { name: kind === 'Dataset' ? 'Create Dataset' : kind === 'Snapshot' ? 'Create Snapshot' : 'Commit', exact: true }).click();
+  await expect(page.getByRole('region', { name: kind === 'Split revision' ? 'Edit Split revision' : 'Import Snapshot', exact: true })).toHaveCount(0);
 }
 export async function mapping(page: Page, value: unknown) {
   await expandEditor(page, 'Advanced');
@@ -68,8 +68,16 @@ export async function textCell(page: Page, sample: string, field: string, value:
   await input.fill(value);
   await expect(page.getByRole('dialog', { name: `Edit ${field}`, exact: true })).toHaveCount(0);
 }
-export async function resumeDraft(page: Page, name: string, resource: string) {
+export async function resumeDraft(page: Page, name: string, resource: string, creating = false) {
   const tree = page.getByRole('navigation', { name: 'Dataset tree', exact: true });
+  if (creating) { await tree.getByRole('button', { name: `Dataset Draft ${name} · ${resource.slice(0, 8)}`, exact: true }).click(); return; }
   await tree.getByRole('button', { name, exact: true }).click();
   await tree.getByRole('button', { name: `Snapshot Draft ${resource.slice(0, 8)}`, exact: true }).click();
+}
+
+export async function uploadFiles(page: Page, files: { name: string; mimeType: string; buffer: Buffer }, field?: string) {
+  const picker = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Upload files', exact: true }).click();
+  if (field) await page.getByRole('dialog', { name: 'Choose upload Field', exact: true }).getByRole('button', { name: field, exact: true }).click();
+  await (await picker).setFiles(files);
 }

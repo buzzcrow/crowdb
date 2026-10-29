@@ -6,7 +6,7 @@ import { call, datasetPath, openDataset, seed } from '../fixtures/dataset';
 import { consoleProxy } from '../fixtures/consoleProxy';
 import { step } from '../fixtures/stepTimer';
 
-// Baseline: 4.7s (2026-10-27), owned release fixture before Dataset deletion assertions.
+// Baseline: 5.5s (2026-10-29), catalog, immutable browsing and Dataset deletion.
 test('Dataset native: browse', async ({ page, request }, testInfo) => {
   const name = `browse-${Date.now()}`;
   const root = await step('setup', () => seed(request, name));
@@ -78,7 +78,7 @@ test('Dataset native: browse', async ({ page, request }, testInfo) => {
   });
 });
 
-// Baseline: 0.203s (2026-10-24), failed at the retired fixture API before resource migration.
+// Baseline: 3.6s (2026-10-29), readonly and capability boundaries.
 test('Dataset native: capabilities', async ({ page, request, baseURL }) => {
   const name = `capabilities-${Date.now()}`; const snapshot = await seed(request, name, null, 1, 1);
   await openDataset(page, name); await page.getByRole('button', { name: snapshot, exact: true }).click();
@@ -104,10 +104,10 @@ test('Dataset native: capabilities', async ({ page, request, baseURL }) => {
     await page.getByRole('button', { name: snapshot, exact: true }).click();
     await expect(page.getByRole('table', { name: 'Sample field matrix' })).toContainText('sample-00');
     await expect(page.getByRole('button', { name: 'Reclaim Snapshot' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Create child Snapshot' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Edit Snapshot' })).toHaveCount(0);
     await page.getByTestId('dataset-scope').click({ button: 'right' });
     await expect(page.getByRole('menuitem', { name: 'Reclaim Snapshot…', exact: true })).toBeDisabled();
-    await expect(page.getByRole('menuitem', { name: 'Create child Snapshot…', exact: true })).toBeDisabled();
+    await expect(page.getByRole('menuitem', { name: 'Edit Snapshot…', exact: true })).toBeDisabled();
     await page.keyboard.press('Escape');
     await expect(page.getByText('Session activity', { exact: true })).toHaveCount(0);
     expect(seen.length).toBeGreaterThan(0); expect(seen.every(url => new URL(url).pathname.startsWith('/proxy/api/'))).toBe(true);

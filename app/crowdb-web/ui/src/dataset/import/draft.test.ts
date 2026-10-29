@@ -50,3 +50,11 @@ it('restores the frozen Split source when independent root is turned off', async
   expect(root.source?.parent).toBeNull(); expect(root.source?.splits).toEqual([]);
   expect(independentRoot(root, false).source).toEqual(draft.source);
 });
+
+it('opens a separate root with no inherited data even when Latest has required fields and Splits', async () => {
+  const draft = await openDraft('training', null);
+  expect(draft.expectedHead).toBe('3'.repeat(64));
+  expect(draft.source?.parent).toBeNull();
+  expect(draft.mapping).toEqual({ version: 1, schema: { version: 1, fields: [{ name: 'content', required: false }] }, samples: [] });
+  expect(draft.source?.splits).toEqual([]); expect(draft.parentSplits?.splits).toEqual([]);
+});

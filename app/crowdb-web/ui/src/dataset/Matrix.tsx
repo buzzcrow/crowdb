@@ -42,7 +42,6 @@ export function Matrix({ scope, active, refresh, select, window, updateWindow, o
   const move = (action: () => void) => { checkpoint(); action(); };
   return <section aria-label="Samples and Schema" className="tw-space-y-3">
     <h2 className="tw-font-semibold">Samples {scope.split !== undefined && `· ${scope.split}`}</h2>
-    <p className="tw-text-xs tw-text-muted">20 Samples × 12 Schema fields per window. Select a header, Sample ID or cell for properties.</p>
     {!preview && <form className="tw-flex tw-gap-2" onSubmit={event => { event.preventDefault(); try { bytes(exact); setError(''); move(() => setLookup(exact)); } catch (reason) { setError(String(reason)); } }}>
       <input className={inputClass} aria-label="Exact Sample ID (base64)" value={exact} onChange={event => setExact(event.target.value)} placeholder="Canonical base64 ID" />
       <button className={buttonClass} disabled={scope.split !== undefined}>Find Sample</button>

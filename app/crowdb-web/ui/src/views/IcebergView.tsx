@@ -199,7 +199,7 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
     {loaded && <>{!selected && <nav className="tw-flex tw-gap-2" aria-label="Table sections">{sections.map(value => <button key={value} className={buttonClass} aria-pressed={section === value} onClick={() => setSection(value)}>{value}</button>)}</nav>}
       {!inspector.selection && <TableContent loaded={loaded} section={section} inspector={inspector} onContextMenu={referenceMenu} />}
       <InspectionView inspector={inspector} propertyHost={propertyHost} onContextMenu={referenceMenu} />
-      {section === 'Files' && !inspector.selection && <p className="tw-text-xs tw-text-muted">Select a snapshot in the reference tree to inspect its manifest list, manifests and file metadata.</p>}
+      {section === 'Files' && !inspector.selection && <p className="tw-text-xs tw-text-muted">No Snapshot selected.</p>}
     </>}
 
     </>}

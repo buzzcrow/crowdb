@@ -33,6 +33,12 @@ it('edits a Sample as one row, persists only metadata and does not publish on Sa
   const saved = vi.mocked(writeRequest).mock.calls.at(-1)![1];
   expect(saved.mapping!.samples).toEqual([{ kind: 'upsert', id: btoa('note'), fields: [{ name: 'content', value: { kind: 'inline', data: btoa('(empty text)') } }] }]);
   expect(JSON.stringify(saved)).not.toContain('Blob');
+  expect(screen.getAllByText('Saved locally')).toHaveLength(1);
+  vi.mocked(writeRequest).mockRejectedValueOnce(new Error('Storage is full'));
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save Draft' })));
+  expect(screen.getByRole('alert')).toHaveTextContent('Storage is full');
+  expect(screen.queryByText('Saved locally')).toBeNull();
+  expect(api.mutate).not.toHaveBeenCalled();
 });
 it('patches a cell without losing other Fields and rejects unbounded authoring input', () => {
   const op = setCell(draft(), btoa('note'), 'label', textValue('keep'));

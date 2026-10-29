@@ -8,12 +8,12 @@ import { newId } from './upload';
 import type { LocalSample, Mapping } from './mapping';
 
 /** Freeze identities and mutable pointers when opening, before any local edits. */
-export async function openDraft(dataset: string, parent?: string, source?: SplitSource, signal?: AbortSignal): Promise<Operation> {
+export async function openDraft(dataset: string, parent?: string | null, source?: SplitSource, signal?: AbortSignal): Promise<Operation> {
   if (!(await api.capabilities(signal)).includes('dataset-identity-fence')) throw new Error('Dataset identity protection is unavailable. Upgrade the service before editing.');
   const info = await api.control<DatasetInfo>(api.datasetPath(dataset), 'GET', undefined, signal);
   api.opaqueId(info.id);
   const head = await api.control<Head>(`${api.datasetPath(dataset)}/head`, 'GET', undefined, signal, info.id);
-  const base = parent ?? head.latest;
+  const base = parent === undefined ? head.latest : parent;
   let schema: Schema = { version: 1, fields: [{ name: 'content', required: false }] };
   if (base) {
     const summary = await api.summary(dataset, base, signal);

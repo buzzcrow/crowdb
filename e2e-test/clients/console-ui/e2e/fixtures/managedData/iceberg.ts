@@ -5,8 +5,10 @@ import { expect } from '../realBackend';
 import { resourceAction } from '../resourceMenus';
 import { step } from '../stepTimer';
 import { parquetWorkflow } from './parquet';
+import { parquetUploads } from '../parquetUploads';
 
 export async function icebergWorkflow(page: Page, request: APIRequestContext) {
+  const file = await parquetUploads();
   let namespace: string; let path: string;
   const tree = page.getByRole('navigation', { name: 'Iceberg tree', exact: true });
   await step('Iceberg: create namespace and table through the tree', async () => {
@@ -24,6 +26,10 @@ export async function icebergWorkflow(page: Page, request: APIRequestContext) {
     await resourceAction(page, tree.getByRole('button', { name: namespace, exact: true }), 'Create table…');
     const defaultName = await page.getByLabel('Table name', { exact: true }).inputValue();
     expect(defaultName).toMatch(/^table-[a-f0-9]{8}$/);
+    await expect(page.getByRole('button', { name: 'Commit', exact: true })).toBeDisabled();
+    await expect(page.getByRole('region', { name: 'Schema preview', exact: true })).toHaveCount(0);
+    await page.getByLabel('Parquet files', { exact: true }).setInputFiles(file('initial.parquet', 'a'));
+    await expect(page.getByRole('table', { name: 'Parquet editor table', exact: true })).toContainText('Uploaded');
     await page.getByRole('button', { name: 'Commit', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Refresh table', exact: true })).toBeVisible();
     await resourceAction(page, tree.getByRole('button', { name: defaultName, exact: true }), 'Rename table…');
@@ -91,9 +97,9 @@ async function namespaceTree(page: Page, request: APIRequestContext, parent: str
 }
 
 async function updateAndRename(page: Page, request: APIRequestContext, namespace: string, path: string) {
-  await step('Iceberg: metadata-only update preserves the empty data history', async () => {
+  await step('Iceberg: metadata-only update preserves the data history', async () => {
     const before = await table(request, `${path}/tables/example`);
-    expect(before.metadata.snapshots).toEqual([]);
+    expect(before.metadata.snapshots).toHaveLength(1);
     const tree = page.getByRole('navigation', { name: 'Iceberg tree', exact: true });
     await resourceAction(page, tree.getByRole('button', { name: 'example', exact: true }), 'Commit metadata…');
     const editor = page.getByRole('region', { name: 'Commit metadata', exact: true });
@@ -109,7 +115,7 @@ async function updateAndRename(page: Page, request: APIRequestContext, namespace
     const after = await table(request, `${path}/tables/example`);
     expect(after['metadata-location']).not.toBe(before['metadata-location']);
     expect(after.metadata['table-uuid']).toBe(before.metadata['table-uuid']);
-    expect(after.metadata.snapshots).toEqual([]);
+    expect(after.metadata.snapshots).toEqual(before.metadata.snapshots);
     expect(after.metadata['current-snapshot-id']).toBe(before.metadata['current-snapshot-id']);
     expect(after.metadata.properties.console_crud).toBe('verified');
     await resourceAction(page, tree.getByRole('button', { name: 'example', exact: true }), 'Rename table…');

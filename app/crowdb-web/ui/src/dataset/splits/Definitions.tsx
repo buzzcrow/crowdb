@@ -33,7 +33,6 @@ export function Definitions({ splits, policy, change, view, disabled = false }: 
   };
   return <fieldset disabled={disabled} className="tw-space-y-3 tw-border tw-border-border tw-p-3">
     <legend className="tw-font-semibold">Named Splits</legend>
-    <p className="tw-text-xs">One revision publishes this complete set, including an empty set. Definitions evaluate on the complete Snapshot.</p>
     <label className="tw-text-xs">Overlap <select className={inputClass} value={policy.overlap} onChange={event => change(splits, { ...policy, overlap: event.target.value as SplitPolicy['overlap'] })}><option value="disjoint">Disjoint</option><option value="allow_overlap">Allow overlap</option></select></label>
     <label className="tw-text-xs">Coverage <select className={inputClass} value={policy.coverage} onChange={event => change(splits, { ...policy, coverage: event.target.value as SplitPolicy['coverage'] })}><option value="allow_unassigned">Allow unassigned</option><option value="require_complete">Require complete</option></select></label>
     {splits.map((split, index) => <div key={index} className="tw-border-t tw-border-border tw-pt-2 tw-space-y-2">

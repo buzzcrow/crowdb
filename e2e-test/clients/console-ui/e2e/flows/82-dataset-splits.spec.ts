@@ -11,7 +11,7 @@ async function openRevision(page: import('@playwright/test').Page, dataset: stri
   }
   await page.getByTestId(`tree-node-${dataset}:${snapshot}:revision:${revision}`).getByRole('button', { name: revision.slice(0, 8), exact: true }).click();
 }
-// Baseline: 0.219s (2026-10-24), failed at the retired fixture API before resource migration.
+// Baseline: 7.1s (2026-10-29), Split Save Draft, preview, history and publication conflicts.
 test('Dataset native: split_revisions', async ({ page, request, browser, baseURL }) => {
   const name = `splits-${Date.now()}`;
   const snapshot = await step('setup', () => seed(request, name, null, 3, 1));
@@ -21,6 +21,9 @@ test('Dataset native: split_revisions', async ({ page, request, browser, baseURL
   const tree = page.getByRole('navigation', { name: 'Dataset tree', exact: true });
   await resourceAction(page, tree.getByRole('button', { name: 'Splits', exact: true }), 'Create Split…');
   await page.getByLabel('Split 1 name').fill('train');
+  await page.getByRole('button', { name: 'Save Draft', exact: true }).click();
+  await expect(page.getByText('Saved locally', { exact: true })).toHaveCount(1);
+  await expect(page.getByRole('region', { name: 'Edit Split revision', exact: true })).not.toContainText('Committing publishes an immutable Split revision.');
   await page.getByLabel('Selection kind', { exact: true }).selectOption('explicit');
   await page.getByRole('combobox', { name: 'Coverage', exact: true }).selectOption('require_complete');
   await page.getByRole('button', { name: 'Commit', exact: true }).click();

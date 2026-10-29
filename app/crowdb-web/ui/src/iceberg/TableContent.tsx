@@ -24,5 +24,5 @@ export function TableContent({ loaded, section, inspector, onContextMenu }: { lo
     return <div className="tw-space-y-4"><Fields values={{ 'schema-id': schema?.['schema-id'], 'Partition spec': metadata['default-spec-id'], 'Sort order': metadata['default-sort-order-id'] }} /><SchemaTable key={String(schema?.['schema-id'])} fields={schema?.fields ?? []} /></div>;
   }
 
-  return <div className="tw-space-y-3"><h2 className="tw-font-medium">Metadata file</h2><p className="tw-text-sm tw-break-all">{loaded['metadata-location']}</p><p className="tw-text-sm tw-text-muted">Expand a snapshot to inspect its manifest list, manifests and data or delete files.</p></div>;
+  return <div className="tw-space-y-3"><h2 className="tw-font-medium">Metadata file</h2><p className="tw-text-sm tw-break-all">{loaded['metadata-location']}</p></div>;
 }
