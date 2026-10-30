@@ -6,15 +6,15 @@ cd "${PIXI_PROJECT_ROOT:?}"
 
 git config core.hooksPath .githooks
 bashrc="${HOME:?}/.bashrc"
-if [[ ! -f "$bashrc" ]] || ! grep -Eq '^[[:space:]]*(source|\.)[[:space:]]+<\(pixi completion (--shell[ =]|-s[ =])bash\)' "$bashrc"; then
+if [[ ! -f "$bashrc" ]] || ! grep -Eq 'pixi[[:space:]]+completion([^#]*[[:space:]])bash([[:space:]]|\)|$)' "$bashrc"; then
     cat >> "$bashrc" <<'EOF'
 
-# Complete Pixi commands and workspace task names.
+# CROWDB Pixi Bash completion: commands and workspace task names.
 if command -v pixi >/dev/null 2>&1; then
   source <(pixi completion --shell bash)
 fi
 EOF
-    echo "[install-deps] enabled Pixi Bash completion in $bashrc; open a new terminal to use it"
+    echo "[install-deps] enabled Pixi Bash completion in $bashrc; open a new Bash session or run 'source $bashrc'"
 fi
 if [[ $(uname -sm) == 'Linux x86_64' ]]; then
     pixi run --manifest-path container/oci-image/pixi.toml python container/oci-image/preflight.py --setup-apparmor
