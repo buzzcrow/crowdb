@@ -297,11 +297,17 @@ fn service(profile: &DeploymentProfile, id: &str) -> Result<ServiceProfile> {
 fn web_service(profile: &DeploymentProfile, monitor_port: u16) -> Result<ServiceProfile> {
     let root = &profile.paths.data_root;
     let mut web = service(profile, "web")?;
+    let web_port = profile
+        .public_endpoints
+        .iter()
+        .find(|endpoint| endpoint.id == "web")
+        .map(|endpoint| endpoint.port)
+        .ok_or("web public endpoint is absent from node profile")?;
     web.args = vec![
         "--bind".into(),
         "0.0.0.0".into(),
         "--port".into(),
-        "9090".into(),
+        web_port.to_string(),
         "--runtime-dir".into(),
         root.join("console").to_string_lossy().into_owned(),
         "--node-monitor".into(),

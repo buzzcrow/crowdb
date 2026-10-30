@@ -123,8 +123,13 @@ impl ChunkdbClient {
                 }) {
                     Ok(response) => return Ok(response),
                     Err(
-                        error @ (ChunkdbClientError::NotMyRange(_) | ChunkdbClientError::ConnectFailed(_)),
+                        error @ (ChunkdbClientError::NotMyRange(_)
+                        | ChunkdbClientError::ConnectFailed(_)
+                        | ChunkdbClientError::Unavailable(_)),
                     ) => {
+                        // The server reports KV quorum loss as Unavailable
+                        // only after allocation has rolled back its physical
+                        // strips, so retrying starts a fresh safe allocation.
                         safe_retry = Some(error);
                     }
                     Err(error) => return Err(error),

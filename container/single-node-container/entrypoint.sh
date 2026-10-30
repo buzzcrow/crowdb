@@ -60,18 +60,29 @@ if test "$port_offset" -gt 0; then
     offset_templates=$offset_root/templates
     mkdir -p "$offset_templates"
     cp "$profile" "$offset_root/profile.toml"
-    cp /opt/crowdb/etc/templates/*.toml "$offset_templates/"
+    if test -d /opt/crowdb/etc/templates; then
+        for template in /opt/crowdb/etc/templates/*.toml; do
+            test -f "$template" || continue
+            cp "$template" "$offset_templates/"
+        done
+    fi
     # The preview profile is intentionally self-contained. Shift every
     # declared listener and endpoint together so host-network containers can
     # coexist while retaining the same relative service layout.
-    for base in 9090 9091 9092 10000 10100 10101 11000 11100 11200 12100 12200 13000 15100 15200; do
+    for base in 9090 9091 9092 9093 9094 9095 10000 10100 10101 11000 11100 11200 12100 12200 13000 15100 15200; do
         next=$((base + port_offset))
-        sed -i -E "s/(^|[^0-9])${base}([^0-9]|$)/\\1${next}\\2/g" \
-            "$offset_root/profile.toml" "$offset_templates"/*.toml
+        sed -i -E "s/(^|[^0-9])${base}([^0-9]|$)/\\1${next}\\2/g" "$offset_root/profile.toml"
+        if test -d "$offset_templates"; then
+            for template in "$offset_templates"/*.toml; do
+                test -f "$template" || continue
+                sed -i -E "s/(^|[^0-9])${base}([^0-9]|$)/\\1${next}\\2/g" "$template"
+            done
+        fi
     done
     sed -i "s#/opt/crowdb/etc/templates#$offset_templates#g" "$offset_root/profile.toml"
     profile="$offset_root/profile.toml"
 fi
+ssh_port=$((2222 + port_offset))
 /opt/crowdb/bin/crowdb-monitor validate "$profile"
 
 if test -n "${CROWDB_STARTUP_MODE:-}"; then
@@ -149,7 +160,7 @@ chmod 600 /opt/crowdb/data/ssh/authorized_keys
 chown -R crowdb:crowdb /opt/crowdb/data/ssh /opt/crowdb/run
 if ! test -e /opt/crowdb/.ssh; then ln -s /opt/crowdb/data/ssh /opt/crowdb/.ssh; fi
 cat > /opt/crowdb/run/sshd_config <<EOF
-Port 2222
+Port $ssh_port
 HostKey /opt/crowdb/data/ssh/ssh_host_ed25519_key
 AuthorizedKeysFile /opt/crowdb/data/ssh/authorized_keys
 PermitRootLogin no

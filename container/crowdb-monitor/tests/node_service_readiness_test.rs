@@ -220,3 +220,138 @@ async fn recovery_waits_for_live_dependencies_without_consuming_launches() {
         server.abort();
     }
 }
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn health_restarts_a_completed_service_after_consecutive_probe_failures() {
+    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("service-health-restart");
+    let root = directory.path().join("data");
+    std::fs::create_dir_all(&root).unwrap();
+    let request = NodeSetupRequest {
+        version: 1,
+        discovery_id: NodeIdentity::load_or_create(&root).unwrap().uuid().to_string(),
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        choices: crowdb_protocol::mgmt::node::setup::NodeSetupChoices::default(),
+    };
+    let authority = node_setup::TestAuthority::start(&root, &request).await;
+    let mut profile = DeploymentProfile::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../oci-image/node-profile.toml"),
+    )
+    .unwrap();
+    profile.paths.data_root = root.clone();
+    profile.paths.install_root = directory.path().to_path_buf();
+    profile.paths.bin_root = directory.path().join("bin");
+    profile.paths.template_root = directory.path().join("templates");
+    profile.paths.log_root = root.join("log");
+    profile.paths.run_root = directory.path().join("run");
+    std::fs::create_dir_all(&profile.paths.bin_root).unwrap();
+    std::fs::create_dir_all(&profile.paths.template_root).unwrap();
+    std::fs::create_dir_all(&profile.paths.log_root).unwrap();
+    std::fs::create_dir_all(&profile.paths.run_root).unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let unhealthy = root.join("unhealthy");
+    let invocations = root.join("invocations");
+    let program = profile.paths.bin_root.join("managed-service");
+    std::fs::write(
+        &program,
+        format!(
+            r#"#!/bin/sh
+count=0
+if [ -f '{invocations}' ]; then count=$(cat '{invocations}'); fi
+count=$((count + 1))
+echo "$count" > '{invocations}'
+health_file=''
+if [ "$count" -eq 1 ]; then health_file='{unhealthy}'; fi
+exec python3 - "{port}" "$health_file" <<'PY'
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import os
+import sys
+
+port = int(sys.argv[1])
+health_file = sys.argv[2]
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        status = 503 if health_file and os.path.exists(health_file) else 200
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *_args):
+        pass
+
+HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+PY
+"#,
+            invocations = invocations.display(),
+            unhealthy = unhealthy.display(),
+            port = port,
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for service in &mut profile.services {
+        service.program = profile.paths.bin_root.join("unused-service");
+    }
+    let child = profile
+        .services
+        .iter_mut()
+        .find(|service| service.id == "chunkdb")
+        .unwrap();
+    child.program = program;
+    child.dependencies = vec!["kv".into()];
+    child.probe.failure_threshold = 2;
+    profile.validate().unwrap();
+
+    let intent = NodeServiceIntent {
+        cluster_id: authority.binding.bootstrap.cluster_id.clone(),
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        node_id: authority.binding.node_id,
+        service_id: "chunkdb-2".into(),
+        kind: "chunkdb".into(),
+        action: NodeServiceAction::Start,
+        configuration: format!("[server]\nhttp_listen_addr = '127.0.0.1:{port}'\n"),
+        environment: std::collections::BTreeMap::default(),
+    };
+    let key = b"/deployment/services/2/chunkdb-2";
+    authority
+        .kv
+        .put(0, 0, key, &serde_json::to_vec(&intent).unwrap(), None)
+        .await
+        .unwrap();
+
+    let mut worker = NodeServiceForTests::new_for_tests(profile).await.unwrap();
+    let first = worker.execute_for_tests(intent.clone()).await.unwrap();
+    let first_pid = first["pid"].as_u64().unwrap();
+    std::fs::write(&unhealthy, b"probe failure").unwrap();
+    worker.reconcile_for_tests().await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&invocations).unwrap().trim(),
+        "1",
+        "one failed probe must not restart a live service"
+    );
+    worker.reconcile_for_tests().await.unwrap();
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("services/chunkdb-2/execution.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["complete"], true);
+    assert_ne!(state["pid"].as_u64().unwrap(), first_pid);
+    assert_eq!(
+        std::fs::read_to_string(&invocations).unwrap().trim(),
+        "2",
+        "the threshold must restart the listener even while its child remains alive"
+    );
+
+    let mut stop = intent;
+    stop.operation_id = uuid::Uuid::new_v4().to_string();
+    stop.action = NodeServiceAction::Stop;
+    authority
+        .kv
+        .put(0, 0, key, &serde_json::to_vec(&stop).unwrap(), None)
+        .await
+        .unwrap();
+    worker.execute_for_tests(stop).await.unwrap();
+}

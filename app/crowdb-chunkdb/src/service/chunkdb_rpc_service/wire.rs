@@ -24,6 +24,13 @@ use crowdb_protocol::chunkdb_fb::{FBPlacementAssessment, FBPlacementAssessmentAr
 
 /// Map a `LifecycleError` to `(ret_code, message, range_start, range_end)`.
 pub(super) fn map_error(e: &LifecycleError) -> (FBChunkdbRetCode, String, u32, u32) {
+    map_error_with_policy(e, false)
+}
+
+fn map_error_with_policy(
+    e: &LifecycleError,
+    allocation_retryable: bool,
+) -> (FBChunkdbRetCode, String, u32, u32) {
     match e {
         LifecycleError::Storage(crate::storage::StoreError::Authority) => {
             (FBChunkdbRetCode::NotMyRange, e.to_string(), 0, 0)
@@ -44,6 +51,19 @@ pub(super) fn map_error(e: &LifecycleError) -> (FBChunkdbRetCode, String, u32, u
         LifecycleError::StateConflict => (FBChunkdbRetCode::Aborted, e.to_string(), 0, 0),
         LifecycleError::Allocation(_) | LifecycleError::Commit(_) | LifecycleError::Cleanup(_) => {
             (FBChunkdbRetCode::Internal, e.to_string(), 0, 0)
+        }
+        // Chunk creation rolls back its physical strip allocation when the
+        // metadata batch cannot be committed. A routed KV quorum/election
+        // outage is therefore safe for the client to retry as a fresh
+        // allocation; keep deterministic metadata failures internal.
+        LifecycleError::Storage(crate::storage::StoreError::Kv(message))
+            if allocation_retryable
+                && (message.contains("leadership quorum unavailable")
+                    || message.contains("retries exhausted")
+                    || message.contains("no known leader")
+                    || message.contains("transport error")) =>
+        {
+            (FBChunkdbRetCode::Unavailable, e.to_string(), 0, 0)
         }
         LifecycleError::Storage(_) => (FBChunkdbRetCode::Internal, e.to_string(), 0, 0),
         LifecycleError::InvalidRequest(_) => (FBChunkdbRetCode::InvalidArgument, e.to_string(), 0, 0),
@@ -89,6 +109,7 @@ pub(super) fn submit_chunk_result(
     create_nano: u64,
     msg_type: u16,
     result: Result<Chunk, LifecycleError>,
+    allocation_retryable: bool,
 ) {
     match result {
         Ok(chunk) => {
@@ -97,7 +118,7 @@ pub(super) fn submit_chunk_result(
             submit_fb_response(server, conn_handle, ctrl, msg_type, req_id);
         }
         Err(e) => {
-            let (code, msg, rs, re) = map_error(&e);
+            let (code, msg, rs, re) = map_error_with_policy(&e, allocation_retryable);
             let ctrl = build_chunk_response(req_id, create_nano, code, Some(&msg), rs, re, &Chunk::default());
             submit_fb_response(server, conn_handle, ctrl, msg_type, req_id);
         }
@@ -1018,5 +1039,37 @@ pub(super) fn fb_ec_state(s: ProtoEcState) -> FBEcState {
     match s {
         ProtoEcState::NoParity => FBEcState::NoParity,
         ProtoEcState::Parity => FBEcState::Parity,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{map_error, map_error_with_policy, FBChunkdbRetCode, LifecycleError};
+    use crate::storage::StoreError;
+
+    #[test]
+    fn transient_kv_quorum_errors_are_retryable() {
+        for message in [
+            "linearizable read: leadership quorum unavailable",
+            "retries exhausted after 11 attempts",
+            "no known leader for group",
+            "transport error to endpoint",
+        ] {
+            let error = LifecycleError::Storage(StoreError::Kv(message.into()));
+            assert_eq!(
+                map_error_with_policy(&error, true).0,
+                FBChunkdbRetCode::Unavailable,
+                "{message}"
+            );
+            assert_eq!(map_error(&error).0, FBChunkdbRetCode::Internal);
+        }
+    }
+
+    #[test]
+    fn deterministic_kv_errors_remain_internal() {
+        let error = LifecycleError::Storage(StoreError::Kv("invalid request encoding".into()));
+        assert_eq!(map_error(&error).0, FBChunkdbRetCode::Internal);
+        let unknown = LifecycleError::Storage(StoreError::OutcomeUnknown("quorum unavailable".into()));
+        assert_eq!(map_error(&unknown).0, FBChunkdbRetCode::Internal);
     }
 }

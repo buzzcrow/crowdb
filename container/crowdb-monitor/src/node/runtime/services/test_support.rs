@@ -92,7 +92,12 @@ impl NodeServiceForTests {
     /// # Errors
     /// Propagates authority, journal and process observation errors.
     pub async fn reconcile_for_tests(&mut self) -> Result<()> {
-        super::super::health::NodeHealth::new(&self.profile)?
+        if self.health.is_none() {
+            self.health = Some(super::super::health::NodeHealth::new(&self.profile)?);
+        }
+        self.health
+            .as_mut()
+            .ok_or("missing test health worker")?
             .reconcile_services(&self.profile, &mut self.processes)
             .await
     }

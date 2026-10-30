@@ -45,6 +45,8 @@ pub(crate) struct NodeRunArgs {
 
 pub(crate) async fn run(args: NodeRunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let inputs = resolve(&args)?;
+    let offset = port_offset()?;
+    let monitor_port = shifted_port(9095, offset)?;
     let addresses = if_addrs::get_if_addrs()?
         .into_iter()
         .filter(|address| args.interface.contains(&address.name))
@@ -52,11 +54,11 @@ pub(crate) async fn run(args: NodeRunArgs) -> Result<(), Box<dyn std::error::Err
         .collect();
     let config = NodeRuntimeConfig {
         profile: args.profile,
-        bind: "0.0.0.0:9095".parse()?,
+        bind: format!("0.0.0.0:{monitor_port}").parse()?,
         discovery: DiscoveryConfig {
             interfaces: args.interface,
             addresses,
-            monitor_port: 9095,
+            monitor_port,
             cluster_id: None,
             seeds: discovery_seeds(),
         },
@@ -64,6 +66,21 @@ pub(crate) async fn run(args: NodeRunArgs) -> Result<(), Box<dyn std::error::Err
     };
     let result = crowdb_monitor::run_node_with_inputs(config, &inputs.file, &inputs.explicit).await;
     result.map_err(|error| error.to_string().into())
+}
+
+fn port_offset() -> Result<u16, Box<dyn std::error::Error>> {
+    let value = std::env::var("CROWDB_PORT_OFFSET").unwrap_or_default();
+    if value.is_empty() {
+        return Ok(0);
+    }
+    value
+        .parse::<u16>()
+        .map_err(|_| "CROWDB_PORT_OFFSET must be a non-negative integer fitting a port".into())
+}
+
+fn shifted_port(base: u16, offset: u16) -> Result<u16, Box<dyn std::error::Error>> {
+    base.checked_add(offset)
+        .ok_or_else(|| "CROWDB_PORT_OFFSET shifts a listener beyond port 65535".into())
 }
 
 pub(crate) fn accept(args: &NodeRunArgs) -> Result<&'static str, Box<dyn std::error::Error>> {
@@ -146,4 +163,15 @@ fn read_inputs(
         return Err("node deployment configuration exceeds its size bound".into());
     }
     Ok(toml::from_str(&content)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shifted_port;
+
+    #[test]
+    fn shifted_ports_are_bounded() {
+        assert_eq!(shifted_port(9095, 100).unwrap(), 9195);
+        assert!(shifted_port(u16::MAX, 1).is_err());
+    }
 }

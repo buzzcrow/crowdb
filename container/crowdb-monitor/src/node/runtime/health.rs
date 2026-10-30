@@ -14,6 +14,7 @@ pub(super) struct NodeHealth {
     store: StatusStore,
     status: MonitorStatus,
     attempts: BTreeMap<String, u32>,
+    probe_failures: BTreeMap<String, u32>,
     probes: crate::ProbeExecutor,
 }
 
@@ -24,6 +25,7 @@ impl NodeHealth {
             store: StatusStore::new(&profile.paths.run_root)?,
             status: MonitorStatus::new(identity.uuid(), MonitorPhase::Initializing),
             attempts: BTreeMap::new(),
+            probe_failures: BTreeMap::new(),
             probes: crate::ProbeExecutor::new(true)?,
         })
     }
@@ -127,21 +129,77 @@ impl NodeHealth {
             }
         };
         for intent in &intents {
-            if !super::services::pending(profile, intent, processes)? {
+            let pending = super::services::pending(profile, intent, processes)?;
+            let restart_unhealthy = if !pending
+                && matches!(
+                    intent.action,
+                    crowdb_protocol::mgmt::node::NodeServiceAction::Start
+                        | crowdb_protocol::mgmt::node::NodeServiceAction::Restart
+                ) {
+                self.restart_if_unhealthy(profile, intent, processes).await?
+            } else {
+                false
+            };
+            if !pending && !restart_unhealthy {
                 continue;
             }
             if let Err(error) = super::services::dependencies_ready(profile, intent, &intents).await {
                 tracing::debug!(service = %intent.service_id, %error, "service recovery waits for dependencies");
                 continue;
             }
+            if restart_unhealthy {
+                let process_id = if intent.kind == "kv" {
+                    "kv"
+                } else {
+                    &intent.service_id
+                };
+                processes.stop(process_id, Duration::from_secs(10)).await?;
+            }
             match super::services::execute(profile, processes, intent.clone()).await {
                 Ok(_) => {
                     *self.attempts.entry(intent.service_id.clone()).or_default() += 1;
+                    self.probe_failures.remove(&intent.service_id);
                 }
                 Err(error) => eprintln!("service recovery deferred for {}: {error}", intent.service_id),
             }
         }
         Ok(())
+    }
+
+    async fn restart_if_unhealthy(
+        &mut self,
+        profile: &DeploymentProfile,
+        intent: &crowdb_protocol::mgmt::node::NodeServiceIntent,
+        processes: &mut ProcessManager,
+    ) -> Result<bool> {
+        let process_id = if intent.kind == "kv" {
+            "kv"
+        } else {
+            &intent.service_id
+        };
+        if !processes.owns(process_id) || !processes.alive(process_id)? {
+            self.probe_failures.remove(&intent.service_id);
+            return Ok(false);
+        }
+        let service = match super::probes::for_intent(profile, intent) {
+            Ok(service) => service,
+            Err(error) => {
+                tracing::debug!(service = %intent.service_id, %error, "service health probe unavailable");
+                return Ok(false);
+            }
+        };
+        if self
+            .probes
+            .probe_service(&service, &BTreeMap::new())
+            .await
+            .is_ok()
+        {
+            self.probe_failures.remove(&intent.service_id);
+            return Ok(false);
+        }
+        let failures = self.probe_failures.entry(intent.service_id.clone()).or_default();
+        *failures = failures.saturating_add(1);
+        Ok(*failures >= service.probe.failure_threshold)
     }
 
     fn restart_allowed(&mut self, id: &str) -> Result<()> {
