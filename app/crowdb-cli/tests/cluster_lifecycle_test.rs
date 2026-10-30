@@ -154,6 +154,15 @@ async fn default_single_node_start_seals_identity_and_resumes_without_duplicate_
         0,
     );
     let original = fs::read(test.receipt("local")).unwrap();
+    let accepted: Value = serde_json::from_slice(&original).unwrap();
+    assert_eq!(accepted["version"], 2);
+    for (internal, offset) in [(9090, 0), (16000, 1), (17000, 2), (18000, 3)] {
+        assert_eq!(
+            test.state()["container"]["crowdb-local-1"]["HostConfig"]["PortBindings"]
+                [format!("{internal}/tcp")][0]["HostPort"],
+            (port + offset).to_string()
+        );
+    }
     let binding = test.root.path().join("persistent/clusters/local/target.json");
     let target: Value = serde_json::from_slice(&fs::read(binding).unwrap()).unwrap();
     assert_eq!(target["cluster_id"], uuid::Uuid::from_u128(1).to_string());
@@ -178,6 +187,47 @@ async fn default_single_node_start_seals_identity_and_resumes_without_duplicate_
             .count(),
         1
     );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_receipts_retain_protocol_ports_on_resume_and_recreation() {
+    let test = TestDocker::new();
+    let (port, server) = serve("local", 1, true).await;
+    test.run(
+        None,
+        &["start", "--port-base", &port.to_string(), "--wait", "0"],
+        0,
+    );
+    let path = test.receipt("local");
+    let mut legacy: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    legacy["version"] = json!(1);
+    let accepted = serde_json::to_vec(&legacy).unwrap();
+    fs::write(&path, &accepted).unwrap();
+    let ports: serde_json::Map<_, _> = (0_u16..4)
+        .map(|offset| {
+            (
+                format!("{}/tcp", 9090 + offset),
+                json!([{"HostIp":"127.0.0.1","HostPort":(port+offset).to_string()}]),
+            )
+        })
+        .collect();
+    let mut state = test.state();
+    state["container"]["crowdb-local-1"]["HostConfig"]["PortBindings"] = json!(ports);
+    test.save(&state);
+    test.run(None, &["stop"], 0);
+    test.run(None, &["start", "--wait", "0"], 0);
+    assert_eq!(fs::read(&path).unwrap(), accepted);
+    let mut state = test.state();
+    state["container"] = json!({});
+    test.save(&state);
+    test.run(None, &["start", "--wait", "0"], 0);
+    assert_eq!(fs::read(&path).unwrap(), accepted);
+    assert_eq!(
+        test.state()["container"]["crowdb-local-1"]["HostConfig"]["PortBindings"],
+        json!(ports)
+    );
+    assert_eq!(test.state()["volume"].as_object().unwrap().len(), 1);
     server.abort();
 }
 

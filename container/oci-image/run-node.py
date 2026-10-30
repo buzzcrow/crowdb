@@ -21,9 +21,12 @@ def digest_reference(reference):
 
 
 # Base listeners used by one node. Host-network instances add
-# ``CROWDB_PORT_OFFSET`` to every listener before the policy is sealed.
-HOST_PORTS = (2222, 7100, 7101, 7102, 7200, 7300, 7301, 7400, 7401,
-              9090, 9091, 9092, 9093, 9094, 9095, 10000, 10100, 10101)
+# ``CROWDB_PORT_OFFSET`` to every listener before the policy is sealed. These
+# values mirror the canonical service blocks in
+# ``lib/crowdb-protocol/src/port/ports.rs``.
+HOST_PORTS = (2222, 9090, 9095, 10000, 10100, 10101, 11000, 11100, 11200,
+              12000, 12100, 12200, 13000, 14000, 15100, 15200, 16000, 17000,
+              18000, 19000)
 
 
 def check_host_ports(ports=HOST_PORTS):

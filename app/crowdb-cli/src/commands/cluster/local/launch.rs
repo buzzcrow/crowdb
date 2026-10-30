@@ -41,7 +41,7 @@ pub(super) async fn accepted(docker: &Docker, cluster: &str, args: &StartArgs) -
         return Err(invalid("local start requires the Linux amd64 CROWDB node image"));
     }
     let record = Launch {
-        version: 1,
+        version: 2,
         cluster: cluster.into(),
         owner: uuid::Uuid::new_v4().to_string(),
         runtime: docker.identity().await?,
@@ -111,10 +111,13 @@ fn arguments(record: &Launch, index: u8) -> Vec<String> {
         &format!("type=volume,source={volume},target=/opt/crowdb/data"),
     ]));
     let base = record.port_base + u16::from(index - 1) * 10;
-    for (offset, protocol) in [(0_u16, ""), (1, "S3"), (2, "ICEBERG"), (3, "DATASET")] {
+    for ((offset, protocol), internal) in [(0_u16, ""), (1, "S3"), (2, "ICEBERG"), (3, "DATASET")]
+        .into_iter()
+        .zip(record.container_ports())
+    {
         args.extend(strings(&[
             "-p",
-            &format!("127.0.0.1:{}:{}", base + offset, 9090 + offset),
+            &format!("127.0.0.1:{}:{internal}", base + offset),
         ]));
         if !protocol.is_empty() {
             args.extend(strings(&[
@@ -137,9 +140,9 @@ pub(super) fn verify(item: &Value, record: &Launch, index: u8) -> Result<()> {
     require_owned(item, record, "container")?;
     let base = record.port_base + u16::from(index - 1) * 10;
     let mut ports = serde_json::Map::new();
-    for offset in 0..4 {
+    for (offset, internal) in (0_u16..).zip(record.container_ports()) {
         ports.insert(
-            format!("{}/tcp", 9090 + offset),
+            format!("{internal}/tcp"),
             json!([{"HostIp":"127.0.0.1", "HostPort":(base+offset).to_string()}]),
         );
     }

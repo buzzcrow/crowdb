@@ -4,6 +4,21 @@
 
 
 def diskless_setup():
-    return {"storage": {"mode": "diskless"}, "services": [
+    services = [
+        {"kind": "paxos-kv", "enabled": True,
+         "listeners": {"http_port": 10000, "rpc_port": 10100}}]
+    services += [
         {"kind": kind, "enabled": False, "listeners": {}}
-        for kind in ("paxos-kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access-server")]}
+        for kind in ("diskdb", "diskio", "chunkdb", "chunk-kv", "access-server")]
+    return {"storage": {"mode": "diskless"}, "services": services}
+
+
+def diskless_policy():
+    lines = ['[storage]', 'mode = "diskless"']
+    for service in diskless_setup()["services"]:
+        lines += ['[[services]]', f'kind = "{service["kind"]}"',
+                  f'enabled = {str(service["enabled"]).lower()}']
+        if service["listeners"]:
+            lines += ['[services.listeners]',
+                      *(f'{key} = {value}' for key, value in service["listeners"].items())]
+    return '\n'.join(lines) + '\n'

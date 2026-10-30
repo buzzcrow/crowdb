@@ -193,7 +193,7 @@ async fn access_readiness_follows_catalog_redirects_within_its_probe_deadline() 
     };
     let authority = node_setup::TestAuthority::start(root.path(), &request).await;
     let (rpc, requests) = redirecting_rpc();
-    publish_catalog(&authority.kv, rpc.port()).await;
+    publish_catalog(&authority.kv, rpc.port(), None).await;
     let mut profile =
         DeploymentProfile::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../oci-image/node-profile.toml"))
             .unwrap();
@@ -217,9 +217,34 @@ async fn access_readiness_follows_catalog_redirects_within_its_probe_deadline() 
         environment: BTreeMap::new(),
     };
     let result = NodeServiceForTests::dependencies_ready_for_tests(&profile, &intent, &[]).await;
-    rpc.stop();
     result.unwrap();
     assert_eq!(requests.load(Ordering::Relaxed), 2);
+    let (second_rpc, second_requests) = redirecting_rpc();
+    publish_catalog(
+        &authority.kv,
+        rpc.port(),
+        Some(u16::try_from(second_rpc.port()).unwrap()),
+    )
+    .await;
+    NodeServiceForTests::dependencies_ready_for_tests(&profile, &intent, &[])
+        .await
+        .unwrap();
+    assert_eq!(second_requests.load(Ordering::Relaxed), 2);
+    let unavailable = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    publish_catalog(
+        &authority.kv,
+        rpc.port(),
+        Some(unavailable.local_addr().unwrap().port()),
+    )
+    .await;
+    let result = NodeServiceForTests::dependencies_ready_for_tests(&profile, &intent, &[]).await;
+    rpc.stop();
+    second_rpc.stop();
+    assert!(
+        result.is_err(),
+        "a healthy first owner must not hide an unavailable second owner"
+    );
+    assert!(!root.path().join("services/access-2/execution.json").exists());
 }
 
 fn redirecting_rpc() -> (crowdb_rpc_ffi::RpcServer, Arc<AtomicUsize>) {
@@ -258,7 +283,7 @@ fn redirecting_rpc() -> (crowdb_rpc_ffi::RpcServer, Arc<AtomicUsize>) {
     (rpc, requests)
 }
 
-async fn publish_catalog(kv: &crowdb_kv_client::CrowdbKvClient, port: i32) {
+async fn publish_catalog(kv: &crowdb_kv_client::CrowdbKvClient, port: i32, second: Option<u16>) {
     let mut page = ChunkKvRangeCatalogPage {
         generation: 1,
         page_index: 0,
@@ -283,6 +308,20 @@ async fn publish_catalog(kv: &crowdb_kv_client::CrowdbKvClient, port: i32) {
             },
         }],
     };
+    if let Some(port) = second {
+        page.entries[0].range.end = Some(vec![128]);
+        let mut entry = page.entries[0].clone();
+        entry.partition_id.low = 2;
+        entry.artifact.tree_id = 2;
+        entry.artifact.stream_name.low = 2;
+        entry.range = KeyRange {
+            start: vec![128],
+            end: None,
+        };
+        entry.owner.instance_id = 3;
+        entry.owner.rpc_endpoint = format!("127.0.0.1:{port}");
+        page.entries.push(entry);
+    }
     page.seal().unwrap();
     let mut head = ChunkKvRangeCatalogHead {
         generation: 1,

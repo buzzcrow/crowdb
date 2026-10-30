@@ -223,7 +223,7 @@ async fn recovery_waits_for_live_dependencies_without_consuming_launches() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn health_restarts_a_completed_service_after_consecutive_probe_failures() {
+async fn completed_service_preserves_live_recovery_and_restarts_failed_health() {
     let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("service-health-restart");
     let root = directory.path().join("data");
     std::fs::create_dir_all(&root).unwrap();
@@ -275,7 +275,12 @@ health_file = sys.argv[2]
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        status = 503 if health_file and os.path.exists(health_file) else 200
+        status = 200
+        if health_file and os.path.exists(health_file):
+            with open(health_file) as marker:
+                readiness_only = marker.read() == "readiness-only"
+            if self.path == "/ready" or not readiness_only:
+                status = 503
         self.send_response(status)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -326,6 +331,26 @@ PY
     let mut worker = NodeServiceForTests::new_for_tests(profile).await.unwrap();
     let first = worker.execute_for_tests(intent.clone()).await.unwrap();
     let first_pid = first["pid"].as_u64().unwrap();
+    std::fs::write(&unhealthy, b"readiness-only").unwrap();
+    assert_eq!(
+        reqwest::get(format!("http://127.0.0.1:{port}/ready"))
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE
+    );
+    for _ in 0..3 {
+        worker.reconcile_for_tests().await.unwrap();
+    }
+    let recovering: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("services/chunkdb-2/execution.json")).unwrap())
+            .unwrap();
+    assert_eq!(recovering["pid"].as_u64().unwrap(), first_pid);
+    assert_eq!(
+        std::fs::read_to_string(&invocations).unwrap().trim(),
+        "1",
+        "readiness recovery must retain a responsive process"
+    );
     std::fs::write(&unhealthy, b"probe failure").unwrap();
     worker.reconcile_for_tests().await.unwrap();
     assert_eq!(

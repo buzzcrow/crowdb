@@ -3,7 +3,10 @@
 
 use crowdb_protocol::mgmt::node::{
     deployment::{DeploymentMode, NodeDeploymentOverrides, NodeDeploymentPolicy, PublicAccessUris},
-    setup::{SetupServiceKind, SetupStorage},
+    setup::{NodeSetupChoices, SetupServiceKind, SetupStorage},
+};
+use crowdb_protocol::{
+    ACCESS_SERVER_DATASET_HTTP_BASE, ACCESS_SERVER_HTTP_BASE, ACCESS_SERVER_ICEBERG_HTTP_BASE,
 };
 
 #[test]
@@ -19,15 +22,22 @@ fn fresh_local_policy_has_one_voter_and_all_public_access_listeners() {
         SetupStorage::Automatic { sparse: true, .. }
     ));
     assert!(policy.setup.services.iter().all(|service| service.enabled));
+    let diskdb = &policy.setup.services[1].listeners;
+    assert_eq!(diskdb.listen_port, Some(11000));
+    assert_eq!(diskdb.http_port, Some(11100));
+    assert_eq!(diskdb.rpc_port, Some(11200));
     let access = policy
         .setup
         .services
         .iter()
         .find(|service| service.kind == SetupServiceKind::AccessServer)
         .unwrap();
-    assert_eq!(access.listeners.s3_port, Some(9091));
-    assert_eq!(access.listeners.http_port, Some(9092));
-    assert_eq!(access.listeners.dataset_port, Some(9093));
+    assert_eq!(access.listeners.s3_port, Some(ACCESS_SERVER_HTTP_BASE));
+    assert_eq!(access.listeners.http_port, Some(ACCESS_SERVER_ICEBERG_HTTP_BASE));
+    assert_eq!(
+        access.listeners.dataset_port,
+        Some(ACCESS_SERVER_DATASET_HTTP_BASE)
+    );
 }
 
 #[test]
@@ -58,6 +68,19 @@ fn public_origins_resolve_per_field_and_survive_omitted_restart_inputs() {
     assert_eq!(environment["CROWDB_DATASET_PUBLIC_URI"], "http://127.0.0.1:19093");
     assert_eq!(environment.len(), 3);
     assert_eq!(accepted.setup, NodeDeploymentPolicy::default().setup);
+}
+
+#[test]
+fn shifted_setup_retains_the_group0_listener_pair_for_admission_metadata() {
+    let mut choices = NodeSetupChoices::default();
+    let kv = choices
+        .services
+        .iter_mut()
+        .find(|service| service.kind == SetupServiceKind::PaxosKv)
+        .unwrap();
+    kv.listeners.http_port = Some(10001);
+    kv.listeners.rpc_port = Some(10101);
+    assert_eq!(choices.paxos_kv_ports(), Some((10001, 10101)));
 }
 
 #[test]
@@ -175,7 +198,7 @@ fn invalid_policies_are_rejected_before_any_resolution_can_replace_them() {
             .is_err());
     }
     let mut duplicate_port = valid;
-    duplicate_port.setup.services[5].listeners.dataset_port = Some(9092);
+    duplicate_port.setup.services[5].listeners.dataset_port = Some(ACCESS_SERVER_ICEBERG_HTTP_BASE);
     assert!(duplicate_port.validate().is_err());
     duplicate_port.setup.services[5].listeners.dataset_port = None;
     assert!(duplicate_port.validate().is_err());

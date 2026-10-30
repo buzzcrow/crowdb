@@ -30,6 +30,28 @@ pub struct TransitionExecutor {
 }
 
 impl TransitionExecutor {
+    pub(super) async fn release_excluded_source(
+        &self,
+        transition: &TransferTransition,
+    ) -> Result<(), MonitorError> {
+        if transition.source.instance_id != self.instance_id || transition.release_proof.is_none() {
+            return Ok(());
+        }
+        let Some(partition) = self.service.hosted_partition(transition.partition_id) else {
+            return Ok(());
+        };
+        // A restarted source can reopen the still-published old assignment
+        // before cutover. Release its exact old WAL so the target can take over;
+        // a later assignment of the same partition must remain untouched.
+        if partition.snapshot().ownership_epoch != transition.source_epoch {
+            return Ok(());
+        }
+        partition
+            .suspend_for_shutdown(transition.source_epoch)
+            .await
+            .map_err(|error| plan_error(&error.to_string()))
+    }
+
     /// Creates a worker bound to one server identity.
     ///
     /// # Errors

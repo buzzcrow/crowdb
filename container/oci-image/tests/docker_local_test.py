@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 import uuid
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from docker_local_cleanup import clean, image_garbage, selected
@@ -19,7 +20,7 @@ from docker_local_state import CLUSTER, OWNER, Docker, load, seal
 
 class DockerLocalTest(unittest.TestCase):
     def setUp(self):
-        self.record = {"version": 1, "cluster": "first", "owner": str(uuid.uuid4()),
+        self.record = {"version": 2, "cluster": "first", "owner": str(uuid.uuid4()),
                        "runtime": {"daemon": "owned", "context": "default", "endpoint": "unix:///owned"},
                        "image_id": "sha256:retained", "image": "crowdb-node:dev", "nodes": 1,
                        "port_base": 9090, "cpus": 1, "memory_mib": 1536}
@@ -109,23 +110,41 @@ class DockerLocalTest(unittest.TestCase):
         item = {"Name": "/crowdb-first-1", "Image": record["image_id"], "Config": {"Labels": self.labels, "Env": environment},
                 "HostConfig": {"NanoCpus": 1_000_000_000, "Memory": 1536 * 1024 * 1024,
                                "NetworkMode": "crowdb-first", "PortBindings": {
-                                   f"{port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(port)}]
-                                   for port in range(9090, 9094)}},
+                                   f"{port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(9090+offset)}]
+                                   for offset, port in enumerate((9090, 16000, 17000, 18000))}},
                 "Mounts": [{"Destination": "/opt/crowdb/data", "Name": "owned-volume", "Type": "volume", "RW": True}]}
         verify_container(item, record, 1, "owned-volume", "crowdb-first")
+        legacy = dict(item, HostConfig=dict(item["HostConfig"], PortBindings={
+            f"{port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(port)}]
+            for port in range(9090, 9094)}))
+        verify_container(legacy, dict(record, version=1), 1, "owned-volume", "crowdb-first")
+        with self.assertRaisesRegex(ValueError, "endpoints"):
+            verify_container(legacy, record, 1, "owned-volume", "crowdb-first")
         for field, value in (("Image", "foreign"), ("Mounts", []), ("HostConfig", {})):
             with self.subTest(field=field), self.assertRaises((ValueError, KeyError)):
                 verify_container(dict(item, **{field: value}), record, 1, "owned-volume", "crowdb-first")
+
+    def test_compose_examples_publish_the_standard_node_listeners(self):
+        for filename in ("compose.yaml", "compose-three.yaml"):
+            document = yaml.safe_load((Path(__file__).resolve().parents[1] / filename).read_text())
+            for service in document["services"].values():
+                self.assertEqual([port.split("}:", 1)[1] for port in service["ports"]],
+                                 ["9090", "${CROWDB_S3_CONTAINER_PORT:-16000}",
+                                  "${CROWDB_ICEBERG_CONTAINER_PORT:-17000}",
+                                  "${CROWDB_DATASET_CONTAINER_PORT:-18000}"])
 
     def test_receipts_are_immutable_scoped_and_reject_symlinks(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             seal(self.record, directory)
             self.assertEqual(load("first", directory), self.record)
+            legacy = dict(self.record, cluster="legacy", version=1)
+            seal(legacy, directory)
+            self.assertEqual(load("legacy", directory), legacy)
             self.assertEqual(selected("first", False, directory), [self.record])
             other = dict(self.record, cluster="second", owner=str(uuid.uuid4()))
             seal(other, directory)
-            self.assertEqual(len(selected(None, True, directory)), 2)
+            self.assertEqual(len(selected(None, True, directory)), 3)
             with self.assertRaises(ValueError):
                 seal(dict(self.record, owner=str(uuid.uuid4())), directory)
             (directory / "foreign.json").symlink_to(directory / "first.json")

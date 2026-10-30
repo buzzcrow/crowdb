@@ -175,12 +175,19 @@ async fn unbound_setup_survives_a_worker_restart_without_creating_disks_or_servi
 
 #[tokio::test]
 async fn diskless_setup_requires_the_exact_confirmed_admission_and_does_not_start_services() {
-    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-setup-diskless");
+    for kv_enabled in [false, true] {
+        assert_diskless_setup(kv_enabled).await;
+    }
+}
+
+async fn assert_diskless_setup(kv_enabled: bool) {
+    let directory = run_root::TestRunRoot::new("node-setup-diskless");
     let root = directory.path();
     let mut choices = crowdb_protocol::mgmt::node::deployment::NodeDeploymentPolicy::default().setup;
     choices.storage = SetupStorage::Diskless;
     for service in &mut choices.services {
-        service.enabled = false;
+        service.enabled =
+            kv_enabled && service.kind == crowdb_protocol::mgmt::node::setup::SetupServiceKind::PaxosKv;
     }
     let inputs = crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides {
         storage: Some(choices.storage.clone()),
@@ -202,12 +209,17 @@ async fn diskless_setup_requires_the_exact_confirmed_admission_and_does_not_star
     let mut authority = node_setup::TestAuthority::start(root, &intent).await;
     let preparation_key = crowdb_console_shared::deployment::preparation::DEFAULT_PREPARATION_KEY;
     authority.kv.delete(0, 0, preparation_key, None).await.unwrap();
-    let profile = profile(root);
+    let mut profile = profile(root);
+    profile.paths.run_root = root.join("run");
+    let observe = kv_enabled.then(|| node_setup_control::processes_with_kv_once(&profile.paths.run_root));
     NodeSetupForTests::advance_for_tests(profile.clone())
         .await
         .unwrap();
     let status = NodeSetupForTests::status_for_tests(root).unwrap().unwrap();
     assert_eq!(status.phase, NodeSetupPhase::Ready);
+    if let Some(observe) = observe {
+        observe.await.unwrap();
+    }
     assert!(matches!(
         authority
             .kv

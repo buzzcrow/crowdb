@@ -33,6 +33,8 @@ impl SetupServiceKind {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetupListeners {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listen_port: Option<u16>,
     pub http_port: Option<u16>,
     pub rpc_port: Option<u16>,
     pub s3_port: Option<u16>,

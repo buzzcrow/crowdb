@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from fixture import HTTP, LABEL, request, wait
 from profiles.node import request as admission_request
+from profiles.setup_choices import diskless_policy
 import oci_reference_runtime as runtime
 import oci_reference_protocols as protocols
 
@@ -24,11 +25,8 @@ def create_nonvoter(cluster):
     name = cluster.expected_names[3]
     volume = runtime.node_volume(cluster, 3)
     policy = cluster.artifacts / 'later-member.toml'
-    lines = ['version = 1', 'mode = "local"', f'cluster = "{cluster.run_id}"',
-             'initial_voters = 3', '[storage]', 'mode = "diskless"']
-    for kind in ('paxos-kv', 'diskdb', 'diskio', 'chunkdb', 'chunk-kv', 'access-server'):
-        lines += ['[[services]]', f'kind = "{kind}"', 'enabled = false']
-    content = '\n'.join(lines) + '\n'
+    content = ('version = 1\nmode = "local"\n'
+               f'cluster = "{cluster.run_id}"\ninitial_voters = 3\n' + diskless_policy())
     if policy.exists():
         assert policy.read_text() == content
     else:

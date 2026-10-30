@@ -43,9 +43,9 @@ pub use node::{
 };
 pub use node::{
     accept_node_policy, accept_node_policy_with_port_offset, control_node, discover_disks, read_node_policy,
-    run_node, run_node_with_inputs, serve_node_management, CandidateCache, DiscoveryConfig, DiscoveryError,
-    NodeDiscovery, NodeIdentity, NodeIdentityError, NodeManagementError, NodeRuntimeConfig,
-    NODE_SERVICE_TYPE,
+    resolve_node_policy_with_port_offset, run_node, run_node_with_inputs, serve_node_management,
+    CandidateCache, DiscoveryConfig, DiscoveryError, NodeDiscovery, NodeIdentity, NodeIdentityError,
+    NodeManagementError, NodeRuntimeConfig, NODE_SERVICE_TYPE,
 };
 #[cfg(feature = "test-util")]
 pub use preview::{preview_step_names_for_tests, run_preview_for_tests, PreviewError};
@@ -60,7 +60,7 @@ pub use status::{MonitorPhase, MonitorStatus, ServiceStatus, StatusError, Status
 pub use supervisor::{Supervisor, SupervisorError};
 
 #[cfg(feature = "test-util")]
-pub use node::rebind_recovery_services_for_tests;
+pub use node::{apply_member_endpoints_for_tests, rebind_recovery_services_for_tests};
 
 pub use node::read_recovery_identity;
 

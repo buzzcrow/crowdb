@@ -1,7 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_monitor::{cleanup_node_for_tests, DeploymentProfile, ProcessManager};
+use crowdb_monitor::{accept_node_policy, cleanup_node_for_tests, DeploymentProfile, ProcessManager};
+use crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides;
 use crowdb_protocol::mgmt::SystemBootstrapIdentity;
 use crowdb_test_harness::test_dirs::tempdir_in_test_data;
 use std::{os::unix::fs::PermissionsExt, path::Path};
@@ -11,6 +12,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 async fn retired_cleanup_restarts_its_local_worker_after_a_failed_deletion() {
     let directory = tempdir_in_test_data("monitor-retired-cleanup");
     let root = directory.path();
+    let defaults = NodeDeploymentOverrides::default();
+    accept_node_policy(root, &defaults, &defaults).unwrap();
     let bootstrap = SystemBootstrapIdentity {
         cluster_id: uuid::Uuid::new_v4().to_string(),
         operation_id: uuid::Uuid::new_v4().to_string(),

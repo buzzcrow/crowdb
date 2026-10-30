@@ -660,11 +660,15 @@ impl PxKvStore {
 }
 
 pub(crate) fn missing_group_response(request_id: u64, request_create_ms: u64) -> crate::rpc::KvResponse {
-    crate::rpc::KvResponse::err(
+    let mut response = crate::rpc::KvResponse::err(
         "no kv group configured for request group_id".to_string(),
         request_id,
         request_create_ms,
-    )
+    );
+    // A cached route may name a replica removed from this process. The caller
+    // must discover the current leader rather than repeat the obsolete route.
+    response.error_code = crate::rpc::KvErrorCode::KvErrorNotLeader as i32;
+    response
 }
 
 /// Build a failed [`crate::rpc::KvScanResponse`] carrying `error` and an

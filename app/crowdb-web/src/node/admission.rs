@@ -189,15 +189,14 @@ async fn admit_observed(
         .map_err(map_config_err)?;
     }
     save(&path, &record)?;
-    let setup = body.setup.clone();
-    super::setup::accept(state, &record, &target, body.setup, body.expected_formation).await?;
+    let setup = super::setup::accept(state, &record, &target, body.setup, body.expected_formation).await?;
     target.ssh_password = None;
     target.ssh_key = None;
     target.ssh_credential_ref = Some("id_ed25519".into());
     if let Some(binding) = &binding {
         confirm_admission(state, binding, &key, &target, &mut record).await?;
     }
-    update_config(state, &record, target, setup.as_ref())?;
+    update_config(state, &record, target, Some(&setup))?;
     save(&path, &record)?;
     state.persist().map_err(map_persist_err)?;
     super::preflight::finish(state, &record)?;

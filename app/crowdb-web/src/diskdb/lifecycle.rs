@@ -26,6 +26,9 @@ pub struct DeployDiskdbBody {
     /// Internal HTTP health port. When omitted, derived from `rpc_port`.
     #[serde(default)]
     pub http_port: Option<u16>,
+    /// Explicit RPC listener for policies with independent listener ranges.
+    #[serde(default)]
+    pub rpc_listen_port: Option<u16>,
     /// Normal `DiskDB` heartbeat cadence, retained across service restart.
     #[serde(default)]
     pub keepalive_interval_secs: Option<std::num::NonZeroU32>,
@@ -36,9 +39,11 @@ pub(super) fn validate_diskdb_ports(
 ) -> Result<(u16, u16, u16), (StatusCode, Json<ErrorBody>)> {
     let listen_port = body.listen_port.unwrap_or(body.rpc_port);
     let http_port = body.http_port.unwrap_or_else(|| body.rpc_port.saturating_add(1));
-    let rpc_listen_port = body.rpc_port.saturating_add(2);
+    let rpc_listen_port = body
+        .rpc_listen_port
+        .unwrap_or_else(|| body.rpc_port.saturating_add(2));
     let ports = [listen_port, http_port, rpc_listen_port];
-    if ports.contains(&0) || body.rpc_port > 65_533 {
+    if ports.contains(&0) || (body.rpc_listen_port.is_none() && body.rpc_port > 65_533) {
         return Err(err_400("DiskDB ports must be in the range 1..=65535"));
     }
     if ports[0] == ports[1] || ports[0] == ports[2] || ports[1] == ports[2] {

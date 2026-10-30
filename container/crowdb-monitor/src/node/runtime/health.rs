@@ -181,7 +181,10 @@ impl NodeHealth {
             self.probe_failures.remove(&intent.service_id);
             return Ok(false);
         }
-        let service = match super::probes::for_intent(profile, intent) {
+        // An ownership handover can withdraw readiness while the service is
+        // still advancing its durable transition. Restart only a failed live
+        // listener; keep readiness probes for the published health snapshot.
+        let service = match super::probes::liveness_for_intent(profile, intent) {
             Ok(service) => service,
             Err(error) => {
                 tracing::debug!(service = %intent.service_id, %error, "service health probe unavailable");

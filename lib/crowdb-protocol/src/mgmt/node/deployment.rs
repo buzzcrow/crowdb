@@ -4,6 +4,12 @@
 //! Accepted startup inputs, distinct from discovered or confirmed membership.
 
 use super::setup::{NodeSetupChoices, SetupService, SetupServiceKind, SetupStorage};
+use crate::{
+    ACCESS_SERVER_DATASET_HTTP_BASE, ACCESS_SERVER_HEALTH_HTTP_BASE, ACCESS_SERVER_HTTP_BASE,
+    ACCESS_SERVER_ICEBERG_HTTP_BASE, CHUNKDB_HTTP_BASE, CHUNKDB_RPC_BASE, CHUNK_KV_HTTP_BASE,
+    CHUNK_KV_RPC_BASE, DISKDB_HTTP_BASE, DISKDB_LISTEN_BASE, DISKDB_RPC_BASE, DISKIO_RPC_BASE,
+    KV_SERVER_LISTEN_BASE, KV_SERVER_MGMT_BASE,
+};
 use serde::{Deserialize, Serialize};
 
 mod public_access;
@@ -73,24 +79,28 @@ impl Default for NodeDeploymentPolicy {
             let listeners = &mut service.listeners;
             match service.kind {
                 SetupServiceKind::PaxosKv => {
-                    listeners.http_port = Some(10000);
-                    listeners.rpc_port = Some(10100);
+                    listeners.http_port = Some(KV_SERVER_MGMT_BASE);
+                    listeners.rpc_port = Some(KV_SERVER_LISTEN_BASE);
                 }
-                SetupServiceKind::Diskdb => listeners.rpc_port = Some(7100),
-                SetupServiceKind::Diskio => listeners.rpc_port = Some(7200),
+                SetupServiceKind::Diskdb => {
+                    listeners.listen_port = Some(DISKDB_LISTEN_BASE);
+                    listeners.http_port = Some(DISKDB_HTTP_BASE);
+                    listeners.rpc_port = Some(DISKDB_RPC_BASE);
+                }
+                SetupServiceKind::Diskio => listeners.rpc_port = Some(DISKIO_RPC_BASE),
                 SetupServiceKind::Chunkdb => {
-                    listeners.http_port = Some(7300);
-                    listeners.rpc_port = Some(7301);
+                    listeners.http_port = Some(CHUNKDB_HTTP_BASE);
+                    listeners.rpc_port = Some(CHUNKDB_RPC_BASE);
                 }
                 SetupServiceKind::ChunkKv => {
-                    listeners.http_port = Some(7400);
-                    listeners.rpc_port = Some(7401);
+                    listeners.http_port = Some(CHUNK_KV_HTTP_BASE);
+                    listeners.rpc_port = Some(CHUNK_KV_RPC_BASE);
                 }
                 SetupServiceKind::AccessServer => {
-                    listeners.s3_port = Some(9091);
-                    listeners.http_port = Some(9092);
-                    listeners.dataset_port = Some(9093);
-                    listeners.health_port = Some(9094);
+                    listeners.s3_port = Some(ACCESS_SERVER_HTTP_BASE);
+                    listeners.http_port = Some(ACCESS_SERVER_ICEBERG_HTTP_BASE);
+                    listeners.dataset_port = Some(ACCESS_SERVER_DATASET_HTTP_BASE);
+                    listeners.health_port = Some(ACCESS_SERVER_HEALTH_HTTP_BASE);
                 }
             }
         }
@@ -101,9 +111,9 @@ impl Default for NodeDeploymentPolicy {
             initial_voters: 1,
             setup,
             public_access: PublicAccessUris {
-                s3: Some("http://127.0.0.1:9091".into()),
-                iceberg: Some("http://127.0.0.1:9092".into()),
-                dataset: Some("http://127.0.0.1:9093".into()),
+                s3: Some(format!("http://127.0.0.1:{ACCESS_SERVER_HTTP_BASE}")),
+                iceberg: Some(format!("http://127.0.0.1:{ACCESS_SERVER_ICEBERG_HTTP_BASE}")),
+                dataset: Some(format!("http://127.0.0.1:{ACCESS_SERVER_DATASET_HTTP_BASE}")),
             },
         }
     }
@@ -142,6 +152,7 @@ impl NodeDeploymentPolicy {
         for service in self.setup.services.iter().filter(|service| service.enabled) {
             let ports = &service.listeners;
             if [
+                ports.listen_port,
                 ports.http_port,
                 ports.rpc_port,
                 ports.s3_port,

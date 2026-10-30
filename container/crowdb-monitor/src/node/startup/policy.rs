@@ -7,7 +7,7 @@ use std::{fs, io, path::Path};
 
 use crowdb_protocol::mgmt::node::{
     deployment::{NodeDeploymentOverrides, NodeDeploymentPolicy},
-    setup::SetupStorage,
+    setup::{SetupService, SetupStorage},
 };
 
 use crate::node::durable;
@@ -57,13 +57,7 @@ pub fn accept_node_policy_with_port_offset(
         return Err(io::Error::other("node policy root must be an absolute directory"));
     }
     let accepted = read_node_policy(root)?;
-    let mut selected = explicit
-        .resolve(file, accepted.as_ref())
-        .map_err(io::Error::other)?;
-    if accepted.is_none() && offset != 0 {
-        shift_policy_ports(&mut selected, offset)?;
-        selected.validate().map_err(io::Error::other)?;
-    }
+    let selected = resolve_node_policy_with_port_offset(file, explicit, accepted.as_ref(), offset)?;
     if accepted.is_some() {
         validate_retained_identity(root)?;
         return Ok(selected);
@@ -87,9 +81,34 @@ pub fn accept_node_policy_with_port_offset(
     Ok(winner)
 }
 
-fn shift_policy_ports(policy: &mut NodeDeploymentPolicy, offset: u16) -> io::Result<()> {
-    for service in &mut policy.setup.services {
+/// Resolve launcher inputs into the same port space as the accepted policy.
+///
+/// # Errors
+/// Rejects invalid inputs, port overflow and changes to accepted policy.
+pub fn resolve_node_policy_with_port_offset(
+    file: &NodeDeploymentOverrides,
+    explicit: &NodeDeploymentOverrides,
+    accepted: Option<&NodeDeploymentPolicy>,
+    offset: u16,
+) -> io::Result<NodeDeploymentPolicy> {
+    let (mut file, mut explicit) = (file.clone(), explicit.clone());
+    if accepted.is_some() {
+        for services in [&mut file.services, &mut explicit.services].into_iter().flatten() {
+            shift_service_ports(services, offset)?;
+        }
+    }
+    let mut selected = explicit.resolve(&file, accepted).map_err(io::Error::other)?;
+    if accepted.is_none() {
+        shift_service_ports(&mut selected.setup.services, offset)?;
+        selected.validate().map_err(io::Error::other)?;
+    }
+    Ok(selected)
+}
+
+fn shift_service_ports(services: &mut [SetupService], offset: u16) -> io::Result<()> {
+    for service in services {
         for port in [
+            &mut service.listeners.listen_port,
             &mut service.listeners.http_port,
             &mut service.listeners.rpc_port,
             &mut service.listeners.s3_port,

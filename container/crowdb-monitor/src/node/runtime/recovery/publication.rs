@@ -21,8 +21,7 @@ pub(super) async fn reconcile(
 ) -> Result<()> {
     let local = super::identity(root)?.endpoint;
     let mut config = topology.clone();
-    let (management_port, rpc_port) = super::super::kv::ports_from_root(root)?;
-    let seeds = apply_member_endpoints(&mut config, endpoints, management_port, rpc_port)?;
+    let seeds = apply_member_endpoints(&mut config, endpoints)?;
     let client = Arc::new(CrowdbKvClient::new(ClientConfig::new(seeds.clone())));
     let GetOutcome::Found { value, .. } = client
         .get(
@@ -97,12 +96,7 @@ pub(super) async fn reconcile(
     Ok(())
 }
 
-fn apply_member_endpoints(
-    config: &mut ConsoleConfig,
-    endpoints: &MemberEndpoints,
-    management_port: u16,
-    rpc_port: u16,
-) -> Result<Vec<String>> {
+fn apply_member_endpoints(config: &mut ConsoleConfig, endpoints: &MemberEndpoints) -> Result<Vec<String>> {
     let mut seeds = Vec::new();
     for node in &mut config.nodes {
         let Some(peer) = endpoints.members.iter().find(|peer| peer.node_id == node.id) else {
@@ -115,18 +109,24 @@ fn apply_member_endpoints(
             .or_else(|| peer.addresses.first())
             .ok_or("member address missing")?;
         node.host = address.to_string();
-        seeds.push(format!(
-            "http://{}",
-            std::net::SocketAddr::new(*address, management_port)
-        ));
-        for server in config
+        let server = config
             .servers
             .iter_mut()
-            .filter(|server| server.node_id == Some(node.id))
-        {
-            server.url = format!("http://{}", std::net::SocketAddr::new(*address, management_port));
-            server.rpc_url = Some(std::net::SocketAddr::new(*address, rpc_port).to_string());
-        }
+            .find(|server| {
+                server.node_id == Some(node.id)
+                    && server.service_type == crowdb_console_shared::config::ServiceType::PaxosKv
+            })
+            .ok_or("member KV topology missing")?;
+        let management_port = reqwest::Url::parse(&server.url)?
+            .port_or_known_default()
+            .ok_or("member management port missing")?;
+        let rpc = server.rpc_url.as_ref().ok_or("member RPC endpoint missing")?;
+        let rpc_port = reqwest::Url::parse(&format!("http://{rpc}"))?
+            .port()
+            .ok_or("member RPC port missing")?;
+        server.url = format!("http://{}", std::net::SocketAddr::new(*address, management_port));
+        server.rpc_url = Some(std::net::SocketAddr::new(*address, rpc_port).to_string());
+        seeds.push(server.url.clone());
     }
     Ok(seeds)
 }
@@ -211,6 +211,18 @@ async fn rebind(
     }
     durable::write(&path, &current)?;
     Ok(true)
+}
+
+#[cfg(feature = "test-util")]
+/// Rebind authenticated contacts while retaining each member's accepted ports.
+///
+/// # Errors
+/// Rejects missing member topology or malformed accepted endpoints.
+pub fn apply_member_endpoints_for_tests(
+    config: &mut ConsoleConfig,
+    endpoints: &MemberEndpoints,
+) -> Result<Vec<String>> {
+    apply_member_endpoints(config, endpoints)
 }
 
 #[cfg(feature = "test-util")]

@@ -28,6 +28,9 @@ use crowdb_protocol::diskdb::rpc::Segment;
 #[path = "production_chunk_test/recovery.rs"]
 mod recovery;
 
+#[path = "production_chunk_test/recovery_drain.rs"]
+mod recovery_drain;
+
 #[path = "production_chunk_test/local_progress.rs"]
 mod local_progress;
 
@@ -441,6 +444,7 @@ struct Disks {
     initialization_started: tokio::sync::Notify,
     initialization_resume: tokio::sync::Notify,
     drain_delay_ms: AtomicU64,
+    fail_all_drains: AtomicBool,
     active_drains: AtomicUsize,
     max_active_drains: AtomicUsize,
     completed_drains: AtomicUsize,
@@ -482,7 +486,11 @@ impl DiskWriter for Disks {
         if delay != 0 {
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         }
-        let result = self.fsync(segment).await;
+        let result = if self.fail_all_drains.load(Ordering::Acquire) {
+            Err(IoError::WriteFailed("all mirror drains unavailable".into()))
+        } else {
+            self.fsync(segment).await
+        };
         self.active_drains.fetch_sub(1, Ordering::AcqRel);
         self.completed_drains.fetch_add(1, Ordering::AcqRel);
         result

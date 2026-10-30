@@ -11,6 +11,57 @@ use crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides;
 mod run_root;
 
 #[test]
+fn explicit_file_listener_ports_are_shifted_once_across_repeated_acceptance() {
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-policy-file-offset");
+    let omitted = NodeDeploymentOverrides::default();
+    let mut file = NodeDeploymentOverrides {
+        services: Some(
+            crowdb_protocol::mgmt::node::deployment::NodeDeploymentPolicy::default()
+                .setup
+                .services,
+        ),
+        ..Default::default()
+    };
+    let accepted =
+        crowdb_monitor::accept_node_policy_with_port_offset(root.path(), &file, &omitted, 1).unwrap();
+    let bytes = fs::read(root.path().join("node-policy.json")).unwrap();
+    assert_eq!(
+        crowdb_monitor::accept_node_policy_with_port_offset(root.path(), &file, &omitted, 1).unwrap(),
+        accepted
+    );
+    file.services.as_mut().unwrap()[0].listeners.rpc_port = Some(10102);
+    assert!(crowdb_monitor::accept_node_policy_with_port_offset(root.path(), &file, &omitted, 1).is_err());
+    assert_eq!(fs::read(root.path().join("node-policy.json")).unwrap(), bytes);
+}
+
+#[test]
+fn host_network_policy_shifts_every_diskdb_listener_once_and_keeps_instances_disjoint() {
+    let omitted = NodeDeploymentOverrides::default();
+    let mut listeners = std::collections::BTreeSet::new();
+    for offset in 0..3 {
+        let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-policy-offset");
+        let policy =
+            crowdb_monitor::accept_node_policy_with_port_offset(root.path(), &omitted, &omitted, offset)
+                .unwrap();
+        let diskdb = &policy.setup.services[1].listeners;
+        assert_eq!(diskdb.listen_port, Some(11000 + offset));
+        assert_eq!(diskdb.http_port, Some(11100 + offset));
+        assert_eq!(diskdb.rpc_port, Some(11200 + offset));
+        for port in [diskdb.listen_port, diskdb.http_port, diskdb.rpc_port]
+            .into_iter()
+            .flatten()
+        {
+            assert!(listeners.insert(port));
+        }
+        assert_eq!(
+            crowdb_monitor::accept_node_policy_with_port_offset(root.path(), &omitted, &omitted, offset,)
+                .unwrap(),
+            policy
+        );
+    }
+}
+
+#[test]
 fn accepted_policy_survives_restart_without_defaults_or_identity_effects() {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("accepted-node-policy");
     let omitted = NodeDeploymentOverrides::default();

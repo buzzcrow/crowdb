@@ -5,160 +5,170 @@
 
 Upstream: [deployment design](../design/deploy/design-crowdb-deploy.md),
 [OCI image guide](../design/deploy/design-crowdb-oci-image.md),
-[KV quorum design](../design/kv/design-crowdb-kv-group0.md).
+[KV quorum design](../design/kv/design-crowdb-kv-group0.md),
+[Chunk-KV recovery design](../design/chunkds/design-crowdb-chunk-kv-server.md).
 
-Goal: validate the current CI reliability fixes on two real Linux hosts using
-reproducible CROWDB clusters, with cross-host discovery, key-only admission,
-host-network container composition, Group 0 bootstrap, service readiness
-recovery, transient KV quorum loss during allocation, and owned cleanup
-evidence.
+Goal: validate discovery, key-only admission, host-network composition,
+service readiness, bounded data operations and recovery on two real hosts.
+Results and receipts: [track-two-physical-nodes.md](track-two-physical-nodes.md).
+The physical three-container matrix and requested CI selections pass. The plan
+remains open for authorized publication and the five-container physical follow-up.
 
-## Topology and limits
+## Fixture and constraints
 
-The basic two-physical-node run uses one logical node per host and one initial
-voter. It proves cross-host discovery, key-only admission and durable restart;
-it does not claim two-voter quorum. The composition run uses three logical
-voters on one host with listener offsets `0`, `200` and `400`; this validates
-that a physical host can run multiple host-network containers. A later mixed
-placement can put any of those logical nodes on the second host.
+- Host A: `u24-amd`, `192.168.31.129`; host B: `cj7960`, `192.168.31.184`.
+- Final placement: two logical voters on A, one on B; host-network offsets
+  `0/1` on A and `0` on B. Each node owns a separate labeled volume.
+- All remote work now uses `cj` and `id_ed25519`, key-only SSH. Existing
+  authorized keys are preserved; passwords are absent from run artifacts.
+- Build and execute through `pixi run`. Record immutable OCI receipts and
+  compare execution configuration plus ordered rootfs layers on both hosts.
+- Never alter shared firewall, Docker, NIC, routes or kernel settings.
+  Stop/remove only resources verified to carry the exact run label.
+- Preserve the first failing operation and complete logs. Do not lengthen
+  deadlines or add caller retries to turn a failure into a pass.
 
-- Physical host A: `u24-amd`, `192.168.31.129`, Linux 6.8, Docker 29.8.1.
-- Physical host B: `cj7960`, `192.168.31.184`, Linux 6.11, Docker 28.3.3.
-- Inventory evidence: `.crowdb-runtime/artifacts/two-physical-nodes-20261030T010205Z/run-manifest.json`.
-- Bidirectional ICMP and SSH/22 reachability passed; CROWDB service ports are
-  currently closed on both hosts.
-- Remote account: `cj`; credentials are used only through SSH/`sshpass` and
-  are never written to the plan, logs, environment artifacts, or reports.
-- Required source/image identity: the current checkout plus a newly built
-  immutable OCI image; the existing images differ in source revisions and are
-  not acceptable for the final run.
-- Network: direct host addresses on `192.168.31.0/24`; all advertised
-  management, KV, DiskDB, DiskIO, ChunkDB, Chunk-KV, Access, Web and SSH
-  endpoints must be reachable from both hosts. Host-network listener offsets
-  use a stride of at least `200`: offset `100` collides with the adjacent
-  default KV RPC range (`10000/10100`).
+## Completed prerequisites and baseline
 
-## Safety gates
+- [x] **Inventory and reachability**: capture hosts, interfaces, Docker versions,
+  resources, endpoint ownership and cross-host SSH/TCP reachability.
+- [x] **Repair host SSH**: install the existing public key on B, preserve other
+  keys, verify permissions and key-only `BatchMode` login.
+- [x] **Compose offset nodes**: verify all canonical listener blocks and
+  offset-resolved setup choices. Local offsets `0/1/2` reached active Group 0.
+  Files: `container/oci-image/run-node.py`,
+  `container/single-node-container/entrypoint.sh`,
+  `lib/crowdb-protocol/src/mgmt/node/deployment.rs`,
+  `container/crowdb-monitor/src/node/startup/policy.rs`.
+- [x] **Persist accepted admission choices**: use the target-resolved choices
+  for endpoint publication when the request omits setup. Files:
+  `app/crowdb-web/src/node/{admission,setup}.rs`.
+- [x] **Separate DiskDB listener blocks**: support explicit main/HTTP/RPC ports,
+  shift each once, retain custom legacy base behavior, and prove adjacent
+  instances disjoint. Files: protocol node setup/validation/deployment,
+  Web DiskDB lifecycle/configuration and planned deployment, monitor policy.
+- [x] **Exact mixed-placement image and bootstrap**: import the verified image
+  on both hosts, admit all three nodes without passwords, initialize
+  three-voter Group 0, provision production disk media, and reach seven
+  healthy services per node. Files: attempt-12 receipts and snapshots.
+- [x] **Bounded baseline corpus**: KV put/get/batch, 96 KiB S3 object,
+  Iceberg metadata, and a small mirrored ChunkDB allocation; cross-host exact
+  reads. Files: attempt-12 corpus and native-client evidence.
+- [x] **Retained-volume recreation**: recreate all three nodes with the
+  corrected image and original identities, without a password-file mount.
 
-- Only run containers, data directories, bridges and logs labeled with this
-  run's UUID. Never reuse an existing CROWDB cluster or data root.
-- Capture `docker inspect`, image receipt, host inventory, endpoint map and
-  service logs before cleanup. Cleanup stops and removes only this run's
-  containers, volumes, networks and remote directories.
-- Do not change system firewall, routes, Docker daemon settings, kernel
-  parameters, physical NIC settings or shared services. A missing port or
-  privilege is a blocked prerequisite, not a reason to weaken the test.
-- Keep the first workload small and bounded. Do not add retries or lengthen
-  readiness deadlines to hide a failure; record the first failing operation,
-  logs and persisted status, then stop the affected phase.
+## Recovery verification and remaining work
 
-## Phase 1: inventory and owned fixture
+- [x] **Managed listener recovery**: fault one owned Chunk-KV child, require a
+  changed PID within the existing bound, all services ready and cross-host
+  corpus reads. Strengthen Access startup to probe every catalog owner before
+  another launch. Files: monitor service dependencies and regression tests.
+- [x] **Allocation retry contract regression**: use real RPC responses to prove
+  known `Unavailable` retries the same chunk ID and a lost reply submits once.
+  File: `app/crowdb-chunkdb/tests/allocation_retry_test.rs`.
+- [x] **Observe remote loss**: stop B, verify KV quorum write/read, retain the
+  S3 `ServiceUnavailable` result and failed 180-second catalog failover wait,
+  then restore B. This completed observation is a failed availability case.
+- [x] **Diagnose recovery defects**: reproduce the unfinished owner-2-to-owner-1
+  `TargetPreparing` transfer and explain why it cannot finish; inspect the
+  planner's busy-owner exclusion and the target preparation dependency.
+  DiskDB stale-owner discovery and released-source WAL/grant fixes pass focused
+  regressions. Attempt 15 also reproduced empty sealed-WAL recovery rejection;
+  the production adapter regression passes. The upgrade then exposed reclaimed-journal recovery losing live DiskDB occupancy; KV and DiskDB restart regressions now pass. Preserve the corrupted attempt-15 evidence and run a fresh dynamic-ownership matrix after rebuilding. Files: Chunk-KV transition worker/monitor, DiskDB ownership lifecycle,
+  and focused regressions selected from first divergence evidence.
+- [x] **Repeat physical allocation retry**: attempt 15 retained three voters,
+  injected Group-1-only leadership unavailability, observed the explicit
+  allocation-level `Unavailable` retry, and completed same-ID allocation/query
+  within the original five-retry/10-second limit. The KV processes and Group 0
+  stayed live. Earlier process-pause attempts are separate failed observations.
+- [x] **Repeat remote storage recovery**: after repairing the defects, stop B,
+  require bounded range recovery and one-shot S3/Iceberg reads, recreate B with
+  its volume/key-only admission, and recheck identities and exact data.
+- [x] **Repeat expected two-voter host loss**: after preceding recovery passes,
+  stop both A nodes, record expected Group-0 unavailability, restore them and
+  verify all services and durable data. Earlier-image evidence is historical.
+- [x] **Pass final health/data/allocation gate**: require stable healthy PIDs,
+  existing KV/S3/Iceberg reads, a fresh batch and fresh allocation/query.
+  Attempt 12 passed restored health, existing reads and batch, but failed fresh
+  allocation with `disk-group not owned`.
 
-- [x] **Record host inventory**: capture hostnames, IP/interface selection,
-  kernel, Docker, CPU/memory, disk space, image presence, and bidirectional
-  SSH/TCP reachability. Files: this plan, run manifest and artifact directory.
-- [x] **Add host-network port offsets**: extend the existing
-  `CROWDB_PORT_OFFSET` path to shift monitor, Web, Access, KV, DiskDB,
-  DiskIO, ChunkDB, Chunk-KV and SSH listeners; persist shifted setup choices
-  and use them for Group 0 endpoint publication. Verify the launcher offset
-  validator and shell syntax. Files: `container/single-node-container/entrypoint.sh`,
-  `container/crowdb-monitor/src/node_args.rs`,
-  `container/crowdb-monitor/src/node/runtime/kv.rs`,
-  `container/oci-image/run-node.py`.
-- [x] **Build and distribute exact image**: build with `pixi run oci-build`,
-  record source tree and image digests, transfer/import the same archive on
-  both hosts, and verify the digest plus required runtime labels. The final
-  flexible-port image was also built locally for the three-container run;
-  transfer it to host B before a mixed-placement run.
-- [x] **Prepare isolated roots**: create one run UUID, per-host data/log roots,
-  a unique Docker network or host-network port map, and a machine-readable
-  endpoint map. Verify no endpoint is already owned.
-- [x] **Start two logical nodes**: launch one node per physical host with
-  `initial_voters = 1`, distinct data roots and explicit physical-host IDs.
-  Verify both candidates are visible before admission.
-- [x] **Start three composed nodes**: launch three offset nodes on one
-  physical host with offsets `0/200/400`, verify all listener families are
-  unique, and verify all three candidates are visible before admission.
+## Evidence and cleanup
 
-## Phase 2: bootstrap and normal cross-host behavior
-
-- [x] **Admit and bootstrap the two-node run**: create one rack record, admit
-  both discovered nodes with `ssh_password = null`, initialize one-voter Group
-  0, and record node IDs, discovery IDs and cluster ID.
-- [x] **Admit and bootstrap the composed three-node run**: create one rack,
-  admit all three offset nodes with key-only SSH, initialize three-voter Group
-  0, and verify management/RPC ports `10000/10100`, `10200/10300` and
-  `10400/10500`.
-- [ ] **Verify dependency readiness**: wait for KV, DiskDB, DiskIO, ChunkDB,
-  Chunk-KV and Access readiness on all logical nodes. Confirm the monitor
-  status is `ready` and identities/PIDs are stable after one health interval.
-- [ ] **Run bounded data corpus**: perform KV put/get/batch, S3 bucket/object
-  put/get, one Iceberg metadata round trip and one ChunkDB small allocation;
-  verify exact bytes and read through both physical-host endpoints.
-
-## Phase 3: failure and recovery cases
-
-- [x] **Remote logical-node restart**: stop and recreate host B's node using
-  the same data root without mounting a password file. Verify the original
-  discovery identity, cluster ID, active Group 0 status and key-only SSH.
-- [ ] **Remote logical-node stop**: stop only host B's CROWDB node. Verify the
-  two host-A voters retain Group 0 quorum, linearizable KV writes continue,
-  existing S3 reads continue, and status identifies the stopped node.
-- [x] **Key-only composed restart**: recreate each of the three composed
-  containers without `CROWDB_SSH_PASSWORD_FILE`; verify
-  `PasswordAuthentication no`, all three dynamic KV health endpoints and
-  active Group 0 status.
-- [ ] **Managed listener failure**: stop or fault only the selected Chunk-KV
-  listener while leaving its process ownership observable. Verify consecutive
-  readiness failures trigger the monitor's bounded restart, the PID changes,
-  Access becomes ready again, and no caller timeout is modified.
-- [ ] **Transient allocation quorum loss**: during a bounded small allocation,
-  pause one KV voter long enough to produce the known `leadership quorum
-  unavailable` response, restore it, and verify ChunkDB allocation recovers
-  through the allocation-only transient path. Verify outcome-unknown cases
-  remain terminal and no duplicate chunk metadata is published.
-- [ ] **Expected two-voter host loss**: stop host A's two logical nodes only
-  after the preceding recovery cases pass. Record the expected Group 0 quorum
-  loss and the exact readiness/error surfaces, then restore both nodes and
-  verify durable state recovery. This is an observation case, not a pass claim
-  for availability while two of three voters are down.
-
-## Phase 4: evidence and cleanup
-
-- [ ] **Collect evidence**: save commands, source/image identity, endpoint map,
-  host inventory, cluster status snapshots, monitor events, service logs,
-  process identities, workload results and first-failure diagnostics.
-- [ ] **Run final health/data gate**: after all recovery cases, require all
-  three logical nodes and their enabled services ready, repeat KV and object
-  reads from both physical hosts, and check no unexpected process/container
-  remains.
-- [ ] **Cleanup owned resources**: stop/remove only this run's containers,
-  networks, volumes and remote directories; verify the endpoints are closed
-  and retain artifacts outside deleted data roots.
-- [ ] **Report result**: mark each case pass, expected observation, failed or
-  blocked with evidence. Do not mark the run complete if the image, placement,
-  or cross-host path was not proven.
-
-## Consolidated files and commands
-
-- Plan/tracking: `doc/working/plan-two-physical-nodes.md`,
-  `doc/working/track-two-physical-nodes.md`.
-- Image: `container/oci-image/build.py`, `container/oci-image/run-node.py`,
-  `container/oci-image/control.py`.
-- Existing lifecycle references: `e2e-test/profiles/node-bootstrap.py`,
-  `e2e-test/profiles/containerd-cluster.py`, `e2e-test/console_native_fixture.py`.
-- Local quality gates: `pixi run cargo fmt --all -- --check`, affected Rust
-  tests/clippy, and `pixi run oci-build`.
-- Remote checks: `ssh`, `docker`, `docker inspect`, `docker logs`, and the
-  repository's CLI/HTTP cluster status commands, all recorded in the run
-  manifest.
+- [x] **Freeze diagnostics**: retain status, inspect, policies, receipts,
+  transitions, workload errors and complete logs. Capture final log archives
+  after container stop to avoid concurrent-write tar failures.
+- [x] **Clean exact owned resources**: remove attempt-12 through attempt-16 containers and volumes,
+  delete its remote transfer archives, verify all owned endpoints closed,
+  retain artifacts outside deleted volumes and retain host-B SSH access.
+- [x] **Report actual coverage**: distinguish passes, failed recovery cases,
+  earlier-image observations and the physical retry coverage gap.
 
 ## Verification groups
 
-- Unit: current monitor and ChunkDB regression tests already added for the CI
-  failures.
-- Integration: image/launcher validation, endpoint ownership, discovery and
-  SSH admission.
-- Physical E2E: three logical voters over two physical hosts, normal writes,
-  one-voter loss/restart, managed listener recovery, transient allocation
-  recovery, expected two-voter quorum loss and durable recovery.
+- Protocol: node deployment/setup contract tests and full crate tests.
+- Web: DiskDB deployment configuration tests and full crate tests.
+- Monitor: node policy, service dependencies and service readiness tests.
+- ChunkDB: allocation retry tests and dynamic retry tests.
+- Quality: Rust fmt, affected crates' clippy with warnings denied, launcher
+  Python tests and shell syntax; immutable OCI build for production changes.
+- Physical: repeat only the affected matrix after the first failures are
+  repaired, preserving successful baseline evidence and default limits.
+
+## After physical validation: requested CI jobs
+
+- [x] **Fetch requested CI evidence**: retain all eight job logs and map the
+  exact failed cases in run 41003611925 after completing physical attempt 16.
+- [x] **Repair retained Monitor fixtures**: accept valid startup policy before
+  identity, resume and cleanup operations. The exact two failures pass; the
+  earlier passing Monitor targets and the remaining targets are retained.
+  Files: `container/crowdb-monitor/tests/{kv_resume,node_cleanup}_test.rs`.
+- [x] **Repair common Console/bootstrap policy**: the exact inspection case
+  reproduces container exit due to disabled Paxos KV, followed by no route to
+  host. Keep mandatory KV listeners enabled while skipping storage setup;
+  verify the original case and affected Console/deployment selections.
+  Files: `e2e-test/profiles/setup_choices.py`, native policy, bridge-node and
+  reference-recovery fixtures.
+- [x] **Preserve live services during readiness recovery**: native inspection
+  passed serially after bootstrap repair but a concurrent-load run exposed a
+  monitor restart during normal transfer readiness withdrawal. Recorded HTTP
+  evidence distinguishes `/ready` 503 from `/health` 200. Keep readiness for
+  admission/status and liveness for restart decisions; preserve dead-listener
+  restart assertions and verify the new image with the affected case.
+  Files: monitor runtime health/probes and service readiness regression.
+- [x] **Verify Go SDK failure cleanup**: focused and complete S3 selections
+  pass. Retain safe operation/error diagnostics; the original opaque CI
+  cleanup cause cannot be established from its artifact.
+- [x] **Skip ordinary metadata for diskless KV-only setup**: the mandatory
+  Group-0 prerequisite must not reserve a default Group 1. Reproduce the
+  metadata race, retain both disabled/KV-only unit coverage, repair the
+  preparation predicate, rebuild and resume the stopped native-data group.
+- [x] **Resolve remote wildcard topology addresses**: HTTP Console topology
+  reports must inherit the reporting server management host before entering
+  the shared cache. Reproduce false loopback Group-0 authority loss after
+  stopping a local follower, reuse the existing endpoint resolver, add an
+  HTTP/cache regression and rerun the affected lifecycle case.
+- [x] **Publish canonical protocol listeners with retained-input compatibility**:
+  repair Pixi/CLI/Compose mappings and image metadata, retain version-1 launch
+  ports while sealing fresh version-2 inputs, verify mapping/receipt regressions
+  and CLI quality gates; the image rebuild is complete before reference verification.
+- [x] **Complete requested Console partitions**: browser, native-data,
+  native-operations, transition and inspection, with original coverage and
+  fail-fast progression. Keep browser fixture networks isolated from other jobs.
+- [x] **Complete deployment reference**: rerun its original case set after the
+  shared bootstrap repair, then diagnose any remaining failure.
+- [x] **Close AccessTests and quality gates**: run the requested Access component
+  and SDK commands once, fmt, affected clippy and required C++ lint before the
+  first coherent commit/push.
+- Job IDs: `123893403740`, `123899615935`, `123899616023`, `123899615992`,
+  `123899616153`, `123899616076`, `123899616075`, `123899615882`.
+- Run: https://github.com/buzzcrow/crowdb/actions/runs/41003611925
+
+## Authorized publication and five-container follow-up
+
+- [~] **First publication**: user authorized a single coherent commit and push
+  after the physical matrix, requested CI repairs and relevant gates pass.
+- [ ] **Five-container physical matrix**: after that push, run a fresh cluster on the same two physical
+  hosts, retaining immutable image receipts, cross-host data witnesses, fault
+  and recovery results, and exact owned-resource cleanup.
+- [ ] **Final publication**: repair failures and verify affected groups, then commit and push the
+  resulting five-node validation changes and evidence summary a second time.

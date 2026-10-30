@@ -85,12 +85,7 @@ fn shifted_port(base: u16, offset: u16) -> Result<u16, Box<dyn std::error::Error
 
 pub(crate) fn accept(args: &NodeRunArgs) -> Result<&'static str, Box<dyn std::error::Error>> {
     let inputs = resolve(args)?;
-    let policy = crowdb_monitor::accept_node_policy_with_port_offset(
-        &inputs.data_root,
-        &inputs.file,
-        &inputs.explicit,
-        port_offset()?,
-    )?;
+    let policy = crowdb_monitor::accept_node_policy(&inputs.data_root, &inputs.file, &inputs.explicit)?;
     Ok(match policy.mode {
         DeploymentMode::Local => "local",
         DeploymentMode::Production => "production",
@@ -124,12 +119,25 @@ fn resolve(args: &NodeRunArgs) -> Result<ResolvedInputs, Box<dyn std::error::Err
     let profile = DeploymentProfile::load(&args.profile)?;
     profile.validate_node_catalog()?;
     let accepted = crowdb_monitor::read_node_policy(&profile.paths.data_root)?;
-    let selected = explicit.resolve(&file, accepted.as_ref())?;
+    let selected = crowdb_monitor::resolve_node_policy_with_port_offset(
+        &file,
+        &explicit,
+        accepted.as_ref(),
+        port_offset()?,
+    )?;
     let physical_host_id = physical_host(args.physical_host_id.clone(), &selected)?;
     Ok(ResolvedInputs {
         data_root: profile.paths.data_root,
-        file,
-        explicit,
+        file: NodeDeploymentOverrides::default(),
+        explicit: NodeDeploymentOverrides {
+            version: Some(selected.version),
+            mode: Some(selected.mode),
+            cluster: Some(selected.cluster),
+            initial_voters: Some(selected.initial_voters),
+            storage: Some(selected.setup.storage),
+            services: Some(selected.setup.services),
+            public_access: selected.public_access,
+        },
         physical_host_id,
     })
 }

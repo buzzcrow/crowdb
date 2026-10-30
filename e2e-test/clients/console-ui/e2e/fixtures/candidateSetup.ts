@@ -18,8 +18,10 @@ export async function reviewDisklessCandidate(dialog: Locator, request?: APIRequ
   await expect(dialog.getByLabel('Managed file capacity (GiB)', { exact: true })).toHaveCount(0);
   for (const name of ['crowdb-paxos-kv', 'crowdb-disk-db', 'crowdb-disk-io', 'crowdb-chunk-db', 'crowdb-chunk-kv', 'crowdb-access-server']) {
     const service = dialog.getByRole('checkbox', { name, exact: true });
-    await expect(service).not.toBeChecked();
+    if (name === 'crowdb-paxos-kv') await expect(service).toBeChecked();
+    else await expect(service).not.toBeChecked();
     await expect(service).toBeDisabled();
   }
+  await expect(dialog.getByText("This node's startup settings fix these choices.", { exact: true })).toBeVisible();
   await dialog.getByRole('button', { name: 'Join and start', exact: true }).click();
 }

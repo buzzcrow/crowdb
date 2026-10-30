@@ -375,3 +375,51 @@ fn a_new_admission_keeps_the_cancelled_operations_pins_and_fence() {
         "the cancelled operation remains fenced"
     );
 }
+
+#[test]
+fn recovered_contacts_preserve_member_specific_listener_ports() {
+    use crowdb_protocol::mgmt::node::recovery::{MemberEndpoint, MemberEndpoints};
+    let dir = tempdir_in_test_data("monitor-offset-recovery-contacts");
+    let trust = trust::fixture(dir.path());
+    let operation = crowdb_console_shared::deployment::PreparedBootstrap::load(
+        &dir.path().join("prepared-bootstrap.json"),
+    )
+    .unwrap();
+    let mut config = operation.intent.to_config();
+    config.servers[1].url = "http://192.0.2.2:10001".into();
+    config.servers[1].rpc_url = Some("192.0.2.2:10101".into());
+    let endpoints = MemberEndpoints {
+        version: 1,
+        bootstrap: trust.bootstrap,
+        observer_boot_id: uuid::Uuid::new_v4().to_string(),
+        observed_at_unix_ms: 1,
+        conflicts: vec![],
+        members: trust
+            .members
+            .into_iter()
+            .map(|member| MemberEndpoint {
+                discovery_id: member.discovery_id,
+                node_id: member.node_id,
+                boot_id: uuid::Uuid::new_v4().to_string(),
+                addresses: vec![if member.node_id == 3 {
+                    "2001:db8::3"
+                } else {
+                    "192.0.2.10"
+                }
+                .parse()
+                .unwrap()],
+            })
+            .collect(),
+    };
+    let seeds = crowdb_monitor::apply_member_endpoints_for_tests(&mut config, &endpoints).unwrap();
+    assert_eq!(
+        seeds,
+        [
+            "http://192.0.2.10:10000",
+            "http://192.0.2.10:10001",
+            "http://[2001:db8::3]:10000"
+        ]
+    );
+    assert_eq!(config.servers[1].rpc_url.as_deref(), Some("192.0.2.10:10101"));
+    assert_eq!(config.servers[2].rpc_url.as_deref(), Some("[2001:db8::3]:10100"));
+}

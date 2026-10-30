@@ -69,7 +69,7 @@ if test "$port_offset" -gt 0; then
     # The preview profile is intentionally self-contained. Shift every
     # declared listener and endpoint together so host-network containers can
     # coexist while retaining the same relative service layout.
-    for base in 9090 9091 9092 9093 9094 9095 10000 10100 10101 11000 11100 11200 12100 12200 13000 15100 15200; do
+    for base in 19000 18000 17000 16000 15200 15100 14000 13000 12200 12100 12000 11200 11100 11000 10101 10100 10000 9095 9094 9093 9092 9091 9090 7401 7400 7301 7300 7200 7102 7101 7100; do
         next=$((base + port_offset))
         sed -i -E "s/(^|[^0-9])${base}([^0-9]|$)/\\1${next}\\2/g" "$offset_root/profile.toml"
         if test -d "$offset_templates"; then

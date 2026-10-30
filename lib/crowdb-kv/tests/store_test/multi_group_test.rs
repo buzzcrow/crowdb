@@ -68,6 +68,10 @@ async fn missing_group_returns_error() {
     // Put to non-existent group
     let resp = store.kv_put(99, b"k", b"v", 1, 1, 100, 1000).await;
     assert!(!resp.ok);
+    assert_eq!(
+        resp.error_code,
+        crowdb_kv::rpc::KvErrorCode::KvErrorNotLeader as i32
+    );
     assert!(
         resp.error.contains("no kv group"),
         "error should mention missing group, got: {}",

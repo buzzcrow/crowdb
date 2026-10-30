@@ -17,10 +17,10 @@ spec.loader.exec_module(run_node)
 
 class HostInputsTest(unittest.TestCase):
     def test_port_offset_shifts_every_host_listener_for_additional_instances(self):
-        shifted = run_node.shifted_ports(100)
-        self.assertEqual(shifted[0], 2322)
-        self.assertIn(10100, shifted)
-        self.assertIn(10200, shifted)
+        shifted = run_node.shifted_ports(1)
+        self.assertEqual(shifted[0], 2223)
+        self.assertIn(10001, shifted)
+        self.assertIn(10101, shifted)
         with self.assertRaisesRegex(ValueError, "beyond port 65535"):
             run_node.shifted_ports(65535)
 

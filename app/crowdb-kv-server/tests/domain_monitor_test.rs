@@ -544,6 +544,7 @@ async fn chunk_kv_driver_plans_dead_owner_recovery_once_and_waits_for_target() {
             .generation,
         1
     );
+    grant_process::assert_returned_source_is_excluded(&control, &policy, partition_id).await;
 }
 
 #[allow(clippy::too_many_lines)]
