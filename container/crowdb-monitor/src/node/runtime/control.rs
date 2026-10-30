@@ -137,7 +137,8 @@ async fn bootstrap(
             let accepted = preparation::accept(root, node_id, bootstrap, manifest, credentials, admission)?;
             super::recovery::prepare_admitted(root, &accepted).await?;
             start_kv(profile, processes, &accepted).await?;
-            Ok(json!({"node_id": node_id, "management_port": 10000, "rpc_port": 10100}))
+            let (management_port, rpc_port) = kv::ports(profile)?;
+            Ok(json!({"node_id": node_id, "management_port": management_port, "rpc_port": rpc_port}))
         }
         _ => Err("unsupported bootstrap control request".into()),
     }

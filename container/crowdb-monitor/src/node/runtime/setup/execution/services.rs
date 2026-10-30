@@ -90,7 +90,7 @@ pub(super) async fn advance(
         }
         step.phase = SetupStepPhase::Preparing;
         journal::save(&profile.paths.data_root, state)?;
-        let (success, value) = prepare(binding, state, kind).await?;
+        let (success, value) = prepare(profile, binding, state, kind).await?;
         let step = &mut state.status.services[index];
         step.phase = if success {
             SetupStepPhase::Accepted
@@ -122,17 +122,24 @@ fn name(kind: SetupServiceKind) -> &'static str {
 }
 
 async fn prepare(
+    profile: &DeploymentProfile,
     binding: &NodeBinding,
     state: &AcceptedSetup,
     kind: SetupServiceKind,
 ) -> Result<(bool, serde_json::Value)> {
+    let web_port = profile
+        .public_endpoints
+        .iter()
+        .find(|endpoint| endpoint.id == "web")
+        .map(|endpoint| endpoint.port)
+        .ok_or("node profile requires a Web endpoint")?;
     let mut response = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(30))
         .build()?
         .post(format!(
-            "http://127.0.0.1:9090/api/nodes/{}/setup/prepare-service",
-            binding.node_id
+            "http://127.0.0.1:{web_port}/api/nodes/{}/setup/prepare-service",
+            binding.node_id,
         ))
         .json(&json!({"operation_id":state.request.operation_id,"kind":kind}))
         .send()

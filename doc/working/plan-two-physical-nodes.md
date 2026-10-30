@@ -8,19 +8,19 @@ Upstream: [deployment design](../design/deploy/design-crowdb-deploy.md),
 [KV quorum design](../design/kv/design-crowdb-kv-group0.md).
 
 Goal: validate the current CI reliability fixes on two real Linux hosts using
-one reproducible CROWDB cluster, with cross-host discovery, quorum writes,
-service readiness recovery, transient KV quorum loss during allocation, and
-owned cleanup evidence.
+reproducible CROWDB clusters, with cross-host discovery, key-only admission,
+host-network container composition, Group 0 bootstrap, service readiness
+recovery, transient KV quorum loss during allocation, and owned cleanup
+evidence.
 
 ## Topology and limits
 
-The test uses three logical CROWDB voters because production Group 0 accepts
-one or three initial voters. Two logical voters run on `192.168.31.129` and one
-on `192.168.31.184`; the physical-host identity is recorded separately from
-the logical node identity. This proves cross-host quorum and preserves quorum
-when the single remote logical voter is stopped. It does not claim that the
-two-voter host can fail as a whole; losing that host removes two of three
-voters and is an expected quorum-loss observation.
+The basic two-physical-node run uses one logical node per host and one initial
+voter. It proves cross-host discovery, key-only admission and durable restart;
+it does not claim two-voter quorum. The composition run uses three logical
+voters on one host with listener offsets `0`, `200` and `400`; this validates
+that a physical host can run multiple host-network containers. A later mixed
+placement can put any of those logical nodes on the second host.
 
 - Physical host A: `u24-amd`, `192.168.31.129`, Linux 6.8, Docker 29.8.1.
 - Physical host B: `cj7960`, `192.168.31.184`, Linux 6.11, Docker 28.3.3.
@@ -34,8 +34,9 @@ voters and is an expected quorum-loss observation.
   not acceptable for the final run.
 - Network: direct host addresses on `192.168.31.0/24`; all advertised
   management, KV, DiskDB, DiskIO, ChunkDB, Chunk-KV, Access, Web and SSH
-  endpoints must be reachable from both hosts. Every listener gets a unique
-  port offset because host A owns two logical nodes.
+  endpoints must be reachable from both hosts. Host-network listener offsets
+  use a stride of at least `200`: offset `100` collides with the adjacent
+  default KV RPC range (`10000/10100`).
 
 ## Safety gates
 
@@ -57,28 +58,37 @@ voters and is an expected quorum-loss observation.
   kernel, Docker, CPU/memory, disk space, image presence, and bidirectional
   SSH/TCP reachability. Files: this plan, run manifest and artifact directory.
 - [x] **Add host-network port offsets**: extend the existing
-  `CROWDB_PORT_OFFSET` path to shift monitor, Web, Access and SSH listeners so
-  two logical nodes can coexist on one physical host; verify the offset helper
-  and shell syntax. Files: `container/single-node-container/entrypoint.sh`,
+  `CROWDB_PORT_OFFSET` path to shift monitor, Web, Access, KV, DiskDB,
+  DiskIO, ChunkDB, Chunk-KV and SSH listeners; persist shifted setup choices
+  and use them for Group 0 endpoint publication. Verify the launcher offset
+  validator and shell syntax. Files: `container/single-node-container/entrypoint.sh`,
   `container/crowdb-monitor/src/node_args.rs`,
-  `container/crowdb-monitor/src/node/runtime.rs`.
+  `container/crowdb-monitor/src/node/runtime/kv.rs`,
+  `container/oci-image/run-node.py`.
 - [x] **Build and distribute exact image**: build with `pixi run oci-build`,
   record source tree and image digests, transfer/import the same archive on
-  both hosts, and verify the digest plus required runtime labels.
-- [ ] **Prepare isolated roots**: create one run UUID, per-host data/log roots,
+  both hosts, and verify the digest plus required runtime labels. The final
+  flexible-port image was also built locally for the three-container run;
+  transfer it to host B before a mixed-placement run.
+- [x] **Prepare isolated roots**: create one run UUID, per-host data/log roots,
   a unique Docker network or host-network port map, and a machine-readable
   endpoint map. Verify no endpoint is already owned.
-- [ ] **Start three logical nodes**: launch two offset nodes on host A and one
-  base node on host B with the same cluster policy, `initial_voters = 3`,
-  distinct data roots and explicit physical-host IDs. Verify all three
-  candidates are visible before admission.
+- [x] **Start two logical nodes**: launch one node per physical host with
+  `initial_voters = 1`, distinct data roots and explicit physical-host IDs.
+  Verify both candidates are visible before admission.
+- [x] **Start three composed nodes**: launch three offset nodes on one
+  physical host with offsets `0/200/400`, verify all listener families are
+  unique, and verify all three candidates are visible before admission.
 
 ## Phase 2: bootstrap and normal cross-host behavior
 
-- [ ] **Admit and bootstrap Group 0**: create one rack record, admit the three
-  discovered nodes, initialize the cluster, and wait for all three KV health
-  observations. Record node IDs, discovery IDs, cluster ID and remote replica
-  endpoints.
+- [x] **Admit and bootstrap the two-node run**: create one rack record, admit
+  both discovered nodes with `ssh_password = null`, initialize one-voter Group
+  0, and record node IDs, discovery IDs and cluster ID.
+- [x] **Admit and bootstrap the composed three-node run**: create one rack,
+  admit all three offset nodes with key-only SSH, initialize three-voter Group
+  0, and verify management/RPC ports `10000/10100`, `10200/10300` and
+  `10400/10500`.
 - [ ] **Verify dependency readiness**: wait for KV, DiskDB, DiskIO, ChunkDB,
   Chunk-KV and Access readiness on all logical nodes. Confirm the monitor
   status is `ready` and identities/PIDs are stable after one health interval.
@@ -88,13 +98,16 @@ voters and is an expected quorum-loss observation.
 
 ## Phase 3: failure and recovery cases
 
+- [x] **Remote logical-node restart**: stop and recreate host B's node using
+  the same data root without mounting a password file. Verify the original
+  discovery identity, cluster ID, active Group 0 status and key-only SSH.
 - [ ] **Remote logical-node stop**: stop only host B's CROWDB node. Verify the
   two host-A voters retain Group 0 quorum, linearizable KV writes continue,
   existing S3 reads continue, and status identifies the stopped node.
-- [ ] **Remote node restart**: restart host B's node with the same data root.
-  Verify the original discovery identity, cluster ID, service identities and
-  persisted object are retained; wait for full readiness and repeat the data
-  corpus.
+- [x] **Key-only composed restart**: recreate each of the three composed
+  containers without `CROWDB_SSH_PASSWORD_FILE`; verify
+  `PasswordAuthentication no`, all three dynamic KV health endpoints and
+  active Group 0 status.
 - [ ] **Managed listener failure**: stop or fault only the selected Chunk-KV
   listener while leaving its process ownership observable. Verify consecutive
   readiness failures trigger the monitor's bounded restart, the PID changes,

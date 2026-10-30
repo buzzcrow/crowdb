@@ -45,7 +45,7 @@ pub use runtime::{control_node, run_node, run_node_with_inputs, NodeRuntimeConfi
 pub use runtime::{publish_file_for_tests, resume_file_operations_for_tests};
 #[cfg(feature = "test-util")]
 pub use startup::accept_startup_mode_for_tests;
-pub use startup::{accept_node_policy, read_node_policy};
+pub use startup::{accept_node_policy, accept_node_policy_with_port_offset, read_node_policy};
 
 pub use management::{serve_node_management, NodeManagementError};
 

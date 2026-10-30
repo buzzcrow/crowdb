@@ -35,13 +35,35 @@ pub fn accept_node_policy(
     file: &NodeDeploymentOverrides,
     explicit: &NodeDeploymentOverrides,
 ) -> io::Result<NodeDeploymentPolicy> {
+    accept_node_policy_with_port_offset(root, file, explicit, 0)
+}
+
+/// Accept a fresh policy after shifting every service listener by `offset`.
+///
+/// The offset is a launcher concern: it is applied once, before the policy is
+/// sealed, and retained unchanged on every restart.  Existing accepted roots
+/// are never shifted again.
+///
+/// # Errors
+/// Returns an error when the root, policy inputs or shifted listener ports are
+/// invalid, or when a retained policy does not match the supplied inputs.
+pub fn accept_node_policy_with_port_offset(
+    root: &Path,
+    file: &NodeDeploymentOverrides,
+    explicit: &NodeDeploymentOverrides,
+    offset: u16,
+) -> io::Result<NodeDeploymentPolicy> {
     if !crate::layout::is_clean_absolute(root) || !fs::symlink_metadata(root)?.is_dir() {
         return Err(io::Error::other("node policy root must be an absolute directory"));
     }
     let accepted = read_node_policy(root)?;
-    let selected = explicit
+    let mut selected = explicit
         .resolve(file, accepted.as_ref())
         .map_err(io::Error::other)?;
+    if accepted.is_none() && offset != 0 {
+        shift_policy_ports(&mut selected, offset)?;
+        selected.validate().map_err(io::Error::other)?;
+    }
     if accepted.is_some() {
         validate_retained_identity(root)?;
         return Ok(selected);
@@ -63,6 +85,26 @@ pub fn accept_node_policy(
         ));
     }
     Ok(winner)
+}
+
+fn shift_policy_ports(policy: &mut NodeDeploymentPolicy, offset: u16) -> io::Result<()> {
+    for service in &mut policy.setup.services {
+        for port in [
+            &mut service.listeners.http_port,
+            &mut service.listeners.rpc_port,
+            &mut service.listeners.s3_port,
+            &mut service.listeners.dataset_port,
+            &mut service.listeners.health_port,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *port = port
+                .checked_add(offset)
+                .ok_or_else(|| io::Error::other("port offset exceeds 65535"))?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_retained_identity(root: &Path) -> io::Result<()> {

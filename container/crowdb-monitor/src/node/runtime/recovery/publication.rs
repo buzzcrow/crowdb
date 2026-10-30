@@ -21,28 +21,8 @@ pub(super) async fn reconcile(
 ) -> Result<()> {
     let local = super::identity(root)?.endpoint;
     let mut config = topology.clone();
-    let mut seeds = Vec::new();
-    for node in &mut config.nodes {
-        let Some(peer) = endpoints.members.iter().find(|peer| peer.node_id == node.id) else {
-            continue;
-        };
-        let address = peer
-            .addresses
-            .iter()
-            .find(|address| address.is_ipv4())
-            .or_else(|| peer.addresses.first())
-            .ok_or("member address missing")?;
-        node.host = address.to_string();
-        seeds.push(format!("http://{}", std::net::SocketAddr::new(*address, 10000)));
-        for server in config
-            .servers
-            .iter_mut()
-            .filter(|server| server.node_id == Some(node.id))
-        {
-            server.url = format!("http://{}", std::net::SocketAddr::new(*address, 10000));
-            server.rpc_url = Some(std::net::SocketAddr::new(*address, 10100).to_string());
-        }
-    }
+    let (management_port, rpc_port) = super::super::kv::ports_from_root(root)?;
+    let seeds = apply_member_endpoints(&mut config, endpoints, management_port, rpc_port)?;
     let client = Arc::new(CrowdbKvClient::new(ClientConfig::new(seeds.clone())));
     let GetOutcome::Found { value, .. } = client
         .get(
@@ -115,6 +95,40 @@ pub(super) async fn reconcile(
         }
     }
     Ok(())
+}
+
+fn apply_member_endpoints(
+    config: &mut ConsoleConfig,
+    endpoints: &MemberEndpoints,
+    management_port: u16,
+    rpc_port: u16,
+) -> Result<Vec<String>> {
+    let mut seeds = Vec::new();
+    for node in &mut config.nodes {
+        let Some(peer) = endpoints.members.iter().find(|peer| peer.node_id == node.id) else {
+            continue;
+        };
+        let address = peer
+            .addresses
+            .iter()
+            .find(|address| address.is_ipv4())
+            .or_else(|| peer.addresses.first())
+            .ok_or("member address missing")?;
+        node.host = address.to_string();
+        seeds.push(format!(
+            "http://{}",
+            std::net::SocketAddr::new(*address, management_port)
+        ));
+        for server in config
+            .servers
+            .iter_mut()
+            .filter(|server| server.node_id == Some(node.id))
+        {
+            server.url = format!("http://{}", std::net::SocketAddr::new(*address, management_port));
+            server.rpc_url = Some(std::net::SocketAddr::new(*address, rpc_port).to_string());
+        }
+    }
+    Ok(seeds)
 }
 
 async fn rebind(

@@ -309,8 +309,18 @@ async fn confirmed_inner(
             .iter_mut()
             .find(|server| server.node_id == Some(node.node_id))
         {
-            server.url = format!("http://{host}:10000");
-            server.rpc_url = Some(format!("{host}:10100"));
+            let management_port = reqwest::Url::parse(&server.url)
+                .ok()
+                .and_then(|url| url.port_or_known_default())
+                .unwrap_or(10000);
+            let rpc_port = server
+                .rpc_url
+                .as_deref()
+                .and_then(|url| reqwest::Url::parse(&format!("http://{url}")).ok())
+                .and_then(|url| url.port_or_known_default())
+                .unwrap_or(10100);
+            server.url = format!("http://{host}:{management_port}");
+            server.rpc_url = Some(format!("{host}:{rpc_port}"));
         } else {
             let mut server = crowdb_console_shared::config::ServerEntry::new(
                 format!("kv-{}", node.node_id),

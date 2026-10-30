@@ -42,9 +42,10 @@ pub use node::{
     NodeServiceForTests, NodeSetupForTests, SuppliedOperationsForTests,
 };
 pub use node::{
-    accept_node_policy, control_node, discover_disks, read_node_policy, run_node, run_node_with_inputs,
-    serve_node_management, CandidateCache, DiscoveryConfig, DiscoveryError, NodeDiscovery, NodeIdentity,
-    NodeIdentityError, NodeManagementError, NodeRuntimeConfig, NODE_SERVICE_TYPE,
+    accept_node_policy, accept_node_policy_with_port_offset, control_node, discover_disks, read_node_policy,
+    run_node, run_node_with_inputs, serve_node_management, CandidateCache, DiscoveryConfig, DiscoveryError,
+    NodeDiscovery, NodeIdentity, NodeIdentityError, NodeManagementError, NodeRuntimeConfig,
+    NODE_SERVICE_TYPE,
 };
 #[cfg(feature = "test-util")]
 pub use preview::{preview_step_names_for_tests, run_preview_for_tests, PreviewError};

@@ -137,12 +137,6 @@ impl NodeSetupChoices {
 fn valid_listeners(service: &SetupService, ports: &mut BTreeSet<u16>) -> bool {
     use SetupServiceKind::{AccessServer, Chunkdb, Diskdb, Diskio};
     let listeners = &service.listeners;
-    if service.kind == SetupServiceKind::PaxosKv
-        && (listeners.http_port.is_some_and(|port| port != 10000)
-            || listeners.rpc_port.is_some_and(|port| port != 10100))
-    {
-        return false;
-    }
     if (service.kind != Chunkdb && listeners.dynamic_ownership.is_some())
         || (service.kind != Diskdb && listeners.keepalive_interval_secs.is_some())
         || (service.kind != AccessServer

@@ -85,7 +85,12 @@ fn shifted_port(base: u16, offset: u16) -> Result<u16, Box<dyn std::error::Error
 
 pub(crate) fn accept(args: &NodeRunArgs) -> Result<&'static str, Box<dyn std::error::Error>> {
     let inputs = resolve(args)?;
-    let policy = crowdb_monitor::accept_node_policy(&inputs.data_root, &inputs.file, &inputs.explicit)?;
+    let policy = crowdb_monitor::accept_node_policy_with_port_offset(
+        &inputs.data_root,
+        &inputs.file,
+        &inputs.explicit,
+        port_offset()?,
+    )?;
     Ok(match policy.mode {
         DeploymentMode::Local => "local",
         DeploymentMode::Production => "production",

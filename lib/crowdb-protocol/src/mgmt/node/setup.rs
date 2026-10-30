@@ -117,6 +117,21 @@ pub struct NodeSetupChoices {
     pub services: Vec<SetupService>,
 }
 
+impl NodeSetupChoices {
+    /// Return the management and RPC listeners reserved for the bootstrap KV.
+    ///
+    /// The node launcher may shift these listeners for host-network containers
+    /// that share one physical host.  Callers that need the Group 0 endpoint
+    /// must use the accepted policy rather than assuming the default ports.
+    #[must_use]
+    pub fn paxos_kv_ports(&self) -> Option<(u16, u16)> {
+        self.services
+            .iter()
+            .find(|service| service.kind == SetupServiceKind::PaxosKv && service.enabled)
+            .and_then(|service| Some((service.listeners.http_port?, service.listeners.rpc_port?)))
+    }
+}
+
 fn default_services() -> Vec<SetupService> {
     SetupServiceKind::ALL
         .into_iter()

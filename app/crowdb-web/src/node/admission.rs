@@ -189,6 +189,7 @@ async fn admit_observed(
         .map_err(map_config_err)?;
     }
     save(&path, &record)?;
+    let setup = body.setup.clone();
     super::setup::accept(state, &record, &target, body.setup, body.expected_formation).await?;
     target.ssh_password = None;
     target.ssh_key = None;
@@ -196,7 +197,7 @@ async fn admit_observed(
     if let Some(binding) = &binding {
         confirm_admission(state, binding, &key, &target, &mut record).await?;
     }
-    update_config(state, &record, target)?;
+    update_config(state, &record, target, setup.as_ref())?;
     save(&path, &record)?;
     state.persist().map_err(map_persist_err)?;
     super::preflight::finish(state, &record)?;
@@ -323,7 +324,12 @@ pub(crate) fn save(path: &Path, record: &impl serde::Serialize) -> Result<(), Fa
         .map_err(|error| err_502(error.to_string()))
 }
 
-pub(super) fn update_config(state: &AppState, record: &NodeRecord, target: NodeEntry) -> Result<(), Failure> {
+pub(super) fn update_config(
+    state: &AppState,
+    record: &NodeRecord,
+    target: NodeEntry,
+    setup: Option<&crowdb_protocol::mgmt::node::setup::NodeSetupChoices>,
+) -> Result<(), Failure> {
     {
         let mut config = state.config.write().map_err(|error| err_502(error.to_string()))?;
         if let Some(node) = config.nodes.iter_mut().find(|node| node.id == record.node_id) {
@@ -332,12 +338,15 @@ pub(super) fn update_config(state: &AppState, record: &NodeRecord, target: NodeE
             config.nodes.push(target);
         }
         if config.server_for_node(record.node_id).is_none() {
+            let (management_port, rpc_port) = setup
+                .and_then(crowdb_protocol::mgmt::node::setup::NodeSetupChoices::paxos_kv_ports)
+                .unwrap_or((10000, 10100));
             let mut server = ServerEntry::new(
                 format!("kv-{}", record.node_id),
-                format!("http://{}:10000", bracket_host(&record.host)),
+                format!("http://{}:{management_port}", bracket_host(&record.host)),
             );
             server.node_id = Some(record.node_id);
-            server.rpc_url = Some(format!("{}:10100", bracket_host(&record.host)));
+            server.rpc_url = Some(format!("{}:{rpc_port}", bracket_host(&record.host)));
             config.servers.push(server);
         }
     }
