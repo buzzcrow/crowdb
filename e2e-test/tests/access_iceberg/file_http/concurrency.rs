@@ -1,8 +1,41 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use super::super::signed_file::TestFileClient;
 use super::setup::{path, setup};
-use reqwest::Method;
+use reqwest::{Method, StatusCode};
+use std::time::Duration;
+
+const MAX_SLOWDOWN_ATTEMPTS: usize = 4;
+const SLOWDOWN_BASE_DELAY_MS: u64 = 100;
+const SLOWDOWN_STAGGER_MS: u64 = 25;
+
+async fn put_with_slowdown_retry(
+    client: TestFileClient,
+    object: String,
+    payload: Vec<u8>,
+    index: usize,
+) -> (StatusCode, String, usize) {
+    for attempt in 1..=MAX_SLOWDOWN_ATTEMPTS {
+        let response = client.send(Method::PUT, &object, "", &payload, false).await;
+        let status = response.status();
+        let body = response.text().await.unwrap();
+        if status != StatusCode::SERVICE_UNAVAILABLE
+            || !body.contains("<Code>SlowDown</Code>")
+            || attempt == MAX_SLOWDOWN_ATTEMPTS
+        {
+            return (status, body, attempt);
+        }
+
+        let delay_ms =
+            SLOWDOWN_BASE_DELAY_MS * (1 << (attempt - 1)) + (index as u64 % 8) * SLOWDOWN_STAGGER_MS;
+        eprintln!("upload {index}: transient SlowDown on attempt {attempt}; retrying in {delay_ms}ms");
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    }
+
+    unreachable!("the retry loop always returns on its final attempt")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "requires the owned release Iceberg FileIO stack"]
 async fn thirty_two_concurrent_direct_puts() {
@@ -24,17 +57,17 @@ async fn thirty_two_concurrent_direct_puts() {
         let barrier = barrier.clone();
         requests.spawn(async move {
             barrier.wait().await;
-            let response = client.send(Method::PUT, &object, "", &payload, false).await;
-            (index, response.status(), response.text().await.unwrap())
+            let (status, body, attempts) = put_with_slowdown_retry(client, object, payload, index).await;
+            (index, status, body, attempts)
         });
     }
     barrier.wait().await;
     let mut failures = Vec::new();
     while let Some(result) = requests.join_next().await {
-        let (index, status, body) = result.unwrap();
-        println!("upload {index}: {status} {body}");
-        if status != 200 {
-            failures.push((index, status, body));
+        let (index, status, body, attempts) = result.unwrap();
+        println!("upload {index}: {status} attempts={attempts} {body}");
+        if status != StatusCode::OK {
+            failures.push((index, status, attempts, body));
         }
     }
     assert!(failures.is_empty(), "failed uploads: {failures:?}");
