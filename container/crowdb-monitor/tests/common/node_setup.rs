@@ -54,6 +54,7 @@ impl TestAuthority {
         let registry = NodeRegistry {
             cluster_id: binding.bootstrap.cluster_id.clone(),
             nodes: vec![NodeRecord {
+                web_port: 9090,
                 discovery_id: request.discovery_id.clone(),
                 operation_id: request.operation_id.clone(),
                 node_id: 2,

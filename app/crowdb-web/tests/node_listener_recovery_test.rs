@@ -27,6 +27,7 @@ async fn background_protocol_reads_follow_confirmed_addresses_without_ui_refresh
     let registry = NodeRegistry {
         cluster_id: fixture.binding.bootstrap.cluster_id.clone(),
         nodes: vec![NodeRecord {
+            web_port: 9090,
             discovery_id: discovery.clone(),
             node_id: 2,
             physical_host_id: "retained-host".into(),

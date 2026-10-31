@@ -67,12 +67,13 @@ pub(super) async fn read(
             discovery_id: node.discovery_id.clone(),
             node_id: Some(node.node_id),
             management_endpoints: vec![format!(
-                "http://{}:9090",
+                "http://{}:{}",
                 if host.contains(':') {
                     format!("[{host}]")
                 } else {
                     host.into()
-                }
+                },
+                node.web_port,
             )],
         });
         let now = now_ms();
@@ -109,7 +110,10 @@ async fn member(client: &reqwest::Client, node: &registry::NodeRecord) -> Option
         host.into()
     };
     let mut reply = client
-        .get(format!("http://{host}:9090/api/cluster/node-observation"))
+        .get(format!(
+            "http://{host}:{}/api/cluster/node-observation",
+            node.web_port
+        ))
         .send()
         .await
         .ok()?

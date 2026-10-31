@@ -15,6 +15,7 @@ use std::{
 pub(in crate::access_iceberg::gc) struct TestGcPressure {
     sdk: std::process::Child,
     stdout: PathBuf,
+    control: PathBuf,
     writes: Option<tokio::task::JoinHandle<()>>,
     progress: Arc<AtomicUsize>,
     previous_active: Option<(u64, u64)>,
@@ -27,9 +28,13 @@ impl TestGcPressure {
         let stdout = PathBuf::from(std::env::var("CROWDB_E2E_ARTIFACTS").map_err(|error| error.to_string())?)
             .join(format!("gc-inline-sdk-{}.log", OperationId::random()));
         let output = std::fs::File::create(&stdout).map_err(|error| error.to_string())?;
+        let control = stdout.with_extension("control");
+        std::fs::create_dir(&control).map_err(|error| error.to_string())?;
+        std::fs::write(control.join("run"), b"").map_err(|error| error.to_string())?;
         let sdk = std::process::Command::new("pixi")
             .args(["run", "-e", "iceberg-e2e", "python", "-c", SDK_PRESSURE_SCRIPT])
             .args([origin, "12", "0.5", "gc-convergence"])
+            .arg(&control)
             .stdout(output)
             .spawn()
             .map_err(|error| error.to_string())?;
@@ -42,6 +47,7 @@ impl TestGcPressure {
         Ok(Self {
             sdk,
             stdout,
+            control,
             writes: Some(writes),
             progress,
             previous_active: None,
@@ -50,12 +56,19 @@ impl TestGcPressure {
         })
     }
 
-    pub(in crate::access_iceberg::gc) async fn observe(&mut self, deleted: u64) -> Result<(), String> {
+    pub(in crate::access_iceberg::gc) async fn observe(
+        &mut self,
+        deleted: u64,
+        gc_complete: bool,
+    ) -> Result<(), String> {
         if let Some(status) = self.sdk.try_wait().map_err(|error| error.to_string())? {
             if !status.success() {
                 return Err(format!("official SDK foreground failed: {status}"));
             }
             self.sdk_complete = true;
+        }
+        if gc_complete && self.writes.is_none() {
+            std::fs::write(self.control.join("stop"), b"").map_err(|error| error.to_string())?;
         }
         if self
             .writes
@@ -90,6 +103,7 @@ impl TestGcPressure {
     }
 
     pub(in crate::access_iceberg::gc) async fn stop(&mut self) {
+        let _ = std::fs::write(self.control.join("stop"), b"");
         if let Some(writes) = self.writes.take() {
             writes.abort();
             let _ = writes.await;
@@ -118,6 +132,23 @@ impl TestGcPressure {
             .find_map(|line| line.strip_prefix("gc_foreground_official_sdk "))
             .ok_or("official SDK latency report is missing")?;
         let report: serde_json::Value = serde_json::from_str(report).map_err(|error| error.to_string())?;
+        for operation in [
+            "create_table",
+            "commit",
+            "load_table",
+            "credentials",
+            "read_metadata",
+            "drop_table",
+        ] {
+            if report[operation]["count"]
+                .as_u64()
+                .map_or(true, |count| count < 48)
+            {
+                return Err(format!(
+                    "official SDK did not complete its minimum foreground workload: {operation}"
+                ));
+            }
+        }
         let overlapping = report
             .as_object()
             .ok_or("SDK report must be an object")?
@@ -143,10 +174,10 @@ impl TestGcPressure {
             "gc_foreground_deletion_overlap {}",
             serde_json::json!({
                 "deletion_intervals_unix_ns":self.deletion_intervals,"small_writes":64,
-                "sdk_workers":4,"tables_per_worker":12,"inter_table_sleep_ms":500,
+                "sdk_workers":4,"minimum_tables_per_worker":12,"inter_table_sleep_ms":500,
                 "small_write_interval_ms":250,"sleeps_in_latency_samples":false,
                 "sdk_stdout_artifact":self.stdout,
-                "scope":"independent fixed load; latency is not directly comparable to the original three-table, 50-ms probe",
+                "scope":"continuous foreground through cleanup and small-writer completion; latency is not a fixed-load baseline",
             })
         );
         Ok(())

@@ -364,6 +364,13 @@ Only the last referenced chunk may require content parsing. Earlier chunks
 have finalized bounds and chunk record mappings and are not scanned. A last
 chunk whose seal and final mappings are already published needs no tail scan.
 Recovery after an interrupted seal may still reconstruct that one last chunk.
+The ChunkDB finalizer may reclaim and tombstone a physically empty tail before
+the Stream publishes its successor. Recovery accepts that exact tombstone only
+with its seal timestamp, valid purpose and nonzero writer epoch, zero capacity,
+zero sealed/acknowledged/checkpoint boundaries, and no remaining strips or cleanup
+intents. It retains the logical position, leaves the tombstone unchanged, and
+attaches a fresh chunk under current writer authority. A missing chunk or a
+nonempty or unproven tombstone never becomes an empty prefix.
 Bound reads, buffered bytes, parsed frames, and total scan bytes by the active
 chunk geometry, independently of retained Stream length.
 

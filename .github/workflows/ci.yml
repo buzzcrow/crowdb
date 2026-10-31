@@ -654,6 +654,11 @@ jobs:
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
         pixi-version: v0.77.0
+    - name: Install owned network fault tools
+      if: matrix.partition == 'console-api'
+      run: |
+        pixi run sudo apt-get update
+        pixi run sudo apt-get install -y iptables
     - uses: ./.github/actions/restore-compiled
       with:
         artifact: ${{ needs.BuildClients.outputs.artifact }}

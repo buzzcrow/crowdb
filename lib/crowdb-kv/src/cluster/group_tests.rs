@@ -14,6 +14,14 @@ use crate::paxos::PxNodeId;
 /// repair step, and peer-applied injection — to integration tests under
 /// `tests/` without permanently widening the production public API.
 impl PxGroup {
+    /// Observe a missing chosen value without delivering its Accepted frame.
+    pub fn note_missing_chosen_for_tests(&self, slot: SlotIndex) {
+        let replica = self.local_replica();
+        replica.record_gap(slot);
+        replica.note_chosen(slot, replica.current_term_snapshot());
+        replica.wake_apply_loop();
+    }
+
     /// Whether a conditional mutation currently owns one key's admission.
     #[must_use]
     pub fn conditional_write_pending_for_tests(&self, key: &[u8]) -> bool {

@@ -3,14 +3,19 @@
 
 # Two Physical Node Test Track
 
-Plan: [plan-two-physical-nodes.md](plan-two-physical-nodes.md)
-
 Run ID: `two-physical-nodes-20261030T010205Z`.
-Latest fixture: `physical-20261030-r16`; result: **physical recovery matrix passed**.
-SSH access is repaired. All owned physical fixtures are cleaned up. Attempt 15
-forensic metadata/WAL, raw mirror reads and complete logs remain archived;
-attempt 16 passed using fresh test data and the retained preflight policy
-volumes. Historical failures remain recorded below.
+Latest fixture: `physical-20261030-r17`; result: **five-container recovery matrix
+passed across two physical hosts**, including all five replicas' acknowledged
+Group-0/1/3 checkpoints. All owned physical fixtures are cleaned up and key-only
+SSH works. First publication is `25059cf7d`; the follow-up CI repairs pass local
+verification and are prepared for the authorized second publication. Historical
+CI runs remain failed; the next published commit requires its own remote result.
+
+The separate 512-record/default-five-second capacity probe failed; 294 confirmed
+records are exact recovery witnesses, not a capacity pass. User disk cleanup
+deleted the earlier local archives, including attempt 15 forensic files. Later
+sections describe that loss and the surviving/reconstructed evidence explicitly;
+historical archive descriptions below refer to their state before that cleanup.
 
 ## Attempt 12 placement and image (historical)
 
@@ -438,3 +443,333 @@ Root: `.crowdb-runtime/artifacts/two-physical-nodes-20261030T010205Z/`.
   both host-loss cases and owned-resource cleanup.
 - Verify repairs and commit/push the five-node changes and evidence summary
   a second time. The execution plan remains active until then.
+
+## Five-container physical continuation
+
+- First publication completed: commit
+  `25059cf7d9a5f08d61479f4749659aa6f3fe119f` pushed to `task-fix-build`.
+  PR #55 CI run `41128190276` completed: 22 jobs passed; five follow-up
+  failures are recorded below and remain part of this task.
+- Selected five initial voters across two physical hosts: A offsets `0/1/2`,
+  B offsets `0/1`, with a separate volume and seven services per container.
+- New regressions reproduced three entry restrictions: accepted voter count,
+  default preparation membership and bound-member conflict handling. Policy now
+  accepts only `1/3/5`; preparation maps every admitted voter to its own initial
+  storage binding; all multi-node scopes retain the existing formation fences.
+  Policy, all nine preparation tests and all nine formation tests pass.
+- Full affected tests/clippy and a fresh image precede physical deployment.
+  The physical matrix will include 512 exact 64-KiB ChunkKV records, all five
+  serving owners, cross-host KV/S3/Iceberg reads, retained-volume recreation,
+  unresponsive-child recovery, remote-leader KV stop/start, both host-loss cases,
+  bounded allocation retry and a final no-overlapping-allocation scan.
+
+- Full affected Protocol, Console shared, Web and Monitor tests, all-target
+  clippy and workspace formatting pass. One Monitor CLI test retained the old
+  invalid-voter error text; it now asserts the `1/3/5` contract and retains all
+  no-identity/no-storage side-effect checks.
+- The first remote CI run also exposed `g3_leader_change::leader_change_simulation`:
+  the second one-shot write returned failure. Its original artifact omitted the
+  response, so the precise original reply remains unknown. The focused case,
+  a complete 131-case group run and twenty logged repetitions pass before the
+  helper repair. A deterministic regression then proves that the fixture's
+  role-only wait can return before a current quorum lease exists. The helper
+  now waits within the same three-second bound for current proposing tenure
+  and quorum lease; writes remain one-shot and report the complete response on
+  failure. The three affected cases, complete `test-core` gate and KV clippy
+  pass. Production Paxos logic is unchanged. Evidence:
+  `ci/run-41128190276/core-verification.json`, `ci-leader-ready-{red,green}.log`.
+
+
+### Attempt 17: five voters on two physical hosts
+
+- Immutable image `0ef175e40bef7a152fda9abff2929f41df3830d39bedf555f04de53776dcab51`
+  is verified on both hosts. All five Group-0/default-metadata/manual-data voters,
+  35 service health observations and KV/S3/Iceberg witnesses pass initially.
+- The additional 512-record capacity case failed its original five-second batch
+  deadline during split/cutover. A full read-only audit found records 0–293 exact
+  (19,267,584 bytes), with 294–511 absent. No timed-out mutation was replayed.
+  Preserve this failed capacity case separately from the 294-record recovery
+  witness. No process OOM or PID replacement occurred during the capacity failure.
+- All-five retained-volume recreation passes with exact identities and witness
+  bytes. SIGSTOP ChunkKV is replaced within 48.3 seconds; the other 34 PIDs and
+  all witnesses are retained. Cross-host local-KV stop/start passes after fixing
+  the harness to accept an omitted stopped-service row as well as a null PID.
+- Stopping both B containers preserves the manual-data KV quorum write, but
+  catalog recovery fails its original 180-second bound. WAL recovery drains
+  schedule repair, then new active WAL initialization still selects stopped
+  physical IO targets. This remains a failed case until repaired and rerun.
+- Whole-cluster readiness also exposes a fixed-9090 lookup and a `1/3` reducer
+  restriction. Repair accepted Web-listener publication and five-voter reduction;
+  verify the original volume set after upgrading the image.
+- First-push CI exposed four additional groups: KV-only readiness collection,
+  stale CLI Access ports, journal selection during normal owner transfer, and GC
+  foreground overlap. Keep the original assertions/deadlines and verify each
+  group before final publication. Browser trace and GC operation timestamps are
+  retained under `ci/run-41128190276/`.
+
+- Repaired-image round 1 preserved the original volumes but exposed finalized
+  empty WAL tails: the current Stream record still referenced a zero-boundary
+  chunk that the ChunkDB finalizer had legitimately sealed, reclaimed and
+  tombstoned. Exact records under `upgrade-round1/` show `Deleted`, a seal time,
+  zero capacity/cursors and no remaining strips. Recovery previously accepted
+  only `Sealed` for that empty case. Both a cold adapter and complete writer
+  reopen regression reproduce the error, then pass with exact finalization
+  proof. Reopen preserves the tombstone and allocates a fresh chunk; eleven
+  invalid/unproven states remain rejected. Full Stream and ChunkKV server tests
+  pass; quality gates and the second image upgrade precede resumed faults.
+- The same round confirms the independent cluster-observation repair: all five
+  UUIDs resolve to the accepted per-host `9090/9091/9092` listeners, with no
+  invalid-voter or foreign-member reasons. Remaining service reasons correctly
+  report the blocked WAL recovery. See `upgrade-round1/partial-cluster-status.json`.
+
+- Round 2 image `cde2868ade7b3437c27f01c67c7eaf407a02c15b53b874e580c04d0611d1b1ea`
+  restores all original volumes, 35 services, all five cluster-readiness views
+  and exact witnesses. B-host loss now passes Catalog takeover, original data,
+  and one-shot S3/Iceberg writes. Both B containers recreate with retained
+  identities and all five nodes verify the outage writes and 294 exact records.
+- The subsequent majority-host loss correctly rejects writes, but restoration
+  fails the original 180-second bound. KV role/lease health returns while new
+  leaders' applied frontiers remain behind. `upgrade-round2/` preserves the
+  exact failure, current per-replica health and complete logs. They show serial
+  bulk Phase 1 competing with background repair, plus follower FetchGap stopping
+  permanently above the 1024-gap snapshot threshold despite having no automatic
+  running-replica snapshot replacement. Two regressions reproduce these paths.
+  Bounded concurrent recovery, mutually exclusive initial/background repair and
+  continued 16-request FetchGap pass three regressions, including cancellation
+  before Accept. Full core gates and a rebuilt image precede the resumed matrix.
+
+- The complete `test-core` gate, KV all-target clippy and workspace formatting
+  pass after the backlog repair. Evidence: `ci/run-41128190276/backlog-gates.json`.
+
+- During round 3 the user deleted `.crowdb-runtime` for disk cleanup. Historical
+  artifact archives, including the earlier frozen corruption records, are no
+  longer available. Surviving `/tmp` logs/scripts were copied back into the same
+  runtime artifact root, as requested; current state and complete service logs
+  were recaptured from the five original Docker volumes. The cleanup also
+  interrupted artifact publication after the already-failed restoration wait.
+  Do not treat reconstructed expectations or new captures as recovered archives.
+- Round 3 image `64454951913004b00d5d8dad480e8ddeb65088ce34cb427b64c3d0269ec48a71`
+  again passes original-volume upgrade and B-host loss/recreation. Majority loss
+  rejects writes, but restoration still fails the original 180-second bound.
+  Further regressions show FetchGap failing to persist recovered entries and
+  restart discarding a valid durable snapshot prefix when its WAL boundary is
+  absent. Both failures reproduce before their fixes, then focused restart and
+  durable-tree regressions pass. Recovery also needs to probe retained pinned
+  contacts when multicast is absent; an empty-discovery regression reproduces
+  the missing probes. All route publication continues to require pinned SSH
+  identity/bootstrap proof. Complete gates and another image precede resumption.
+
+- After the durable catch-up and retained-contact fixes, complete `test-core`,
+  Monitor tests, both crates' all-target clippy and workspace formatting pass.
+  Confirmation/publication share their existing three-second authority budget,
+  keeping offline SSH proof refresh below the fifteen-second route fence.
+  Evidence: `ci/run-41128190276/durable-gates.json`.
+
+- Round 4 image `2989a3a0dc7729126f005330ee58f1e701a87d3696164ce750a259d874755f03`
+  restores all 35 services, five cluster-readiness views and exact witnesses.
+  The stronger per-replica check then fails its 180-second bound: B replicas
+  remain at Group-0 applied slots 77005 and 34771 while A advances beyond 140000.
+  The matrix stops before new fault injection. Current receipts, checkpoints and
+  complete logs are retained under attempt 17's `round4/upgrade-failure/`.
+- A real-RPC regression reproduces historical chosen replay being rejected by
+  a higher promise; another proves FetchGap incorrectly exposed accepted-only
+  values. Both fail before the repair. Learning now preserves higher promises,
+  WAL replay retains accepted history independently of promise record order,
+  and the source requires a recovered contiguous chosen proof. Focused tests
+  pass; complete core gates and another retained-volume upgrade remain pending.
+- An actual zero-ballot probe confirms both blocked boundary slots retain a
+  higher promise (`(1,4)` / `(1,5)`) than the source's historical chosen ballot
+  `(0,3)`. Both probes are rejected without changing those promises. The
+  retained receipt, probe source and complete response are under `round4/`.
+- The repaired FetchGap cases preserve exact nonempty values and higher
+  promises through WAL restart. The existing RPC migration fixture now
+  publishes its actual two-voter quorum decision before fetching; response
+  assertions remain intact. Complete core coverage passes through its retained
+  prefix and resumed remainder; affected all-target clippy and formatting pass.
+  Evidence: `ci/run-41128190276/promise-resumed-gates.json` and
+  `ci-fetch-gap-promise-{red,green}.log`.
+- Round 5 image `51d0a67638ee9102664710eb95711dae3d201d066c09e44bb8a3aa1ae7e9996d`
+  restores all services, five readiness views and exact data. All five replicas
+  reach the fixed Group-0/1/3 checkpoints within the original 180-second bound;
+  the Group-0 check completes in 110.3 seconds after both B replicas had been
+  tens of thousands of slots behind. Per-second checkpoint observations and
+  immutable receipts accompany the retained-volume upgrade. Host faults follow.
+- Review found that 64 retained address hints could consume the whole probe
+  budget and exclude a discovered changed IP. A 64-member regression fails
+  before prioritizing fresh hints, then both discovery regressions and Monitor
+  clippy pass. The five-member physical fixture probes the same complete set
+  in either order; the next CI image includes this budget-boundary repair.
+- Round 5 B-host loss/recreation passes in 338.6 seconds for the whole
+  sequence: surviving quorum write/read, Catalog takeover within 180 seconds,
+  new unique acknowledged KV/S3/Iceberg witnesses, exact original reads,
+  retained identity recreation of both B containers and all-five reads.
+  Majority-host loss, allocation fault, final audit and cleanup remain pending.
+- Majority-host loss/restoration passes in 175.3 seconds for the whole sequence:
+  the two surviving voters reject the write, then all 35 services, all-five
+  replica checkpoints and exact witnesses recover within their original bounds.
+- The first allocation fault observation failed a harness race: its wait ended
+  on the first follower's no-op reply before the leader's accepted reply arrived.
+  It now waits for actual acceptance within the same three-second bound and
+  persists every reply. The resumed case observes explicit allocation-only safe
+  retry, completes same-ID allocation/query in 3.12 seconds, keeps every KV PID
+  and verifies Group-0 lease availability during the fault. Earlier passes are
+  retained; final fresh-outage writes, allocation audit and cleanup follow.
+- The resumed final gate passes: a second unique outage witness, all-five exact
+  reads, stable service PIDs, fresh native batch/allocation and all Group-0/1/3
+  applied checkpoints. The final scan finds 1774 live mirrored segments with
+  no cross-chunk physical overlap. All five labeled containers/volumes are
+  removed, all 85 owned endpoints are closed, and key-only host SSH still works.
+  Final frozen service logs were archived after stopping each container, with
+  no concurrent-write tar caveat. The separate 512-record capacity deadline
+  failure remains a measured limit; 294 exact records are the recovery witness.
+  Evidence: `attempt17/repaired-matrix-sequence.json`, `final-closed/`,
+  `final-all-replicas-caught-up.json`, `physical-five-occupancy.log`, `cleanup.json`.
+- Complete storage tests and formatting pass after the physical matrix. The
+  current isolated Journal browser case passes in 3268 ms; its original ordered
+  native-operations group then stops at Shell's KV-stop command. Three earlier
+  cases pass and are retained. Whole-workspace clippy and all 277 framework
+  tests pass before the newly diagnosed stop-receipt repair.
+- Shell's trace shows Stop requested at `00:45:35.108Z`, KV exiting about
+  0.1 seconds later, and the identical SSH request timing out after another
+  three-second authority read. The target had been Group-0 leader; its durable
+  execution record already says complete. The isolated Shell case passes in
+  4.3 seconds, then a real-authority/owned-child regression reproduces receipt
+  failure after authority loss. Exact completed KV-stop receipts now carry
+  bootstrap proof and return without re-execution; legacy, foreign, incomplete,
+  retired and live-replacement states still require current authority.
+
+### Stop-receipt and settled-Journal verification
+
+- Full Monitor tests, affected Monitor/E2E clippy, the 277 fixture tests,
+  bundled native-browser type checks, workspace fmt and required `tree-lint`
+  pass. The C++ gate exited zero with existing warnings in unchanged sources.
+- The release image containing the completed-stop receipt fix built in 139.7 s;
+  Docker execution identity is
+  `sha256:fea066994ab45918a04335fe93b00044aebb3fe73b958278806536a90aa05cba`.
+- Exact Shell recovery passes: Playwright 6.5 s, initial election 3385 ms;
+  the stopped leader's duplicate operation returns its immutable receipt.
+- Exact Journal recovery passes: placement settles in 502 ms before the browser,
+  Playwright 4.6 s, owner restart response 2290 ms. The measured pre-change
+  browser baseline was 3.268 s; the new time is below twice that baseline.
+  All navigation, identity, owner-loss/restart, stale-cursor and cleanup assertions
+  retain their original deadlines.
+- Evidence: `ci/run-41128190276/receipt-fixture-gates.json` and its named logs.
+  The initial direct-source TypeScript invocation lacked the serializer snapshot
+  supplied by `bundle_client`; the passing check uses that same snapshot layout.
+- Continue the native-operations selection in its original relative order:
+  retain unchanged binding/CRUD passes and rerun the KV-stop lifecycle case,
+  failed Shell case and all fifteen previously unrun cases (17 remaining).
+
+### Complete native operations and explicit KV-only witness setup
+
+- The native-operations closing run actually executed all original 19 cases,
+  despite the launcher-only remainder filter described above. All 19 passed;
+  `native-operations-complete-coverage.json` validates the exact original case
+  set against `results.json`. `native-resume-orchestration-note.json` preserves
+  the planned/actual selection difference. The resume helper now filters both
+  launcher and executor selections; no assertions or resources changed.
+- The deployment-services closing selection stopped at
+  `deployment::kv_bootstrap::monitor_creates_real_kv_groups_then_validates_after_restart`:
+  `/stores/0/groups/1/ready` returned 404 (`group 1 not found in store 0`). Seven
+  earlier/in-flight cases passed and remain valid.
+- This KV-only fixture must explicitly request its ordinary witness Group 1:
+  `/system/prepare` accepts bootstrap ownership; it does not create that group.
+  Both KV-only witness tests now assert no default-preparation record and no
+  existing Group 1, create the group once through the production management API,
+  and await its leader under the existing management four-second setup bound.
+  Group-0/1 identity, readiness, foreign-bootstrap rejection, exact data and
+  retained initialization checks remain. Restart does not recreate the group.
+- Repair sequence: affected E2E clippy/fmt, both exact KV-only cases, then the
+  24 unrun deployment cases in original relative order. Combined with the seven
+  valid passes and two focused cases, this preserves all 33 deployment cases.
+
+### Sustained terminal-writer fault versus automatic DiskIO recovery
+
+- Console API stopped at `console::cli_container::terminal_chunk_writer_recovery`.
+  The correct health endpoints returned fresh `ready: true` after the nominal
+  forty-second pause. Six independent cases passed, including the formerly
+  failing plain Docker attachment; retain them for the resumed selection.
+- Monitor lifecycle logs prove the fault healed before the thirty-second I/O
+  deadline: DiskIO PIDs 1414/594/631 were replaced by 2344/1522/1515 around
+  19–27 seconds after fault submission. The healthy responses were not stale.
+- The injector now holds each verified owned Monitor while pausing DiskIO,
+  verifies all six original processes remain stopped after forty seconds,
+  and resumes DiskIO before Monitor. Production recovery policy, original fault
+  duration, health assertions, terminal-replay proof and restart/data checks
+  remain intact. No host-wide settings change.
+- An `ExitStack` restores every paused process even if another resume fails;
+  client reaping still runs on failure. Two cleanup regressions and all 279
+  fixture tests pass. The focused terminal-writer test is running.
+- Deployment's complete 33-case union and Native Operations' exact 19-case set
+  are verified by the named `*-complete-coverage.json` records.
+
+### Replace supervisor suspension with an owned network fault
+
+- Holding Monitor also suspends its child-log pumps. That attempted injector
+  produced health-listener curl timeouts while all six PIDs remained stopped;
+  it is a failed observation, not a pass. Preserve `terminal-fault-held-focused.log`
+  and `run-fd6b4633ab9c4f0e981d5a62da2387fa` for that first divergence.
+- Use a forty-second packet drop on each accepted DiskIO TCP listener instead.
+  The helper joins only an authenticated owned CLI bridge container's network
+  namespace, receives only NET_ADMIN, and mounts a fingerprinted host netfilter
+  tool snapshot read-only. It never joins the host namespace or edits host rules.
+  Existing Monitor, log pumping and health samplers continue during the outage;
+  automatic DiskIO replacement cannot heal the blocked listener early.
+- A disposable private-namespace probe passed add/check/delete of the exact
+  DROP rule using the current release image. ExitStack cleanup handles each
+  jump, rule and chain independently, including partial setup and a failed
+  removal; focused unit coverage also rejects host-network targets before any
+  helper execution. The original health/currentness, terminal writer restart,
+  unchanged Access PIDs, exact data and operation-fencing assertions remain.
+
+### Bound the sustained GC load at its original cadence
+
+- Native Operations 19/19, deployment-services 33/33 and Console API 92/92
+  complete coverage is verified. GC cleanup's six cases passed; convergence
+  failed at 96/128 files after otherwise monotonic revisions.
+- The convergence failure is an explained process exit: the sole Chunk-KV
+  container has `OOMKilled=true`, exit 137, with its unchanged 512 MiB limit.
+  Four zero-delay SDK workers created 45,828 table cycles before that exit,
+  versus the original minimum 48. Keep the frozen state and counters in
+  `gc-zero-delay-oom-proof.json`; do not count this overload as a passing run.
+- Retain the original 500 ms inter-table interval while running until cleanup
+  completes. Stagger four workers by quarter-cycle offsets so 250 ms deletion
+  observations do not repeatedly alias all workers' gaps. Sleeps stay outside
+  latency measurements; the minimum counts, real deletion overlap, 64 small
+  writes and original test deadlines remain. The separate zero-delay foreground
+  probe keeps its existing zero-delay/yield behavior.
+- Repeat convergence and the restart matrix with that shared pressure change.
+  The five other cleanup cases retain valid passes because their load inputs
+  are unchanged. Preserve the complete failed long-run evidence.
+
+### Closing verification and publication
+
+- Both paced GC repetitions pass: restart matrix 132.54 s; convergence 479.44 s
+  including fixture lifecycle, with 471.46 s client execution. The convergence
+  task reaches `Complete`, deletes all 128 source files and verifies their 1554
+  logical bytes. The original 64 foreground writes, minimum SDK operation counts
+  and measured overlap with actual deletion intervals all pass. The failed
+  zero-delay overload remains separate evidence.
+- Complete affected container coverage is 151 distinct cases: Native Operations
+  19, deployment-services 33, Console API 92, GC cleanup 6 and GC convergence 1.
+  Their `*-complete-coverage.json` records identify the actual result files and
+  distinguish retained unchanged passes from repeated changed cases. The two
+  shared GC pressure consumers were both repeated after restoring the cadence.
+- Core, storage, Protocol, Web, Monitor, Console Shared, KV Client, ChunkDB and
+  Chunk Stream verification pass, along with workspace fmt, whole-workspace and
+  subsequent affected-crate clippy, native-browser type checks, all 280 fixture
+  tests and required C++ tree lint. The final post-pressure E2E clippy/fmt and
+  framework checks pass. No production changes followed the final release-image
+  build; later changes are tests, fixture tooling, CI prerequisites and docs.
+- Rechecked run `41003611925`: eight failed jobs, repaired and locally verified
+  before the first publication. Rechecked run `41128190276`: five failed jobs,
+  repaired and verified by the follow-up coverage above. The historical job
+  conclusions are retained; local passes do not change those remote conclusions.
+- The user renewed commit/push authorization after temporarily deferring push.
+  The completed execution plan is removed for this publication. Cleanup-tool
+  changes belonging to the user's concurrent work are excluded from the commit.
+- Physical scope remains five containers across two hosts, with complete
+  recovery/cleanup results. The separate 512-record/default-five-second capacity
+  failure is unresolved as a capacity limit; the 294 acknowledged records are
+  verified recovery witnesses only. Earlier archives deleted during user disk
+  cleanup cannot be recovered or claimed as retained.

@@ -36,6 +36,7 @@ async fn concurrent_admissions_allocate_unique_stable_ids_through_group_zero() {
     .await
     .unwrap();
     let node = |uuid: &str, host: &str| NodeRecord {
+        web_port: 9090,
         discovery_id: uuid.into(),
         node_id: 0,
         physical_host_id: "same-host".into(),
@@ -173,6 +174,7 @@ async fn authenticated_node_update_preserves_ids_and_converges_from_another_cons
         .await
         .unwrap();
     let source = NodeRecord {
+        web_port: 9090,
         discovery_id: uuid::Uuid::new_v4().to_string(),
         node_id: 7,
         physical_host_id: "same-host".into(),

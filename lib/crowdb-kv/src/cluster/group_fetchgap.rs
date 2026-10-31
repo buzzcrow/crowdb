@@ -4,16 +4,25 @@
 #![allow(clippy::too_many_lines)]
 #![allow(clippy::cast_possible_truncation)]
 
-use std::sync::atomic::Ordering;
-use std::sync::Weak;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Weak,
+};
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::cluster::group::PxGroup;
-use crate::paxos::roles::Acceptor;
 use crate::paxos::PxGroupId;
+
+struct FetchGapInFlight(Arc<AtomicU64>);
+
+impl Drop for FetchGapInFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 /// R65: Follower-side `FetchGap` driver. Periodically checks the local
 /// replica's `gap_slots` set and sends `FetchGap` to the leader for each
@@ -25,6 +34,7 @@ pub(crate) async fn run_fetchgap_driver(
     cancel: CancellationToken,
 ) {
     let tick = Duration::from_millis(10);
+    let mut large_backlog = false;
     loop {
         if cancel.is_cancelled() {
             return;
@@ -49,21 +59,17 @@ pub(crate) async fn run_fetchgap_driver(
         let Some(remote) = group.get_remote_replica(leader_id) else {
             continue;
         };
-        // R65: snapshot fallback — if gap count exceeds the threshold,
-        // skip FetchGap and log a warning. A full automatic snapshot
-        // install for running replicas is a follow-up; for now the
-        // follower will eventually catch up via ChosenNotice + heartbeat.
+        // Running replicas have no atomic snapshot replacement yet. Keep
+        // draining large backlogs with the existing fixed inflight bound.
         let gap_count = group.local_replica().gap_slots.lock().len();
         let threshold = group.config.election.catchup_snapshot_threshold;
-        if gap_count > threshold as usize {
-            warn!(
+        if gap_count > threshold as usize && !large_backlog {
+            debug!(
                 group_id,
-                gap_count,
-                threshold,
-                "gap count exceeds snapshot threshold; FetchGap skipped (snapshot fallback not yet automatic)"
+                gap_count, threshold, "snapshot catch-up is unavailable; continuing bounded FetchGap"
             );
-            continue;
         }
+        large_backlog = gap_count > threshold as usize;
         // Clone the crowdb-rpc transport + endpoint so the spawned task
         // can call `transport.send_fetch_gap()` directly.
         let rpc_transport = remote.rpc_transport().cloned();
@@ -81,6 +87,7 @@ pub(crate) async fn run_fetchgap_driver(
         let gap_slots = replica.gap_slots.clone();
         let learner = replica.learner.clone();
         let acceptor = replica.acceptor.clone();
+        let wal = replica.wal().cloned();
         let apply_notify = replica.apply_notify.clone();
         let fetchgap_received = replica
             .replication_handles
@@ -95,16 +102,17 @@ pub(crate) async fn run_fetchgap_driver(
             let rpc_transport_clone = rpc_transport.clone();
             let rpc_endpoint_clone = rpc_endpoint.clone();
             let rpc_timeout_clone = rpc_timeout;
-            let fetchgap_inflight_clone = fetchgap_inflight.clone();
+            let inflight = FetchGapInFlight(fetchgap_inflight.clone());
             let gap_slots_clone = gap_slots.clone();
             let learner_clone = learner.clone();
             let acceptor_clone = acceptor.clone();
+            let wal_clone = wal.clone();
             let apply_notify_clone = apply_notify.clone();
             let fetchgap_received_clone = fetchgap_received.clone();
             let fetchgap_failed_clone = fetchgap_failed.clone();
             tokio::spawn(async move {
+                let _inflight = inflight;
                 let Some(ref transport) = rpc_transport_clone else {
-                    fetchgap_inflight_clone.fetch_sub(1, Ordering::AcqRel);
                     if let Some(c) = &fetchgap_failed_clone {
                         c.inc();
                     }
@@ -132,7 +140,6 @@ pub(crate) async fn run_fetchgap_driver(
                     ))
                 })
                 .and_then(|r| r);
-                fetchgap_inflight_clone.fetch_sub(1, Ordering::AcqRel);
                 match result {
                     Ok(resp) => {
                         if let Some(c) = &fetchgap_received_clone {
@@ -153,7 +160,30 @@ pub(crate) async fn run_fetchgap_driver(
                             term: resp.term,
                             payload: resp.payload,
                         };
-                        acceptor_clone.accept(&entry).await;
+                        // Historical chosen values may belong to an older
+                        // election term. Persist their original entry before
+                        // exposing an applied frontier or snapshot coverage.
+                        let persisted = if let Some(wal) = &wal_clone {
+                            match wal
+                                .append(&crate::wal::record::WALRecord::from_accepted(group_id, &entry))
+                                .await
+                            {
+                                Ok(_) => true,
+                                Err(error) => {
+                                    tracing::error!(group_id, slot, %error, "FetchGap persistence failed; retaining gap for later recovery");
+                                    false
+                                }
+                            }
+                        } else {
+                            true
+                        };
+                        if !persisted || !acceptor_clone.install_chosen(&entry).await {
+                            gap_slots_clone.lock().insert(slot);
+                            if let Some(c) = &fetchgap_failed_clone {
+                                c.inc();
+                            }
+                            return;
+                        }
                         learner_clone.update_chosen_frontier(resp.slot, resp.term);
                         apply_notify_clone.notify_one();
                     }

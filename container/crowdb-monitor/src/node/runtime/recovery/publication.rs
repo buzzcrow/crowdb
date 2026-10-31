@@ -18,6 +18,7 @@ pub(super) async fn reconcile(
     operation: &PreparedBootstrap,
     endpoints: &MemberEndpoints,
     topology: &ConsoleConfig,
+    web_port: u16,
 ) -> Result<()> {
     let local = super::identity(root)?.endpoint;
     let mut config = topology.clone();
@@ -60,8 +61,9 @@ pub(super) async fn reconcile(
         .ok_or("local node topology missing")?
         .host
         .clone();
-    if record.host != current {
+    if record.host != current || record.web_port != web_port {
         record.host.clone_from(&current);
+        record.web_port = web_port;
         node_update::apply(&ctx, &operation.identity.cluster_id, record).await?;
     }
     super::owners::capture(root, &ctx, &operation.identity, local.node_id).await?;

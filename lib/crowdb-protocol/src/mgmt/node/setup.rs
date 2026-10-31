@@ -120,6 +120,16 @@ pub struct NodeSetupChoices {
 }
 
 impl NodeSetupChoices {
+    /// Whether the selected storage or services require ordinary metadata.
+    #[must_use]
+    pub fn requires_default_preparation(&self) -> bool {
+        !matches!(self.storage, SetupStorage::Diskless)
+            || self
+                .services
+                .iter()
+                .any(|service| service.enabled && service.kind != SetupServiceKind::PaxosKv)
+    }
+
     /// Return the management and RPC listeners reserved for the bootstrap KV.
     ///
     /// The node launcher may shift these listeners for host-network containers

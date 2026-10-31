@@ -47,6 +47,11 @@ impl ProductionStreamChunkStore {
         {
             return Err(StreamError::StaleWriter);
         }
+        if chunk.state == ChunkState::Deleted as i32 && !finalized_empty_chunk(&chunk) {
+            return Err(StreamError::Corruption(
+                "deleted stream chunk lacks empty finalization proof".into(),
+            ));
+        }
         let state = self.install(chunk.clone())?;
         if chunk.strips.is_empty() {
             let recovered = empty_sealed_tail(&chunk, active)?;
@@ -121,11 +126,11 @@ fn empty_sealed_tail(chunk: &Chunk, active: &ActiveChunkDescriptor) -> Result<Re
     let valid_purpose = [StreamPurpose::Wal, StreamPurpose::Stream]
         .into_iter()
         .any(|purpose| purpose.matches(active.chunk_id) && chunk.chunk_type == purpose.chunk_type() as i32);
-    // Sealing an empty tail returns every strip. Its durable zero boundary has
-    // no physical bytes to scan, but an active or nonempty layout is corrupt.
+    // Finalization may delete the already sealed empty tail. Its durable zero
+    // boundary has no physical bytes to scan; no nonempty tombstone is accepted.
     if !valid_purpose
         || chunk.writer_epoch == 0
-        || chunk.state != ChunkState::Sealed as i32
+        || (chunk.state != ChunkState::Sealed as i32 && !finalized_empty_chunk(chunk))
         || chunk.capacity != 0
         || chunk.sealed_length != 0
         || chunk.acknowledged_cursor != 0
@@ -139,6 +144,23 @@ fn empty_sealed_tail(chunk: &Chunk, active: &ActiveChunkDescriptor) -> Result<Re
         logical_end: active.logical_start,
         extents: Vec::new(),
     })
+}
+
+pub(super) fn finalized_empty_chunk(chunk: &Chunk) -> bool {
+    use crowdb_protocol::chunk_stream::StreamPurpose;
+    chunk.state == ChunkState::Deleted as i32
+        && chunk.sealed_ts_ms != 0
+        && chunk.writer_epoch != 0
+        && chunk.strips.is_empty()
+        && chunk.cleanup_intents.is_empty()
+        && chunk.capacity == 0
+        && chunk.sealed_length == 0
+        && chunk.acknowledged_cursor == 0
+        && chunk.id.is_some_and(|id| {
+            [StreamPurpose::Wal, StreamPurpose::Stream]
+                .into_iter()
+                .any(|purpose| purpose.matches(id) && chunk.chunk_type == purpose.chunk_type() as i32)
+        })
 }
 
 fn observation_error(error: &crowdb_chunk_client::FrameObservationError) -> StreamError {

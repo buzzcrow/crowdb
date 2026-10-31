@@ -25,6 +25,9 @@ use crowdb_protocol::chunkdb::rpc::{
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
 
+#[path = "production_chunk_test/finalized_empty.rs"]
+mod finalized_empty;
+
 #[path = "production_chunk_test/recovery.rs"]
 mod recovery;
 

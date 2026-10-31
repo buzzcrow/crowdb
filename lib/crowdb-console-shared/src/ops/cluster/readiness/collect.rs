@@ -129,20 +129,36 @@ async fn gather(
     let (nodes, intents, metadata, storage) = tokio::join!(
         tokio::time::timeout_at(deadline, registry::read(ctx.kv())),
         tokio::time::timeout_at(deadline, services::list(ctx.kv())),
-        tokio::time::timeout_at(deadline, storage::metadata(ctx, bootstrap)),
-        tokio::time::timeout_at(deadline, storage::read(ctx, bootstrap)),
+        async {
+            if local.policy.setup.requires_default_preparation() {
+                Some(tokio::time::timeout_at(deadline, storage::metadata(ctx, bootstrap)).await)
+            } else {
+                None
+            }
+        },
+        async {
+            if local.policy.setup.requires_default_preparation() {
+                tokio::time::timeout_at(deadline, storage::read(ctx, bootstrap))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+            } else {
+                None
+            }
+        },
     );
-    observation
-        .dependencies
-        .push(metadata.ok().and_then(Result::ok).unwrap_or_else(|| {
-            fact(
-                "cluster/metadata",
-                DependencyKind::Metadata,
-                DependencyState::Unknown,
-                "metadata-unavailable",
-            )
-        }));
-    let storage = storage.ok().and_then(Result::ok);
+    if let Some(metadata) = metadata {
+        observation
+            .dependencies
+            .push(metadata.ok().and_then(Result::ok).unwrap_or_else(|| {
+                fact(
+                    "cluster/metadata",
+                    DependencyKind::Metadata,
+                    DependencyState::Unknown,
+                    "metadata-unavailable",
+                )
+            }));
+    }
     let Ok(Ok(Some((registry, _)))) = nodes else {
         append_storage(observation, storage.as_ref(), &std::collections::BTreeMap::new());
         return;
@@ -173,6 +189,13 @@ fn append_storage(
     storage: Option<&storage::StorageSnapshot>,
     nodes: &std::collections::BTreeMap<u64, NodeRuntimeObservation>,
 ) {
+    if observation
+        .policy
+        .as_ref()
+        .is_some_and(|policy| !policy.setup.requires_default_preparation())
+    {
+        return;
+    }
     observation.dependencies.extend(storage.map_or_else(
         || {
             vec![fact(

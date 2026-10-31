@@ -243,3 +243,29 @@ fn accepted_serialization_requires_explicit_version_and_complete_policy() {
     };
     assert!(current.resolve(&future, None).is_err());
 }
+
+#[test]
+fn five_voter_policy_retains_the_accepted_formation_and_rejects_other_counts() {
+    let omitted = NodeDeploymentOverrides::default();
+    let explicit = NodeDeploymentOverrides {
+        initial_voters: Some(5),
+        ..Default::default()
+    };
+    let accepted = explicit.resolve(&omitted, None).unwrap();
+    accepted.formation().validate().unwrap();
+    assert_eq!(accepted.initial_voters, 5);
+    assert_eq!(omitted.resolve(&omitted, Some(&accepted)).unwrap(), accepted);
+    let changed = NodeDeploymentOverrides {
+        initial_voters: Some(3),
+        ..Default::default()
+    };
+    assert!(changed.resolve(&omitted, Some(&accepted)).is_err());
+    for count in [0, 2, 4, 6, 7, 255] {
+        let invalid = NodeDeploymentPolicy {
+            initial_voters: count,
+            ..Default::default()
+        };
+        assert!(invalid.validate().is_err(), "count {count}");
+        assert!(invalid.formation().validate().is_err(), "count {count}");
+    }
+}

@@ -36,7 +36,7 @@ impl FormationPolicy {
     /// # Errors
     /// Rejects unsupported versions, malformed scopes and voter counts.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.version != 1 || !matches!(self.initial_voters, 1 | 3) || !valid_cluster(&self.cluster) {
+        if self.version != 1 || !matches!(self.initial_voters, 1 | 3 | 5) || !valid_cluster(&self.cluster) {
             return Err("invalid node formation policy");
         }
         Ok(())
@@ -138,8 +138,8 @@ impl NodeDeploymentPolicy {
         if self.version != 1 {
             return Err("unsupported node deployment policy version");
         }
-        if !matches!(self.initial_voters, 1 | 3) {
-            return Err("initial voters must be one or three");
+        if !matches!(self.initial_voters, 1 | 3 | 5) {
+            return Err("initial voters must be one, three or five");
         }
         if !valid_cluster(&self.cluster) {
             return Err("cluster scope must contain 1 to 48 name characters");

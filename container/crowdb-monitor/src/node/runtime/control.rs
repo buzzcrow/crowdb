@@ -61,8 +61,18 @@ pub(super) async fn execute(
             node_id,
             admission,
         } => admission::cancel(profile, processes, bootstrap, node_id, admission).await,
-        request @ (NodeControl::Identity
-        | NodeControl::InstallKey { .. }
+        NodeControl::Identity => {
+            let mut value = identity(root)?;
+            let port = profile
+                .public_endpoints
+                .iter()
+                .find(|endpoint| endpoint.id == "web")
+                .ok_or("web public endpoint is absent from node profile")?
+                .port;
+            value["web_port"] = port.into();
+            Ok(value)
+        }
+        request @ (NodeControl::InstallKey { .. }
         | NodeControl::RemoveKey { .. }
         | NodeControl::TrustHost { .. }) => keys(root, request).await,
         NodeControl::Bind { binding } => kv::bind(profile, processes, binding).await,

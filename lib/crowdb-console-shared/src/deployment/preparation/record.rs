@@ -69,9 +69,9 @@ impl DefaultPreparation {
 
     fn with_operation(bootstrap: &PreparedBootstrap, operation_id: String) -> Result<Self> {
         let members = bootstrap.intent.members();
-        if !matches!(members.len(), 1 | 3) {
+        if !matches!(members.len(), 1 | 3 | 5) {
             return Err(Error::Config(
-                "default preparation requires one or three admitted voters".into(),
+                "default preparation requires one, three or five admitted voters".into(),
             ));
         }
         let config = bootstrap.intent.to_config();

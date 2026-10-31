@@ -73,6 +73,16 @@ impl NodeServiceForTests {
     }
 
     /// # Errors
+    /// Propagates owned test KV child startup failures.
+    pub async fn start_kv_child_for_tests(&mut self) -> Result<u32> {
+        let service = super::super::service(&self.profile, "kv")?;
+        Ok(self
+            .processes
+            .start(&service, &std::collections::BTreeMap::new())
+            .await?)
+    }
+
+    /// # Errors
     /// Propagates failure to stop the owned KV child.
     pub async fn stop_kv_for_tests(&mut self) -> Result<()> {
         self.processes

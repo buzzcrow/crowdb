@@ -25,20 +25,20 @@ impl Drop for Worker {
     }
 }
 
-pub(in crate::node::runtime) fn start(root: std::path::PathBuf, port: u16) -> Worker {
+pub(in crate::node::runtime) fn start(root: std::path::PathBuf, port: u16, web_port: u16) -> Worker {
     Worker(tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(3));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
-            if let Err(error) = refresh(&root, port).await {
+            if let Err(error) = refresh(&root, port, web_port).await {
                 tracing::debug!(%error, "member endpoint recovery is pending");
             }
         }
     }))
 }
 
-async fn refresh(root: &Path, port: u16) -> Result<()> {
+async fn refresh(root: &Path, port: u16, web_port: u16) -> Result<()> {
     let Some(accepted) = durable::read::<AcceptedNode>(&root.join("accepted-node.json"))? else {
         return Ok(());
     };
@@ -52,9 +52,14 @@ async fn refresh(root: &Path, port: u16) -> Result<()> {
     {
         return Err("member recovery is retired".into());
     }
+    let authority_start = std::time::Instant::now();
     if let Err(error) = super::confirmed::refresh(root, &accepted).await {
         tracing::debug!(%error, "confirmed recovery contacts await current authority");
     }
+    // Confirmation and publication share their existing three-second budget.
+    // A ten-second offline SSH proof must not stretch route refresh past the
+    // fifteen-second freshness fence while Group 0 is unavailable.
+    let publication_budget = Duration::from_secs(3).saturating_sub(authority_start.elapsed());
     super::check(root, &accepted)?;
     let operation = PreparedBootstrap::load(&root.join("prepared-bootstrap.json"))?;
     let (trust, config) = super::confirmed::contacts(root, &operation)?;
@@ -95,8 +100,8 @@ async fn refresh(root: &Path, port: u16) -> Result<()> {
     };
     durable::write(&root.join("member-endpoints.json"), &snapshot)?;
     match tokio::time::timeout(
-        Duration::from_secs(3),
-        super::publication::reconcile(root, &operation, &snapshot, &config),
+        publication_budget,
+        super::publication::reconcile(root, &operation, &snapshot, &config, web_port),
     )
     .await
     {
@@ -139,17 +144,38 @@ fn destinations(
             if destinations.len() >= 64 || !destinations.insert((member.node_id, host)) {
                 continue;
             }
-            let mut node = config
-                .node(member.node_id)
-                .cloned()
-                .ok_or("member topology is absent")?;
-            node.host = host.to_string();
-            node.ssh_password = None;
-            node.ssh_key = Some(root.join("ssh/id_ed25519").to_string_lossy().into_owned());
-            probes.push(node);
+            probes.push(probe_node(root, config, member.node_id, host)?);
+        }
+    }
+    // Fresh discovery gets the bounded probe budget first so retained old
+    // addresses cannot crowd out a changed IP. Retained addresses are hints too: pinned SSH still proves the member
+    // before a route is published. Recovery must not depend on multicast or
+    // on Group 0 already being available after its majority restarts.
+    for member in trust.members.iter().take(64) {
+        if destinations.len() >= 64 {
+            break;
+        }
+        let node = config.node(member.node_id).ok_or("member topology is absent")?;
+        if let Ok(host) = node.host.parse::<std::net::IpAddr>() {
+            if destinations.insert((member.node_id, host)) {
+                probes.push(probe_node(root, config, member.node_id, host)?);
+            }
         }
     }
     Ok(probes)
+}
+
+fn probe_node(
+    root: &Path,
+    config: &ConsoleConfig,
+    node_id: u64,
+    host: std::net::IpAddr,
+) -> Result<crowdb_console_shared::config::NodeEntry> {
+    let mut node = config.node(node_id).cloned().ok_or("member topology is absent")?;
+    node.host = host.to_string();
+    node.ssh_password = None;
+    node.ssh_key = Some(root.join("ssh/id_ed25519").to_string_lossy().into_owned());
+    Ok(node)
 }
 
 fn unique(endpoints: impl Iterator<Item = MemberEndpoint>) -> (Vec<MemberEndpoint>, Vec<String>) {
@@ -180,4 +206,16 @@ pub fn unique_member_endpoints_for_tests(
     endpoints: Vec<MemberEndpoint>,
 ) -> (Vec<MemberEndpoint>, Vec<String>) {
     unique(endpoints.into_iter())
+}
+
+#[cfg(feature = "test-util")]
+/// # Errors
+/// Rejects trusted members missing from the retained topology.
+pub fn member_recovery_destinations_for_tests(
+    root: &Path,
+    config: &ConsoleConfig,
+    trust: &MemberTrust,
+    snapshot: CandidateSnapshot,
+) -> Result<Vec<crowdb_console_shared::config::NodeEntry>> {
+    destinations(root, config, trust, snapshot)
 }

@@ -31,8 +31,6 @@ pub use liveness::{probe_liveness, LivenessError, LivenessServer};
 pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};
 pub use monitor_log::{MonitorEvent, MonitorEventKind, MonitorLog, MonitorLogError};
 #[cfg(feature = "test-util")]
-pub use node::unique_member_endpoints_for_tests;
-#[cfg(feature = "test-util")]
 pub use node::{
     accept_file_for_tests, accept_member_trust_for_tests, accept_startup_mode_for_tests,
     check_member_trust_for_tests, check_retained_medium_for_tests, file_operations_for_tests,
@@ -47,6 +45,8 @@ pub use node::{
     CandidateCache, DiscoveryConfig, DiscoveryError, NodeDiscovery, NodeIdentity, NodeIdentityError,
     NodeManagementError, NodeRuntimeConfig, NODE_SERVICE_TYPE,
 };
+#[cfg(feature = "test-util")]
+pub use node::{member_recovery_destinations_for_tests, unique_member_endpoints_for_tests};
 #[cfg(feature = "test-util")]
 pub use preview::{preview_step_names_for_tests, run_preview_for_tests, PreviewError};
 pub use probe::{ProbeError, ProbeExecutor};

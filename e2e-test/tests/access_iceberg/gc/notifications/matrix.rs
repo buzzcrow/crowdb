@@ -125,7 +125,7 @@ impl TestMatrix {
             let deleted = task.deleted;
             self.observe(&task, multipart.as_ref());
             if let Some(pressure) = &mut self.pressure {
-                pressure.observe(deleted).await?;
+                pressure.observe(deleted, task.phase == GcPhase::Complete).await?;
             } else if deleted > 0 {
                 let remaining = self.records.remaining().await?;
                 if task.phase == GcPhase::Complete || remaining == 0 {

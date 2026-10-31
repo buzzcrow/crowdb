@@ -50,6 +50,7 @@ pub use hardware::{
 };
 pub use membership::{GroupMembershipClient, GroupMembershipSnapshot};
 pub use metrics::{ClientMetrics, ClientMetricsSnapshot, LeaderChangeEpisode, WindowLatencySnapshot};
+pub use service::registry::DEFAULT_TTL_MS as SERVICE_INSTANCE_TTL_MS;
 pub use service::{
     DomainMonitorClient, ServiceDiscoveryClient, ServiceRegistryClient, StreamProcessAuthority,
     StreamProcessContext, StreamProcessLeaseClient, StreamProcessLeaseError, StreamProcessLeaseStatus,

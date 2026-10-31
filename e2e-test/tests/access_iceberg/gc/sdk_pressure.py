@@ -33,8 +33,14 @@ def run(worker):
                 raise RuntimeError("foreground cancelled before release")
             time.sleep(0.01)
     count = int(sys.argv[2]) if len(sys.argv) > 2 else 3
+    interval = float(sys.argv[3]) if len(sys.argv) > 3 else 0
+    # Keep paced workers spread across a cycle so a short deletion interval
+    # cannot repeatedly fall into all four workers' inter-table gaps.
+    if interval:
+        time.sleep(worker * interval / 4)
     index = 0
-    while index < count or (count == 0 and (index < 3 or not (control / "stop").exists())):
+    minimum = count if count else 3
+    while index < minimum or (control and not (control / "stop").exists()):
         identifier = namespace + (f"events-{index}",)
         table = measure("create_table", lambda: catalog.create_table(identifier, Schema(NestedField(field_id=1, name="id", field_type=LongType(), required=True))))
         measure("commit", lambda: table.transaction().set_properties({"gc-probe": str(index)}).commit_transaction())
@@ -58,7 +64,7 @@ def run(worker):
             temporary.write_text(str(index))
             temporary.replace(control / f"progress-{worker}")
         if len(sys.argv) > 3:
-            time.sleep(float(sys.argv[3]))
+            time.sleep(interval)
     measure("drop_namespace", lambda: catalog.drop_namespace(namespace))
     return samples, windows
 

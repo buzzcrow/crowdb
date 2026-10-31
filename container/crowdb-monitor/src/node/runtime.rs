@@ -58,11 +58,11 @@ mod recovery;
 pub use ipc::control_node;
 use ipc::read_request;
 #[cfg(feature = "test-util")]
-pub use recovery::unique_member_endpoints_for_tests;
-#[cfg(feature = "test-util")]
 pub use recovery::{
     accept_member_trust_for_tests, check_member_trust_for_tests, member_trust_ready_for_tests,
 };
+#[cfg(feature = "test-util")]
+pub use recovery::{member_recovery_destinations_for_tests, unique_member_endpoints_for_tests};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -128,7 +128,13 @@ pub async fn run_node_with_inputs(
     let web = web_service(&profile, config.bind.port())?;
     processes.start(&web, &BTreeMap::new()).await?;
     recovery::publish_local(&root, &config.discovery.addresses)?;
-    let endpoint_recovery = recovery::start(root.clone(), config.bind.port());
+    let web_port = profile
+        .public_endpoints
+        .iter()
+        .find(|endpoint| endpoint.id == "web")
+        .ok_or("web public endpoint is absent from node profile")?
+        .port;
+    let endpoint_recovery = recovery::start(root.clone(), config.bind.port(), web_port);
     kv::resume(&profile, &mut processes).await?;
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let discovery_root = root.clone();

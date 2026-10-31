@@ -20,7 +20,7 @@ mod publication;
 pub(super) use confirmed::{accept as accept_confirmed, prepare_admitted};
 pub(super) use discovery::start;
 #[cfg(feature = "test-util")]
-pub use discovery::unique_member_endpoints_for_tests;
+pub use discovery::{member_recovery_destinations_for_tests, unique_member_endpoints_for_tests};
 
 pub(super) fn publish_local(root: &Path, addresses: &[std::net::IpAddr]) -> Result<()> {
     durable::write(

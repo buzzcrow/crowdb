@@ -3,9 +3,9 @@
 
 //! Topology cache for chunkdb placement decisions.
 //!
-//! `TopologyCache` holds an `Arc<RwLock<TopologySnapshot>>` with the
+//! `TopologyCache` publishes an immutable `ArcSwap<TopologySnapshot>` with the
 //! current cluster hierarchy (racks, nodes, disk-groups). Placement
-//! (R87) calls `snapshot()` to get a consistent point-in-time view.
+//! calls `snapshot()` to get a consistent point-in-time view.
 //!
 //! Update path: periodic full refresh from group-0 via
 //! `HardwareClient` + watch/notify for immediate status changes.
@@ -23,6 +23,7 @@ use crowdb_protocol::{DiskGroupId, NodeId, RackId};
 
 use crate::selector::PlacementEntry;
 
+mod availability;
 pub mod notify;
 pub mod refresh;
 
@@ -33,7 +34,7 @@ pub const G0_GROUP: u64 = 0;
 /// Watch prefixes for chunkdb topology updates. Disk records carry the
 /// allocation geometry; without their notifications a ChunkDB started before
 /// DiskIO publishes hardware can retain a zero unit size indefinitely.
-pub const CHUNKDB_WATCH_PREFIXES: &[&[u8]] = &[b"/hw/node/", b"/hw/dg/", b"/hw/disk/"];
+pub const CHUNKDB_WATCH_PREFIXES: &[&[u8]] = &[b"/hw/node/", b"/hw/dg/", b"/hw/disk/", b"/srv/diskio/"];
 
 /// `HwStatus::Up` as `i32` (prost represents enums as i32 in messages).
 const HW_UP: i32 = HwStatus::Up as i32;
@@ -52,6 +53,8 @@ pub struct TopologySnapshot {
     disk_groups: HashMap<DiskGroupId, DiskGroupEntry>,
     /// disk_id → physical failure-domain location for post-allocation checks.
     disks: HashMap<DiskId, DiskLocation>,
+    /// Located DiskIO observations expire independently of hardware intent.
+    diskio_deadlines: HashMap<DiskGroupId, u64>,
     /// Capacity observations joined to live disk-group membership.
     usage: HashMap<DiskGroupId, DiskGroupCapacity>,
     /// Monotonic local publication generation.
@@ -139,6 +142,16 @@ impl Drop for InFlightReservation {
 impl TopologySnapshot {
     /// All disk-groups with healthy status (rack/node/dg all `Up`).
     pub fn healthy_disk_groups(&self) -> Vec<&DiskGroupEntry> {
+        self.healthy_disk_groups_at(availability::now_ms())
+    }
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn healthy_disk_groups_at_for_tests(&self, now: u64) -> Vec<&DiskGroupEntry> {
+        self.healthy_disk_groups_at(now)
+    }
+
+    fn healthy_disk_groups_at(&self, now: u64) -> Vec<&DiskGroupEntry> {
         self.disk_groups
             .values()
             .filter(|dg| {
@@ -148,7 +161,13 @@ impl TopologySnapshot {
                     .get(&(dg.rack_id, dg.node_id))
                     .is_some_and(|(s, _)| *s == HW_UP);
                 let rack_ok = self.racks.get(&dg.rack_id).is_some_and(|(s, _)| *s == HW_UP);
-                dg_ok && node_ok && rack_ok
+                dg_ok
+                    && node_ok
+                    && rack_ok
+                    && self
+                        .diskio_deadlines
+                        .get(&dg.dg_id)
+                        .map_or(true, |deadline| *deadline >= now)
             })
             .collect()
     }
@@ -497,6 +516,7 @@ pub async fn build_snapshot(hw: &crowdb_kv_client::HardwareClient) -> Option<Top
         }
     };
     let service = crowdb_kv_client::ServiceRegistryClient::from_shared(hw.shared_kv());
+    let diskio = availability::read(&service).await?;
     if let Ok(instances) = service.read_all_diskdb_instances().await {
         for (_, instance) in instances {
             if let Some(diskdb) = instance.extra.and_then(|extra| extra.diskdb) {
@@ -556,6 +576,7 @@ pub async fn build_snapshot(hw: &crowdb_kv_client::HardwareClient) -> Option<Top
     }
 
     snap.set_allocation_geometry(&disks);
+    snap.diskio_deadlines = availability::deadlines(&snap.disk_groups, &diskio);
 
     Some(snap)
 }

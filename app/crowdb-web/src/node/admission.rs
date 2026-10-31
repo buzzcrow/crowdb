@@ -179,6 +179,10 @@ async fn admit_observed(
     .await
     .map_err(map_config_err)?;
     record.pin_host_key(&identity.host_key).map_err(map_config_err)?;
+    if identity.web_port == 0 {
+        return Err(err_409("Authenticated target has an invalid Web listener"));
+    }
+    record.web_port = identity.web_port;
     if let Some(binding) = &binding {
         record = registry::admit(
             state.kv_client().await.as_ref(),
@@ -436,6 +440,7 @@ fn initial_record(
         record
     } else {
         NodeRecord {
+            web_port: 9090,
             discovery_id: id.to_string(),
             node_id: next_node_id(config, &records(state)?)?,
             physical_host_id: physical_host.to_owned(),

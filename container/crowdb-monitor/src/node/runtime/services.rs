@@ -11,6 +11,8 @@ use std::time::Duration;
 #[derive(Serialize, Deserialize)]
 pub(super) struct Execution {
     pub(super) intent: NodeServiceIntent,
+    #[serde(default)]
+    bootstrap: Option<crowdb_protocol::mgmt::SystemBootstrapIdentity>,
     complete: bool,
     pid: Option<u32>,
     #[serde(default)]
@@ -28,6 +30,7 @@ mod execution;
 pub(super) use dependencies::ready as dependencies_ready;
 mod observation;
 mod policy;
+mod receipt;
 pub(super) use execution::execute;
 pub(super) use observation::observe;
 

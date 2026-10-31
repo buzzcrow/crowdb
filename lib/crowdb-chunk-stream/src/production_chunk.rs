@@ -490,7 +490,17 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         }
         let chunk = state.chunk.load_full();
         let name = StreamName::from_chunk_owner_key(&chunk.owner_key).ok_or(StreamError::StaleWriter)?;
-        if let Some(context) = self.owner_context(name, writer_epoch)? {
+        let context = self.owner_context(name, writer_epoch)?;
+        if chunk.state == ChunkState::Deleted as i32 {
+            if cursor != 0 || !recovery::finalized_empty_chunk(&chunk) {
+                return Err(StreamError::Corruption(
+                    "deleted stream chunk is not a proven empty tail".into(),
+                ));
+            }
+            context.ok_or(StreamError::StaleWriter)?.check_io()?;
+            return Ok(());
+        }
+        if let Some(context) = context {
             if chunk.state != ChunkState::Sealed as i32 {
                 self.drain_for_seal(&chunk, &context).await?;
             }

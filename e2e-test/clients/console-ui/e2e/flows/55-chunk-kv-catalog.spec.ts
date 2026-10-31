@@ -1,21 +1,24 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: partition/overlay 1.4s, unavailable 0.208s, journal 0.534s, placement 0.321s (2026-10-03).
+// Baseline: journal 4.6s (2026-10-31); partition/overlay 1.4s, unavailable 0.208s, placement 0.321s (2026-10-03).
 import { test, expect } from '../fixtures/realBackend';
+import { step } from '../fixtures/stepTimer';
 import type { APIRequestContext, APIResponse, Page, Response } from '@playwright/test';
 import type { CatalogPage, Partition } from '../../src/chunk-kv/catalog';
 
 test('native diagnostics: journal identity survives Chunk navigation and owner interruption', async ({ page, request }) => {
-  const bucket = `journal-${process.pid}-${Date.now()}`;
+  const bucket = process.env.CROWDB_NATIVE_JOURNAL_BUCKET;
+  if (!bucket) throw new Error("Journal diagnostics require the settled owned object");
   const object = `/api/access/s3/${bucket}/value`;
   try {
-    expect((await request.put(`/api/access/s3/${bucket}`)).ok()).toBe(true);
-    expect((await request.put(object, { data: 'native journal observation' })).ok()).toBe(true);
+    const witness = await step('journal fixture witness', () => request.get(object));
+    expect(witness.ok(), await witness.text()).toBe(true);
+    expect(await witness.text()).toBe('native journal observation');
     const catalogObservation = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/catalog');
-    await page.goto('/?domain=Chunk-KV');
+    await step('journal DOM setup', () => page.goto('/?domain=Chunk-KV'));
     const response = await catalogObservation;
     expect(response.ok(), await response.text()).toBe(true);
-    const { partition, observed } = await selectActiveJournal(page, request, await response.json());
+    const { partition, observed } = await step('journal initial lifecycle', async () => selectActiveJournal(page, request, await response.json()));
     const runtime = await observed.json();
     expect(runtime.journal.chunk_record).not.toBeNull();
     await page.getByRole('tab', { name: 'Journal', exact: true }).click();
@@ -36,26 +39,28 @@ test('native diagnostics: journal identity survives Chunk navigation and owner i
     await page.getByRole('button', { name: 'Refresh catalog', exact: true }).click();
     const currentResponse = await currentMap;
     expect(currentResponse.ok(), await currentResponse.text()).toBe(true);
-    const current = await selectActiveJournal(page, request, await currentResponse.json(), partition.id);
+    const current = await step('journal current owner lifecycle', async () => selectActiveJournal(page, request, await currentResponse.json(), partition.id));
     expect(current.partition.id).toBe(partition.id);
     await page.getByRole('tab', { name: 'Journal', exact: true }).click();
     await expect(page.getByRole('region', { name: 'Partition runtime', exact: true }).getByRole('button', { name: 'Refresh runtime', exact: true })).toBeEnabled();
     const owner = `chunk-kv-${current.partition.owner_id}`;
-    expect((await request.post(`/api/services/${owner}/stop`, { data: {} })).ok()).toBe(true);
+    expect((await step('journal owner stop response', () => request.post(`/api/services/${owner}/stop`, { data: {} }))).ok()).toBe(true);
     try {
       const observation = page.getByRole('region', { name: 'Partition runtime', exact: true });
-      await observation.getByRole('button', { name: 'Refresh runtime', exact: true }).click();
-      await expect(observation).toContainText('Runtime unavailable');
-      await expect(journal.getByLabel('Stream chunk record', { exact: true })).toHaveCount(0);
-      await expect(journal.getByRole('button', { name: 'Inspect Chunk', exact: true })).toHaveCount(0);
+      await step('journal owner loss DOM refresh', async () => {
+        await observation.getByRole('button', { name: 'Refresh runtime', exact: true }).click();
+        await expect(observation).toContainText('Runtime unavailable');
+        await expect(journal.getByLabel('Stream chunk record', { exact: true })).toHaveCount(0);
+        await expect(journal.getByRole('button', { name: 'Inspect Chunk', exact: true })).toHaveCount(0);
+      });
     } finally {
-      expect((await request.post(`/api/services/${owner}/restart`, { data: {} })).ok()).toBe(true);
+      expect((await step('journal owner restart response', () => request.post(`/api/services/${owner}/restart`, { data: {} }))).ok()).toBe(true);
     }
     const refreshedMap = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/catalog');
     await page.getByRole('button', { name: 'Refresh catalog', exact: true }).click();
     const mapResponse = await refreshedMap;
     expect(mapResponse.ok(), await mapResponse.text()).toBe(true);
-    const restored = await selectActiveJournal(page, request, await mapResponse.json(), partition.id);
+    const restored = await step('journal restored owner lifecycle', async () => selectActiveJournal(page, request, await mapResponse.json(), partition.id));
     expect(restored.partition.id).toBe(partition.id);
     await page.getByRole('tab', { name: 'Journal', exact: true }).click();
     const observation = page.getByRole('region', { name: 'Partition runtime', exact: true });
@@ -67,9 +72,9 @@ test('native diagnostics: journal identity survives Chunk navigation and owner i
     expect((await request.get(stale.toString())).status()).toBe(409);
   } finally {
     try {
-      expect((await request.delete(object)).status()).toBe(204);
+      expect((await step('journal object teardown', () => request.delete(object))).status()).toBe(204);
     } finally {
-      expect((await request.delete(`/api/access/s3/${bucket}`)).status()).toBe(204);
+      expect((await step('journal bucket teardown', () => request.delete(`/api/access/s3/${bucket}`))).status()).toBe(204);
     }
   }
 });
@@ -180,7 +185,7 @@ async function selectActiveJournal(page: Page, request: APIRequestContext, initi
   let selected: { partition: Partition; observed: Response } | null = null;
   const refresh = async (action: () => Promise<unknown>) => {
     const observation = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/catalog');
-    await action();
+    await step('journal catalog refresh response', action);
     const response = await observation;
     expect(response.ok(), await response.text()).toBe(true);
     catalog = await response.json();
@@ -206,7 +211,7 @@ async function selectActiveJournal(page: Page, request: APIRequestContext, initi
       }
       if (entry.state !== 'Serving') continue;
       const query = new URLSearchParams({ id: entry.id, epoch: entry.epoch, generation: catalog.generation, page: String(catalog.page), offset: String(catalog.offset) });
-      const response = await request.get(`/api/chunk-kv/runtime?${query}`);
+      const response = await step('journal runtime API response', () => request.get(`/api/chunk-kv/runtime?${query}`));
       if (await changed(response)) return false;
       expect(response.ok(), await response.text()).toBe(true);
       if (!(await response.json()).journal.chunk_record) continue;
@@ -214,8 +219,10 @@ async function selectActiveJournal(page: Page, request: APIRequestContext, initi
       // Selecting the same partition leaves its identity unchanged. Explicitly
       // refresh runtime so owner restart is observed even without a new catalog.
       const observation = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/runtime');
-      await page.getByRole('region', { name: 'Partition runtime', exact: true }).getByRole('button', { name: 'Refresh runtime', exact: true }).click();
-      const observed = await observation;
+      const observed = await step('journal runtime DOM refresh', async () => {
+        await page.getByRole('region', { name: 'Partition runtime', exact: true }).getByRole('button', { name: 'Refresh runtime', exact: true }).click();
+        return observation;
+      });
       if (await changed(observed)) return false;
       expect(observed.ok(), await observed.text()).toBe(true);
       selected = { partition: entry, observed };

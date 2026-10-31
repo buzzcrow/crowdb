@@ -139,7 +139,7 @@ fn invalid_voter_override_fails_before_node_identity_and_storage_effects() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("initial voters must be one or three"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("initial voters must be one, three or five"));
     assert_eq!(fs::read_dir(root.path().join("install/data")).unwrap().count(), 0);
 }
 
