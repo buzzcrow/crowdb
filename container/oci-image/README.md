@@ -110,6 +110,7 @@ pixi run oci-run-1c --cluster demo
 pixi run oci-run-3c --cluster demo-three --port-base 9190
 pixi run oci-stop --cluster demo-three
 pixi run oci-run-3c --cluster demo-three
+pixi run oci-stop --cluster demo-three
 pixi run oci-clean --cluster demo-three --keep-data
 # Recreate containers and bridge with the original volumes and accepted policy:
 pixi run oci-run-3c --cluster demo-three
@@ -123,28 +124,39 @@ A different node count or conflicting input requires another cluster name.
 Ports for each node are UI/S3/Iceberg/Dataset at base/base+1/base+2/base+3;
 subsequent members add 10 and 20. All published ports bind to `127.0.0.1`.
 Run and stop default to `local`; stop accepts `--all` for every recorded local
-cluster. Clean defaults to every recorded local and host-network cluster and
-deletes their node data; use `--cluster NAME` to clean only one. Explicit `--all`
-also selects every recorded cluster. Use `--keep-data` to preserve data and
-restart receipts; `--delete-data` explicitly selects the default deletion mode.
+cluster. Default clean skips running recorded local and host-network clusters,
+including all resources of a bridge cluster with any running member. It removes
+stopped clusters and their node data, then cleans unused resources on the selected
+Docker daemon, including containers without CROWDB receipts:
 
 ```bash
 pixi run oci-clean
 ```
 
-With no cluster receipts, clean reports that there are no recorded clusters and
-checks for dangling CROWDB images if Docker is installed. An explicitly named
-cluster without a receipt remains an error. Containerd-only host cleanup needs
-no Docker daemon.
+- Remove stopped containers first, then unused networks and both named and
+  anonymous volumes, followed by unused Docker build cache. Running containers
+  and referenced resources remain intact. Docker removals never force active
+  containers or in-use resources; a concurrent new reference makes removal fail.
+- Preserve resources belonging to skipped running clusters and their restart
+  receipts, including detached volumes and stopped members of those clusters.
+- Use `--keep-data` to preserve all Docker volumes, node data and restart receipts;
+  `--delete-data` explicitly selects the default deletion mode.
+- `--cluster NAME` explicitly stops and removes one recorded cluster, without
+  daemon-wide garbage collection. `--all` explicitly stops and removes every
+  recorded cluster and also cleans unused Docker resources.
+- With no cluster receipts, unused Docker resource cleanup still runs if Docker
+  is installed. An explicitly named cluster without a receipt remains an error.
+  Containerd-only host cleanup needs no Docker daemon.
 
 Host receipts live in `.crowdb-runtime/persistent/oci-clusters/`. The shortcuts
 verify the Docker daemon/context and exact ownership labels before effects.
-Clean stops and removes owned containers, unused owned bridges and owned data
+Clean removes selected stopped containers, unused owned bridges and owned data
 volumes. It also removes the launch receipt and matching optional CLI target
 binding. `--keep-data` retains volumes and restart inputs. Image cleanup
 only considers dangling CROWDB images, preserving retained cluster references
 and images used by any running or stopped container. Attached or relabelled
-networks and volumes referenced elsewhere are rejected. No global prune runs.
+networks and volumes referenced elsewhere are rejected. Daemon-wide garbage
+collection runs only when no `--cluster` is selected.
 These host scripts invoke Docker directly and require no CLI binary or application
 target binding. A binding with different ownership is rejected before data
 deletion.

@@ -208,8 +208,9 @@ oci-run-1c = "python container/oci-image/docker-local.py run --nodes 1"
 oci-run-3c = "python container/oci-image/docker-local.py run --nodes 3"
 # Stop defaults to --cluster local; --all selects every recorded local cluster.
 oci-stop = "python container/oci-image/docker-local.py stop"
-# Clean defaults to all recorded clusters; --cluster narrows the scope.
-# Remove owned containers, bridges and data volumes; --keep-data preserves data.
+# Clean stopped clusters and unused Docker containers, networks, volumes and build cache.
+# Running clusters are preserved; --cluster/--all explicitly stop selected clusters.
+# --keep-data preserves volumes, node data and restart receipts.
 oci-clean = "python container/oci-image/clean.py"
 
 ################################################################################

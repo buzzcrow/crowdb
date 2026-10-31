@@ -68,7 +68,7 @@ def selected_records(cluster, root):
     return [selected(path.stem, root) for path in sorted(directory.glob('*.json'))]
 
 
-def clean(record):
+def clean(record, *, stop_running=True):
     runtime = HostRuntime(record['options'], record['cluster'])
     runtime.check(record)
     current = runtime.named(record['name'])
@@ -77,6 +77,8 @@ def clean(record):
     require_owned(current, record)
     identity = current['Id']
     if current['State']['Running']:
+        if not stop_running:
+            raise ValueError('host container is running; refusing cleanup')
         runtime.check(record)
         runtime.invoke('stop', identity)
     current = runtime.inspect(identity)

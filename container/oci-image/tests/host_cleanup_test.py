@@ -20,6 +20,20 @@ class HostCleanupTest(unittest.TestCase):
             clean(self.record)
         self.assertEqual(self.runtime.effects, [('stop', 'owned-container'), ('rm', 'owned-container')])
 
+    def test_stopped_only_cleanup_never_stops_a_running_host(self):
+        self.runtime.current = fixture.container(self.record)
+        with patch('host_cleanup.HostRuntime', return_value=self.runtime):
+            with self.assertRaisesRegex(ValueError, 'host container is running'):
+                clean(self.record, stop_running=False)
+        self.assertEqual(self.runtime.effects, [])
+
+    def test_stopped_only_cleanup_removes_an_exited_host(self):
+        self.runtime.current = fixture.container(self.record)
+        self.runtime.current['State']['Running'] = False
+        with patch('host_cleanup.HostRuntime', return_value=self.runtime):
+            clean(self.record, stop_running=False)
+        self.assertEqual(self.runtime.effects, [('rm', 'owned-container')])
+
     def test_foreign_owner_or_daemon_never_receives_effects(self):
         for changed_daemon in (False, True):
             self.runtime.current = fixture.container(self.record)

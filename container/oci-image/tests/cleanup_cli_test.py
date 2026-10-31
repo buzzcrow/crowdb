@@ -1,6 +1,6 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
-"""Clean command defaults select all receipts and remove owned data."""
+"""Default cleanup preserves running clusters and reclaims unused Docker resources."""
 
 import contextlib
 import importlib.util
@@ -37,20 +37,26 @@ class CleanupCliTest(unittest.TestCase):
                         patch.object(cleanup, 'HostRuntime'), patch.object(cleanup, 'HostDataCleanup'),
                         patch.object(cleanup, 'clean_host'), patch.object(cleanup, 'require_owned'),
                         patch.object(cleanup.shutil, 'which', return_value='/docker'),
-                        patch.object(cleanup, 'check_data_users')]
+                        patch.object(cleanup, 'check_data_users'), patch.object(cleanup, 'collect')]
         (self.factory, self.select, self.check, self.clean, self.select_hosts, self.garbage,
-         self.load, self.runtime, self.data, self.clean_host, self.require, self.which, self.users) = [
+         self.load, self.runtime, self.data, self.clean_host, self.require, self.which, self.users,
+         self.collect) = [
             item.start() for item in self.patches]
+        self.runtime.return_value.named.return_value = None
         self.addCleanup(lambda: [item.stop() for item in reversed(self.patches)])
 
     def test_bare_clean_selects_all_and_deletes_data_before_image_garbage(self):
         cleanup.main([])
         self.select.assert_called_once_with(None, True, cleanup.RECORDS)
         self.assertEqual(self.clean.call_args_list,
-                         [call(self.docker, record, True, cleanup.RECORDS) for record in self.records])
-        self.clean_host.assert_called_once_with(self.hosts[0])
+                         [call(self.docker, record, True, cleanup.RECORDS, stop_running=False)
+                          for record in self.records])
+        self.clean_host.assert_called_once_with(self.hosts[0], stop_running=False)
         self.data.return_value.remove.assert_called_once_with()
-        self.garbage.assert_called_once_with(self.docker, cleanup.RECORDS, runtime=self.records[0]['runtime'])
+        self.collect.assert_called_once_with(self.docker, [], [], delete_data=True,
+                                             runtime=self.docker.identity.return_value)
+        self.garbage.assert_called_once_with(self.docker, cleanup.RECORDS,
+                                             runtime=self.docker.identity.return_value)
 
     def test_explicit_cluster_and_keep_data(self):
         self.load.return_value = self.records[0]
@@ -59,14 +65,17 @@ class CleanupCliTest(unittest.TestCase):
         self.select.assert_not_called()
         self.load.assert_called_once_with('first', cleanup.RECORDS)
         self.select_hosts.assert_called_once_with('first', cleanup.RECORDS.parents[1])
-        self.clean.assert_called_once_with(self.docker, self.records[0], False, cleanup.RECORDS)
+        self.clean.assert_called_once_with(self.docker, self.records[0], False, cleanup.RECORDS,
+                                           stop_running=True)
         self.data.assert_not_called()
+        self.collect.assert_not_called()
 
     def test_explicit_all_and_delete_data(self):
         cleanup.main(['--all', '--delete-data'])
         self.select.assert_called_once_with(None, True, cleanup.RECORDS)
         self.assertEqual(self.clean.call_args_list,
-                         [call(self.docker, record, True, cleanup.RECORDS) for record in self.records])
+                         [call(self.docker, record, True, cleanup.RECORDS, stop_running=True)
+                          for record in self.records])
 
     def test_empty_inventory_still_checks_image_garbage(self):
         self.select.return_value = []
@@ -84,13 +93,13 @@ class CleanupCliTest(unittest.TestCase):
         cleanup.main([])
         self.factory.assert_not_called()
         self.garbage.assert_not_called()
-        self.clean_host.assert_called_once_with(self.hosts[0])
+        self.clean_host.assert_called_once_with(self.hosts[0], stop_running=False)
         self.data.return_value.remove.assert_called_once_with()
 
     def test_host_keep_data_preserves_restart_receipts(self):
         self.load.return_value = None
         cleanup.main(['--cluster', 'host', '--keep-data'])
-        self.clean_host.assert_called_once_with(self.hosts[0])
+        self.clean_host.assert_called_once_with(self.hosts[0], stop_running=True)
         self.data.assert_not_called()
 
     def test_host_docker_endpoint_does_not_trigger_image_cleanup_on_current_docker_context(self):
@@ -98,7 +107,7 @@ class CleanupCliTest(unittest.TestCase):
         self.hosts[0]['options']['runtime'] = 'docker'
         cleanup.main([])
         self.factory.assert_not_called()
-        self.clean_host.assert_called_once_with(self.hosts[0])
+        self.clean_host.assert_called_once_with(self.hosts[0], stop_running=False)
         self.garbage.assert_not_called()
 
     def test_missing_explicit_cluster_is_an_error_before_runtime_access(self):
@@ -108,6 +117,30 @@ class CleanupCliTest(unittest.TestCase):
             cleanup.main(['--cluster', 'missing'])
         self.factory.assert_not_called()
         self.runtime.assert_not_called()
+
+    def test_default_retains_running_cluster_and_all_its_resources(self):
+        self.docker.owned.side_effect = [[dict(State=dict(Running=True))], []]
+        self.select_hosts.return_value = []
+        cleanup.main([])
+        self.clean.assert_called_once_with(self.docker, self.records[1], True, cleanup.RECORDS,
+                                           stop_running=False)
+        self.collect.assert_called_once_with(self.docker, self.records[:1], [], delete_data=True,
+                                             runtime=self.docker.identity.return_value)
+
+    def test_default_retains_running_host_data_without_planning_deletion(self):
+        self.runtime.return_value.named.return_value = dict(State=dict(Running=True))
+        cleanup.main([])
+        self.clean_host.assert_not_called()
+        self.data.assert_not_called()
+        self.users.assert_not_called()
+        self.collect.assert_called_once_with(self.docker, [], self.hosts, delete_data=True,
+                                             runtime=self.docker.identity.return_value)
+
+    def test_default_keep_data_protects_receipts_from_global_collection(self):
+        cleanup.main(['--keep-data'])
+        self.data.assert_not_called()
+        self.collect.assert_called_once_with(self.docker, self.records, self.hosts, delete_data=False,
+                                             runtime=self.docker.identity.return_value)
 
     def test_all_runtime_identities_are_checked_before_cleanup(self):
         self.check.side_effect = [None, ValueError('changed daemon')]

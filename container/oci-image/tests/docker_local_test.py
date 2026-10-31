@@ -86,6 +86,23 @@ class DockerLocalTest(unittest.TestCase):
             clean(self.docker, self.record)
         self.docker.call.assert_not_called()
 
+    def test_running_cluster_is_rejected_before_any_effect_in_stopped_only_mode(self):
+        self.docker.owned.return_value = [dict(State=dict(Running=False)), dict(State=dict(Running=True))]
+        with self.assertRaisesRegex(ValueError, 'cluster is running'):
+            clean(self.docker, self.record, stop_running=False)
+        self.docker.call.assert_not_called()
+
+    def test_container_restarted_during_cleanup_is_never_stopped(self):
+        stopped = dict(Id='owned', State=dict(Running=False))
+        restarted = dict(stopped, Name='/crowdb-first-1', Config=dict(Labels=self.labels),
+                         State=dict(Running=True))
+        self.docker.owned.side_effect = [[stopped], [stopped]]
+        self.docker.call.return_value = json.dumps([restarted])
+        with self.assertRaisesRegex(ValueError, 'container restarted'):
+            clean(self.docker, self.record, stop_running=False)
+        self.assertEqual([item.args for item in self.docker.call.call_args_list],
+                         [('container', 'inspect', 'owned')])
+
     def test_delete_data_rejects_a_volume_referenced_by_another_container(self):
         volume = {"Name": "crowdb-first-1-data", "Labels": self.labels}
         self.docker.owned.side_effect = lambda record, kind: [volume] if kind == "volume" else []
