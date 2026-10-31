@@ -35,7 +35,8 @@ lock-free DiskIO route snapshot. It exposes:
 
 `ChunkReadPolicy` configures stream-window bytes, a 256-MiB process-wide
 EC-recovery budget, layout safety margin, bounded layout retries, and the
-ad-hoc full-fragment threshold.
+ad-hoc full-fragment threshold. An optional preferred node supplies a mirror
+read locality hint; ChunkKV uses its configured node identity for WAL replay.
 
 ## 2. Location mapping
 
@@ -55,9 +56,15 @@ offset. The output length must equal the requested logical length.
 
 ## 3. Strip reads
 
-Mirror reads try usable replicas in metadata order. Each request uses the
-exact segment-relative offset and length; DiskIO supports arbitrary byte
-ranges.
+Mirror reads try usable replicas in metadata order by default. With a preferred
+node and complete retained route hints for a strip, they first try that node,
+then other nodes in its rack, preserving metadata order within each tier.
+Unknown preferred nodes or incomplete strip hints preserve metadata order.
+This ordering changes only the read snapshot: it neither publishes placement
+nor adds or removes replicas. Layout validity deadlines, exact segment
+incarnations, checksum verification, and corruption reporting remain unchanged.
+Each request uses the exact segment-relative offset and length; DiskIO supports
+arbitrary byte ranges.
 
 EC reads derive the shard width from stored segment geometry. The fast path
 reads only data-shard intersections needed by the request. If a required data

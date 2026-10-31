@@ -98,6 +98,10 @@ impl ChunkKvStorage {
                 chunk_capacity_bytes: config.storage.stream_chunk_capacity_bytes,
                 ..StreamConfig::default()
             },
+            ChunkReadPolicy {
+                preferred_node_id: config.node_id,
+                ..ChunkReadPolicy::default()
+            },
         )
         .await
     }
@@ -109,13 +113,14 @@ impl ChunkKvStorage {
         writer_lease_ms: u64,
         tree: TreeStorageGeometry,
         stream_config: StreamConfig,
+        read_policy: ChunkReadPolicy,
     ) -> Result<Self, StorageRuntimeError> {
         let streams = Arc::new(
             ProductionStreamRuntime::new_with_mirror_copies(
                 Arc::clone(&kv),
                 &chunk_io,
                 writer_lease_ms,
-                ChunkReadPolicy::default(),
+                read_policy,
                 stream_config,
                 tree.mirror_copies,
             )
@@ -147,6 +152,7 @@ impl ChunkKvStorage {
                 strip_capacity_bytes: 0,
             },
             StreamConfig::default(),
+            ChunkReadPolicy::default(),
         )
         .await
     }
