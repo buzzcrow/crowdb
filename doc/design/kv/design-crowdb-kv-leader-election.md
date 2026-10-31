@@ -215,6 +215,10 @@ While its lease is valid, a leader may serve linearizable reads from local state
 The first assumption is enforced by:
 
 - Acceptors **promise not to vote for any other candidate** for at least `lease_duration` after granting a heartbeat (this is the Raft "PreVote + lease" pattern).
+- The leader rejects both PreVote and RequestVote while its quorum-renewed
+  effective lease remains valid, even after the original self-vote lockout
+  expires. Renewing this protection uses the existing atomic lease deadline;
+  a lagging minority cannot recruit the healthy leader as its extra voter.
 - The leader treats its lease as expired at `lease_grant_time + lease_duration - max_clock_skew` for safety (see §6.3).
 
 ### 6.2 Lease grant and renewal
