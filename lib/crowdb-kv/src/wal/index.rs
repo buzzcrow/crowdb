@@ -38,6 +38,10 @@ pub struct SegmentMeta {
     pub min_slot: SlotIndex,
     pub max_slot: SlotIndex,
     pub record_count: u32,
+    /// Highest election term observed in any verified record in this segment.
+    pub max_term: u64,
+    /// Highest term of a vote record; its segment must survive election-state GC.
+    pub vote_term: Option<u64>,
 }
 
 impl SegmentIndex {
@@ -113,6 +117,37 @@ pub struct ShardedSegmentIndex {
 }
 
 impl ShardedSegmentIndex {
+    /// Seed the existing pipeline shards before any writer can publish new records.
+    ///
+    /// # Errors
+    /// Returns an error when recovered locations refer to an unavailable disk.
+    pub(super) fn from_replay(
+        pipeline_count: usize,
+        group_id: u64,
+        recovered: SegmentIndex,
+    ) -> std::io::Result<Self> {
+        let mut index = Self::new(pipeline_count, group_id);
+        for (slot, location) in recovered.map {
+            let shard = index.shards.get_mut(location.disk_idx).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "replayed WAL disk is unavailable",
+                )
+            })?;
+            shard.get_mut().insert(slot, location);
+        }
+        for meta in recovered.segments.into_values() {
+            let shard = index.shards.get_mut(meta.disk_idx).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "replayed WAL disk is unavailable",
+                )
+            })?;
+            shard.get_mut().register_segment(meta);
+        }
+        Ok(index)
+    }
+
     /// Create one independent shard per WAL pipeline.
     ///
     /// # Panics

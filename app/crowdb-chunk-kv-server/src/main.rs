@@ -219,7 +219,8 @@ async fn main() -> std::process::ExitCode {
     let recovery_service = &service;
     let instance_id = config.instance_id;
     match catalog
-        .recover_current(
+        .recover_current_for_instance(
+            instance_id,
             std::time::Instant::now() + std::time::Duration::from_secs(60),
             |pages| async move {
                 recover_assigned_partitions(recovery_storage, recovery_service, &pages, instance_id).await

@@ -434,11 +434,15 @@ Recovery proceeds independently of Group-0 availability:
    conditional new service operations; later stop/delete commands win. Public
    client URIs are independent of these internal addresses.
 
-The contact worker checks current authority before probing peers so retirement
-still takes precedence. Confirmation and later address publication share a
-three-second authority budget; SSH proofs retain their ten-second bound. A
-failed authority lookup must not add another full publication wait and expire
-otherwise valid routes at their fifteen-second freshness fence.
+The contact worker checks retained retirement and accepted identity before
+probing peers. After authenticating recovered routes, address publication
+checks current authority through those routes before optional confirmation
+refreshes retained contacts. Publication and confirmation share a three-second
+authority budget; SSH proofs retain their ten-second bound. Unreachable old
+authority contacts must not consume the budget before recovered addresses can
+be published, nor add another full wait that expires otherwise valid routes at
+their fifteen-second freshness fence. Current authority still fences removed
+members and conditional service operations before publication.
 
 This permits all members to restart with changed IPs at once. Neither stable DNS
 names nor fixed IPs nor a complete peer-address list is required. Multicast must

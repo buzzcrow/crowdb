@@ -106,6 +106,14 @@ path = "tests/store_test.rs"
 name = "wal_test"
 path = "tests/wal_test.rs"
 
+[[test]]
+name = "replay_memory_test"
+path = "tests/replay_memory_test.rs"
+
+[[test]]
+name = "replay_compaction_memory_test"
+path = "tests/replay_compaction_memory_test.rs"
+
 [[bench]]
 name = "wal"
 harness = false

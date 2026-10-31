@@ -8,6 +8,66 @@ use std::sync::atomic::Ordering;
 use super::*;
 use crate::mirrored_fixture::TestMirroredFrames as Layout;
 
+#[tokio::test(start_paused = true)]
+async fn alternating_mirror_order_cannot_force_every_observation_across_a_slow_rack() {
+    use crowdb_diskio_client::{DiskId, DiskTopologyView, TestDiskRoute};
+
+    let mut layout = Layout::new();
+    for (index, strip) in layout.chunk.strips.iter_mut().enumerate() {
+        if index % 2 == 1 {
+            let Some(Strip::MirrorStrip(mirrors)) = &mut strip.strip else {
+                panic!("mirror layout");
+            };
+            mirrors.segments.reverse();
+        }
+    }
+    let topology = DiskTopologyView::from_routes_for_tests(
+        (1..=2)
+            .map(|disk| TestDiskRoute {
+                disk_id: DiskId::new(disk, 1),
+                rack_id: 3 - disk,
+                node_id: disk,
+                disk_group_id: disk,
+                instance_id: disk,
+                endpoint: format!("127.0.0.1:{}", 9 + disk),
+            })
+            .collect(),
+    );
+    let disks = Arc::get_mut(&mut layout.disks).unwrap();
+    disks.topology = Some(topology);
+    disks.slow_disk = Some((1, Duration::from_millis(60)));
+    disks.delay_ms.store(1, Ordering::Relaxed);
+    let original = Arc::new(layout.chunk);
+    let deadline = Instant::now() + Duration::from_millis(100);
+    let readers =
+        MirroredFrameReaders::new(original.clone(), Layout::NAME, layout.disks.clone(), deadline).unwrap();
+    let selected = select_frame_prefix(
+        readers.readers(),
+        readers.scan_config(0, 0, 0, 64 * 1024 * 1024).unwrap(),
+        65536,
+        deadline,
+    )
+    .await
+    .unwrap();
+    assert_eq!(selected.healthy_replicas(), 1);
+    assert_eq!(selected.observation().summary().physical_end, layout.body_length);
+    let mut sink = TestExtentSink::default();
+    replay_frame_prefix(
+        readers.readers()[selected.selected_index()].as_ref(),
+        selected.observation(),
+        deadline,
+        &mut sink,
+    )
+    .await
+    .unwrap();
+    assert_eq!(sink.records.len(), 1);
+    assert!(Instant::now() < deadline);
+    let Some(Strip::MirrorStrip(mirrors)) = &original.strips[1].strip else {
+        panic!("mirror layout");
+    };
+    assert_eq!(mirrors.segments[0].disk_id.unwrap().high, 2);
+}
+
 #[tokio::test]
 async fn pinned_layout_reads_grouped_data_beyond_old_cursor_across_frames_and_strips() {
     let layout = Layout::new();
@@ -39,6 +99,35 @@ async fn pinned_layout_reads_grouped_data_beyond_old_cursor_across_frames_and_st
     assert_eq!(sink.records[0].physical_length, layout.body_length);
     assert_eq!(sink.records[0].logical_offset, 700);
     assert_eq!(sink.records[0].logical_length, 100_000);
+}
+
+#[tokio::test(start_paused = true)]
+async fn incomplete_topology_hints_preserve_even_the_unmapped_replica() {
+    use crowdb_diskio_client::{DiskId, DiskTopologyView, TestDiskRoute};
+
+    let mut layout = Layout::new();
+    let disks = Arc::get_mut(&mut layout.disks).unwrap();
+    disks.topology = Some(DiskTopologyView::from_routes_for_tests(vec![TestDiskRoute {
+        disk_id: DiskId::new(2, 1),
+        rack_id: 1,
+        node_id: 2,
+        disk_group_id: 2,
+        instance_id: 2,
+        endpoint: "127.0.0.1:11".into(),
+    }]));
+    disks.slow_disk = Some((1, Duration::from_millis(40)));
+    let deadline = Instant::now() + Duration::from_millis(20);
+    let readers = MirroredFrameReaders::new(
+        Arc::new(layout.chunk),
+        Layout::NAME,
+        layout.disks.clone(),
+        deadline,
+    )
+    .unwrap();
+    assert_eq!(readers.readers().len(), 2);
+    assert!(readers.readers()[0].read_window(0, 512).await.is_err());
+    assert_eq!(Instant::now(), deadline);
+    assert_eq!(layout.disks.calls.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]

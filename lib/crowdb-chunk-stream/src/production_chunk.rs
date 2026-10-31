@@ -227,6 +227,10 @@ fn update_state(state: &ChunkStateView, chunk: Chunk) {
 
 #[async_trait]
 impl StreamChunkStore for ProductionStreamChunkStore {
+    fn capacity_limit(&self) -> u64 {
+        self.chunk_capacity_bytes
+    }
+
     fn bind_writer(&self, name: StreamName, epoch: u64, session: Arc<crate::StreamWriterSession>) {
         self.owners.insert(name, (epoch, session));
     }
@@ -234,7 +238,22 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         self.mirror_copies
     }
     async fn current_capacity(&self, chunk_id: ChunkId) -> Result<u64> {
-        let state = self.state(chunk_id).await?;
+        // Opening a newer checkpoint can reuse an adapter that observed this
+        // chunk before a different owner grew it. Cached layout is not an
+        // authoritative bound for that checkpoint.
+        let chunk = self
+            .allocator
+            .query_chunk(QueryChunkRequest {
+                chunk_id: Some(chunk_id),
+            })
+            .await
+            .map_err(io_error)?
+            .chunk
+            .ok_or_else(|| StreamError::ReadUnavailable("stream chunk is missing".into()))?;
+        if chunk.id != Some(chunk_id) {
+            return Err(StreamError::Corruption("stream chunk identity differs".into()));
+        }
+        let state = self.install(chunk)?;
         chunk_capacity(&state.chunk.load())
     }
     async fn allocate_mirrored(

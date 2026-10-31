@@ -47,6 +47,12 @@ pub trait PartitionTree: Send + Sync {
     ) -> Result<(Vec<ScanEntry>, bool)>;
     async fn apply(&self, mutation_seq: u64, operation: &MutationOperation) -> Result<()>;
     async fn advance_noop(&self, mutation_seq: u64) -> Result<()>;
+    /// Drains replay's transient buffers without publishing a checkpoint or trimming WAL.
+    /// # Errors
+    /// Returns an in-memory tree drain or storage-read failure.
+    async fn drain_replay(&self) -> Result<()> {
+        Ok(())
+    }
     async fn checkpoint(&self, wal_replay_offset: u64) -> Result<(u64, u64)>;
     async fn checkpoint_snapshot(
         &self,
@@ -416,6 +422,18 @@ impl PartitionTree for CrowdbPartitionTree {
     async fn advance_noop(&self, mutation_seq: u64) -> Result<()> {
         self.tree.force_advance_slot(mutation_seq);
         Ok(())
+    }
+
+    async fn drain_replay(&self) -> Result<()> {
+        let tree = std::sync::Arc::clone(&self.tree);
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            let writer = crowdb_tree_ffi::AsyncCrowdbtree::from_shared(tree);
+            runtime.block_on(writer.flush())
+        })
+        .await
+        .map_err(|error| ChunkKvError::TreeUnavailable(error.to_string()))?
+        .map_err(map_tree_apply_error)
     }
 
     async fn checkpoint(&self, wal_replay_offset: u64) -> Result<(u64, u64)> {

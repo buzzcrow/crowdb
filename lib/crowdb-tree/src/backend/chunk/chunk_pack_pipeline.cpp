@@ -392,6 +392,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                                             std::memory_order_release);
         store->staged_initialized_ = false;
         store->staged_.clear();
+        store->staged_base_.reset();
         store->dirty_ranges_.clear();
         store->inherited_manifest_.reset();
         store->inherited_catalog_.reset();
@@ -405,11 +406,18 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
     {
         auto &job = *writes[index];
         orphan_pack_bytes.fetch_add(job.pack.ref.length, std::memory_order_relaxed);
-        const auto frame_error = crowdb::protocol::encode_frames(
-            chunk_page_frame_magic(chunk_purpose(job.pack.ref.chunk_id)),
-            {.high = job.pack.ref.chunk_id.high, .low = job.pack.ref.chunk_id.low},
-            std::span<const uint8_t>(store->staged_.data() + job.source_offset, job.pack.ref.length),
-            monotonic_millis(), &job.framed);
+        std::vector<uint8_t> payload;
+        Status               staging_status =
+            store->read_staged_range(job.source_offset, job.pack.ref.length, &payload, cancellation);
+        if (!staging_status.ok()) {
+            stop_requested.store(true, std::memory_order_release);
+            completion.complete(std::move(staging_status));
+            return;
+        }
+        const auto frame_error =
+            crowdb::protocol::encode_frames(chunk_page_frame_magic(chunk_purpose(job.pack.ref.chunk_id)),
+                                            {.high = job.pack.ref.chunk_id.high, .low = job.pack.ref.chunk_id.low},
+                                            payload, monotonic_millis(), &job.framed);
         if (frame_error != crowdb::protocol::FrameError::Ok || job.framed.size() != job.physical_length) {
             stop_requested.store(true, std::memory_order_release);
             completion.complete(Status::corruption("chunk page frame encoding failed"));

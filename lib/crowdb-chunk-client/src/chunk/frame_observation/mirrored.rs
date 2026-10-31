@@ -17,6 +17,7 @@ use crate::{DiskWriter, STREAM_CHUNK_BYTES};
 
 mod read;
 use read::MirroredWindowReader;
+mod order;
 
 struct MirroredLayout {
     chunk: Arc<Chunk>,
@@ -59,6 +60,7 @@ impl MirroredFrameReaders {
             return Err(invalid_layout("chunk purpose, owner, epoch or state is invalid"));
         }
         let (capacity, replicas) = validate_layout(&chunk, chunk_id)?;
+        let chunk = order::by_rack(chunk, disk_io.as_ref());
         let layout = Arc::new(MirroredLayout {
             chunk,
             disk_io,

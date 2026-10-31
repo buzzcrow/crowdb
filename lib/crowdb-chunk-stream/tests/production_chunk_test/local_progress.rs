@@ -102,7 +102,7 @@ async fn grouped_progress_survives_checkpoint_query_renew_growth_and_mirror_repa
     store.renew_liveness(active.chunk_id, 9).await.unwrap();
     let old_layout = allocator.chunk.lock().unwrap().clone();
     let grown = store
-        .grow_mirrored(name, 9, active.chunk_id, active.capacity + 1)
+        .grow_mirrored(name, 9, active.chunk_id, 4 * 1024 * 1024)
         .await
         .unwrap()
         .unwrap();

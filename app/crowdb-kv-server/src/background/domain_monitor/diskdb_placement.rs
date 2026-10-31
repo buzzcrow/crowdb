@@ -12,6 +12,9 @@ use crowdb_protocol::common::{BindMapValue, InstanceValue, OwnerMapValue};
 use crowdb_protocol::key::{BindMapKey, DiskGroupKey, InstanceKey, OwnerMapKey, RackKey, TextKey};
 use std::collections::BTreeMap;
 
+const OWNER_LEASE_MS: u64 = 3_600_000;
+const OWNER_RENEW_MARGIN_MS: u64 = 60_000;
+
 pub struct DiskdbPlacementMonitorDriver;
 
 impl DomainMonitorDriver for DiskdbPlacementMonitorDriver {
@@ -44,29 +47,10 @@ async fn reconcile(control: &Group0ControlPlane, policy: &DomainMonitorDescripto
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX);
-    let instances = control
-        .scan_all_prefix(Bytes::from(InstanceKey::text_prefix_for_service("diskdb")), 256)
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut heartbeats = BTreeMap::new();
-    let mut loads = BTreeMap::new();
-    for row in instances {
-        let instance: InstanceValue = decode(&row.value)?;
-        heartbeats.insert(instance.instance_id, instance.last_heartbeat_ms);
-        // Only the fenced server implementation publishes this capability.
-        let capable = control
-            .get(format!("/diskdb/ownership-capability/{}", instance.instance_id).as_bytes())
-            .await
-            .map_err(|e| e.to_string())?
-            .value
-            .is_some();
-        if capable
-            && !instance.rpc_endpoint.is_empty()
-            && now.saturating_sub(instance.last_heartbeat_ms) < policy.suspect_after_ms
-        {
-            loads.insert(instance.instance_id, 0usize);
-        }
-    }
+    let LiveInstances {
+        heartbeats,
+        mut loads,
+    } = live_instances(control, policy, now).await?;
     if loads.is_empty() {
         return Ok(());
     }
@@ -97,12 +81,9 @@ async fn reconcile(control: &Group0ControlPlane, policy: &DomainMonitorDescripto
         }
         groups.push((key, owner_key, owner.revision, value));
     }
+    let mut renewed = false;
     for (group, key, revision, owner) in &groups {
-        let needs_owner = owner.as_ref().map_or(true, |owner| {
-            heartbeats
-                .get(&owner.instance_id)
-                .map_or(true, |last| now.saturating_sub(*last) >= policy.dead_after_ms)
-        });
+        let needs_owner = owner_is_dead(owner.as_ref(), &heartbeats, now, policy.dead_after_ms);
         if needs_owner {
             if !has_data_binding(control, group).await? {
                 continue;
@@ -110,7 +91,14 @@ async fn reconcile(control: &Group0ControlPlane, policy: &DomainMonitorDescripto
             let target = least_loaded(&loads);
             assign(control, key, *revision, target, now).await?;
             *loads.get_mut(&target).expect("selected live target") += 1;
+        } else if renew_live_owner(control, key, *revision, owner.as_ref(), &loads, now).await? {
+            renewed = true;
         }
+    }
+    // Renewal advances the map revision. Balance from a fresh snapshot on the
+    // next tick instead of attempting a move with that old generation.
+    if renewed {
+        return Ok(());
     }
     // Move at most one healthy group per tick. This bounds recovery work and
     // converges to a count difference of at most one without ping-pong.
@@ -132,6 +120,79 @@ async fn reconcile(control: &Group0ControlPlane, policy: &DomainMonitorDescripto
     Ok(())
 }
 
+fn owner_is_dead(
+    owner: Option<&OwnerMapValue>,
+    heartbeats: &BTreeMap<u64, u64>,
+    now: u64,
+    dead_after_ms: u64,
+) -> bool {
+    owner.map_or(true, |owner| {
+        heartbeats
+            .get(&owner.instance_id)
+            .map_or(true, |last| now.saturating_sub(*last) >= dead_after_ms)
+    })
+}
+
+async fn renew_live_owner(
+    control: &Group0ControlPlane,
+    key: &str,
+    revision: u64,
+    owner: Option<&OwnerMapValue>,
+    loads: &BTreeMap<u64, usize>,
+    now: u64,
+) -> Result<bool, String> {
+    let Some(owner) = owner.filter(|owner| {
+        loads.contains_key(&owner.instance_id)
+            && owner.lease_expiry_ms <= now.saturating_add(OWNER_RENEW_MARGIN_MS)
+    }) else {
+        return Ok(false);
+    };
+    let mut value = owner.clone();
+    value.lease_expiry_ms = now.saturating_add(OWNER_LEASE_MS);
+    publish_owner(control, key, revision, value).await?;
+    Ok(true)
+}
+
+struct LiveInstances {
+    heartbeats: BTreeMap<u64, u64>,
+    loads: BTreeMap<u64, usize>,
+}
+
+async fn live_instances(
+    control: &Group0ControlPlane,
+    policy: &DomainMonitorDescriptor,
+    now: u64,
+) -> Result<LiveInstances, String> {
+    let instances = control
+        .scan_all_prefix(Bytes::from(InstanceKey::text_prefix_for_service("diskdb")), 256)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut result = LiveInstances {
+        heartbeats: BTreeMap::new(),
+        loads: BTreeMap::new(),
+    };
+    for row in instances {
+        let instance: InstanceValue = decode(&row.value)?;
+        result
+            .heartbeats
+            .insert(instance.instance_id, instance.last_heartbeat_ms);
+        // Only the fenced server implementation publishes this capability.
+        let capable = control
+            .get(format!("/diskdb/ownership-capability/{}", instance.instance_id).as_bytes())
+            .await
+            .map_err(|error| error.to_string())?
+            .value
+            .is_some();
+        if capable
+            && !instance.rpc_endpoint.is_empty()
+            && now.saturating_sub(instance.last_heartbeat_ms) < policy.suspect_after_ms
+        {
+            result.loads.insert(instance.instance_id, 0);
+        }
+    }
+    Ok(result)
+}
+
 fn least_loaded(loads: &BTreeMap<u64, usize>) -> u64 {
     *loads
         .iter()
@@ -150,8 +211,23 @@ async fn assign(
     let value = OwnerMapValue {
         process_epoch: 0,
         instance_id: instance,
-        lease_expiry_ms: now.saturating_add(3_600_000),
+        lease_expiry_ms: now.saturating_add(OWNER_LEASE_MS),
     };
+    publish_owner(control, key, revision, value).await?;
+    tracing::info!(
+        owner_key = key,
+        instance_id = instance,
+        "DiskGroup manager assigned"
+    );
+    Ok(())
+}
+
+async fn publish_owner(
+    control: &Group0ControlPlane,
+    key: &str,
+    revision: u64,
+    value: OwnerMapValue,
+) -> Result<(), String> {
     let placement = OwnerMapKey::from_path(key).map_err(|error| error.to_string())?;
     let rack_key = RackKey {
         rack_id: placement.rack_id,
@@ -208,11 +284,6 @@ async fn assign(
             .await
             .map_err(|error| error.to_string())?;
     }
-    tracing::info!(
-        owner_key = key,
-        instance_id = instance,
-        "DiskGroup manager assigned"
-    );
     Ok(())
 }
 

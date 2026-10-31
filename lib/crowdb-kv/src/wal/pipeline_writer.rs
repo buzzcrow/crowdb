@@ -75,6 +75,8 @@ pub(crate) struct PendingWrite {
     pub encoded: EncodedRecord,
     /// Slot index for index update (0 = metadata record, not indexed).
     pub slot: SlotIndex,
+    pub term: u64,
+    pub is_vote: bool,
     /// Ack channel: resolves with the record's `SlotLocation` when the
     /// covering flush succeeds.
     pub ack: oneshot::Sender<io::Result<SlotLocation>>,
@@ -640,6 +642,10 @@ async fn write_batch(
             }
         }
         segment.record_count += 1;
+        segment.max_term = segment.max_term.max(req.term);
+        if req.is_vote {
+            segment.vote_term = Some(segment.vote_term.map_or(req.term, |term| term.max(req.term)));
+        }
     }
 
     // Single durable flush for the whole batch — skipped when skip_fsync is
@@ -689,6 +695,8 @@ fn register_sealed(index: &ShardedSegmentIndex, segment: &WalSegment, pipeline_i
         min_slot: segment.min_slot,
         max_slot: segment.max_slot,
         record_count: segment.record_count,
+        max_term: segment.max_term,
+        vote_term: segment.vote_term,
     };
     index.register_segment(pipeline_idx, meta);
     debug!(

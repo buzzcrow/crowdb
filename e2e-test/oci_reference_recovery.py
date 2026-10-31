@@ -129,6 +129,15 @@ def replace_addresses(cluster, before):
 
 def verify(cluster, cluster_id, witness, credentials):
     assert cluster.implementation == 'docker' and cluster.node_count == 3
+    # This case submits one explicit later-member admission. Stop automatic
+    # admission before exposing that candidate, rather than racing two callers.
+    for index in range(3):
+        disabled = admission_request(origin(cluster, index), '/api/node/auto-join',
+                                     {'enabled': False})
+        assert disabled['enabled'] is False
+        wait(lambda index=index: request(origin(cluster, index), '/api/node/auto-join'),
+             lambda value: value['observation']['phase'] == 'disabled',
+             'automatic admission quiesced before manual admission', seconds=10)
     cluster.expected_names.append(cluster.run_id + '-node4')
     create_nonvoter(cluster)
     cluster.command('start', cluster.expected_names[3])

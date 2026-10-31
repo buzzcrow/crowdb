@@ -5,17 +5,20 @@
 
 use std::time::Duration;
 
-const MIN_AHEAD: u64 = 2 * 1024 * 1024;
+const MIN_AHEAD: u64 = crowdb_protocol::frame::MAX_FRAME_BYTES as u64;
+const MAX_AHEAD: u64 = crowdb_chunk_client::STREAM_STRIP_BYTES;
 const INITIAL_PREPARATION: Duration = Duration::from_millis(20);
 
 #[derive(Default)]
 pub(super) struct CapacityPlan {
     bytes_per_second: u64,
     preparation: Duration,
+    last_batch_bytes: u64,
 }
 
 impl CapacityPlan {
     pub(super) fn record_get(&mut self, bytes: u64, elapsed: Duration) {
+        self.last_batch_bytes = bytes;
         let rate =
             u64::try_from(u128::from(bytes) * 1_000_000_000 / elapsed.as_nanos().max(1)).unwrap_or(u64::MAX);
         // React immediately to acceleration; decay gradually after a slow write.
@@ -31,18 +34,7 @@ impl CapacityPlan {
         if capacity >= limit {
             return None;
         }
-        // Cover twice the observed preparation time, including allocation and every
-        // replica's initialization. Bound speculative capacity independently of
-        // stream length and leave room for the batch already being submitted.
-        let latency = self.preparation.max(INITIAL_PREPARATION).as_nanos();
-        let ahead = u64::try_from(
-            u128::from(self.bytes_per_second)
-                .saturating_mul(latency)
-                .saturating_mul(2)
-                / 1_000_000_000,
-        )
-        .unwrap_or(u64::MAX)
-        .clamp(MIN_AHEAD, limit.max(MIN_AHEAD));
+        let ahead = self.ahead(limit);
         if capacity.saturating_sub(cursor) > ahead.saturating_add(batch_bytes) {
             return None;
         }
@@ -53,6 +45,34 @@ impl CapacityPlan {
                 .max(capacity.saturating_add(1))
                 .min(limit),
         )
+    }
+
+    pub(super) fn successor_target(&self, cursor: u64, limit: u64) -> Option<u64> {
+        let ahead = self.ahead(limit);
+        if limit.saturating_sub(cursor) > ahead.saturating_add(self.last_batch_bytes) {
+            return None;
+        }
+        Some(
+            ahead
+                .saturating_mul(2)
+                .saturating_add(self.last_batch_bytes)
+                .min(limit),
+        )
+    }
+
+    fn ahead(&self, limit: u64) -> u64 {
+        // Cover twice the observed preparation time, including allocation and every
+        // replica's initialization. Bound speculative capacity independently of
+        // stream length and leave room for the batch already being submitted.
+        let latency = self.preparation.max(INITIAL_PREPARATION).as_nanos();
+        u64::try_from(
+            u128::from(self.bytes_per_second)
+                .saturating_mul(latency)
+                .saturating_mul(2)
+                / 1_000_000_000,
+        )
+        .unwrap_or(u64::MAX)
+        .clamp(MIN_AHEAD, limit.clamp(MIN_AHEAD, MAX_AHEAD))
     }
 }
 

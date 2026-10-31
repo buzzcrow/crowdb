@@ -1391,7 +1391,7 @@ fn scan_page_bytes(page: &crowdb_chunk_kv::ScanPage) -> usize {
     })
 }
 
-fn recoverable_local_entry(entry: &ChunkKvRangeCatalogEntry, instance_id: u64) -> bool {
+pub(crate) fn recoverable_local_entry(entry: &ChunkKvRangeCatalogEntry, instance_id: u64) -> bool {
     entry.owner.instance_id == instance_id
         && !matches!(
             entry.state,

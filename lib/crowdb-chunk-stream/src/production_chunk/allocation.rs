@@ -78,7 +78,9 @@ impl ProductionStreamChunkStore {
         // Await every submitted synchronization even if another strip failed.
         let mut pending = FuturesUnordered::new();
         let mut strips = strips.iter();
-        for strip in strips.by_ref().take(8) {
+        // Bound mirrored zeroing bursts so initialization leaves transport
+        // capacity for writes using the already initialized prefix.
+        for strip in strips.by_ref().take(2) {
             pending.push(self.initialize_strip(chunk, strip));
         }
         let mut error = None;

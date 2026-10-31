@@ -76,6 +76,7 @@ impl ManagedPipeline {
 }
 
 mod batch;
+mod liveness;
 mod prefetch;
 mod worker;
 
@@ -657,25 +658,6 @@ impl OwnedChunk {
 
     fn remaining_in_chunk(&self) -> u64 {
         self.policy.chunk_capacity.saturating_sub(self.cursor)
-    }
-
-    async fn renew_liveness(&mut self) -> Result<()> {
-        self.flush_pending_advance().await?;
-        let chunk_id = self
-            .chunk
-            .id
-            .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
-        self.chunk = advance_chunk(
-            Arc::clone(&self.allocator),
-            chunk_id,
-            self.writer_epoch,
-            self.chunk.modify_ts,
-            self.cursor,
-            None,
-            u64::try_from(self.policy.writer_lease.as_millis()).unwrap_or(u64::MAX),
-        )
-        .await?;
-        Ok(())
     }
 
     fn current_strip(&self) -> Result<&crowdb_protocol::chunkdb::rpc::ChunkStrip> {

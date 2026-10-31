@@ -5,6 +5,29 @@ use super::*;
 use tokio::time::{timeout, Duration};
 
 #[tokio::test]
+async fn a_small_cold_stream_does_not_initialize_megabytes_of_unused_spares() {
+    let allocator = Arc::new(Allocator::new());
+    let disks = Arc::new(Disks::default());
+    let stream = test_stream(allocator.clone(), disks.clone()).await;
+    stream.append(&[Bytes::from_static(b"retained")]).await.unwrap();
+    stream.release_writer().await.unwrap();
+    assert!(allocator.successors.lock().unwrap().is_empty());
+    let initialized: usize = disks
+        .writes
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, _, _, bytes)| bytes.len() == 1024 * 1024)
+        .map(|(_, _, _, bytes)| bytes.len())
+        .sum();
+    assert_eq!(initialized, 2 * 1024 * 1024);
+    assert_eq!(
+        stream.read_at(0, 8).await.unwrap(),
+        Bytes::from_static(b"retained")
+    );
+}
+
+#[tokio::test]
 async fn preparation_revision_does_not_abort_or_reinitialize_mirror_repair() {
     let allocator = Arc::new(Allocator::new());
     let disks = Arc::new(Disks::default());
@@ -81,7 +104,8 @@ async fn temporary_allocation_failure_does_not_poison_later_capacity() {
     allocator.pause_growth.store(true, Ordering::Release);
     allocator.fail_growth_once.store(true, Ordering::Release);
     let stream = test_stream(allocator.clone(), Arc::new(Disks::default())).await;
-    stream.append(&[Bytes::from_static(b"retained")]).await.unwrap();
+    let retained = Bytes::from(vec![0x51; 512 * 1024]);
+    stream.append(std::slice::from_ref(&retained)).await.unwrap();
     timeout(Duration::from_secs(1), allocator.growth_started.notified())
         .await
         .unwrap();
@@ -91,7 +115,8 @@ async fn temporary_allocation_failure_does_not_poison_later_capacity() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(range.begin, 8);
+    assert_eq!(range.begin, retained.len() as u64);
+    assert_eq!(stream.read_at(0, retained.len()).await.unwrap(), retained);
     assert_eq!(stream.read_at(range.begin, data.len()).await.unwrap(), data);
     stream.close().await.unwrap();
 }
@@ -103,8 +128,9 @@ async fn uncertain_unused_candidate_is_reclaimed_and_replaced_without_reinitiali
     // The primary chunk uses disks 1/2, 11/12, ...; its first candidate
     // has distinct disks 1001/1002, 1011/1012, ... . Fail candidate growth.
     disks.fail_fsync_once.store(1011, Ordering::Release);
-    let stream = test_stream(allocator.clone(), disks.clone()).await;
-    stream.append(&[Bytes::from_static(b"retained")]).await.unwrap();
+    let stream = test_stream_with_capacity(allocator.clone(), disks.clone(), 2 * 1024 * 1024).await;
+    let retained = Bytes::from(vec![0x51; 1536 * 1024]);
+    stream.append(std::slice::from_ref(&retained)).await.unwrap();
     timeout(Duration::from_secs(1), async {
         while allocator.successors.lock().unwrap().len() < 2 {
             tokio::task::yield_now().await;
@@ -133,13 +159,18 @@ async fn uncertain_unused_candidate_is_reclaimed_and_replaced_without_reinitiali
     );
     assert_eq!(stream.metrics().failed, 0);
     assert_eq!(stream.metrics().rollovers, 0);
-    assert_eq!(
-        stream.read_at(0, 8).await.unwrap(),
-        Bytes::from_static(b"retained")
-    );
+    assert_eq!(stream.read_at(0, retained.len()).await.unwrap(), retained);
 }
 
 async fn test_stream(allocator: Arc<Allocator>, disks: Arc<Disks>) -> ChunkStream {
+    test_stream_with_capacity(allocator, disks, 8 * 1024 * 1024).await
+}
+
+async fn test_stream_with_capacity(
+    allocator: Arc<Allocator>,
+    disks: Arc<Disks>,
+    capacity: u64,
+) -> ChunkStream {
     let metadata = Arc::new(MemoryStreamStore::new(256 * 1024 * 1024));
     let chunks = Arc::new(
         ProductionStreamChunkStore::new(allocator, disks, 30_000, ChunkReadPolicy::default()).unwrap(),
@@ -156,7 +187,10 @@ async fn test_stream(allocator: Arc<Allocator>, disks: Arc<Disks>) -> ChunkStrea
             created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
-        StreamConfig::default(),
+        StreamConfig {
+            chunk_capacity_bytes: capacity,
+            ..StreamConfig::default()
+        },
         metadata.clone(),
         metadata,
         chunks,
@@ -170,10 +204,10 @@ async fn allocation_in_flight_does_not_block_writes_in_ready_capacity() {
     let allocator = Arc::new(Allocator::new());
     allocator.pause_growth.store(true, Ordering::Release);
     let stream = test_stream(allocator.clone(), Arc::new(Disks::default())).await;
-    let payload = Bytes::from(vec![0x51; 4096]);
+    let retained = Bytes::from(vec![0x51; 512 * 1024]);
     timeout(
         Duration::from_secs(1),
-        stream.append(std::slice::from_ref(&payload)),
+        stream.append(std::slice::from_ref(&retained)),
     )
     .await
     .unwrap()
@@ -181,6 +215,7 @@ async fn allocation_in_flight_does_not_block_writes_in_ready_capacity() {
     timeout(Duration::from_secs(1), allocator.growth_started.notified())
         .await
         .unwrap();
+    let payload = Bytes::from(vec![0x52; 4096]);
     let range = timeout(
         Duration::from_secs(1),
         stream.append(std::slice::from_ref(&payload)),
@@ -188,7 +223,7 @@ async fn allocation_in_flight_does_not_block_writes_in_ready_capacity() {
     .await
     .unwrap()
     .unwrap();
-    assert_eq!(range.begin, 4096);
+    assert_eq!(range.begin, retained.len() as u64);
     allocator.growth_resume.notify_one();
     stream.close().await.unwrap();
     assert_eq!(stream.read_at(range.begin, payload.len()).await.unwrap(), payload);
@@ -200,7 +235,8 @@ async fn only_a_write_reaching_uninitialized_capacity_waits() {
     let disks = Arc::new(Disks::default());
     disks.pause_initialization.store(true, Ordering::Release);
     let stream = test_stream(allocator.clone(), disks.clone()).await;
-    stream.append(&[Bytes::from(vec![0x31; 4096])]).await.unwrap();
+    let retained = Bytes::from(vec![0x31; 512 * 1024]);
+    stream.append(std::slice::from_ref(&retained)).await.unwrap();
     timeout(Duration::from_secs(1), disks.initialization_started.notified())
         .await
         .unwrap();
@@ -216,14 +252,14 @@ async fn only_a_write_reaching_uninitialized_capacity_waits() {
     let data = large.clone();
     let mut pending = tokio::spawn(async move { writer.append(&[data]).await });
     assert!(timeout(Duration::from_millis(20), &mut pending).await.is_err());
-    assert_eq!(stream.tail(), 8192);
+    assert_eq!(stream.tail(), retained.len() as u64 + 4096);
     disks.initialization_resume.notify_one();
     let range = timeout(Duration::from_secs(1), pending)
         .await
         .unwrap()
         .unwrap()
         .unwrap();
-    assert_eq!(range.begin, 8192);
+    assert_eq!(range.begin, retained.len() as u64 + 4096);
     assert_eq!(stream.read_at(range.begin, large.len()).await.unwrap(), large);
     stream.close().await.unwrap();
 }
@@ -234,7 +270,10 @@ async fn close_drains_preparation_before_sealing() {
     let disks = Arc::new(Disks::default());
     disks.pause_initialization.store(true, Ordering::Release);
     let stream = test_stream(allocator.clone(), disks.clone()).await;
-    stream.append(&[Bytes::from_static(b"retained")]).await.unwrap();
+    stream
+        .append(&[Bytes::from(vec![0x51; 512 * 1024])])
+        .await
+        .unwrap();
     timeout(Duration::from_secs(1), disks.initialization_started.notified())
         .await
         .unwrap();

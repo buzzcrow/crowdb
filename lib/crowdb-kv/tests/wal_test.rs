@@ -18,6 +18,9 @@ mod wal_engine_test;
 #[path = "wal_test/replay_test.rs"]
 mod replay_test;
 
+#[path = "wal_test/replay_compaction_test.rs"]
+mod replay_compaction_test;
+
 #[path = "wal_test/gc_test.rs"]
 mod gc_test;
 

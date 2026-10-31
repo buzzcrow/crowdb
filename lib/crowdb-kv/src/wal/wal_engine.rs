@@ -21,7 +21,7 @@ use crate::metrics::{Bandwidth, Counter, LatencySummary};
 use crate::paxos::roles::SlotIndex;
 use crate::paxos::PxGroupId;
 
-use super::index::{ShardedSegmentIndex, SlotLocation};
+use super::index::{SegmentIndex, ShardedSegmentIndex, SlotLocation};
 use super::pipeline::WalPipeline;
 use super::pipeline_backend::{WalBlockAlignment, WalPipelineBackend};
 use super::pipeline_writer::{spawn_pipeline_writer, EncodedRecord, PendingWrite, WriterCommand};
@@ -154,9 +154,47 @@ impl WalEngine {
         group_id: PxGroupId,
         initial_next_segment_id: u64,
     ) -> io::Result<Arc<Self>> {
+        Self::create_with_index(
+            backend,
+            config,
+            group_id,
+            initial_next_segment_id,
+            SegmentIndex::new(),
+        )
+        .await
+    }
+
+    /// Resume a WAL with the verified index and next segment id recovered locally.
+    ///
+    /// # Errors
+    /// Returns an error if recovered disks are unavailable or writers cannot start.
+    pub async fn create_from_replay(
+        backend: Arc<IoBackend>,
+        config: WalConfig,
+        group_id: PxGroupId,
+        max_segment_id: u64,
+        index: SegmentIndex,
+    ) -> io::Result<Arc<Self>> {
+        let next_segment_id = max_segment_id
+            .checked_add(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WAL segment id exhausted"))?;
+        Self::create_with_index(backend, config, group_id, next_segment_id.max(1), index).await
+    }
+
+    async fn create_with_index(
+        backend: Arc<IoBackend>,
+        config: WalConfig,
+        group_id: PxGroupId,
+        initial_next_segment_id: u64,
+        recovered_index: SegmentIndex,
+    ) -> io::Result<Arc<Self>> {
         let pipeline_count = config.wal_disks.len();
         let failed = Arc::new(AtomicBool::new(false));
-        let index = Arc::new(ShardedSegmentIndex::new(pipeline_count, group_id));
+        let index = Arc::new(ShardedSegmentIndex::from_replay(
+            pipeline_count,
+            group_id,
+            recovered_index,
+        )?);
         let next_segment_id = Arc::new(AtomicU64::new(initial_next_segment_id));
         let flush_count = Arc::new(AtomicU64::new(0));
         let records_flushed = Arc::new(AtomicU64::new(0));
@@ -282,6 +320,8 @@ impl WalEngine {
         let pending = PendingWrite {
             encoded,
             slot: record.slot,
+            term: record.term,
+            is_vote: record.record_type == super::record::RecordType::VoteGranted,
             ack: ack_tx,
         };
 

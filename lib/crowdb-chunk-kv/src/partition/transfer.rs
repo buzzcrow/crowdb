@@ -229,6 +229,7 @@ async fn catch_up_inner(state: &mut super::WorkerState, request: &TransferCatchU
     let mut replay = super::ReplayState {
         seed,
         checkpoint_applied_seq: current.applied_seq,
+        applied_bytes_since_drain: 0,
         stream_name: request.parent_journal.stream_name(),
         retained_results: state.config.retained_results,
         replayed: HashMap::new(),

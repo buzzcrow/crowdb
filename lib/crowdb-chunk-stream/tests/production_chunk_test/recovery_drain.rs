@@ -3,6 +3,51 @@
 
 use super::*;
 
+#[tokio::test(start_paused = true)]
+async fn recovery_drains_a_large_layout_with_bounded_parallelism_across_strips() {
+    use std::time::Duration;
+
+    let allocator = Arc::new(Allocator::new());
+    let disks = Arc::new(Disks::default());
+    let make = || {
+        ProductionStreamChunkStore::new(
+            allocator.clone(),
+            disks.clone(),
+            30_000,
+            ChunkReadPolicy::default(),
+        )
+        .unwrap()
+    };
+    let writer = make();
+    let name = StreamName::generate();
+    let active = writer
+        .allocate_mirrored(name, 9, crowdb_chunk_stream::StreamPurpose::Wal)
+        .await
+        .unwrap();
+    writer
+        .grow_mirrored(name, 9, active.chunk_id, 32 * 1024 * 1024)
+        .await
+        .unwrap();
+    let mut encoded = TestGroupedStrip::default();
+    let end = encoded
+        .append(&writer, name, 9, active.chunk_id, b"retained")
+        .await;
+    drop(writer);
+    let cold = make();
+    let memory = MemoryStreamStore::new(1024);
+    cold.bind_writer(name, 10, memory.claim_writer(name, 10).await.unwrap());
+    disks.drain_delay_ms.store(20, Ordering::Release);
+    let recovered = tokio::time::timeout(Duration::from_millis(400), cold.recover_tail(name, 10, &active))
+        .await
+        .expect("all allocated strips must drain within the original recovery budget")
+        .unwrap();
+    assert_eq!((recovered.physical_end, recovered.logical_end), (end, 8));
+    assert_eq!(recovered.extents.len(), 1);
+    assert_eq!(disks.completed_drains.load(Ordering::Acquire), 64);
+    assert!((4..=8).contains(&disks.max_active_drains.load(Ordering::Acquire)));
+    assert_eq!(disks.active_drains.load(Ordering::Acquire), 0);
+}
+
 #[tokio::test]
 async fn a_failed_recovery_drain_requests_layout_repair_before_tail_observation() {
     for lost_reply in [false, true] {

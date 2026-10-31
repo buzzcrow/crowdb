@@ -128,10 +128,14 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
         pack.ref.length                      = static_cast<uint32_t>(length);
         const size_t         physical_length = chunk_framed_length(length);
         std::vector<uint8_t> framed;
+        std::vector<uint8_t> payload;
+        Status               staging_status = read_staged_range(offset, length, &payload, cancellation);
+        if (!staging_status.ok()) {
+            return staging_status;
+        }
         if (physical_length == 0 ||
             crowdb::protocol::encode_frames(chunk_page_frame_magic(purpose),
-                                            {.high = active_chunk_id_.high, .low = active_chunk_id_.low},
-                                            std::span<const uint8_t>(staged_.data() + offset, length),
+                                            {.high = active_chunk_id_.high, .low = active_chunk_id_.low}, payload,
                                             monotonic_millis(), &framed) != crowdb::protocol::FrameError::Ok) {
             return Status::resource_exhausted("chunk page frame encoding failed");
         }

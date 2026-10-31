@@ -47,12 +47,13 @@ Temporary plans live under `doc/working/`; flow analyses live under
 
 ## Dev Environment (`doc/dev/`)
 
-| Doc                          | When to read                                                           |
-| ---------------------------- | ---------------------------------------------------------------------- |
-| `doc/dev/crash_debugging.md` | Core collection, host setup, GDB, and exact-build symbols.             |
-| `doc/dev/env_setup.md`       | Benchmark commands, sentinels, prerequisites, and perf-counter setup.  |
-| `doc/dev/hyper_fork.md`      | Hyper fork branches, submodule, build, sync, validation, and recovery. |
-| `tools/README.md`            | Tool directories, Pixi task entry points, CI checks, and suite timing. |
+| Doc                                  | When to read                                                                     |
+| ------------------------------------ | -------------------------------------------------------------------------------- |
+| `doc/dev/crash_debugging.md`         | Core collection, host setup, GDB, and exact-build symbols.                       |
+| `doc/dev/env_setup.md`               | Benchmark commands, sentinels, prerequisites, and perf-counter setup.            |
+| `doc/dev/hyper_fork.md`              | Hyper fork branches, submodule, build, sync, validation, and recovery.           |
+| `doc/dev/physical-node-test-plan.md` | Repeatable two-host, five-container physical tests and 30-minute sustained load. |
+| `tools/README.md`                    | Tool directories, Pixi task entry points, CI checks, and suite timing.           |
 
 ## Component Acceptance
 

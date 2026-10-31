@@ -57,6 +57,8 @@ impl FileHttp {
             )
             .await
             .map_err(|error| {
+                tracing::warn!(file = %owner.file, %error,
+                    "native injection receive failed; unpublished blocks retained for reclamation");
                 body.failure()
                     .map_or_else(|| admission_error(error), multipart::encoding_error)
             })?;
@@ -64,11 +66,19 @@ impl FileHttp {
             .map_err(|_| FileS3ErrorCode::InternalError)?
             .seal_uploaded(owner, file_request.location.clone(), tree.clone())
             .await
-            .map_err(multipart::seal_error)?;
+            .map_err(|error| {
+                tracing::warn!(file = %owner.file, %error,
+                    "native injection seal failed; unpublished blocks retained for reclamation");
+                multipart::seal_error(error)
+            })?;
         let file = FileRepository::new(self.store.clone())
             .finalize_native_parquet(admission.context(), owner, &stem, tree, locations)
             .await
-            .map_err(catalog_error)?;
+            .map_err(|error| {
+                tracing::warn!(file = %owner.file, %error,
+                    "native injection publication failed; candidate retained for reconciliation");
+                catalog_error(error)
+            })?;
         let bytes = serde_json::to_vec(&serde_json::json!({"location": file.location.to_string()}))
             .map_err(|_| FileS3ErrorCode::InternalError)?;
         let length = bytes.len();

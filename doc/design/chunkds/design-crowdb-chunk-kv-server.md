@@ -76,6 +76,32 @@ Normal service discovery filters expired registrations. Monitor observation
 uses the raw scan, preserving expired entries and heartbeat timestamps so
 absence cannot be confused with owner death. The default heartbeat is two
 seconds, `Suspect` begins at six seconds, and `Dead` recovery begins at ten.
+Automatic dead-owner planning and lease exclusion also require the absence of
+a live WAL process lease. Independent renewal starts before partition replay,
+whereas discovery publication can wait for replay to finish. A renewing recovery
+boot therefore retains its assignments despite stale discovery; it receives no
+serving authority until normal recovery and grants complete. Expired processes
+remain eligible for failover under the existing heartbeat and exclusion limits.
+
+When the catalog advances during initial replay, completed recovery remains
+usable only if every local recoverable entry is identical in both validated
+catalogs, including ownership epoch, range, state, transition, and artifact.
+The service installs those handles with the newer head without replaying them
+again. Remote assignment changes do not invalidate local recovery. Changed
+local assignments still require recovery under the original reconciliation
+deadline; failed replay is never accepted as completed recovery.
+
+WAL replay retains a SHA-256 fingerprint of each canonical complete record for
+duplicate-sequence validation, rather than retaining its key and value payloads.
+The fingerprint includes identity, epoch, request, recorded result, and operation.
+Exact late duplicates remain valid; conflicting duplicates, sequence gaps, and
+operation-digest mismatches remain corruption. Replay windows and retry-result
+retention keep their existing independent bounds.
+After each 16 MiB of estimated applied key/value and entry bytes, native replay drains its transient
+memtables into the in-memory tree. This bounds overwritten versions retained
+while normal maintenance is not yet running. It does not snapshot, publish a
+checkpoint, advance the checkpoint replay offset, or trim WAL; a drain failure
+still rejects recovery.
 
 ## 3. Serving Authority
 

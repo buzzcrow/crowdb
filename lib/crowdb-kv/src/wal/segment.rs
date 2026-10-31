@@ -39,6 +39,8 @@ use crate::paxos::PxGroupId;
 use super::record::{parse_hex_u32, RecordError, WALRecord, WalRecordFormat};
 use super::{IoBackend, OpenOptions, WalFile};
 
+mod read_buffer;
+
 const SEG_MAGIC: u32 = 0x5345_474D;
 const SEG_VERSION: u16 = 1;
 pub const SEG_HEADER_LEN: usize = 4 + 2 + 8 + 8; // 22
@@ -68,6 +70,8 @@ pub struct WalSegment {
     pub min_slot: SlotIndex,
     pub max_slot: SlotIndex,
     pub record_count: u32,
+    pub(super) max_term: u64,
+    pub(super) vote_term: Option<u64>,
     sealed: bool,
     record_format: WalRecordFormat,
 }
@@ -126,6 +130,8 @@ impl WalSegment {
             min_slot: u64::MAX,
             max_slot: 0,
             record_count: 0,
+            max_term: 0,
+            vote_term: None,
             sealed: false,
             record_format,
         })
@@ -159,6 +165,10 @@ impl WalSegment {
             }
         }
         self.record_count += 1;
+        self.max_term = self.max_term.max(record.term);
+        if record.record_type == super::record::RecordType::VoteGranted {
+            self.vote_term = Some(self.vote_term.map_or(record.term, |term| term.max(record.term)));
+        }
         Ok(offset)
     }
 
@@ -299,6 +309,7 @@ pub struct SegmentReader {
     offset: u64,
     /// File size (to detect truncation).
     file_len: u64,
+    buffer: read_buffer::SegmentReadBuffer,
 }
 
 impl SegmentReader {
@@ -347,6 +358,7 @@ impl SegmentReader {
                 header,
                 offset: data_offset,
                 file_len,
+                buffer: read_buffer::SegmentReadBuffer::default(),
             })
         } else {
             // Binary-format header.
@@ -359,6 +371,7 @@ impl SegmentReader {
                 header,
                 offset: SEG_HEADER_LEN as u64,
                 file_len,
+                buffer: read_buffer::SegmentReadBuffer::default(),
             })
         }
     }
@@ -409,12 +422,12 @@ impl SegmentReader {
 
         // Peek the next frame marker (the `frame_len` of a record, the
         // `FOOTER_MAGIC` of a seal footer, or `0` for trailing padding).
-        let mut frame_hdr = [0u8; 4];
-        self.file
-            .read_exact_at(&mut frame_hdr, self.offset)
+        let frame_hdr = self
+            .buffer
+            .read(&mut self.file, self.file_len, self.offset, 4)
             .await
             .map_err(|_| (RecordError::Truncated, self.offset))?;
-        let marker = u32::from_le_bytes(frame_hdr);
+        let marker = u32::from_le_bytes(frame_hdr.as_ref().try_into().expect("four-byte frame prefix"));
 
         // Footer reached → records are done (sealed segment).
         if marker == FOOTER_MAGIC {
@@ -436,9 +449,14 @@ impl SegmentReader {
             return Err((RecordError::Truncated, self.offset));
         }
 
-        let mut buf = vec![0u8; usize::try_from(total).expect("record size exceeds usize")];
-        self.file
-            .read_exact_at(&mut buf, self.offset)
+        let buf = self
+            .buffer
+            .read(
+                &mut self.file,
+                self.file_len,
+                self.offset,
+                usize::try_from(total).expect("record size exceeds usize"),
+            )
             .await
             .map_err(|_| (RecordError::Truncated, self.offset))?;
 
@@ -456,12 +474,12 @@ impl SegmentReader {
         if self.file_len - self.offset < prefix.len() as u64 {
             return Ok(false);
         }
-        let mut buf = vec![0u8; prefix.len()];
-        self.file
-            .read_exact_at(&mut buf, self.offset)
+        let buf = self
+            .buffer
+            .read(&mut self.file, self.file_len, self.offset, prefix.len())
             .await
             .map_err(|_| (RecordError::Truncated, self.offset))?;
-        Ok(buf == prefix)
+        Ok(buf.as_ref() == prefix)
     }
 
     async fn next_is_text_footer(&mut self) -> Result<bool, (RecordError, u64)> {
@@ -469,12 +487,12 @@ impl SegmentReader {
         if self.file_len - self.offset < prefix.len() as u64 {
             return Ok(false);
         }
-        let mut buf = vec![0u8; prefix.len()];
-        self.file
-            .read_exact_at(&mut buf, self.offset)
+        let buf = self
+            .buffer
+            .read(&mut self.file, self.file_len, self.offset, prefix.len())
             .await
             .map_err(|_| (RecordError::Truncated, self.offset))?;
-        Ok(buf == prefix)
+        Ok(buf.as_ref() == prefix)
     }
 
     async fn next_text_record(

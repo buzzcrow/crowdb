@@ -18,6 +18,125 @@ fn sim_backend() -> Arc<IoBackend> {
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn gc_preserves_election_state_in_a_mixed_old_segment() {
+    let backend = sim_backend();
+    let disks = vec![PathBuf::from("/mixed-vote")];
+    let config = WalConfig {
+        wal_disks: disks.clone(),
+        wal_segment_size: 256,
+        ..Default::default()
+    };
+    let wal = WalEngine::create(backend.clone(), config, 1).await.unwrap();
+    wal.append(&WALRecord::from_vote_granted(1, 9, 42)).await.unwrap();
+    for slot in 1..=20 {
+        let entry = PxLogEntry {
+            slot,
+            ballot: PxBallot::new(9, 42),
+            term: 9,
+            payload: Bytes::from_static(b"data"),
+        };
+        wal.append(&WALRecord::from_accepted(1, &entry)).await.unwrap();
+    }
+    wal.seal_all().await.unwrap();
+    assert!(run_gc_with_watermark(&wal, 100).await.unwrap() > 0);
+    let replay = replay_group(&backend, &disks, 1).await.unwrap();
+    assert_eq!(replay.current_term, 9);
+    assert_eq!(
+        replay.voted_for,
+        Some(42),
+        "GC must not permit a second vote after restart"
+    );
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn gc_keeps_a_high_term_without_a_vote_in_an_old_segment() {
+    let backend = sim_backend();
+    let disks = vec![PathBuf::from("/mixed-term")];
+    let config = WalConfig {
+        wal_disks: disks.clone(),
+        wal_segment_size: 256,
+        ..Default::default()
+    };
+    let wal = WalEngine::create(backend.clone(), config, 1).await.unwrap();
+    wal.append(&WALRecord::from_promised(1, 12, 1, PxBallot::new(12, 42)))
+        .await
+        .unwrap();
+    // Older in-flight accepts can reach a different disk pipeline after a term change.
+    for slot in 2..=20 {
+        wal.append(&WALRecord::from_promised(1, 9, slot, PxBallot::new(9, 42)))
+            .await
+            .unwrap();
+    }
+    wal.seal_all().await.unwrap();
+    assert!(run_gc_with_watermark(&wal, 100).await.unwrap() > 0);
+    let replay = replay_group(&backend, &disks, 1).await.unwrap();
+    assert_eq!(replay.current_term, 12);
+    assert_eq!(replay.voted_for, None);
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn multi_disk_restart_preserves_index_and_election_state_across_gc() {
+    let backend = sim_backend();
+    let disks = vec![PathBuf::from("/restart-a"), PathBuf::from("/restart-b")];
+    let config = WalConfig {
+        wal_disks: disks.clone(),
+        wal_segment_size: 256,
+        ..Default::default()
+    };
+    let mut wal = WalEngine::create(backend.clone(), config.clone(), 1)
+        .await
+        .unwrap();
+    wal.append(&WALRecord::from_vote_granted(1, 9, 42)).await.unwrap();
+    for round in 0..3 {
+        for slot in round * 24 + 1..=(round + 1) * 24 {
+            wal.append(&WALRecord::from_accepted(
+                1,
+                &PxLogEntry {
+                    slot,
+                    ballot: PxBallot::new(9, 42),
+                    term: 9,
+                    payload: Bytes::copy_from_slice(&slot.to_le_bytes()),
+                },
+            ))
+            .await
+            .unwrap();
+        }
+        wal.seal_all().await.unwrap();
+        let mut replay = replay_group(&backend, &disks, 1).await.unwrap();
+        let prior_index = replay.index.clone();
+        drop(wal);
+        wal = WalEngine::create_from_replay(
+            backend.clone(),
+            config.clone(),
+            1,
+            replay.max_segment_id,
+            std::mem::take(&mut replay.index),
+        )
+        .await
+        .unwrap();
+        assert_eq!(wal.index().slot_count(), prior_index.slot_count());
+        for record in &replay.records {
+            if record.slot != 0 {
+                assert_eq!(
+                    wal.index().locate(record.slot).as_ref(),
+                    prior_index.locate(record.slot)
+                );
+            }
+        }
+        assert!(run_gc_with_watermark(&wal, (round + 1) * 24).await.unwrap() > 0);
+        let recovered = replay_group(&backend, &disks, 1).await.unwrap();
+        assert_eq!(recovered.current_term, 9);
+        assert_eq!(recovered.voted_for, Some(42));
+        let tip = (round + 1) * 24;
+        assert!(recovered
+            .records
+            .iter()
+            .any(|record| record.slot == tip && record.payload.as_ref() == tip.to_le_bytes()));
+        assert!(recovered.records.len() < replay.records.len());
+    }
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc_removes_segments_below_watermark() {
     let backend = sim_backend();
     let disks = vec![PathBuf::from("/wal")];

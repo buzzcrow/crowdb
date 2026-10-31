@@ -23,6 +23,7 @@
 
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -178,7 +179,7 @@ class BufferPool
 
     [[nodiscard]] uint8_t *frame_bytes(uint32_t idx)
     {
-        return arena_.data() + (static_cast<size_t>(idx) * page_bytes_);
+        return arena_.get() + (static_cast<size_t>(idx) * page_bytes_);
     }
 
     void unpin(uint32_t idx);
@@ -193,14 +194,14 @@ class BufferPool
     [[nodiscard]] int64_t acquire_victim();
     Status                write_back_io(uint32_t idx, PageAddr addr);
 
-    mutable std::mutex      mu_;
-    std::condition_variable state_cv_;
-    std::vector<uint8_t>    arena_;
-    std::vector<FrameMeta>  frames_;
-    uint32_t                page_bytes_;
-    uint32_t                num_frames_;
-    PageStore              *store_;
-    uint32_t                clock_hand_ = 0;
+    mutable std::mutex         mu_;
+    std::condition_variable    state_cv_;
+    std::unique_ptr<uint8_t[]> arena_;
+    std::vector<FrameMeta>     frames_;
+    uint32_t                   page_bytes_;
+    uint32_t                   num_frames_;
+    PageStore                 *store_;
+    uint32_t                   clock_hand_ = 0;
 
     std::vector<uint64_t> ht_key_; // page_id or kInvalidPageId
     std::vector<uint32_t> ht_val_; // frame index

@@ -4,6 +4,31 @@
 #[path = "common/member_trust.rs"]
 mod trust;
 
+#[tokio::test]
+async fn stale_authority_contacts_cannot_starve_publication_through_recovered_routes() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+    let published = AtomicBool::new(false);
+    let start = Instant::now();
+    crowdb_monitor::recovery_authority_work_for_tests(
+        async {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            published.store(true, Ordering::Release);
+            Ok(())
+        },
+        std::future::pending(),
+    )
+    .await;
+    assert!(
+        published.load(Ordering::Acquire),
+        "old unavailable authority contacts consumed the publication budget"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(4),
+        "confirmation and publication retain one shared three-second budget"
+    );
+}
+
 #[test]
 fn pinned_retained_contacts_are_probed_when_multicast_discovery_is_empty() {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("member-recovery-contacts");

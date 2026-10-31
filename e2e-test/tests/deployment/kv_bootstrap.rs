@@ -36,6 +36,7 @@ async fn monitor_creates_real_kv_groups_then_validates_after_restart() {
     if write {
         create_witness_group().await;
     }
+    wait_for_witness_group().await;
     for group in [0, 1] {
         let ready = request(
             &http,
@@ -76,7 +77,6 @@ async fn monitor_creates_real_kv_groups_then_validates_after_restart() {
 
 pub(super) async fn create_witness_group() {
     use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
-    use std::time::{Duration, Instant};
 
     let origin = format!("http://{}:10000", crate::common::management::addresses(1)[0]);
     let kv = CrowdbKvClient::new(ClientConfig::new(vec![origin.clone()]));
@@ -113,17 +113,28 @@ pub(super) async fn create_witness_group() {
         201,
     )
     .await;
+    wait_for_witness_group().await;
+}
+
+async fn wait_for_witness_group() {
+    use std::time::{Duration, Instant};
+
+    let origin = format!("http://{}:10000", crate::common::management::addresses(1)[0]);
+    let http = client();
     let deadline = Instant::now() + Duration::from_secs(4);
     loop {
-        let ready = request(
-            &http,
-            &origin,
-            Method::GET,
-            "/stores/0/groups/1/ready",
-            Value::Null,
-            200,
-        )
-        .await;
+        let response = http
+            .get(format!("{origin}/stores/0/groups/1/ready"))
+            .send()
+            .await
+            .expect("witness group readiness request");
+        let status = response.status();
+        let ready: Value = response.json().await.expect("witness group readiness JSON");
+        assert!(
+            matches!(status.as_u16(), 200 | 503),
+            "unexpected witness readiness HTTP {status}: {ready}"
+        );
+        assert_eq!(status.as_u16() == 200, ready["ready"] == true, "{ready}");
         if ready["ready"] == true {
             assert_eq!(ready["leader_id"], 1);
             assert_eq!(ready["voting_replicas"], 1);

@@ -25,6 +25,7 @@ use super::{DomainMonitorDriver, DomainMonitorFuture};
 mod balance;
 mod catalog;
 mod grants;
+mod liveness;
 
 pub struct ChunkKvRangeMonitorDriver;
 
@@ -59,8 +60,9 @@ impl DomainMonitorDriver for ChunkKvRangeMonitorDriver {
             if catalog::refresh_endpoints(control, descriptor).await? {
                 return Ok(());
             }
-            plan_dead_owner_transfer(control, descriptor).await?;
-            advance_dead_owner_exclusion(control, descriptor).await?;
+            let live_processes = liveness::live_processes(control).await?;
+            plan_dead_owner_transfer(control, descriptor, &live_processes).await?;
+            advance_dead_owner_exclusion(control, descriptor, &live_processes).await?;
             balance::plan(control, descriptor).await?;
             authorize_live_source_fences(control, descriptor).await?;
             publish_ready_transitions(control).await?;
@@ -73,6 +75,7 @@ impl DomainMonitorDriver for ChunkKvRangeMonitorDriver {
 async fn plan_dead_owner_transfer(
     control: &Group0ControlPlane,
     descriptor: &DomainMonitorDescriptor,
+    live_processes: &HashSet<u64>,
 ) -> Result<(), String> {
     if descriptor.failure_policy != DomainFailurePolicy::AutomaticSharedStorage {
         return Ok(());
@@ -124,6 +127,7 @@ async fn plan_dead_owner_transfer(
     });
     for entry in catalog.pages.iter().flat_map(|page| &page.entries) {
         if entry.state != ChunkKvRangeCatalogPartitionState::Serving
+            || live_processes.contains(&entry.owner.instance_id)
             || transitioning_partitions.contains(&entry.partition_id)
             || busy_owners.contains(&entry.owner.instance_id)
             || instances
@@ -215,6 +219,7 @@ async fn plan_dead_owner_transfer(
 async fn advance_dead_owner_exclusion(
     control: &Group0ControlPlane,
     descriptor: &DomainMonitorDescriptor,
+    live_processes: &HashSet<u64>,
 ) -> Result<(), String> {
     let now_ms = wall_time_ms();
     let dead_before = now_ms.saturating_sub(descriptor.dead_after_ms);
@@ -224,6 +229,7 @@ async fn advance_dead_owner_exclusion(
             transition.phase,
             TransferPhase::TargetPrepared | TransferPhase::AwaitingFence
         ) || transition.release_proof.is_some()
+            || live_processes.contains(&transition.source.instance_id)
             || instances
                 .get(&transition.source.instance_id)
                 .is_some_and(|instance| instance.last_heartbeat_ms >= dead_before)

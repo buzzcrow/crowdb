@@ -15,6 +15,9 @@ use crowdb_kv::wal::replay::replay_group;
 use crowdb_kv::wal::{IoBackend, WalEngine};
 use crowdb_kv_server::recovery::startup::{create_group_with_wal, store_wal_root};
 
+#[path = "startup_test/reclamation.rs"]
+mod reclamation;
+
 fn encode_put_payload(key: &[u8], value: &[u8]) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(&1u16.to_le_bytes()); // 1 op (u16 LE)

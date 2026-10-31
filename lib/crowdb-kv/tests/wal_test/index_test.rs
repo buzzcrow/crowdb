@@ -25,6 +25,8 @@ fn meta(seg: u64, min: u64, max: u64) -> SegmentMeta {
         min_slot: min,
         max_slot: max,
         record_count: (max - min + 1) as u32,
+        max_term: 0,
+        vote_term: None,
     }
 }
 

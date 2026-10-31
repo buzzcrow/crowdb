@@ -20,10 +20,12 @@ use super::record::{RecordType, WALRecord};
 use super::segment::{parse_segment_filename, SegmentReader};
 use super::{IoBackend, OpenOptions};
 
+mod records;
+
 /// Result of replaying all WAL segments for a group.
 #[derive(Debug)]
 pub struct ReplayResult {
-    /// Verified records in slot order (deduplicated: highest ballot per slot wins).
+    /// Vote records followed by slot-ordered highest accepted and promised ballots.
     pub records: Vec<WALRecord>,
     /// Rebuilt segment index.
     pub index: SegmentIndex,
@@ -87,7 +89,7 @@ pub async fn replay_group(
     );
 
     // ── Step 2–3: scan records, verify CRC, truncate on error ──
-    let mut verified_records: Vec<WALRecord> = Vec::new();
+    let mut verified_records = records::ReplayRecords::default();
     let mut index = SegmentIndex::new();
     let mut max_segment_id: u64 = 0;
     let total_segments = all_segments.len();
@@ -119,6 +121,8 @@ pub async fn replay_group(
         let mut seg_min_slot = u64::MAX;
         let mut seg_max_slot = 0u64;
         let mut seg_record_count = 0u32;
+        let mut max_term = 0;
+        let mut vote_term = None::<u64>;
 
         loop {
             match reader.next_record().await {
@@ -133,6 +137,10 @@ pub async fn replay_group(
                         }
                     }
                     seg_record_count += 1;
+                    max_term = max_term.max(record.term);
+                    if record.record_type == RecordType::VoteGranted {
+                        vote_term = Some(vote_term.map_or(record.term, |term| term.max(record.term)));
+                    }
                     verified_records.push(record);
                 }
                 Ok(None) => break, // EOF or footer
@@ -170,6 +178,8 @@ pub async fn replay_group(
             min_slot: if seg_min_slot == u64::MAX { 0 } else { seg_min_slot },
             max_slot: seg_max_slot,
             record_count: seg_record_count,
+            max_term,
+            vote_term,
         };
         for (slot, file_offset) in &seg_records {
             index.insert(
@@ -186,25 +196,16 @@ pub async fn replay_group(
 
     debug!(
         group_id,
-        total_records = verified_records.len(),
+        total_records = verified_records.scanned,
         max_segment_id,
         "replay: scan complete"
     );
 
-    // ── Step 4–7: rebuild in-memory state ──────────────
-
-    // 4. current_term = max term across all records.
-    let current_term = verified_records.iter().map(|r| r.term).max().unwrap_or(0);
-
-    // 5. voted_for from latest VoteGranted for current_term.
-    let voted_for = verified_records
-        .iter()
-        .rev()
-        .find(|r| r.record_type == RecordType::VoteGranted && r.term == current_term)
-        .and_then(WALRecord::voted_for_id);
+    let current_term = verified_records.current_term;
+    let voted_for = verified_records.voted_for;
 
     Ok(ReplayResult {
-        records: verified_records,
+        records: verified_records.into_records(),
         index,
         max_segment_id,
         current_term,

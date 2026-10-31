@@ -253,6 +253,9 @@ impl WALRecord {
             return Err(RecordError::Truncated);
         }
         let frame_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        if frame_len < HEADER_BODY_LEN + 4 {
+            return Err(RecordError::Truncated);
+        }
         let total = 4 + frame_len;
         if data.len() < total {
             return Err(RecordError::Truncated);

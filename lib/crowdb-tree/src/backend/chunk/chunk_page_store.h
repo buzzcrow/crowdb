@@ -6,6 +6,7 @@
 #pragma once
 
 #include "chunk_cancellation.h"
+#include "chunk_page_staging.h"
 #include "chunk_purpose.h"
 #include "chunk_transport.h"
 #include "crowdb-tree/backend/async_page_store.h"
@@ -365,7 +366,9 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     size_t      staged_pack_length(uint64_t offset, const ChunkManifest *base) const;
     static bool range_has_pack(const ChunkManifest &base, uint64_t offset, size_t length);
     uint64_t    chunk_allocation_bytes() const;
-    Status      materialize_active(std::vector<uint8_t> *out) const;
+    Status      read_staged_range(uint64_t offset, size_t length, std::vector<uint8_t> *out,
+                                  ChunkCancellation cancellation = {}) const;
+    Status      prepare_staged_write(uint64_t offset, size_t length);
     Status      refresh_active_chunk();
     Status build_manifest(uint64_t expected_generation, std::shared_ptr<ChunkManifest> *out, uint64_t *new_pack_bytes,
                           ChunkCancellation cancellation = {});
@@ -393,7 +396,8 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     Config                                       config_;
     std::shared_ptr<RootCatalog>                 catalog_;
     std::shared_ptr<ChunkTransport>              transport_;
-    std::vector<uint8_t>                         staged_;
+    ChunkPageStaging                             staged_;
+    std::shared_ptr<const ChunkManifest>         staged_base_;
     PagePurposeRanges                            staged_purposes_;
     std::vector<std::pair<uint64_t, uint64_t>>   dirty_ranges_;
     std::vector<std::pair<uint64_t, uint64_t>>   materialization_live_extents_;

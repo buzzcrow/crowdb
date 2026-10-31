@@ -64,6 +64,8 @@ impl TestMirroredFrames {
             calls: AtomicUsize::new(0),
             short: AtomicBool::new(false),
             delay_ms: AtomicU64::new(0),
+            topology: None,
+            slow_disk: None,
         });
         Self {
             chunk,
@@ -79,10 +81,15 @@ pub struct TestFrameDisks {
     pub calls: AtomicUsize,
     pub short: AtomicBool,
     pub delay_ms: AtomicU64,
+    pub topology: Option<crowdb_diskio_client::DiskTopologyView>,
+    pub slow_disk: Option<(u64, std::time::Duration)>,
 }
 
 #[async_trait]
 impl DiskWriter for TestFrameDisks {
+    fn disk_topology(&self) -> Option<crowdb_diskio_client::DiskTopologyView> {
+        self.topology.clone()
+    }
     async fn write(&self, _: &Segment, _: u64, _: Bytes) -> crowdb_chunk_client::Result<()> {
         Err(IoError::WriteFailed("read-only observation fixture".into()))
     }
@@ -104,6 +111,11 @@ impl DiskWriter for TestFrameDisks {
     ) -> crowdb_chunk_client::Result<Bytes> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         let delay = self.delay_ms.load(Ordering::Relaxed);
+        if let Some((disk, duration)) = self.slow_disk {
+            if segment.disk_id.is_some_and(|id| id.high == disk) {
+                tokio::time::sleep(duration).await;
+            }
+        }
         if delay > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         }

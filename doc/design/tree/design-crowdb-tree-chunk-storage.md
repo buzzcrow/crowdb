@@ -57,6 +57,26 @@ and a `ChunkPageRef` containing chunk identity, physical offset, logical length,
 and frame revision. Frame footers own payload integrity and expected chunk
 identity; high-cardinality reference entries do not duplicate their checksums.
 
+Pending writes form a sparse byte overlay on one captured immutable manifest.
+Starting a write does not materialize the published logical image or its holes.
+Partial writes capture only their intersected published packs, retaining the
+verified untouched bytes even if those mirrors become unavailable before commit.
+Later overlapping writes replace earlier bytes; overlay fragments are bounded
+to 64 KiB so replacing a small range cannot copy an arbitrarily large fragment.
+Each fragment retains its full logical coverage while storing trailing zeros
+implicitly. Zero padding therefore still overwrites base bytes and participates
+in coverage checks without retaining an allocation-unit buffer per padded page.
+Publication assembles one pack from verified base bytes and the overlay at a
+time. Unchanged packs still undergo frame verification before reuse. Both
+publication paths discard the overlay after commit, releasing its buffers.
+The tree releases each encoded snapshot page as soon as its store write
+completes, including asynchronous completion. It retains the page's publication
+identity through the final anchor barrier, without retaining a second copy of
+all bytes already accepted into the backend overlay.
+Snapshot preparation retains logical encoded page bytes. It reserves aligned
+addresses immediately but adds zero padding to the current page only at write
+submission, avoiding an additional allocation-unit padding copy of every page.
+
 Mapping-table slots do not store physical chunk offsets. Their tagged 64-bit
 page-reference words name a logical location whose covering pack is resolved
 through immutable segmented reference tables. Untagged words remain valid for

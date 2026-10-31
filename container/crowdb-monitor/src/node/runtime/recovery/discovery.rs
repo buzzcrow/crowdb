@@ -52,14 +52,6 @@ async fn refresh(root: &Path, port: u16, web_port: u16) -> Result<()> {
     {
         return Err("member recovery is retired".into());
     }
-    let authority_start = std::time::Instant::now();
-    if let Err(error) = super::confirmed::refresh(root, &accepted).await {
-        tracing::debug!(%error, "confirmed recovery contacts await current authority");
-    }
-    // Confirmation and publication share their existing three-second budget.
-    // A ten-second offline SSH proof must not stretch route refresh past the
-    // fifteen-second freshness fence while Group 0 is unavailable.
-    let publication_budget = Duration::from_secs(3).saturating_sub(authority_start.elapsed());
     super::check(root, &accepted)?;
     let operation = PreparedBootstrap::load(&root.join("prepared-bootstrap.json"))?;
     let (trust, config) = super::confirmed::contacts(root, &operation)?;
@@ -89,7 +81,7 @@ async fn refresh(root: &Path, port: u16, web_port: u16) -> Result<()> {
     let (members, conflicts) = unique(endpoints);
     let snapshot = MemberEndpoints {
         version: 1,
-        bootstrap: accepted.bootstrap,
+        bootstrap: accepted.bootstrap.clone(),
         observer_boot_id: local.boot_id,
         observed_at_unix_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)?
@@ -99,16 +91,11 @@ async fn refresh(root: &Path, port: u16, web_port: u16) -> Result<()> {
         conflicts,
     };
     durable::write(&root.join("member-endpoints.json"), &snapshot)?;
-    match tokio::time::timeout(
-        publication_budget,
+    Box::pin(super::authority_refresh::run(
         super::publication::reconcile(root, &operation, &snapshot, &config, web_port),
-    )
-    .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => tracing::debug!(%error, "recovered endpoint publication awaits authority"),
-        Err(_) => tracing::debug!("recovered endpoint publication yielded at its deadline"),
-    }
+        super::confirmed::refresh(root, &accepted),
+    ))
+    .await;
     Ok(())
 }
 

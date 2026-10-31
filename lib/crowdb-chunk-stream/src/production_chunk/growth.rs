@@ -13,9 +13,6 @@ use crowdb_protocol::chunkdb::rpc::{
     AppendChunkRequest, AppendChunkResponse, Chunk, QueryChunkRequest, Strip, StripType,
 };
 
-const MIN_GROWTH_WINDOW_BYTES: u64 = 2 * STREAM_STRIP_BYTES;
-const MAX_GROWTH_WINDOW_BYTES: u64 = 8 * STREAM_STRIP_BYTES;
-
 impl ProductionStreamChunkStore {
     pub(super) async fn grow_active_chunk(
         &self,
@@ -51,16 +48,11 @@ impl ProductionStreamChunkStore {
                     capacity,
                 }));
             }
-            // Small appends must not wait for a large initialization burst.
-            // Large appends amortize allocation over several following writes.
-            let window = required_capacity
-                .saturating_sub(write_cursor(&state))
-                .saturating_mul(4)
-                .clamp(MIN_GROWTH_WINDOW_BYTES, MAX_GROWTH_WINDOW_BYTES)
-                .next_power_of_two();
+            // The stream worker has already budgeted its lookahead. Do not
+            // multiply speculative bytes again at the physical allocation layer.
             let target = required_capacity
-                .div_ceil(window)
-                .saturating_mul(window)
+                .div_ceil(STREAM_STRIP_BYTES)
+                .saturating_mul(STREAM_STRIP_BYTES)
                 .min(self.chunk_capacity_bytes);
             let growth_timer = PhaseTimer::start(&perf().growth);
             let response = self.request_growth(&chunk, target, capacity).await?;

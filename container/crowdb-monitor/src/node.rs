@@ -40,7 +40,10 @@ pub use runtime::{
 };
 pub use runtime::{control_node, run_node, run_node_with_inputs, NodeRuntimeConfig};
 #[cfg(feature = "test-util")]
-pub use runtime::{member_recovery_destinations_for_tests, unique_member_endpoints_for_tests};
+pub use runtime::{
+    member_recovery_destinations_for_tests, recovery_authority_work_for_tests,
+    unique_member_endpoints_for_tests,
+};
 #[cfg(feature = "test-util")]
 pub use runtime::{publish_file_for_tests, resume_file_operations_for_tests};
 #[cfg(feature = "test-util")]

@@ -439,6 +439,10 @@ alike. This is the "4 GiB / 8 GiB btree cache" knob (`capacity_bytes` default
   metadata under the pool mutex.
   The page table (`pid -> frame index`) is an open-addressing array, not
   `std::unordered_map`, to keep the hot path branch-light and cache-friendly.
+- **Unused capacity.** Arena allocation preserves the configured frame count
+  without initializing every unused frame. Fresh and anonymous frames are
+  zeroed when acquired. A read miss loads and validates the complete frame
+  before publishing it, preserving initialization and stable frame addresses.
 - **Pinning and eviction.** A reader pins the leaf/inner frames along its
   descent, reads via the view, then releases. Pinned frames are never
   evicted. Eviction uses a **CLOCK (second-chance)** sweep: skip pinned and

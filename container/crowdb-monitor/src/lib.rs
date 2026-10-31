@@ -46,7 +46,10 @@ pub use node::{
     NodeManagementError, NodeRuntimeConfig, NODE_SERVICE_TYPE,
 };
 #[cfg(feature = "test-util")]
-pub use node::{member_recovery_destinations_for_tests, unique_member_endpoints_for_tests};
+pub use node::{
+    member_recovery_destinations_for_tests, recovery_authority_work_for_tests,
+    unique_member_endpoints_for_tests,
+};
 #[cfg(feature = "test-util")]
 pub use preview::{preview_step_names_for_tests, run_preview_for_tests, PreviewError};
 pub use probe::{ProbeError, ProbeExecutor};

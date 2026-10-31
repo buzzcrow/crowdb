@@ -13,6 +13,9 @@ use crowdb_protocol::chunk_kv::{
 };
 use crowdb_protocol::chunk_stream::StreamName;
 
+#[path = "catalog_test/recovery_assignments.rs"]
+mod recovery_assignments;
+
 fn page(generation: u64, owner_epoch: u64) -> ChunkKvRangeCatalogPage {
     let mut page = ChunkKvRangeCatalogPage {
         generation,

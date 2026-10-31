@@ -12,6 +12,8 @@ use crowdb_protocol::{
 };
 use futures::{stream, StreamExt};
 
+type StripDrainResults = Vec<(Segment, Result<()>)>;
+
 impl ProductionStreamChunkStore {
     pub(super) async fn drain_recovery_layout(
         &self,
@@ -19,7 +21,8 @@ impl ProductionStreamChunkStore {
         context: &StreamWriteContext,
         deadline: std::time::Instant,
     ) -> Result<()> {
-        for (index, strip) in chunk.strips.iter().enumerate() {
+        let drained = self.drain_recovery_segments(chunk, context, deadline).await?;
+        for (index, (strip, results)) in chunk.strips.iter().zip(drained).enumerate() {
             let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
                 return Err(StreamError::Corruption("recovery chunk is not mirrored".into()));
             };
@@ -28,21 +31,6 @@ impl ProductionStreamChunkStore {
                     "recovery mirror repair is pending".into(),
                 ));
             }
-            let results = stream::iter(mirror.segments.iter().copied())
-                .map(|segment| async move {
-                    let result = async {
-                        context.check_io()?;
-                        self.disk_writer
-                            .drain_segment(&segment, u64::from(strip.unit_kb) * 1024, deadline)
-                            .await
-                            .map_err(io_error)
-                    }
-                    .await;
-                    (segment, result)
-                })
-                .buffer_unordered(8)
-                .collect::<Vec<_>>()
-                .await;
             let failed: Vec<_> = mirror
                 .segments
                 .iter()
@@ -68,6 +56,52 @@ impl ProductionStreamChunkStore {
             return Err(error);
         }
         Ok(())
+    }
+
+    async fn drain_recovery_segments(
+        &self,
+        chunk: &Chunk,
+        context: &StreamWriteContext,
+        deadline: std::time::Instant,
+    ) -> Result<Vec<StripDrainResults>> {
+        let mut segments = Vec::with_capacity(chunk.strips.len() * 2);
+        let mut drained = Vec::with_capacity(chunk.strips.len());
+        for (index, strip) in chunk.strips.iter().enumerate() {
+            let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
+                return Err(StreamError::Corruption("recovery chunk is not mirrored".into()));
+            };
+            if !strip.unavailable_segments.is_empty() {
+                return Err(StreamError::ReadUnavailable(
+                    "recovery mirror repair is pending".into(),
+                ));
+            }
+            drained.push(Vec::with_capacity(mirror.segments.len()));
+            segments.extend(
+                mirror
+                    .segments
+                    .iter()
+                    .map(|segment| (index, u64::from(strip.unit_kb) * 1024, *segment)),
+            );
+        }
+        let results = stream::iter(segments)
+            .map(|(index, unit_bytes, segment)| async move {
+                let result = async {
+                    context.check_io()?;
+                    self.disk_writer
+                        .drain_segment(&segment, unit_bytes, deadline)
+                        .await
+                        .map_err(io_error)
+                }
+                .await;
+                (index, segment, result)
+            })
+            .buffer_unordered(8)
+            .collect::<Vec<_>>()
+            .await;
+        for (index, segment, result) in results {
+            drained[index].push((segment, result));
+        }
+        Ok(drained)
     }
 
     async fn mark_recovery_mirrors(

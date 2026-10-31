@@ -19,6 +19,22 @@ pub(super) struct SuccessorPreparation {
 }
 
 pub(super) fn start(state: &mut WorkerState) {
+    let Some(active) = state.progress.active.as_ref() else {
+        return;
+    };
+    let Some(required) = state.capacity_plan.successor_target(
+        active.acknowledged_cursor,
+        state
+            .config
+            .chunk_capacity_bytes
+            .min(state.chunks.capacity_limit()),
+    ) else {
+        return;
+    };
+    prepare(state, required);
+}
+
+fn prepare(state: &mut WorkerState, required: u64) {
     let Some(authority) = state.authority.as_ref() else {
         return;
     };
@@ -35,15 +51,7 @@ pub(super) fn start(state: &mut WorkerState) {
         epoch: state.writer_epoch,
         purpose: state.progress.purpose,
         interval: state.config.liveness_interval,
-        required: state
-            .capacity_plan
-            .target(
-                0,
-                0,
-                state.config.chunk_capacity_bytes,
-                state.config.batch_bytes as u64,
-            )
-            .expect("nonzero chunk capacity"),
+        required,
     };
     let (handoff, receive) = oneshot::channel();
     state.successor = Some(SuccessorPreparation {
@@ -200,7 +208,9 @@ async fn allocate(
 
 pub(super) async fn take(state: &mut WorkerState) -> Result<ActiveChunkDescriptor> {
     let Some(preparation) = state.successor.take() else {
-        start(state);
+        // A waiting rotation requires a candidate regardless of the last
+        // consumption sample. Grow it further only for the actual next append.
+        prepare(state, 1);
         let preparation = state.successor.take().ok_or(StreamError::WriteStalled)?;
         return join(preparation, true).await;
     };

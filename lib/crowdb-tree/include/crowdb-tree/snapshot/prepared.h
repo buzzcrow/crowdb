@@ -40,7 +40,7 @@ struct PreparedPageWrite
     uint64_t             prior_addr  = kNoAddr;
     uint64_t             addr        = 0;
     uint32_t             logical_len = 0; // unpadded; mirrors PageBase::durable_plen
-    std::vector<uint8_t> blob;            // already IU-padded
+    std::vector<uint8_t> blob;            // padded to IU at submission; released after completion
 };
 
 // A dirty MappingSegment's fresh image write, plus enough identity to
@@ -80,10 +80,11 @@ struct PrefetchedPage
     std::vector<uint8_t> blob; // IU-padded page content read from the store
 };
 
-// Output of prepare_snapshot_locked(): every byte this snapshot generation
-// needs written, computed synchronously under write_mutex_ (the segment
+// Output of prepare_snapshot_locked(): encoded page payloads and metadata
+// bytes computed synchronously under write_mutex_ (the segment
 // scan + delta-fold + page/segment-image/directory encode is CPU/memory-only
-// -- see the "Lock scope" note on #11). The caller writes
+// without device padding). Page payloads gain device padding
+// only at submission. The caller writes
 // `page_writes` and `segment_writes` (any order/concurrency) then
 // `directory_write`, then a durability barrier, then `anchor_write` --
 // writing the anchor before that barrier would violate the crash-safety

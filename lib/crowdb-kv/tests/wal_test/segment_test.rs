@@ -39,6 +39,35 @@ fn accepted_record(group: u64, slot: u64, payload_len: usize) -> WALRecord {
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn buffered_binary_replay_keeps_payloads_across_refills_and_large_frames() {
+    let backend = aligned_backend();
+    let directory = PathBuf::from("/buffer-boundary/group1");
+    let mut segment = WalSegment::create(&backend, &directory, 1, 1).await.unwrap();
+    let mut records = Vec::new();
+    for (index, length) in [13, 65536, 1_048_500, 37, 1_048_577, 0, 32768]
+        .into_iter()
+        .enumerate()
+    {
+        let record = accepted_record(1, u64::try_from(index).unwrap() + 1, length);
+        segment.append(&record).await.unwrap();
+        records.push(record);
+    }
+    segment.seal().await.unwrap();
+    let mut reader = SegmentReader::open(&backend, segment.path()).await.unwrap();
+    let mut recovered = Vec::new();
+    while let Some((record, _)) = reader.next_record().await.unwrap() {
+        recovered.push(record);
+    }
+    assert!(reader.read_footer().await.unwrap().is_some());
+    drop(reader);
+    drop(segment);
+    assert_eq!(
+        recovered, records,
+        "earlier payload owners must survive every refill"
+    );
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn create_segment_writes_header() {
     let backend = sim_backend();
     let dir = PathBuf::from("/wal/group1");

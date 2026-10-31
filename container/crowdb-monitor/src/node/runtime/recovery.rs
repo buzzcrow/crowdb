@@ -13,8 +13,11 @@ use ssh_key::PublicKey;
 
 use super::{durable, AcceptedNode, Result};
 use crate::NodeIdentity;
+mod authority_refresh;
 mod confirmed;
 mod discovery;
+#[cfg(feature = "test-util")]
+pub use authority_refresh::recovery_authority_work_for_tests;
 mod owners;
 mod publication;
 pub(super) use confirmed::{accept as accept_confirmed, prepare_admitted};

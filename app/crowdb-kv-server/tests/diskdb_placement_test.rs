@@ -160,6 +160,54 @@ async fn assigns_balances_and_replaces_dead_owners_without_changing_bindings() {
         .is_none());
 }
 
+#[tokio::test]
+async fn renews_live_owner_leases_without_replacing_the_process_epoch_or_rewriting_fresh_leases() {
+    for remaining in [0, 1000] {
+        let (_, store) = registry_with_group_zero(PxLocalReplicaRole::Leader);
+        let control = Group0ControlPlane::acquire(&store).await.unwrap();
+        instance(&control, 1, u64::MAX).await;
+        prepare_groups(&control).await;
+        let now = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap();
+        let key = OwnerMapKey {
+            rack_id: 1,
+            node_id: 1,
+            disk_group_id: 1,
+        }
+        .to_path();
+        put_json(
+            &control,
+            key.clone(),
+            &OwnerMapValue {
+                instance_id: 1,
+                process_epoch: 17,
+                lease_expiry_ms: if remaining == 0 { 1 } else { now + remaining },
+            },
+        )
+        .await;
+        let initial = control.get(key.as_bytes()).await.unwrap().revision;
+        DiskdbPlacementMonitorDriver
+            .tick(&control, &descriptor())
+            .await
+            .unwrap();
+        let renewed: OwnerMapValue = get_json(&control, &key).await;
+        assert_eq!((renewed.instance_id, renewed.process_epoch), (1, 17));
+        assert!(renewed.lease_expiry_ms > now + 60_000, "{renewed:?}");
+        let revision = control.get(key.as_bytes()).await.unwrap().revision;
+        assert!(revision > initial);
+        DiskdbPlacementMonitorDriver
+            .tick(&control, &descriptor())
+            .await
+            .unwrap();
+        assert_eq!(control.get(key.as_bytes()).await.unwrap().revision, revision);
+    }
+}
+
 async fn prepare_groups(control: &Group0ControlPlane) {
     for dg in 1..=5 {
         put_json(

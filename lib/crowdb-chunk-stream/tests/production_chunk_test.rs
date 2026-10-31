@@ -40,6 +40,12 @@ mod local_progress;
 #[path = "production_chunk_test/growth.rs"]
 mod growth;
 
+#[path = "production_chunk_test/capacity_refresh.rs"]
+mod capacity_refresh;
+
+#[path = "common/initialization_window.rs"]
+mod initialization_window;
+
 #[path = "production_chunk_test/preparation.rs"]
 mod preparation;
 
@@ -654,7 +660,7 @@ async fn production_store_grows_and_writes_across_mirror_strips() {
         .unwrap();
     assert_eq!(active.capacity, 1024 * 1024);
     let grown = store
-        .grow_mirrored(name, 9, active.chunk_id, active.capacity + 1)
+        .grow_mirrored(name, 9, active.chunk_id, 8 * 1024 * 1024)
         .await
         .unwrap()
         .unwrap();
@@ -878,7 +884,10 @@ async fn stream_repair_preserves_a_batch_crossing_mirror_strips() {
             created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
-        StreamConfig::default(),
+        StreamConfig {
+            chunk_capacity_bytes: 2 * 1024 * 1024,
+            ..StreamConfig::default()
+        },
         Arc::clone(&metadata) as Arc<dyn StreamRegistry>,
         metadata as Arc<dyn StreamMetadataStore>,
         chunks,
@@ -899,7 +908,7 @@ async fn stream_repair_preserves_a_batch_crossing_mirror_strips() {
     assert_eq!(&read[prefix.len()..], suffix.as_ref());
     assert_eq!(stream.metrics().rollovers, 0);
     let chunk = allocator.chunk.lock().unwrap().clone().unwrap();
-    assert_eq!(chunk.strips.len(), 8);
+    assert_eq!(chunk.strips.len(), 2);
     let Some(Strip::MirrorStrip(mirror)) = &chunk.strips[1].strip else {
         panic!("expected mirror strip");
     };
