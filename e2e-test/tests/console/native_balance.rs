@@ -34,6 +34,32 @@ pub(super) async fn settle(context: &TestNativeContext) {
     verify_values(&client).await;
 }
 
+pub(super) async fn settle_existing(context: &TestNativeContext) {
+    let source = Group0ChunkKvRangeCatalogSource::from_shared(context.kv.clone());
+    let started = Instant::now();
+    let mut interval = tokio::time::interval(Duration::from_millis(100));
+    loop {
+        interval.tick().await;
+        let catalog = load(&source).await;
+        if catalog.entries().iter().all(|entry| {
+            entry.state == ChunkKvRangeCatalogPartitionState::Serving
+                && entry.transition_id.is_none()
+                && entry.artifact.tail_overlay.is_none()
+        }) && placement_ready(&context.kv, catalog.generation()).await
+        {
+            eprintln!(
+                "[PHASE] journal fixture placement settled in {:?}",
+                started.elapsed()
+            );
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(40),
+            "journal fixture's normal placement did not settle"
+        );
+    }
+}
+
 async fn seed_values(client: &ChunkKvClient) {
     for batch in 0..32 {
         let items = (batch * 16..(batch + 1) * 16)

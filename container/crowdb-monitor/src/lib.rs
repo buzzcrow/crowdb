@@ -31,8 +31,6 @@ pub use liveness::{probe_liveness, LivenessError, LivenessServer};
 pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};
 pub use monitor_log::{MonitorEvent, MonitorEventKind, MonitorLog, MonitorLogError};
 #[cfg(feature = "test-util")]
-pub use node::unique_member_endpoints_for_tests;
-#[cfg(feature = "test-util")]
 pub use node::{
     accept_file_for_tests, accept_member_trust_for_tests, accept_startup_mode_for_tests,
     check_member_trust_for_tests, check_retained_medium_for_tests, file_operations_for_tests,
@@ -42,10 +40,13 @@ pub use node::{
     NodeServiceForTests, NodeSetupForTests, SuppliedOperationsForTests,
 };
 pub use node::{
-    accept_node_policy, control_node, discover_disks, read_node_policy, run_node, run_node_with_inputs,
-    serve_node_management, CandidateCache, DiscoveryConfig, DiscoveryError, NodeDiscovery, NodeIdentity,
-    NodeIdentityError, NodeManagementError, NodeRuntimeConfig, NODE_SERVICE_TYPE,
+    accept_node_policy, accept_node_policy_with_port_offset, control_node, discover_disks, read_node_policy,
+    resolve_node_policy_with_port_offset, run_node, run_node_with_inputs, serve_node_management,
+    CandidateCache, DiscoveryConfig, DiscoveryError, NodeDiscovery, NodeIdentity, NodeIdentityError,
+    NodeManagementError, NodeRuntimeConfig, NODE_SERVICE_TYPE,
 };
+#[cfg(feature = "test-util")]
+pub use node::{member_recovery_destinations_for_tests, unique_member_endpoints_for_tests};
 #[cfg(feature = "test-util")]
 pub use preview::{preview_step_names_for_tests, run_preview_for_tests, PreviewError};
 pub use probe::{ProbeError, ProbeExecutor};
@@ -59,7 +60,7 @@ pub use status::{MonitorPhase, MonitorStatus, ServiceStatus, StatusError, Status
 pub use supervisor::{Supervisor, SupervisorError};
 
 #[cfg(feature = "test-util")]
-pub use node::rebind_recovery_services_for_tests;
+pub use node::{apply_member_endpoints_for_tests, rebind_recovery_services_for_tests};
 
 pub use node::read_recovery_identity;
 

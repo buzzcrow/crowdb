@@ -8,6 +8,12 @@ import uuid
 
 from docker_local_state import CLUSTER, OWNER, check_daemon, load, require_owned, seal
 
+CONTAINER_PORTS = (9090, 16000, 17000, 18000)
+
+
+def container_ports(record):
+    return (9090, 9091, 9092, 9093) if record["version"] == 1 else CONTAINER_PORTS
+
 
 def arguments(record):
     return ["--label", f"{CLUSTER}={record['cluster']}", "--label", f"{OWNER}={record['owner']}"]
@@ -43,7 +49,7 @@ def accepted(docker, args):
         raise ValueError("local node image must be Linux amd64")
     if metadata.get("Config", {}).get("Labels", {}).get("org.opencontainers.image.source") != "https://github.com/buzzcrow/crowdb":
         raise ValueError("image is not a CROWDB node image")
-    record = {"version": 1, "cluster": args.cluster, "owner": str(uuid.uuid4()), "runtime": docker.identity(),
+    record = {"version": 2, "cluster": args.cluster, "owner": str(uuid.uuid4()), "runtime": docker.identity(),
               "nodes": args.nodes if args.nodes is not None else 1, "port_base": args.port_base if args.port_base is not None else 9090, "image": image,
               "image_id": metadata["Id"], "cpus": args.cpus if args.cpus is not None else 1,
               "memory_mib": args.memory_mib if args.memory_mib is not None else 1536}
@@ -59,8 +65,8 @@ def verify_container(item, record, index, volume, network):
     require_owned(item, record, "container")
     host = item["HostConfig"]
     base = record["port_base"] + (index - 1) * 10
-    ports = {f"{9090+offset}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(base+offset)}]
-             for offset in range(4)}
+    ports = {f"{port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(base+offset)}]
+             for offset, port in enumerate(container_ports(record))}
     expected_environment = {"CROWDB_CLUSTER": record["cluster"], "CROWDB_INITIAL_VOTERS": str(record["nodes"])}
     for offset, protocol in enumerate((None, "S3", "ICEBERG", "DATASET")):
         if protocol:
@@ -102,7 +108,7 @@ def run(docker, record):
                    "--mount", f"type=volume,source={volume},target=/opt/crowdb/data",
                    "-e", "CROWDB_CLUSTER=" + record["cluster"], "-e", f"CROWDB_INITIAL_VOTERS={record['nodes']}"]
         for offset, protocol in enumerate((None, "S3", "ICEBERG", "DATASET")):
-            command += ["-p", f"127.0.0.1:{base+offset}:{9090+offset}"]
+            command += ["-p", f"127.0.0.1:{base+offset}:{container_ports(record)[offset]}"]
             if protocol:
                 command += ["-e", f"CROWDB_{protocol}_PUBLIC_URI=http://127.0.0.1:{base+offset}"]
         check_daemon(docker, record)

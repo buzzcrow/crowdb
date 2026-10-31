@@ -29,7 +29,7 @@ const G0_STORE: u64 = 0;
 const G0_GROUP: u64 = 0;
 
 /// Default liveness TTL: 3× a 5s heartbeat interval = 15s.
-const DEFAULT_TTL_MS: u64 = 15_000;
+pub const DEFAULT_TTL_MS: u64 = 15_000;
 
 fn now_ms() -> u64 {
     SystemTime::now()

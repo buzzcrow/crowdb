@@ -19,6 +19,12 @@ pub(in crate::node::runtime) async fn execute(
     if binding.node_id != intent.node_id || binding.bootstrap.cluster_id != intent.cluster_id {
         return Err("service intent belongs to another node or cluster".into());
     }
+    let directory = profile.paths.data_root.join("services").join(&intent.service_id);
+    let state = directory.join("execution.json");
+    let previous = durable::read::<Execution>(&state)?;
+    if super::receipt::completed_kv_stop(profile, processes, &binding, &intent, previous.as_ref())? {
+        return Ok(json!({"pid": null, "operation_id": intent.operation_id}));
+    }
     tokio::time::timeout(Duration::from_secs(3), super::super::verify_binding(&binding)).await??;
     verify_intent(&binding, &intent).await?;
     let process_id = if intent.kind == "kv" {
@@ -26,12 +32,10 @@ pub(in crate::node::runtime) async fn execute(
     } else {
         &intent.service_id
     };
-    let directory = profile.paths.data_root.join("services").join(&intent.service_id);
     std::fs::create_dir_all(&directory)?;
-    let state = directory.join("execution.json");
     let mut attempts = 0;
     let mut continuing = false;
-    if let Some(previous) = durable::read::<Execution>(&state)? {
+    if let Some(previous) = previous {
         if previous.intent.operation_id == intent.operation_id {
             if previous.intent != intent {
                 return Err("operation identity reused with other inputs".into());
@@ -68,6 +72,7 @@ pub(in crate::node::runtime) async fn execute(
         &state,
         &Execution {
             intent: intent.clone(),
+            bootstrap: Some(binding.bootstrap.clone()),
             complete: false,
             pid: None,
             attempts,
@@ -93,6 +98,7 @@ pub(in crate::node::runtime) async fn execute(
         &state,
         &Execution {
             intent: intent.clone(),
+            bootstrap: Some(binding.bootstrap.clone()),
             complete,
             pid,
             attempts: if complete { 0 } else { attempts },

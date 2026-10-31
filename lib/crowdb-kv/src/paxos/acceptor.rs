@@ -110,6 +110,29 @@ impl PxAcceptor {
         self.slots.len()
     }
 
+    /// Retain a value proved chosen by the current recovered leader without
+    /// answering Accept or weakening a later promise. A higher accepted ballot
+    /// may already carry the same chosen value; conflicting evidence fails closed.
+    pub(crate) async fn install_chosen(&self, entry: &PxLogEntry) -> bool {
+        let _ = self.prepare(entry.slot, entry.ballot).await;
+        let Some(guard) = self.open_slot(entry.slot) else {
+            return false;
+        };
+        let node = guard.value();
+        self.bump_highest_seen(entry.slot);
+        loop {
+            let previous = node.accepted.load(Ordering::Acquire);
+            if let Some(accepted) = node.accepted() {
+                if accepted.ballot >= entry.ballot {
+                    return accepted.payload == entry.payload;
+                }
+            }
+            if node.cas_accepted(previous, entry.clone()).is_ok() {
+                return true;
+            }
+        }
+    }
+
     fn open_slot(&self, slot: SlotIndex) -> Option<Entry<'_, SlotIndex, PxSlotNode>> {
         if slot < self.trim_slot() {
             return None;

@@ -40,9 +40,9 @@ class CliAttachedCluster(CliClient, Cluster):
                     f"CROWDB_CLUSTER={self.run_id}", "CROWDB_INITIAL_VOTERS=3",
                     "CROWDB_DEPLOYMENT_MODE=local",
                     f"CROWDB_PHYSICAL_HOST_ID={host}",
-                    f"CROWDB_S3_PUBLIC_URI=http://{address}:9091",
-                    f"CROWDB_ICEBERG_PUBLIC_URI=http://{address}:9092",
-                    f"CROWDB_DATASET_PUBLIC_URI=http://{address}:9093",
+                    f"CROWDB_S3_PUBLIC_URI=http://{address}:16000",
+                    f"CROWDB_ICEBERG_PUBLIC_URI=http://{address}:17000",
+                    f"CROWDB_DATASET_PUBLIC_URI=http://{address}:18000",
                     "CROWDB_DISCOVERY_SEEDS=" + ",".join(f"http://{peer}:9095" for peer in peers))))
         self.origins = [f"http://{address}:10000" for address in self.addresses]
         for name in self.servers:
@@ -61,6 +61,9 @@ class CliAttachedCluster(CliClient, Cluster):
 
     def endpoint(self, index):
         return f"http://{self.addresses[index]}:9090"
+
+    def access_listeners(self, index):
+        return {"s3_port": 16000, "health_port": 19000}
 
     def inventory(self):
         containers = [json.loads(self.command("inspect", name))[0] for name in self.servers]

@@ -32,6 +32,7 @@ fn fixture(root: &Path) -> (DeploymentProfile, PreparedBootstrap, NodeServiceCre
         "server": [{"id": "kv-1", "node_id": 1, "url": "http://127.0.0.1:10000", "rpc_url": "127.0.0.1:10100"}]
     })).unwrap();
     let node = NodeRecord {
+        web_port: 9090,
         discovery_id: identity.uuid().to_string(),
         node_id: 1,
         rack_id: 1,

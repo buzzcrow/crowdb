@@ -88,7 +88,9 @@ impl TestGcConvergence {
             {
                 self.observe(&task)?;
                 if let Some(pressure) = &mut self.pressure {
-                    pressure.observe(task.deleted).await?;
+                    pressure
+                        .observe(task.deleted, task.phase == GcPhase::Complete)
+                        .await?;
                 } else if task.deleted > 0 {
                     if task.phase == GcPhase::Complete {
                         return Err("GC completed before the foreground overlap could be started".into());

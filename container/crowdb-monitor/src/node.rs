@@ -31,8 +31,6 @@ pub use runtime::prepare_supplied_disk_for_tests;
 #[cfg(feature = "test-util")]
 pub use runtime::runtime_observation_for_tests;
 #[cfg(feature = "test-util")]
-pub use runtime::unique_member_endpoints_for_tests;
-#[cfg(feature = "test-util")]
 pub use runtime::InitializationForTests;
 #[cfg(feature = "test-util")]
 pub use runtime::NodeSetupForTests;
@@ -42,10 +40,15 @@ pub use runtime::{
 };
 pub use runtime::{control_node, run_node, run_node_with_inputs, NodeRuntimeConfig};
 #[cfg(feature = "test-util")]
+pub use runtime::{member_recovery_destinations_for_tests, unique_member_endpoints_for_tests};
+#[cfg(feature = "test-util")]
 pub use runtime::{publish_file_for_tests, resume_file_operations_for_tests};
 #[cfg(feature = "test-util")]
 pub use startup::accept_startup_mode_for_tests;
-pub use startup::{accept_node_policy, read_node_policy};
+pub use startup::{
+    accept_node_policy, accept_node_policy_with_port_offset, read_node_policy,
+    resolve_node_policy_with_port_offset,
+};
 
 pub use management::{serve_node_management, NodeManagementError};
 
@@ -66,7 +69,7 @@ pub(crate) fn write_single_binding(
 pub use runtime::NodeServiceForTests;
 
 #[cfg(feature = "test-util")]
-pub use runtime::rebind_recovery_services_for_tests;
+pub use runtime::{apply_member_endpoints_for_tests, rebind_recovery_services_for_tests};
 
 pub use runtime::read_recovery_identity;
 

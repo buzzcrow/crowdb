@@ -185,6 +185,7 @@ fn required(observation: &ClusterObservation, kind: DependencyKind) -> bool {
         return true;
     };
     match kind {
+        DependencyKind::Metadata => policy.setup.requires_default_preparation(),
         DependencyKind::Storage => !matches!(policy.setup.storage, SetupStorage::Diskless),
         DependencyKind::Protocol => policy
             .setup
@@ -197,7 +198,7 @@ fn required(observation: &ClusterObservation, kind: DependencyKind) -> bool {
 
 fn invalid(observation: &ClusterObservation) -> bool {
     observation.version != 1
-        || !matches!(observation.initial_voters, 1 | 3)
+        || !matches!(observation.initial_voters, 1 | 3 | 5)
         || (observation.bound && observation.cluster_id.is_none())
         || observation.cluster_id.as_ref().is_some_and(|identity| {
             uuid::Uuid::parse_str(identity).map_or(true, |identity| identity.is_nil())

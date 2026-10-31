@@ -33,6 +33,8 @@ impl SetupServiceKind {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetupListeners {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listen_port: Option<u16>,
     pub http_port: Option<u16>,
     pub rpc_port: Option<u16>,
     pub s3_port: Option<u16>,
@@ -115,6 +117,31 @@ pub struct NodeSetupChoices {
     pub storage: SetupStorage,
     #[serde(default = "default_services")]
     pub services: Vec<SetupService>,
+}
+
+impl NodeSetupChoices {
+    /// Whether the selected storage or services require ordinary metadata.
+    #[must_use]
+    pub fn requires_default_preparation(&self) -> bool {
+        !matches!(self.storage, SetupStorage::Diskless)
+            || self
+                .services
+                .iter()
+                .any(|service| service.enabled && service.kind != SetupServiceKind::PaxosKv)
+    }
+
+    /// Return the management and RPC listeners reserved for the bootstrap KV.
+    ///
+    /// The node launcher may shift these listeners for host-network containers
+    /// that share one physical host.  Callers that need the Group 0 endpoint
+    /// must use the accepted policy rather than assuming the default ports.
+    #[must_use]
+    pub fn paxos_kv_ports(&self) -> Option<(u16, u16)> {
+        self.services
+            .iter()
+            .find(|service| service.kind == SetupServiceKind::PaxosKv && service.enabled)
+            .and_then(|service| Some((service.listeners.http_port?, service.listeners.rpc_port?)))
+    }
 }
 
 fn default_services() -> Vec<SetupService> {

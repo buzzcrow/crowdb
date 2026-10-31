@@ -56,7 +56,7 @@ pub(super) fn candidates<'a>(
             "Too many fresh nodes in the cluster scope; select an unambiguous formation",
         ));
     }
-    if policy.initial_voters == 3
+    if policy.initial_voters > 1
         && snapshot.candidates.iter().any(|peer| {
             peer.state == CandidateState::ForeignCluster
                 && peer.advertisement.formation.as_ref() == Some(&expected)

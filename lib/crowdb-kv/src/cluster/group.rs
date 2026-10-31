@@ -939,16 +939,13 @@ impl PxGroup {
     }
 
     /// R65: Leader-side `FetchGap` handler. Looks up the requested slot
-    /// in the local acceptor. If the leader has an accepted value, replies
-    /// with it (payload + ballot + term). If the leader doesn't have the
-    /// value, returns `None` — the slot is not yet chosen from this
-    /// leader's perspective, and the follower should retry later (the
-    /// leader's `repair_once` will eventually fill it, or a newer
-    /// `ChosenNotice` will re-notify).
+    /// in the local acceptor, restricted to the recovered leader's proven
+    /// contiguous chosen prefix. An accepted value alone is insufficient
+    /// evidence for a follower to learn it.
     pub(crate) fn handle_fetch_gap(&self, slot: SlotIndex) -> Option<crate::rpc::FetchGapResponse> {
         let replica = &self.local_replica;
-        if !replica.is_leader() {
-            debug!(slot, role = ?replica.role(), leader = ?replica.believed_leader_id(), "handle_fetch_gap: not leader, ignoring");
+        if !replica.is_leader() || !self.leader_read_ready() || slot > replica.contiguous_chosen() {
+            debug!(slot, role = ?replica.role(), leader = ?replica.believed_leader_id(), "handle_fetch_gap: recovered chosen proof unavailable");
             return None;
         }
         let entry = replica.acceptor.accepted_at(slot)?;

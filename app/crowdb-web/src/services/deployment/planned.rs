@@ -148,6 +148,9 @@ async fn build(
     let name = service_name(selected.kind);
     let id = format!("{name}-{}", node.id);
     let (configuration, environment) = if selected.kind == SetupServiceKind::Diskdb {
+        if selected.listeners.listen_port.is_some() {
+            choices["rpc_listen_port"] = json!(selected.listeners.rpc_port);
+        }
         let body: crate::diskdb::DeployDiskdbBody =
             serde_json::from_value(choices).map_err(|error| err_400(error.to_string()))?;
         (

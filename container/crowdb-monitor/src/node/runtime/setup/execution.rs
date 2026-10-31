@@ -79,11 +79,7 @@ async fn advance(profile: &DeploymentProfile, state: &mut AcceptedSetup) -> Resu
     state.status.phase = NodeSetupPhase::Running;
     journal::save(root, state)?;
     let choices = &state.request.choices;
-    let preparation_needed = !matches!(
-        choices.storage,
-        crowdb_protocol::mgmt::node::setup::SetupStorage::Diskless
-    ) || choices.services.iter().any(|service| service.enabled);
-    if preparation_needed
+    if choices.requires_default_preparation()
         && crate::node::read_node_policy(root)?.is_some()
         && !metadata::ready(root, &binding, &kv).await?
     {

@@ -269,12 +269,29 @@ fn diskless_kv_only_policy_requires_its_selected_services_without_inventing_prot
     }
     policy.validate().unwrap();
     input.policy = Some(policy);
-    input
-        .dependencies
-        .retain(|fact| !matches!(fact.kind, DependencyKind::Storage | DependencyKind::Protocol));
+    input.dependencies.retain(|fact| {
+        !matches!(
+            fact.kind,
+            DependencyKind::Metadata | DependencyKind::Storage | DependencyKind::Protocol
+        )
+    });
     assert_eq!(reduce(input.clone(), 1000).phase, ClusterPhase::Ready);
     let mut remote_protocol = fact(DependencyKind::Protocol);
     remote_protocol.state = DependencyState::Unknown;
     input.dependencies.push(remote_protocol);
     assert_eq!(reduce(input, 1000).phase, ClusterPhase::Degraded);
+}
+
+#[test]
+fn five_voter_readiness_preserves_required_evidence_and_rejects_other_counts() {
+    let mut input = observation();
+    input.initial_voters = 5;
+    assert_eq!(reduce(input.clone(), 1000).phase, ClusterPhase::Ready);
+    input.dependencies[0].state = DependencyState::Unknown;
+    assert_eq!(reduce(input, 1000).phase, ClusterPhase::Unavailable);
+    for count in [0, 2, 4, 6, 7] {
+        let mut input = observation();
+        input.initial_voters = count;
+        assert_eq!(reduce(input, 1000).phase, ClusterPhase::Failed);
+    }
 }

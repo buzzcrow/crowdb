@@ -96,6 +96,11 @@ numeric node ID through Group 0 and durably records the mapping. Allocation and
 mapping publication are conditional and idempotent under concurrent admission;
 IDs cannot collide or be silently reassigned. Endpoint and rack changes do not
 change either identity. Duplicate live UUID claims are identity conflicts.
+Confirmed admission retains the Web listener proved over authenticated SSH.
+Cluster observation uses that listener for each UUID, including containers with
+shared host addresses and different port offsets. Retained default-port records
+keep their existing serialized identity; each monitor republishes its own current
+listener through the existing confirmed-node update operation.
 
 ## 3. Invariants
 
@@ -255,7 +260,7 @@ requires an explicit recovery/decommission procedure, not an automatic timeout.
 
 1. Any UI collects compatible candidates and the operator's rack assignments.
 2. The operator selects initial Group-0 voting members, or Auto join selects
-   the explicitly selected one or three authenticated eligible candidates in
+   the explicitly selected one, three or five authenticated eligible candidates in
    discovery-UUID order. Candidate
    count is not voting-member count; application nodes need not all vote.
 3. Submit the bootstrap identity, immutable initial manifest and initial data
@@ -311,16 +316,18 @@ Production requires configured rack assignments and access. Missing Production
 credentials remain Needs access, without a Local fallback. Multiple bound cluster
 UUIDs require explicit target selection rather than an arbitrary advertisement.
 
-The accepted initial voter count is one or three. An incomplete three-node set
-remains pending; an observed overfull fresh set reports conflict before acceptance.
+The accepted initial voter count is one, three or five. An incomplete selected
+set remains pending; an observed overfull fresh set reports conflict before acceptance.
 Eligible UUID ordering selects the coordinator within that set, while monitor and
 KV-server accepted-manifest fencing prevent conflicting execution. Fixed voters
 never expand from later advertisements. Turning Auto join off stops new scheduling
 while already accepted monitor work continues.
 
 After Group-0 publication, one committed default preparation intent owns the
-ordinary metadata group, replica mapping and shared access credentials. Authorized
-workers resume that intent across Web/coordinator loss. Each monitor interleaves
+ordinary metadata group, replica mapping and shared access credentials. The
+replica mapping covers every fixed initial voting member; each receives its own
+initial storage binding. Authorized workers resume that intent across
+Web/coordinator loss. Each monitor interleaves
 disk preparation with dependent service startup; DiskIO may start before Online
 because its ownership proof enables Online. Explicit later service stops or group
 retirement supersede historical setup and prevent automatic recreation.
@@ -395,8 +402,12 @@ trust or automatic key replacement for an existing identity.
 
 Recovery proceeds independently of Group-0 availability:
 
-1. mDNS/DNS-SD or a configured seed reveals a candidate's current management
-   endpoint. Its advertised UUIDs and node ID are untrusted lookup hints.
+1. mDNS/DNS-SD, a configured seed or retained accepted contact supplies a
+   candidate management address. Retained contacts remain probe hints when
+   multicast or Group 0 is unavailable. Advertised identities and addresses
+   never authorize a route without fresh proof. Fresh discovery hints receive
+   the bounded probe budget before retained addresses, so a full old-address
+   cache cannot suppress a member's changed IP.
 2. The monitor selects an already accepted member binding and opens SSH to that
    address with the expected host key, rather than trusting the IP's previous
    occupant or accepting a new key. SSH proves possession of the private key.
@@ -422,6 +433,12 @@ Recovery proceeds independently of Group-0 availability:
    recovery. Internal service listeners and management contacts change through
    conditional new service operations; later stop/delete commands win. Public
    client URIs are independent of these internal addresses.
+
+The contact worker checks current authority before probing peers so retirement
+still takes precedence. Confirmation and later address publication share a
+three-second authority budget; SSH proofs retain their ten-second bound. A
+failed authority lookup must not add another full publication wait and expire
+otherwise valid routes at their fifteen-second freshness fence.
 
 This permits all members to restart with changed IPs at once. Neither stable DNS
 names nor fixed IPs nor a complete peer-address list is required. Multicast must
@@ -577,6 +594,16 @@ read has a three-second bound. It checks the intent again after stopping an old
 process and before starting its replacement. A superseded operation or unavailable
 authority rejects execution. Recovery reads current desired intents through the
 same authority path and does not execute a retained command solely from disk.
+
+An exact completed KV Stop/Delete can return its retained receipt while that
+child remains stopped. The receipt carries the bootstrap identity under which
+the operation was authorized; it must match the current accepted local binding
+and complete intent, with no live replacement, cancellation or retirement.
+This reports a prior effect without executing another one. It must not require
+the Group-0 leader that the operation already stopped: background recovery may
+finish the intent before its identical SSH request reaches the executor.
+Legacy receipts without that bootstrap proof still require current authority.
+Incomplete, superseded and new operations retain every authority fence above.
 
 Admission commands similarly match the current cluster publication and UUID,
 numeric ID, operation ID and cancellation state. Local durable cancellation and

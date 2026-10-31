@@ -9,6 +9,48 @@ use crowdb_kv::cluster::kv_server::KvServer;
 use crowdb_kv_client::{BatchOp, CrowdbKvClient, Error, KvRpcTransport};
 
 #[tokio::test]
+async fn a_removed_replica_refreshes_its_stale_route_before_reading_or_writing() {
+    let servers = TestServers::start(true).await;
+    assert!(servers.follower.remove_group(1));
+    servers
+        .client()
+        .put(1, 1, b"value", b"retained", None)
+        .await
+        .unwrap();
+    let value = servers
+        .client()
+        .get(1, 1, b"value", crowdb_kv_client::ReadMode::Linearizable, None)
+        .await
+        .unwrap();
+    assert!(
+        matches!(value, crowdb_kv_client::GetOutcome::Found { value, .. } if value.as_ref() == b"retained")
+    );
+    servers
+        .client()
+        .put_cas(1, 1, b"conditional", b"value", 0)
+        .await
+        .unwrap();
+    let scan = servers
+        .client()
+        .scan(
+            1,
+            1,
+            b"value",
+            b"",
+            b"",
+            10,
+            crowdb_kv_client::ReadMode::Linearizable,
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(scan.items.len(), 1);
+    servers.client().delete(1, 1, b"value", None).await.unwrap();
+}
+
+#[tokio::test]
 async fn conditional_writes_discover_leader_after_explicit_rejection_without_a_hint() {
     let servers = TestServers::start(true).await;
     let raw = KvRpcTransport::new()

@@ -3,6 +3,7 @@
 """Production-policy release nodes with explicit admission and fixed ports."""
 
 import json
+import re
 import urllib.request
 import urllib.error
 from urllib.parse import urlparse
@@ -267,6 +268,14 @@ class NativeConsoleCluster(ShellBrowserCluster):
                     "native diagnostics: browser history preserves S3 windows and rejects replaced or deleted resources",
                 ), config="native.config.ts", expected=4,
                     extra_env={"CROWDB_NATIVE_CHUNK_FIXTURE": json.dumps(chunks)})
+                return {"passed": True}
+            if self.case_name == "console::native_browser::journal_identity_and_owner_recovery":
+                bucket = body.get("journal_bucket")
+                if not isinstance(bucket, str) or not re.fullmatch(r"journal-[a-f0-9]{32}", bucket):
+                    raise ValueError("journal diagnostics require their settled owned object")
+                self.browser_timeout = 180
+                self.browser("native diagnostics: journal identity survives Chunk navigation and owner interruption",
+                    config="native.config.ts", extra_env={"CROWDB_NATIVE_JOURNAL_BUCKET": bucket})
                 return {"passed": True}
             cases = {
                 "console::native_browser::catalog_resource_navigation": (

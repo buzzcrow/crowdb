@@ -303,10 +303,17 @@ async fn crowdb_rpc_fetch_gap() {
         .send_prepare(1, ballot, 0, 1, 0)
         .await
         .expect("follower prepare");
-    follower_remote
+    let accepted = follower_remote
         .send_accept(&entry, 1, 0)
         .await
         .expect("follower accept");
+    assert!(matches!(
+        accepted,
+        crowdb_kv::paxos::roles::PxAcceptReply::Accepted { .. }
+    ));
+    // Both voters have accepted. Publish that quorum decision before serving
+    // the chosen value; an Accepted response alone is not a learner proof.
+    leader_replica.learn_chosen(&entry, &[]).await;
 
     // Use the follower's remote (points at leader) to fetch gap.
     let follower_group = cluster.follower.get_group(1).expect("follower group");

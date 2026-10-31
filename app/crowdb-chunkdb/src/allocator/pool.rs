@@ -174,9 +174,10 @@ impl DiskdbClientPool {
 
     /// Allocate blocks on the diskdb instance owning `disk_group_id`.
     ///
-    /// A connection failure before submission refreshes discovery and permits
-    /// one attempt at a different endpoint. Once submitted, the mutation is
-    /// never replayed: DiskDB may have persisted blocks before losing its reply.
+    /// A connection failure before submission or an explicit ownership rejection
+    /// refreshes discovery and permits one attempt at a different endpoint.
+    /// Ambiguous submitted mutations are never replayed: DiskDB may have
+    /// persisted blocks before losing its reply.
     ///
     /// # Errors
     /// Returns `DiskdbClientError::ConnectFailed` when connection setup fails,
@@ -240,7 +241,10 @@ impl DiskdbClientPool {
             DiskdbClientError::Unreachable(format!("no endpoint for disk_group {dg_id}: {error}"))
         })?;
         let result = self.transport.allocate_blocks(&endpoint, request).await;
-        if matches!(result, Err(DiskdbClientError::ConnectFailed(_))) {
+        if matches!(
+            result,
+            Err(DiskdbClientError::ConnectFailed(_) | DiskdbClientError::NotOwner(_))
+        ) {
             if self.refresh_endpoints().await.is_err() {
                 return result;
             }

@@ -56,6 +56,29 @@ pub(super) fn for_intent(profile: &DeploymentProfile, intent: &NodeServiceIntent
     Ok(service)
 }
 
+pub(super) fn liveness_for_intent(
+    profile: &DeploymentProfile,
+    intent: &NodeServiceIntent,
+) -> Result<ServiceProfile> {
+    let mut service = for_intent(profile, intent)?;
+    if matches!(service.probe.kind, ProbeKind::Http) {
+        let address = service
+            .probe
+            .target
+            .strip_suffix("/ready")
+            .ok_or("missing managed readiness path")?;
+        service.probe.target = format!(
+            "{address}{}",
+            if intent.kind == "access" {
+                "/live"
+            } else {
+                "/health"
+            }
+        );
+    }
+    Ok(service)
+}
+
 fn field<'a>(mut value: &'a toml::Value, path: &[&str]) -> Result<&'a toml::Value> {
     for key in path {
         value = value.get(*key).ok_or("missing service probe setting")?;

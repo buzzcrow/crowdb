@@ -4,10 +4,10 @@ import { test, expect } from '../fixtures/realBackend';
 import { diskMenu } from '../fixtures/capacity';
 import { step } from '../fixtures/stepTimer';
 
-// Baseline: 6.0s (2026-10-15).
+// Baseline: 6.5s (2026-10-31).
 test('shell defaults and tree interactions distinguish live and stopped release nodes', async ({ page, request }) => {
   test.setTimeout(90_000);
-  const stopped = await request.post('/api/nodes/4/server/stop');
+  const stopped = await step('shell KV stop response', () => request.post('/api/nodes/4/server/stop'));
   expect(stopped.ok(), await stopped.text()).toBe(true);
   await expect.poll(async () => {
     const response = await request.get('/api/node/status');
@@ -21,14 +21,14 @@ test('shell defaults and tree interactions distinguish live and stopped release 
     return nodes.filter((node: { id: number; kv_server?: { health: string } }) =>
       [1, 2, 3].includes(node.id) && node.kv_server?.health === 'up').length;
   }, { timeout: 10_000, intervals: [100] }).toBe(3);
-  const store = await request.post('/api/stores', { data: { store_id: 207, nodes: [1, 2] } });
+  const store = await step('shell Store mutation response', () => request.post('/api/stores', { data: { store_id: 207, nodes: [1, 2] } }));
   expect(store.status(), await store.text()).toBe(201);
   const diskInventoryRequests: number[] = [];
   page.on('request', request => {
     const match = new URL(request.url()).pathname.match(/^\/api\/nodes\/(\d+)\/disk-groups$/);
     if (match) diskInventoryRequests.push(Number(match[1]));
   });
-  await page.goto('/?domain=KV');
+  await step('shell DOM setup', () => page.goto('/?domain=KV'));
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   await sidebar.getByRole('button', { name: 'datacenter', exact: true }).click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Add Store', exact: true }).click();

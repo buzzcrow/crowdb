@@ -44,7 +44,33 @@ async fn storage_windows_and_access_recovery() {
 #[tokio::test]
 #[ignore = "requires normal storage and a host browser for owner recovery"]
 async fn journal_identity_and_owner_recovery() {
-    browse_storage().await;
+    let context = TestNativeContext::connect().await;
+    super::native_storage::start(&context).await;
+    let bucket = format!("journal-{}", uuid::Uuid::new_v4().simple());
+    for (path, body) in [
+        (format!("/api/access/s3/{bucket}"), ""),
+        (
+            format!("/api/access/s3/{bucket}/value"),
+            "native journal observation",
+        ),
+    ] {
+        let response = context
+            .http
+            .put(format!("{}{path}", context.base))
+            .body(body)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_success(),
+            "journal fixture write: {}",
+            response.text().await.unwrap()
+        );
+    }
+    super::native_balance::settle_existing(&context).await;
+    let result = crate::common::control::native_browser_with_journal(&bucket).await;
+    assert_eq!(result["passed"], true);
 }
 
 #[tokio::test]

@@ -37,6 +37,56 @@ fn command(profile: &Path) -> Command {
 }
 
 #[test]
+fn container_preflight_reuses_explicit_file_ports_with_a_nonzero_offset() {
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-cli-file-offset");
+    let profile = profile(root.path());
+    let config = root.path().join("node.toml");
+    let inputs = NodeDeploymentOverrides {
+        services: Some(
+            crowdb_protocol::mgmt::node::deployment::NodeDeploymentPolicy::default()
+                .setup
+                .services,
+        ),
+        ..Default::default()
+    };
+    fs::write(&config, toml::to_string(&inputs).unwrap()).unwrap();
+    let invoke = || {
+        let mut accept = Command::new(env!("CARGO_BIN_EXE_crowdb-monitor"));
+        for name in [
+            "CROWDB_NODE_POLICY_FILE",
+            "CROWDB_DEPLOYMENT_MODE",
+            "CROWDB_CLUSTER",
+            "CROWDB_INITIAL_VOTERS",
+            "CROWDB_PHYSICAL_HOST_ID",
+            "CROWDB_S3_PUBLIC_URI",
+            "CROWDB_ICEBERG_PUBLIC_URI",
+            "CROWDB_DATASET_PUBLIC_URI",
+            "CROWDB_DISCOVERY_SEEDS",
+        ] {
+            accept.env_remove(name);
+        }
+        accept.args(["accept-policy", "--profile"]).arg(&profile);
+        accept
+            .args(["--deployment-config"])
+            .arg(&config)
+            .env("CROWDB_PORT_OFFSET", "1");
+        accept.output().unwrap()
+    };
+    for _ in 0..2 {
+        let output = invoke();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let accepted = crowdb_monitor::read_node_policy(&root.path().join("install/data"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(accepted.setup.services[0].listeners.rpc_port, Some(10101));
+}
+
+#[test]
 fn public_uri_flags_override_environment_before_acceptance_and_changed_restarts_fail() {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("public-origin");
     let profile = profile(root.path());
@@ -89,7 +139,7 @@ fn invalid_voter_override_fails_before_node_identity_and_storage_effects() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("initial voters must be one or three"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("initial voters must be one, three or five"));
     assert_eq!(fs::read_dir(root.path().join("install/data")).unwrap().count(), 0);
 }
 

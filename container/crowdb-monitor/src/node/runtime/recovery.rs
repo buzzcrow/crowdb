@@ -20,7 +20,7 @@ mod publication;
 pub(super) use confirmed::{accept as accept_confirmed, prepare_admitted};
 pub(super) use discovery::start;
 #[cfg(feature = "test-util")]
-pub use discovery::unique_member_endpoints_for_tests;
+pub use discovery::{member_recovery_destinations_for_tests, unique_member_endpoints_for_tests};
 
 pub(super) fn publish_local(root: &Path, addresses: &[std::net::IpAddr]) -> Result<()> {
     durable::write(
@@ -266,7 +266,7 @@ pub fn member_trust_ready_for_tests(root: &Path) -> Result<bool> {
 }
 
 #[cfg(feature = "test-util")]
-pub use publication::rebind_recovery_services_for_tests;
+pub use publication::{apply_member_endpoints_for_tests, rebind_recovery_services_for_tests};
 
 /// Read a live monitor's retained identity without waiting for lifecycle control.
 ///

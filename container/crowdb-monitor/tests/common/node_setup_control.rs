@@ -6,6 +6,14 @@ use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub fn processes_once(root: &Path) -> tokio::task::JoinHandle<()> {
+    processes_reply_once(root, false)
+}
+
+pub fn processes_with_kv_once(root: &Path) -> tokio::task::JoinHandle<()> {
+    processes_reply_once(root, true)
+}
+
+fn processes_reply_once(root: &Path, kv_running: bool) -> tokio::task::JoinHandle<()> {
     std::fs::create_dir_all(root).unwrap();
     let listener = tokio::net::UnixListener::bind(root.join("node-control.sock")).unwrap();
     tokio::spawn(async move {
@@ -16,8 +24,15 @@ pub fn processes_once(root: &Path) -> tokio::task::JoinHandle<()> {
             serde_json::from_slice::<NodeControl>(&bytes).unwrap(),
             NodeControl::Processes { .. }
         ));
+        let processes = if kv_running {
+            serde_json::json!({"kv":42})
+        } else {
+            serde_json::json!({})
+        };
+        let reply = serde_json::json!({"ok":true,"value":{
+            "processes":processes,"service_failures":{}}});
         stream
-            .write_all(br#"{"ok":true,"value":{"processes":{},"service_failures":{}}}"#)
+            .write_all(&serde_json::to_vec(&reply).unwrap())
             .await
             .unwrap();
     })

@@ -172,3 +172,24 @@ fn duplicate_service_or_protocol_identity_is_a_conflict() {
         assert_eq!(fixture.project()[0].state, DependencyState::Failed);
     }
 }
+
+#[test]
+fn default_web_port_preserves_legacy_records_and_offset_ports_round_trip() {
+    let mut record = TestMemberEvidence::new().expected;
+    let legacy = serde_json::to_value(&record).unwrap();
+    assert!(legacy.get("web_port").is_none());
+    assert_eq!(
+        serde_json::from_value::<crowdb_console_shared::deployment::registry::NodeRecord>(legacy.clone())
+            .unwrap(),
+        record
+    );
+    record.web_port = 9092;
+    let shifted = serde_json::to_value(&record).unwrap();
+    assert_eq!(shifted["web_port"], 9092);
+    assert_eq!(
+        serde_json::from_value::<crowdb_console_shared::deployment::registry::NodeRecord>(shifted).unwrap(),
+        record
+    );
+    record.web_port = 9090;
+    assert_eq!(serde_json::to_value(record).unwrap(), legacy);
+}

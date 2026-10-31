@@ -57,7 +57,11 @@ pub(super) async fn deploy(
     ))
 }
 
-pub(crate) fn configuration(
+/// Build a retained `DiskDB` configuration from validated listener choices.
+///
+/// # Errors
+/// Rejects zero, overflowing or overlapping listener ports.
+pub fn configuration(
     node: &crowdb_console_shared::config::NodeEntry,
     seeds: &[String],
     body: &DeployDiskdbBody,

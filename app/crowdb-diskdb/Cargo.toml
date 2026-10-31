@@ -167,3 +167,7 @@ path = "tests/online_activation_test.rs"
 [[test]]
 name = "compaction_schedule_test"
 path = "tests/compaction_schedule_test.rs"
+
+[[test]]
+name = "journal_gap_recovery_test"
+path = "tests/journal_gap_recovery_test.rs"

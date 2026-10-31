@@ -20,6 +20,8 @@ pub struct SshNodeIdentity {
     pub discovery_id: String,
     pub public_key: String,
     pub host_key: String,
+    #[serde(default = "super::registry::default_web_port")]
+    pub web_port: u16,
 }
 
 /// # Errors

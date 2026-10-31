@@ -12,6 +12,7 @@
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use crowdb_kv::cluster::group_election::LeaderElection;
 use crowdb_kv::cluster::replica::StepDownRequestPayload;
 use crowdb_kv::rpc::{KvGetRequest, KvSetRequest};
 
@@ -21,7 +22,13 @@ async fn wait_for_leader(cluster: &TestCluster, timeout: Duration) -> Option<u64
     let start = Instant::now();
     while start.elapsed() < timeout {
         if let Some(node) = cluster.elected_leader() {
-            return Some(node.get_group(1).expect("group").local_replica().id);
+            let group = node.get_group(1).expect("group");
+            let replica = group.local_replica();
+            if group.proposing_term() == replica.current_term_snapshot()
+                && replica.lease_read_valid(Instant::now())
+            {
+                return Some(replica.id);
+            }
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
@@ -107,6 +114,7 @@ async fn put_via_leader(cluster: &TestCluster, key: &[u8], val: &[u8], req_id: u
         .await
         .expect("put rpc")
         .into_inner();
+    assert!(resp.ok, "write {key:?} failed: {resp:?}");
     resp.ok
 }
 
@@ -183,5 +191,30 @@ async fn leader_change_simulation() {
     poll_for_value(&cluster, b"lc1", b"first", Duration::from_secs(3)).await;
     poll_for_value(&cluster, b"lc2", b"second", Duration::from_secs(3)).await;
 
+    cluster.shutdown().await;
+}
+
+#[tokio::test]
+async fn leader_wait_does_not_accept_role_before_a_current_quorum_lease() {
+    let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
+    wait_for_leader(&cluster, Duration::from_secs(3))
+        .await
+        .expect("initial leader");
+    let node = cluster.elected_leader().expect("leader role");
+    let group = node.get_group(1).expect("group");
+    group.local_replica().reset_lease_to(Instant::now());
+    assert!(group.local_replica().is_leader());
+    {
+        let waiting = wait_for_leader(&cluster, Duration::from_secs(3));
+        tokio::pin!(waiting);
+        assert!(
+            futures::poll!(&mut waiting).is_pending(),
+            "leader role alone cannot authorize the next one-shot write"
+        );
+        waiting
+            .await
+            .expect("quorum-backed leader within the original bound");
+    }
+    assert!(put_via_leader(&cluster, b"ready-leader", b"once", 3).await);
     cluster.shutdown().await;
 }

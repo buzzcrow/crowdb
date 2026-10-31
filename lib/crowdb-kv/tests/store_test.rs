@@ -61,3 +61,6 @@ mod bounded_scan;
 
 #[path = "store_test/group_operations_test.rs"]
 mod group_operations;
+
+#[path = "store_test/journal_recovery_test.rs"]
+mod journal_recovery;

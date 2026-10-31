@@ -83,6 +83,7 @@ pub(in crate::node::runtime) async fn ready(
         .await??;
     }
     if intent.kind == "access" {
+        use crowdb_chunk_kv_client::ChunkKvRangeCatalogSource;
         // An idle local ChunkKV listener does not prove that the catalog owner
         // has finished WAL replay. Probe the same routed read Access needs.
         let binding: NodeBinding = super::durable::read(&profile.paths.data_root.join("node-binding.json"))?
@@ -91,24 +92,36 @@ pub(in crate::node::runtime) async fn ready(
             crowdb_kv_client::ClientConfig::new(binding.management_seeds),
         ));
         let catalog = Arc::new(crowdb_chunk_kv_client::Group0ChunkKvRangeCatalogSource::from_shared(kv));
-        let transport = Arc::new(crowdb_chunk_kv_client::ChunkKvRpcTransport::new(1, 1, 1));
+        let (_, pages) = catalog.load().await?;
+        let mut owner_keys = BTreeMap::new();
+        for entry in pages.iter().flat_map(|page| &page.entries) {
+            owner_keys
+                .entry(entry.owner.rpc_endpoint.clone())
+                .or_insert_with(|| entry.range.start.clone());
+        }
+        let max_owners = owner_keys.len().max(1);
+        let transport = Arc::new(crowdb_chunk_kv_client::ChunkKvRpcTransport::new(max_owners, 1, 1));
         let client = crowdb_chunk_kv_client::ChunkKvClient::new(
             crowdb_chunk_kv_client::ClientConfig {
                 operation_timeout: Duration::from_secs(1),
                 // Keep normal routed-read redirects within this probe's deadline:
                 // catalog ownership may change between discovery and the read.
-                max_owner_connections: 1,
+                max_owner_connections: max_owners,
                 ..Default::default()
             },
             catalog,
             transport,
         )?;
-        let response = client.get(b"/deployment/access-readiness".to_vec(), None).await?;
-        if !matches!(
-            response.result,
-            Ok(crowdb_protocol::chunk_kv::OperationResult::Value(_))
-        ) {
-            return Err(format!("routed ChunkKV catalog is not ready: {:?}", response.result).into());
+        // Access startup can read any metadata range. A point routed to one
+        // healthy owner cannot authorize a launch while another owner replays.
+        for key in owner_keys.into_values() {
+            let response = client.get(key, None).await?;
+            if !matches!(
+                response.result,
+                Ok(crowdb_protocol::chunk_kv::OperationResult::Value(_))
+            ) {
+                return Err(format!("routed ChunkKV catalog is not ready: {:?}", response.result).into());
+            }
         }
     }
     Ok(())

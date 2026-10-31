@@ -79,7 +79,7 @@ class TaskEntrypointsTest(unittest.TestCase):
 
     def test_manifest_exposes_unified_tasks_and_has_no_stale_dependency_names(self):
         tasks = tomllib.loads((ROOT / 'pixi.toml').read_text())['tasks']
-        self.assertTrue({'install-deps', 'clean', 'build'} <= tasks.keys())
+        self.assertTrue({'install-deps', 'clean', 'build-native', 'build'} <= tasks.keys())
         self.assertFalse({'install-ui-deps', 'clean-env', 'build-cpp', 'build-tests'} & tasks.keys())
         for name, task in tasks.items():
             if isinstance(task, dict):

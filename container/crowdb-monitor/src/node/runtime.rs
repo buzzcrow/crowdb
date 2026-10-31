@@ -58,11 +58,11 @@ mod recovery;
 pub use ipc::control_node;
 use ipc::read_request;
 #[cfg(feature = "test-util")]
-pub use recovery::unique_member_endpoints_for_tests;
-#[cfg(feature = "test-util")]
 pub use recovery::{
     accept_member_trust_for_tests, check_member_trust_for_tests, member_trust_ready_for_tests,
 };
+#[cfg(feature = "test-util")]
+pub use recovery::{member_recovery_destinations_for_tests, unique_member_endpoints_for_tests};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -128,7 +128,13 @@ pub async fn run_node_with_inputs(
     let web = web_service(&profile, config.bind.port())?;
     processes.start(&web, &BTreeMap::new()).await?;
     recovery::publish_local(&root, &config.discovery.addresses)?;
-    let endpoint_recovery = recovery::start(root.clone(), config.bind.port());
+    let web_port = profile
+        .public_endpoints
+        .iter()
+        .find(|endpoint| endpoint.id == "web")
+        .ok_or("web public endpoint is absent from node profile")?
+        .port;
+    let endpoint_recovery = recovery::start(root.clone(), config.bind.port(), web_port);
     kv::resume(&profile, &mut processes).await?;
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let discovery_root = root.clone();
@@ -297,11 +303,17 @@ fn service(profile: &DeploymentProfile, id: &str) -> Result<ServiceProfile> {
 fn web_service(profile: &DeploymentProfile, monitor_port: u16) -> Result<ServiceProfile> {
     let root = &profile.paths.data_root;
     let mut web = service(profile, "web")?;
+    let web_port = profile
+        .public_endpoints
+        .iter()
+        .find(|endpoint| endpoint.id == "web")
+        .map(|endpoint| endpoint.port)
+        .ok_or("web public endpoint is absent from node profile")?;
     web.args = vec![
         "--bind".into(),
         "0.0.0.0".into(),
         "--port".into(),
-        "9090".into(),
+        web_port.to_string(),
         "--runtime-dir".into(),
         root.join("console").to_string_lossy().into_owned(),
         "--node-monitor".into(),
@@ -336,7 +348,7 @@ fn disk_inventory(root: &std::path::Path) -> Result<Value> {
 pub use services::NodeServiceForTests;
 
 #[cfg(feature = "test-util")]
-pub use recovery::rebind_recovery_services_for_tests;
+pub use recovery::{apply_member_endpoints_for_tests, rebind_recovery_services_for_tests};
 
 pub use recovery::read_recovery_identity;
 

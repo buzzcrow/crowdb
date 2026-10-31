@@ -71,7 +71,7 @@ def load(cluster, directory=RECORDS):
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077 or metadata.st_size > 1024 * 1024:
         raise ValueError("cluster receipt must be a bounded private regular file")
     record = json.loads(path.read_text())
-    if record.get("version") != 1 or record.get("cluster") != cluster:
+    if record.get("version") not in (1, 2) or record.get("cluster") != cluster:
         raise ValueError("invalid cluster receipt")
     required = {"version", "cluster", "owner", "runtime", "nodes", "port_base", "image", "image_id", "cpus", "memory_mib"}
     if set(record) != required or not isinstance(record["runtime"], dict):

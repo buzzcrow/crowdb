@@ -63,22 +63,25 @@ impl PxLocalReplica {
         let resume_from = engine.resume_from_slot();
         let replica = Self::new_with_learner(id, role, PxLearner::with_engine(engine));
 
-        // Pass 1: rebuild acceptor (promise + accept) state from the WAL.
+        // Accepted history and later promises are independent durable facts.
+        // FetchGap may learn an old chosen value after a higher promise; replay
+        // must retain that value and the higher fence regardless of record order.
+        for record in replay
+            .records
+            .iter()
+            .filter(|record| record.record_type == crate::wal::record::RecordType::Accepted)
+        {
+            let entry = record.to_log_entry().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "restore replay accepted missing log entry",
+                )
+            })?;
+            let _ = replica.acceptor.accept(&entry).await;
+        }
         for record in &replay.records {
-            match record.record_type {
-                crate::wal::record::RecordType::Promised => {
-                    let _ = replica.acceptor.prepare(record.slot, record.ballot).await;
-                }
-                crate::wal::record::RecordType::Accepted => {
-                    let entry = record.to_log_entry().ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "restore replay accepted missing log entry",
-                        )
-                    })?;
-                    let _ = replica.acceptor.accept(&entry).await;
-                }
-                crate::wal::record::RecordType::VoteGranted => {}
+            if record.record_type == crate::wal::record::RecordType::Promised {
+                let _ = replica.acceptor.prepare(record.slot, record.ballot).await;
             }
         }
 
@@ -124,25 +127,19 @@ impl PxLocalReplica {
         // legitimately touches. There is no safe way to "fall back" to
         // replaying it once the engine is past that floor.
         //
-        // Seed the frontier to `(resume_from, term-at-resume_from)` via
-        // `seed_resume_frontier` when the just-rebuilt acceptor has an
-        // accepted entry at that exact slot (the expected case: an engine
-        // can only ever have durably applied a slot that was itself
-        // accepted and WAL-logged, and Pass 1 rebuilds the *entire* WAL
-        // history). If it's missing (e.g. a WAL segment lost/GC'd after the
-        // engine already durably flushed that slot -- not expected, but not
-        // an invariant this restore path should trust blindly), leave the
-        // frontier at the fresh learner's default (`0`) rather than guess a
-        // term: under-reporting `contiguous_chosen`/`last_chosen_term` only
-        // costs more conservative heartbeat catch-up / safe-read bounds,
-        // never incorrectness, unlike attempting the skipped replay.
+        // A recovered engine proves the complete durable prefix even when
+        // WAL reclamation removed its boundary record. Preserve that prefix;
+        // requesting it again can never succeed once peers reclaimed it too.
+        // Term zero explicitly records unknown historical term. Election
+        // freshness uses the durable acceptor tip, not this chosen watermark.
         let highest = replica.acceptor.highest_seen_slot();
-        let resume_from = resume_from.min(highest);
         let start_slot = if resume_from > 0 {
-            if let Some(entry) = replica.acceptor.accepted_at(resume_from) {
-                replica.learner.seed_resume_frontier(resume_from, entry.term);
-            }
-            resume_from + 1
+            let term = replica
+                .acceptor
+                .accepted_at(resume_from)
+                .map_or(0, |entry| entry.term);
+            replica.learner.seed_resume_frontier(resume_from, term);
+            resume_from.saturating_add(1)
         } else {
             1
         };

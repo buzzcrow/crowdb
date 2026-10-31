@@ -3,13 +3,12 @@
 """Accept the owned diskless policy before attaching unadmitted fixture media."""
 
 from allocation import LABEL
+from profiles.setup_choices import diskless_policy
 
 
 def accept(cluster, index, data, physical_host):
     policy = cluster.artifacts / f"node-policy-{index}.toml"
-    kinds = ("paxos-kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access-server")
-    services = ", ".join(f'{{ kind = "{kind}", enabled = false }}' for kind in kinds)
-    policy.write_text(f'services = [{services}]\n[storage]\nmode = "diskless"\n')
+    policy.write_text(diskless_policy())
     environment = ("CROWDB_DEPLOYMENT_MODE=production", "CROWDB_INITIAL_VOTERS=3",
         f"CROWDB_CLUSTER={cluster.run_id}", "CROWDB_SSH_PASSWORD=crowdb",
         f"CROWDB_PHYSICAL_HOST_ID={physical_host}",

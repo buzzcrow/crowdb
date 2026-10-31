@@ -130,6 +130,8 @@ auditwheel = ">=6, <7"
 install-deps = { cmd = "bash tools/pixi-tasks/install-deps.sh" }
 # Stop services and remove build products/runtime state; --runtime-only preserves build products and persistent clusters.
 clean = { cmd = "bash tools/pixi-tasks/clean-build.sh" }
+# Build the native libraries used by the C++ and storage component gates.
+build-native = "bash tools/pixi-tasks/build-cpp.sh"
 # Build C++ libraries, Rust release binaries, frontend and workspace test targets.
 build = { cmd = "bash tools/pixi-tasks/build-release.sh", depends-on = ["install-deps"] }
 default = { depends-on = ["build"] }
@@ -139,9 +141,9 @@ default = { depends-on = ["build"] }
 ################################################################################
 test = "python tools/pixi-tasks/test.py"
 test-suite = { cmd = "python tools/pixi-tasks/test.py all", depends-on = ["build"] }
-test-cpp = { cmd = "python tools/pixi-tasks/test.py unit cpp", depends-on = ["build"] }
+test-cpp = { cmd = "python tools/pixi-tasks/test.py unit cpp", depends-on = ["build-native"] }
 test-core = { cmd = "python tools/pixi-tasks/test.py unit core" }
-test-storage = { cmd = "python tools/pixi-tasks/test.py unit storage" }
+test-storage = { cmd = "python tools/pixi-tasks/test.py unit storage", depends-on = ["build-native"] }
 test-access = { cmd = "python tools/pixi-tasks/test.py unit access" }
 test-console = { cmd = "python tools/pixi-tasks/test.py unit console" }
 test-console-ui = { cmd = "python tools/pixi-tasks/test.py unit ui", depends-on = ["install-deps"] }

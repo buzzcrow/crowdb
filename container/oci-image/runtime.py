@@ -119,7 +119,8 @@ class Runtime:
                    "-e", f"CROWDB_INITIAL_VOTERS={args.initial_voters}",
                    "-e", "CROWDB_DEPLOYMENT_MODE=production",
                    "-e", f"CROWDB_PHYSICAL_HOST_ID={args.physical_host_id}",
-                   "-e", f"CROWDB_MANAGEMENT_INTERFACE={args.interface}"]
+                   "-e", f"CROWDB_MANAGEMENT_INTERFACE={args.interface}",
+                   "-e", f"CROWDB_PORT_OFFSET={getattr(args, 'port_offset', 0)}"]
         workers = getattr(args, "worker_threads", None)
         if workers is not None:
             command += ["-e", f"TOKIO_WORKER_THREADS={workers}"]

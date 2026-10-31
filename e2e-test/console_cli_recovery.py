@@ -7,21 +7,15 @@ import subprocess
 import time
 
 from fixture import request
-
-
-def signal_diskio(cluster, identity, pid, signal):
-    expected = "/opt/crowdb/bin/crowdb-diskio"
-    check = f'test "$(readlink /proc/{pid}/exe)" = {expected} && kill -{signal} {pid}'
-    if signal == "CONT":
-        check = f"if test -e /proc/{pid}/exe; then {check}; fi"
-    cluster.command("exec", "--user", "crowdb", identity, "sh", "-c", check)
+from console_cli_io_fault import DiskIoOutage
 
 
 def health_snapshot(cluster, label):
     observed = []
     for index, name in enumerate(cluster.servers):
         identity = cluster.inspect_owned(name)["Id"]
-        url = f"http://{cluster.addresses[index]}:9094/_crowdb/health/ready"
+        port = cluster.access_listeners(index)["health_port"]
+        url = f"http://{cluster.addresses[index]}:{port}/_crowdb/health/ready"
         try:
             value = cluster.command("exec", identity, "curl", "--silent", "--show-error",
                                     "--max-time", "3", url)
@@ -32,27 +26,24 @@ def health_snapshot(cluster, label):
     return observed
 
 
-def pause_and_write(cluster, pauses):
+def block_and_write(cluster, outage):
     with (cluster.artifacts / "fault-s3.log").open("w") as output:
         clients = []
         try:
-            for identity, pid in pauses:
-                signal_diskio(cluster, identity, pid, "STOP")
-                status = cluster.command("exec", identity, "cat", f"/proc/{pid}/status")
-                assert "State:\tT" in status, status
-            print("Paused three verified DiskIO processes across the 30-second I/O deadline", flush=True)
-            for number in range(3):
-                clients.append(subprocess.Popen(cluster.arguments("s3", "object", "put",
-                    "writer-recovery", f"during-{number}", "--text", "during-fault"),
-                    env=cluster.environment(), stdout=output, stderr=output))
-            time.sleep(40)
-            unavailable = health_snapshot(cluster, "paused")
-            assert all(value.get("ready") is False for value in unavailable), unavailable
-            assert all(value.get("observation", {}).get("state") == "current"
-                       for value in unavailable), unavailable
+            with outage:
+                outage.verify()
+                print("Blocked three owned DiskIO listeners across the 30-second I/O deadline", flush=True)
+                for number in range(3):
+                    clients.append(subprocess.Popen(cluster.arguments("s3", "object", "put",
+                        "writer-recovery", f"during-{number}", "--text", "during-fault"),
+                        env=cluster.environment(), stdout=output, stderr=output))
+                time.sleep(40)
+                outage.verify()
+                unavailable = health_snapshot(cluster, "paused")
+                assert all(value.get("ready") is False for value in unavailable), unavailable
+                assert all(value.get("observation", {}).get("state") == "current"
+                           for value in unavailable), unavailable
         finally:
-            for identity, pid in pauses:
-                signal_diskio(cluster, identity, pid, "CONT")
             for client in clients:
                 try:
                     client.wait(timeout=60)
@@ -95,8 +86,9 @@ def terminal_writer_recovery(cluster, cluster_id):
         assert type(pid) is int and pid > 1, service
         pauses.append((identities[index], pid))
     (cluster.artifacts / "fault-injection.json").write_text(json.dumps({
-        "diskio_processes": pauses, "pause_seconds": 40}, indent=2))
-    pause_and_write(cluster, pauses)
+        "diskio_processes": pauses, "fault": "owned-namespace DiskIO packet drop",
+        "outage_seconds": 40}, indent=2))
+    block_and_write(cluster, DiskIoOutage(cluster))
     # No application traffic until independent health observation reports recovery.
     started = time.monotonic()
     try:

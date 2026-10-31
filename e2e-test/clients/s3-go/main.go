@@ -129,6 +129,24 @@ func capture(action func()) (failure any) {
 	return nil
 }
 
+func failureCode(failure any) string {
+	code := fmt.Sprintf("%T", failure)
+	if assertion, ok := failure.(assertionFailure); ok {
+		return "assertion: " + string(assertion)
+	}
+	if err, ok := failure.(error); ok {
+		var api smithy.APIError
+		if errors.As(err, &api) {
+			code = api.ErrorCode()
+		}
+		var operation *smithy.OperationError
+		if errors.As(err, &operation) {
+			code = operation.Operation() + ": " + code
+		}
+	}
+	return code
+}
+
 func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -149,20 +167,10 @@ func run() int {
 			exit = 42
 		}
 		// SDK errors can contain request URLs; report only the code/type and stage.
-		code := fmt.Sprintf("%T", failure)
-		if assertion, ok := failure.(assertionFailure); ok {
-			code = "assertion: " + string(assertion)
-		}
-		if err, ok := failure.(error); ok {
-			var api smithy.APIError
-			if errors.As(err, &api) {
-				code = api.ErrorCode()
-			}
-		}
-		fmt.Fprintf(os.Stderr, "go: FAILED step=%s code=%s\n", s.current, code)
+		fmt.Fprintf(os.Stderr, "go: FAILED step=%s code=%s\n", s.current, failureCode(failure))
 	}
-	if capture(s.cleanup) != nil {
-		fmt.Fprintln(os.Stderr, "go: cleanup FAILED")
+	if failure := capture(s.cleanup); failure != nil {
+		fmt.Fprintf(os.Stderr, "go: cleanup FAILED code=%s\n", failureCode(failure))
 		exit = 1
 	}
 	if exit == 0 {

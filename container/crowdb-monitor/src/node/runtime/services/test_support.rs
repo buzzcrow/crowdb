@@ -73,6 +73,16 @@ impl NodeServiceForTests {
     }
 
     /// # Errors
+    /// Propagates owned test KV child startup failures.
+    pub async fn start_kv_child_for_tests(&mut self) -> Result<u32> {
+        let service = super::super::service(&self.profile, "kv")?;
+        Ok(self
+            .processes
+            .start(&service, &std::collections::BTreeMap::new())
+            .await?)
+    }
+
+    /// # Errors
     /// Propagates failure to stop the owned KV child.
     pub async fn stop_kv_for_tests(&mut self) -> Result<()> {
         self.processes
@@ -92,7 +102,12 @@ impl NodeServiceForTests {
     /// # Errors
     /// Propagates authority, journal and process observation errors.
     pub async fn reconcile_for_tests(&mut self) -> Result<()> {
-        super::super::health::NodeHealth::new(&self.profile)?
+        if self.health.is_none() {
+            self.health = Some(super::super::health::NodeHealth::new(&self.profile)?);
+        }
+        self.health
+            .as_mut()
+            .ok_or("missing test health worker")?
             .reconcile_services(&self.profile, &mut self.processes)
             .await
     }
