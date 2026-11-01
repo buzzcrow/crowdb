@@ -87,5 +87,38 @@ class AttachedInventoryTest(unittest.TestCase):
             self.cluster.inventory()
 
 
+class AttachedReadinessTest(unittest.TestCase):
+    def setUp(self):
+        self.cluster = object.__new__(CliAttachedCluster)
+        self.cluster.cluster_id = "cluster"
+        self.cluster.ready_deadline = 280
+        self.cluster.invoke = Mock(return_value=json.dumps({
+            "phase": "ready", "observation": {"cluster_id": "cluster"}}))
+
+    def test_final_check_uses_only_the_remaining_startup_budget(self):
+        with patch("console_cli_target.time.monotonic", return_value=245.5):
+            self.cluster.check_ready(endpoint="http://node3:9090")
+        self.cluster.invoke.assert_called_once_with(
+            "cluster", "check", "--wait", "34", "--json", endpoint="http://node3:9090")
+
+    def test_expired_budget_does_not_dispatch_another_check(self):
+        with patch("console_cli_target.time.monotonic", return_value=280), \
+                self.assertRaisesRegex(AssertionError, "original readiness deadline"):
+            self.cluster.check_ready()
+        self.cluster.invoke.assert_not_called()
+
+    def test_check_failure_is_not_retried_and_wrong_cluster_is_rejected(self):
+        self.cluster.invoke.side_effect = AssertionError("degraded")
+        with patch("console_cli_target.time.monotonic", return_value=250):
+            with self.assertRaisesRegex(AssertionError, "degraded"):
+                self.cluster.check_ready()
+            self.cluster.invoke.assert_called_once()
+            self.cluster.invoke.side_effect = None
+            self.cluster.invoke.return_value = json.dumps({
+                "phase": "ready", "observation": {"cluster_id": "foreign"}})
+            with self.assertRaises(AssertionError):
+                self.cluster.check_ready()
+
+
 if __name__ == "__main__":
     unittest.main()

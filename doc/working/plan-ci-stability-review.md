@@ -22,7 +22,8 @@ coverage, and identify the remaining work needed to improve CI stability.
 
 2026-11-01 用户恢复执行。此前暂停于 GC 派发前；恢复后加强版 GC 三例、
 辅助服务/Journal 三轮组合、Go SDK 三轮和 Dataset 分阶段验证均已通过。
-本地补充验证控制器正常退出，下一步是提交、推送和核对新 SHA 的完整 CI。
+本地补充验证控制器正常退出；首次推送后的三个新失败已修复并完成本地复验，
+下一步是推送这些修复并核对新 SHA 的完整 CI。
 物理容器在恢复前已停止，原因未知；七个容器、镜像和卷身份均保持不变。
 
 ## 当前执行队列
@@ -58,8 +59,40 @@ coverage, and identify the remaining work needed to improve CI stability.
   guard 通过。新增断言均有独立实际运行证据，不能与旧 bundle 的全量混算。
 - [~] **提交、推送并核对远端 CI**：CROWDB `task-fix-build` 一个一致提交；
   记录精确 SHA、run/attempt 和全部展开 job，修复真实失败后推进。
+  已推送 `76fc6508189dd31018e953674a8f1c693011498d`，新 run `41295426521`
+  attempt 1 已结束：27 项中 24 成功、3 失败。CI merge checkout 与 head
+  的完整 tree 一致。三个新失败的本地修复与受影响组复验均已通过，待推送
+  新 head 并重新核对全部 27 项。完整日志与三个校验过的 artifact 保留在
+  `ci/published-76fc6508/`，不并入原 16 项人工 review。
 - [ ] **恢复物理验证**：远端 CI 核对后继续 P13 和 P14–P19，保留 native
   崩溃的新镜像验证及历史数据审计；当前物理资源和失败证据继续保留。
+
+## Run 41295426521：首次发布后的三个新失败
+
+- **Chunk allocation 丢回复注入**：旧代理丢弃首段 TCP 数据，其中可能只有
+  `0xfffe` capability handshake，allocation 尚未执行，busy bytes 仅为 1 MiB。
+  复用共享 frame-aware 代理，要求恰好转发一次握手、丢弃一次 application
+  response，保留 Unreachable、精确 2 MiB 和不重放 allocation 的断言。
+  原精确/默认 scope/串行基线均通过；该 scope 只有一个 case，不能据此声称
+  复现了多 case 竞争。修复精确场景通过；完整失败 job 的 47 个剩余场景
+  本地通过，保留三个未受影响的远端 PASS。
+- **Shell lazy inventory**：原 trace 在 N-3 选中后、DOM 断言返回前发生正常
+  topology refresh；四次 inventory 均只请求 N-3，均返回 200。现按 topology
+  观察周期精确断言 `[3]`，保留初始零发现、全部 DOM 断言和三秒期限。
+  原精确基线 4.2 秒，修复后 3.9 秒；原 shell/capacity 并发组合分别
+  4.8/10.8 秒通过。生产 UI 不变。
+- **CLI final readiness**：自动 split 发布 generation 2 后，旧 grant 短暂
+  StaleCatalog，最终即时 check 返回 degraded；真实进程仍存活。最终 check
+  现在仅使用启动时原 180 秒绝对期限的剩余量，调用一次官方 `--wait`，保留
+  Ready、cluster identity 和整个等待前后的 lifecycle equality。过期不派发、
+  失败不重试、错 cluster 拒绝均有回归；不新增 mutation replay 或等待预算。
+  原精确和五例并发基线通过；修复后六例通过，包含被独立 fixture 首错中断的
+  terminal writer recovery。该 peer 不是另一个已证实的产品失败。本地修复轮
+  没有复现原 StaleCatalog 窗口，不能以快速 PASS 声称复现了该时序。
+- **门禁与保留**：fixture 304 tests、fmt、full clippy、TypeScript、diff check
+  全部通过。生产 source tree 仍为 `376fdc26a0e96d7810313ea670bf043c4f0dfcae`；
+  正常 clients builder 已刷新对应输入。七个物理容器及卷身份未变；尚未进行
+  物理故障、升级或退休。完整执行证据见 `local-repair-closure.json`。
 
 ## 通过场景的稳定性改善
 

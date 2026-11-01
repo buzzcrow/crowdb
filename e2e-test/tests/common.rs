@@ -6,6 +6,7 @@ pub(crate) mod hardware;
 mod logging;
 pub(crate) mod management;
 pub(crate) mod native_s3;
+pub(crate) mod rpc_response_proxy;
 mod test_client;
 
 use bytes::Bytes;

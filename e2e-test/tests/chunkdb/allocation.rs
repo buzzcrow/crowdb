@@ -3,6 +3,9 @@
 
 use crowdb_chunkdb::allocator::DiskdbClientPool;
 use crowdb_kv_client::ServiceRegistryClient;
+use std::sync::atomic::Ordering;
+
+use crate::common::rpc_response_proxy::TestResponseProxy;
 
 #[tokio::test]
 #[ignore = "requires the owned Diskdb container fixture"]
@@ -10,7 +13,6 @@ async fn allocation_connect_failure_reroutes_but_lost_reply_does_not() {
     use crate::common::hardware::{DG_ID, UNIT_SIZE_BYTES};
     use crowdb_diskdb_client::{DiskdbClientError, DiskdbRpcTransport};
     use crowdb_protocol::common::ChunkId;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let pool = DiskdbClientPool::new(ServiceRegistryClient::new(crate::common::hardware::kv_client()));
     pool.refresh_endpoints().await.expect("discover live owner");
@@ -34,26 +36,9 @@ async fn allocation_connect_failure_reroutes_but_lost_reply_does_not() {
     // The proxy forwards the allocation, then closes without its response.
     // Group-0 still advertises the direct endpoint, so an unsafe replay would
     // allocate another set there.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let proxy = listener.local_addr().unwrap().to_string();
-    let upstream_endpoint = endpoint.clone();
-    let forward = tokio::spawn(async move {
-        let (downstream, _) = listener.accept().await.unwrap();
-        let upstream = tokio::net::TcpStream::connect(upstream_endpoint).await.unwrap();
-        let (mut input, mut output) = downstream.into_split();
-        let (mut responses, mut requests) = upstream.into_split();
-        let send = tokio::io::copy(&mut input, &mut requests);
-        let discard = async {
-            let mut buffer = [0; 8192];
-            assert!(responses.read(&mut buffer).await.unwrap() > 0);
-            output.shutdown().await.unwrap();
-        };
-        tokio::select! {
-            _ = send => panic!("request stream ended before response"),
-            () = discard => {}
-        }
-    });
-    pool.replace_endpoints_for_tests(vec![(DG_ID, proxy)]);
+    let proxy = TestResponseProxy::start(endpoint.clone()).await;
+    proxy.armed.store(true, Ordering::SeqCst);
+    pool.replace_endpoints_for_tests(vec![(DG_ID, proxy.endpoint.clone())]);
     let result = pool
         .allocate_blocks_reusing_disks(DG_ID, 1, 1, &ChunkId { high: 0, low: 42 })
         .await;
@@ -61,7 +46,8 @@ async fn allocation_connect_failure_reroutes_but_lost_reply_does_not() {
         matches!(result, Err(DiskdbClientError::Unreachable(_))),
         "{result:?}"
     );
-    forward.await.unwrap();
+    assert_eq!(proxy.forwarded_handshakes.load(Ordering::SeqCst), 1);
+    assert_eq!(proxy.dropped.load(Ordering::SeqCst), 1);
 
     let transport = DiskdbRpcTransport::new();
     let info = transport

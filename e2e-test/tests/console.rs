@@ -7,8 +7,7 @@ mod group_publication;
 mod hardware;
 mod logical_publication;
 
-#[path = "console/common/rpc_response_proxy.rs"]
-mod rpc_response_proxy;
+use crate::common::rpc_response_proxy;
 
 #[path = "console/common/bootstrap_authority.rs"]
 mod bootstrap_authority;

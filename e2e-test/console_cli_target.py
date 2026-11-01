@@ -3,6 +3,7 @@
 """Attach a host CLI to ordinary Docker nodes without a launch receipt."""
 
 import json
+import time
 from pathlib import Path
 
 from allocation import create_network, node_data, start_node
@@ -48,6 +49,7 @@ class CliAttachedCluster(CliClient, Cluster):
         for name in self.servers:
             if not json.loads(self.command("inspect", name))[0]["State"]["Running"]:
                 raise AssertionError("plain Docker node exited: " + self.command("logs", name))
+        self.ready_deadline = time.monotonic() + 180
         report = json.loads(self.invoke("cluster", "check", "--wait", "180", "--json",
                                        endpoint=self.endpoint(0)))
         assert report["phase"] == "ready", report
@@ -116,6 +118,17 @@ class CliAttachedCluster(CliClient, Cluster):
                 "processes": sorted((node, service, *identity) for (node, service), identity in processes.items()),
                 "registrations": sorted(registrations, key=lambda item: item["id"])}
 
+    def check_ready(self, endpoint=None):
+        # Automatic catalog publication can temporarily fence an older serving
+        # grant. Use the original startup deadline for the final lifecycle gate;
+        # the operation does not receive another readiness budget or a replay.
+        remaining = int(self.ready_deadline - time.monotonic())
+        assert remaining > 0, "CLI flow exhausted its original readiness deadline"
+        report = json.loads(self.invoke("cluster", "check", "--wait", str(remaining), "--json",
+                                       endpoint=endpoint))
+        assert report["phase"] == "ready" and report["observation"]["cluster_id"] == self.cluster_id, report
+        return report
+
     def replay(self, checkpoint):
         if checkpoint != "attachment":
             before = self.inventory()
@@ -124,9 +137,8 @@ class CliAttachedCluster(CliClient, Cluster):
                          "logical": console_cli_operations.logical,
                          "data": console_cli_operations.data}[checkpoint]
             operation(self)
+            self.check_ready()
             assert self.inventory() == before, "logical CLI operation changed runtime lifecycle"
-            report = json.loads(self.invoke("cluster", "check", "--json"))
-            assert report["phase"] == "ready" and report["observation"]["cluster_id"] == self.cluster_id
             (self.artifacts / "operation-proof.json").write_text(json.dumps({
                 "cluster_id": self.cluster_id, "operation": checkpoint, "inventory": before}, indent=2))
             print("PASS selected-cluster CLI", checkpoint, flush=True)
@@ -154,8 +166,7 @@ class CliAttachedCluster(CliClient, Cluster):
             assert self.invoke("s3", "object", "get", "cli-attach", "witness",
                                endpoint=self.endpoint(index)) == value
         self.invoke("cluster", "stop", endpoint=self.endpoint(0), expected_exit=2)
-        report = json.loads(self.invoke("cluster", "check", "--json", endpoint=self.endpoint(2)))
-        assert report["phase"] == "ready" and report["observation"]["cluster_id"] == self.cluster_id
+        self.check_ready(endpoint=self.endpoint(2))
         assert self.inventory() == before, "attachment changed container or service lifecycle"
         assert not (self.root / "persistent/oci-clusters").exists(), "attachment created a runtime receipt"
         (self.artifacts / "attachment-proof.json").write_text(json.dumps({

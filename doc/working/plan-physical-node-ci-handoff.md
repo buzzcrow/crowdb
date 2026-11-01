@@ -11,9 +11,9 @@ Upstream: [Physical Node Test Plan](../dev/physical-node-test-plan.md),
 Goal: finish CI stability verification and publish CROWDB, then resolve P13 and
 complete the two-host physical recovery matrix without losing data or evidence.
 
-## 1. Current checkpoint: local verification complete, publication next
+## 1. Current checkpoint: published CI diagnosed, local repairs verified
 
-Updated 2026-11-01, 17:56 Asia/Shanghai. The user explicitly resumed this plan.
+Updated 2026-11-01, 18:56 Asia/Shanghai. The user explicitly resumed this plan.
 Continue the agreed CI refinement, commit/push, exact-head CI, then physical
 recovery sequence. No physical fault or retirement has been dispatched on resume.
 
@@ -44,7 +44,23 @@ recovery sequence. No physical fault or retirement has been dispatched on resume
 - No test/workload/fault controller is left running. Physical work remains
   paused; the seven retained physical containers and their volumes remain owned
   and preserved. Do not restart old session IDs.
-- No new commit or push has been made. No new CI run has been triggered.
+- Commit 76fc6508189dd31018e953674a8f1c693011498d was pushed successfully.
+  [CI run 41295426521](https://github.com/buzzcrow/crowdb/actions/runs/41295426521),
+  attempt 1, finished with 24 successful and three failed jobs out of 27.
+  All job logs and the three failed-job artifacts are preserved under
+  ci/published-76fc6508/. Artifact sizes, SHA-256 and ZIP CRCs were verified.
+- All three test-boundary repairs are locally verified: a frame-aware lost-reply
+  proxy, exact selected-node requests per topology cycle, and final CLI readiness
+  within the remaining original startup deadline. No production source changed.
+  The chunk job's 47 remaining cases passed, retaining three unaffected remote
+  passes. All six CLI cases, including the interrupted terminal-recovery peer,
+  and the original shell/capacity browser pair passed. Fixture 304, full clippy,
+  fmt and TypeScript passed; the closing scope guard preserved all seven nodes.
+  Next publish these coherent repairs and verify the new head's complete CI.
+- CI checks out merge commit 66579652b16f798d8fd0211fe39002b0f7eae594.
+  Its complete source tree equals the pushed head's tree
+  8039607dbf9901dc8fdcbd5e78b207ed10627140. Local and CI image runtime digests
+  differ; source equality does not claim identical binaries.
 - Two physical hosts have not completed final acceptance: P13 is still failed,
   P14–P19 are unrun, and the latest native lifecycle fix needs physical validation.
 
@@ -55,15 +71,16 @@ the user finishes joint review; a PASS must not check a human review box.
 ## 2. Repository and publication boundary
 
 - CROWDB root: /cjdata/cpp/crowdb2.
-- Branch: task-fix-build; HEAD:
-  7a93c4e5fdca9bc39455331bfae9f3082e167a43.
-- Four existing local commits are ahead of the remote branch:
+- Branch: task-fix-build; published HEAD:
+  76fc6508189dd31018e953674a8f1c693011498d.
+- The four previously local commits were included in the fast-forward push:
   cdf023d6 (recovery/liveness), 81d07f03 (nearby mirrors),
   d396a220 (healthy leader quorum lease), and 7a93c4e5 (cleanup/handoff).
-- The substantial current production/test/documentation changes are still
-  uncommitted. Preserve them and any new user edits; do not reset or restore.
-- Remote task-fix-build was last verified through GitHub during this session at
-  8885d2adc351d9c99f0219e18ecf0c4782bc3079.
+- The production changes are committed and pushed. Three subsequent test fixes
+  and working-plan updates remain local until the next publication. Preserve
+  any new user edits; do not reset or restore.
+- Remote task-fix-build was fetched at 8885d2a immediately before the push;
+  GitHub then confirmed the new exact head 76fc6508.
   [PR 55](https://github.com/buzzcrow/crowdb/pull/55) is open.
   Fetch and verify remote state again immediately before the eventual push.
 - After explicit resume, the agreed order remains: finish local CI stability
@@ -101,6 +118,9 @@ All abbreviated paths below are relative to:
   passed after the final test-only dependency-recovery predicate change.
 - ci/stability-final/scope-guard-before.json and scope-guard-latest.json:
   exact retained A3/B4 container, image, running-state and volume identities.
+- ci/published-76fc6508/: all 27 job logs, failed artifacts, repair-diagnosis.json,
+  repair-queue.json, local-repair-closure.json and exact/original-pair results.
+  These three newly published failures are separate from the historical 16 jobs.
 - The earlier long handoff is preserved at
   handoff-history/plan-physical-node-ci-handoff-before-rewrite-20261101T062936Z.md.
   It contains superseded historical instructions, not current authorization.
@@ -186,7 +206,7 @@ Final local server image:
   The runs are 41003611925 (8/27 failed), 41128190276 (5/27), and
   41159636766 (3/27 at head 8885d2a). All 16 joint review boxes remain unchecked.
 
-Main uncommitted source ownership:
+Main source ownership in the published change:
 
 - RPC/C ABI: lib/crowdb-rpc/ffi/src/owned_route* and logging.rs,
   lib/crowdb-rpc/src/c_api.cpp, lib/crowdb-tree/ffi/src/tree.rs, and tests.
@@ -259,12 +279,16 @@ The user has resumed; proceed in the order below.
   failure occurrences and three newer cases. Client binary hashes match the
   frozen build manifest; browser/Go/Dataset source digests agree. Stability TODO
   updated; all human review boxes remain unchecked.
-- [~] **Commit and push CROWDB only**: run final relevant gates/diff check,
+- [x] **Commit and push CROWDB only**: final relevant gates and staged diff
+  check passed; the pre-commit hook independently passed fmt/clippy. Created
+  76fc6508 and fast-forward pushed after fetching and verifying the old remote.
+  The publication receipt is ci/stability-final/publication.json. Required rules:
   inspect staged contents, and make one coherent commit with a single-line
   subject, no body/trailers/doc references/requirement numbers. Fetch and verify
   the remote before the authorized fast-forward push; do not force-push.
   No Sirius-specific pre-push rules apply to this repository.
-- [ ] **Inspect new exact-head CI**: PR synchronization should trigger CI.
+- [~] **Inspect new exact-head CI**: run 41295426521 attempt 1 ended 24 PASS / 3 FAIL.
+  The three fixes and local affected regressions passed; commit/push them next.
   Match the actual new head SHA/run/attempt, inspect every expanded job
   (the three historical runs had 27), preserve every first failure and artifact,
   fix real errors and rerun the appropriate new-head job/run. Do not rerun an old
