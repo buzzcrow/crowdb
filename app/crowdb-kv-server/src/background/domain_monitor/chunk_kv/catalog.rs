@@ -10,7 +10,9 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, SplitPhase, SplitTransition,
     TransferPhase, TransferTransition,
 };
-use crowdb_protocol::key::{ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, TextKey};
+use crowdb_protocol::key::{
+    ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, ChunkKvSplitKey, TextKey,
+};
 
 use crate::group0_control_plane::Group0ControlPlane;
 
@@ -160,8 +162,52 @@ pub async fn publish_materialized_partition(
     let transition_id = current
         .transition_id
         .ok_or_else(|| "materialized split child has no transition identity".to_string())?;
+    validate_materialized_split(control, &catalog.pages, transition_id).await?;
     let (head, pages) = release_materialized_split(catalog.head, catalog.pages, transition_id, partition_id)?;
     publish(control, head, pages, catalog.head_revision).await
+}
+
+async fn validate_materialized_split(
+    control: &Group0ControlPlane,
+    pages: &[ChunkKvRangeCatalogPage],
+    transition_id: crowdb_protocol::chunk_kv::Id128,
+) -> Result<(), String> {
+    let path = ChunkKvSplitKey { transition_id }.to_path();
+    let read = control
+        .get(path.as_bytes())
+        .await
+        .map_err(|error| error.to_string())?;
+    let bytes = read.value.ok_or("materialized split transition is absent")?;
+    let transition: SplitTransition = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    transition.validate().map_err(|error| error.to_string())?;
+    if transition.transition_id != transition_id
+        || !matches!(
+            transition.phase,
+            SplitPhase::ChildPrepared | SplitPhase::CatalogCommitted
+        )
+    {
+        return Err("materialized split transition is not published".into());
+    }
+    let desired = split_entries(&transition);
+    for entry in pages.iter().flat_map(|page| &page.entries) {
+        if entry.transition_id == Some(transition_id)
+            && !desired
+                .iter()
+                .any(|wanted| published_assignment_matches(entry, wanted))
+        {
+            return Err("materialized split assignment differs from its published transition".into());
+        }
+    }
+    // Once the split commit is durable, lease-excluded recovery may supersede
+    // either writer independently. Only the remaining exact split assignments
+    // own this overlay and marker; a successor assignment must stay untouched.
+    // Before that status write, both exact successors must still prove publication.
+    if transition.phase != SplitPhase::CatalogCommitted
+        && !publication_complete(pages, &desired, transition_id)?
+    {
+        return Err("materialized split must retain both uncommitted published assignments".into());
+    }
+    Ok(())
 }
 
 pub async fn publish_materialized_transfer(
@@ -274,8 +320,8 @@ fn release_materialized_split(
             page.generation = generation;
         }
     }
-    if matched != 2 || !partition_matched {
-        return Err("materialized split must match one partition in an exact writer pair".into());
+    if !(1..=2).contains(&matched) || !partition_matched {
+        return Err("materialized split must match a remaining published partition".into());
     }
     let all_materialized = pages
         .iter()

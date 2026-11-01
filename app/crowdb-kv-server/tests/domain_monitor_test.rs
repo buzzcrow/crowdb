@@ -38,6 +38,8 @@ mod test_process;
 mod catalog_publication;
 #[path = "common/endpoint_publication.rs"]
 mod endpoint_publication;
+#[path = "common/split_materialization.rs"]
+mod split_materialization;
 
 struct CountingDriver {
     ticks: Arc<AtomicUsize>,

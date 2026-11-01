@@ -169,7 +169,7 @@ impl TestPublication {
     }
 }
 
-async fn replace_json<T: serde::Serialize>(control: &Group0ControlPlane, key: String, value: &T) {
+pub(super) async fn replace_json<T: serde::Serialize>(control: &Group0ControlPlane, key: String, value: &T) {
     let current = control.get(key.as_bytes()).await.unwrap();
     control
         .compare_and_put(
@@ -227,7 +227,7 @@ async fn publish_materialized_catalog(
     head
 }
 
-async fn tick(control: &Group0ControlPlane) -> Result<(), String> {
+pub(super) async fn tick(control: &Group0ControlPlane) -> Result<(), String> {
     let mut policy = descriptor();
     policy.domain = "chunk-kv".into();
     policy.service_registry_name = "chunk-kv".into();

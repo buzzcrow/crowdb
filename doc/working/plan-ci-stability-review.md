@@ -23,7 +23,9 @@ coverage, and identify the remaining work needed to improve CI stability.
 2026-11-01 用户恢复执行。此前暂停于 GC 派发前；恢复后加强版 GC 三例、
 辅助服务/Journal 三轮组合、Go SDK 三轮和 Dataset 分阶段验证均已通过。
 本地补充验证控制器正常退出；首次推送后的三个新失败已修复并完成本地复验，
-下一步是推送这些修复并核对新 SHA 的完整 CI。
+修复已推送为 `70ae86b1`，完整 CI 为 26/27 PASS；新发现的 terminal writer
+恢复故障已定位为 split 物化与父分区租约转移的冲突，修复和本地复验已完成，
+待提交推送并核对下一轮精确 SHA CI。
 物理容器在恢复前已停止，原因未知；七个容器、镜像和卷身份均保持不变。
 
 ## 当前执行队列
@@ -61,8 +63,11 @@ coverage, and identify the remaining work needed to improve CI stability.
   记录精确 SHA、run/attempt 和全部展开 job，修复真实失败后推进。
   已推送 `76fc6508189dd31018e953674a8f1c693011498d`，新 run `41295426521`
   attempt 1 已结束：27 项中 24 成功、3 失败。CI merge checkout 与 head
-  的完整 tree 一致。三个新失败的本地修复与受影响组复验均已通过，待推送
-  新 head 并重新核对全部 27 项。完整日志与三个校验过的 artifact 保留在
+  的完整 tree 一致。三个新失败的本地修复与受影响组复验均已通过，已推送
+  `70ae86b1c62e095be2754ed178890736e49be5a4`；新 run `41299662435`
+  attempt 1 已结束，26/27 PASS，只有 console-api 的 terminal writer recovery
+  失败；上一轮三个修复场景已远端通过。全部日志和校验过的失败 artifact
+  保留于 `ci/published-70ae86b1/`。此前完整日志与三个 artifact 保留在
   `ci/published-76fc6508/`，不并入原 16 项人工 review。
 - [ ] **恢复物理验证**：远端 CI 核对后继续 P13 和 P14–P19，保留 native
   崩溃的新镜像验证及历史数据审计；当前物理资源和失败证据继续保留。
@@ -93,6 +98,28 @@ coverage, and identify the remaining work needed to improve CI stability.
   全部通过。生产 source tree 仍为 `376fdc26a0e96d7810313ea670bf043c4f0dfcae`；
   正常 clients builder 已刷新对应输入。七个物理容器及卷身份未变；尚未进行
   物理故障、升级或退休。完整执行证据见 `local-repair-closure.json`。
+
+## Run 41299662435：split 物化与租约恢复
+
+- 完整 CI 为 26/27 PASS；console-api 的 92 例中 91 例通过，只有
+  `terminal_chunk_writer_recovery` 在原 180 秒恢复期限内未恢复。
+  故障解除后的首次持续分歧是 Group 0 monitor 的 exact writer pair 错误，
+  80 次错误阻止后续 serving grant 更新，最终两个 ChunkKV 范围 LeaseExpired。
+- 已提交 split 的父分区因租约失效转移后，其 marker 正常更新为 transfer ID；
+  子分区独立可恢复时，旧物化逻辑仍要求两个 split marker。确定性回归在
+  旧代码重现同一错误，也发现仅计数会接受复用 marker 的错误身份。
+- 修复从持久化 split proof 核对每个剩余 marker 的完整 assignment；只有
+  CatalogCommitted 才允许另一分区已被后继转移取代，并保持其新状态不变。
+  ChildPrepared 仍需两个精确 successor，旧 epoch、错误 artifact 和复用
+  marker 均拒绝。原超时、错误处理、故障时长及写入次数保持不变。
+- 精确容器基线通过，但不据此声称复现远端时序。旧代码确定性回归两例失败，
+  修复后的完整 KV Server 86 tests 通过，包含四个新回归。全新生产镜像、
+  ChunkKV Server 112 tests（另有一个 opt-in RDMA ignore）、fmt 和 full clippy
+  均通过。新镜像精确 terminal 151.1 秒通过，恢复 check 21.2 秒；默认并发
+  CLI 九例、ChunkKV 两例、balance 一例和 console-api 剩余 83 例全部通过，
+  共 95 个不同 canonical case。七个保留物理容器及卷身份不变。
+  证据：`ci/split-materialization-fixed/`；下一次精确 SHA CI 尚未执行。
+  此前 396-case PASS 属于旧生产镜像，不能将两轮输入混为最终镜像全量验证。
 
 ## 通过场景的稳定性改善
 
