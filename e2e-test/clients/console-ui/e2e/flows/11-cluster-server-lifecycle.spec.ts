@@ -6,7 +6,7 @@ import { observeDeployingSteps } from '../fixtures/servicePlanObservation';
 import { step } from '../fixtures/stepTimer';
 import { observeDefaultDeployments } from '../fixtures/defaultDeployments';
 import { nativeProcessAlive } from '../fixtures/nativeProcess';
-import { cycleAuxiliaryService, nativeServerInventory } from '../fixtures/nativeServiceLifecycle';
+import { accessDependencyReady, cycleAuxiliaryService, nativeServerInventory } from '../fixtures/nativeServiceLifecycle';
 
 // Baseline: 9.7s (2026-11-01), original combined 3s assertions on the independent-observation image.
 // Previous: 20.7s (2026-10-29), including external stop/start observation without Refresh.
@@ -22,13 +22,11 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
     const access = (await list()).find((row: { node_id: number; service_type: string }) => row.node_id === 1 && row.service_type === 'access-server');
     const stopped = await request.post(`/api/services/${access.id}/stop`, { data: {} });
     expect(stopped.ok(), await stopped.text()).toBe(true);
-    try {
-      await expect.poll(() => alive(access.pid), { intervals: [100] }).toBe(false);
-      await expect(page.locator('header').getByTitle('Cluster health: Failed', { exact: true })).toBeVisible();
-    } finally {
-      const started = await request.post(`/api/services/${access.id}/restart`, { data: {} });
-      expect(started.ok(), await started.text()).toBe(true);
-    }
+    await expect.poll(() => alive(access.pid), { intervals: [100] }).toBe(false);
+    await expect(page.locator('header').getByTitle('Cluster health: Failed', { exact: true })).toBeVisible();
+    await accessDependencyReady(request, access.node_id);
+    const started = await request.post(`/api/services/${access.id}/restart`, { data: {} });
+    expect(started.ok(), await started.text()).toBe(true);
     await expect(page.locator('header').getByTitle('Cluster health: Healthy', { exact: true })).toBeVisible();
   });
   expect(await list()).toHaveLength(18);

@@ -11,9 +11,9 @@ Upstream: [Physical Node Test Plan](../dev/physical-node-test-plan.md),
 Goal: finish CI stability verification and publish CROWDB, then resolve P13 and
 complete the two-host physical recovery matrix without losing data or evidence.
 
-## 1. Current checkpoint: lifecycle repair locally verified, publication pending
+## 1. Current checkpoint: S3 UI repair locally verified, publication pending
 
-Updated 2026-11-01, 21:21 Asia/Shanghai. The user explicitly resumed this plan.
+Updated 2026-11-01, 23:10 Asia/Shanghai. The user explicitly resumed this plan.
 Continue the agreed CI refinement, commit/push, exact-head CI, then physical
 recovery sequence. No physical fault or retirement has been dispatched on resume.
 
@@ -87,8 +87,11 @@ recovery sequence. No physical fault or retirement has been dispatched on resume
   existing 16-MiB export limit and was not uploaded; do not claim it was inspected.
 - Local exact auxiliary passed (12.4 seconds), its original concurrent pair
   reproduced the same restart 409 (12.1 seconds), and the serial auxiliary
-  passed (13.7 seconds). Finish normal initial placement before lifecycle faults;
-  preserve every original response, process, sibling and readiness assertion.
+  passed (13.7 seconds). The first repair used placement settle; subsequent
+  source review found that its transfer observation cannot exclude a split
+  planned in the same or next tick. Use the actual local ChunkKV readiness
+  immediately before each Access restart. Preserve every original response,
+  process, sibling and readiness assertion.
 - The original ordered local partition stopped earlier at KV restart after
   stopping Group 0's leader. The isolated serial case also failed. A new leader
   was elected after submission; the authority guard returned 502. Observe the
@@ -105,8 +108,44 @@ recovery sequence. No physical fault or retirement has been dispatched on resume
   The two data-plan cases used concurrency two but resource-aware batching ran
   them sequentially (12,800 + 6,656 MiB exceed the 16,384-MiB budget).
   UI 366, plan-hook 28 including two new regressions, fixture 304, TypeScript,
-  fmt and full clippy passed. New publication and all 27 exact-head CI jobs
-  remain required before any physical dispatch.
+  fmt and full clippy passed. Commit 18015caf0cc99978eec99517a3f52b468128c0e2
+  was fast-forward pushed; run 41311084753 attempt 1 completed all 27 jobs
+  successfully. All logs, exact-head/merge source equality and the actual CI
+  image receipt are retained in ci/published-18015caf/.
+- A test-only refinement replaces the insufficient early placement predicate
+  with a direct, identity-checked ChunkKV /ready probe before the single Access
+  restart. It retains the three-second observation budget and all mutation
+  assertions. Its first local attempt failed on an incorrect inventory URL
+  field; the corrected mgmt_url exact case and original concurrent pair passed.
+  The full operation group stopped at a separate S3 delete failure: 17 PASS,
+  one FAIL and one unrun. Preserve every attempt in ci/access-readiness-fixed/.
+  The current refinement and S3 UI repair need publication and all 27 exact-head
+  CI jobs before physical dispatch.
+- S3 multipart delete's original three-second DOM assertion failed both in the
+  full group and a fresh serial baseline. The isolated and concurrent-pair
+  baselines passed. In the full-group trace, DELETE returned 204 in 1.279 seconds;
+  its subsequent list returned 200 with zero keys in 2.036 seconds. S3View clears
+  selection on deletion success but retains cached rows until listing finishes.
+  Correction: remove only the successfully deleted exact object's
+  current-bucket row before the existing refresh; retain failed/unknown rows.
+  The user approved that behavior. S3-04 and its ASCII layout were updated
+  first, followed by a deterministic deferred-list regression. After correcting
+  its provider/field-label setup, the old UI fails the exact stale-row assertion;
+  the one-line removal fix passes all three cases, including rejected and
+  unknown deletes and a failed post-delete list refresh. The original three-second
+  E2E assertion remains unchanged. Diagnosis, trace timeline and baselines:
+  ci/access-readiness-fixed/s3-delete/. New image and verification:
+  ci/s3-ui-fixed/ and image/s3-ui-fixed/. The new image passed the exact multipart
+  case (4.6-second Playwright), original auxiliary pair (12.7-second auxiliary)
+  and all 19 native operation cases at default concurrency (417.230 seconds).
+  Multipart passed again in the group at 4.1 seconds. UI 369, full TypeScript,
+  fmt and full clippy passed. Initial unsupported Testing Library options failed
+  type checking after all UI cases passed; that attempt and the corrected gate
+  are preserved separately. Publication and new exact-head CI remain pending.
+- Offline physical observer regressions now require an immutable 35-process
+  identity fence after recovery and throughout the subsequent full data audit.
+  A second fence cannot accept a later restart. Both fence regressions and all
+  seven closure acceptance checks passed; physical resources remain untouched.
 - Run 41299662435 checked out merge commit e9f241349146046d52c1198cf3f1b0e0dbdbccff.
   Its complete source tree equals the pushed head's tree
   9a7a6a85ba27c2722610d4185912edf67b3c86bf. Local and CI image runtime digests
@@ -121,17 +160,17 @@ the user finishes joint review; a PASS must not check a human review box.
 ## 2. Repository and publication boundary
 
 - CROWDB root: /cjdata/cpp/crowdb2.
-- Branch: task-fix-build; published HEAD before this lifecycle repair:
-  5af2737fd5797a1afd1395eac63427e8fdb892d2.
+- Branch: task-fix-build; latest published HEAD:
+  18015caf0cc99978eec99517a3f52b468128c0e2.
 - The four previously local commits were included in the fast-forward push:
   cdf023d6 (recovery/liveness), 81d07f03 (nearby mirrors),
   d396a220 (healthy leader quorum lease), and 7a93c4e5 (cleanup/handoff).
 - The production changes, subsequent test fixes and new split materialization
-  repair are committed and pushed. The current lifecycle/dependency repair and
-  working-plan updates are prepared for the next coherent commit. Preserve
+  repair and lifecycle/dependency repair are committed and pushed. The Access
+  test precondition and working-plan updates form the next commit. Preserve
   any new user edits; do not reset or restore.
-- Remote task-fix-build was fetched at 70ae86b1 immediately before the last push;
-  GitHub then confirmed the new exact head 5af2737f.
+- Remote task-fix-build was fetched at 5af2737f immediately before the last push;
+  GitHub then confirmed the new exact head 18015caf.
   [PR 55](https://github.com/buzzcrow/crowdb/pull/55) is open.
   Fetch and verify remote state again immediately before the eventual push.
 - After explicit resume, the agreed order remains: finish local CI stability
@@ -180,26 +219,38 @@ All abbreviated paths below are relative to:
   artifacts, concurrent/serial baselines and deterministic dependency regressions.
 - ci/lifecycle-dependencies-fixed/: current prepare/exact/operations/browser/data
   queues, 48-case source-specific closure, quality gates and diff review.
+- ci/published-18015caf/: all 27 successful job logs, source equivalence,
+  CI image receipt and offline physical audit/retirement checks.
+- ci/access-readiness-fixed/: the subsequent test-only readiness refinement,
+  first failed endpoint-field attempt, corrected verification and S3 diagnosis.
+- ci/s3-ui-fixed/: UI red/green evidence, corrected gates, exact cases and full
+  19-case operation group on the new source-verified image.
 - The earlier long handoff is preserved at
   handoff-history/plan-physical-node-ci-handoff-before-rewrite-20261101T062936Z.md.
   It contains superseded historical instructions, not current authorization.
 
 Current local server image:
 
-- Tag: crowdb-node:lifecycle-fixed.
-- Source tree: 1516797b67ad493c9bbf9c25048e574e7d994f31.
+- Tag: crowdb-node:s3-ui-fixed.
+- Source tree: 4b061ce8ab3d74493e975659c79505e5b620b054.
 - Docker image ID:
-  sha256:359897a74ffa13d05e6c3bcf6708c7291a2b761e7c7193b706ba436060d75119.
+  sha256:05bbc6cb53d6aafbc18004f8a2271ddc4708c88ac69d32a6a41fd30e96468c2c.
 - OCI config digest:
-  sha256:a35afa03888629de0d172ca9a186f5c67d558c64125b9f075747f11b049b08e0.
+  sha256:381d352c595863b44b7deaa55c75cf1779ec038b40822d58b39466aeca0bf7b0.
 - Runtime SHA-256:
-  c03d3b78cf126c42923cfd91b3e6d03160ae082e77039708afafda465d9a5e26.
-- OCI archive: image/lifecycle-dependencies-fixed/crowdb.oci.tar; SHA-256:
-  41107c698fb1ff1ddbd51aee05401e797cb4587b3103dcd1145bad6ae83cc020.
-- Revision label 5af2737f predates this uncommitted fix; the source-tree label
+  84cdaba42a73f087a5b278834cf768bc210b08af2774839166a74ea7e4dd778f.
+- OCI archive: image/s3-ui-fixed/crowdb.oci.tar; SHA-256:
+  4ab605d4b0f060cc040e5d217d94850bfa88e9f54437b980ce846867f7dac979.
+- Revision label 18015caf predates the new fix; the source-tree label
   records the actual source. Physical hosts have not been upgraded. Setup and
   retirement require this image, current local verification and the eventual
   new all-27-job CI PASS.
+- The preceding lifecycle-fixed image and its 48-case validation remain in
+  image/lifecycle-dependencies-fixed/ and ci/lifecycle-dependencies-fixed/.
+  Its Docker ID begins 359897a7, source tree is
+  1516797b67ad493c9bbf9c25048e574e7d994f31 and runtime SHA-256 is
+  c03d3b78cf126c42923cfd91b3e6d03160ae082e77039708afafda465d9a5e26.
+  Those 48 cases are not relabeled as new S3-image coverage.
 - The preceding split-fixed image and its 95-case validation remain in
   image/split-materialization-fixed/ and ci/split-materialization-fixed/.
   Its Docker ID begins cec0d2c1 and source tree is

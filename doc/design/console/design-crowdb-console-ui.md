@@ -1295,6 +1295,10 @@ and footer structure; it does not imply reading data pages or SQL querying.
   use the same menu contract without adding every Object to the left tree.
   Prefix is a key filter, not a physical folder; Bucket deletion does not silently
   cascade. Demo controls are not primary browsing actions. Exact bucket/key is visible.
+  A successful Object deletion immediately removes that exact Bucket/key from
+  the current object list before its server refresh completes; other rows remain.
+  Failed or unknown deletion retains the row. A later refresh failure preserves
+  the confirmed removal and reports the refresh error.
   Multipart state distinguishes uploaded parts, completion, abort, failure and
   unknown outcome. Downloads stream; previews read at most the advertised cap.
 - **S3-05:** Object details include Storage locations below HEAD, 20 extents per
@@ -1345,6 +1349,7 @@ S3: Bucket object list (S3-01/02/04):
 |                            |                                                              |                              |
 |                            | Objects stay in this bounded list.                           |                              |
 |                            | Right-click Object -> its own resource menu.                 |                              |
+|                            | Deleted Object disappears on success, then list refreshes.   |                              |
 +----------------------------+--------------------------------------------------------------+------------------------------+
 ```
 

@@ -135,12 +135,7 @@ async fn browse_diskdb() {
 #[tokio::test]
 #[ignore = "requires normal storage and owned container PID observations"]
 async fn auxiliary_process_menus() {
-    let context = TestNativeContext::connect().await;
-    super::native_storage::start(&context).await;
-    // Finish initial placement before independent Stop/Start operations.
-    super::native_balance::settle_existing(&context).await;
-    let result = crate::common::control::native_browser().await;
-    assert_eq!(result["passed"], true);
+    browse_storage().await;
 }
 
 #[tokio::test]

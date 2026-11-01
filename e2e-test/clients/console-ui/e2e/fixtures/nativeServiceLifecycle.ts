@@ -8,6 +8,7 @@ import { step } from './stepTimer';
 
 interface NativeServer {
   id: string;
+  mgmt_url?: string;
   node_id: number;
   pid?: number;
   pid_node_id?: number;
@@ -20,6 +21,25 @@ export async function nativeServerInventory(request: APIRequestContext): Promise
   const response = await request.get('/api/servers');
   expect(response.ok(), await response.text()).toBe(true);
   return response.json();
+}
+
+/** Probe the local dependency immediately before the single Access restart. */
+export async function accessDependencyReady(request: APIRequestContext, node: number) {
+  const dependency = (await nativeServerInventory(request)).find(row => row.node_id === node && row.service_type === 'chunk-kv');
+  expect(dependency).toBeDefined();
+  expect(dependency.id).toMatch(/^chunk-kv-\d+$/);
+  expect(dependency.mgmt_url).toMatch(/^https?:\/\//);
+  const instance = Number(dependency.id.slice('chunk-kv-'.length));
+  const deadline = performance.now() + 3000;
+  await step('native lifecycle: Access dependency readiness', () => expect.poll(async () => {
+    const remaining = Math.ceil(deadline - performance.now());
+    if (remaining <= 0) return false;
+    const response = await request.get(new URL('/ready', dependency.mgmt_url).href, { timeout: remaining });
+    const health = await response.json();
+    expect([200, 503], await response.text()).toContain(response.status());
+    expect(health.instance_id).toBe(instance);
+    return response.status() === 200 && health.ready === true;
+  }, { timeout: 3000, intervals: [100] }).toBe(true));
 }
 
 async function siblingIdentities(target: string) {
@@ -57,6 +77,7 @@ async function stopAuxiliary(page: Page, request: APIRequestContext, original: N
 
 async function startAuxiliary(page: Page, request: APIRequestContext, original: NativeServer, kind: string, label: string, prefix: string, oldOperation: string) {
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  if (kind === 'access-server') await accessDependencyReady(request, original.node_id);
   let submitted = false;
   try {
     await sidebar.getByRole('button', { name: 'N-1', exact: true }).click({ button: 'right' });

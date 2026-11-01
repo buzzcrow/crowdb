@@ -26,8 +26,10 @@ coverage, and identify the remaining work needed to improve CI stability.
 修复已推送为 `70ae86b1`，完整 CI 为 26/27 PASS；新发现的 terminal writer
 恢复故障已定位为 split 物化与父分区租约转移的冲突，修复和本地复验已完成，
 已推送为 `5af2737f`，run `41304660599` attempt 1 已结束，25/27 PASS。
-terminal writer recovery 已远端通过；auxiliary 与六节点部署修复及本地复验已完成，
-新的提交和精确 SHA CI 尚待完成。
+terminal writer recovery 已远端通过；auxiliary 与六节点部署修复已推送为
+`18015caf`，run `41311084753` attempt 1 全部 27 个 job 通过。
+后续只读复核发现早期 placement settle 不能排除自动 split，正在补强
+Access Restart 前的实际依赖就绪观察；该测试修正仍需独立发布和精确 SHA CI。
 物理容器在恢复前已停止，原因未知；七个容器、镜像和卷身份均保持不变。
 
 ## 当前执行队列
@@ -133,8 +135,10 @@ terminal writer recovery 已远端通过；auxiliary 与六节点部署修复及
 - Auxiliary 外部 Stop、OS 进程退出和页面 Failed 均通过，随后 Restart
   在 ChunkKV 初始放置的 TransferFencing 窗口返回 409 Waiting。原精确
   场景 12.4 秒 PASS；原并发组合 12.1 秒复现；串行对照 13.7 秒 PASS。
-  修复前置条件：沿用已有正常 placement settle，再执行故障，不调整生产
-  balance 策略、response/PID/OS/sibling/readiness 断言或 timeout。
+  首次修复沿用 placement settle，后续复核发现其 transfer observation
+  不覆盖同一或下一 tick 的自动 split。现改为每次 Access Restart 前直接
+  观察同节点 ChunkKV /ready 与 instance identity，保留三秒观察期限，
+  不调整生产 balance 策略、response/PID/OS/sibling/readiness 断言。
 - 六节点 Access Waiting 缺少分类，本地另复现带换行的 ChunkKV Waiting
   不匹配原正则。monitor 已恢复实际进程，计划仍为 failed。新增两例确定性
   回归先红；修正分类后又捕获同 waiting 状态保留旧 detail，导致已登记启动
@@ -149,8 +153,39 @@ terminal writer recovery 已远端通过；auxiliary 与六节点部署修复及
   数据组虽配置 concurrency 2，资源预算实际使两例顺序执行，不能声称并发。
 - UI 366、plan-hook 28（含两例新回归）、fixture 304、完整 TypeScript、
   fmt/full clippy 均通过。七个物理容器及卷身份未变。证据保存在
-  `ci/lifecycle-dependencies-fixed/`；新的精确 SHA CI 尚待完成。
+  `ci/lifecycle-dependencies-fixed/`；已推送 `18015caf`，对应 run
+  `41311084753` attempt 1 全部 27 个 job 通过，完整日志保留。
   原 16 项人工 review 保持未勾选。
+
+## Run 41311084753 后：Access Restart 的实际依赖边界
+
+- 27/27 PASS，上一轮 auxiliary 和六节点部署失败组均通过；CI merge
+  checkout 与 HEAD 完整 tree 相同。源码一致不表示本地与 CI 二进制相同。
+- 复核 balance monitor 发现 transfer observation 可报告 within tolerance，
+  同一 tick 仍可规划 split。早期 settle 通过不证明后续 Restart 依赖就绪。
+  新辅助函数在两处 Access Restart 前 GET 本机 ChunkKV /ready，核对
+  instance_id 与真实 ready，再保留原单次 mutation 和响应断言。
+- 首次新单例因使用不存在的 url 字段报 Invalid URL；已改为 API 实际
+  mgmt_url，保留失败证据。修正后精确单例 35.6 秒通过，原并发组合中的
+  auxiliary Playwright 14.5 秒通过。完整操作组为 17 PASS / 1 FAIL / 1 未执行。
+  生产镜像输入未变，继续使用 lifecycle-fixed 镜像并核对 source projection。
+- 新失败为 S3 multipart 删除后旧行超过原三秒期限。完整 trace 显示
+  DELETE 204 用时 1.279 秒，后续 list 200/KeyCount 0 用时 2.036 秒；
+  页面成功删除后仍等待 list 才清除缓存行。精确单例和并发组合对照通过，
+  串行对照再次复现同一断言。建议收到成功后立即移除精确 Bucket/key 行，
+  再执行原刷新；失败/未知结果保留行，原三秒 E2E 断言不变。
+  用户已同意该行为，先更新了 S3-04 和 ASCII 布局。可控延迟列表回归在
+  旧 UI 复现原行未移除，单行生产修正后三项通过，覆盖精确 key、其他行、
+  刷新失败以及删除拒绝/未知结果。初始测试 provider/字段标签错误单独保留，
+  不作为产品 red 证据。新镜像已通过精确 multipart（Playwright 4.6 秒）、
+  原 auxiliary 并发组合（auxiliary 12.7 秒）和全部 19-case 操作组
+  （417.230 秒；multipart 再次 4.1 秒通过）。UI 369、TypeScript、
+  fmt 和 full clippy 通过；新测试不支持的 exact 选项所致类型错误与
+  修正后的门禁分别保留。新的提交、推送和 27-job CI 尚待完成。
+  证据：`ci/access-readiness-fixed/s3-delete/`、`ci/s3-ui-fixed/`。
+- 物理 observer 的离线回归补充了恢复后固定 35 个进程身份的 fence，
+  数据审计期间不再沿用故障目标的宽松重启许可。两项 fence 回归及七项
+  closure 接受性检查通过；未派发物理启动、故障、归档或退休。
 
 ## 通过场景的稳定性改善
 
