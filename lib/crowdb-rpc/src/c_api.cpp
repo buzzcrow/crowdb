@@ -443,6 +443,12 @@ crowdb_rpc_status crowdb_rpc_client_send(crowdb_rpc_client_t client, crowdb_rpc_
             return CROWDB_RPC_ERR_INVALID_ARG;
         }
 
+        // Completion can synchronously destroy all caller-side wrappers. Keep
+        // their native owners through submission and never read wrappers after it.
+        const auto transport  = server->server->shared_transport();
+        const auto caller     = client->client;
+        const auto connection = conn->conn;
+
         crowdb::rpc::Buffer *ctrl_buf = control->buf;
         crowdb::rpc::Buffer *data_buf = (data != nullptr) ? data->buf : nullptr;
 
@@ -454,8 +460,8 @@ crowdb_rpc_status crowdb_rpc_client_send(crowdb_rpc_client_t client, crowdb_rpc_
             data_buf->ref_clone();
         }
 
-        bool ok = client->client->send(server->server->transport(), conn->conn.get(), request_id, ctrl_buf, data_buf,
-                                       msg_type, on_complete, user_data);
+        bool ok = caller->send(transport.get(), connection.get(), request_id, ctrl_buf, data_buf, msg_type, on_complete,
+                               user_data);
 
         // Release the caller's wrapper handles (decrements the ref bumped
         // above and frees the crowdb_rpc_buffer_s struct).
@@ -464,7 +470,7 @@ crowdb_rpc_status crowdb_rpc_client_send(crowdb_rpc_client_t client, crowdb_rpc_
             crowdb_rpc_buffer_release(data);
         }
 
-        return submit_status(ok, conn->conn.get());
+        return submit_status(ok, connection.get());
     }
     catch (...) {
         return CROWDB_RPC_ERR_CONN_ERROR;
@@ -487,6 +493,10 @@ crowdb_rpc_status crowdb_rpc_client_send_chain(crowdb_rpc_client_t client, crowd
             return CROWDB_RPC_ERR_INVALID_ARG;
         }
 
+        const auto transport  = server->server->shared_transport();
+        const auto caller     = client->client;
+        const auto connection = conn->conn;
+
         std::array<crowdb::rpc::Buffer *, crowdb::rpc::MAX_DATA_VIEWS> buffers{};
         uint64_t                                                       total = 0;
         for (uint8_t index = 0; index < data_view_count; ++index) {
@@ -504,14 +514,14 @@ crowdb_rpc_status crowdb_rpc_client_send_chain(crowdb_rpc_client_t client, crowd
         for (uint8_t index = 0; index < data_view_count; ++index) {
             buffers[index]->ref_clone();
         }
-        bool ok = client->client->send_chain(server->server->transport(), conn->conn.get(), request_id, control->buf,
-                                             buffers.data(), data_view_count, msg_type, on_complete, user_data);
+        bool ok = caller->send_chain(transport.get(), connection.get(), request_id, control->buf, buffers.data(),
+                                     data_view_count, msg_type, on_complete, user_data);
 
         crowdb_rpc_buffer_release(control);
         for (uint8_t index = 0; index < data_view_count; ++index) {
             crowdb_rpc_buffer_release(data_views[index]);
         }
-        return submit_status(ok, conn->conn.get());
+        return submit_status(ok, connection.get());
     }
     catch (...) {
         return CROWDB_RPC_ERR_CONN_ERROR;
@@ -528,6 +538,10 @@ crowdb_rpc_status crowdb_rpc_client_send_slab(crowdb_rpc_client_t client, crowdb
             return CROWDB_RPC_ERR_INVALID_ARG;
         }
 
+        const auto transport  = server->server->shared_transport();
+        const auto caller     = client->client;
+        const auto connection = conn->conn;
+
         crowdb::rpc::Buffer *ctrl_buf = control->buf;
         crowdb::rpc::Buffer *data_buf = (data != nullptr) ? data->buf : nullptr;
         if (ctrl_buf != nullptr) {
@@ -537,13 +551,13 @@ crowdb_rpc_status crowdb_rpc_client_send_slab(crowdb_rpc_client_t client, crowdb
             data_buf->ref_clone();
         }
 
-        bool ok = client->client->send_slab_only(server->server->transport(), conn->conn.get(), request_id, ctrl_buf,
-                                                 data_buf, msg_type, on_complete, user_data);
+        bool ok = caller->send_slab_only(transport.get(), connection.get(), request_id, ctrl_buf, data_buf, msg_type,
+                                         on_complete, user_data);
         crowdb_rpc_buffer_release(control);
         if (data != nullptr) {
             crowdb_rpc_buffer_release(data);
         }
-        return submit_status(ok, conn->conn.get());
+        return submit_status(ok, connection.get());
     }
     catch (...) {
         return CROWDB_RPC_ERR_CONN_ERROR;

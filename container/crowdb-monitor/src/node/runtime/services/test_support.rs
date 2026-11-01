@@ -121,6 +121,27 @@ impl NodeServiceForTests {
     /// # Errors
     /// Propagates bounded failure observation errors.
     pub fn failures_for_tests(&mut self) -> Result<Value> {
-        failures(&self.profile.paths.data_root, &self.processes.live_pids()?)
+        let binding = super::durable::read::<crowdb_protocol::mgmt::node::NodeBinding>(
+            &self.profile.paths.data_root.join("node-binding.json"),
+        )?
+        .ok_or("node is unbound")?;
+        failures(
+            &self.profile.paths.data_root,
+            &self.processes.live_pids()?,
+            &binding,
+        )
+    }
+
+    /// Read the production bound namespace of this fixture's actual children.
+    ///
+    /// # Errors
+    /// Propagates binding, process and durable observation failures.
+    pub fn owned_processes_for_tests(&mut self, cluster: &str, node: u64) -> Result<Value> {
+        super::super::observation::processes(
+            &self.profile.paths.data_root,
+            &mut self.processes,
+            cluster,
+            node,
+        )
     }
 }

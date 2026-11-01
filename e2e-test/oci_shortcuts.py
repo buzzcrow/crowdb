@@ -103,7 +103,11 @@ def verify(cluster):
             retained_credentials=True, retained_management_write=True,
             unrelated_container_ids=unrelated, actions=actions)
     finally:
-        invoke('oci-clean', '--all', '--delete-data' if success else '--keep-data')
+        for name in (one, other, three):
+            receipt = root / 'persistent/oci-clusters' / (name + '.json')
+            if receipt.exists():
+                invoke('oci-clean', '--cluster', name,
+                       '--delete-data' if success else '--keep-data')
     assert all(not container_ids(name) for name in (one,other,three,missing))
     (cluster.artifacts/'shortcuts-proof.json').write_text(json.dumps(proof,indent=2))
     print('PASS real Pixi one/three-node shortcuts, retained data and independent scoped cleanup without CLI',flush=True)

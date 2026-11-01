@@ -132,6 +132,11 @@ pub(super) fn pending(
         &intent.service_id
     };
     let alive = processes.owns(id) && processes.alive(id)?;
+    let binding: NodeBinding =
+        durable::read(&profile.paths.data_root.join("node-binding.json"))?.ok_or("node is unbound")?;
+    if previous.bootstrap.as_ref() != Some(&binding.bootstrap) {
+        return Ok(true);
+    }
     if previous.attempts >= 5
         && !alive
         && matches!(
@@ -147,7 +152,7 @@ pub(super) fn pending(
     Ok(matches!(
         intent.action,
         NodeServiceAction::Start | NodeServiceAction::Restart
-    ) && !alive)
+    ) && (!alive || previous.pid != processes.pid(id)))
 }
 
 fn bounded_error(error: &str) -> String {
@@ -157,6 +162,7 @@ fn bounded_error(error: &str) -> String {
 pub(super) fn failures(
     root: &std::path::Path,
     live: &std::collections::BTreeMap<String, u32>,
+    binding: &NodeBinding,
 ) -> Result<Value> {
     let directory = root.join("services");
     let mut failures = serde_json::Map::new();
@@ -169,6 +175,12 @@ pub(super) fn failures(
             continue;
         }
         if let Some(execution) = durable::read::<Execution>(&entry.path().join("execution.json"))? {
+            if execution.bootstrap.as_ref() != Some(&binding.bootstrap)
+                || execution.intent.cluster_id != binding.bootstrap.cluster_id
+                || execution.intent.node_id != binding.node_id
+            {
+                continue;
+            }
             if let Some(error) = execution.error {
                 let process = if execution.intent.kind == "kv" {
                     "kv"
@@ -190,4 +202,43 @@ pub(super) fn failures(
         }
     }
     Ok(Value::Object(failures))
+}
+
+/// Couple each live managed PID to the durable execution that actually owns it.
+pub(super) fn process_operations(
+    root: &std::path::Path,
+    live: &std::collections::BTreeMap<String, u32>,
+    binding: &NodeBinding,
+) -> Result<Value> {
+    let directory = root.join("services");
+    let mut operations = serde_json::Map::new();
+    if !directory.exists() {
+        return Ok(Value::Object(operations));
+    }
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        if let Some(execution) = durable::read::<Execution>(&entry.path().join("execution.json"))? {
+            if execution.bootstrap.as_ref() != Some(&binding.bootstrap)
+                || execution.intent.cluster_id != binding.bootstrap.cluster_id
+                || execution.intent.node_id != binding.node_id
+            {
+                continue;
+            }
+            let process = if execution.intent.kind == "kv" {
+                "kv"
+            } else {
+                &execution.intent.service_id
+            };
+            if execution.pid.is_some() && execution.pid == live.get(process).copied() {
+                if operations.len() >= 4096 {
+                    return Err("service process observation exceeds bound".into());
+                }
+                operations.insert(process.to_owned(), execution.intent.operation_id.into());
+            }
+        }
+    }
+    Ok(Value::Object(operations))
 }

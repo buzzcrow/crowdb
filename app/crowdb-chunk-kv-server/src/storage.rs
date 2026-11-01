@@ -534,16 +534,22 @@ impl ChunkKvStorage {
         if !fresh {
             return recover_bootstrap_partition(config, page_store, stream).await;
         }
-        let partition = Partition::open_native(
-            partition_id,
-            range,
-            config.owner_epoch,
-            PartitionConfig::default(),
-            config.tree_id,
-            crowdb_tree_ffi::Config::default(),
-            page_store,
-            stream,
-        )
+        let owner_epoch = config.owner_epoch;
+        let tree_id = config.tree_id;
+        let partition = tokio::task::spawn_blocking(move || {
+            Partition::open_native(
+                partition_id,
+                range,
+                owner_epoch,
+                PartitionConfig::default(),
+                tree_id,
+                crowdb_tree_ffi::Config::default(),
+                page_store,
+                stream,
+            )
+        })
+        .await
+        .map_err(|error| StorageRuntimeError::Partition(format!("bootstrap tree open: {error}")))?
         .map_err(|error| StorageRuntimeError::Partition(format!("bootstrap tree open: {error}")))?;
         initialize_bootstrap_root(&partition, config).await?;
         Ok(partition)
@@ -599,10 +605,16 @@ impl ChunkKvStorage {
                     "nonempty child WAL has no committed handoff proof",
                 ));
             }
-            crowdb_chunk_kv::CrowdbPartitionTree::open(child.tree_id, &child.tree_config)
-                .map_err(|error| storage_plan_error(&error.to_string()))?
-                .unpin_generation(split_plan(transition).transition_id)
-                .map_err(|error| storage_plan_error(&error.to_string()))?;
+            let tree_id = child.tree_id;
+            let tree_config = child.tree_config.clone();
+            let transition_id = split_plan(transition).transition_id;
+            tokio::task::spawn_blocking(move || {
+                crowdb_chunk_kv::CrowdbPartitionTree::open(tree_id, &tree_config)?
+                    .unpin_generation(transition_id)
+            })
+            .await
+            .map_err(|error| storage_plan_error(&error.to_string()))?
+            .map_err(|error| storage_plan_error(&error.to_string()))?;
             child
         };
         let handoff = Arc::new(split_handoff::SplitHandoffCommit {

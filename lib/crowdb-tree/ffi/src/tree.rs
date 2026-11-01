@@ -559,6 +559,11 @@ pub fn ct_flush_logging() {
 /// buffered log messages are written to disk. Safe to call when logging
 /// was never initialized (no-op in that case).
 pub fn ct_shutdown_logging() {
+    #[cfg(feature = "chunk-rpc")]
+    assert!(
+        crowdb_rpc_ffi::OwnedClientRoute::drain_retired(std::time::Duration::from_secs(30)),
+        "RPC route owner teardown did not drain before native logging shutdown"
+    );
     unsafe { sys::ct_shutdown_logging() };
 }
 

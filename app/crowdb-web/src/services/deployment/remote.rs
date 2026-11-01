@@ -62,13 +62,7 @@ pub(super) async fn deploy(
         configuration,
         environment: owned_environment(state, body, &node)?,
     };
-    let result = match crowdb_console_shared::deployment::services::execute(
-        state.kv_client().await.as_ref(),
-        &node,
-        intent,
-    )
-    .await
-    {
+    let result = match crate::services::remote::execute(state, &node, intent).await {
         Ok(result) => result,
         Err(error)
             if error

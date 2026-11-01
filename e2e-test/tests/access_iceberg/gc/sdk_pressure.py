@@ -1,17 +1,40 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
 
-import sys, json, time
+import sys, json, time, traceback
 from concurrent.futures import ThreadPoolExecutor
-import requests
 from pathlib import Path
-from pyiceberg.catalog import load_catalog
-from pyiceberg.schema import Schema
-from pyiceberg.types import LongType, NestedField
 
-control = Path(sys.argv[5]) if len(sys.argv) > 5 else None
+control = None
+
+def wait_for_release(directory, worker):
+    (directory / f"ready-{worker}").touch()
+    while True:
+        failures = sorted(directory.glob("failed-*"))
+        if failures:
+            raise RuntimeError(f"foreground peer failed: {failures[0].read_text()}")
+        if (directory / "stop").exists():
+            raise RuntimeError("foreground cancelled before release")
+        if (directory / "run").exists():
+            return
+        time.sleep(0.01)
+
+def guarded_run(worker):
+    try:
+        return run(worker)
+    except BaseException:
+        if control and not any(control.glob("failed-*")):
+            temporary = control / f"failure-{worker}.tmp"
+            temporary.write_text(traceback.format_exc())
+            temporary.replace(control / f"failed-{worker}")
+        raise
 
 def run(worker):
+    import requests
+    from pyiceberg.catalog import load_catalog
+    from pyiceberg.schema import Schema
+    from pyiceberg.types import LongType, NestedField
+
     samples = {}
     windows = {}
     def measure(operation, call):
@@ -27,11 +50,7 @@ def run(worker):
     namespace = (f"{prefix}-{worker}",)
     measure("create_namespace", lambda: catalog.create_namespace(namespace))
     if control:
-        (control / f"ready-{worker}").touch()
-        while not (control / "run").exists():
-            if (control / "stop").exists():
-                raise RuntimeError("foreground cancelled before release")
-            time.sleep(0.01)
+        wait_for_release(control, worker)
     count = int(sys.argv[2]) if len(sys.argv) > 2 else 3
     interval = float(sys.argv[3]) if len(sys.argv) > 3 else 0
     # Keep paced workers spread across a cycle so a short deletion interval
@@ -68,16 +87,22 @@ def run(worker):
     measure("drop_namespace", lambda: catalog.drop_namespace(namespace))
     return samples, windows
 
-with ThreadPoolExecutor(max_workers=4) as executor:
-    results = list(executor.map(run, range(4)))
-combined = {}
-combined_windows = {}
-for result, windows in results:
-    for operation, samples in result.items():
-        combined.setdefault(operation, []).extend(samples)
-        combined_windows.setdefault(operation, []).extend(windows.get(operation, []))
-report = {}
-for operation, samples in combined.items():
-    ordered = sorted(samples)
-    report[operation] = {"raw_ns":samples,"count":len(samples),"p50_ns":ordered[(len(ordered)-1)//2],"p99_ns":ordered[(99*len(ordered)+99)//100-1],"windows_unix_ns":combined_windows[operation]}
-print("gc_foreground_official_sdk " + json.dumps(report), flush=True)
+def main():
+    global control
+    control = Path(sys.argv[5]) if len(sys.argv) > 5 else None
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(guarded_run, range(4)))
+    combined = {}
+    combined_windows = {}
+    for result, windows in results:
+        for operation, samples in result.items():
+            combined.setdefault(operation, []).extend(samples)
+            combined_windows.setdefault(operation, []).extend(windows.get(operation, []))
+    report = {}
+    for operation, samples in combined.items():
+        ordered = sorted(samples)
+        report[operation] = {"raw_ns":samples,"count":len(samples),"p50_ns":ordered[(len(ordered)-1)//2],"p99_ns":ordered[(99*len(ordered)+99)//100-1],"windows_unix_ns":combined_windows[operation]}
+    print("gc_foreground_official_sdk " + json.dumps(report), flush=True)
+
+if __name__ == "__main__":
+    main()

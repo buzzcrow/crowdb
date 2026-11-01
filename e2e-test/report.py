@@ -17,8 +17,10 @@ def write_report(root, timings):
             phase.get("exit_code") == phase.get("expected_exit_code", 0) for phase in phases)
         actions = [json.loads(action.read_text()) for action in sorted(
             (directory / "control").glob("*.response.json"))]
+        status = ("not_executed" if fixture.get("status") == "not_executed"
+                  else "pass" if completed else "failed")
         cases.append({**case, "actions": actions, "artifacts": str(directory), "phases": phases,
-                      "fixture": fixture, "status": "pass" if completed else "failed"})
+                      "fixture": fixture, "status": status})
     cases.sort(key=lambda case: case["fixture"].get("total", 0), reverse=True)
     slowest_clients = sorted(
         ({"case": case["case"], "scope": case["scope"], **phase}

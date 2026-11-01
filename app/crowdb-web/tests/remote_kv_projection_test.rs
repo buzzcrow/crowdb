@@ -99,6 +99,14 @@ async fn kv_lifecycle_intents_preserve_admitted_endpoints_while_auxiliary_servic
         .with_node_monitor("http://127.0.0.1:12345")
         .unwrap();
     *state.kv_client.write().await = Some(kv);
+    let _observer = crowdb_web::start_service_observer(&state).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while state.config.read().unwrap().servers.len() != 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("background authority projection did not publish auxiliary registration");
     let response = router(state)
         .oneshot(
             Request::builder()

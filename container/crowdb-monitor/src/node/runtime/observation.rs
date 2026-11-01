@@ -35,6 +35,10 @@ pub(super) fn processes(
     // This authenticated read observes only local children. It needs no live
     // Group-0 grant and remains available while that authority is unavailable.
     let live = manager.live_pids()?;
-    let failures = super::services::failures(root, &live)?;
-    Ok(json!({"cluster_id":cluster,"node_id":node,"processes":live,"service_failures":failures}))
+    let failures = super::services::failures(root, &live, &binding)?;
+    let operations = super::services::process_operations(root, &live, &binding)?;
+    Ok(
+        json!({"cluster_id":cluster,"node_id":node,"bootstrap":binding.bootstrap,
+        "processes":live,"process_operations":operations,"service_failures":failures}),
+    )
 }

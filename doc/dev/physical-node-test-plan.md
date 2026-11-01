@@ -32,6 +32,10 @@ Upstream: [deployment and recovery](../design/deploy/design-crowdb-deploy.md),
   or the Docker daemon.
 - A reduced three-node run must explicitly declare A1/A2/B1 and three voters.
   It cannot substitute for five-node coverage.
+- Record each retained EC layout's fragment distribution and actual loss budget.
+  Three live KV voters do not establish payload availability. For example,
+  EC 8+4 with six fragments on B cannot reconstruct that data while B is offline.
+  Keep this limit separate from the acknowledged-data audit after B returns.
 
 ## 2. Execution contract
 
@@ -156,7 +160,10 @@ acknowledged writes from the current case.
   Verify single-attempt KV writes/reads and catalog takeover onto surviving
   Serving owners within 180 seconds. While B stays offline, submit fresh S3
   writes and Iceberg property commits through A, then cross-read. Use new
-  witnesses per fault to prove new writes occurred. Restore B, then recreate
+  witnesses per fault to prove new writes occurred, and verify those witnesses
+  through all three A endpoints while B remains offline. Record temporary
+  unavailability of older EC data when the stopped fragments exceed its actual
+  loss budget; do not claim rack protection for such a layout. Restore B, then recreate
   B1/B2 individually with retained volumes. Check original identities, all data
   through five endpoints, and all five replicas caught up.
 - [ ] **P13 All three A nodes offline**: stop A1/A2/A3; B loses quorum.
@@ -209,7 +216,10 @@ prove individual deadlines. Preserve shorter production-client limits.
   with verified ownership. Check owned ports are closed on both hosts, no owned
   resources remain, and SSH key access still works. Retain run artifacts.
   Do not prune the daemon or clean other tasks' resources. Capture failures
-  before cleanup.
+  before cleanup. Before retiring failed retained data, privately archive the
+  stopped owned volumes and verify archive integrity and checksums. A Docker
+  archive helper streaming binary tar output must use `--log-driver none` so
+  the daemon does not duplicate the archive into container JSON logs.
 
 ## 7. Deliverables and the next run
 
@@ -230,13 +240,6 @@ Save these artifacts and link them from the final summary:
   and reports, Iceberg tables/snapshots, S3 inventory, immutable Dataset snapshots,
   and sample verification summaries. Confirm implementation and acceptance of
   all three targets before use; mark unimplemented paths `NOT RUN`.
-
-Open issue requiring retest (2026-10-31): five containers writing
-512 records × 64 KiB reached the default five-second deadline during
-split/cutover. The previous run acknowledged and recovered only 294 records,
-not a full load. Reproduce, repair, and fully pass P04; then seed at least
-4096 records and run 30 continuous minutes. Remove this open item only after
-successful repair and retest, preserving results in its run directory.
 
 Suggested request for a future run:
 

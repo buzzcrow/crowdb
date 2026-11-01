@@ -111,8 +111,8 @@ async fn streaming_reuses_only_one_verified_leaf_directory_without_prefetch() {
         let input = vec![42; length];
         writer.push(&input).await.unwrap();
         let tree = writer.finish().await.unwrap();
-        let parent_reads = if length > 256 { length } else { 0 };
         let directory_reads = length.div_ceil(256);
+        let parent_reads = if length > 256 { directory_reads } else { 0 };
         let mut reader = FileReader::new(store.clone(), record(owner, tree), None, 1).unwrap();
         for expected in &input {
             assert_eq!(reader.next().await.unwrap().unwrap(), [*expected]);
@@ -125,6 +125,30 @@ async fn streaming_reuses_only_one_verified_leaf_directory_without_prefetch() {
             length + parent_reads + directory_reads
         );
     }
+}
+
+#[tokio::test]
+async fn ranged_stream_reuses_the_current_directory_and_checks_the_next_boundary() {
+    let store = Arc::new(TestBlocks::default());
+    let owner = owner();
+    let input: Vec<_> = (0..513).map(|index| u8::try_from(index % 251).unwrap()).collect();
+    let mut writer = FileTreeWriter::new(store.clone(), owner, 1).unwrap();
+    writer.push(&input).await.unwrap();
+    let mut reader = FileReader::new(
+        store.clone(),
+        record(owner, writer.finish().await.unwrap()),
+        Some(ByteRange { start: 254, end: 258 }),
+        1,
+    )
+    .unwrap();
+    for expected in &input[254..256] {
+        assert_eq!(reader.next().await.unwrap().unwrap(), [*expected]);
+    }
+    assert_eq!(store.reads.load(Ordering::SeqCst), 4);
+    store.corrupt_reads.store(true, Ordering::SeqCst);
+    assert!(reader.next().await.is_err());
+    assert!(reader.next().await.is_err());
+    assert_eq!(store.reads.load(Ordering::SeqCst), 5);
 }
 
 #[tokio::test]

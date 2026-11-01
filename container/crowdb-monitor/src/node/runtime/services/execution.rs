@@ -33,25 +33,13 @@ pub(in crate::node::runtime) async fn execute(
         &intent.service_id
     };
     std::fs::create_dir_all(&directory)?;
-    let mut attempts = 0;
-    let mut continuing = false;
-    if let Some(previous) = previous {
-        if previous.intent.operation_id == intent.operation_id {
-            if previous.intent != intent {
-                return Err("operation identity reused with other inputs".into());
-            }
-            attempts = previous.attempts;
-            continuing = matches!(
-                intent.action,
-                NodeServiceAction::Start | NodeServiceAction::Restart
-            ) && processes.owns(process_id)
-                && processes.alive(process_id)?;
-            if previous.complete
-                && (previous.pid.is_none() || (processes.owns(process_id) && processes.alive(process_id)?))
-            {
-                return Ok(json!({"pid": processes.pid(process_id), "operation_id": intent.operation_id}));
-            }
-        }
+    let Replay {
+        mut attempts,
+        continuing,
+        completed,
+    } = replay(previous.as_ref(), &binding, &intent, processes, process_id)?;
+    if completed {
+        return Ok(json!({"pid": processes.pid(process_id), "operation_id": intent.operation_id}));
     }
     if matches!(
         intent.action,
@@ -107,6 +95,50 @@ pub(in crate::node::runtime) async fn execute(
     )?;
     result?;
     Ok(json!({"pid": pid, "operation_id": intent.operation_id}))
+}
+
+#[derive(Default)]
+struct Replay {
+    attempts: u32,
+    continuing: bool,
+    completed: bool,
+}
+
+fn replay(
+    previous: Option<&Execution>,
+    binding: &NodeBinding,
+    intent: &NodeServiceIntent,
+    processes: &mut ProcessManager,
+    process_id: &str,
+) -> Result<Replay> {
+    let Some(previous) = previous.filter(|previous| previous.intent.operation_id == intent.operation_id)
+    else {
+        return Ok(Replay::default());
+    };
+    if previous.intent != *intent {
+        return Err("operation identity reused with other inputs".into());
+    }
+    if previous
+        .bootstrap
+        .as_ref()
+        .is_some_and(|bootstrap| bootstrap != &binding.bootstrap)
+    {
+        return Err("service execution belongs to another bootstrap".into());
+    }
+    let continuing = matches!(
+        intent.action,
+        NodeServiceAction::Start | NodeServiceAction::Restart
+    ) && processes.owns(process_id)
+        && processes.alive(process_id)?;
+    let completed = previous.complete
+        && previous.bootstrap.as_ref() == Some(&binding.bootstrap)
+        && previous.pid == processes.pid(process_id)
+        && (previous.pid.is_none() || (processes.owns(process_id) && processes.alive(process_id)?));
+    Ok(Replay {
+        attempts: previous.attempts,
+        continuing,
+        completed,
+    })
 }
 
 async fn apply(
@@ -178,7 +210,11 @@ async fn apply(
 // A live process has already had its initial startup window. Later health
 // observations must yield after one probe so control requests can make progress.
 async fn observe_ready(profile: &DeploymentProfile, intent: &NodeServiceIntent) -> Result<()> {
-    let service = super::super::probes::for_intent(profile, intent)?;
+    let service = if intent.kind == "kv" {
+        super::super::service(profile, "kv")?
+    } else {
+        super::super::probes::for_intent(profile, intent)?
+    };
     crate::ProbeExecutor::new(intent.kind == "diskio")?
         .probe_service(&service, &std::collections::BTreeMap::new())
         .await

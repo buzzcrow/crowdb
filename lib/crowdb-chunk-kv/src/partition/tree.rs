@@ -469,10 +469,13 @@ impl PartitionTree for CrowdbPartitionTree {
         wal_replay_offset: u64,
     ) -> Result<(u64, u64, std::sync::Arc<dyn PartitionTree>)> {
         let (generation, applied_seq) = self.checkpoint(wal_replay_offset).await?;
-        let config = self.config.as_ref().ok_or_else(|| {
+        let config = self.config.clone().ok_or_else(|| {
             ChunkKvError::InvalidRequest("native tree was not opened from a retained configuration".into())
         })?;
-        let snapshot = Self::open(self.tree_id, config)?;
+        let tree_id = self.tree_id;
+        let snapshot = tokio::task::spawn_blocking(move || Self::open(tree_id, &config))
+            .await
+            .map_err(|error| ChunkKvError::TreeUnavailable(error.to_string()))??;
         let observed = snapshot.tree.snapshot_state().map_err(map_tree_read_error)?;
         if observed != (generation, applied_seq) {
             return Err(ChunkKvError::TreeCorruption(format!(
@@ -500,13 +503,20 @@ impl PartitionTree for CrowdbPartitionTree {
             start: range.start.clone(),
             end: range.end.clone(),
         };
-        let retained_config = config.clone();
-        let (tree, stats) = self.tree.rebuild_range(&config).map_err(map_tree_read_error)?;
+        let source = std::sync::Arc::clone(&self.tree);
+        let (tree, stats, config) = tokio::task::spawn_blocking(move || {
+            source
+                .rebuild_range(&config)
+                .map(|(tree, stats)| (tree, stats, config))
+        })
+        .await
+        .map_err(|error| ChunkKvError::TreeUnavailable(error.to_string()))?
+        .map_err(map_tree_read_error)?;
         Ok((
             std::sync::Arc::new(Self {
                 tree_id,
                 tree: std::sync::Arc::new(tree),
-                config: Some(retained_config),
+                config: Some(config),
             }),
             stats,
         ))

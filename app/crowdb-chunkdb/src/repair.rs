@@ -25,6 +25,9 @@ use crate::metrics::RepairMetrics;
 use crate::task::executor::TaskFuture;
 use crate::task::{TaskHandler, TaskManager, TaskOutcome, TaskStore, TaskStoreError};
 
+mod memory;
+mod targets;
+
 pub const REPAIR_STRIP_TASK_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -209,7 +212,6 @@ impl RepairStripTaskHandler {
         self
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn execute_once(&self, task: &ChunkTaskValue) -> Result<RepairStats, RepairRunError> {
         let mut payload = decode_payload(&task.payload)?;
         let chunk = self.lifecycle.query_chunk(&payload.chunk_id).await?;
@@ -224,6 +226,7 @@ impl RepairStripTaskHandler {
         let segments = strip_segments(strip)?;
         self.confirm_published_targets(task, &mut payload, &segments)
             .await?;
+        self.reconcile_allocated_targets(task, &mut payload).await?;
         let unavailable: Vec<_> = strip
             .unavailable_segments
             .iter()
@@ -237,45 +240,9 @@ impl RepairStripTaskHandler {
             .checked_mul(1024)
             .ok_or_else(|| RepairRunError::Permanent("unit size overflows".into()))?;
         let shard_bytes = segment_size(&segments[0], unit_bytes)?;
-        let required = shard_bytes
-            .checked_mul(u64::try_from(segments.len().saturating_add(1)).unwrap_or(u64::MAX))
-            .and_then(|bytes| usize::try_from(bytes).ok())
-            .ok_or_else(|| RepairRunError::Permanent("repair memory calculation overflows".into()))?;
-        if required > self.memory_limit {
-            return Err(RepairRunError::Retry(format!(
-                "repair requires {required} bytes but the limit is {}",
-                self.memory_limit
-            )));
-        }
-        let permits = u32::try_from(required)
-            .map_err(|_| RepairRunError::Permanent("repair memory exceeds semaphore".into()))?;
-        let _reservation = self
-            .memory
-            .clone()
-            .acquire_many_owned(permits)
-            .await
-            .map_err(|_| RepairRunError::Retry("repair memory budget closed".into()))?;
-        self.metrics.reserve_memory(required);
-        let _memory_metrics = RepairMemoryGuard {
-            metrics: Arc::clone(&self.metrics),
-            bytes: required,
-        };
+        let (_reservation, _memory_metrics) = self.reserve_memory(shard_bytes, segments.len()).await?;
 
-        let recovered = match strip.strip.as_ref() {
-            Some(Strip::MirrorStrip(_)) => self.recover_mirror(strip, &segments).await?,
-            Some(Strip::EcStrip(ec)) => {
-                let sealed_bytes = if chunk.acknowledged_cursor == 0 {
-                    u64::from(strip.sealed_length) * 1024
-                } else {
-                    chunk
-                        .acknowledged_cursor
-                        .saturating_sub(u64::from(strip.chunk_offset) * 1024)
-                        .min(u64::from(strip.capacity) * 1024)
-                };
-                self.recover_ec(strip, ec, &segments, sealed_bytes).await?
-            }
-            None => return Err(RepairRunError::Permanent("strip has no body".into())),
-        };
+        let recovered = self.recover_shards(&chunk, strip, &segments).await?;
         if !recovered.new_failures.is_empty() {
             self.persist_new_failures(
                 &chunk,
@@ -288,94 +255,9 @@ impl RepairStripTaskHandler {
             return Err(RepairRunError::Retry("new failed segments were persisted".into()));
         }
 
-        let mut replacement = strip.clone();
-        let mut surviving: Vec<_> = segments
-            .iter()
-            .copied()
-            .filter(|segment| !unavailable.contains(segment))
-            .collect();
-        // Even when node anti-affinity is relaxed for an undersized test
-        // cluster, never place two shards from one strip on the same disk.
-        let mut excluded: Vec<_> = segments.iter().filter_map(|segment| segment.disk_id).collect();
-        for failed in &unavailable {
-            let index = segments
-                .iter()
-                .position(|segment| segment == failed)
-                .ok_or_else(|| RepairRunError::Permanent("failed segment disappeared".into()))?;
-            let target_index = payload.targets.iter().position(|target| target.source == *failed);
-            let target_index = if let Some(index) = target_index {
-                index
-            } else {
-                let destination = self
-                    .lifecycle
-                    .allocate_repair_segment(
-                        &payload.chunk_id,
-                        failed,
-                        &surviving,
-                        &excluded,
-                        self.allow_unsafe_placement,
-                    )
-                    .await?;
-                payload.targets.push(RepairTargetCheckpoint {
-                    source: *failed,
-                    destination,
-                    phase: RepairTargetPhase::Allocated,
-                });
-                self.checkpoint(task, &payload).await?;
-                payload.targets.len().saturating_sub(1)
-            };
-            let destination = payload.targets[target_index].destination;
-            if payload.targets[target_index].phase == RepairTargetPhase::Allocated {
-                let mut data = recovered.shards[index].clone();
-                if let Some(Strip::EcStrip(ec)) = &strip.strip {
-                    let sealed = if chunk.acknowledged_cursor == 0 {
-                        u64::from(strip.sealed_length) * 1024
-                    } else {
-                        chunk
-                            .acknowledged_cursor
-                            .saturating_sub(u64::from(strip.chunk_offset) * 1024)
-                            .min(u64::from(strip.capacity) * 1024)
-                    };
-                    let valid = if index < ec.data_num as usize {
-                        sealed.saturating_sub(index as u64 * shard_bytes).min(shard_bytes)
-                    } else {
-                        sealed.min(shard_bytes)
-                    };
-                    data = data.slice(..usize::try_from(valid).unwrap_or(data.len()));
-                }
-                if !data.is_empty() {
-                    self.io
-                        .write_segment(&destination, unit_bytes, data)
-                        .await
-                        .map_err(|error| RepairRunError::Retry(error.to_string()))?;
-                }
-                self.io
-                    .fsync_segment(&destination)
-                    .await
-                    .map_err(|error| RepairRunError::Retry(error.to_string()))?;
-                payload.targets[target_index].phase = RepairTargetPhase::Copied;
-                self.checkpoint(task, &payload).await?;
-            }
-            if let Some(shared) = &self.ad_hoc {
-                shared.rebuilt(
-                    RecoveryKey {
-                        chunk_id: payload.chunk_id,
-                        strip_sequence: payload.strip_sequence,
-                        segment: *failed,
-                    },
-                    recovered.shards[index].clone(),
-                );
-            }
-            let new_segment = destination;
-            replace_segment(&mut replacement, failed, new_segment)?;
-            surviving.push(new_segment);
-            if let Some(disk_id) = new_segment.disk_id {
-                excluded.push(disk_id);
-            }
-        }
-        replacement
-            .unavailable_segments
-            .retain(|segment| !unavailable.contains(segment));
+        let replacement = self
+            .prepare_replacement(task, &mut payload, &chunk, strip, &recovered, &unavailable)
+            .await?;
         self.lifecycle
             .publish_tentative_chunk_strip_range(
                 &payload.chunk_id,
@@ -457,6 +339,29 @@ impl RepairStripTaskHandler {
             }
         }
         self.checkpoint(task, payload).await
+    }
+
+    async fn recover_shards(
+        &self,
+        chunk: &Chunk,
+        strip: &ChunkStrip,
+        segments: &[Segment],
+    ) -> Result<RecoveredShards, RepairRunError> {
+        match strip.strip.as_ref() {
+            Some(Strip::MirrorStrip(_)) => self.recover_mirror(strip, segments).await,
+            Some(Strip::EcStrip(ec)) => {
+                let sealed_bytes = if chunk.acknowledged_cursor == 0 {
+                    u64::from(strip.sealed_length) * 1024
+                } else {
+                    chunk
+                        .acknowledged_cursor
+                        .saturating_sub(u64::from(strip.chunk_offset) * 1024)
+                        .min(u64::from(strip.capacity) * 1024)
+                };
+                self.recover_ec(strip, ec, segments, sealed_bytes).await
+            }
+            None => Err(RepairRunError::Permanent("strip has no body".into())),
+        }
     }
 
     async fn recover_mirror(
@@ -642,17 +547,6 @@ struct RecoveredShards {
 struct RepairStats {
     segments: u64,
     bytes: u64,
-}
-
-struct RepairMemoryGuard {
-    metrics: Arc<RepairMetrics>,
-    bytes: usize,
-}
-
-impl Drop for RepairMemoryGuard {
-    fn drop(&mut self) {
-        self.metrics.release_memory(self.bytes);
-    }
 }
 
 #[derive(Debug, thiserror::Error)]

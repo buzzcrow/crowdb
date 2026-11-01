@@ -2,6 +2,8 @@
 # Licensed under the Apache License, Version 2.0.
 """Failure ownership and resource contracts without a container daemon."""
 
+import contextlib
+import io
 import json
 import tempfile
 import subprocess
@@ -107,9 +109,35 @@ class FixtureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             daemon = Daemon()
             daemon.fail_cleanup = True
-            with self.assertRaisesRegex(RuntimeError, "first server failed") as caught, Cluster("image", directory, daemon):
+            cluster = Cluster("image", directory, daemon)
+            cluster.case_name = "owned-startup"
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), \
+                    self.assertRaisesRegex(RuntimeError, "first server failed") as caught, cluster:
                 pass
             self.assertIn("owned cleanup failed", " ".join(caught.exception.__notes__))
+            self.assertEqual(output.getvalue().count("[FAILED CASE] owned-startup:"), 1)
+            self.assertIn("[CLEANUP ERROR] owned-startup: owned cleanup failed", output.getvalue())
+            self.assertIn("daemon cleanup unavailable", output.getvalue())
+
+    def test_cleanup_failure_after_client_success_prints_the_actual_case_and_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            daemon = Daemon()
+            daemon.fail_cleanup = True
+            cluster = Cluster("image", directory, daemon)
+            cluster.case_name = "owned-successful-client"
+            cluster.network_created = True
+            daemon.resources[("network", cluster.run_id)] = cluster.run_id
+            output = io.StringIO()
+            with patch.object(cluster, "start", return_value=cluster), \
+                    contextlib.redirect_stdout(output), \
+                    self.assertRaisesRegex(RuntimeError, "owned cleanup failed"), cluster:
+                pass
+            self.assertIn("[FAILED CASE] owned-successful-client: owned cleanup failed", output.getvalue())
+            self.assertIn("daemon cleanup unavailable", output.getvalue())
+            self.assertIn(str(cluster.artifacts), output.getvalue())
+            self.assertEqual(cluster.timings["status"], "failed")
+            self.assertEqual(json.loads((cluster.artifacts / "timing.json").read_text())["status"], "failed")
 
     def test_interruption_tears_down_and_keeps_other_fixture(self):
         with tempfile.TemporaryDirectory() as directory:

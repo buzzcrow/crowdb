@@ -2,8 +2,23 @@
 // Licensed under the Apache License, Version 2.0.
 
 mod access;
+mod cache;
+mod mutation;
+mod sampling;
+mod source;
+#[cfg(feature = "test-util")]
+mod test_support;
+mod worker;
 #[cfg(feature = "test-util")]
 pub use access::remote_access_health_for_tests;
+pub(crate) use cache::ServiceObservations;
+#[cfg(feature = "test-util")]
+pub use test_support::{invalidate_service_observation_for_tests, ServiceObservationMutationForTests};
+pub use worker::{start_service_observer, ServiceObserver};
+#[cfg(feature = "test-util")]
+pub use worker::{
+    start_service_observer_for_tests, ServiceObservationSource as ServiceObservationSourceForTests,
+};
 
 use crate::state::AppState;
 use axum::{extract::State, Json};
@@ -49,59 +64,43 @@ pub struct ServerSummary {
 /// # Panics
 /// Panics if the `RwLock` is poisoned.
 pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<ServerSummary>> {
-    let intents = if state.node_monitor_url.is_some()
-        && crate::node::cluster_binding(&state).ok().flatten().is_some()
-    {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            super::remote::refresh_with_intents(&state),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let snap = state.monitor_cache.snapshot().await;
     let cfg = state.config.read().unwrap().clone();
     let remote = state.node_monitor_url.is_some();
-    let remote_pids = if remote {
-        super::remote::processes(&state, &cfg, &intents).await
+    let binding = remote
+        .then(|| crate::node::cluster_binding(&state).ok().flatten())
+        .flatten();
+    let observed = state.service_observations.latest.load_full();
+    // Remote inventory readers never perform authority, SSH, or endpoint I/O.
+    let snap = if remote {
+        std::collections::BTreeMap::default()
     } else {
-        super::remote::ProcessObservations::default()
+        state.monitor_cache.snapshot().await
     };
     let rows = futures::future::join_all(cfg.servers.iter().map(|s| {
         let state = &state;
         let cfg = &cfg;
         let snap = &snap;
-        let remote_pids = &remote_pids;
-        let intents = &intents;
+        let observed = &observed;
+        let binding = &binding;
         async move {
-            let runtime_pid = match s.node_id {
-                Some(node_id) if s.service_type == ServiceType::Diskdb => {
-                    state.diskdb_runtime_pid(node_id.to_string())
-                }
-                Some(node_id) if s.service_type == ServiceType::PaxosKv => {
-                    state.runtime_pid(node_id.to_string())
-                }
-                _ => None,
-            };
-            let pid = if remote {
-                let process_id = if s.service_type == ServiceType::PaxosKv {
-                    "kv"
-                } else {
-                    &s.id
-                };
-                s.node_id
-                    .and_then(|node| remote_pids.pids.get(&(node, process_id.to_owned())).copied())
+            let (pid, health, start_pending) = if remote {
+                observed.read(binding.as_ref(), s.node_id.and_then(|id| cfg.node(id)), s)
             } else {
-                runtime_pid.or_else(|| {
+                let runtime_pid = match s.node_id {
+                    Some(node_id) if s.service_type == ServiceType::Diskdb => {
+                        state.diskdb_runtime_pid(node_id.to_string())
+                    }
+                    Some(node_id) if s.service_type == ServiceType::PaxosKv => {
+                        state.runtime_pid(node_id.to_string())
+                    }
+                    _ => None,
+                };
+                let pid = runtime_pid.or_else(|| {
                     s.pid
                         .filter(|pid| crowdb_console_shared::lifecycle::process_is_alive(*pid))
-                })
+                });
+                (pid, observe_health(state, cfg, s, pid, snap, &[]).await, false)
             };
-            let health = observe_health(state, cfg, s, pid, snap, intents).await;
             ServerSummary {
                 id: s.id.clone(),
                 node_id: s.node_id,
@@ -111,7 +110,7 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
                     .then(|| s.rpc_url.clone().unwrap_or_else(|| s.url.clone())),
                 rpc_url: s.rpc_url.clone(),
                 pid,
-                start_pending: remote_pids.start_pending(s, remote, pid),
+                start_pending,
                 pid_node_id: if remote && pid.is_some() { s.node_id } else { None },
                 health,
                 service_type: match s.service_type {

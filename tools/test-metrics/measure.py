@@ -99,13 +99,14 @@ def main():
                 print(text, flush=True)
                 raise SystemExit(f"{suite} succeeded without canonical container results")
             passed = sum(case["status"] == "pass" for case in cases)
-            failed = sum(case["status"] != "pass" for case in cases)
+            failed = sum(case["status"] not in ("pass", "not_executed") for case in cases)
             ignored, ignored_cases = 0, []
         record = dict(suite=suite, environment=environment, passed=passed, ignored=ignored,
                       ignored_cases=ignored_cases, failed=failed,
                       seconds=elapsed, exit_code=result.returncode, log=str(log),
                       run_started_at=run_date.isoformat())
         if is_container:
+            record["not_executed"] = sum(case["status"] == "not_executed" for case in cases)
             record["scenario_seconds"] = sum(report["timings"].get("scenarios_wall", 0) for report in reports)
             record["container_artifacts"] = str(container_root)
         results.append(record)

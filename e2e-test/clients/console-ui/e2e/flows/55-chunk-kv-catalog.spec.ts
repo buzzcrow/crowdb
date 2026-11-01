@@ -3,8 +3,9 @@
 // Baseline: journal 4.6s (2026-10-31); partition/overlay 1.4s, unavailable 0.208s, placement 0.321s (2026-10-03).
 import { test, expect } from '../fixtures/realBackend';
 import { step } from '../fixtures/stepTimer';
+import { journalRuntimeResponse, type JournalRuntimeTarget } from '../fixtures/journalRuntimeRequest';
 import type { APIRequestContext, APIResponse, Page, Response } from '@playwright/test';
-import type { CatalogPage, Partition } from '../../src/chunk-kv/catalog';
+import { identity, type CatalogPage, type Partition } from '../../src/chunk-kv/catalog';
 
 test('native diagnostics: journal identity survives Chunk navigation and owner interruption', async ({ page, request }) => {
   const bucket = process.env.CROWDB_NATIVE_JOURNAL_BUCKET;
@@ -180,8 +181,31 @@ test('native diagnostics: Chunk-KV graph survives tab changes, refresh and resiz
   });
 });
 
+async function refreshSelectedJournal(page: Page, target: JournalRuntimeTarget, remaining: () => number) {
+  const properties = page.getByRole('region', { name: 'Split properties', exact: true });
+  const property = (name: string) => properties.locator('dt').filter({ hasText: new RegExp(`^${name}$`) }).locator('..').locator('dd').textContent({ timeout: remaining() });
+  const sameSelection = await properties.count() === 1 && (await property('Split ID')) === target.id
+    && (await property('Owner epoch')) === target.epoch && (await property('Generation')) === target.generation;
+  const select = () => page.getByLabel('Partition range map').getByRole('button', { name: `Partition ${target.id}`, exact: true }).click({ timeout: remaining() });
+  if (sameSelection) await select();
+  else await step('journal automatic selection response', () => journalRuntimeResponse(page, target, select, remaining));
+  const refreshRuntime = page.getByRole('region', { name: 'Partition runtime', exact: true }).getByRole('button', { name: 'Refresh runtime', exact: true });
+  await expect(refreshRuntime).toBeEnabled({ timeout: remaining() });
+  // Selecting the same partition leaves its identity unchanged. Explicitly
+  // refresh runtime so owner restart is observed even without a new catalog.
+  const observed = await step('journal runtime DOM refresh', () => journalRuntimeResponse(page, target,
+    () => refreshRuntime.click({ timeout: remaining() }), remaining));
+  return { observed, refreshRuntime };
+}
+
 async function selectActiveJournal(page: Page, request: APIRequestContext, initial: CatalogPage, partitionId?: string) {
   let catalog = initial;
+  const deadline = performance.now() + 3_000;
+  const remaining = () => {
+    const budget = deadline - performance.now();
+    if (budget <= 0) throw new Error('Journal observation exceeded its three-second deadline');
+    return budget;
+  };
   let selected: { partition: Partition; observed: Response } | null = null;
   const refresh = async (action: () => Promise<unknown>) => {
     const observation = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/catalog');
@@ -215,16 +239,19 @@ async function selectActiveJournal(page: Page, request: APIRequestContext, initi
       if (await changed(response)) return false;
       expect(response.ok(), await response.text()).toBe(true);
       if (!(await response.json()).journal.chunk_record) continue;
-      await page.getByLabel('Partition range map').getByRole('button', { name: `Partition ${entry.id}`, exact: true }).click();
-      // Selecting the same partition leaves its identity unchanged. Explicitly
-      // refresh runtime so owner restart is observed even without a new catalog.
-      const observation = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/runtime');
-      const observed = await step('journal runtime DOM refresh', async () => {
-        await page.getByRole('region', { name: 'Partition runtime', exact: true }).getByRole('button', { name: 'Refresh runtime', exact: true }).click();
-        return observation;
-      });
+      const target = { origin: new URL(page.url()).origin, id: entry.id, epoch: entry.epoch,
+        generation: catalog.generation, page: catalog.page, offset: catalog.offset };
+      const { observed, refreshRuntime } = await refreshSelectedJournal(page, target, remaining);
       if (await changed(observed)) return false;
       expect(observed.ok(), await observed.text()).toBe(true);
+      const runtime = await observed.json();
+      expect(runtime.partition_id).toBe(entry.id);
+      expect(runtime.owner_epoch).toBe(entry.epoch);
+      expect(runtime.catalog_generation).toBe(catalog.generation);
+      expect(runtime.stream_id).toBe(identity(entry.artifact.stream_name));
+      expect(runtime.journal?.offset).toBe(0);
+      expect(runtime.journal?.chunk_record).toBeTruthy();
+      await expect(refreshRuntime).toBeEnabled({ timeout: remaining() });
       selected = { partition: entry, observed };
       return true;
     }

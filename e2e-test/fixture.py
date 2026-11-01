@@ -16,6 +16,7 @@ from allocation import observed_address, LABEL, create_network, node_data, start
 from client import run_client
 from kv_node import arguments as kv_arguments
 from control import Control
+from fixture_result import CaseNotExecuted
 from kv_topology import ready_nodes, wire_nodes
 
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -250,26 +251,49 @@ class Cluster:
 
     def __exit__(self, _kind, error, _traceback):
         from failure_logs import print_failure
+        not_executed = isinstance(error, CaseNotExecuted)
+        if not_executed:
+            self.timings["not_executed_reason"] = redact(str(error))
         if self.closed:
-            self.timings["status"] = "pass" if error is None else "failed"
+            self.timings["status"] = ("not_executed" if not_executed
+                                      else "pass" if error is None else "failed")
             self.write_timings()
             return
+        if not_executed:
+            print(redact(f"[NOT EXECUTED CASE] {getattr(self, 'case_name', self.run_id)}: "
+                         f"{error}\nArtifacts: {self.artifacts}"), flush=True)
         collection_error = None
         try:
             self.diagnostics()
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as diagnostic_error:
             collection_error = diagnostic_error
-            if error is not None:
+            if error is not None and not not_executed:
                 error.add_note(str(diagnostic_error))
-        if error is not None or collection_error is not None:
+        reported_error = collection_error if not_executed else error or collection_error
+        if reported_error is not None:
             print_failure(self.artifacts, self.data_paths, getattr(self, "case_name", self.run_id),
-                          error if error is not None else collection_error, redact)
+                          reported_error, redact)
         try:
-            self.timings["status"] = "pass" if error is None and collection_error is None else "failed"
+            self.timings["status"] = ("failed" if collection_error is not None
+                                      else "not_executed" if not_executed
+                                      else "pass" if error is None else "failed")
             self.close()
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as cleanup_error:
+            if not_executed:
+                self.timings["status"] = "failed"
+                self.write_timings()
+                print_failure(self.artifacts, self.data_paths, getattr(self, "case_name", self.run_id),
+                              cleanup_error, redact)
+                if collection_error is not None:
+                    collection_error.add_note(str(cleanup_error))
+                    raise collection_error from cleanup_error
+                raise
             if error is None:
+                print_failure(self.artifacts, self.data_paths, getattr(self, "case_name", self.run_id),
+                              cleanup_error, redact)
                 raise
             error.add_note(str(cleanup_error))
-        if error is None and collection_error is not None:
+            print(redact(f"[CLEANUP ERROR] {getattr(self, 'case_name', self.run_id)}: "
+                         f"{cleanup_error}\nArtifacts: {self.artifacts}"), flush=True)
+        if (error is None or not_executed) and collection_error is not None:
             raise collection_error

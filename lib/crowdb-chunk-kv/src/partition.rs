@@ -12,6 +12,7 @@ mod frontier;
 mod ingress;
 mod journal;
 mod maintenance;
+mod native;
 mod observation;
 mod replay;
 mod scan;
@@ -24,6 +25,7 @@ pub use frame::{decode_frame, encode_frame, DecodedFrame, FrameDecode, MAX_FRAME
 pub use frontier::JournalFrontier;
 pub use ingress::SplitIngress;
 pub use journal::{PartitionJournal, StreamPartitionJournal};
+use native::native_storage_parts;
 pub use observation::TreeObservation;
 use replay::{replay_suffix, validate_replay_record, ReplayState};
 pub use split::{PreparedSplit, PreparedSplitWriter, SplitHandoffStore, SplitWriterTarget};
@@ -510,33 +512,13 @@ impl Partition {
                 "tree identity and ownership epoch must be nonzero".into(),
             ));
         }
-        let replay_offset = if page_store.is_chunk_backed() && tree::chunk_root_generation(&page_store)? == 0
-        {
-            0
-        } else {
-            page_store.wal_replay_offset().map_err(|error| match error {
-                crowdb_tree_ffi::CtError::Corruption => ChunkKvError::TreeCorruption(error.to_string()),
-                _ => ChunkKvError::TreeUnavailable(error.to_string()),
-            })?
-        };
-        let stream_name = stream.stream_name();
-        let stream_generation = stream.record_generation();
-        let (tree, journal) = native_storage_parts(tree_id, &range, tree_config, page_store, stream)?;
-        let (tree_manifest, applied_seq) = tree.checkpoint_state()?;
-        let root_manifest_generation = tree.root_manifest_generation()?;
+        let (tree, journal, checkpoint) =
+            native::open_latest(tree_id, range.clone(), tree_config, page_store, stream).await?;
         Self::recover_assignment(
             partition_id,
             range,
             ownership_epoch,
-            Checkpoint {
-                tree_id,
-                tree_manifest,
-                root_manifest_generation,
-                applied_seq,
-                stream_name,
-                stream_generation,
-                replay_offset,
-            },
+            checkpoint,
             config,
             tree,
             journal,
@@ -565,7 +547,7 @@ impl Partition {
             ));
         }
         let (tree, journal) =
-            native_storage_parts(checkpoint.tree_id, &range, tree_config, page_store, stream)?;
+            native::open_storage(checkpoint.tree_id, range.clone(), tree_config, page_store, stream).await?;
         Self::recover_assignment(
             partition_id,
             range,
@@ -744,7 +726,7 @@ impl Partition {
         };
         let range = artifact.range.clone();
         let (tree, journal) =
-            native_storage_parts(artifact.tree_id, &range, tree_config, page_store, stream)?;
+            native::open_storage(artifact.tree_id, range, tree_config, page_store, stream).await?;
         let parent_journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(
             parent_stream,
             artifact.parent_stream_name,
@@ -1720,24 +1702,6 @@ impl Partition {
             notified.await;
         }
     }
-}
-
-fn native_storage_parts(
-    tree_id: u64,
-    range: &PartitionRange,
-    mut tree_config: crowdb_tree_ffi::Config,
-    page_store: Arc<crowdb_tree_ffi::PageStore>,
-    stream: ChunkStream,
-) -> Result<(Arc<dyn PartitionTree>, Arc<dyn PartitionJournal>)> {
-    tree_config.page_store = Some(page_store);
-    tree_config.key_range = crowdb_tree_ffi::KeyRange::Bounded {
-        start: range.start.clone(),
-        end: range.end.clone(),
-    };
-    let tree: Arc<dyn PartitionTree> = Arc::new(CrowdbPartitionTree::open(tree_id, &tree_config)?);
-    let stream_name = stream.stream_name();
-    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name)?);
-    Ok((tree, journal))
 }
 
 fn validate_split_artifact(plan: &SplitPlan, artifact: &SplitArtifact, cutover_seq: u64) -> Result<()> {

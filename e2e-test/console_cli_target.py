@@ -67,10 +67,54 @@ class CliAttachedCluster(CliClient, Cluster):
 
     def inventory(self):
         containers = [json.loads(self.command("inspect", name))[0] for name in self.servers]
-        assert all(item["Config"]["Labels"].get(LABEL) == self.run_id for item in containers)
+        assert all(item["Config"]["Labels"].get(LABEL) == self.run_id
+                   and item["Image"] == self.image and item["State"]["Running"]
+                   for item in containers), "CLI inventory container ownership or image changed"
+        processes = {}
+        nodes = set()
+        for container in containers:
+            identity = container["Id"]
+            binding = json.loads(self.command("exec", identity, "cat", "/opt/crowdb/data/node-binding.json"))
+            node = binding["node_id"]
+            assert type(node) is int and node > 0 and node not in nodes, binding
+            assert binding["bootstrap"]["cluster_id"] == self.cluster_id, binding
+            nodes.add(node)
+            status = json.loads(self.command("exec", identity, "cat", "/opt/crowdb/run/status/monitor.json"))
+            for service, current in status["services"].items():
+                assert type(current.get("pid")) is int and current["pid"] > 1, (node, service, "invalid monitor PID", current)
+                processes[node, service] = (current["pid"], current["generation"], current["operation_id"])
+            self.command("exec", identity, "sh", "-c", """
+                for pid do
+                    state=$(awk '{print $3}' "/proc/$pid/stat") || exit 1
+                    case "$state" in ''|Z|X)
+                        echo "owned service PID $pid is not live ($state)" >&2
+                        exit 1;;
+                    esac
+                done
+                """, "owned-service-pids", *(str(current["pid"]) for current in status["services"].values()))
+        # Aggregate PID fields are optional fresh samples. Lifecycle invariance
+        # uses each owning monitor, including services absent from that cache.
         services = request(self.endpoint(0), "/api/servers")
+        assert len({item["id"] for item in services}) == len(services), services
+        kinds = {"paxos-kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access-server"}
+        for node in nodes:
+            registered = [item for item in services if item["node_id"] == node]
+            assert len(registered) == len(kinds) and {item["service_type"] for item in registered} == kinds, registered
+            required = {"web"} | {"kv" if item["service_type"] == "paxos-kv" else item["id"] for item in registered}
+            observed = {service for owner, service in processes if owner == node}
+            assert required <= observed, ("owned monitor service is absent", node, required, observed)
+        assert {item["node_id"] for item in services} == nodes, services
+        for item in services:
+            service = "kv" if item["service_type"] == "paxos-kv" else item["id"]
+            actual = processes[item["node_id"], service]
+            if item.get("pid") is not None:
+                assert item.get("pid_node_id") == item["node_id"], ("cached PID namespace changed", item)
+                assert item["pid"] == actual[0], ("cached PID differs from owning monitor", item, actual)
+        volatile = {"pid", "pid_node_id", "health", "start_pending"}
+        registrations = [{key: value for key, value in item.items() if key not in volatile} for item in services]
         return {"containers": [(item["Id"], item["Image"]) for item in containers],
-                "processes": sorted((item["id"], item["pid"]) for item in services)}
+                "processes": sorted((node, service, *identity) for (node, service), identity in processes.items()),
+                "registrations": sorted(registrations, key=lambda item: item["id"])}
 
     def replay(self, checkpoint):
         if checkpoint != "attachment":

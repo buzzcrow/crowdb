@@ -21,6 +21,8 @@ class BrowserBatchTest(unittest.TestCase):
                 owner.events.append(('close', case))
                 owner.failures[case] = error
                 owner.active.remove(case)
+                if case == owner.cleanup_failure:
+                    raise RuntimeError('cleanup rejected')
 
         return Fixture()
 
@@ -28,6 +30,7 @@ class BrowserBatchTest(unittest.TestCase):
         self.events = []
         self.active = set()
         self.start_failure = None
+        self.cleanup_failure = None
         self.failures = {}
 
     def test_clients_share_stable_bounded_batch_and_teardown_precedes_next_batch(self):
@@ -62,6 +65,17 @@ class BrowserBatchTest(unittest.TestCase):
         self.assertEqual([str(error) for error in errors], ['startup rejected'])
         self.assertEqual(self.events, [('start', 0), ('start', 1), ('close', 0)])
         self.assertEqual(self.active, set())
+        self.assertEqual(str(self.failures[0]),
+                         'browser client not executed: batch startup failed in 1')
+
+    def test_cleanup_failure_is_not_attributed_to_a_successful_peer(self):
+        self.cleanup_failure = 1
+        errors = run_browser_batches([0, 1], 2, self.fixture, lambda *_: None)
+        self.assertEqual([str(error) for error in errors], ['cleanup rejected'])
+        self.assertEqual(self.events[-2:], [('close', 1), ('close', 0)])
+        self.assertEqual(self.active, set())
+        self.assertIsNone(self.failures[0])
+        self.assertIsNone(self.failures[1])
 
     def test_fail_fast_closes_current_batch_before_skipping_later_fixtures(self):
         def execute(case, fixture):
@@ -71,6 +85,14 @@ class BrowserBatchTest(unittest.TestCase):
         errors = run_browser_batches([0, 1], 1, self.fixture, execute, fail_fast=True)
         self.assertEqual([str(error) for error in errors], ['browser failed'])
         self.assertEqual(self.events, [('start', 0), ('close', 0)])
+        self.assertEqual(self.active, set())
+
+    def test_fail_fast_startup_closes_peer_before_skipping_later_batch(self):
+        self.start_failure = 1
+        errors = run_browser_batches([0, 1, 2], 2, self.fixture,
+                                     lambda *_: self.fail('client was dispatched'), fail_fast=True)
+        self.assertEqual([str(error) for error in errors], ['startup rejected'])
+        self.assertEqual(self.events, [('start', 0), ('start', 1), ('close', 0)])
         self.assertEqual(self.active, set())
 
     def test_large_fixture_does_not_serialize_later_small_browser_batches(self):
