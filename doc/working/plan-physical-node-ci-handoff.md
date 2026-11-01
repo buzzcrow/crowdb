@@ -11,11 +11,72 @@ Upstream: [Physical Node Test Plan](../dev/physical-node-test-plan.md),
 Goal: finish CI stability verification and publish CROWDB, then resolve P13 and
 complete the two-host physical recovery matrix without losing data or evidence.
 
-## 1. Current checkpoint: S3 UI repair locally verified, publication pending
+## 1. Current checkpoint: cross-extent read repair locally verified
 
-Updated 2026-11-01, 23:10 Asia/Shanghai. The user explicitly resumed this plan.
-Continue the agreed CI refinement, commit/push, exact-head CI, then physical
-recovery sequence. No physical fault or retirement has been dispatched on resume.
+Updated 2026-11-02, 00:55 Asia/Shanghai. The earlier repair is published as
+1814405e4dd1fe0fcd64f9f18ac7c71e98d64fd2. The user's latest instructions are
+"不要检测CI" and "归啥档，测试能过就好了". CI inspection is stopped; do not
+query its latest state or require it before physical work. No additional volume
+archives are required or authorized by this plan. Preserve existing evidence
+and A's three completed archives (2.835 GiB); these are not a cleanup prerequisite.
+
+B rebooted and is reachable as cj7960 at 192.168.31.184. All seven original
+stopped container/volume identities passed the fresh guard. Image transfer and
+archive SHA-256 verification passed. The first ID check failed because A exposes
+the manifest digest as its Docker ID while B exposes the config digest. The
+continuation verifies the manifest-to-config hash, identical platform, labels
+and all rootfs layers. See image/s3-ui-fixed/resume-image-verified.json. Upgrade
+the five current containers with their original volumes and recorded per-host
+image IDs; do not create additional backups. The five-node same-volume upgrade
+passed. Groups 0/1/3 recovered in at most 2.995 seconds, catalog in 5.727 seconds
+and all services in 25.547 seconds, each within its original 180-second bound.
+Complete retained history passed: three 512-record sets, the 4096-record set,
+five Group-3 endpoints, baseline allocation, five-endpoint S3/Iceberg SF1,
+187 Dataset reports, witnesses and acknowledged deletions. The audit observer
+passed 625 complete samples (maximum gap 3.823 seconds), with all 35 identities
+fixed. Fresh P09 found a production cross-extent read defect; P09–P19 remain
+unfinished. All five current nodes are stopped for repair, with all seven
+original volumes retained and no new archives or cleanup.
+
+- The first startup observer rejected monitor timestamps while managed services
+  were still launching. P02 requires fresh observations at recovered readiness;
+  it does not require unavailable recovery health to be Ready. The corrected
+  observer records transitional timestamps only for explicitly faulted nodes,
+  keeps all unaffected process identities fixed, and requires all five fresh
+  snapshots when recovery seals and for the complete audit. Four transition
+  checks, two immutable-identity-fence tests and seven acceptance-gate checks
+  passed. The original failure and stop marker remain preserved under
+  observations/final-image-upgrade/; start-audited reuses successful recovery
+  gates without restarting nodes or replaying mutations.
+- The first fresh P09 recovered all groups, catalog and services within their
+  original bounds, but the sampler discarded complete node observations when
+  a deliberately stopping process disappeared from `/proc`. The fixed collector
+  records absent/unreadable process IDs alongside live siblings and cgroup data;
+  loss of any unaffected or audit-fenced process still fails. Four focused
+  checks passed, including an actual-container collection. Original evidence
+  is retained under observations/final-P09/. The new fault/witness identity is
+  final-P09-sampling-fixed; the ordered queue is final-queue-sampling-fixed/.
+- That second P09 attempt exposed A2 Group 0's latched tree I/O fault after
+  cold startup. At global address 133259264, asynchronous reading requested
+  1212416 bytes but returned 958464, exactly reaching the 128-MiB global
+  boundary between 64-MiB block files. `BlockAsyncPageStore::submit_read`
+  mapped only the first fd, while synchronous reads and asynchronous writes
+  already split extents. A deterministic reopened-store regression reproduces
+  the identical short read. The fix chains reads across the mapped extents,
+  completing once after all parts or the first real error; no retry or lock was
+  added. Cross-extent, missing/truncated-tail and existing async tests pass
+  (19 focused tests). Complete C++/FFI, core and storage verification, fmt,
+  clean changed-file tree-lint and full clippy all passed. Publish this repair,
+  build a fresh verified image and resume retained-volume physical verification.
+  Evidence: first-failures/P09-retained-engine-unhealthy/ and
+  repair/cross-extent-read-fixed/. Do not dispatch P10–P19 on the old image.
+- The new deployment controller is harness/physical_storage_repair.py with
+  explicit scope/image/upgrade/start stages and immutable per-stage receipts.
+  It checks the published source, quality source hashes and image identity;
+  no CI result or new volume archive is a prerequisite. Its frozen runtime
+  inputs belong under image/cross-extent-read-fixed/. The new ordered queue
+  is final-queue-cross-extent-read-fixed/, using cross-extent-P09–P13 labels.
+  Keep both earlier failed P09 controllers and their original logs.
 
 - The first resume scope check failed because all five current physical nodes
   are stopped. All seven container/image/volume identities remain unchanged.
@@ -161,22 +222,21 @@ the user finishes joint review; a PASS must not check a human review box.
 
 - CROWDB root: /cjdata/cpp/crowdb2.
 - Branch: task-fix-build; latest published HEAD:
-  18015caf0cc99978eec99517a3f52b468128c0e2.
+  1814405e4dd1fe0fcd64f9f18ac7c71e98d64fd2.
 - The four previously local commits were included in the fast-forward push:
   cdf023d6 (recovery/liveness), 81d07f03 (nearby mirrors),
   d396a220 (healthy leader quorum lease), and 7a93c4e5 (cleanup/handoff).
 - The production changes, subsequent test fixes and new split materialization
-  repair and lifecycle/dependency repair are committed and pushed. The Access
-  test precondition and working-plan updates form the next commit. Preserve
+  repair, lifecycle/dependency repair, Access test precondition and S3 UI repair
+  are committed and pushed. Preserve
   any new user edits; do not reset or restore.
-- Remote task-fix-build was fetched at 5af2737f immediately before the last push;
-  GitHub then confirmed the new exact head 18015caf.
+- Remote task-fix-build was fetched at 18015caf immediately before the last push;
+  GitHub then confirmed the new exact head 1814405e.
   [PR 55](https://github.com/buzzcrow/crowdb/pull/55) is open.
   Fetch and verify remote state again immediately before the eventual push.
-- After explicit resume, the agreed order remains: finish local CI stability
-  gates; commit/push CROWDB; inspect the new exact-head-SHA CI and every expanded
-  job; then resume P13 and the physical matrix. Physical completion is not a
-  prerequisite for that CROWDB push.
+- Earlier stability gates and their authorized push are complete. The latest user
+  instruction stops CI inspection and resumes the physical matrix. CI evidence
+  remains separate from physical PASS; preserve actual source epochs and failures.
 - Loader and website publication are outside scope. Last recorded loader HEAD
   was local 447a1e619550bbdc0150139976e0c442675f92b0, with origin/main at
   4cafdc9227871f55942a2b215ccb5a3078ade70d; website had local c9306c51.
@@ -225,6 +285,9 @@ All abbreviated paths below are relative to:
   first failed endpoint-field attempt, corrected verification and S3 diagnosis.
 - ci/s3-ui-fixed/: UI red/green evidence, corrected gates, exact cases and full
   19-case operation group on the new source-verified image.
+- ci/published-1814405e/: publication, source equality, background CI logs,
+  ci-wait-deferred.json and the B-host connection failure. Independent A backup
+  progress is recorded in independent-A-archives.json.
 - The earlier long handoff is preserved at
   handoff-history/plan-physical-node-ci-handoff-before-rewrite-20261101T062936Z.md.
   It contains superseded historical instructions, not current authorization.
@@ -421,7 +484,11 @@ The user has resumed; proceed in the order below.
   subject, no body/trailers/doc references/requirement numbers. Fetch and verify
   the remote before the authorized fast-forward push; do not force-push.
   No Sirius-specific pre-push rules apply to this repository.
-- [~] **Inspect new exact-head CI**: run 41295426521 attempt 1 ended 24 PASS / 3 FAIL.
+- **CI inspection stopped by user**: do not inspect run 41320020131 or infer
+  its latest result. Retain only already collected evidence. This supersedes
+  the historical inspection instructions in this section.
+  Run 41311084753 passed all 27 on 18015caf.
+  Earlier run 41295426521 attempt 1 ended 24 PASS / 3 FAIL.
   The three fixes and local affected regressions passed and were pushed as
   70ae86b1. Run 41299662435 attempt 1 ended 26 PASS / 1 FAIL. Its production
   split materialization repair now has 198 affected component PASS and 95
@@ -444,7 +511,21 @@ while production sources still match. Every command and original error is durabl
 
 ## 6. Physical checkpoint and remaining work
 
-Physical work is deferred until the CI/publication stage above is complete.
+The user explicitly stopped CI inspection and additional volume archives.
+Earlier stability gates and publication are complete. The additional storage
+repair passed local gates and is ready for publication. Physical work continues
+using the original volumes, with exact ownership checks and complete evidence.
+
+- [x] **Image upgrade**: B connectivity and identical image content are verified.
+  All five current containers were recreated with their original volumes,
+  mounts, environment and limits. Seven volume identities remain unchanged.
+  A and B expose different Docker IDs for the same manifest/config content;
+  image/s3-ui-fixed/resume-image-verified.json records both.
+- [~] **Cross-extent storage repair**: deterministic red/green regression and
+  all local quality gates passed. Publish the fix, build/verify the new image,
+  use the original volumes, complete its read-only history audit, then execute
+  fresh P09–P16 and the scoped P17–P19 closure. Earlier-image passes retain
+  their original source identities.
 
 - Hosts: A 192.168.31.129 (A1/A2/A3) and B 192.168.31.184 (B1/B2).
   Existing SSH uses BatchMode/IdentitiesOnly. Verify host identity/clocks on resume.
@@ -479,13 +560,10 @@ Physical work is deferred until the CI/publication stage above is complete.
   history returns after B recovery. Keep this harness boundary distinct from
   production repair and retain the complete post-recovery historical audit.
 
-- [ ] **Archive current physical data before image upgrade**: existing private
-  archives are complete/tested/hashed but predate later P12/P13 data. Make fresh
-  private archives of every still-existing volume before any new upgrade or
-  retirement. Archive helper containers must use --log-driver none so binary
-  tar data cannot fill Docker JSON logs. Keep incomplete old streams invalid.
-  Transfer/verify the final production image and preserve exact mounts/limits.
-  Do not blindly replay resume_repaired_image.py or old witness mutation IDs.
+- **Additional archives canceled by user**: preserve existing A archives and
+  all logs. Upgrade and retire using exact resource ownership/identity checks,
+  without creating more volume archives. Preserve the original failure receipts;
+  do not blindly replay resume_repaired_image.py or old witness mutation IDs.
 - [ ] **Close unexpected P12 A3 identity change**: A3 ChunkKV changed PID451/gen2
   to PID66135/gen3, stderr Resource deadlock avoided, no usable core.
   Local Rust-FFI gdb proves callback-final-owner destruction can join its own
