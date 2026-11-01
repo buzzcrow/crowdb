@@ -52,7 +52,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/dev/crash_debugging.md`         | Core collection, host setup, GDB, and exact-build symbols.                       |
 | `doc/dev/env_setup.md`               | Benchmark commands, sentinels, prerequisites, and perf-counter setup.            |
 | `doc/dev/hyper_fork.md`              | Hyper fork branches, submodule, build, sync, validation, and recovery.           |
-| `doc/dev/physical-node-test-plan.md` | Repeatable two-host, five-container physical tests and 30-minute sustained load. |
+| `doc/dev/physical-node-test-plan.md` | Physical-node test cases, scenarios, recovery gates and evidence.                |
 | `tools/README.md`                    | Tool directories, Pixi task entry points, CI checks, and suite timing.           |
 
 ## Component Acceptance

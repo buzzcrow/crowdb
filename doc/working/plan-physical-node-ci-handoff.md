@@ -11,9 +11,75 @@ Upstream: [Physical Node Test Plan](../dev/physical-node-test-plan.md),
 Goal: finish CI stability verification and publish CROWDB, then resolve P13 and
 complete the two-host physical recovery matrix without losing data or evidence.
 
-## 1. Current checkpoint: cross-extent read repair locally verified
+## 1. Current checkpoint: P11 monitor freshness repair under validation
 
-Updated 2026-11-02, 00:55 Asia/Shanghai. The earlier repair is published as
+Updated 2026-11-02, 07:05 Asia/Shanghai. On the published c063 image, P09 and P10 both passed
+complete historical audits. P11 follower lifecycle and its complete audit passed;
+P11 leader lifecycle recovered every original gate, but the continuous observer
+rejected the unaffected B2 monitor at 3519 ms old. P12–P19 were not dispatched.
+No I/O/memory stall accompanied this event, and no service identity changed
+between the failure capture and the later repair preparation.
+
+The production health loop awaited a Group0 desired-service scan with a
+three-second bound before publishing current local health. A slow-authority
+regression fails on the old code. The repair moves that read into one bounded
+background task, rejects expired/rebound observations, and retains current
+binding/intent checks before any disruptive recovery action. Actual local probe
+changes continue to publish with unchanged PIDs. Eight focused tests passed,
+including rejection of an obsolete recovery intent before stopping a process.
+Full fmt/clippy/access-monitor/console validation passed: 2041 Access/Monitor
+Rust cases and 426 Console Rust cases, plus the normal task companion checks.
+The first clippy semicolon failure and corrected continuation remain separate.
+Unchanged C++/core/storage gates retain their c063 inputs and source proof.
+
+All five current nodes are stopped for repair with all seven original volumes
+retained. Both hosts' complete stopped service/crash logs are frozen. Evidence:
+first-failures/P11-monitor-freshness/ and repair/monitor-health-nonblocking/.
+The repair still needs publication, a source-verified image, affected container
+checks and a new physical epoch. Do not relabel c063 passes as new-image passes.
+
+The reusable physical plan now has six case categories, 20 parent cases and
+71 named scenarios, with no checkboxes. It separates execution results from the
+case catalog and cancels mandatory new volume archives. The original 16 human
+joint-review boxes remain unchanged. CI inspection remains stopped.
+
+### Previous cross-extent repair checkpoint
+
+Updated 2026-11-02, 02:18 Asia/Shanghai. The cross-extent read repair is published
+as `c063a169f5e400a44c48a5a66aa42fc48609b396`. The normal client/native/image
+builds and same-volume deployment passed on both hosts. Image/runtime identity
+is recorded in image/cross-extent-read-fixed/. Fresh startup recovered groups
+0/1/3 within 1.887 seconds, catalog within 4.961 seconds and all 35 services
+within 37.439 seconds, each under its original independent 180-second gate.
+All native historical sets and five-endpoint S3 SF1 passed on this image.
+
+The subsequent five-endpoint Iceberg audit failed with GetObject curl 28 during
+checksum reads. At 17:25:33 UTC the A host's nvme1n1 accumulated 209 outstanding
+requests; reads/flushes nearly stopped for about ten seconds. All three A monitor
+snapshots became stale, Group0 RPCs timed out, and all five ChunkKV processes
+expired their leases and drained gracefully. OOM counters remained zero and
+host memory/CPU were available. No kernel device error was recorded. The exact
+device/filesystem cause remains unproven; do not attribute this event or the old
+P13 timeout to the cross-extent repair without further evidence. Preserve the
+failed startup receipt and observations/cross-extent-image-upgrade/ unchanged.
+
+The same 216-MB lineitem object passed isolated full decoding, checksum and
+Iceberg sampling in 61.236 seconds with the original client limits. A new strict
+complete read-only audit passed in 1230.088 seconds using
+cross-extent-image-upgrade-audit and resume-start-audited.json. It includes all
+five endpoints, 187 Dataset reports (935 endpoint/report results), all witnesses
+and acknowledged deletions. All 35 identities remained fixed across 597 complete
+samples; the maximum gap was 3.843 seconds. Additional 250-ms host I/O sampling
+captured no new stall. No startup or mutation was replayed; no client timeout,
+concurrency, assertion or lease deadline changed. Fresh P09 then passed in 1164.469 seconds, including all five original-volume
+recreations, all recovery gates and full retained history. Its 35 expected service
+replacements are the only identity changes; the recovered audit remained fixed.
+P10 subsequently passed in 1023.819 seconds; P11 follower passed but its leader
+observer failed as described above. The preserved dependent queue is
+final-queue-cross-extent-read-fixed-after-io/. Both earlier P09 failures and the
+new startup failure remain retained. See first-failures/cross-extent-upgrade-protocol/.
+
+Earlier resume history: the previous repair is published as
 1814405e4dd1fe0fcd64f9f18ac7c71e98d64fd2. The user's latest instructions are
 "不要检测CI" and "归啥档，测试能过就好了". CI inspection is stopped; do not
 query its latest state or require it before physical work. No additional volume
@@ -35,8 +101,9 @@ five Group-3 endpoints, baseline allocation, five-endpoint S3/Iceberg SF1,
 187 Dataset reports, witnesses and acknowledged deletions. The audit observer
 passed 625 complete samples (maximum gap 3.823 seconds), with all 35 identities
 fixed. Fresh P09 found a production cross-extent read defect; P09–P19 remain
-unfinished. All five current nodes are stopped for repair, with all seven
-original volumes retained and no new archives or cleanup.
+unfinished at that checkpoint. Those five nodes were stopped for repair; the
+current c063 image is now running on the same volumes, with all seven original
+volumes retained and no new archives or cleanup.
 
 - The first startup observer rejected monitor timestamps while managed services
   were still launching. P02 requires fresh observations at recovered readiness;
@@ -66,8 +133,8 @@ original volumes retained and no new archives or cleanup.
   completing once after all parts or the first real error; no retry or lock was
   added. Cross-extent, missing/truncated-tail and existing async tests pass
   (19 focused tests). Complete C++/FFI, core and storage verification, fmt,
-  clean changed-file tree-lint and full clippy all passed. Publish this repair,
-  build a fresh verified image and resume retained-volume physical verification.
+  clean changed-file tree-lint and full clippy all passed. The repair was published
+  as c063a169; its verified new image is undergoing retained-volume verification.
   Evidence: first-failures/P09-retained-engine-unhealthy/ and
   repair/cross-extent-read-fixed/. Do not dispatch P10–P19 on the old image.
 - The new deployment controller is harness/physical_storage_repair.py with

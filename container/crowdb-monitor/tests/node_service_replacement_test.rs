@@ -68,3 +68,40 @@ async fn supervised_kv_replacements_and_legacy_receipts_refresh_the_pid_without_
     worker.stop_kv_for_tests().await.unwrap();
     health.abort();
 }
+
+#[tokio::test]
+async fn superseded_recovery_observation_cannot_stop_the_current_process() {
+    let mut fixture = TestReplacement::new().await;
+    let mut current = fixture.intent.clone();
+    current.operation_id = uuid::Uuid::new_v4().to_string();
+    current.action = crowdb_protocol::mgmt::node::NodeServiceAction::Stop;
+    fixture
+        .authority
+        .kv
+        .put(
+            0,
+            0,
+            b"/deployment/services/2/kv-2",
+            &serde_json::to_vec(&current).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let before = std::fs::read(&fixture.state).unwrap();
+    let error = fixture
+        .worker
+        .stop_unhealthy_for_tests(&fixture.intent)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("superseded"), "{error}");
+    assert_eq!(
+        fixture
+            .worker
+            .owned_processes_for_tests(&current.cluster_id, current.node_id)
+            .unwrap()["processes"]["kv"],
+        fixture.original
+    );
+    assert_eq!(std::fs::read(&fixture.state).unwrap(), before);
+    fixture.worker.stop_kv_for_tests().await.unwrap();
+    fixture.health.abort();
+}

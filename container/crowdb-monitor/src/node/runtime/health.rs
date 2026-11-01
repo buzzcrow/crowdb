@@ -10,12 +10,15 @@ use crate::{
     StatusStore,
 };
 
+mod intents;
+
 pub(super) struct NodeHealth {
     store: StatusStore,
     status: MonitorStatus,
     attempts: BTreeMap<String, u32>,
     probe_failures: BTreeMap<String, u32>,
     probes: crate::ProbeExecutor,
+    intents: intents::ServiceIntents,
 }
 
 impl NodeHealth {
@@ -27,6 +30,7 @@ impl NodeHealth {
             attempts: BTreeMap::new(),
             probe_failures: BTreeMap::new(),
             probes: crate::ProbeExecutor::new(true)?,
+            intents: intents::ServiceIntents::default(),
         })
     }
 
@@ -118,17 +122,19 @@ impl NodeHealth {
         profile: &DeploymentProfile,
         processes: &mut ProcessManager,
     ) -> Result<()> {
-        if !profile.paths.data_root.join("node-binding.json").exists() {
-            return Ok(());
+        if let Some(intents) = self.intents.poll(profile).await {
+            self.apply_services(profile, processes, &intents).await?;
         }
-        let intents = match super::services::desired(profile).await {
-            Ok(intents) => intents,
-            Err(error) => {
-                tracing::debug!(%error, "service recovery awaits committed intents");
-                return Ok(());
-            }
-        };
-        for intent in &intents {
+        Ok(())
+    }
+
+    async fn apply_services(
+        &mut self,
+        profile: &DeploymentProfile,
+        processes: &mut ProcessManager,
+        intents: &[crowdb_protocol::mgmt::node::NodeServiceIntent],
+    ) -> Result<()> {
+        for intent in intents {
             let pending = super::services::pending(profile, intent, processes)?;
             let restart_unhealthy = if !pending
                 && matches!(
@@ -143,17 +149,15 @@ impl NodeHealth {
             if !pending && !restart_unhealthy {
                 continue;
             }
-            if let Err(error) = super::services::dependencies_ready(profile, intent, &intents).await {
+            if let Err(error) = super::services::dependencies_ready(profile, intent, intents).await {
                 tracing::debug!(service = %intent.service_id, %error, "service recovery waits for dependencies");
                 continue;
             }
             if restart_unhealthy {
-                let process_id = if intent.kind == "kv" {
-                    "kv"
-                } else {
-                    &intent.service_id
-                };
-                processes.stop(process_id, Duration::from_secs(10)).await?;
+                if let Err(error) = super::services::stop_unhealthy(profile, processes, intent).await {
+                    tracing::debug!(service = %intent.service_id, %error, "unhealthy service recovery awaits current authority");
+                    continue;
+                }
             }
             match super::services::execute(profile, processes, intent.clone()).await {
                 Ok(_) => {
@@ -164,6 +168,20 @@ impl NodeHealth {
             }
         }
         Ok(())
+    }
+
+    pub(super) async fn stop(&mut self) {
+        self.intents.stop().await;
+    }
+
+    #[cfg(feature = "test-util")]
+    pub(in crate::node::runtime) async fn reconcile_services_for_tests(
+        &mut self,
+        profile: &DeploymentProfile,
+        processes: &mut ProcessManager,
+    ) -> Result<()> {
+        let intents = super::services::desired(profile).await?;
+        self.apply_services(profile, processes, &intents).await
     }
 
     async fn restart_if_unhealthy(

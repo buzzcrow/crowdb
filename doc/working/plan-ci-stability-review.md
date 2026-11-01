@@ -85,7 +85,22 @@ Access Restart 前的实际依赖就绪观察；该测试修正仍需独立发�
   新 P09 在 A2 Group 0 复现真实的跨块异步短读，已停止五个节点保留原卷，
   P09–P19 尚未完成。最小回归重现完全相同的 958464/1212416 字节错误；
   跨块读取修复、19 项 focused 检查及完整 C++/FFI、core、storage、fmt、
-  tree-lint、clippy 门禁均通过；发布和新镜像物理验证继续进行。
+  tree-lint、clippy 门禁均通过，已推送 `c063a169`；新镜像同卷升级通过。
+  新启动全部 35 服务在 37.439 秒恢复，原生历史与五端点 S3 SF1 通过。
+  Iceberg 校验时 A 主机 NVMe 约十秒 I/O 停顿，随后 monitor 过期、Group0
+  超时和五个 ChunkKV 租约退出；OOM 为零，设备/文件系统根因尚未证实。
+  单对象原限制全读/校验通过；新的完整只读历史审计随后通过，1230.088 秒，
+  597 次观察、最大间隔 3.843 秒、35 身份不变；187 份 Dataset 报告及全部
+  五端点协议/见证/删除记录通过。原失败不改写；c063 的新 P09 完整通过（1164.469 秒），P10 也通过
+  （1023.819 秒）。P11 follower 完整审计通过；leader 恢复门禁通过但 B2
+  monitor 观察过期 3519 ms，后续 P12–P19 未派发。
+  根因是本地健康发布前同步等待 Group0 desired-service scan。旧代码的慢
+  authority 回归失败；改为一个有界后台只读任务并保留操作前权威 fence 后，
+  focused 八项通过；完整 fmt/clippy、Access/Monitor 2041、Console 426 及正常
+  task 附属检查通过。未改动的 C++/core/storage 门禁保留 c063 输入证明。
+  发布、新镜像和受影响物理复验待完成；五节点已停止、原七卷保留，失败和
+  修复证据分别留存。可复用物理方案已按测试用例重组。
+  未查询新 CI。
   这不是新增 CI job 失败，不并入原 16 项共同 review。
   A 已完成的三个备份和全部原始失败证据继续保留，不再新增备份。
 
@@ -290,7 +305,8 @@ Access Restart 前的实际依赖就绪观察；该测试修正仍需独立发�
 - 上一版 P12 修复镜像输入 tree 为 `76f794e03757249f37efa96cd0bfcad064be4388`；
   32 条历史容器失败记录所对应的 case 已全部在此镜像实际执行并通过，
   精确映射见 `new-image-case-progress.json`。全量结束后的 scope guard 确认
-  原有 7 个停止容器及卷身份完全不变。物理恢复与新提交的远端 CI 仍须完成。
+  原有 7 个停止容器及卷身份完全不变。物理恢复仍须完成；用户随后取消
+  继续检测 CI，不再要求新提交的远端 CI 作为物理验收前置。
 
 ## Run 41003611925：8 个失败 job
 
@@ -584,8 +600,10 @@ Access Restart 前的实际依赖就绪观察；该测试修正仍需独立发�
 
 ## 最后逐项 review 的记录
 
-- [ ] **补齐最终验收证据**：更新新镜像 396-case 账本、受影响的物理恢复，
-  以及本次新 SHA 的全部 27 个远端 job；保留各自输入身份和覆盖边界。
+- [ ] **补齐最终验收证据**：整理 396-case 历史账本、后续修复的受影响
+  组件/E2E 与物理恢复，保留各自源码/镜像身份和覆盖边界，不将早期 PASS
+  归给当前镜像。远端仅保留已经取得的结果；用户已取消继续检测 CI，
+  不再要求本次新 SHA 的 27 个远端 job。
 - [ ] **逐项共同 review 01–16**：每项明确“原因确认程度、修复是否充分、
   回归是否能捕获原问题、还需做什么”。保留 Go 旧原因未知的事实，
   核对 browser batch 新增的未执行/级联错误归因及独立统计。
@@ -612,7 +630,8 @@ Access Restart 前的实际依赖就绪观察；该测试修正仍需独立发�
   Review 另发现 C ABI send/chain/slab 在同步 completion 释放 wrapper 后仍会
   读它；四个确定性原生用例在修复前失败，保活 native client/connection/transport
   至返回后均通过。完整 C++、owned tree transport、storage、fmt/tree-lint 已通过。
-  按新顺序先收尾此修复与 CI，再回到物理验证；P14 门禁继续保留。
+  生命周期修复的本地验证与发布已经完成；CI 按用户要求停止检测。
+  当前 c063 新镜像的 P12/P13 物理复验尚待完成，P14 门禁继续保留。
   文件：`lib/crowdb-tree/ffi/src/chunk/transport.rs`、
   `lib/crowdb-rpc/ffi/src/owned_route.rs`、
   `lib/crowdb-rpc/src/client/client.cpp`、
@@ -630,6 +649,11 @@ Access Restart 前的实际依赖就绪观察；该测试修正仍需独立发�
   B1/B2 此次 ChunkKV 重启已有 lease 到期、主动退出、正常 join 的日志闭环，
   stderr 为空；不是已证实的同一 C++ 异常。下次每个入口单独保存 stdout、
   endpoint、起止时间与退出码，再聚合状态，避免并发错误归属缺失。
+  c063 启动审计另捕获 A 主机约十秒 NVMe I/O 停顿，随后 Group0 超时、
+  五个 ChunkKV 租约退出和五个具名 Iceberg checksum reader 的 curl28；
+  无 OOM，设备/文件系统原因未证实，不能据此倒推旧 P13 的根因。
+  单对象原限制验证及新的完整五端点只读历史审计随后通过；新 P09 冷启动
+  及完整历史审计也已通过，后续仍须完成 P12/P13 的独立故障验证。
 
 ## 文件与验证入口
 
@@ -640,4 +664,5 @@ Access Restart 前的实际依赖就绪观察；该测试修正仍需独立发�
 - 集成：完整 core/access/console/storage 组，以及精确的原始非容器失败 case。
 - E2E：396 个 canonical scope/case、并发隔离、原失败 case 的实际执行、Go
   故意注入后的 cleanup、GC 真实 overlap，以及新镜像上的物理恢复。
-- 远端：推送后关联本次 SHA 的新 run，核对 27 个展开后的 job，而非仅看汇总状态。
+- 远端：保留已记录的精确 SHA、attempt 和展开 job。用户已要求停止检测 CI，
+  不查询或推断当前提交的新 run，也不将它作为后续物理验收条件。

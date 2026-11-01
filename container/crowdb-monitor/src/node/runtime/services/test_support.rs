@@ -92,6 +92,12 @@ impl NodeServiceForTests {
     }
 
     /// # Errors
+    /// Rejects superseded recovery observations before stopping an owned process.
+    pub async fn stop_unhealthy_for_tests(&mut self, intent: &NodeServiceIntent) -> Result<()> {
+        super::stop_unhealthy(&self.profile, &mut self.processes, intent).await
+    }
+
+    /// # Errors
     /// Propagates production authority, process and readiness errors.
     pub async fn execute_for_tests(&mut self, intent: NodeServiceIntent) -> Result<Value> {
         execute(&self.profile, &mut self.processes, intent).await
@@ -108,7 +114,7 @@ impl NodeServiceForTests {
         self.health
             .as_mut()
             .ok_or("missing test health worker")?
-            .reconcile_services(&self.profile, &mut self.processes)
+            .reconcile_services_for_tests(&self.profile, &mut self.processes)
             .await
     }
 

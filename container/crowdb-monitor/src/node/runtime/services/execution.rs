@@ -7,6 +7,27 @@ use crowdb_protocol::mgmt::node::{NodeBinding, NodeServiceAction, NodeServiceInt
 use serde_json::{json, Value};
 use std::time::Duration;
 
+pub(in crate::node::runtime) async fn stop_unhealthy(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    intent: &NodeServiceIntent,
+) -> Result<()> {
+    let binding: NodeBinding =
+        durable::read(&profile.paths.data_root.join("node-binding.json"))?.ok_or("node is unbound")?;
+    if binding.node_id != intent.node_id || binding.bootstrap.cluster_id != intent.cluster_id {
+        return Err("service intent belongs to another node or cluster".into());
+    }
+    tokio::time::timeout(Duration::from_secs(3), super::super::verify_binding(&binding)).await??;
+    verify_intent(&binding, intent).await?;
+    let id = if intent.kind == "kv" {
+        "kv"
+    } else {
+        &intent.service_id
+    };
+    processes.stop(id, Duration::from_secs(10)).await?;
+    Ok(())
+}
+
 pub(in crate::node::runtime) async fn execute(
     profile: &DeploymentProfile,
     processes: &mut ProcessManager,

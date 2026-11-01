@@ -195,6 +195,7 @@ pub async fn run_node_with_inputs(
         }
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     }.await;
+    health.stop().await;
     drop(endpoint_recovery);
     initialization.stop().await;
     setup.stop().await;
