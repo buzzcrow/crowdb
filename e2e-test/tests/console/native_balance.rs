@@ -70,14 +70,14 @@ pub(super) async fn settle_existing(context: &TestNativeContext) {
         }) && placement_ready(&context.kv, catalog.generation()).await
         {
             eprintln!(
-                "[PHASE] journal fixture placement settled in {:?}",
+                "[PHASE] native fixture placement settled in {:?}",
                 started.elapsed()
             );
             return;
         }
         assert!(
             started.elapsed() < Duration::from_secs(40),
-            "journal fixture's normal placement did not settle"
+            "native fixture's normal placement did not settle"
         );
     }
 }

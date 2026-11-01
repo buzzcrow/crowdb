@@ -11,9 +11,9 @@ Upstream: [Physical Node Test Plan](../dev/physical-node-test-plan.md),
 Goal: finish CI stability verification and publish CROWDB, then resolve P13 and
 complete the two-host physical recovery matrix without losing data or evidence.
 
-## 1. Current checkpoint: split recovery repair locally verified
+## 1. Current checkpoint: lifecycle repair locally verified, publication pending
 
-Updated 2026-11-01, 20:00 Asia/Shanghai. The user explicitly resumed this plan.
+Updated 2026-11-01, 21:21 Asia/Shanghai. The user explicitly resumed this plan.
 Continue the agreed CI refinement, commit/push, exact-head CI, then physical
 recovery sequence. No physical fault or retirement has been dispatched on resume.
 
@@ -41,9 +41,11 @@ recovery sequence. No physical fault or retirement has been dispatched on resume
   took 5574.963 seconds; the earlier actual CLI failure remains in its attempts.
 - The CI pause marker was removed after the normal client refresh and resumed
   scope guard passed. The separate physical investigation marker remains.
-- No test/workload/fault controller is left running. Physical work remains
-  paused; the seven retained physical containers and their volumes remain owned
-  and preserved. Do not restart old session IDs.
+- The previous full-suite controller completed. Current lifecycle repair tests
+  are tracked under ci/lifecycle-dependencies-fixed/; original failures and
+  baseline comparisons remain under ci/published-5af2737f/. Physical work remains deferred; the
+  seven retained physical containers and their volumes remain owned and preserved.
+  Do not restart old session IDs.
 - Commit 76fc6508189dd31018e953674a8f1c693011498d was pushed successfully.
   [CI run 41295426521](https://github.com/buzzcrow/crowdb/actions/runs/41295426521),
   attempt 1, finished with 24 successful and three failed jobs out of 27.
@@ -72,9 +74,40 @@ recovery sequence. No physical fault or retirement has been dispatched on resume
   passed. A new source-verified image passed the exact terminal recovery case
   (151.1 seconds; recovery check 21.2 seconds), all nine CLI cases at default
   concurrency, two ChunkKV cases, balance and 83 remaining console-api cases.
-  These are 95 distinct current-image cases. Publication and new exact-head CI
-  remain pending. Previous 396-case coverage belongs to the previous image.
-- This CI checked out merge commit e9f241349146046d52c1198cf3f1b0e0dbdbccff.
+  These are 95 distinct current-image cases. The coherent fix was committed and
+  fast-forward pushed as 5af2737fd5797a1afd1395eac63427e8fdb892d2; commit hooks
+  passed fmt/clippy. Run 41304660599 attempt 1 ended 25 PASS / 2 FAIL. Its merge checkout
+  3c87db4bcf71f2d532762bbadb3a4416732514f1 has the same complete tree as HEAD:
+  4b93303bfaf8cc2e0b797b14815d8e884771e473. Previous 396-case coverage belongs
+  to the previous image. All 27 current jobs must pass before physical dispatch.
+- The previous terminal writer recovery now passes remotely. The two new failures
+  are auxiliary external Access restart during an initial ChunkKV transfer and
+  six-node Access deployment Waiting classified as terminal failure. All 27 logs
+  and both verified artifacts are retained. The six-node trace exceeded the
+  existing 16-MiB export limit and was not uploaded; do not claim it was inspected.
+- Local exact auxiliary passed (12.4 seconds), its original concurrent pair
+  reproduced the same restart 409 (12.1 seconds), and the serial auxiliary
+  passed (13.7 seconds). Finish normal initial placement before lifecycle faults;
+  preserve every original response, process, sibling and readiness assertion.
+- The original ordered local partition stopped earlier at KV restart after
+  stopping Group 0's leader. The isolated serial case also failed. A new leader
+  was elected after submission; the authority guard returned 502. Observe the
+  same cluster's surviving authority within the existing election budget before
+  submitting one restart. The mutation response budget remains unchanged.
+- Two deterministic plan-hook regressions reproduced Access Waiting and multiline
+  ChunkKV Waiting becoming failed. A further regression exposed stale waiting
+  detail selecting the ten-second missing-disk backoff for a registered startup.
+  The repair restores the existing dependency-wait contract and observes the
+  accepted operation without a duplicate deploy/restart. The new source-verified
+  image passed all 48 distinct affected cases: native operations 19, browser 27
+  and native deployment plans two. Exact KV, auxiliary pair and six-node cases
+  passed first; lifecycle cases passed again at original default concurrency.
+  The two data-plan cases used concurrency two but resource-aware batching ran
+  them sequentially (12,800 + 6,656 MiB exceed the 16,384-MiB budget).
+  UI 366, plan-hook 28 including two new regressions, fixture 304, TypeScript,
+  fmt and full clippy passed. New publication and all 27 exact-head CI jobs
+  remain required before any physical dispatch.
+- Run 41299662435 checked out merge commit e9f241349146046d52c1198cf3f1b0e0dbdbccff.
   Its complete source tree equals the pushed head's tree
   9a7a6a85ba27c2722610d4185912edf67b3c86bf. Local and CI image runtime digests
   differ; source equality does not claim identical binaries.
@@ -88,17 +121,17 @@ the user finishes joint review; a PASS must not check a human review box.
 ## 2. Repository and publication boundary
 
 - CROWDB root: /cjdata/cpp/crowdb2.
-- Branch: task-fix-build; published HEAD:
-  70ae86b1c62e095be2754ed178890736e49be5a4.
+- Branch: task-fix-build; published HEAD before this lifecycle repair:
+  5af2737fd5797a1afd1395eac63427e8fdb892d2.
 - The four previously local commits were included in the fast-forward push:
   cdf023d6 (recovery/liveness), 81d07f03 (nearby mirrors),
   d396a220 (healthy leader quorum lease), and 7a93c4e5 (cleanup/handoff).
-- The earlier production changes and three subsequent test fixes are committed
-  and pushed. The new split materialization fix, regression and plan updates
-  remain local. Preserve
+- The production changes, subsequent test fixes and new split materialization
+  repair are committed and pushed. The current lifecycle/dependency repair and
+  working-plan updates are prepared for the next coherent commit. Preserve
   any new user edits; do not reset or restore.
-- Remote task-fix-build was fetched at 76fc6508 immediately before the last push;
-  GitHub then confirmed the new exact head 70ae86b1.
+- Remote task-fix-build was fetched at 70ae86b1 immediately before the last push;
+  GitHub then confirmed the new exact head 5af2737f.
   [PR 55](https://github.com/buzzcrow/crowdb/pull/55) is open.
   Fetch and verify remote state again immediately before the eventual push.
 - After explicit resume, the agreed order remains: finish local CI stability
@@ -143,26 +176,35 @@ All abbreviated paths below are relative to:
   exact baseline, deterministic red/green and both affected component suites.
 - ci/split-materialization-fixed/: new image build, exact and grouped container
   queues, 95-case source-specific local closure, quality gates and diff review.
+- ci/published-5af2737f/: third publication, all 27 job logs, both checked failure
+  artifacts, concurrent/serial baselines and deterministic dependency regressions.
+- ci/lifecycle-dependencies-fixed/: current prepare/exact/operations/browser/data
+  queues, 48-case source-specific closure, quality gates and diff review.
 - The earlier long handoff is preserved at
   handoff-history/plan-physical-node-ci-handoff-before-rewrite-20261101T062936Z.md.
   It contains superseded historical instructions, not current authorization.
 
 Current local server image:
 
-- Tag: crowdb-node:split-fixed.
-- Production source tree: 861fc9d45ae32f72a5199585a8bb1b231048b448.
+- Tag: crowdb-node:lifecycle-fixed.
+- Source tree: 1516797b67ad493c9bbf9c25048e574e7d994f31.
 - Docker image ID:
-  sha256:cec0d2c1bf885429024298a884aecdfd137a40c0b38ec9f4a077c36cc47394ae.
+  sha256:359897a74ffa13d05e6c3bcf6708c7291a2b761e7c7193b706ba436060d75119.
 - OCI config digest:
-  sha256:c77782fdd13916f42e72e283b06662f8cf22a2158233faf74fd4a63069b42eda.
+  sha256:a35afa03888629de0d172ca9a186f5c67d558c64125b9f075747f11b049b08e0.
 - Runtime SHA-256:
-  9fab75b6dae267c98946c7c9da7866deaa406531255497f9fd3b8f6c3faadfdc.
-- OCI archive: image/split-materialization-fixed/crowdb.oci.tar; SHA-256:
-  11a6ff4a615f55b638f412cd3b93a5f248c68792a33bbbb77b59385d5ef6d3bc.
-- Revision label 70ae86b1 predates this uncommitted fix; the source-tree label
-  records the actual source. Both identities are preserved. Physical hosts have
-  not been upgraded. Setup and retirement require this exact image, current
-  local verification and the eventual new all-27-job CI PASS.
+  c03d3b78cf126c42923cfd91b3e6d03160ae082e77039708afafda465d9a5e26.
+- OCI archive: image/lifecycle-dependencies-fixed/crowdb.oci.tar; SHA-256:
+  41107c698fb1ff1ddbd51aee05401e797cb4587b3103dcd1145bad6ae83cc020.
+- Revision label 5af2737f predates this uncommitted fix; the source-tree label
+  records the actual source. Physical hosts have not been upgraded. Setup and
+  retirement require this image, current local verification and the eventual
+  new all-27-job CI PASS.
+- The preceding split-fixed image and its 95-case validation remain in
+  image/split-materialization-fixed/ and ci/split-materialization-fixed/.
+  Its Docker ID begins cec0d2c1 and source tree is
+  861fc9d45ae32f72a5199585a8bb1b231048b448; those passes are not relabeled as
+  current-image coverage.
 
 Previous local server image and retained 396-case evidence:
 
@@ -332,7 +374,10 @@ The user has resumed; proceed in the order below.
   The three fixes and local affected regressions passed and were pushed as
   70ae86b1. Run 41299662435 attempt 1 ended 26 PASS / 1 FAIL. Its production
   split materialization repair now has 198 affected component PASS and 95
-  exact-image container PASS; publish the coherent fix and inspect its new run.
+  exact-image container PASS. The fix is pushed as 5af2737f; inspect all jobs in
+  run 41304660599 attempt 1 ended 25 PASS / 2 FAIL. Repair the two new lifecycle
+  failures and the local Group 0 restart boundary, then publish and inspect the
+  next exact-head run. Current diagnosis: ci/published-5af2737f/repair-diagnosis.json.
   Match the actual new head SHA/run/attempt, inspect every expanded job
   (the three historical runs had 27), preserve every first failure and artifact,
   fix real errors and rerun the appropriate new-head job/run. Do not rerun an old
@@ -426,7 +471,9 @@ Physical work is deferred until the CI/publication stage above is complete.
 - [ ] **P17–P19 close only after all prerequisites pass**: freeze complete
   evidence/results/summary, inspect identities across the entire fault and audit
   intervals, privately preserve remaining data, then exact owned-only retirement.
-  Review harness/close_run.py before dispatch; no global cleanup.
+  Use only the reviewed harness/close_physical_final.py and
+  cleanup_host_final.py stages. Never replay obsolete close_run.py or
+  cleanup_host.py; no global cleanup.
 
 The separate investigate-unexpected-P12-restart marker prevents recovery_final.py
 from dispatching P14. It is not the CI pause marker. Do not remove it merely to

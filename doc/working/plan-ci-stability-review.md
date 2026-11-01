@@ -25,7 +25,9 @@ coverage, and identify the remaining work needed to improve CI stability.
 本地补充验证控制器正常退出；首次推送后的三个新失败已修复并完成本地复验，
 修复已推送为 `70ae86b1`，完整 CI 为 26/27 PASS；新发现的 terminal writer
 恢复故障已定位为 split 物化与父分区租约转移的冲突，修复和本地复验已完成，
-待提交推送并核对下一轮精确 SHA CI。
+已推送为 `5af2737f`，run `41304660599` attempt 1 已结束，25/27 PASS。
+terminal writer recovery 已远端通过；auxiliary 与六节点部署修复及本地复验已完成，
+新的提交和精确 SHA CI 尚待完成。
 物理容器在恢复前已停止，原因未知；七个容器、镜像和卷身份均保持不变。
 
 ## 当前执行队列
@@ -118,8 +120,37 @@ coverage, and identify the remaining work needed to improve CI stability.
   均通过。新镜像精确 terminal 151.1 秒通过，恢复 check 21.2 秒；默认并发
   CLI 九例、ChunkKV 两例、balance 一例和 console-api 剩余 83 例全部通过，
   共 95 个不同 canonical case。七个保留物理容器及卷身份不变。
-  证据：`ci/split-materialization-fixed/`；下一次精确 SHA CI 尚未执行。
+  证据：`ci/split-materialization-fixed/`；已推送 `5af2737f`，其精确 SHA
+  CI run `41304660599` attempt 1 已结束；原 terminal recovery 已通过。
   此前 396-case PASS 属于旧生产镜像，不能将两轮输入混为最终镜像全量验证。
+
+## Run 41304660599：依赖等待与生命周期前置条件
+
+- 全部 27 个 job 日志和两个失败 artifact 已保留并校验；25 PASS / 2 FAIL。
+  `console-native-operations` 为 18 PASS / 1 FAIL，`console-native-data` 为
+  13 PASS / 1 FAIL。六节点 trace 为 27.4 MB，超过原 16 MiB 导出上限，
+  远端未保留；该部分只能依据完整失败日志与本地重现诊断。
+- Auxiliary 外部 Stop、OS 进程退出和页面 Failed 均通过，随后 Restart
+  在 ChunkKV 初始放置的 TransferFencing 窗口返回 409 Waiting。原精确
+  场景 12.4 秒 PASS；原并发组合 12.1 秒复现；串行对照 13.7 秒 PASS。
+  修复前置条件：沿用已有正常 placement settle，再执行故障，不调整生产
+  balance 策略、response/PID/OS/sibling/readiness 断言或 timeout。
+- 六节点 Access Waiting 缺少分类，本地另复现带换行的 ChunkKV Waiting
+  不匹配原正则。monitor 已恢复实际进程，计划仍为 failed。新增两例确定性
+  回归先红；修正分类后又捕获同 waiting 状态保留旧 detail，导致已登记启动
+  误用十秒缺盘退避。修复按已有 CLU-03/SVC-03 契约观察目标 monitor，
+  回归要求最终 deployed，且 deploy 一次、restart 零次。
+- 原有序并发组在更早的 KV lifecycle 失败；精确串行同样失败。停止 Group 0
+  leader 后过早提交 restart，权威校验三秒到期。增加同 cluster/operation
+  的权威恢复观察，使用已有选举预算，再提交一次 mutation，保留响应预算。
+- 新镜像的 48 个独立 case 全部通过：native operations 19、browser 27、
+  六节点和固定端口/失败重试两例。先通过三个精确场景，再在原有序生命周期
+  组复验。六节点两次 Playwright 为 51.2/49.2 秒；固定端口为 5.4 秒。
+  数据组虽配置 concurrency 2，资源预算实际使两例顺序执行，不能声称并发。
+- UI 366、plan-hook 28（含两例新回归）、fixture 304、完整 TypeScript、
+  fmt/full clippy 均通过。七个物理容器及卷身份未变。证据保存在
+  `ci/lifecycle-dependencies-fixed/`；新的精确 SHA CI 尚待完成。
+  原 16 项人工 review 保持未勾选。
 
 ## 通过场景的稳定性改善
 

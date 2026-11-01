@@ -175,7 +175,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
                 const step: ServiceStep = registered.pid ? { state: 'deployed' } : registered.start_pending
                   ? { state: 'waiting', detail: startingService }
                   : { state: 'failed', detail: 'Registered service is stopped; restart it from the Node menu before resuming.' };
-                if (plan[kind].state !== step.state) await write(kind, step);
+                if (plan[kind].state !== step.state || plan[kind].detail !== step.detail) await write(kind, step);
                 continue;
               }
               retryRegistered.current.delete(`${id}/${kind}`);
@@ -225,10 +225,10 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
                 deploymentStarted = true;
               } catch (error) {
                 if (disposed || stopped.current) return;
-                // Hardware can change between the readiness probe and mutation.
-                // A rejected prerequisite has not launched a service; keep it queued.
-                const dependency = String(error).match(/^Error: HTTP 409: (Waiting: .+)$/);
-                if (dependency && (kind === 'chunkdb' || kind === 'chunk-kv')) {
+                // A prerequisite can change after its probe. The monitor may
+                // already own the intent; the next pass observes that registration.
+                const dependency = String(error).match(/^Error: HTTP 409: (Waiting: [\s\S]+)$/);
+                if (dependency && (kind === 'chunkdb' || kind === 'chunk-kv' || kind === 'access-server')) {
                   waitingForStorage = true;
                   await write(kind, { state: 'waiting', detail: dependency[1] });
                   continue;
