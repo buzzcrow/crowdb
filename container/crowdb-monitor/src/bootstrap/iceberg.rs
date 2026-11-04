@@ -11,6 +11,7 @@ use crate::{
     MonitorLogError, ServerCredentials,
 };
 
+mod command_failure;
 mod console;
 mod shared_console;
 
@@ -28,6 +29,12 @@ pub enum IcebergBootstrapError {
     Conflict(&'static str),
     #[error("Iceberg management command failed: {0}")]
     Command(&'static str),
+    #[error("Iceberg management command {action} failed ({status}): {diagnostic}")]
+    CommandExit {
+        action: String,
+        status: String,
+        diagnostic: String,
+    },
     #[error("Iceberg management process failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("Iceberg bootstrap manifest failed: {0}")]
@@ -319,9 +326,7 @@ impl ManagementCommand<'_> {
         .await
         .map_err(|_| IcebergBootstrapError::Command("management command timed out"))??;
         if !output.status.success() {
-            return Err(IcebergBootstrapError::Command(
-                "management command exited unsuccessfully",
-            ));
+            return Err(command_failure::describe(arguments, &output, self.credentials));
         }
         Ok(output.stdout)
     }

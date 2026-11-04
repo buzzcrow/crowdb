@@ -75,7 +75,8 @@ test('native plans: fixed ports isolate three nodes and failed DiskDB retries pr
   const stopped = await request.post('/api/services/diskdb-1/stop');
   expect(stopped.ok(), await stopped.text()).toBe(true);
   expect(await stopped.json()).toMatchObject({ id: 'diskdb-1', pid: null, removed: false });
-  await expect.poll(async () => (await nativeServices(0))['diskdb-1']?.pid, { intervals: [100] }).toBeNull();
+  // Monitor status lists owned children; Stop removes the child but retains registration.
+  await expect.poll(async () => Object.hasOwn(await nativeServices(0), 'diskdb-1'), { intervals: [100] }).toBe(false);
   const registered = (await json(request, '/api/servers')).filter((server: { id: string }) => server.id === 'diskdb-1');
   expect(registered).toHaveLength(1);
   expect(registered[0]).toMatchObject({ id: 'diskdb-1', node_id: 1, service_type: 'diskdb' });
