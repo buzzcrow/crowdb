@@ -590,10 +590,12 @@ async fn main() -> std::process::ExitCode {
         refresh_task,
     ));
     info!("chunk KV background workers stopped");
-    if let Err(error) = service.drain_writers().await {
-        warn!(%error, "WAL writer drain incomplete; restart must retain lease exclusion");
+    match service.drain_writers().await {
+        Ok(()) => info!("chunk KV WAL writer drain complete"),
+        Err(error) => {
+            warn!(%error, "WAL writer drain incomplete; restart must retain lease exclusion");
+        }
     }
-    info!("chunk KV WAL writer drain complete");
     if let Err(error) = process_lease.withdraw_observation().await {
         warn!(%error, "failed to unregister chunk KV instance");
     }

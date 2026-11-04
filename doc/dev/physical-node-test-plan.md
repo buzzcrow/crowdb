@@ -554,22 +554,37 @@ PID/start-time, and complete-audit assertions.
 - **P16.2 New and old data**: verify a new KV batch, new ChunkDB allocate/query,
   and all historical data separately. Preserve distinctions among
   acknowledgments, acknowledged deletions, and OutcomeUnknown.
-- **P16.3 Full occupancy**: scan all this run's DiskDB occupancy read-only,
+- **P16.3 Full occupancy**: scan all this run's DiskDB occupancy,
   covering every disk, zone, and continuation without truncation. Verify live
   mirror segments do not overlap across chunks; retain actual live, allocated,
   free, and reserved counts.
-- **P16.4 Cutoff and metadata-change evidence**: use one recorded scan cutoff
-  for busy allocations and live Chunk metadata, then retain the completion
-  barrier and journal fence. A bounded current-version scan is not an MVCC
-  snapshot: matching busy-allocation or `/chunk/` mutations during that interval
-  must fail the unchanged stability guard. Capture the exact failed prefix and
-  slot interval immediately, before journal GC or expensive failure collection,
-  with one bounded 20-second read-only diagnostic. Retain raw and decoded keys,
-  values, operations and source identities to classify the changed fields.
-  Diagnostic failure must preserve the original audit exception. GC gaps or
-  truncation leave classification unknown; they cannot establish a consistent
-  scan or waive fixed-cutoff, scope, completeness or non-overlap assertions.
-  A later unchanged scan is a separate attempt, not proof about the failed one.
+- **P16.4 Consistent inventory**: a bounded current-version scan is not an MVCC
+  snapshot. Record one initial cutoff for complete busy-allocation and
+  `/chunk/` scans. Either prove both prefixes unchanged through a valid
+  completion fence, or reconstruct both inventories at that fence by replaying
+  every intervening journal put and delete. Do not ignore metadata fields or
+  discard changed records. Apply all scope, completeness, allocation, bounds
+  and non-overlap checks to the resulting inventory.
+- **P16.5 Completion fence and journal**: a coalesced ReadIndex may return a
+  conservative earlier read point. For reconstruction, submit one isolated
+  test-control marker to the same Group1 after both scans, outside the audited
+  prefixes. Record intent before submission, use a unique key, and require a
+  positive acknowledgment with a matching transport correlation ID and a
+  chosen revision beyond the initial cutoff. Record the logical request ID
+  separately. An unknown outcome fails without automatic resubmission. All
+  scans and replay are read-only; the marker is a separate control write.
+  Fetch the complete bounded journal interval for both prefixes without
+  splitting operations sharing a slot. Reject GC gaps, missing history,
+  truncation, a read slot below the fence, and foreign or unordered operations.
+  Retain raw scans, operations, reconstructed maps, and marker outcome.
+- **P16.6 Failed stability evidence**: matching busy-allocation or `/chunk/`
+  mutations must fail an unchanged-inventory guard. Capture the exact failed
+  prefix and slot interval immediately, before journal GC or expensive failure
+  collection, with one bounded 20-second read-only diagnostic. Retain raw and
+  decoded keys, values, operations and source identities. Diagnostic failure
+  preserves the original audit exception. A GC gap or truncation leaves the
+  changed fields unknown. A later consistent audit is a separate qualification,
+  not proof about the failed scan or permission to weaken its assertions.
 
 ## 7. Category F: first-failure diagnosis, repair, and cleanup
 
