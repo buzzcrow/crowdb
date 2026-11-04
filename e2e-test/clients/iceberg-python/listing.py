@@ -28,7 +28,7 @@ def main():
         endpoint_override=endpoint.netloc, force_virtual_addressing=False,
     )
     prefix = f'{config["bucket"]}/{config["prefix"]}data/'
-    for suffix in ["a.json", "nested/b.json", "雪&<>+%.json"]:
+    for suffix in ["a.json", "nested/b.json", "\u96ea&<>+%.json"]:
         path = prefix + suffix
         file = PyArrowFile("s3://" + path, path, filesystem)
         assert not file.exists()
@@ -39,7 +39,7 @@ def main():
             assert stream.read() == b"{}"
     selected = filesystem.get_file_info(fs.FileSelector(prefix.removesuffix("/"), recursive=True))
     names = sorted(file.path for file in selected if file.type == fs.FileType.File)
-    assert names == sorted(prefix + suffix for suffix in ["a.json", "nested/b.json", "雪&<>+%.json"]), names
+    assert names == sorted(prefix + suffix for suffix in ["a.json", "nested/b.json", "\u96ea&<>+%.json"]), names
     print(f"PyIceberg {pyiceberg.__version__} / PyArrow {pyarrow.__version__}: exact creation, HEAD/GET and prefix discovery passed")
     verify(config)
     if os.environ.get("CROWDB_E2E_NATIVE_LOADER_FLOW") == "1":

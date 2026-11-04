@@ -145,6 +145,39 @@ async fn serve(cluster: &str, nodes: u8, ready: bool) -> (u16, tokio::task::Join
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_foreign_resource_removal_does_not_break_selected_cluster_replay() {
+    let test = TestDocker::new();
+    let (port, server) = serve("local", 1, true).await;
+    let mut state = test.state();
+    state["disappearing"] = json!({
+        "container": ["crowdb-foreign-1"],
+        "volume": ["crowdb-foreign-1-data"],
+        "network": ["crowdb-foreign"],
+    });
+    test.save(&state);
+    test.run(
+        None,
+        &["start", "--port-base", &port.to_string(), "--wait", "0"],
+        0,
+    );
+    let receipt = fs::read(test.receipt("local")).unwrap();
+    test.run(None, &["stop"], 0);
+    test.run(None, &["start", "--wait", "0"], 0);
+    assert_eq!(fs::read(test.receipt("local")).unwrap(), receipt);
+    assert_eq!(test.state()["container"].as_object().unwrap().len(), 1);
+    assert!(test.state()["calls"].as_array().unwrap().iter().all(|args| {
+        args[1] != "inspect"
+            || args
+                .as_array()
+                .unwrap()
+                .iter()
+                .skip(2)
+                .all(|name| !name.as_str().unwrap().starts_with("crowdb-foreign"))
+    }));
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn default_single_node_start_seals_identity_and_resumes_without_duplicate_resources() {
     let test = TestDocker::new();
     let (port, server) = serve("local", 1, true).await;

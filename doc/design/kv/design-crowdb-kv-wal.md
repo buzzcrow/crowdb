@@ -177,7 +177,10 @@ Each individual `Accept` is small (tens of bytes overhead + payload). Per-record
 The durable operation is backend-specific:
 
 - **Filesystem file backend:** append with normal file writes, then `fdatasync` / equivalent durable flush.
-- **Block-device backend:** issue aligned direct writes. If the device requires 4 KiB sectors, the WAL writer pads or read-modify-writes through the block backend's alignment planner; no filesystem `fdatasync` is involved.
+- **Block-device backend:** issue aligned positional writes, using direct I/O
+  when selected. If the device requires 4 KiB sectors, the WAL writer pads or
+  read-modify-writes through the alignment planner. The real file-backed
+  implementation then calls `sync_data` before releasing durable acknowledgments.
 - **RAM / SCM / simulated backends:** use the backend's own durability contract. A volatile RAM backend is for tests only and may complete immediately; persistent-memory backends may require cache-line flush / fence semantics instead of filesystem sync.
 
 The acceptor code talks to `WalEngine::append_*` and does not branch on these backend details.
@@ -248,6 +251,20 @@ enum with four variants:
   `fdatasync` calls `sync_data`. Whether the path is a regular file, a raw
   block device, or a tmpfs file makes no difference; in Unix, a block device
   *is* a file.
+
+On the production multi-thread Tokio runtime, including a runtime with one
+worker, synchronous block-device file and layout operations use Tokio's
+[`block_in_place`](https://docs.rs/tokio/1.52.3/tokio/task/fn.block_in_place.html).
+This allows independently spawned apply, RPC, and timer tasks
+to run while the OS call blocks. The closure completes before returning, so
+borrowed WAL buffers and the file remain live without an extra payload copy.
+Write, durable flush, index publication, and acknowledgment keep their original
+ordering and error behavior. This changes scheduling rather than durability,
+timeouts, retries, or configured worker/resource limits. Current-thread and
+non-runtime callers retain synchronous compatibility; they do not gain
+concurrent task progress. The production path uses independently spawned WAL
+workers on the ordinary multi-thread runtime, not a `LocalSet` or same-task
+`join!` branches.
 
 `BlockDevice` has two constructors selected by the `O_DIRECT` flag:
 

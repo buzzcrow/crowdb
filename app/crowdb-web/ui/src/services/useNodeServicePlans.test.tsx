@@ -320,20 +320,23 @@ describe('node service plans', () => {
     expect(result.current.plans[1]['access-server'].state).toBe('deployed');
     expect(vi.mocked(serviceRequest).mock.calls.filter(([, method]) => method === 'POST')).toHaveLength(3);
   });
-  it('does not retry failures automatically and stops queued deployments before reset', async () => {
+  it('observes failures without replaying mutations and stops observation before reset', async () => {
     vi.mocked(serviceRequest).mockImplementation(async path => { if (path === '/service-plans') return {}; if (path === '/chunk-storage-readiness' || path === '/group0-readiness') return { ready: true }; if (path.endsWith('/service-plan')) return { revision: 1, ready: true }; throw new Error('Unavailable'); });
     const { result } = renderHook(() => useNodeServicePlans(stores, {}, async () => {}, true));
     await act(async () => { result.current.start(1); });
     expect(result.current.plans[1].chunkdb.state).toBe('failed');
-    const attempts = vi.mocked(serviceRequest).mock.calls.length;
+    const mutations = vi.mocked(serviceRequest).mock.calls.filter(([, method]) => method === 'POST');
+    const observations = vi.mocked(listServers).mock.calls.length;
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    expect(serviceRequest).toHaveBeenCalledTimes(attempts);
+    expect(vi.mocked(listServers).mock.calls.length).toBeGreaterThan(observations);
+    expect(vi.mocked(serviceRequest).mock.calls.filter(([, method]) => method === 'POST')).toEqual(mutations);
+    const attempts = vi.mocked(serviceRequest).mock.calls.length;
     await act(async () => { await result.current.stop(); });
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     expect(result.current.plans).toEqual({});
     expect(serviceRequest).toHaveBeenCalledTimes(attempts);
   });
-  it('recovers waiting progress and fences interrupted deployment until explicit reconciliation', async () => {
+  it('recovers waiting progress and observes an interrupted deployment without replaying it', async () => {
     const steps = Object.fromEntries(['paxos-kv', 'diskdb', 'chunkdb', 'diskio', 'chunk-kv', 'access-server'].map(kind => [kind,
       { state: kind === 'chunkdb' ? 'deploying' : kind === 'paxos-kv' || kind === 'diskdb' ? 'deployed' : 'waiting' }]));
     vi.mocked(serviceRequest).mockImplementation(async path => path === '/service-plans' ? { 1: { revision: 7, steps } } : path === '/chunk-storage-readiness' ? { ready: true } : { revision: 8, ready: true });
@@ -346,7 +349,7 @@ describe('node service plans', () => {
       { node_id: 1, service_type: 'paxos-kv', pid: 10 }, { node_id: 1, service_type: 'diskdb', pid: 11 },
       { node_id: 1, service_type: 'chunkdb', pid: 12 },
     ] as Awaited<ReturnType<typeof listServers>>);
-    await act(async () => { await result.current.start(1); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     expect(result.current.plans[1].chunkdb.state).toBe('deployed');
     expect(vi.mocked(serviceRequest).mock.calls.some(([path, method, body]) => path.endsWith('/services/deploy') && method === 'POST' && (body as { kind?: string })?.kind === 'chunkdb')).toBe(false);
     expect(serviceRequest).toHaveBeenCalledWith('/nodes/1/service-plan', 'PUT', expect.objectContaining({ revision: 7 }));
@@ -414,7 +417,8 @@ describe('node service plans', () => {
     vi.mocked(listServers).mockRejectedValue(new Error('Registry unavailable'));
     const { result } = renderHook(() => useNodeServicePlans([], {}, async () => {}, true));
     await act(async () => { await result.current.start(1, ['paxos-kv']); });
-    expect(result.current.plans[1]['paxos-kv'].state).toBe('failed');
+    expect(result.current.plans[1]['paxos-kv'].state).toBe('waiting');
+    expect(result.current.plans[1]['paxos-kv'].detail).toContain('inventory');
     for (const kind of serviceOrder.filter(kind => kind !== 'paxos-kv')) expect(result.current.plans[1][kind].state).toBe('disabled');
   });
   it('rechecks registered DiskIO ownership promptly without requiring disk rows to be expanded', async () => {

@@ -67,7 +67,7 @@ class DefaultClientCases:
         client = self.default_client()
         bucket = self.bucket + "-presign"
         client.create_bucket(Bucket=bucket)
-        params = {"Bucket": bucket, "Key": "exact/%25+边界"}
+        params = {"Bucket": bucket, "Key": "exact/%25+\u8fb9\u754c"}
         put = client.generate_presigned_url("put_object", Params=params, ExpiresIn=60)
         self.assertEqual(self.presigned_http("PUT", put, b"presigned bytes")[0], 200)
         get = client.generate_presigned_url("get_object", Params=params, ExpiresIn=60)

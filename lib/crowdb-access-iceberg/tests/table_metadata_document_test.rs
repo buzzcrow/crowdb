@@ -35,7 +35,7 @@ fn official_java_metadata_roundtrips_without_rewriting() {
 fn version_envelopes_preserve_original_bytes_and_unknown_fields() {
     for version in 1..=3 {
         let mut value = fixture::metadata(version);
-        value["future-extension"] = json!({"nested":[null,true,5,"雪"]});
+        value["future-extension"] = json!({"nested":[null,true,5,"\u{96ea}"]});
         value["location"] = json!(fixture::table().to_string().trim_end_matches('/'));
         let bytes = format!(" \n{}\n ", serde_json::to_string_pretty(&value).unwrap()).into_bytes();
         let head = fixture::head(

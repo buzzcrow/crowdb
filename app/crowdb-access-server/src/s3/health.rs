@@ -41,6 +41,16 @@ impl S3HttpHandler for AccessHealthHandler {
     }
 }
 
+impl S3Dispatcher {
+    #[cfg(feature = "test-util")]
+    /// Read the production cached response without transport or dependency work.
+    #[must_use]
+    pub fn health_response_for_tests(&self) -> Response<ResponseBody> {
+        let observed = self.observations.latest.load_full();
+        readiness_response(observed.as_deref(), self.health.is_live(), false)
+    }
+}
+
 fn readiness_response(
     observed: Option<&HealthObservation>,
     live: bool,

@@ -7,7 +7,7 @@ describe('mixed KV byte presentation', () => {
   it('keeps printable fields around control and invalid UTF-8 bytes', () => {
     expect(byteRuns(undefined, '616200ffe4b8ad6364')).toEqual([
       { text: 'ab', binary: false }, { text: '00FF', binary: true },
-      { text: '中cd', binary: false },
+      { text: '\u4e2dcd', binary: false },
     ]);
     expect(printableBytes(undefined, '616200ff')).toBe(false);
   });
@@ -18,8 +18,8 @@ describe('mixed KV byte presentation', () => {
     expect(displayBytes(undefined, 'e282')).toBe('E282');
   });
   it('distinguishes text that looks like hex and preserves valid Unicode', () => {
-    expect(byteRuns('FF00中😀', undefined)).toEqual([{ text: 'FF00中😀', binary: false }]);
-    expect(printableBytes('FF00中😀', undefined)).toBe(true);
+    expect(byteRuns('FF00\u4e2d😀', undefined)).toEqual([{ text: 'FF00\u4e2d😀', binary: false }]);
+    expect(printableBytes('FF00\u4e2d😀', undefined)).toBe(true);
     expect(byteRuns(undefined, 'efbbbf41')).toEqual([{ text: 'EFBBBF', binary: true }, { text: 'A', binary: false }]);
   });
 });

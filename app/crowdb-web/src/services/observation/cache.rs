@@ -57,6 +57,7 @@ pub(super) struct ProcessFact {
     pub(super) started: Instant,
     pub(super) pid: Option<u32>,
     pub(super) exhausted: bool,
+    pub(super) observed: bool,
 }
 
 #[derive(Clone)]
@@ -100,9 +101,9 @@ impl Inventory {
         binding: Option<&NodeBinding>,
         node: Option<&NodeEntry>,
         entry: &ServerEntry,
-    ) -> (Option<u32>, NodeHealth, bool) {
+    ) -> (Option<u32>, NodeHealth, bool, bool) {
         let Some(node) = node.filter(|_| self.binding.as_ref() == binding && binding.is_some()) else {
-            return (None, NodeHealth::Unknown, false);
+            return (None, NodeHealth::Unknown, false, false);
         };
         let key = (node.id, entry.id.clone());
         let valid = |sample: &Sample| self.accepts(sample) && sample.node == *node && sample.entry == *entry;
@@ -130,7 +131,7 @@ impl Inventory {
                 )
             })
             && !process.is_some_and(|fact| fact.exhausted);
-        (pid, health, pending)
+        (pid, health, pending, process.is_some_and(|fact| fact.observed))
     }
 }
 
@@ -185,7 +186,14 @@ impl ServiceObservations {
         accepted
     }
 
-    pub(super) fn process(&self, sample: &Sample, started: Instant, pid: Option<u32>, exhausted: bool) {
+    pub(super) fn process(
+        &self,
+        sample: &Sample,
+        started: Instant,
+        pid: Option<u32>,
+        exhausted: bool,
+        observed: bool,
+    ) {
         self.latest.rcu(|current| {
             if !current.accepts(sample) {
                 return Arc::clone(current);
@@ -198,6 +206,7 @@ impl ServiceObservations {
                     started,
                     pid,
                     exhausted,
+                    observed,
                 },
             );
             Arc::new(next)

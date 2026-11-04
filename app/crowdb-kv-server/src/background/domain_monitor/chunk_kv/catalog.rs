@@ -212,7 +212,7 @@ async fn validate_materialized_split(
 
 pub async fn publish_materialized_transfer(
     control: &Group0ControlPlane,
-    partition_id: crowdb_protocol::chunk_kv::Id128,
+    expected: &ChunkKvRangeCatalogEntry,
 ) -> Result<u64, String> {
     let catalog = load_current(control)
         .await?
@@ -221,18 +221,21 @@ pub async fn publish_materialized_transfer(
         .pages
         .iter()
         .flat_map(|page| &page.entries)
-        .find(|entry| entry.partition_id == partition_id)
+        .find(|entry| entry.partition_id == expected.partition_id)
     else {
         return Err("materialized transfer target is absent from the catalog".into());
     };
     if current.artifact.tail_overlay.is_none() && current.transition_id.is_none() {
         return Ok(catalog.head.generation);
     }
+    if current != expected {
+        return Err("materialized transfer assignment changed before publication".into());
+    }
     let transition_id = current
         .transition_id
         .ok_or_else(|| "materialized transfer target has no transition identity".to_string())?;
     let (head, pages) =
-        release_materialized_transfer(catalog.head, catalog.pages, transition_id, partition_id)?;
+        release_materialized_transfer(catalog.head, catalog.pages, transition_id, expected.partition_id)?;
     publish(control, head, pages, catalog.head_revision).await
 }
 
@@ -254,7 +257,7 @@ fn release_materialized_transfer(
                 continue;
             }
             matched += 1;
-            if entry.partition_id != partition_id || entry.artifact.tail_overlay.is_none() {
+            if entry.partition_id != partition_id {
                 return Err("materialized transfer target identity is inconsistent".into());
             }
             entry.artifact.tail_overlay = None;

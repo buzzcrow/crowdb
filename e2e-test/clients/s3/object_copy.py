@@ -8,7 +8,7 @@ class CopyCases:
     def test_server_side_copy_preserves_bytes_and_supported_metadata(self):
         source_bucket = f"{self.bucket}-copy-source"
         target_bucket = f"{self.bucket}-copy-target"
-        source_key = "encoded/雪 %?+&.json"
+        source_key = "encoded/\u96ea %?+&.json"
         payload = b'{"copy":"immutable"}'
         self.client.create_bucket(Bucket=source_bucket)
         self.client.create_bucket(Bucket=target_bucket)

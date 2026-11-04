@@ -5,6 +5,8 @@
 mod balance_distribution;
 #[path = "common/balance_planning.rs"]
 mod balance_planning;
+#[path = "chunk_kv_balance_planning_test/committed_transfer.rs"]
+mod committed_transfer;
 #[path = "chunk_kv_balance_planning_test/recovering_owner.rs"]
 mod recovering_owner;
 

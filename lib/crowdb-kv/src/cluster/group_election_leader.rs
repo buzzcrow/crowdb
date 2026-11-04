@@ -503,8 +503,13 @@ impl PxGroup {
                 }
                 // Admin step-down via StepDown RPC.
                 () = replica.admin_step_down_signal.notified() => {
-                    self.step_down(&tenure_cancel, leader_term, StepDownReason::Admin);
-                    return;
+                    // Accepted requests fence the role before publishing the wakeup.
+                    // A permit retained from an earlier tenure cannot dismiss a
+                    // replica that has since become leader again.
+                    if replica.role() != PxLocalReplicaRole::Leader {
+                        self.step_down(&tenure_cancel, leader_term, StepDownReason::Admin);
+                        return;
+                    }
                 }
                 _ = ticker.tick() => {
                     match self.run_heartbeat_round(cfg, leader_term).await {

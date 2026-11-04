@@ -5,7 +5,7 @@
 
 use super::{
     cache::{Sample, MAX_AGE},
-    source::ServiceObservationSource,
+    source::{ProcessObservation, ServiceObservationSource},
     worker::phase_error,
 };
 use crate::state::AppState;
@@ -23,6 +23,13 @@ pub(super) async fn sample_node(
     binding: NodeBinding,
     node: NodeEntry,
 ) {
+    let mut transport = match source.process_observer(&state, &binding, &node) {
+        Ok(transport) => transport,
+        Err(error) => {
+            phase_error(&state, node.id, "processes", Instant::now(), &error);
+            return;
+        }
+    };
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
@@ -40,19 +47,26 @@ pub(super) async fn sample_node(
             .filter(|entry| entry.node_id == Some(node.id))
             .map(|entry| observed.sample(&binding, &node, entry))
             .collect();
-        sample_processes(&state, source.as_ref(), &binding, &node, &samples).await;
+        sample_processes(&state, source.as_ref(), &mut transport, &binding, &node, &samples).await;
     }
 }
 
 async fn sample_processes(
     state: &AppState,
     source: &dyn ServiceObservationSource,
+    observer: &mut Option<Box<dyn ProcessObservation>>,
     binding: &NodeBinding,
     node: &NodeEntry,
     samples: &[Sample],
 ) {
     let started = Instant::now();
-    let result = match tokio::time::timeout(MAX_AGE, source.processes(state, binding, node)).await {
+    let read = async {
+        match observer {
+            Some(observer) => observer.read().await,
+            None => source.processes(state, binding, node).await,
+        }
+    };
+    let result = match tokio::time::timeout(MAX_AGE, read).await {
         Ok(Ok(value)) => Some(value),
         Ok(Err(error)) => {
             phase_error(state, node.id, "processes", started, &error);
@@ -113,9 +127,19 @@ async fn sample_processes(
                 value["service_failures"][&intent.service_id]["operation_id"] == intent.operation_id
                     && value["service_failures"][&intent.service_id]["exhausted"] == true
             });
+        let has_process_evidence = value
+            .as_ref()
+            .and_then(|value| value["processes"].as_object())
+            .is_some_and(|processes| match processes.get(id) {
+                None => sample.intent.is_some() || sample.entry.service_type == ServiceType::PaxosKv,
+                Some(value) => value
+                    .as_u64()
+                    .and_then(|pid| u32::try_from(pid).ok())
+                    .is_some_and(|pid| pid > 0 && owned.is_some()),
+            });
         state
             .service_observations
-            .process(sample, started, pid, exhausted);
+            .process(sample, started, pid, exhausted, has_process_evidence);
     }
 }
 

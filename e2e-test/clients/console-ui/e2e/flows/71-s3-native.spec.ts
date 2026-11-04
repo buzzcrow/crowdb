@@ -9,7 +9,7 @@ import { bucketFailure, bucketReply } from '../fixtures/bucketDiagnostics';
 // Baseline: 5.3s (2026-10-04); normal three-node fixture, actual multipart acceptance.
 test('S3 native multipart upload, HEAD, bounded preview and full round trip', async ({ page, request }) => {
   const bucket = `console-multipart-${process.pid}-${Date.now()}`;
-  const key = 'multipart 中文.txt';
+  const key = 'multipart \u4e2d\u6587.txt';
   const bucketPath = `/api/access/s3/${bucket}`;
   const objectPath = `${bucketPath}/${encodeURIComponent(key)}`;
   const bytes = Buffer.alloc(9 * 1024 * 1024, 'x');

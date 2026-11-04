@@ -53,6 +53,7 @@ rand = "0.8"
 futures = "0.3"
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 crowdb-console-shared = { path = "../../lib/crowdb-console-shared" }
 crowdb-kv = { path = "../../lib/crowdb-kv", features = ["test-util"] }
 crowdb-chunkdb-client = { path = "../../lib/crowdb-chunkdb-client" }

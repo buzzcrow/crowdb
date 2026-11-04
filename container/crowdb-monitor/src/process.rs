@@ -1,3 +1,4 @@
+mod exit_observation;
 pub(crate) mod log;
 mod retention;
 
@@ -7,7 +8,6 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-use rustix::process::{kill_process, Pid, Signal};
 use thiserror::Error;
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
@@ -30,6 +30,7 @@ pub enum ProcessError {
 }
 
 struct ManagedProcess {
+    spawn_pid: u32,
     child: Child,
     logger: JoinHandle<io::Result<()>>,
 }
@@ -108,8 +109,14 @@ impl ProcessManager {
         let policy = self.log_policy.clone();
         let logger =
             tokio::spawn(async move { Box::pin(log::pump(stdout, stderr, &log_directory, policy)).await });
-        self.processes
-            .insert(service.id.clone(), ManagedProcess { child, logger });
+        self.processes.insert(
+            service.id.clone(),
+            ManagedProcess {
+                spawn_pid: pid,
+                child,
+                logger,
+            },
+        );
         if let Err(error) = self
             .events
             .record(&MonitorEvent {
@@ -198,30 +205,23 @@ impl ProcessManager {
             .processes
             .remove(id)
             .ok_or(ProcessError::Invalid("service is not owned"))?;
-        if process.child.try_wait()?.is_none() {
-            if let Some(pid) = process
-                .child
-                .id()
-                .and_then(|value| i32::try_from(value).ok())
-                .and_then(Pid::from_raw)
-            {
-                if let Err(error) = kill_process(pid, Signal::TERM) {
-                    if error != rustix::io::Errno::SRCH {
-                        return Err(io::Error::from_raw_os_error(error.raw_os_error()).into());
-                    }
-                }
-            }
-            if timeout(grace, process.child.wait()).await.is_err() {
-                process.child.start_kill()?;
-                process.child.wait().await?;
-            }
-        }
+        let observation = exit_observation::stop(&mut process.child, process.spawn_pid, grace).await?;
         let log_result = timeout(Duration::from_secs(5), &mut process.logger).await;
         if let Ok(joined) = log_result {
             joined?.map_err(ProcessError::Io)?;
         } else {
             process.logger.abort();
             return Err(ProcessError::Invalid("child log pipes did not close after exit"));
+        }
+        if let Err(error) = self
+            .events
+            .record_process_exit(id, process.spawn_pid, &observation)
+            .await
+        {
+            eprintln!(
+                "process exit evidence was not retained: service={id} pid={} error={error}",
+                process.spawn_pid
+            );
         }
         self.events
             .record(&MonitorEvent {

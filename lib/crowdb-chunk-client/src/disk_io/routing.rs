@@ -9,11 +9,14 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_diskio_client::{
     DiskId, DiskioClient, DiskioClientConfig, DiskioError, Durability, NativeDiskIoRoutes, SegmentTarget,
+    TrafficLane,
 };
 use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::diskdb::rpc::Segment;
 
 use crate::{DiskWriter, IoError, Result};
+
+mod reads;
 
 /// Disk writer backed by the complete semantic DiskIO client.
 pub struct RoutedDiskWriter {
@@ -370,24 +373,20 @@ impl DiskWriter for RoutedDiskWriter {
         segment_offset: u64,
         length: u32,
     ) -> Result<crowdb_rpc_ffi::OwnedPayload> {
-        let target = Self::target(seg, unit_bytes).map_err(|error| IoError::ReadFailed(error.to_string()))?;
-        let result = self
-            .client
-            .read_payload(target, segment_offset, length, self.client.normal_options())
-            .await;
-        match result {
-            Err(DiskioError::TransportUnavailable(_) | DiskioError::TopologyUnavailable(_)) => {
-                // A restarted DiskIO can advertise a new endpoint while the
-                // retained generation still points at its old connection.
-                // Reads are safe to retry once after an authoritative refresh.
-                self.client.refresh().await.map_err(map_read_error)?;
-                self.client
-                    .read_payload(target, segment_offset, length, self.client.normal_options())
-                    .await
-                    .map_err(map_read_error)
-            }
-            result => result.map_err(map_read_error),
-        }
+        self.read_payload_in_lane(seg, unit_bytes, segment_offset, length, TrafficLane::Normal)
+            .await
+    }
+
+    async fn read_priority(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        segment_offset: u64,
+        length: u32,
+    ) -> Result<Bytes> {
+        self.read_payload_in_lane(seg, unit_bytes, segment_offset, length, TrafficLane::Priority)
+            .await
+            .map(crowdb_rpc_ffi::OwnedPayload::into_bytes)
     }
 }
 

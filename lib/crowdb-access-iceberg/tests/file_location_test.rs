@@ -16,7 +16,7 @@ fn canonical_locations_round_trip_without_names_or_key_normalization() {
     assert_eq!(table.to_string().parse::<TableLocation>().unwrap(), table);
     for key in [
         "metadata/v1.json",
-        "数据/a+b",
+        "\u{6570}\u{636e}/a+b",
         "a%2Fb",
         "a/b",
         "a//b",
@@ -72,6 +72,6 @@ fn object_key_limit_counts_utf8_bytes_including_table_prefix() {
     assert_eq!(file.object_key().len(), MAX_OBJECT_KEY_BYTES);
     assert_eq!(file.to_string().parse::<FileLocation>().unwrap(), file);
     assert!(table.file(&(key.clone() + "x")).is_err());
-    assert!(table.file(&("x".repeat(available - 1) + "冰")).is_err());
+    assert!(table.file(&("x".repeat(available - 1) + "\u{51b0}")).is_err());
     assert!(FileLocation::from_object_key(&table.bucket(), &(file.object_key() + "x")).is_err());
 }

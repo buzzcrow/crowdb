@@ -30,7 +30,7 @@ async fn upstream(
             r#"{"error":"Object generation changed"}"#.into(),
         ),
         "missing" => (StatusCode::NOT_FOUND, r#"{"error":"Object missing"}"#.into()),
-        "folder/中文.bin" => {
+        "folder/\u{4e2d}\u{6587}.bin" => {
             assert_eq!(query["limit"], "20");
             assert_eq!(query["cursor"], "opaque+/=");
             (StatusCode::OK, r#"{"offset":"9007199254740993"}"#.into())

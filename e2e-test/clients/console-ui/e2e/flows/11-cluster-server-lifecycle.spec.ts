@@ -95,9 +95,13 @@ test('native diagnostics: interrupted six-service plan reconciles without duplic
     steps: Object.fromEntries(kinds.map(kind => [kind, { state: kind === 'paxos-kv' ? 'deployed' : kind === 'chunkdb' ? 'deploying' : 'pending' }])),
   } });
   expect(saved.ok(), await saved.text()).toBe(true);
-  let deploymentRequests = 0;
+  const lifecycleRequests: string[] = [];
   page.on('request', current => {
-    if (current.method() === 'POST' && /\/api\/nodes\/\d+\/(server|diskdb|services)\/deploy$/.test(new URL(current.url()).pathname)) deploymentRequests++;
+    const path = new URL(current.url()).pathname;
+    if (current.method() === 'POST' && (
+      /\/api\/nodes\/\d+\/(server|diskdb|services)\/(deploy|start|restart)$/.test(path)
+      || /\/api\/services\/[^/]+\/(start|restart)$/.test(path)
+    )) lifecycleRequests.push(path);
   });
   const dialog = page.getByRole('dialog', { name: 'Node 1 services', exact: true });
   const open = async () => {
@@ -111,10 +115,9 @@ test('native diagnostics: interrupted six-service plan reconciles without duplic
     await page.goto('/?domain=Cluster');
     await page.reload();
     await open();
-    await expect(dialog).toContainText('Deployment was interrupted');
     await expect(dialog.getByRole('listitem')).toHaveCount(6);
-    await dialog.getByRole('button', { name: 'Retry failed services', exact: true }).click();
-    await expect(dialog.getByRole('button', { name: 'Done', exact: true })).toBeEnabled();
+    await expect(dialog.getByRole('button', { name: 'Done', exact: true })).toBeEnabled({ timeout: 3000 });
+    await expect(dialog).not.toContainText('Deployment was interrupted');
   });
   await step('native plan authoritative reconciliation', async () => {
     await expect.poll(async () => {
@@ -125,14 +128,14 @@ test('native diagnostics: interrupted six-service plan reconciles without duplic
     const current = await request.get('/api/servers');
     expect(current.ok()).toBe(true);
     expect(identity(await current.json())).toEqual(identity(original));
-    expect(deploymentRequests).toBe(0);
+    expect(lifecycleRequests).toEqual([]);
   });
   await step('native completed plan reload', async () => {
     await page.reload();
     await open();
     await expect(dialog.getByRole('button', { name: 'Done', exact: true })).toBeEnabled();
     await expect(dialog).not.toContainText('Deployment was interrupted');
-    expect(deploymentRequests).toBe(0);
+    expect(lifecycleRequests).toEqual([]);
   });
 });
 

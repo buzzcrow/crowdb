@@ -8,6 +8,7 @@ import time
 
 from fixture import request
 from console_cli_io_fault import DiskIoOutage
+from console_cli_readiness import OUTAGE_SECONDS, observe_unavailable
 
 
 def health_snapshot(cluster, label):
@@ -37,12 +38,14 @@ def block_and_write(cluster, outage):
                     clients.append(subprocess.Popen(cluster.arguments("s3", "object", "put",
                         "writer-recovery", f"during-{number}", "--text", "during-fault"),
                         env=cluster.environment(), stdout=output, stderr=output))
-                time.sleep(40)
+                # Payload writes can fail before reaching the metadata journal.
+                clients.append(subprocess.Popen(cluster.arguments("s3", "bucket", "put",
+                    "writer-recovery-metadata-fault"), env=cluster.environment(),
+                    stdout=output, stderr=output))
+                observe_unavailable(cluster.artifacts,
+                                    lambda: health_snapshot(cluster, "paused"),
+                                    len(cluster.servers))
                 outage.verify()
-                unavailable = health_snapshot(cluster, "paused")
-                assert all(value.get("ready") is False for value in unavailable), unavailable
-                assert all(value.get("observation", {}).get("state") == "current"
-                           for value in unavailable), unavailable
         finally:
             for client in clients:
                 try:
@@ -87,7 +90,7 @@ def terminal_writer_recovery(cluster, cluster_id):
         pauses.append((identities[index], pid))
     (cluster.artifacts / "fault-injection.json").write_text(json.dumps({
         "diskio_processes": pauses, "fault": "owned-namespace DiskIO packet drop",
-        "outage_seconds": 40}, indent=2))
+        "outage_seconds": OUTAGE_SECONDS}, indent=2))
     block_and_write(cluster, DiskIoOutage(cluster))
     # No application traffic until independent health observation reports recovery.
     started = time.monotonic()

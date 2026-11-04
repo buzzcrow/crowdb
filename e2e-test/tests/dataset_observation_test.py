@@ -132,7 +132,7 @@ class TestProtocol(unittest.TestCase):
 
     def test_fragmented_unicode_and_ordinary_output_are_continuously_preserved(self):
         rows = list(messages())
-        rows[0]["observation"]["unavailable"]["extra"] = "雪"
+        rows[0]["observation"]["unavailable"]["extra"] = "\u96ea"
         raw = b"ordinary report\n" + b"".join(encoded(row) for row in rows) + b"ordinary EOF without newline"
         child = TestChild(chunks=[raw[index:index + 17] for index in range(0, len(raw), 17)])
         with tempfile.TemporaryDirectory() as directory:

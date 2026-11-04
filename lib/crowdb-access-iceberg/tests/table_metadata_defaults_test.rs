@@ -24,7 +24,7 @@ fn primitive_defaults_check_type_range_and_canonical_encodings() {
         ("double", json!(1e100), json!("NaN")),
         ("decimal(4,2)", json!("12.34"), json!("123.45")),
         ("decimal(4,2)", json!("1234e-2"), json!("12.3")),
-        ("string", json!("雪"), json!(5)),
+        ("string", json!("\u{96ea}"), json!(5)),
         (
             "uuid",
             json!("12345678-1234-1234-1234-123456789abc"),

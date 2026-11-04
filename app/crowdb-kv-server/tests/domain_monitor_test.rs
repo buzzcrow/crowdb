@@ -29,6 +29,8 @@ use crowdb_protocol::key::{
     DomainMonitorKey, InstanceKey, ServingGrantKey, TextKey,
 };
 
+#[path = "common/grant_isolation.rs"]
+mod grant_isolation;
 #[path = "common/grant_process.rs"]
 mod grant_process;
 #[path = "common/process_lease.rs"]

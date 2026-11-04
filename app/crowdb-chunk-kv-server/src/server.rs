@@ -299,13 +299,6 @@ impl ChunkKvService {
         self.authority.monotonic_ms()
     }
 
-    /// Stops new admission and revokes successful serving replies. Admitted
-    /// operations retain their partition handle and can finish durable work.
-    pub fn begin_drain(&self) {
-        self.admitting.store(false, Ordering::Release);
-        self.authority.clear();
-    }
-
     #[must_use]
     pub fn health(&self, now_monotonic_ms: u64) -> ServerHealth {
         let catalog = self.catalog.load();

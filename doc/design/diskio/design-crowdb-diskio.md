@@ -754,6 +754,12 @@ client's references, while the final in-flight reference controls when its C++
 connection is closed. Selection and route/status snapshots use immutable RCU
 state and atomics, so request routing does not acquire a caller lock.
 
+Readiness uses the priority group for bounded 4096-byte reads of existing disk
+headers. Normal bulk responses and readiness headers therefore have independent
+TCP response ordering while sharing the same validated disk identity and route.
+Priority selection does not change physical read semantics, error propagation,
+route refresh rules or the caller's total deadline.
+
 The internal wire transport retains the caller's owned `Bytes` allocation in
 the RPC buffer until completion. This avoids a client-side `Bytes` to `Vec`
 payload copy. On the server, block-size-one and already aligned payloads can

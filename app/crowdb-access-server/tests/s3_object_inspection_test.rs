@@ -163,7 +163,7 @@ async fn inspection_fixture() -> (Arc<TestTransport>, S3Dispatcher) {
         .collect();
     let object = ObjectRecord {
         bucket_id,
-        key: "folder/中文.bin".as_bytes().to_vec(),
+        key: "folder/\u{4e2d}\u{6587}.bin".as_bytes().to_vec(),
         logical_length: 184,
         checksum: vec![1; 16],
         etag: "etag".into(),
@@ -222,7 +222,7 @@ async fn privileged_http_inspection_reads_two_metadata_keys_and_rejects_stale_ge
     );
     let server = tokio::spawn(serve(listener, Arc::new(dispatcher), std::future::pending()));
     let http = reqwest::Client::new();
-    let query = [("bucket", "bucket"), ("key", "folder/中文.bin")];
+    let query = [("bucket", "bucket"), ("key", "folder/\u{4e2d}\u{6587}.bin")];
     let response = http.get(&endpoint).query(&query).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 401);
     let response = http

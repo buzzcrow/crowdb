@@ -23,6 +23,11 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
     }
     auto snap_t0 = std::chrono::steady_clock::now();
     acquire_snapshot_slot();
+    Status pending = retry_snapshot_anchor();
+    if (!pending.ok()) {
+        release_snapshot_slot();
+        return pending;
+    }
     PreparedSnapshot prepared;
     Status           ps;
     {
@@ -98,8 +103,9 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
         release_snapshot_slot();
         return aw;
     }
-    auto   fsync2_t0 = std::chrono::steady_clock::now();
-    Status sync2     = opt_.page_store->sync();
+    auto fsync2_t0           = std::chrono::steady_clock::now();
+    snapshot_anchor_pending_ = true;
+    Status sync2             = opt_.page_store->sync();
     if (metrics_.fsync_l != nullptr) {
         auto ns =
             std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - fsync2_t0).count();
@@ -111,6 +117,7 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
         release_snapshot_slot();
         return sync2;
     }
+    snapshot_anchor_pending_ = false;
 
     // Observe metadata write bytes: segments + directory + anchor.
     if (metrics_.snapshot_meta_write_bw != nullptr) {
@@ -172,18 +179,7 @@ void Crowdbtree::snapshot_async(
     }
     if (opt_.async_page_store != nullptr) {
         acquire_snapshot_slot();
-        auto   prepared = std::make_shared<PreparedSnapshot>();
-        Status ps;
-        {
-            std::scoped_lock lk(write_mutex_);
-            ps = prepare_snapshot_locked(prepared.get());
-        }
-        if (!ps.ok()) {
-            release_snapshot_slot();
-            on_done(ps, 0);
-            return;
-        }
-        snapshot_write_next_async(std::move(prepared), 0, std::move(on_done));
+        snapshot_prepare_async(std::move(on_done));
         return;
     }
     // No async backend wired -- run the synchronous path in
@@ -264,14 +260,17 @@ void Crowdbtree::snapshot_write_next_async(                    // NOLINT(readabi
                                 on_done(st3, 0);
                                 return;
                             }
-                            Status fs2 = opt_.async_page_store->submit_fsync(
+                            snapshot_anchor_pending_ = true;
+                            Status fs2               = opt_.async_page_store->submit_fsync(
                                 detail::own_async_completion([this, prepared, on_done](const Status &st4) mutable {
                                     if (!st4.ok()) {
+                                        CRB_LOG_ERROR("[{}] snapshot anchor sync failed: {}", name_, st4.to_string());
                                         commit_prepared_snapshot(*prepared);
                                         release_snapshot_slot();
                                         on_done(st4, 0);
                                         return;
                                     }
+                                    snapshot_anchor_pending_ = false;
                                     finalize_prepared_snapshot(*prepared);
                                     uint64_t last_applied = prepared->last_applied_slot;
                                     release_snapshot_slot();
@@ -295,6 +294,11 @@ Status Crowdbtree::persist_compaction_snapshot(std::vector<PrefetchedPage> prefe
                                                std::set<uint32_t> selected_blocks, PreparedSnapshot *prepared)
 {
     acquire_snapshot_slot();
+    Status pending = retry_snapshot_anchor();
+    if (!pending.ok()) {
+        release_snapshot_slot();
+        return pending;
+    }
     Status prepare;
     {
         std::scoped_lock lk(write_mutex_);

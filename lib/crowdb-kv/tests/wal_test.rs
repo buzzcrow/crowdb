@@ -30,6 +30,9 @@ mod pipeline_backend_test;
 #[path = "wal_test/block_backend_test.rs"]
 mod block_backend_test;
 
+#[path = "wal_test/block_runtime_test.rs"]
+mod block_runtime_test;
+
 #[path = "wal_test/block_restore_test.rs"]
 mod block_restore_test;
 

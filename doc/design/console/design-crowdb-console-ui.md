@@ -268,10 +268,13 @@ remain subject to the resource capabilities and lifecycle rules in the text.
   budget per service operation; successful readiness clears that budget.
 - Legacy standalone Add Node retains its one-dialog registration and saved
   six-service plan. Its session reconciler saves revision-checked progress before
-  deployment, resumes waiting steps while that Console session is active, and
-  requires explicit retry for interrupted deployment. It never duplicates a
-  registered Node or successful service. This session-owned plan is distinct
-  from the standard target monitor's accepted node setup.
+  deployment and resumes waiting steps while that Console session is active.
+  Unavailable process observations and failed steps continue read-only observation
+  every two seconds, as defined in §13. A fresh, identity-matched running
+  observation reconciles interrupted progress to deployed. Explicit Retry is
+  required to initiate another failed Start, Restart, or Deploy mutation. It never
+  duplicates a registered Node or successful service. This session-owned plan is
+  distinct from the standard target monitor's accepted node setup.
 - Internal service health probes the RPC endpoint independently for each
   service. Startup records lacking RPC endpoints use process observation.
   Before its first store exists, PKV reserves but does not bind its RPC port;
@@ -591,8 +594,54 @@ resource menu. Data browsing is read-only; Query/Scan remain center query tools.
   Missing or conflicting recorded identity fails explicitly.
 - Service failures name the failing step and permit a safe retry. Existing
   instances are not silently duplicated or treated as healthy merely by presence.
+- A registered service whose current process observation is unavailable remains
+  waiting while the session observes it every two seconds. Missing, expired,
+  rejected, or failed observations do not prove that the service stopped. The
+  plan retains its registration and successful siblings without sending another
+  Start, Restart, or Deploy request. A fresh, identity-matched running observation
+  reconciles the step to deployed. Endpoint health remains independently reported
+  and never supplies a missing PID or proves process absence.
+- A fresh, identity-matched observation that confirms a registered service is
+  stopped marks the step failed when no accepted startup is pending. Failed steps
+  continue read-only observation every two seconds, including when no other
+  deployment is queued. A fresh, identity-matched running process automatically
+  reconciles that registered service's progress to deployed. This also reconciles
+  an interrupted deployment whose owned process is later confirmed running.
+- Read-only recovery never sends Start, Restart, or Deploy again. Missing or
+  unverified process evidence does not clear a recorded failure. Explicit Retry
+  is required to initiate another failed lifecycle mutation; an accepted startup
+  retains its existing operation and launch budget. Error observation does not
+  use the missing-Capacity backoff.
+- An unavailable service-inventory read preserves successful steps, recorded
+  failures, and fixed-slot warnings. Unattempted queued steps keep waiting for
+  current inventory instead of becoming failed lifecycle operations.
 - Operational type descriptions remain available even though instance labels
   use the compact convention in §4.
+
+Session-owned Node service plan with unavailable process observation
+(relevant progress rows and existing controls):
+
+```text
++--------------------------------------------------------------------+
+| Node 1 services                                                    |
+|                                                                    |
+| crowdb-access-server                                     deployed  |
+| crowdb-chunk-kv                                          deployed  |
+| crowdb-chunk-db                                          deployed  |
+| crowdb-disk-db                                           deployed  |
+| crowdb-disk-io                                           deployed  |
+| crowdb-paxos-kv                                   queued · waiting |
+|   Waiting: current process observation is unavailable              |
+|                                                                    |
+| [Cancel]                                                   [Done]  |
++--------------------------------------------------------------------+
+```
+
+Existing dialog guidance remains unchanged. Done closes progress; observation
+continues while this Console page is active. Confirmed stopped with no pending
+startup becomes failed and continues observation. A later fresh running process
+reconciles progress to deployed automatically without a lifecycle request. The
+existing Retry failed services action initiates a needed lifecycle mutation.
 
 ## 14. DiskGroup and disk management
 
@@ -1493,7 +1542,12 @@ CRUD merely to match another domain. Dataset lifecycle support is defined in §2
   at 10/30 s retain slow/very-slow reports. Compare per-test baselines; investigate
   more than 2× rather than hiding time with retries or larger deadlines.
 - **TEST-05:** One worker owns the mutable runtime; installed system browser,
-  no automatic browser installation. Default assertion deadline is 3 s and
+  no automatic browser installation. Auxiliary-service dependency convergence
+  may wait up to 10 s for Chunk-KV range activation and matching catalog/grant
+  authority. After 3 s it records the latest readiness response; it also records
+  the final response and elapsed time. This prerequisite does not change UI
+  response or process-observation assertion budgets.
+  Default assertion deadline is 3 s and
   election 10 s, polling every 100 ms. No fixed sleeps. Native large multipart
   and SF=1 loader acceptance run separately from ordinary UI iteration; normal
   smoke data remain small while preserving multi-Strip and pagination cases.

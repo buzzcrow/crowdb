@@ -204,3 +204,142 @@ async fn child_restarts_prune_old_pid_logs_without_crossing_log_channels() {
     assert!(directory.join("operator-notes.txt").exists());
     assert_eq!(fs::read_to_string(active).unwrap(), "new");
 }
+
+fn exit_evidence(logs: &TestLogs, pid: u32) -> serde_json::Value {
+    let body = fs::read_to_string(logs.0.join("monitor/monitor.log")).unwrap();
+    let rows = body
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|row| row["kind"] == "child_exit_observed" && row["pid"] == pid)
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0]["level"],
+        if rows[0]["process_exit"]["success"] == true {
+            "info"
+        } else {
+            "warn"
+        }
+    );
+    assert_eq!(rows[0]["process_exit"]["original_pid"], pid);
+    rows[0]["process_exit"].clone()
+}
+
+async fn wait_finished(manager: &mut ProcessManager) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while manager.exit_status("fake").unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+async fn wait_marker(logs: &TestLogs) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if fs::read_to_string(logs.0.join("fake/service.log")).is_ok_and(|text| text.contains("ready")) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn completed_child_evidence_preserves_original_pid_and_real_exit_codes() {
+    for code in [0, 7] {
+        let logs = TestLogs::new();
+        let mut manager = ProcessManager::new(logs.0.clone(), policy(2)).await.unwrap();
+        let pid = manager
+            .start(&service(&format!("exit {code}")), &BTreeMap::new())
+            .await
+            .unwrap();
+        wait_finished(&mut manager).await;
+        assert_eq!(manager.pid("fake"), None);
+        manager.stop("fake", Duration::from_secs(2)).await.unwrap();
+        let row = exit_evidence(&logs, pid);
+        assert_eq!(row["status_observed"], true);
+        assert_eq!(row["exit_code"], code);
+        assert_eq!(row["success"], code == 0);
+        assert!(row["exit_signal"].is_null());
+        assert!(row["term_sent_at_unix_ms"].is_null());
+        assert!(row["kill_requested_at_unix_ms"].is_null());
+        assert_eq!(row["stop_path"], "already_exited_before_stop");
+    }
+}
+
+#[tokio::test]
+async fn owned_term_stop_records_the_real_signal_without_success() {
+    let logs = TestLogs::new();
+    let mut manager = ProcessManager::new(logs.0.clone(), policy(2)).await.unwrap();
+    let pid = manager
+        .start(&service("printf ready; exec sleep 30"), &BTreeMap::new())
+        .await
+        .unwrap();
+    wait_marker(&logs).await;
+    manager.stop("fake", Duration::from_secs(2)).await.unwrap();
+    let row = exit_evidence(&logs, pid);
+    assert_eq!(row["exit_signal"], 15);
+    assert_eq!(row["success"], false);
+    assert!(row["exit_code"].is_null());
+    assert!(row["term_sent_at_unix_ms"].is_number());
+    assert!(row["kill_requested_at_unix_ms"].is_null());
+    assert_eq!(row["stop_path"], "owned_stop_requested");
+    assert_eq!(row["grace_ms"], 2000);
+}
+
+#[tokio::test]
+async fn ignored_term_retains_original_grace_and_reports_kill_escalation() {
+    let logs = TestLogs::new();
+    let mut manager = ProcessManager::new(logs.0.clone(), policy(2)).await.unwrap();
+    let pid = manager
+        .start(
+            &service("trap '' TERM; printf ready; exec sleep 30"),
+            &BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+    wait_marker(&logs).await;
+    manager.stop("fake", Duration::from_millis(30)).await.unwrap();
+    let row = exit_evidence(&logs, pid);
+    assert_eq!(row["exit_signal"], 9);
+    assert_eq!(row["success"], false);
+    assert!(row["exit_code"].is_null());
+    assert!(row["term_sent_at_unix_ms"].is_number());
+    assert!(row["kill_requested_at_unix_ms"].is_number());
+    assert_eq!(row["stop_path"], "owned_stop_grace_elapsed");
+    assert_eq!(row["grace_ms"], 30);
+    assert!(row["elapsed_since_term_ms"].as_u64().unwrap() >= 30);
+}
+
+#[tokio::test]
+async fn self_signaled_exit_is_not_mislabeled_as_supervisor_kill() {
+    let logs = TestLogs::new();
+    let mut manager = ProcessManager::new(logs.0.clone(), policy(2)).await.unwrap();
+    let pid = manager
+        .start(&service("kill -KILL $$"), &BTreeMap::new())
+        .await
+        .unwrap();
+    wait_finished(&mut manager).await;
+    manager.stop("fake", Duration::from_secs(2)).await.unwrap();
+    let row = exit_evidence(&logs, pid);
+    assert_eq!(row["exit_signal"], 9);
+    assert_eq!(row["success"], false);
+    assert!(row["exit_code"].is_null());
+    assert!(row["term_sent_at_unix_ms"].is_null());
+    assert!(row["kill_requested_at_unix_ms"].is_null());
+    assert_eq!(row["stop_path"], "already_exited_before_stop");
+}
+
+#[tokio::test]
+async fn unowned_stop_does_not_fabricate_exit_evidence() {
+    let logs = TestLogs::new();
+    let mut manager = ProcessManager::new(logs.0.clone(), policy(2)).await.unwrap();
+    assert!(manager.stop("missing", Duration::from_secs(2)).await.is_err());
+    let body = fs::read_to_string(logs.0.join("monitor/monitor.log")).unwrap();
+    assert!(!body.contains("child_exit_observed"));
+    assert!(!body.contains("\"success\":true"));
+}

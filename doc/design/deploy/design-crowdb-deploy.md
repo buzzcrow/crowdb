@@ -332,6 +332,14 @@ disk preparation with dependent service startup; DiskIO may start before Online
 because its ownership proof enables Online. Explicit later service stops or group
 retirement supersede historical setup and prevent automatic recreation.
 
+Background service recovery observes readiness once per pass, retaining the
+same live child and durable launch attempt until readiness succeeds. Explicit
+service commands retain their bounded initial startup wait. Local read-only
+health probes run concurrently with their individual deadlines, and publication
+rechecks actual owned process liveness and PID before reporting health. Slow
+startup or several unavailable listeners must remain visible as unhealthy;
+publishing a fresh timestamp cannot substitute for those observations.
+
 The versioned deployment policy is durable and independent of UI permissions.
 Local and Production inputs cannot replace one another through an environment
 change. Initial voter count, storage, listeners and scope are sealed before node
@@ -369,6 +377,15 @@ monitor commands; the unauthenticated HTTP handshake only exposes observations.
 SSH connection/authentication has a ten-second bound; bidirectional proof has a
 twenty-second bound. Passwords are discarded, sessions are reused during setup,
 and only public keys cross nodes.
+
+Each Web process sampler owns one read-only SSH connection per bound remote
+node. Process observations retain their one-second cadence and three-second
+deadline; connection reuse does not extend observation freshness. The sampler
+checks the returned node and complete bootstrap identity on every response.
+Connections are discarded after a command error, cancelled read, binding or
+node configuration change, and are reauthenticated at least once per minute.
+They use the provisioned node key and existing strict host-key verification,
+without password fallback or sharing a session with management mutations.
 
 ### 6.4 Authenticated member address recovery
 

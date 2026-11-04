@@ -31,7 +31,14 @@ impl ChunkdbClient {
             high: u64::from(purpose) << 56,
             low: 0,
         };
-        match self.query_chunk(QueryChunkRequest { chunk_id: Some(id) }).await {
+        let reply = self
+            .with_probe_retry(&id, |transport, endpoint| async move {
+                transport
+                    .send_query_chunk(&endpoint, &QueryChunkRequest { chunk_id: Some(id) })
+                    .await
+            })
+            .await;
+        match reply {
             Ok(reply) if reply.chunk.as_ref().is_some_and(|chunk| chunk.id == Some(id)) => Ok(()),
             Err(ChunkdbClientError::NotFound(_)) => Ok(()),
             Ok(_) => Err(ChunkdbClientError::Rpc(

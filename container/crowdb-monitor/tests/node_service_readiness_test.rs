@@ -254,6 +254,7 @@ async fn completed_service_preserves_live_recovery_and_restarts_failed_health() 
     drop(listener);
     let unhealthy = root.join("unhealthy");
     let invocations = root.join("invocations");
+    let listening = root.join("listening");
     let program = profile.paths.bin_root.join("managed-service");
     std::fs::write(
         &program,
@@ -288,12 +289,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
-HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+server = HTTPServer(("127.0.0.1", port), Handler)
+with open("{invocations}") as marker:
+    invocation = marker.read().strip()
+with open("{listening}", "w") as marker:
+    marker.write(invocation)
+server.serve_forever()
 PY
 "#,
             invocations = invocations.display(),
             unhealthy = unhealthy.display(),
             port = port,
+            listening = listening.display(),
         ),
     )
     .unwrap();
@@ -362,8 +369,22 @@ PY
     let state: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("services/chunkdb-2/execution.json")).unwrap())
             .unwrap();
-    assert_eq!(state["complete"], true);
     assert_ne!(state["pid"].as_u64().unwrap(), first_pid);
+    // Background recovery yields while the new listener starts. Wait for the
+    // fixture's actual bind event, then observe the same child on its next pass.
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while std::fs::read_to_string(&listening).unwrap_or_default() != "2" {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("replacement fixture did not bind its listener");
+    worker.reconcile_for_tests().await.unwrap();
+    let ready: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("services/chunkdb-2/execution.json")).unwrap())
+            .unwrap();
+    assert_eq!(ready["complete"], true);
+    assert_eq!(ready["pid"], state["pid"]);
     assert_eq!(
         std::fs::read_to_string(&invocations).unwrap().trim(),
         "2",

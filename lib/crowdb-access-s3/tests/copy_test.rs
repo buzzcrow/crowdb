@@ -76,7 +76,7 @@ fn conditions_limits_and_self_copy_use_the_captured_record() {
 fn source_addresses_decode_once_and_reject_ambiguous_selectors() {
     assert_eq!(
         copy::source("/bucket/a%2Fb%20%25%2B%E9%9B%AA").unwrap(),
-        (b"bucket".to_vec(), "a/b %+雪".as_bytes().to_vec())
+        (b"bucket".to_vec(), "a/b %+\u{96ea}".as_bytes().to_vec())
     );
     assert_eq!(
         copy::source("bucket/question%3FversionId%3Dliteral").unwrap().1,

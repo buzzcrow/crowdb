@@ -5,12 +5,10 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use super::{durable, AcceptedNode, Result};
-use crate::{
-    DeploymentProfile, MonitorPhase, MonitorStatus, ProcessManager, ServiceProfile, ServiceStatus,
-    StatusStore,
-};
+use crate::{DeploymentProfile, MonitorPhase, MonitorStatus, ProcessManager, ServiceProfile, StatusStore};
 
 mod intents;
+mod observations;
 
 pub(super) struct NodeHealth {
     store: StatusStore,
@@ -60,61 +58,7 @@ impl NodeHealth {
             }
         }
         self.reconcile_services(profile, processes).await?;
-        self.status.services.clear();
-        let retained = super::services::retained(profile)?;
-        let mut ids = vec!["web".to_owned(), "kv".to_owned()];
-        ids.extend(retained.iter().cloned().map(|intent| intent.service_id));
-        for id in &ids {
-            if processes.owns(id) {
-                let mut healthy = processes.alive(id)?;
-                if healthy {
-                    if id == "web" || id == "kv" {
-                        let service = if id == "web" {
-                            web.clone()
-                        } else {
-                            super::service(profile, "kv")?
-                        };
-                        healthy = self
-                            .probes
-                            .probe_service(&service, &BTreeMap::new())
-                            .await
-                            .is_ok();
-                    } else if let Some(intent) = retained
-                        .iter()
-                        .find(|intent| intent.service_id == *id && intent.kind != "kv")
-                    {
-                        healthy = match super::probes::for_intent(profile, intent) {
-                            Ok(service) => self
-                                .probes
-                                .probe_service(&service, &BTreeMap::new())
-                                .await
-                                .is_ok(),
-                            Err(_) => false,
-                        };
-                    }
-                }
-                self.status.services.insert(
-                    id.clone(),
-                    ServiceStatus {
-                        operation_id: retained
-                            .iter()
-                            .find(|intent| intent.service_id == *id || (id == "kv" && intent.kind == "kv"))
-                            .map(|intent| intent.operation_id.clone()),
-                        pid: processes.pid(id),
-                        generation: 1 + u64::from(*self.attempts.get(id.as_str()).unwrap_or(&0)),
-                        healthy,
-                        restart_attempts: *self.attempts.get(id.as_str()).unwrap_or(&0),
-                    },
-                );
-            }
-        }
-        self.status.phase = if self.status.services.values().all(|service| service.healthy) {
-            MonitorPhase::Ready
-        } else {
-            MonitorPhase::Restarting
-        };
-        self.store.publish(&mut self.status)?;
-        Ok(())
+        self.observe(profile, web, processes).await
     }
 
     pub(in crate::node::runtime) async fn reconcile_services(
@@ -159,7 +103,7 @@ impl NodeHealth {
                     continue;
                 }
             }
-            match super::services::execute(profile, processes, intent.clone()).await {
+            match super::services::reconcile(profile, processes, intent.clone()).await {
                 Ok(_) => {
                     *self.attempts.entry(intent.service_id.clone()).or_default() += 1;
                     self.probe_failures.remove(&intent.service_id);

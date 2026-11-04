@@ -96,13 +96,30 @@ impl ServiceRegistryClient {
             {
                 GetOutcome::Found { value, revision } => (value, revision),
                 GetOutcome::NotFound => {
+                    if current_scope.is_some() {
+                        return Err(Error::Server(
+                            "DiskIO configured scope requires a registered Rack".into(),
+                        ));
+                    }
                     return self
                         .kv
                         .put_cas(0, 0, path.as_bytes(), payload, revision)
                         .await
-                        .map(|_| ())
+                        .map(|_| ());
                 }
             };
+            // The Rack fence must precede the instance observation it protects.
+            // A competing first scope may have committed after our first read
+            // but before this Rack read; do not overwrite that accepted scope.
+            if self
+                .instance_record(path)
+                .await?
+                .as_ref()
+                .map_or(0, |(_, revision)| *revision)
+                != revision
+            {
+                continue;
+            }
             let operations = [
                 BatchOp::Put {
                     key: path.as_bytes().to_vec().into(),

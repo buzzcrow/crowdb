@@ -167,6 +167,15 @@ generation and ownership epoch. Only that compare-and-publish operation makes
 the checkpoint visible. Stale, failed, or ambiguous work remains unreachable
 and is accounted as orphan data.
 
+Once a tree has written an anchor, a failed final durability barrier leaves
+that anchor pending under the existing snapshot serialization gate. Before
+preparing another snapshot, synchronous and asynchronous callers retry the
+pending barrier over the same staged image. Continued unavailability remains
+a typed failure; no new snapshot data is written until the pending barrier
+succeeds. Writes may continue into the live tree and are captured by the next
+snapshot. Failed publication never advances the tree's durable snapshot or WAL
+retention frontier.
+
 Recovery normally opens the newest epoch-valid, fully verified manifest. It
 may fall back only to the preceding complete retained generation. A caller
 holding topology recovery evidence may instead request one exact immutable

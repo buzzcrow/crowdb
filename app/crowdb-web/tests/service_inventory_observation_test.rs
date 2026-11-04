@@ -19,6 +19,7 @@ async fn inventory_readers_do_not_wait_for_an_unrelated_monitor_or_refresh_evide
     TestServiceInventory::signalled(&fixture.source.process_entered).await;
     let row = fixture.wait_pid(1, Some(101)).await;
     assert_eq!(row["pid_node_id"], 1);
+    assert_eq!(row["process_observed"], true);
     assert_eq!(fixture.rows().await.as_array().unwrap().len(), 2);
     assert!(crowdb_web::start_service_observer(&fixture.state).is_err());
     fixture.observer.take();
@@ -33,6 +34,7 @@ async fn inventory_readers_do_not_wait_for_an_unrelated_monitor_or_refresh_evide
     assert!(rows[0]["pid"].is_null());
     assert!(rows[0]["pid_node_id"].is_null());
     assert_eq!(rows[0]["health"], "unknown");
+    assert_eq!(rows[0]["process_observed"], false);
     assert_eq!(fixture.source.calls.load(Ordering::Relaxed), calls);
 }
 
@@ -163,6 +165,7 @@ async fn fresh_bound_processes_remain_observable_when_authority_expires_but_acce
     tokio::time::sleep(Duration::from_millis(3150)).await;
     let row = fixture.wait_pid(1, Some(101)).await;
     assert_eq!(row["pid_node_id"], 1);
+    assert_eq!(row["process_observed"], true);
     assert_eq!(row["health"], "unknown");
     assert_eq!(row["start_pending"], false);
 }
@@ -189,6 +192,7 @@ async fn changed_endpoint_wrong_bootstrap_and_wrong_executed_operation_never_reu
         .find(|row| row["node_id"] == 1)
         .unwrap();
     assert!(row["pid"].is_null());
+    assert_eq!(row["process_observed"], false);
     assert_eq!(row["health"], "unknown");
     std::fs::remove_file(fixture.root.path().join("node-binding.json")).unwrap();
     for row in fixture.rows().await.as_array().unwrap() {

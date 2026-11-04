@@ -8,7 +8,11 @@ use crowdb_access_iceberg::namespace::{
 
 #[test]
 fn multipart_identifiers_preserve_unicode_and_delimiter_like_text() {
-    let components = vec!["数据库".into(), "a.b / %1F".into(), "leaf".into()];
+    let components = vec![
+        "\u{6570}\u{636e}\u{5e93}".into(),
+        "a.b / %1F".into(),
+        "leaf".into(),
+    ];
     let identifier = NamespaceIdentifier::new(components.clone()).unwrap();
     assert_eq!(
         NamespaceIdentifier::decode(&identifier.encode().unwrap()).unwrap(),
@@ -105,7 +109,7 @@ fn property_limits_are_byte_based_and_include_result_cardinality() {
     for (key, value, valid) in [
         ("k".repeat(1024), "v".repeat(8192), true),
         ("k".repeat(1025), String::new(), false),
-        ("键".repeat(342), String::new(), false),
+        ("\u{952e}".repeat(342), String::new(), false),
         ("k".into(), "v".repeat(8193), false),
         ("\0".into(), String::new(), false),
         ("k".into(), "\0".into(), false),

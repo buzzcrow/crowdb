@@ -32,6 +32,7 @@ mod observation;
 mod policy;
 mod receipt;
 pub(super) use execution::execute;
+pub(super) use execution::reconcile;
 pub(super) use execution::stop_unhealthy;
 pub(super) use observation::observe;
 

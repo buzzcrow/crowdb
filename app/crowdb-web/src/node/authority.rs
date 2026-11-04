@@ -16,6 +16,8 @@ use crate::{
     error::{err_409, err_502, map_config_err, ErrorBody},
     state::AppState,
 };
+pub(crate) mod projection;
+
 type Failure = (StatusCode, Json<ErrorBody>);
 
 pub(crate) async fn status(State(state): State<AppState>) -> Json<Value> {
@@ -291,46 +293,11 @@ async fn confirmed_inner(
         return Err(err_409("Topology publication is incomplete"));
     };
     let mut config = state.config.write().map_err(|error| err_502(error.to_string()))?;
-    if config.servers.is_empty() {
-        config.servers = operation.intent.to_config().servers;
-    }
-    for node in registry
-        .nodes
-        .iter()
-        .filter(|node| node.confirmed && !node.cancelled)
-    {
-        let host = if node.host.contains(':') {
-            format!("[{}]", node.host)
-        } else {
-            node.host.clone()
-        };
-        if let Some(server) = config
-            .servers
-            .iter_mut()
-            .find(|server| server.node_id == Some(node.node_id))
-        {
-            let management_port = reqwest::Url::parse(&server.url)
-                .ok()
-                .and_then(|url| url.port_or_known_default())
-                .unwrap_or(10000);
-            let rpc_port = server
-                .rpc_url
-                .as_deref()
-                .and_then(|url| reqwest::Url::parse(&format!("http://{url}")).ok())
-                .and_then(|url| url.port_or_known_default())
-                .unwrap_or(10100);
-            server.url = format!("http://{host}:{management_port}");
-            server.rpc_url = Some(format!("{host}:{rpc_port}"));
-        } else {
-            let mut server = crowdb_console_shared::config::ServerEntry::new(
-                format!("kv-{}", node.node_id),
-                format!("http://{host}:10000"),
-            );
-            server.node_id = Some(node.node_id);
-            server.rpc_url = Some(format!("{host}:10100"));
-            config.servers.push(server);
-        }
-    }
+    projection::project(
+        &mut config.servers,
+        operation.intent.to_config().servers,
+        &registry.nodes,
+    );
     super::admission::save(&state.runtime_root.join("confirmed-nodes.json"), &registry.nodes)?;
     Ok(())
 }

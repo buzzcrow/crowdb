@@ -79,8 +79,8 @@ async fn property_cardinality_replacement_and_overlap_are_atomic_over_http() {
 #[tokio::test]
 async fn property_utf8_key_and_value_byte_limits_fail_without_mutation() {
     let test = TestTableHttp::new().await;
-    let key = format!("{}a", "键".repeat(341));
-    let value = "值".repeat(2730) + "ab";
+    let key = format!("{}a", "\u{952e}".repeat(341));
+    let value = "\u{503c}".repeat(2730) + "ab";
     update(&test, json!({"updates":{key.clone():value.clone()}}), 200).await;
     assert_eq!(properties(&test).await, json!({key.clone():value.clone()}));
     for (invalid_key, invalid_value) in [

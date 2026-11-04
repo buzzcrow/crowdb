@@ -160,7 +160,7 @@ impl KvRootCatalogStore {
                 && entry.owner_epoch == prepared.owner_epoch
                 && entry.artifact.tree_id == prepared.artifact.tree_id
                 && entry.artifact.stream_name == prepared.artifact.stream_name
-                && entry.transition_id == prepared.transition_id
+                && same_publication_dependency(entry, prepared)
                 && same_recovery_base(entry, prepared)
                 && (entry.state == ChunkKvRangeCatalogPartitionState::Serving
                     || (allow_catching_up
@@ -521,6 +521,17 @@ fn decode_authority(value: &[u8]) -> Option<(u64, u64)> {
 
 fn decode_u64(value: &[u8]) -> Option<u64> {
     value.try_into().ok().map(u64::from_be_bytes)
+}
+
+fn same_publication_dependency(
+    entry: &ChunkKvRangeCatalogEntry,
+    prepared: &ChunkKvRangeCatalogEntry,
+) -> bool {
+    entry.transition_id == prepared.transition_id
+        || (entry.state == ChunkKvRangeCatalogPartitionState::Serving
+            && entry.transition_id.is_none()
+            && entry.artifact.tail_overlay.is_none()
+            && prepared.artifact.tail_overlay.is_none())
 }
 
 fn same_recovery_base(entry: &ChunkKvRangeCatalogEntry, prepared: &ChunkKvRangeCatalogEntry) -> bool {

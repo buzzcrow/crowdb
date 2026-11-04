@@ -4,6 +4,9 @@
 use super::catalog_publication::{replace_json, tick};
 use super::*;
 
+#[path = "split_materialization/transfer.rs"]
+mod transfer;
+
 struct TestMaterialization {
     control: Group0ControlPlane,
     split: SplitTransition,

@@ -234,7 +234,7 @@ fn variant_paths_require_normalized_jsonpath_with_bounded_depth() {
         "$",
         "$['']",
         "$['user.name']",
-        "$['位置']['纬度']",
+        "$['\u{4f4d}\u{7f6e}']['\u{7eac}\u{5ea6}']",
         "$['a'][0]",
         "$[42]",
         r"$['a\'b']",

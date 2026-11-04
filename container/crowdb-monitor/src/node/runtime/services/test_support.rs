@@ -92,6 +92,13 @@ impl NodeServiceForTests {
     }
 
     /// # Errors
+    /// Propagates failure to stop one fixture-owned managed child.
+    pub async fn stop_child_for_tests(&mut self, id: &str) -> Result<()> {
+        self.processes.stop(id, std::time::Duration::from_secs(1)).await?;
+        Ok(())
+    }
+
+    /// # Errors
     /// Rejects superseded recovery observations before stopping an owned process.
     pub async fn stop_unhealthy_for_tests(&mut self, intent: &NodeServiceIntent) -> Result<()> {
         super::stop_unhealthy(&self.profile, &mut self.processes, intent).await

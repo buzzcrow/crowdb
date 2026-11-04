@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 use bytes::Bytes;
 use crowdb_kv::cluster::group_operations::KvGroupOperationError;
 use crowdb_protocol::chunk_kv::{
-    ChunkKvRangeBalancePolicy, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogPartitionState,
-    DomainMonitorDescriptor, Id128, OwnerDescriptor, SplitPhase, TransferPhase, TransferTransition,
+    ChunkKvRangeBalancePolicy, ChunkKvRangeCatalogEntry, DomainMonitorDescriptor, Id128, OwnerDescriptor,
+    SplitPhase, TransferPhase, TransferTransition,
 };
 use crowdb_protocol::common::{ChunkKvExtra, ChunkKvPartitionLoad, InstanceValue};
 use crowdb_protocol::key::{ChunkKvSplitKey, ChunkKvTransferKey, TextKey};
@@ -21,6 +21,7 @@ use super::{
     catalog, operation_error, read_instances, read_splits, read_transfers, transfer_id, wall_time_ms,
 };
 
+mod materialization;
 mod observation;
 mod selection;
 mod split;
@@ -50,31 +51,8 @@ pub async fn plan(control: &Group0ControlPlane, descriptor: &DomainMonitorDescri
     if state.healthy.is_empty() {
         return Ok(());
     }
-    let entries: Vec<_> = catalog
-        .pages
-        .iter()
-        .flat_map(|page| page.entries.iter())
-        .collect();
-    if let Some(entry) = entries.iter().copied().find(|entry| {
-        entry.state == ChunkKvRangeCatalogPartitionState::Serving
-            && entry.artifact.tail_overlay.is_some()
-            && partition_load(&state, entry).is_some_and(|load| load.independently_recoverable)
-    }) {
-        let committed_transfer = read_transfers(control).await?.into_iter().any(|(transition, _)| {
-            transition.phase == TransferPhase::CatalogCommitted
-                && entry.transition_id == Some(transition.transition_id)
-                && entry.partition_id == transition.partition_id
-                && entry.range == transition.range
-                && entry.owner.instance_id == transition.target.instance_id
-                && entry.owner_epoch == transition.target_epoch
-                && entry.artifact == transition.target_artifact
-        });
-        if committed_transfer {
-            catalog::publish_materialized_transfer(control, entry.partition_id).await?;
-        } else {
-            catalog::publish_materialized_partition(control, entry.partition_id).await?;
-        }
-        // Materialization only releases an immutable parent-stream overlay.
+    if materialization::reconcile(control, &catalog, &state).await? {
+        // Materialization releases a completed marker or immutable overlay.
         // It does not affect request routing, so immediately plan from the
         // refreshed catalog instead of inserting a control-plane idle cycle
         // before the next independent split.

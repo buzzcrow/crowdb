@@ -13,6 +13,8 @@ mod worker;
 pub use access::remote_access_health_for_tests;
 pub(crate) use cache::ServiceObservations;
 #[cfg(feature = "test-util")]
+pub use source::ProcessObservation as ProcessObservationForTests;
+#[cfg(feature = "test-util")]
 pub use test_support::{invalidate_service_observation_for_tests, ServiceObservationMutationForTests};
 pub use worker::{start_service_observer, ServiceObserver};
 #[cfg(feature = "test-util")]
@@ -46,6 +48,9 @@ pub struct ServerSummary {
     /// Live pid if the console currently tracks the process.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// Fresh accepted monitor evidence; absent for the legacy local inventory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_observed: Option<bool>,
     /// Accepted start awaits an owned PID observation and has not exhausted its launch budget.
     pub start_pending: bool,
     /// Node process namespace for a remote PID; never a Web-host PID.
@@ -83,8 +88,10 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
         let observed = &observed;
         let binding = &binding;
         async move {
-            let (pid, health, start_pending) = if remote {
-                observed.read(binding.as_ref(), s.node_id.and_then(|id| cfg.node(id)), s)
+            let (pid, health, start_pending, process_observed) = if remote {
+                let (pid, health, pending, observed) =
+                    observed.read(binding.as_ref(), s.node_id.and_then(|id| cfg.node(id)), s);
+                (pid, health, pending, Some(observed))
             } else {
                 let runtime_pid = match s.node_id {
                     Some(node_id) if s.service_type == ServiceType::Diskdb => {
@@ -99,7 +106,12 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
                     s.pid
                         .filter(|pid| crowdb_console_shared::lifecycle::process_is_alive(*pid))
                 });
-                (pid, observe_health(state, cfg, s, pid, snap, &[]).await, false)
+                (
+                    pid,
+                    observe_health(state, cfg, s, pid, snap, &[]).await,
+                    false,
+                    None,
+                )
             };
             ServerSummary {
                 id: s.id.clone(),
@@ -111,6 +123,7 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
                 rpc_url: s.rpc_url.clone(),
                 pid,
                 start_pending,
+                process_observed,
                 pid_node_id: if remote && pid.is_some() { s.node_id } else { None },
                 health,
                 service_type: match s.service_type {

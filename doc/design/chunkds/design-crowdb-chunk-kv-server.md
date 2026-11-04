@@ -122,6 +122,12 @@ and atomically preserves its sequence and greatest expiry alongside the grant.
 Replacement, renewal and grant publication therefore serialize on one record;
 replacement cannot miss a concurrent extension. An observation for another
 process epoch cannot receive a grant, and a boot rejects grants for other epochs.
+Grant publication attempts each independently ready instance once per pass in
+instance-ID order. A failed instance publication does not skip other instances;
+the pass reports all publication failures after processing them. Each publication
+retains its process-identity, revision, expiry and atomic lease/grant checks.
+Invalid shared catalog, readiness or exclusion evidence still rejects the pass
+before instance publication. No conditional retry or authority extension is added.
 One bounded control-plane task submits a boot's renewal and discovery writes
 sequentially so their periodic ticks cannot exhaust each other's conditional
 admission budget. Recovery, data IO and load sampling remain outside that task.
@@ -543,6 +549,15 @@ is required. A retained marker from a previous completed split does not block
 this publication when the source has no inherited overlay. A conflicting
 range, owner, epoch, artifact or reused operation identity still fails closed.
 
+For a recovered target without an inherited overlay, normal placement cleanup
+may remove its completed transition marker before its first root checkpoint.
+The already prepared root handle may then claim publication authority from the
+exact current `Serving` partition, range, owner, epoch, tree and stream, with
+both assignments free of overlays. Marker removal alone cannot invalidate that
+published ownership. A different nonempty transition, another assignment, or a
+catching-up entry still cannot authorize publication through this exception;
+root authority continues to fence lower owner epochs.
+
 Recovery uses persisted evidence only. Before source release, a target failure
 leaves the source serving and target preparation is repeatable. After release,
 abort is forbidden: catalog reread decides whether to publish or resume
@@ -610,7 +625,7 @@ a resident index separator or a bounded small key window; exact byte or key
 medians are unnecessary. Live-key witnesses establish nonempty children when
 the observation is made. Concurrent mutations can change that observation.
 The structural query never loads cold pages or flushes the tree. A service
-allows only one background sampling job, and heartbeats use epoch-fenced cached
+owns at most one background sampling job, and heartbeats use epoch-fenced cached
 samples without waiting for that job. Every serving partition is considered;
 an unsplittable largest partition does not exclude the remaining candidates.
 Retained pack estimates use the opened manifest, including shared packs, rather
@@ -709,6 +724,16 @@ through the stream's current durable tail, reports readiness, and serves only
 after installing a matching grant. Shutdown
 atomically stops new admission and clears authority; already admitted R142
 operations retain handles and finish before bounded checkpoint/drain work.
+
+`begin_drain` closes sampling admission before background workers stop. Before
+draining hosted WAL writers, `drain_writers` waits for the sampling job's partition
+payload and captured Tokio `Handle` to finish teardown while the driver remains
+alive, including when queued work is discarded or the job unwinds. Closed sampling
+cannot relaunch; completed drain clears its cache and permits no further publication.
+This barrier owns sampling only. OS I/O remains uncancellable, and the existing
+10-second monitor and 15-second console stop grace periods remain unchanged;
+forced termination retains normal writer-lease exclusion.
+
 Catalog refresh recovers every new or changed local assignment first, then
 replaces the catalog and hosted-partition snapshots; unchanged exact-epoch
 handles remain live and departed assignments are dropped.

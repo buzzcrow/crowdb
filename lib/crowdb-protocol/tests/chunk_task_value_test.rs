@@ -50,7 +50,7 @@ fn task_value_rejects_wrong_identifier_and_malformed_buffer() {
 #[test]
 fn task_value_bounds_last_error_without_splitting_utf8() {
     let mut value = task_value();
-    value.last_error = "界".repeat(400);
+    value.last_error = "\u{754c}".repeat(400);
     let decoded = decode_chunk_task_value(&encode_chunk_task_value(&value)).unwrap();
     assert!(decoded.last_error.len() <= 1_024);
     assert!(decoded.last_error.is_char_boundary(decoded.last_error.len()));

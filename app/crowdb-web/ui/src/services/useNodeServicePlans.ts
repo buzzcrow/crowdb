@@ -11,6 +11,8 @@ export const serviceOrder = ['access-server', 'chunk-kv', 'chunkdb', 'diskdb', '
 export type ServiceKind = typeof serviceOrder[number];
 const deploymentOrder: ServiceKind[] = ['paxos-kv', 'diskdb', 'diskio', 'chunkdb', 'chunk-kv', 'access-server'];
 const startingService = 'Waiting: target monitor is starting the registered service';
+const observingService = 'Waiting: current process observation is unavailable';
+const observingInventory = 'Waiting: current service inventory is unavailable';
 export const serviceLabels = {
   'access-server': 'crowdb-access-server',
   'chunk-kv': 'crowdb-chunk-kv',
@@ -24,8 +26,22 @@ export type NodeServicePlan = Record<ServiceKind, ServiceStep>;
 export type ServiceOverrides = Partial<Record<ServiceKind, Partial<Omit<DeploymentDefaults, 'instance_id'>> & { keepalive_interval_secs?: number }>>;
 export const newPlan = (): NodeServicePlan => Object.fromEntries(serviceOrder.map(kind => [kind, { state: 'pending' }])) as NodeServicePlan;
 
+function observationDelay(plans: Record<number, NodeServicePlan>, hasDisks: boolean, waitingForStorage: boolean, immediate: boolean) {
+  if (immediate) return 0;
+  const steps = Object.values(plans).flatMap(plan => serviceOrder.map(kind => plan[kind]));
+  const queued = steps.some(step => step.state === 'waiting');
+  const observing = steps.some(step => step.state === 'failed'
+    || step.detail === startingService || step.detail === observingService
+    || step.detail?.startsWith(observingInventory)
+    || step.detail?.startsWith('Waiting: restart registered DiskIO services'));
+  const waitingForAuthority = steps.some(step => step.detail === 'Waiting: initialize Group 0 in Paxos KV');
+  // Missing Capacity data does not delay observations of registered services.
+  return queued && !hasDisks && !observing && !waitingForAuthority && !waitingForStorage ? 10000 : 2000;
+}
+
 /** Serializes default deployments across nodes so each step gets fresh port reservations.
- * Plans outlive dialogs; dependency changes resume waiting steps, failures need Retry.
+ * Plans outlive dialogs; dependency changes and observed recovery update progress.
+ * Failed lifecycle mutations need explicit Retry; observation never replays them.
  * Progress is durable; interrupted mutations require registration reconciliation.
  */
 export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<number, NodeDiskGroups>, refresh: () => Promise<void>, enabled: boolean) {
@@ -75,7 +91,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
             ? { ...savedStep, state: 'warning' as const }
             : savedStep;
           return [kind, normalizedStep.state === 'deploying'
-            ? { state: 'failed', detail: 'Deployment was interrupted; verify the registered service, then Retry to reconcile.' } : normalizedStep];
+            ? { state: 'failed', detail: 'Deployment was interrupted; checking the registered service. Retry only if it still needs to be started.' } : normalizedStep];
         })) as NodeServicePlan;
         update(id, steps);
       }
@@ -132,7 +148,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
           if (disposed || stopped.current) return;
           for (const [key, initial] of Object.entries(plansRef.current)) {
             if (disposed || stopped.current) break;
-            if (!serviceOrder.some(kind => ['pending', 'waiting'].includes(initial[kind].state))) continue;
+            if (!serviceOrder.some(kind => ['pending', 'waiting', 'failed'].includes(initial[kind].state))) continue;
             const id = Number(key);
             let plan = plansRef.current[id];
             const write = async (kind: ServiceKind, step: ServiceStep) => { plan = { ...plan, [kind]: step }; await persist(id, plan); };
@@ -140,7 +156,9 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
             try { existing = await listServers(); }
             catch (error) {
               if (disposed || stopped.current) return;
-              for (const kind of serviceOrder) if (!['deployed', 'disabled'].includes(plan[kind].state)) await write(kind, { state: 'failed', detail: String(error) });
+              for (const kind of serviceOrder) if (['pending', 'waiting'].includes(plan[kind].state)) {
+                await write(kind, { state: 'waiting', detail: `${observingInventory}: ${String(error)}` });
+              }
               continue;
             }
             let authorityReady = false;
@@ -152,8 +170,12 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
             for (const kind of deploymentOrder) {
               if (disposed || stopped.current || !input.current.enabled) break;
               if (plan[kind].state === 'disabled') continue;
-              if (plan[kind].state === 'failed' || plan[kind].state === 'warning') continue;
+              if (plan[kind].state === 'warning') continue;
               const registered = existing.find(server => server.node_id === id && server.service_type === kind);
+              if (plan[kind].state === 'failed') {
+                if (registered?.pid && registered.process_observed !== false) await write(kind, { state: 'deployed' });
+                continue;
+              }
               if (registered) {
                 const retryKey = `${id}/${kind}`;
                 if (!registered.pid && retryRegistered.current.has(retryKey)) {
@@ -174,7 +196,9 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
                 retryRegistered.current.delete(retryKey);
                 const step: ServiceStep = registered.pid ? { state: 'deployed' } : registered.start_pending
                   ? { state: 'waiting', detail: startingService }
-                  : { state: 'failed', detail: 'Registered service is stopped; restart it from the Node menu before resuming.' };
+                  : registered.process_observed === false
+                    ? { state: 'waiting', detail: observingService }
+                    : { state: 'failed', detail: 'Registered service is stopped; restart it from the Node menu before resuming.' };
                 if (plan[kind].state !== step.state || plan[kind].detail !== step.detail) await write(kind, step);
                 continue;
               }
@@ -250,13 +274,8 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
         } finally { busy.current = false; }
       }
       if (!disposed) {
-        const hasQueuedWork = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].state === 'waiting'));
-        const waitingForAuthority = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].detail === 'Waiting: initialize Group 0 in Paxos KV'));
-        const waitingForRestart = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].detail?.startsWith('Waiting: restart registered DiskIO services')));
-        const waitingForStart = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].detail === startingService));
         const hasDisks = Object.values(input.current.groups).some(node => Object.values(node.disksByDg).some(disks => disks.length > 0));
-        // Collapsed disk rows are not evidence that registered storage is absent.
-        const delay = wakePending.current ? 0 : hasQueuedWork && !hasDisks && !waitingForAuthority && !waitingForRestart && !waitingForStart && !waitingForStorage ? 10000 : 2000;
+        const delay = observationDelay(plansRef.current, hasDisks, waitingForStorage, wakePending.current);
         wakePending.current = false;
         timer = setTimeout(() => { running.current = tick(); }, delay);
       }

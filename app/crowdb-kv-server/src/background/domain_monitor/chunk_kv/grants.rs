@@ -13,7 +13,7 @@ use crowdb_protocol::{
     common::InstanceValue,
     key::{InstanceKey, ServingGrantKey, StreamProcessLeaseKey, TextKey},
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 struct ReadyInstance {
     process_epoch: u64,
@@ -40,7 +40,7 @@ pub(super) async fn issue(
             )
         })
         .collect();
-    let mut assignments: HashMap<u64, Vec<ServingAssignment>> = HashMap::new();
+    let mut assignments: BTreeMap<u64, Vec<ServingAssignment>> = BTreeMap::new();
     for entry in catalog.pages.iter().flat_map(|page| &page.entries) {
         let assignment = ServingAssignment {
             partition_id: entry.partition_id,
@@ -58,8 +58,9 @@ pub(super) async fn issue(
                 .push(assignment);
         }
     }
+    let mut failures = Vec::new();
     for (instance_id, assignments) in assignments {
-        publish(
+        if let Err(error) = publish(
             control,
             descriptor,
             instance_id,
@@ -67,9 +68,19 @@ pub(super) async fn issue(
             catalog.head.generation,
             assignments,
         )
-        .await?;
+        .await
+        {
+            failures.push(format!("instance {instance_id}: {error}"));
+        }
     }
-    Ok(())
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "serving grant publication failed: {}",
+            failures.join("; ")
+        ))
+    }
 }
 
 async fn publish(

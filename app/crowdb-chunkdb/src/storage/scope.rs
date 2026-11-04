@@ -48,7 +48,8 @@ impl ChunkStore {
     }
 
     /// Keys begin with the owning chunk ID immediately after the prefix.
-    /// Continue past foreign slots until the requested owned result is filled.
+    /// Exclude other maintenance domains at KV, then continue past foreign
+    /// slots until the requested owned result is filled.
     pub(super) async fn scan_owned_records(
         &self,
         prefix: &[u8],
@@ -58,6 +59,10 @@ impl ChunkStore {
         if max_keys == 0 || self.scope.as_ref().is_some_and(|(guard, _)| guard.is_empty()) {
             return Ok(Vec::new());
         }
+        let (start, end) = self.scan_domain_bounds(prefix, start_after);
+        if !end.is_empty() && start.as_ref() >= end.as_slice() {
+            return Ok(Vec::new());
+        }
         let table = self.bindings.snapshot();
         if table.is_empty() {
             return Err(crate::routing::RouteError::NoBinding.into());
@@ -65,7 +70,7 @@ impl ChunkStore {
         let limit = usize::try_from(max_keys).unwrap_or(usize::MAX);
         let mut selected = Vec::new();
         for route in table.bindings() {
-            let mut cursor = Bytes::copy_from_slice(start_after);
+            let mut cursor = start.clone();
             let mut cutoff = 0;
             let mut matched = 0;
             loop {
@@ -76,7 +81,7 @@ impl ChunkStore {
                         route.kv_group_id,
                         prefix,
                         &cursor,
-                        &[],
+                        &end,
                         256,
                         false,
                         None,
@@ -111,6 +116,23 @@ impl ChunkStore {
             selected.truncate(limit);
         }
         Ok(selected)
+    }
+
+    fn scan_domain_bounds(&self, prefix: &[u8], start_after: &[u8]) -> (Bytes, Vec<u8>) {
+        let Some((_, domain)) = &self.scope else {
+            return (Bytes::copy_from_slice(start_after), Vec::new());
+        };
+        // The purpose byte leads the big-endian ChunkId in both metadata
+        // namespaces. A short lower bound still includes its zero-valued ID.
+        let (first, end) = match domain {
+            ChunkDomain::System => (1, 4),
+            ChunkDomain::UserData => (4, 8),
+        };
+        let mut lower = prefix.to_vec();
+        lower.push(first);
+        let mut upper = prefix.to_vec();
+        upper.push(end);
+        (Bytes::copy_from_slice(start_after.max(lower.as_slice())), upper)
     }
 }
 

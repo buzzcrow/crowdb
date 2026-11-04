@@ -19,7 +19,7 @@ table = catalog.create_table(
     properties={"write.parquet.row-group-limit": "2"},
 )
 for first in (0, 44):
-    table.append(pa.table({"id": list(range(first, first + 44)), "message": ["雪", "alpha", "beta", "gamma"] * 11}))
+    table.append(pa.table({"id": list(range(first, first + 44)), "message": ["\u96ea", "alpha", "beta", "gamma"] * 11}))
 print("Committed two snapshots with native Parquet data and Avro manifests")
 many = catalog.create_table(
     (namespace, "many_files"),

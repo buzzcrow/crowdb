@@ -12,9 +12,35 @@ use crowdb_console_shared::{
 use crowdb_protocol::mgmt::node::{NodeBinding, NodeControl, NodeServiceIntent};
 use serde_json::Value;
 
+/// One node sampler owns this reader throughout its bound configuration.
+#[async_trait::async_trait]
+pub trait ProcessObservation: Send {
+    /// Read one fresh monitor response; never return a retained observation.
+    async fn read(&mut self) -> Result<Value, String>;
+}
+
+#[async_trait::async_trait]
+impl ProcessObservation for crowdb_console_shared::deployment::admission::RemoteProcessObservation {
+    async fn read(&mut self) -> Result<Value, String> {
+        Self::read(self).await.map_err(|error| error.to_string())
+    }
+}
+
 /// Observation transports; injected only by focused regression fixtures.
 #[async_trait::async_trait]
 pub trait ServiceObservationSource: Send + Sync + 'static {
+    /// Create an owned process transport when the source supports connection reuse.
+    ///
+    /// # Errors
+    /// Rejects an invalid bound transport configuration.
+    fn process_observer(
+        &self,
+        _state: &AppState,
+        _binding: &NodeBinding,
+        _node: &NodeEntry,
+    ) -> Result<Option<Box<dyn ProcessObservation>>, String> {
+        Ok(None)
+    }
     /// Read the committed service view without accepting mutations.
     async fn intents(&self, state: &AppState) -> Result<Vec<NodeServiceIntent>, String>;
     /// Read authenticated, bound monitor-owned children.
@@ -38,6 +64,25 @@ pub trait ServiceObservationSource: Send + Sync + 'static {
 pub(super) struct Production;
 #[async_trait::async_trait]
 impl ServiceObservationSource for Production {
+    fn process_observer(
+        &self,
+        state: &AppState,
+        binding: &NodeBinding,
+        node: &NodeEntry,
+    ) -> Result<Option<Box<dyn ProcessObservation>>, String> {
+        if node.id == binding.node_id {
+            return Ok(None);
+        }
+        let mut target = node.clone();
+        target.ssh_password = None;
+        target.ssh_key = Some(crate::node::node_key_path(state).to_string_lossy().into_owned());
+        let observer = crowdb_console_shared::deployment::admission::RemoteProcessObservation::new(
+            target,
+            binding.clone(),
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(Some(Box::new(observer)))
+    }
     async fn intents(&self, state: &AppState) -> Result<Vec<NodeServiceIntent>, String> {
         crowdb_console_shared::deployment::services::list(state.kv_client().await.as_ref())
             .await

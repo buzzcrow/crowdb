@@ -125,4 +125,33 @@ impl MonitorLog {
         }
         Ok(())
     }
+    /// Additive diagnostic record; legacy lifecycle event fields stay unchanged.
+    pub(crate) async fn record_process_exit(
+        &mut self,
+        service: &str,
+        pid: u32,
+        observation: &serde_json::Value,
+    ) -> Result<(), MonitorLogError> {
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| MonitorLogError::Clock)?
+            .as_millis();
+        let warning = observation.get("success").and_then(serde_json::Value::as_bool) != Some(true);
+        let mut body = serde_json::to_vec(&serde_json::json!({
+            "timestamp_ms": timestamp_ms,
+            "level": if warning { "warn" } else { "info" },
+            "kind": "child_exit_observed",
+            "service": service,
+            "pid": pid,
+            "attempt": null,
+            "process_exit": observation,
+        }))?;
+        body.push(b'\n');
+        self.output.write_record(&body).await?;
+        self.output.sync().await?;
+        if warning && self.mirror_warnings_to_stderr {
+            eprint!("{}", String::from_utf8_lossy(&body));
+        }
+        Ok(())
+    }
 }

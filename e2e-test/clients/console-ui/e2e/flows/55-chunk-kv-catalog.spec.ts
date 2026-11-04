@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: journal 4.6s (2026-10-31); partition/overlay 1.4s, unavailable 0.208s, placement 0.321s (2026-10-03).
+// Baseline: journal 5.3s (2026-11-03); partition/overlay 1.4s, unavailable 0.208s, placement 0.321s (2026-10-03).
 import { test, expect } from '../fixtures/realBackend';
 import { step } from '../fixtures/stepTimer';
 import { journalRuntimeResponse, type JournalRuntimeTarget } from '../fixtures/journalRuntimeRequest';
@@ -24,9 +24,10 @@ test('native diagnostics: journal identity survives Chunk navigation and owner i
     expect(runtime.journal.chunk_record).not.toBeNull();
     await page.getByRole('tab', { name: 'Journal', exact: true }).click();
     const journal = page.getByRole('tabpanel', { name: 'Journal', exact: true });
-    await expect(journal).toContainText(runtime.journal.chunk_record.chunk_id);
+    const storage = journal.getByRole('region', { name: 'Journal storage', exact: true });
+    await expect(storage).toContainText(runtime.journal.chunk_record.chunk_id);
     for (const [name, value] of [['Stream chunk record generation', runtime.journal.generation], ['Stream writer epoch', runtime.journal.writer_epoch], ['Metadata group', runtime.journal.metadata_group_id]]) {
-      await expect(journal.locator('dt').filter({ hasText: new RegExp(`^${name}$`) }).locator('..').locator('dd')).toHaveText(value);
+      await expect(storage.locator('dt').filter({ hasText: new RegExp(`^${name}$`) }).locator('..').locator('dd')).toHaveText(value);
     }
     await expect(journal.getByLabel('Stream chunk record', { exact: true })).toContainText(runtime.journal.chunk_record.logical_end);
     await journal.getByRole('button', { name: 'Inspect Chunk', exact: true }).click();

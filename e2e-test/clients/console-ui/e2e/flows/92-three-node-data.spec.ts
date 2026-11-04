@@ -165,7 +165,7 @@ async function verifyServices({ page, request, deployments }: UIContext) {
 
 async function s3RoundTrip({ page, request }: UIContext) {
   await step('three-node: S3 upload and exact read through UI', async () => {
-    const content = 'CROWDB three-node UI round trip\n雪\n';
+    const content = 'CROWDB three-node UI round trip\n\u96ea\n';
     await page.getByTestId('domain-s3').click();
     await resourceAction(page, page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: 'S3', exact: true }), 'Create bucket…');
     await page.getByLabel('New bucket', { exact: true }).fill('ui-three-node');

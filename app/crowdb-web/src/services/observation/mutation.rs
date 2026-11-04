@@ -139,6 +139,7 @@ impl Mutation {
                         started: self.started,
                         pid,
                         exhausted: false,
+                        observed: pid.is_some(),
                     },
                 );
             }

@@ -31,9 +31,11 @@ elif args[:2] == ["image", "inspect"]:
     result = [{"Id": "sha256:" + "a" * 64, "Os": "linux", "Architecture": "amd64",
                "Config": {"Labels": {"org.opencontainers.image.source": "https://github.com/buzzcrow/crowdb"}}}]
 elif args[:2] == ["ps", "-aq"]:
-    result = "\n".join(state["container"])
+    result = "\n".join([*state["container"], *state.get("disappearing", {}).get("container", [])])
+elif args[:3] == ["ps", "-a", "--format"]:
+    result = "\n".join([*state["container"], *state.get("disappearing", {}).get("container", [])])
 elif len(args) > 1 and args[1] == "ls":
-    result = "\n".join(state[args[0]])
+    result = "\n".join([*state[args[0]], *state.get("disappearing", {}).get(args[0], [])])
 elif len(args) > 1 and args[1] == "inspect":
     result = [state[args[0]][name] for name in args[2:]]
 elif len(args) > 1 and args[1] == "create":

@@ -19,6 +19,7 @@ use crate::error::{Error, Result};
 use crate::ReadEndpointPolicy;
 
 mod address;
+mod recovery;
 
 type GroupKey = (u64, u64);
 
@@ -234,7 +235,7 @@ impl TopologyCache {
     }
 
     async fn fetch_and_merge(&self, base_generation: u64) -> Result<()> {
-        self.fetch_group_and_merge(base_generation, None)
+        self.fetch_group_and_merge(base_generation, None, None)
             .await
             .map(|_| ())
     }
@@ -247,7 +248,7 @@ impl TopologyCache {
         // A recent unrelated snapshot cannot answer a missing group's query.
         let generation = self.snapshot.load().generation;
         let result = self
-            .fetch_group_and_merge(generation, Some((store_id, group_id)))
+            .fetch_group_and_merge(generation, Some((store_id, group_id)), None)
             .await;
         *last = Instant::now();
         result
@@ -257,6 +258,7 @@ impl TopologyCache {
         &self,
         base_generation: u64,
         required_group: Option<GroupKey>,
+        rejected_endpoint: Option<&str>,
     ) -> Result<Option<String>> {
         let seeds = self.seeds.read().unwrap().clone();
         if seeds.is_empty() {
@@ -287,7 +289,9 @@ impl TopologyCache {
                                         .map(|remote| remote.endpoint.clone())
                                 }
                             })
-                            .filter(|endpoint| !endpoint.is_empty());
+                            .filter(|endpoint| {
+                                !endpoint.is_empty() && rejected_endpoint != Some(endpoint.as_str())
+                            });
                         if required_group.is_some() && endpoint.is_none() {
                             continue;
                         }

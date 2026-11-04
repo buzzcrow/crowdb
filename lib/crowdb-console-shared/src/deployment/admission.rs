@@ -15,6 +15,9 @@ use crate::config::NodeEntry;
 use crate::error::{Error, Result};
 use crate::ssh::{Session, SshCreds};
 
+mod process_observation;
+pub use process_observation::RemoteProcessObservation;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SshNodeIdentity {
     pub discovery_id: String,

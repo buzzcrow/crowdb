@@ -84,7 +84,11 @@ impl CrowdbKvClient {
         self.metrics.record_unknown_leader_wait();
         self.metrics.record_leader_query();
         self.metrics.record_topology_refresh();
-        if let Err(e) = self.topology.refresh().await {
+        if let Err(e) = self
+            .topology
+            .refresh_after_failure(store_id, group_id, endpoint)
+            .await
+        {
             if matches!(e, Error::NoSeeds) {
                 warn!(error = %e, "topology refresh failed in wait_and_refresh_leader");
                 return endpoint.to_string();
@@ -117,7 +121,11 @@ impl CrowdbKvClient {
     ) -> String {
         self.metrics.record_topology_refresh();
         let mut no_seeds = false;
-        if let Err(e) = self.topology.refresh().await {
+        if let Err(e) = self
+            .topology
+            .refresh_after_failure(store_id, group_id, current)
+            .await
+        {
             if matches!(e, Error::NoSeeds) {
                 no_seeds = true;
             }

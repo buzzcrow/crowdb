@@ -124,7 +124,13 @@ async fn two_table_principals_cannot_discover_each_others_published_names() {
 async fn pages_and_delimiters_preserve_order_without_duplicate_groups() {
     let fixture = TestFile::new(common::TestStore::default()).await;
     let repository = FileRepository::new(fixture.store.clone());
-    for relative in ["a/one.json", "a/two.json", "b/one.json", "c.json", "雪&<>.json"] {
+    for relative in [
+        "a/one.json",
+        "a/two.json",
+        "b/one.json",
+        "c.json",
+        "\u{96ea}&<>.json",
+    ] {
         repository
             .publish(fixture.context, &fixture.record(relative, b"{}"))
             .await

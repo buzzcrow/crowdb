@@ -101,7 +101,7 @@ test.describe('kv ops · put/get/scan/delete', () => {
       await openKvPanel(page);
       const table = page.getByTestId('kv-scan-table');
       await expect(table).toContainText('field00FFend');
-      await expect(table).toContainText('helloFE8001中文');
+      await expect(table).toContainText('helloFE8001\u4e2d\u6587');
       await expect(table).not.toContainText('0x');
       await expect(table.locator('[data-byte-format="hex"]')).toHaveText(['00FF', 'FE8001']);
       for (const run of await table.locator('[data-byte-format="hex"]').all()) {
@@ -113,7 +113,7 @@ test.describe('kv ops · put/get/scan/delete', () => {
       }
       await table.getByText('field', { exact: true }).click();
       const detail = page.getByRole('region', { name: 'Selected key' });
-      await expect(detail).toContainText('helloFE8001中文');
+      await expect(detail).toContainText('helloFE8001\u4e2d\u6587');
       await expect(detail.locator('[data-byte-format="hex"]')).toHaveText(['00FF', 'FE8001']);
       for (const run of await detail.locator('[data-byte-format="hex"]').all()) {
         await expect(run).toHaveCSS('color', 'rgb(133, 133, 133)');

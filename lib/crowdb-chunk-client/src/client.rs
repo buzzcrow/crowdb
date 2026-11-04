@@ -8,7 +8,7 @@ use disk_metrics::MetricsDiskWriter;
 
 mod readiness;
 #[cfg(feature = "test-util")]
-pub use readiness::observe_readiness_phase_for_tests;
+pub use readiness::{observe_disk_readiness_for_tests, observe_readiness_phase_for_tests};
 mod connection;
 mod observation;
 mod writer_policy;

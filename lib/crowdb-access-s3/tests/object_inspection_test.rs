@@ -10,7 +10,7 @@ fn record(locations: &[Location]) -> ObjectRecord {
     let length = locations.iter().map(|location| location.logical_length).sum();
     ObjectRecord {
         bucket_id: BucketId::new([7; 16]),
-        key: "folder/中文.bin".as_bytes().to_vec(),
+        key: "folder/\u{4e2d}\u{6587}.bin".as_bytes().to_vec(),
         logical_length: length,
         checksum: vec![1; 16],
         etag: "etag".into(),

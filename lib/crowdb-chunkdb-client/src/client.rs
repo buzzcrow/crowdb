@@ -212,6 +212,10 @@ impl ChunkdbClient {
 
     async fn endpoints_for_chunk(&self, chunk_id: Option<&ChunkId>) -> Result<Vec<String>> {
         self.refresh_endpoints_if_due().await;
+        self.cached_endpoints_for_chunk(chunk_id).await
+    }
+
+    async fn cached_endpoints_for_chunk(&self, chunk_id: Option<&ChunkId>) -> Result<Vec<String>> {
         if let Some(id) = chunk_id {
             let binding = &self.range_binding;
             let owner = binding

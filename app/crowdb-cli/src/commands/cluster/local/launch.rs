@@ -67,7 +67,7 @@ pub(super) async fn run(docker: &Docker, record: &Launch) -> Result<()> {
     if bridge["Driver"] != "bridge" {
         return Err(invalid("local cluster requires its owned bridge"));
     }
-    let containers = docker.objects("container").await?;
+    let containers = docker.objects(record, "container").await?;
     for index in 1..=record.nodes {
         let name = record.resource_name("container", index);
         let volume = record.resource_name("volume", index);

@@ -33,6 +33,23 @@ pub(in crate::node::runtime) async fn execute(
     processes: &mut ProcessManager,
     intent: NodeServiceIntent,
 ) -> Result<Value> {
+    execute_with_readiness(profile, processes, intent, true).await
+}
+
+pub(in crate::node::runtime) async fn reconcile(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    intent: NodeServiceIntent,
+) -> Result<Value> {
+    execute_with_readiness(profile, processes, intent, false).await
+}
+
+async fn execute_with_readiness(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    intent: NodeServiceIntent,
+    wait_initial_ready: bool,
+) -> Result<Value> {
     validate(&intent)?;
     super::policy::validate(&profile.paths.data_root, &intent)?;
     let binding: NodeBinding =
@@ -93,7 +110,16 @@ pub(in crate::node::runtime) async fn execute(
             .await
             .map(|()| processes.pid(process_id))
     } else {
-        apply(profile, processes, &binding, &intent, process_id, &directory).await
+        apply(
+            profile,
+            processes,
+            &binding,
+            &intent,
+            process_id,
+            &directory,
+            wait_initial_ready,
+        )
+        .await
     };
     let (complete, pid, error) = match &result {
         Ok(pid) => (true, *pid, None),
@@ -169,6 +195,7 @@ async fn apply(
     intent: &NodeServiceIntent,
     process_id: &str,
     directory: &std::path::Path,
+    wait_initial_ready: bool,
 ) -> Result<Option<u32>> {
     // Fence the admitted operation immediately before disrupting its service.
     // KV may provide the authority being read, so verify while it is still live.
@@ -219,7 +246,13 @@ async fn apply(
             let pid = processes
                 .start(&service, &std::collections::BTreeMap::new())
                 .await?;
-            wait_ready(profile, processes, intent).await?;
+            if wait_initial_ready {
+                wait_ready(profile, processes, intent).await?;
+            } else {
+                // Recovery observes once per pass. A live child retains its
+                // durable launch attempt while health and control make progress.
+                observe_ready(profile, intent).await?;
+            }
             Some(pid)
         }
     } else {
