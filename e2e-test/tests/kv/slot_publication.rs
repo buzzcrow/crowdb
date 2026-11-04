@@ -121,8 +121,16 @@ async fn complete_epoch_publication_is_atomic_idempotent_and_storage_independent
         client.publish_service_epochs(&transfer),
         client.publish_service_epochs(&transfer)
     );
-    assert!(a.is_ok() && b.is_ok(), "first: {a:?}; second: {b:?}");
+    assert!(
+        matches!(
+            (&a, &b),
+            (Ok(()), Ok(()) | Err(crowdb_kv_client::Error::CasBusy))
+                | (Err(crowdb_kv_client::Error::CasBusy), Ok(()))
+        ),
+        "first: {a:?}; second: {b:?}"
+    );
     let after = client.read_service_snapshot().await.unwrap();
+    assert_eq!(after.authority().head(), transfer.head());
     for current in ChunkSlot::all() {
         assert_eq!(after.authority().owner(current), transfer.owner(current));
         assert_eq!(
@@ -134,6 +142,13 @@ async fn complete_epoch_publication_is_atomic_idempotent_and_storage_independent
         client.read_storage().await.unwrap().bindings(),
         storage.bindings()
     );
+    // A busy caller reconciles the completed publication before submitting again.
+    client.publish_service_epochs(&transfer).await.unwrap();
+    let repeated = client.read_service_snapshot().await.unwrap();
+    assert_eq!(repeated.authority().head(), after.authority().head());
+    assert_eq!(repeated.authority().bindings(), after.authority().bindings());
+    assert_eq!(repeated.service().head(), after.service().head());
+    assert_eq!(repeated.service().bindings(), after.service().bindings());
     let reused = epochs(&service, 4, Some((slot, 1, 2)));
     assert!(client.publish_service_epochs(&reused).await.is_err());
     let rollback = epochs(&service, 4, None);

@@ -128,6 +128,8 @@ Bucket paths accept a single trailing slash. ListObjectsV2 supports URL encoding
 of XML-incompatible keys and selected prefix/delimiter fields. ListBuckets
 reports the Unix epoch as a stable CreationDate placeholder because bucket
 records do not retain creation timestamps.
+Bucket listings skip object and multipart rows sharing the metadata interval only
+after validating their complete key and value identities; unknown or corrupt rows fail.
 
 User metadata is accepted through x-amz-meta-* headers on ordinary PUT,
 multipart initiation and CopyObject. Nonempty HTTP token names are normalized

@@ -44,7 +44,9 @@ impl ChunkSlotMapClient {
     /// Advance this instance's owned slot epochs once before a restarted process serves.
     ///
     /// # Errors
-    /// Returns a publication conflict or a missing/corrupt dynamic assignment.
+    /// Recomputes the current assignment after `CasBusy` or `CasFailed`, up to
+    /// 32 attempts. Other errors, including an unreconciled `OutcomeUnknown`,
+    /// stop immediately. Exhausted contention returns `CasBusy` to the caller.
     pub async fn regrant_service_epochs(&self, instance_id: u64) -> Result<()> {
         for _ in 0..32 {
             match self.regrant_service_epochs_once(instance_id).await {
@@ -74,13 +76,29 @@ impl ChunkSlotMapClient {
     /// No old-write draining or data-group network checks participate in publication.
     ///
     /// # Errors
-    /// Rejects stale publication, epoch rollback/reuse and ambiguous conflicting outcomes.
+    /// Returns `CasBusy` when same-head contention cannot yet be reconciled,
+    /// `CasFailed` for a stale source, and `OutcomeUnknown` for an unconfirmed
+    /// submitted outcome. Callers must reconcile the complete map before
+    /// deciding whether to resubmit the same intent; this method never rebases
+    /// a fixed publication or silently retries its mutation. Epoch rollback
+    /// and reuse are rejected.
     pub async fn publish_service_epochs(&self, next: &ChunkSlotMap<ChunkSlotAuthority>) -> Result<()> {
         match self.publish_service_epochs_once(next).await {
             Err(error @ (Error::OutcomeUnknown | Error::CasBusy | Error::CasFailed { .. })) => {
                 // A competing identical publisher can commit during preparation,
                 // before this caller submits its CAS. Reconcile that boundary too.
-                let current = self.read_service_snapshot().await?;
+                let current = match self.read_service_snapshot().await {
+                    Ok(current) => current,
+                    Err(reconcile_error) if matches!(&error, Error::OutcomeUnknown) => {
+                        tracing::warn!(
+                            generation = next.head().generation,
+                            %reconcile_error,
+                            "epoch publication outcome remains unknown; reconcile the complete map before retrying"
+                        );
+                        return Err(error);
+                    }
+                    Err(reconcile_error) => return Err(reconcile_error),
+                };
                 if current.authority().head() == next.head()
                     && current
                         .authority()

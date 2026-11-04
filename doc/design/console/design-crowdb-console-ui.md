@@ -607,6 +607,10 @@ resource menu. Data browsing is read-only; Query/Scan remain center query tools.
   deployment is queued. A fresh, identity-matched running process automatically
   reconciles that registered service's progress to deployed. This also reconciles
   an interrupted deployment whose owned process is later confirmed running.
+- A plan whose selected steps are all deployed continues read-only process
+  observation every two seconds. A short-lived running process cannot freeze
+  progress after it exits. Confirmed stopped diagnostics retain the service name
+  and configured listener overrides; successful siblings and overrides persist.
 - Read-only recovery never sends Start, Restart, or Deploy again. Missing or
   unverified process evidence does not clear a recorded failure. Explicit Retry
   is required to initiate another failed lifecycle mutation; an accepted startup
@@ -642,6 +646,24 @@ continues while this Console page is active. Confirmed stopped with no pending
 startup becomes failed and continues observation. A later fresh running process
 reconciles progress to deployed automatically without a lifecycle request. The
 existing Retry failed services action initiates a needed lifecycle mutation.
+
+A previously completed plan after a confirmed stopped process:
+
+```text
++--------------------------------------------------------------------+
+| Node 1 services                                                    |
+|                                                                    |
+| crowdb-access-server                                     disabled  |
+| crowdb-chunk-kv                                          disabled  |
+| crowdb-chunk-db                                          disabled  |
+| crowdb-disk-db                                             failed  |
+|   crowdb-disk-db (rpc_port=7100): Registered service is stopped      |
+| crowdb-disk-io                                           disabled  |
+| crowdb-paxos-kv                                          deployed  |
+|                                                                    |
+| [Cancel]                                  [Retry failed services]  |
++--------------------------------------------------------------------+
+```
 
 ## 14. DiskGroup and disk management
 

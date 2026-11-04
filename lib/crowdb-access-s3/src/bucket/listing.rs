@@ -8,10 +8,8 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-use super::BucketError;
-use crate::metadata::{
-    BucketNameRecord, ChunkKvMetadataStore, MetadataKey, MetadataStoreError, ObjectRecord, TenantId,
-};
+use super::{listed_record::decode_bucket_row, BucketError};
+use crate::metadata::{BucketNameRecord, ChunkKvMetadataStore, MetadataKey, MetadataStoreError, TenantId};
 
 const MAX_CURSOR_BYTES: usize = 64 * 1024;
 const CURSOR_CONTEXT: &[u8] = b"crowdb-list-buckets-v1\0";
@@ -87,20 +85,13 @@ impl BucketListSigner {
         let mut buckets = Vec::new();
         let mut continuation = None;
         for (index, value) in page.items.into_iter().enumerate() {
-            match BucketNameRecord::decode(&value.value) {
-                Ok(record) => {
-                    if record.tenant != *tenant
-                        || MetadataKey::bucket_name(tenant, &record.name)? != value.key
-                        || !record.name.starts_with(request.prefix)
-                    {
-                        return Err(crate::metadata::MetadataRecordError::Invalid.into());
-                    }
-                    if !record.tombstone {
-                        buckets.push(record);
-                    }
+            if let Some(record) = decode_bucket_row(tenant, &value.key, &value.value)? {
+                if !record.name.starts_with(request.prefix) {
+                    return Err(crate::metadata::MetadataRecordError::Invalid.into());
                 }
-                Err(_) if ObjectRecord::decode(&value.value).is_ok() => {}
-                Err(error) => return Err(error.into()),
+                if !record.tombstone {
+                    buckets.push(record);
+                }
             }
             if buckets.len() == request.max_buckets || index + 1 == count {
                 if index + 1 < count || page.continuation.is_some() {

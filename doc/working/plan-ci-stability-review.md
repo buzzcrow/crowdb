@@ -3,68 +3,40 @@
 
 # CI Stability Review Plan
 
-Upstream: [Physical Node Test Plan](../dev/physical-node-test-plan.md),
-[container acceptance](../../e2e-test/README.md), and
-[CI workflow](../../.github/workflows/ci.yml).
+The three requested CI repairs and local verification finished on 2026-11-04.
+The user authorized pushing the completed changes on 2026-11-04.
 
-Goal: track the remaining physical-test stability issue.
+- ContainerKV: 50 fixtures and 58 client phases pass, including two-slot isolation.
+  Explicit CAS conflicts remain visible; an unknown publication outcome can no
+  longer become a retryable conflict through a failed reconciliation read.
+- Deployment services: 33 fixtures and 41 client phases pass. Strict bucket-row
+  classification fixes the reproduced multipart metadata collision. The original
+  restart HTTP 500 lacks its offending row, so historical attribution stays qualified.
+- Console native-data: the original ordered 14-case baseline passes. The fixed
+  image passes the original browser case and all nine affected node cases; retain
+  five Dataset baseline passes whose relevant inputs did not change. This is
+  incremental coverage, not a claim that all 14 ran on the fixed image.
+  Complete plans keep observing current processes. All 381 UI tests and types pass.
 
-## Execution status
+CI evidence from repository root:
+`.crowdb-runtime/artifacts/ci/new-failures-20261104/local-verification/`.
+`console-fixed-coverage.json` records exact case membership and image qualification.
+Original failures and repair RED/GREEN evidence remain in the three job directories.
 
-The requested test execution and resource closure finished on 2026-11-04.
-One complex issue remains recorded below under the user's instruction to finish
-independent tests and defer complex repairs. Completed tasks are removed.
+## Remaining task: deferred historical attribution
 
-All evidence paths below are relative to
-`.crowdb-runtime/artifacts/physical-nodes/physical-20261031T194149Z/`.
+- [ ] **P13 first aggregate WAL release error**: Identify its exact historical
+  partition/phase and durable release outcome if further attribution is required.
+  Six failing streams map to exact partitions, but the saved aggregate error does
+  not identify the first branch. A real-worker reproduction establishes that
+  idle liveness failure followed by authority revocation returns `WriteStalled`
+  before owner release with zero payload IO; healthy idle release and transient
+  recovery both pass. This warning alone does not establish an unfinished payload
+  write or corruption. No production fencing change is justified by that evidence.
+  The next investigation needs typed partition/stream/epoch/lifecycle/release-phase
+  and first stalled cause in a local server reproduction. Preserve lease
+  exclusion and replay. The three controls, fmt and focused clippy pass.
+  Evidence from repository root:
+  `.crowdb-runtime/artifacts/physical-nodes/physical-20261031T194149Z/repair/readiness-probe-budget-2s/wal-drain-research-20261104/findings.md`.
 
-- **Local CI reruns**: UnitTests 1,181 passed, Console API 92 passed, and Console
-  Native Operations 19 passed with the approved ten-second backend convergence
-  budget and three-second diagnostic. UI/process budgets stay unchanged. The
-  original Native failure is retained; its eventual recovery and control-plane
-  delay cause remain unproven. Evidence:
-  `ci/requested-full-rerun-20261104/approved-convergence/`.
-- **Physical qualification**: P09 and independent P14 passed. P13 supplementary
-  qualification passed its corrected expired-lease matcher, positive exit
-  statuses, strict stderr, 24,311 healthy responses and unchanged 35-process
-  scope. P16 supplementary consistent-inventory qualification passed: 8,961
-  busy records, 1,641 chunk records, 8,756 physical segments, no missing busy
-  allocations or overlaps, 35 unchanged process identities and 370 healthy
-  responses. Its 16 controls passed. Evidence:
-  `repair/readiness-probe-budget-2s/saved-p13-supplemental-review/original-gates/result.json`
-  and `repair/readiness-probe-budget-2s/p16-consistent-audit-staging/physical-attempt-2/result.json`.
-  Original failures remain retained. Results stay scoped to their actual source
-  and image; this is not fresh full-matrix acceptance.
-- **Probe review**: all 141 CI warnings occurred in fault/restart scenarios;
-  119 have same-endpoint recovery evidence. The other 22 Native records lack
-  exact saved Ready generations. P14's five and P13's 40 physical failures have
-  subsequent-generation recovery. No stable-load failure is established, so the
-  production two-second probe budget stays unchanged. Evidence:
-  `repair/readiness-probe-budget-2s/probe-review-completion-20261104/review.json`.
-- **Resource closure**: all seven exact owned containers and volumes were
-  retired after complete service/crash-log capture and verified B-to-A copying.
-  Resource absence, closed listeners, evidence hashes and SSH access passed.
-  Docker's varying mount order caused one pre-delete refusal; a checked
-  complete-entry sort allowed the exact comparison, without dropping fields.
-  That refusal is retained. No new volume archives or broad pruning. Evidence:
-  `repair/readiness-probe-budget-2s/resource-closure-preparation/driver/disposition.json`.
-
-## Unfinished task
-
-- [ ] **P13 WAL release failure path**: During lease-fenced shutdown, B's two
-  original survivor processes reported `partition writes are stalled`. Identify
-  the affected partition/stream and first typed failure in
-  `release_drained_writer`, journal release, stream command dispatch/completion,
-  or worker release. Existing logs do not distinguish these paths or prove a
-  successful historical release. Reproduce the smallest proven cause before
-  selecting a repair, then verify successor lease exclusion and acknowledged
-  data replay. Stop after two unsuccessful repair attempts and retain evidence.
-  Files: `app/crowdb-chunk-kv-server/src/server/drain.rs`,
-  `lib/crowdb-chunk-kv/src/partition/drain.rs`,
-  `lib/crowdb-chunk-kv/src/partition/journal.rs`, and
-  `lib/crowdb-chunk-stream/src/stream.rs`.
-  Evidence: `repair/readiness-probe-budget-2s/wal-drain-log-repair/unresolved-issue.json`.
-  The separate unconditional success-log bug in
-  `app/crowdb-chunk-kv-server/src/main.rs` is fixed; three graceful-drain tests,
-  Rust fmt and focused clippy passed. The physical image was not rebuilt for
-  this logging-only change; it does not repair the release path.
+Completed execution, probe review and resource-closure tasks have been removed.

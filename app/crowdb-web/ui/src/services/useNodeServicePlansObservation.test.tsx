@@ -216,3 +216,55 @@ it('keeps unattempted work waiting across an unavailable inventory and resumes o
   expect(result.current.plans[1]['paxos-kv'].state).toBe('deployed');
   noLifecycleMutation();
 });
+
+it.each(['stopped', 'unknown'] as const)('continues observing a completed plan after a transient PID becomes %s', async firstLoss => {
+  const steps = failedPlan();
+  steps['paxos-kv'] = { state: 'deployed' };
+  steps.diskdb = { state: 'failed', detail: 'crowdb-disk-db (rpc_port=7100): Previously reported stopped' };
+  const overrides = { diskdb: { rpc_port: 7100 } };
+  vi.mocked(serviceRequest).mockImplementation(async path => path === '/service-plans'
+    ? { 1: { revision: 7, steps, overrides } } : { revision: 8, ready: true });
+  let state: ProcessState = 'unknown';
+  vi.mocked(listServers).mockImplementation(async () => [kv('running'), {
+    ...diskdb(state === 'running', false), process_observed: state !== 'unknown',
+  }]);
+  const { result } = renderHook(() => useNodeServicePlans(stores, {}, async () => {}, true));
+  const preserved = () => {
+    expect(result.current.plans[1]['paxos-kv']).toEqual(steps['paxos-kv']);
+    for (const kind of serviceOrder) if (kind !== 'paxos-kv' && kind !== 'diskdb') {
+      expect(result.current.plans[1][kind]).toEqual({ state: 'disabled' });
+    }
+    const writes = vi.mocked(serviceRequest).mock.calls.filter(([path, method]) => path === '/nodes/1/service-plan' && method === 'PUT');
+    for (const [, , body] of writes) expect(body).toMatchObject({ overrides });
+    noLifecycleMutation();
+  };
+  await act(async () => {});
+  expect(result.current.plans[1].diskdb).toEqual(steps.diskdb);
+  preserved();
+  state = 'running';
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(result.current.plans[1].diskdb.state).toBe('deployed');
+  expect(serviceOrder.every(kind => ['deployed', 'disabled'].includes(result.current.plans[1][kind].state))).toBe(true);
+  preserved();
+  state = firstLoss;
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(result.current.plans[1].diskdb.state).toBe(firstLoss === 'unknown' ? 'waiting' : 'failed');
+  preserved();
+  if (firstLoss === 'unknown') {
+    expect(result.current.plans[1].diskdb.detail).toMatch(/process|observation/i);
+    state = 'stopped';
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(result.current.plans[1].diskdb.state).toBe('failed');
+  }
+  expect(result.current.plans[1].diskdb.detail).toContain('crowdb-disk-db');
+  expect(result.current.plans[1].diskdb.detail).toContain('7100');
+  preserved();
+  state = 'unknown';
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(result.current.plans[1].diskdb.state).toBe('failed');
+  preserved();
+  state = 'running';
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(result.current.plans[1].diskdb.state).toBe('deployed');
+  preserved();
+});

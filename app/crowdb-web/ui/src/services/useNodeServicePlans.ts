@@ -26,6 +26,11 @@ export type NodeServicePlan = Record<ServiceKind, ServiceStep>;
 export type ServiceOverrides = Partial<Record<ServiceKind, Partial<Omit<DeploymentDefaults, 'instance_id'>> & { keepalive_interval_secs?: number }>>;
 export const newPlan = (): NodeServicePlan => Object.fromEntries(serviceOrder.map(kind => [kind, { state: 'pending' }])) as NodeServicePlan;
 
+function serviceFailureDetail(kind: ServiceKind, overrides: ServiceOverrides | undefined, error: unknown) {
+  const listeners = Object.entries(overrides?.[kind] ?? {}).map(([name, port]) => `${name}=${port}`).join(', ');
+  return `${serviceLabels[kind]}${listeners ? ` (${listeners})` : ''}: ${String(error)}`.slice(0, 4096);
+}
+
 function observationDelay(plans: Record<number, NodeServicePlan>, hasDisks: boolean, waitingForStorage: boolean, immediate: boolean) {
   if (immediate) return 0;
   const steps = Object.values(plans).flatMap(plan => serviceOrder.map(kind => plan[kind]));
@@ -148,7 +153,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
           if (disposed || stopped.current) return;
           for (const [key, initial] of Object.entries(plansRef.current)) {
             if (disposed || stopped.current) break;
-            if (!serviceOrder.some(kind => ['pending', 'waiting', 'failed'].includes(initial[kind].state))) continue;
+            if (!serviceOrder.some(kind => ['pending', 'waiting', 'failed', 'deployed'].includes(initial[kind].state))) continue;
             const id = Number(key);
             let plan = plansRef.current[id];
             const write = async (kind: ServiceKind, step: ServiceStep) => { plan = { ...plan, [kind]: step }; await persist(id, plan); };
@@ -198,7 +203,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
                   ? { state: 'waiting', detail: startingService }
                   : registered.process_observed === false
                     ? { state: 'waiting', detail: observingService }
-                    : { state: 'failed', detail: 'Registered service is stopped; restart it from the Node menu before resuming.' };
+                    : { state: 'failed', detail: serviceFailureDetail(kind, overrides.current[id], 'Registered service is stopped; restart it from the Node menu before resuming.') };
                 if (plan[kind].state !== step.state || plan[kind].detail !== step.detail) await write(kind, step);
                 continue;
               }
@@ -257,8 +262,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
                   await write(kind, { state: 'waiting', detail: dependency[1] });
                   continue;
                 }
-                const listeners = Object.entries(overrides.current[id]?.[kind] ?? {}).map(([name, port]) => `${name}=${port}`).join(', ');
-                const detail = `${serviceLabels[kind]}${listeners ? ` (${listeners})` : ''}: ${String(error)}`.slice(0, 4096);
+                const detail = serviceFailureDetail(kind, overrides.current[id], error);
                 // A node without a fixed ChunkDB slot is valid. Keep it as a
                 // warning so the rest of the node plan and existing balance
                 // services continue running.
