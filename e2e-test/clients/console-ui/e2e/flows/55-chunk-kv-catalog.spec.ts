@@ -188,11 +188,15 @@ async function refreshSelectedJournal(page: Page, target: JournalRuntimeTarget, 
   const sameSelection = await properties.count() === 1 && (await property('Split ID')) === target.id
     && (await property('Owner epoch')) === target.epoch && (await property('Generation')) === target.generation;
   const select = () => page.getByLabel('Partition range map').getByRole('button', { name: `Partition ${target.id}`, exact: true }).click({ timeout: remaining() });
-  if (sameSelection) await select();
-  else await step('journal automatic selection response', () => journalRuntimeResponse(page, target, select, remaining));
   const refreshRuntime = page.getByRole('region', { name: 'Partition runtime', exact: true }).getByRole('button', { name: 'Refresh runtime', exact: true });
+  if (!sameSelection) {
+    const observed = await step('journal automatic selection response', () => journalRuntimeResponse(page, target, select, remaining));
+    // A changed identity starts its own observation. Preserve that response,
+    // including a catalog conflict, for the caller's coherence checks.
+    return { observed, refreshRuntime };
+  }
   await expect(refreshRuntime).toBeEnabled({ timeout: remaining() });
-  // Selecting the same partition leaves its identity unchanged. Explicitly
+  // The same partition identity does not trigger a new observation. Explicitly
   // refresh runtime so owner restart is observed even without a new catalog.
   const observed = await step('journal runtime DOM refresh', () => journalRuntimeResponse(page, target,
     () => refreshRuntime.click({ timeout: remaining() }), remaining));

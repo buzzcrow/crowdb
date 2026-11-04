@@ -158,7 +158,7 @@ KV_CASES = (
     Case("kv.recovery", "kv::snapshot::snapshot_import_precedes_wiring_and_catches_up_tail",
          (0, 1, 2), groups_per_node=((1,), (1,), ())),
     Case("kv.membership", "kv::reconfiguration::quorum_expands_and_shrinks_without_losing_writes",
-         (0, 1, 2, 3, 4)),
+         (0, 1, 2, 3, 4), groups_per_node=((1,), (1,), (1,), (), ())),
     Case("kv.routing", "kv::cluster::topology_and_follower_hint", (10, 20, 30), True),
     Case("kv.routing", "kv::cluster::dynamic_groups_isolate_data", (0, 1, 2), True),
     Case("kv.management", "kv::management::management_lifecycle"),

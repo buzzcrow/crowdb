@@ -52,7 +52,9 @@ class TestDispatchTest(unittest.TestCase):
         self.assertIn('key: ${{ inputs.key }}', cache)
         self.assertIn('cmd-format: "pixi run {0}"', cache)
         self.assertIn('cache-workspace-crates: true', cache)
-        directories = cache.split('cache-directories: |', 1)[1].split('cmd-format:', 1)[0].split()
+        self.assertIn('cache-directories: ${{ inputs.directories }}', cache)
+        defaults = cache.split('  directories:\n', 1)[1].split('runs:', 1)[0]
+        directories = defaults.split('    default: |\n', 1)[1].split()
         self.assertEqual(set(directories), {
             'target/debug', 'target/release', 'sdk/target/release', 'sdk/target/sdist/release', 'target/iceberg-sdk/release',
             'app/crowdb-diskio/build', 'lib/crowdb-tree/build', 'lib/crowdb-rpc/build'})
@@ -64,6 +66,23 @@ class TestDispatchTest(unittest.TestCase):
         for job in ('UITests', 'S3E2E', 'IcebergE2E', 'ContainerKV',
                     'ContainerConsole', 'ContainerStorage', 'ContainerDeployment'):
             self.assertNotIn('uses: ./.github/actions/compilation-cache', self.job(job), job)
+
+    def test_access_cache_and_test_profile_bound_disk_without_narrowing_tasks(self):
+        cache = (ROOT / '.github/actions/compilation-cache/action.yml').read_text()
+        self.assertIn('default: release-ci-v1', cache)
+        self.assertIn("shared-key: ${{ inputs.family }}-${{ hashFiles('pixi.lock') }}", cache)
+        access = self.job('AccessTests')
+        self.assertRegex(access, r'(?m)^      CARGO_PROFILE_TEST_STRIP: debuginfo$')
+        self.assertRegex(access, r'(?m)^      CARGO_BUILD_JOBS: "4"$')
+        self.assertNotRegex(self.workflow, r'(?m)^  CARGO_PROFILE_TEST_STRIP:')
+        self.assertIn('family: access-ci-v2', access)
+        directories = re.search(r'        directories: \|\n((?:          [^\n]+\n)+)', access)
+        self.assertIsNotNone(directories)
+        self.assertEqual(directories[1].split(), [
+            'target/debug', 'sdk/target/release', 'sdk/target/sdist/release'])
+        self.assertEqual(re.findall(r'^        pixi run ([\w-]+)', access, re.M), [
+            'test-access', 'test-access-sdk', 'check-dataset-sdk-boundary',
+            'sdk-fmt-check', 'sdk-lint', 'test-dataset-sdk', 'test-dataset-sdk-python'])
 
     def test_only_binary_consumers_wait_for_shared_builds(self):
         for name in ('Lint', 'UITests', 'CppTests', 'UnitTests', 'StorageTests',

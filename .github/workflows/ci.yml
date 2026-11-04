@@ -208,6 +208,11 @@ jobs:
   AccessTests:
     timeout-minutes: 90
     runs-on: ubuntu-24.04
+    env:
+      # Keep function symbols and panic locations without duplicating native
+      # DWARF across hundreds of linked test executables.
+      CARGO_PROFILE_TEST_STRIP: debuginfo
+      CARGO_BUILD_JOBS: "4"
     steps:
     - uses: actions/checkout@v4
       with:
@@ -223,6 +228,12 @@ jobs:
       with:
         pixi-version: v0.77.0
     - uses: ./.github/actions/compilation-cache
+      with:
+        family: access-ci-v2
+        directories: |
+          target/debug
+          sdk/target/release
+          sdk/target/sdist/release
     - name: Clean env
       run: pixi run clean --runtime-only
     - name: Run access component tests

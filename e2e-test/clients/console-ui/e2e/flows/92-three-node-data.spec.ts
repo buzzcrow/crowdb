@@ -12,6 +12,8 @@ import { disklessExpansion, verifyDisklessSlotBalance } from '../fixtures/diskle
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
+import { parseIcebergJson } from '../../src/iceberg/json';
+import type { TableLoad } from '../../src/iceberg/types';
 
 import type { APIRequestContext, Page } from '@playwright/test';
 
@@ -222,7 +224,21 @@ async function icebergRoundTrip({ page, baseURL }: UIContext) {
     execution.child.stdin!.end(JSON.stringify(writerConfig));
     const result = await execution;
     console.log(result.stdout); if (result.stderr) console.log(result.stderr);
-    await page.getByRole('button', { name: 'Refresh table', exact: true }).click();
+    await step('three-node: refreshed Iceberg metadata reaches the DOM', async () => {
+      const refreshed = page.waitForResponse(response => response.request().method() === 'GET'
+        && new URL(response.url()).pathname === '/api/access/iceberg/v1/namespaces/ui_three_node/tables/events');
+      const refresh = page.getByRole('button', { name: 'Refresh table', exact: true });
+      await refresh.click();
+      const response = await refreshed;
+      expect(response.status(), await response.text()).toBe(200);
+      const loaded = parseIcebergJson(await response.text()) as TableLoad;
+      const current = String(loaded.metadata['current-snapshot-id']);
+      const snapshot = loaded.metadata.snapshots?.find(snapshot => String(snapshot['snapshot-id']) === current);
+      expect(snapshot?.summary).toMatchObject({ 'total-records': '3' });
+      await expect(page.getByRole('table', { name: 'Table snapshots', exact: true }).getByRole('row')
+        .filter({ has: page.getByRole('button', { name: current, exact: true }) })).toContainText('Current');
+      await expect(refresh).toBeEnabled();
+    });
     await expect(page.getByRole('button', { name: 'Inspect current snapshot', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Inspect current snapshot', exact: true }).click();
     await expect(page.getByRole('table', { name: 'Manifest list records' })).toContainText('avro');
