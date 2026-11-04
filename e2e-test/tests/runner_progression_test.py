@@ -7,10 +7,55 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scenarios import Case, run_cases
+from scenarios import Case, run_cases, select_cases
 
 
 class RunnerProgressionTest(unittest.TestCase):
+    def run_dataset_phases(self, fail_prepare=False):
+        events = []
+        cases = select_cases(layer='console', scope='console.native.browser.dataset')
+        with tempfile.TemporaryDirectory() as temporary:
+            class Fixture:
+                def __init__(self, case):
+                    self.name = case.name
+                    self.artifacts = Path(temporary) / self.name
+                    self.artifacts.mkdir()
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    events.append((self.name, 'close', self.client_timeout))
+
+                def client(self, _bundle, phase, name):
+                    self_owner.assertEqual(name, self.name)
+                    events.append((name, phase, self.client_timeout))
+                    if fail_prepare and phase == 'prepare':
+                        raise ValueError('Dataset preparation failed')
+
+            self_owner = self
+            with patch('scenarios.select_cases', return_value=cases), \
+                 patch('scenarios.allocate_cluster', side_effect=lambda case, *_: Fixture(case)):
+                if fail_prepare:
+                    with self.assertRaisesRegex(ValueError, 'Dataset preparation failed'):
+                        run_cases('image', temporary, 'bundle', 1, fail_fast=True)
+                else:
+                    run_cases('image', temporary, 'bundle', 1)
+        return cases, events
+
+    def test_dataset_preparation_and_browser_keep_separate_original_budgets(self):
+        cases, events = self.run_dataset_phases()
+        self.assertEqual(len(cases), 5)
+        self.assertEqual(events, [
+            (case.name, phase, 360)
+            for case in cases
+            for phase in ('prepare', case.name.rsplit('::', 1)[-1], 'close')
+        ])
+
+    def test_dataset_preparation_failure_skips_browser_and_closes_fixture(self):
+        cases, events = self.run_dataset_phases(fail_prepare=True)
+        self.assertEqual(events, [(cases[0].name, phase, 360) for phase in ('prepare', 'close')])
+
     def test_ready_cli_executes_before_a_peer_finishes_starting(self):
         executed = threading.Event()
         events = []

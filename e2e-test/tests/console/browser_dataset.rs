@@ -1,37 +1,45 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-async fn run() {
+async fn run(browser_phase: &str) {
+    let phase = std::env::var("CROWDB_E2E_PHASE").expect("owned Dataset client phase");
+    assert!(
+        phase == "prepare" || phase == browser_phase,
+        "unexpected Dataset phase: {phase}"
+    );
     let context = super::native_context::TestNativeContext::connect().await;
-    super::native_storage::start(&context).await;
-    // The first split leaves the normal partition-count policy unsatisfied.
-    // Finish bootstrap placement before the bounded Dataset reads begin.
-    super::native_balance::settle(&context).await;
+    if phase == "prepare" {
+        super::native_storage::start(&context).await;
+        // Finish the full production placement policy in the preparation phase.
+        super::native_balance::settle(&context).await;
+        return;
+    }
+    super::native_balance::settle_existing(&context).await;
     let result = crate::common::control::native_browser().await;
     assert_eq!(result["passed"], true);
 }
 #[tokio::test]
 #[ignore = "requires native Dataset and installed browser"]
 async fn browse() {
-    run().await;
+    run("browse").await;
 }
 #[tokio::test]
 #[ignore = "requires native Dataset and installed browser"]
 async fn import() {
-    run().await;
+    run("import").await;
 }
 #[tokio::test]
 #[ignore = "requires native Dataset and installed browser"]
 async fn split_revisions() {
-    run().await;
+    run("split_revisions").await;
 }
 #[tokio::test]
 #[ignore = "requires native Dataset and installed browser"]
 async fn recovery() {
-    run().await;
+    run("recovery").await;
 }
 #[tokio::test]
 #[ignore = "requires native Dataset and installed browser"]
 async fn capabilities() {
-    run().await;
+    run("capabilities").await;
 }

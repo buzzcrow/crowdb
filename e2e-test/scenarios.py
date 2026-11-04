@@ -846,6 +846,10 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.crash_restart()
                 cluster.client(bundle, "verify", case.name)
             else:
+                if case.scope == "console.native.browser.dataset":
+                    # Production placement and browser execution each retain the
+                    # case's bounded client budget in the same owned fixture.
+                    cluster.client(bundle, "prepare", case.name)
                 cluster.client(bundle, case.name.rsplit("::", 1)[-1], case.name)
 
     def stable_network(case):

@@ -18,6 +18,16 @@ Completed CI execution and review tasks have been removed.
 CI evidence from repository root:
 `.crowdb-runtime/artifacts/ci/run-41816831055/`.
 
+The Dataset import follow-up in
+[run 41829384144](https://github.com/buzzcrow/crowdb/actions/runs/41829384144/job/126583192879)
+is repaired and locally verified: preparation and browser execution each retain
+360 seconds in the same fixture, instead of sharing one client budget. All five
+Dataset owners pass at CI concurrency, including full production placement,
+512 records, 12 partitions and three owners. Original browser assertions remain
+unchanged. All 316 runner controls, Rust format, clippy and CI coverage pass.
+Evidence from repository root:
+`.crowdb-runtime/artifacts/ci/job-126583192879/`.
+
 ## Remaining task: deferred historical attribution
 
 - [ ] **P13 first aggregate WAL release error (deferred)**: identify its exact
