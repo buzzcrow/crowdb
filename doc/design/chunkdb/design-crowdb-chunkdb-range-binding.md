@@ -82,6 +82,12 @@ and interleaves slots among storage groups; this assignment is initial policy,
 not the definition of a slot. Readiness requires initialized maps and valid
 storage routing. An instance with zero service slots is ready but rejects work
 outside its empty bitmap; local disks are not a service-readiness requirement.
+HTTP readiness reads the independently sampled ownership result without issuing
+Group-0 requests. One worker refreshes the complete map every second, with a
+three-second read deadline and no overlapping refreshes. Evidence ages from the
+start of that authority read. Pending, failed or older-than-three-second evidence
+returns unavailable; HTTP readers cannot renew it. This observation does not
+replace per-slot execution admission or weaken map validation.
 The fixed-layout monitor audits ownership and does not reassign
 slots when a heartbeat expires. Legacy assignment writers reject updates.
 
@@ -110,11 +116,25 @@ Explicit `NotMyRange` permits bounded refresh and retry. Unknown allocation or
 mutation outcomes return to the caller without blind resubmission; read-only
 queries can refresh and retry. No original-owner fallback is supported.
 
+Readiness sends real point queries through the initialized service route without
+first running the ordinary periodic Group0 registry/map refresh. Cold discovery
+still requires a validated map; ownership rejection or transport failure retains
+the existing read-only refresh/retry path and caller deadline. The receiving
+owner validates admission and reads its actual KV storage. This keeps a bounded
+probe independent of an unrelated full registry refresh without caching a
+successful result or changing ordinary requests' freshness rules.
+
+The owner's KV transport isolates Get responses from background scans with one
+additional connection per endpoint and the same RPC workers and completion
+budget. The point request still reads current storage and retains its original
+read mode, error handling and deadline. A partially received catalog page must
+not hold the receiving owner's point-read response behind that page's bytes.
+
 ## 5. Maintenance authority
 
 One process hosts separate system and user-data lifecycle/task runtimes.
-Wal, BtreePage, and PageIndex are system purposes; Stream, S3, and IcebergTable
-are user-data purposes. Each runtime has its own scan scope, claims, queue,
+Wal, BtreePage, and PageIndex are system purposes; Stream, S3, IcebergTable,
+and Dataset are user-data purposes. Each runtime has its own scan scope, claims, queue,
 execution capacity, and recovery. Shared transport, codecs, IO, and algorithms
 do not create shared task authority.
 
@@ -125,6 +145,13 @@ Canonical tasks retain the owning chunk ID. Stores reject foreign slots and
 domains at read, admission, claim, and publication boundaries. Execution verifies
 the durable claim before handler side effects; claim generations and writer
 epochs fence delayed completion after same-owner restart.
+
+Chunk and reservation metadata retain their existing ChunkId-ordered keys.
+Scoped scans pass the domain's half-open purpose-byte bounds to KV before
+transferring values: system types 1 through 3 and user-data types 4 through 7.
+Continuation stays within those bounds; ownership filtering and fixed-cutoff
+pagination remain in effect. Growing an unrelated domain must not add pages
+to the scoped read. Unscoped inventory retains the complete keyspace.
 
 The reservation budget is apportioned by service slot share and split equally
 between system and user-data runtimes. Execution limits are independently

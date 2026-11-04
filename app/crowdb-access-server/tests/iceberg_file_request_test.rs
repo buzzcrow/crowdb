@@ -117,7 +117,7 @@ fn native_list_requests_preserve_table_prefix_and_validate_all_selectors() {
         .unwrap()
         .unwrap();
     assert_eq!(list.table, table);
-    assert_eq!(list.prefix, format!("{}data/雪%2B", table.object_prefix()));
+    assert_eq!(list.prefix, format!("{}data/\u{96ea}%2B", table.object_prefix()));
     assert_eq!(list.delimiter.as_deref(), Some("/"));
     assert!(list.encoding_url);
     assert_eq!(list.max_keys, 3);
@@ -173,7 +173,7 @@ fn native_object_routes_decode_once_and_preserve_plus_percent_and_repeated_slash
         ("a+b", "a+b"),
         ("a%252Fb", "a%2Fb"),
         ("a//b", "a//b"),
-        ("%E5%86%B0/a%20b", "冰/a b"),
+        ("%E5%86%B0/a%20b", "\u{51b0}/a b"),
     ] {
         for (method, operation) in [
             (Method::GET, FileOperation::Get),

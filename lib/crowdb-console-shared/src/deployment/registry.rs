@@ -16,6 +16,8 @@ pub struct NodeRecord {
     pub physical_host_id: String,
     pub rack_id: u64,
     pub host: String,
+    #[serde(default = "default_web_port", skip_serializing_if = "IS_DEFAULT_WEB_PORT")]
+    pub web_port: u16,
     pub ssh_port: u16,
     pub ssh_user: String,
     pub operation_id: String,
@@ -26,6 +28,13 @@ pub struct NodeRecord {
     #[serde(default)]
     pub cancelled: bool,
 }
+
+pub(super) const fn default_web_port() -> u16 {
+    // Retained packaged-node records predate explicit Web listener publication.
+    9090
+}
+
+const IS_DEFAULT_WEB_PORT: fn(&u16) -> bool = |port| *port == default_web_port();
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NodeRegistry {

@@ -134,3 +134,55 @@ async fn missing_exposed_empty_or_corrupt_local_credentials_never_fall_back_to_a
         assert!(!fixture.root.join("accepted-node.json").exists());
     }
 }
+
+#[tokio::test]
+async fn five_voter_scope_preserves_incomplete_overfull_and_foreign_member_fences() {
+    let expected = policy(5, DeploymentMode::Local);
+    for count in 0..4 {
+        let peers = vec![(expected.formation(), CandidateState::Unbound); count];
+        let fixture = TestFormationFixture::start(expected.clone(), peers, 1).await;
+        let report = fixture.observation().await;
+        assert_eq!(report["phase"], "waiting", "{report}");
+        assert_eq!(report["required_voters"], 5);
+        assert_eq!(report["observed_voters"], count + 1);
+        fixture.assert_no_admission();
+    }
+    for state in [CandidateState::ForeignCluster, CandidateState::IdentityConflict] {
+        let fixture =
+            TestFormationFixture::start(expected.clone(), vec![(expected.formation(), state)], 1).await;
+        let report = fixture.observation().await;
+        assert_eq!(report["phase"], "failed", "{report}");
+        fixture.assert_no_admission();
+    }
+    let fixture = TestFormationFixture::start(
+        expected.clone(),
+        vec![(expected.formation(), CandidateState::Unbound); 5],
+        1,
+    )
+    .await;
+    let report = fixture.observation().await;
+    assert_eq!(report["phase"], "failed", "{report}");
+    assert!(report["error"].as_str().unwrap().contains("Too many fresh nodes"));
+    fixture.assert_no_admission();
+    let fixture = TestFormationFixture::start(
+        expected.clone(),
+        vec![(expected.formation(), CandidateState::Unbound); 4],
+        99,
+    )
+    .await;
+    let report = fixture.observation().await;
+    assert_eq!(report["phase"], "waiting", "{report}");
+    assert_eq!(report["coordinator"], "00000000-0000-4000-8000-000000000002");
+    fixture.assert_no_admission();
+    let production = policy(5, DeploymentMode::Production);
+    let fixture = TestFormationFixture::with_password(
+        production.clone(),
+        vec![(production.formation(), CandidateState::Unbound); 4],
+        1,
+        Some((b"local-test-password", 0o600)),
+    )
+    .await;
+    let report = fixture.observation().await;
+    assert_eq!(report["phase"], "needs-rack", "{report}");
+    fixture.assert_no_admission();
+}

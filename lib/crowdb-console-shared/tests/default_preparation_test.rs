@@ -362,3 +362,50 @@ async fn explicit_retirement_is_idempotent_and_prevents_automatic_recreation() {
     );
     assert_eq!(snapshot(&authority).await.unwrap(), retired);
 }
+
+#[tokio::test]
+async fn five_voter_preparation_retains_every_admitted_identity_and_fixed_mapping() {
+    let members = [2, 7, 9, 12, 15];
+    let authority = TestPreparationAuthority::start(&members).await;
+    let winner = preparation::reserve(&authority.ctx, &authority.bootstrap.identity)
+        .await
+        .unwrap();
+    assert_eq!(
+        winner
+            .metadata
+            .replicas
+            .iter()
+            .map(|r| (r.node_id, r.replica_id))
+            .collect::<Vec<_>>(),
+        vec![(2, 1), (7, 2), (9, 3), (12, 4), (15, 5)]
+    );
+    assert_eq!(
+        winner
+            .storage
+            .iter()
+            .map(|b| (b.node_id, b.disk_group_id, b.rack_id, b.store_id, b.group_id))
+            .collect::<Vec<_>>(),
+        vec![
+            (2, 1, 4, 0, 1),
+            (7, 2, 4, 0, 1),
+            (9, 3, 4, 0, 1),
+            (12, 4, 4, 0, 1),
+            (15, 5, 4, 0, 1)
+        ]
+    );
+    assert_eq!(winner.chunk_kv.node_id, 2);
+    let before = snapshot(&authority).await.unwrap();
+    let recovered = preparation::read(&authority.ctx, &authority.bootstrap.identity)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovered.0, winner);
+    assert_eq!(recovered.1, before.1);
+    assert_eq!(
+        preparation::reserve(&authority.ctx, &authority.bootstrap.identity)
+            .await
+            .unwrap(),
+        winner
+    );
+    assert_eq!(snapshot(&authority).await.unwrap(), before);
+}

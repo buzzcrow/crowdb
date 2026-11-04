@@ -44,6 +44,7 @@ pub fn fixture(root: &Path) -> MemberTrust {
         );
         config.servers.push(serde_json::from_value(json!({"id":format!("kv-{id}"),"node_id":id,"url":format!("http://192.0.2.{id}:10000"),"rpc_url":format!("192.0.2.{id}:10100")})).unwrap());
         nodes.push(NodeRecord {
+            web_port: 9090,
             discovery_id: ids[usize::try_from(id - 1).unwrap()].clone(),
             node_id: id,
             physical_host_id: "test-host".into(),

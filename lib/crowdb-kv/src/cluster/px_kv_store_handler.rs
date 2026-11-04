@@ -237,12 +237,14 @@ impl KvStore for PxKvStore {
         request_create_ms: u64,
     ) -> crate::rpc::KvScanResponse {
         let Some(operations) = self.group_operations(group_id) else {
-            return scan_err(
+            let mut response = scan_err(
                 format!("group {group_id} not found in store {}", self.store_id),
                 String::new(),
                 request_id,
                 request_create_ms,
             );
+            response.error_code = crate::rpc::KvErrorCode::KvErrorNotLeader as i32;
+            return response;
         };
         let request = KvGroupScanRequest {
             prefix: Bytes::copy_from_slice(prefix),
@@ -516,13 +518,15 @@ impl KvStore for PxKvStore {
         request_create_ms: u64,
     ) -> crate::rpc::KvJournalScanResponse {
         let Some(group) = self.get_group(group_id) else {
-            return journal_scan_err(
+            let mut response = journal_scan_err(
                 format!("group {group_id} not found in store {}", self.store_id),
                 String::new(),
                 false,
                 request_id,
                 request_create_ms,
             );
+            response.error_code = crate::rpc::KvErrorCode::KvErrorNotLeader as i32;
+            return response;
         };
 
         // Read-mode routing mirrors `kv_scan`: linearizable runs the
@@ -568,7 +572,8 @@ impl KvStore for PxKvStore {
         } else {
             max_slot.min(read_slot)
         };
-        if effective_max < min_slot {
+        let first_slot = min_slot.max(1);
+        if effective_max < first_slot {
             // Empty range — return an empty success.
             return crate::rpc::KvJournalScanResponse {
                 version: 1,
@@ -592,7 +597,22 @@ impl KvStore for PxKvStore {
         // `end_slot_exclusive` = effective_max + 1 (effective_max is
         // inclusive per the proto contract).
         let end_exclusive = effective_max.saturating_add(1);
-        let entries = acceptor.accepted_iter_range(min_slot, end_exclusive);
+        let entries = acceptor.accepted_iter_range(first_slot, end_exclusive);
+        // Restart can restore the applied prefix from the durable engine while
+        // its earlier WAL segments are already gone. The live trim watermark
+        // has not necessarily been restored or advanced by maintenance yet.
+        // Also cover reclamation racing the trim check above: copies of every
+        // applied slot, including NoOps, must exist before filtering by key.
+        let expected_entries = effective_max - first_slot + 1;
+        if u64::try_from(entries.len()).unwrap_or(u64::MAX) != expected_entries {
+            return journal_scan_err(
+                format!("journal_scan history is incomplete in slots {first_slot}..={effective_max}"),
+                String::new(),
+                true,
+                request_id,
+                request_create_ms,
+            );
+        }
 
         // Decode each slot's payload batch and emit matching ops in
         // slot order (within a slot, ops are in batch order).

@@ -143,6 +143,7 @@ async fn target_uses_confirmed_current_addresses_without_rewriting_the_manifest(
     let registry = NodeRegistry {
         cluster_id: fixture.prepared.identity.cluster_id.clone(),
         nodes: vec![NodeRecord {
+            web_port: 9090,
             discovery_id: uuid::Uuid::new_v4().to_string(),
             node_id: 2,
             physical_host_id: "test-host".into(),

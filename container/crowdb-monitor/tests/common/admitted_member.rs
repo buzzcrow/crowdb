@@ -22,7 +22,7 @@ pub fn fixture(root: &Path) -> ConfirmedMemberTrust {
     let nodes: Vec<_> = (1_u64..=3).map(|id| {
         config.nodes.push(serde_json::from_value(json!({"id":id,"rack_id":1,"host":format!("192.0.2.{id}"),"ssh_user":"crowdb"})).unwrap());
         config.servers.push(serde_json::from_value(json!({"id":format!("kv-{id}"),"node_id":id,"url":format!("http://192.0.2.{id}:10000"),"rpc_url":format!("192.0.2.{id}:10100")})).unwrap());
-        NodeRecord { discovery_id: uuid::Uuid::new_v4().to_string(), node_id:id, physical_host_id:format!("host-{id}"),
+        NodeRecord { web_port: 9090, discovery_id: uuid::Uuid::new_v4().to_string(), node_id:id, physical_host_id:format!("host-{id}"),
             rack_id:1, host:format!("192.0.2.{id}"), ssh_port:22, ssh_user:"crowdb".into(),
             operation_id:uuid::Uuid::new_v4().to_string(), confirmed:false, cancelled:false,
             host_key:Some(super::trust::key(u8::try_from(id).unwrap())) }
@@ -62,6 +62,7 @@ pub fn fixture(root: &Path) -> ConfirmedMemberTrust {
         node.confirmed = true;
     }
     confirmed.push(NodeRecord {
+        web_port: 9090,
         discovery_id: own.discovery_id,
         node_id: 4,
         physical_host_id: "host-4".into(),

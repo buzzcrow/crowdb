@@ -61,8 +61,18 @@ pub(super) async fn execute(
             node_id,
             admission,
         } => admission::cancel(profile, processes, bootstrap, node_id, admission).await,
-        request @ (NodeControl::Identity
-        | NodeControl::InstallKey { .. }
+        NodeControl::Identity => {
+            let mut value = identity(root)?;
+            let port = profile
+                .public_endpoints
+                .iter()
+                .find(|endpoint| endpoint.id == "web")
+                .ok_or("web public endpoint is absent from node profile")?
+                .port;
+            value["web_port"] = port.into();
+            Ok(value)
+        }
+        request @ (NodeControl::InstallKey { .. }
         | NodeControl::RemoveKey { .. }
         | NodeControl::TrustHost { .. }) => keys(root, request).await,
         NodeControl::Bind { binding } => kv::bind(profile, processes, binding).await,
@@ -137,7 +147,8 @@ async fn bootstrap(
             let accepted = preparation::accept(root, node_id, bootstrap, manifest, credentials, admission)?;
             super::recovery::prepare_admitted(root, &accepted).await?;
             start_kv(profile, processes, &accepted).await?;
-            Ok(json!({"node_id": node_id, "management_port": 10000, "rpc_port": 10100}))
+            let (management_port, rpc_port) = kv::ports(profile)?;
+            Ok(json!({"node_id": node_id, "management_port": management_port, "rpc_port": rpc_port}))
         }
         _ => Err("unsupported bootstrap control request".into()),
     }

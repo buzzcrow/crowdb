@@ -110,6 +110,7 @@ pixi run oci-run-1c --cluster demo
 pixi run oci-run-3c --cluster demo-three --port-base 9190
 pixi run oci-stop --cluster demo-three
 pixi run oci-run-3c --cluster demo-three
+pixi run oci-stop --cluster demo-three
 pixi run oci-clean --cluster demo-three --keep-data
 # Recreate containers and bridge with the original volumes and accepted policy:
 pixi run oci-run-3c --cluster demo-three
@@ -123,28 +124,39 @@ A different node count or conflicting input requires another cluster name.
 Ports for each node are UI/S3/Iceberg/Dataset at base/base+1/base+2/base+3;
 subsequent members add 10 and 20. All published ports bind to `127.0.0.1`.
 Run and stop default to `local`; stop accepts `--all` for every recorded local
-cluster. Clean defaults to every recorded local and host-network cluster and
-deletes their node data; use `--cluster NAME` to clean only one. Explicit `--all`
-also selects every recorded cluster. Use `--keep-data` to preserve data and
-restart receipts; `--delete-data` explicitly selects the default deletion mode.
+cluster. Default clean skips running recorded local and host-network clusters,
+including all resources of a bridge cluster with any running member. It removes
+stopped clusters and their node data, then cleans unused resources on the selected
+Docker daemon, including containers without CROWDB receipts:
 
 ```bash
 pixi run oci-clean
 ```
 
-With no cluster receipts, clean reports that there are no recorded clusters and
-checks for dangling CROWDB images if Docker is installed. An explicitly named
-cluster without a receipt remains an error. Containerd-only host cleanup needs
-no Docker daemon.
+- Remove stopped containers first, then unused networks and both named and
+  anonymous volumes, followed by unused Docker build cache. Running containers
+  and referenced resources remain intact. Docker removals never force active
+  containers or in-use resources; a concurrent new reference makes removal fail.
+- Preserve resources belonging to skipped running clusters and their restart
+  receipts, including detached volumes and stopped members of those clusters.
+- Use `--keep-data` to preserve all Docker volumes, node data and restart receipts;
+  `--delete-data` explicitly selects the default deletion mode.
+- `--cluster NAME` explicitly stops and removes one recorded cluster, without
+  daemon-wide garbage collection. `--all` explicitly stops and removes every
+  recorded cluster and also cleans unused Docker resources.
+- With no cluster receipts, unused Docker resource cleanup still runs if Docker
+  is installed. An explicitly named cluster without a receipt remains an error.
+  Containerd-only host cleanup needs no Docker daemon.
 
 Host receipts live in `.crowdb-runtime/persistent/oci-clusters/`. The shortcuts
 verify the Docker daemon/context and exact ownership labels before effects.
-Clean stops and removes owned containers, unused owned bridges and owned data
+Clean removes selected stopped containers, unused owned bridges and owned data
 volumes. It also removes the launch receipt and matching optional CLI target
 binding. `--keep-data` retains volumes and restart inputs. Image cleanup
 only considers dangling CROWDB images, preserving retained cluster references
 and images used by any running or stopped container. Attached or relabelled
-networks and volumes referenced elsewhere are rejected. No global prune runs.
+networks and volumes referenced elsewhere are rejected. Daemon-wide garbage
+collection runs only when no `--cluster` is selected.
 These host scripts invoke Docker directly and require no CLI binary or application
 target binding. A binding with different ownership is rejected before data
 deletion.
@@ -262,8 +274,11 @@ A direct single-container cluster needs a volume and four published ports:
 
 ```bash
 pixi run docker run -d --name crowdb-one --cpus 1 --memory 1536m \
-  -p 127.0.0.1:9090:9090 -p 127.0.0.1:9091:9091 \
-  -p 127.0.0.1:9092:9092 -p 127.0.0.1:9093:9093 \
+  -e CROWDB_S3_PUBLIC_URI=http://127.0.0.1:9091 \
+  -e CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:9092 \
+  -e CROWDB_DATASET_PUBLIC_URI=http://127.0.0.1:9093 \
+  -p 127.0.0.1:9090:9090 -p 127.0.0.1:9091:16000 \
+  -p 127.0.0.1:9092:17000 -p 127.0.0.1:9093:18000 \
   --mount type=volume,source=crowdb-one-data,target=/opt/crowdb/data \
   crowdb-node:dev
 ```
@@ -278,24 +293,24 @@ pixi run docker run -d --name crowdb-demo-1 --network crowdb-demo --cpus 1 --mem
   -e CROWDB_S3_PUBLIC_URI=http://127.0.0.1:9091 \
   -e CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:9092 \
   -e CROWDB_DATASET_PUBLIC_URI=http://127.0.0.1:9093 \
-  -p 127.0.0.1:9090:9090 -p 127.0.0.1:9091:9091 \
-  -p 127.0.0.1:9092:9092 -p 127.0.0.1:9093:9093 \
+  -p 127.0.0.1:9090:9090 -p 127.0.0.1:9091:16000 \
+  -p 127.0.0.1:9092:17000 -p 127.0.0.1:9093:18000 \
   --mount type=volume,source=crowdb-demo-1-data,target=/opt/crowdb/data crowdb-node:dev
 pixi run docker run -d --name crowdb-demo-2 --network crowdb-demo --cpus 1 --memory 1536m \
   -e CROWDB_CLUSTER=demo -e CROWDB_INITIAL_VOTERS=3 \
   -e CROWDB_S3_PUBLIC_URI=http://127.0.0.1:9101 \
   -e CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:9102 \
   -e CROWDB_DATASET_PUBLIC_URI=http://127.0.0.1:9103 \
-  -p 127.0.0.1:9100:9090 -p 127.0.0.1:9101:9091 \
-  -p 127.0.0.1:9102:9092 -p 127.0.0.1:9103:9093 \
+  -p 127.0.0.1:9100:9090 -p 127.0.0.1:9101:16000 \
+  -p 127.0.0.1:9102:17000 -p 127.0.0.1:9103:18000 \
   --mount type=volume,source=crowdb-demo-2-data,target=/opt/crowdb/data crowdb-node:dev
 pixi run docker run -d --name crowdb-demo-3 --network crowdb-demo --cpus 1 --memory 1536m \
   -e CROWDB_CLUSTER=demo -e CROWDB_INITIAL_VOTERS=3 \
   -e CROWDB_S3_PUBLIC_URI=http://127.0.0.1:9111 \
   -e CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:9112 \
   -e CROWDB_DATASET_PUBLIC_URI=http://127.0.0.1:9113 \
-  -p 127.0.0.1:9110:9090 -p 127.0.0.1:9111:9091 \
-  -p 127.0.0.1:9112:9092 -p 127.0.0.1:9113:9093 \
+  -p 127.0.0.1:9110:9090 -p 127.0.0.1:9111:16000 \
+  -p 127.0.0.1:9112:17000 -p 127.0.0.1:9113:18000 \
   --mount type=volume,source=crowdb-demo-3-data,target=/opt/crowdb/data crowdb-node:dev
 ```
 
@@ -308,6 +323,16 @@ pixi run docker compose -f container/oci-image/compose.yaml down
 pixi run docker compose -f container/oci-image/compose-three.yaml up -d
 pixi run docker compose -f container/oci-image/compose-three.yaml down
 ```
+
+Fresh nodes listen on container ports 9090 (Web), 16000 (S3), 17000 (Iceberg)
+and 18000 (Dataset). The examples retain host ports 9090–9093. New local Docker
+launch receipts use version 2; existing version-1 receipts retain their original
+container ports and pinned image when resumed or recreated.
+
+For Compose volumes with accepted legacy listeners, set
+`CROWDB_S3_CONTAINER_PORT=9091`, `CROWDB_ICEBERG_CONTAINER_PORT=9092` and
+`CROWDB_DATASET_CONTAINER_PORT=9093` to match that policy. Public-origin variables
+still describe the host-side ports. Retained policy is not rewritten on restart.
 
 `down` removes the Compose containers and network, preserving named volumes.
 Set `CROWDB_IMAGE` to select the loaded image and `CROWDB_CLUSTER` to isolate

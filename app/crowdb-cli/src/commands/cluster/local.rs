@@ -216,7 +216,7 @@ async fn stop_inner(cli: &Cli) -> Result<()> {
         .ok_or_else(|| invalid("selected cluster has no local runtime ownership receipt"))?;
     binding(&record)?;
     Docker.check(&record).await?;
-    for item in Docker.objects("container").await? {
+    for item in Docker.objects(&record, "container").await? {
         if owned(&item, &record, "container") && item["State"]["Running"] == true {
             let identity = item["Id"]
                 .as_str()

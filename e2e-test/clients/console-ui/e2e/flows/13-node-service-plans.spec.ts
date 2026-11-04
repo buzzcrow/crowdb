@@ -3,7 +3,7 @@
 import type { APIRequestContext } from '@playwright/test';
 import { test, expect } from '../fixtures/realBackend';
 import { diskMenu } from '../fixtures/capacity';
-import { nativeProcessAlive } from '../fixtures/nativeProcess';
+import { nativeProcessAlive, nativeServices } from '../fixtures/nativeProcess';
 
 const kinds = ['paxos-kv', 'diskdb', 'chunkdb', 'diskio', 'chunk-kv', 'access-server'];
 async function json(request: APIRequestContext, path: string) {
@@ -70,6 +70,19 @@ test('native plans: fixed ports isolate three nodes and failed DiskDB retries pr
   const retained = await json(request, '/api/service-plans');
   expect(retained[1].overrides).toEqual(before[1].overrides);
   expect(retained[1].steps.diskdb).toEqual(before[1].steps.diskdb);
+  // Keep the failed registration for explicit Retry, but cancel its running
+  // intent before freeing the port so monitor recovery cannot win this phase.
+  const stopped = await request.post('/api/services/diskdb-1/stop');
+  expect(stopped.ok(), await stopped.text()).toBe(true);
+  expect(await stopped.json()).toMatchObject({ id: 'diskdb-1', pid: null, removed: false });
+  // Monitor status lists owned children; Stop removes the child but retains registration.
+  await expect.poll(async () => Object.hasOwn(await nativeServices(0), 'diskdb-1'), { intervals: [100] }).toBe(false);
+  const registered = (await json(request, '/api/servers')).filter((server: { id: string }) => server.id === 'diskdb-1');
+  expect(registered).toHaveLength(1);
+  expect(registered[0]).toMatchObject({ id: 'diskdb-1', node_id: 1, service_type: 'diskdb' });
+  expect(registered[0].pid).toBeFalsy();
+  expect((await json(request, '/api/service-plans'))[1].steps.diskdb.state).toBe('failed');
+  expect(await nativeProcessAlive(0, guard.pid)).toBe(true);
   const removed = await request.delete(`/api/services/${guard.id}`);
   expect(removed.ok(), await removed.text()).toBe(true);
   await expect.poll(() => nativeProcessAlive(0, guard.pid), { intervals: [100] }).toBe(false);

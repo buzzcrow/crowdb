@@ -7,7 +7,7 @@ from base import *
 class WireCases:
     def test_signed_raw_http_wire_contract(self):
         bucket = f"{self.bucket}-raw"
-        key = "raw/%25+边界.bin"
+        key = "raw/%25+\u8fb9\u754c.bin"
         path = f"/{bucket}/{quote(key, safe='/')}"
         payload = b"raw-http-object\x00payload"
 
@@ -104,7 +104,7 @@ class WireCases:
         sizes = [0, 1, 65505, 65506, 65507, 1024 * 1024 + 31, 4 * 1024 * 1024 + 127]
         keys = []
         for index, size in enumerate(sizes):
-            key = f"encoded/边界-{index}-%00.bin"
+            key = f"encoded/\u8fb9\u754c-{index}-%00.bin"
             payload = bytes((offset * 31 + index) % 256 for offset in range(size))
             digest = md5(payload)
             result = client.put_object(

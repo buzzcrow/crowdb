@@ -717,8 +717,10 @@ class Crowdbtree
     void commit_prepared_snapshot(const PreparedSnapshot &prepared);
     void finalize_prepared_snapshot(PreparedSnapshot &prepared);
 
-    void acquire_snapshot_slot();
-    void release_snapshot_slot();
+    void   acquire_snapshot_slot();
+    void   release_snapshot_slot();
+    Status retry_snapshot_anchor();
+    void   snapshot_prepare_async(std::function<void(Status, uint64_t last_applied)> on_done);
 
     void snapshot_write_next_async(std::shared_ptr<PreparedSnapshot> prepared, size_t idx,
                                    std::function<void(Status, uint64_t last_applied)> on_done);
@@ -833,6 +835,9 @@ class Crowdbtree
     // snapshot_async's async write phase, where write_mutex_ itself can't be
     // held (see acquire_snapshot_slot's doc comment and snapshot_async's).
     std::atomic<bool> snapshot_inflight_{false};
+    // Protected by snapshot_inflight_: retry an uncertain anchor barrier before
+    // preparing or writing another image over the backend's staged snapshot.
+    bool snapshot_anchor_pending_ = false;
 
     // Block indices that were empty in the previous snapshot (two-generation
     // rule for block deletion). A block is only deleted after it's empty in

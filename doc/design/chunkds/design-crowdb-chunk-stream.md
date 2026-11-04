@@ -86,8 +86,11 @@ placement, growth, replacement, and their durable internal transitions. Each
 such transition updates chunk information independently. Stream metadata refers
 to stable chunk identities and logical mappings; internal chunk changes are
 transparent and never trigger Stream chunk record publication.
-Recovery resolves current capacity and layout through the chunk layer instead
-of trusting capacity cached in an older Stream checkpoint.
+Recovery and read-only opening resolve current capacity and layout through the
+chunk layer instead of trusting capacity cached in an older Stream checkpoint
+or a retained adapter. Opening queries authoritative chunk metadata even when
+the adapter has a cached layout; an unavailable query fails the open rather than
+falling back to that cache. The checkpoint must still fit the current capacity.
 
 DiskIO writes carry a boolean sync option. For a synchronized request the server
 performs the ordered write, then the required flush, and returns one response
@@ -284,8 +287,13 @@ strips incrementally; this remains internal to the chunk layer.
 
 Capacity preparation runs ahead of consumption. Measured write bandwidth
 and preparation duration size the initialized spare capacity with a two-interval
-margin. At least one initialized Candidate is allocated and registered while
-the Active chunk accepts appends. Normal writes use ready capacity; exceptional
+margin, bounded between one frame and one physical strip. The physical allocator
+rounds this target to strip boundaries without adding another growth multiplier.
+As consumption approaches the hard chunk boundary, one initialized Candidate is allocated
+and registered while the Active chunk accepts appends. Its initial capacity
+follows observed batch consumption, not the configured maximum batch size.
+Small cold streams retain their first strip without eagerly initializing spare
+chunks. Normal writes use ready capacity; exceptional
 allocation/initialization delays apply backpressure instead of exposing unsafe
 capacity.
 
@@ -298,8 +306,12 @@ leaves the one last referenced chunk to reconcile. An unattached Candidate has
 no acknowledged user data and can be reclaimed after owner exclusion.
 
 Different segment IO streams can drain concurrently, with at most eight drains
-in flight. Every submitted drain must finish, including after a peer fails;
-physical sealing requires all drains to succeed and current writer authority.
+in flight across the complete layout, including during tail recovery. Strip
+boundaries do not serialize independent drain requests or consume the prefix
+scan's remaining owner deadline. Every submitted drain must finish, including
+after a peer fails; physical sealing requires all drains to succeed and current
+writer authority. Recovery retains its original captured deadline and requests
+durable mirror repair only after all submitted drains have completed.
 
 ### 5.2 Tail reconstruction
 
@@ -314,6 +326,10 @@ after validating the entire group. It then adds one compact location.
 Before publishing a fresh attachment or admitting writes into newly allocated
 capacity, zero and synchronize each new physical strip on every required mirror.
 Initialization uses one submission per replica, without automatic retries. An
+initialization pass admits at most two strips at once; their required mirrors
+still synchronize together. This bounds zeroing bursts while ordinary writes
+use the initialized prefix. Every submitted initialization finishes before the
+pass returns, and capacity is exposed only after every strip succeeds. An
 uncertain result leaves that capacity unavailable to the writer; the owner cannot
 repeat initialization after later data writes. A replacement strip receives its
 complete retained prefix and a zero suffix with the same single-attempt contract
@@ -350,7 +366,14 @@ complete prefix; incomplete groups do not enter it. A failed observation cannot
 subsequently be finalized as a healthy shorter prefix.
 
 After owner exclusion, observe the current available mirrors concurrently
-within a bounded IO budget. Use the shortest complete-append prefix among healthy
+within a bounded IO budget. When retained DiskIO topology covers every segment,
+order each strip's replicas by rack and node for consistent observation lanes
+across strips. Allocation order alone can alternate racks, making every lane
+depend on a slow cross-rack link. These route observations only order existing
+segments: incomplete hints preserve original ordering, no replica is added or
+omitted, and the original authoritative layout remains unchanged. Continue
+checking every completed lane's checksum and complete-prefix agreement under
+the same deadline. Use the shortest complete-append prefix among healthy
 mirrors that finish observation. A mirror that fails or times out during the
 read is unavailable, not a zero-length or partially observed prefix. Corrupt
 replicas are not valid shorter candidates; use healthy copies or report an
@@ -364,6 +387,13 @@ Only the last referenced chunk may require content parsing. Earlier chunks
 have finalized bounds and chunk record mappings and are not scanned. A last
 chunk whose seal and final mappings are already published needs no tail scan.
 Recovery after an interrupted seal may still reconstruct that one last chunk.
+The ChunkDB finalizer may reclaim and tombstone a physically empty tail before
+the Stream publishes its successor. Recovery accepts that exact tombstone only
+with its seal timestamp, valid purpose and nonzero writer epoch, zero capacity,
+zero sealed/acknowledged/checkpoint boundaries, and no remaining strips or cleanup
+intents. It retains the logical position, leaves the tombstone unchanged, and
+attaches a fresh chunk under current writer authority. A missing chunk or a
+nonempty or unproven tombstone never becomes an empty prefix.
 Bound reads, buffered bytes, parsed frames, and total scan bytes by the active
 chunk geometry, independently of retained Stream length.
 

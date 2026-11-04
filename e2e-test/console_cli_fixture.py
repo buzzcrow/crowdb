@@ -203,7 +203,7 @@ class CliContainerCluster(CliClient, Cluster):
             "published_console_ports": [self.port_base + index * 10 for index in range(3)]}, indent=2))
 
     def read_owned(self, path, index=0):
-        if path not in ("node-binding.json", "diskdb-execution"):
+        if path not in ("node-binding.json", "node-policy.json", "diskdb-execution"):
             raise ValueError("unsupported CLI recovery observation")
         if type(index) is not int or not 0 <= index < len(getattr(self, "servers", ())):
             raise ValueError("CLI recovery node is outside the owned cluster")
@@ -215,6 +215,14 @@ class CliContainerCluster(CliClient, Cluster):
                 raise ValueError("invalid owned node binding")
             path = f"services/diskdb-{node_id}/execution.json"
         return json.loads(self.command("exec", info["Id"], "cat", "/opt/crowdb/data/" + path))
+
+    def access_listeners(self, index):
+        services = self.read_owned("node-policy.json", index)["setup"]["services"]
+        selected = [service["listeners"] for service in services
+                    if service["kind"] == "access-server" and service["enabled"]]
+        if len(selected) != 1:
+            raise ValueError("owned node needs one accepted Access listener selection")
+        return selected[0]
 
     def diagnostics(self):
         if not (self.root / "persistent/oci-clusters" / f"{self.run_id}.json").exists():

@@ -80,3 +80,39 @@ async fn grant_and_process_expiry_fence_publish_together_and_reject_stale_observ
     assert_eq!(accepted.grant_sequence, current.lease_sequence);
     assert!(accepted.grant_expires_at_ms >= current.expires_at_ms);
 }
+
+pub(super) async fn assert_returned_source_is_excluded(
+    control: &Group0ControlPlane,
+    policy: &DomainMonitorDescriptor,
+    partition_id: Id128,
+) {
+    // A replacement source can report the old assignment while the catalog
+    // still names it. Durable exclusion must prevent granting it again.
+    test_process::TestProcessLease::seed(control, 1).await;
+    let mut returned = test_process::TestProcessLease::idle_instance(1, "127.0.0.1:17001");
+    returned.extra.as_mut().unwrap().chunk_kv.as_mut().unwrap().hosted = vec![HostedPartition {
+        partition_id,
+        owner_epoch: 5,
+        recovering: false,
+    }];
+    put_json(
+        control,
+        InstanceKey {
+            service: "chunk-kv".into(),
+            instance_id: 1,
+        }
+        .to_path(),
+        &returned,
+    )
+    .await;
+    ChunkKvRangeMonitorDriver::new()
+        .tick(control, policy)
+        .await
+        .unwrap();
+    assert!(control
+        .get(ServingGrantKey { instance_id: 1 }.to_path().as_bytes())
+        .await
+        .unwrap()
+        .value
+        .is_none());
+}

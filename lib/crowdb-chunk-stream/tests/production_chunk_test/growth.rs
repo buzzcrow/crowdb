@@ -4,6 +4,36 @@
 use super::*;
 
 #[tokio::test]
+async fn growth_respects_bounded_initialization_admission() {
+    use super::initialization_window::TestInitializationWindow;
+
+    let allocator = Arc::new(Allocator::new());
+    let disks = Arc::new(Disks::default());
+    let window = Arc::new(TestInitializationWindow::new(disks.clone(), 4));
+    let store =
+        ProductionStreamChunkStore::new(allocator, window.clone(), 30_000, ChunkReadPolicy::default())
+            .unwrap();
+    let name = StreamName { high: 197, low: 199 };
+    let active = store
+        .allocate_mirrored(name, 9, crowdb_chunk_stream::StreamPurpose::Stream)
+        .await
+        .unwrap();
+    let grown = store
+        .grow_mirrored(name, 9, active.chunk_id, 8 * 1024 * 1024)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(grown.capacity, 8 * 1024 * 1024);
+    assert_eq!(window.rejected(), 0);
+    assert_eq!(disks.fsyncs.load(Ordering::Acquire), 16);
+    let media = disks.bytes.lock().unwrap();
+    assert_eq!(media.len(), 16);
+    assert!(media
+        .values()
+        .all(|bytes| bytes.len() == 1024 * 1024 && bytes.iter().all(|byte| *byte == 0)));
+}
+
+#[tokio::test]
 async fn a_small_waiting_append_uses_a_smaller_growth_window() {
     let allocator = Arc::new(Allocator::new());
     let disks = Arc::new(Disks::default());
@@ -56,13 +86,13 @@ async fn a_small_waiting_append_uses_a_smaller_growth_window() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(grown.capacity, 8 * 1024 * 1024);
+    assert_eq!(grown.capacity, 4 * 1024 * 1024);
     assert_eq!(grown.acknowledged_cursor, end);
-    assert_eq!(disks.fsyncs.load(Ordering::Acquire), 18);
+    assert_eq!(disks.fsyncs.load(Ordering::Acquire), 10);
 }
 
 #[tokio::test]
-async fn growth_amortizes_allocation_and_initializes_every_replica_within_the_hard_capacity() {
+async fn growth_honors_requested_capacity_and_initializes_every_replica_within_the_hard_limit() {
     const MIB: u64 = 1024 * 1024;
     let allocator = Arc::new(Allocator::new());
     let disks = Arc::new(Disks::default());
@@ -82,7 +112,7 @@ async fn growth_amortizes_allocation_and_initializes_every_replica_within_the_ha
         .unwrap();
     assert_eq!(active.capacity, MIB);
     let grown = store
-        .grow_mirrored(name, 9, active.chunk_id, MIB + 1)
+        .grow_mirrored(name, 9, active.chunk_id, 8 * MIB)
         .await
         .unwrap()
         .unwrap();
@@ -107,7 +137,7 @@ async fn growth_amortizes_allocation_and_initializes_every_replica_within_the_ha
     assert_eq!(disks.fsyncs.load(Ordering::Acquire), 16);
     assert_eq!(
         store
-            .grow_mirrored(name, 9, active.chunk_id, 9 * MIB)
+            .grow_mirrored(name, 9, active.chunk_id, 10 * MIB)
             .await
             .unwrap()
             .unwrap()

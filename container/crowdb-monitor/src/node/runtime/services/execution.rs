@@ -7,10 +7,48 @@ use crowdb_protocol::mgmt::node::{NodeBinding, NodeServiceAction, NodeServiceInt
 use serde_json::{json, Value};
 use std::time::Duration;
 
+pub(in crate::node::runtime) async fn stop_unhealthy(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    intent: &NodeServiceIntent,
+) -> Result<()> {
+    let binding: NodeBinding =
+        durable::read(&profile.paths.data_root.join("node-binding.json"))?.ok_or("node is unbound")?;
+    if binding.node_id != intent.node_id || binding.bootstrap.cluster_id != intent.cluster_id {
+        return Err("service intent belongs to another node or cluster".into());
+    }
+    tokio::time::timeout(Duration::from_secs(3), super::super::verify_binding(&binding)).await??;
+    verify_intent(&binding, intent).await?;
+    let id = if intent.kind == "kv" {
+        "kv"
+    } else {
+        &intent.service_id
+    };
+    processes.stop(id, Duration::from_secs(10)).await?;
+    Ok(())
+}
+
 pub(in crate::node::runtime) async fn execute(
     profile: &DeploymentProfile,
     processes: &mut ProcessManager,
     intent: NodeServiceIntent,
+) -> Result<Value> {
+    execute_with_readiness(profile, processes, intent, true).await
+}
+
+pub(in crate::node::runtime) async fn reconcile(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    intent: NodeServiceIntent,
+) -> Result<Value> {
+    execute_with_readiness(profile, processes, intent, false).await
+}
+
+async fn execute_with_readiness(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    intent: NodeServiceIntent,
+    wait_initial_ready: bool,
 ) -> Result<Value> {
     validate(&intent)?;
     super::policy::validate(&profile.paths.data_root, &intent)?;
@@ -19,6 +57,12 @@ pub(in crate::node::runtime) async fn execute(
     if binding.node_id != intent.node_id || binding.bootstrap.cluster_id != intent.cluster_id {
         return Err("service intent belongs to another node or cluster".into());
     }
+    let directory = profile.paths.data_root.join("services").join(&intent.service_id);
+    let state = directory.join("execution.json");
+    let previous = durable::read::<Execution>(&state)?;
+    if super::receipt::completed_kv_stop(profile, processes, &binding, &intent, previous.as_ref())? {
+        return Ok(json!({"pid": null, "operation_id": intent.operation_id}));
+    }
     tokio::time::timeout(Duration::from_secs(3), super::super::verify_binding(&binding)).await??;
     verify_intent(&binding, &intent).await?;
     let process_id = if intent.kind == "kv" {
@@ -26,28 +70,14 @@ pub(in crate::node::runtime) async fn execute(
     } else {
         &intent.service_id
     };
-    let directory = profile.paths.data_root.join("services").join(&intent.service_id);
     std::fs::create_dir_all(&directory)?;
-    let state = directory.join("execution.json");
-    let mut attempts = 0;
-    let mut continuing = false;
-    if let Some(previous) = durable::read::<Execution>(&state)? {
-        if previous.intent.operation_id == intent.operation_id {
-            if previous.intent != intent {
-                return Err("operation identity reused with other inputs".into());
-            }
-            attempts = previous.attempts;
-            continuing = matches!(
-                intent.action,
-                NodeServiceAction::Start | NodeServiceAction::Restart
-            ) && processes.owns(process_id)
-                && processes.alive(process_id)?;
-            if previous.complete
-                && (previous.pid.is_none() || (processes.owns(process_id) && processes.alive(process_id)?))
-            {
-                return Ok(json!({"pid": processes.pid(process_id), "operation_id": intent.operation_id}));
-            }
-        }
+    let Replay {
+        mut attempts,
+        continuing,
+        completed,
+    } = replay(previous.as_ref(), &binding, &intent, processes, process_id)?;
+    if completed {
+        return Ok(json!({"pid": processes.pid(process_id), "operation_id": intent.operation_id}));
     }
     if matches!(
         intent.action,
@@ -68,6 +98,7 @@ pub(in crate::node::runtime) async fn execute(
         &state,
         &Execution {
             intent: intent.clone(),
+            bootstrap: Some(binding.bootstrap.clone()),
             complete: false,
             pid: None,
             attempts,
@@ -79,7 +110,16 @@ pub(in crate::node::runtime) async fn execute(
             .await
             .map(|()| processes.pid(process_id))
     } else {
-        apply(profile, processes, &binding, &intent, process_id, &directory).await
+        apply(
+            profile,
+            processes,
+            &binding,
+            &intent,
+            process_id,
+            &directory,
+            wait_initial_ready,
+        )
+        .await
     };
     let (complete, pid, error) = match &result {
         Ok(pid) => (true, *pid, None),
@@ -93,6 +133,7 @@ pub(in crate::node::runtime) async fn execute(
         &state,
         &Execution {
             intent: intent.clone(),
+            bootstrap: Some(binding.bootstrap.clone()),
             complete,
             pid,
             attempts: if complete { 0 } else { attempts },
@@ -103,6 +144,50 @@ pub(in crate::node::runtime) async fn execute(
     Ok(json!({"pid": pid, "operation_id": intent.operation_id}))
 }
 
+#[derive(Default)]
+struct Replay {
+    attempts: u32,
+    continuing: bool,
+    completed: bool,
+}
+
+fn replay(
+    previous: Option<&Execution>,
+    binding: &NodeBinding,
+    intent: &NodeServiceIntent,
+    processes: &mut ProcessManager,
+    process_id: &str,
+) -> Result<Replay> {
+    let Some(previous) = previous.filter(|previous| previous.intent.operation_id == intent.operation_id)
+    else {
+        return Ok(Replay::default());
+    };
+    if previous.intent != *intent {
+        return Err("operation identity reused with other inputs".into());
+    }
+    if previous
+        .bootstrap
+        .as_ref()
+        .is_some_and(|bootstrap| bootstrap != &binding.bootstrap)
+    {
+        return Err("service execution belongs to another bootstrap".into());
+    }
+    let continuing = matches!(
+        intent.action,
+        NodeServiceAction::Start | NodeServiceAction::Restart
+    ) && processes.owns(process_id)
+        && processes.alive(process_id)?;
+    let completed = previous.complete
+        && previous.bootstrap.as_ref() == Some(&binding.bootstrap)
+        && previous.pid == processes.pid(process_id)
+        && (previous.pid.is_none() || (processes.owns(process_id) && processes.alive(process_id)?));
+    Ok(Replay {
+        attempts: previous.attempts,
+        continuing,
+        completed,
+    })
+}
+
 async fn apply(
     profile: &DeploymentProfile,
     processes: &mut ProcessManager,
@@ -110,6 +195,7 @@ async fn apply(
     intent: &NodeServiceIntent,
     process_id: &str,
     directory: &std::path::Path,
+    wait_initial_ready: bool,
 ) -> Result<Option<u32>> {
     // Fence the admitted operation immediately before disrupting its service.
     // KV may provide the authority being read, so verify while it is still live.
@@ -160,7 +246,13 @@ async fn apply(
             let pid = processes
                 .start(&service, &std::collections::BTreeMap::new())
                 .await?;
-            wait_ready(profile, processes, intent).await?;
+            if wait_initial_ready {
+                wait_ready(profile, processes, intent).await?;
+            } else {
+                // Recovery observes once per pass. A live child retains its
+                // durable launch attempt while health and control make progress.
+                observe_ready(profile, intent).await?;
+            }
             Some(pid)
         }
     } else {
@@ -172,7 +264,11 @@ async fn apply(
 // A live process has already had its initial startup window. Later health
 // observations must yield after one probe so control requests can make progress.
 async fn observe_ready(profile: &DeploymentProfile, intent: &NodeServiceIntent) -> Result<()> {
-    let service = super::super::probes::for_intent(profile, intent)?;
+    let service = if intent.kind == "kv" {
+        super::super::service(profile, "kv")?
+    } else {
+        super::super::probes::for_intent(profile, intent)?
+    };
     crate::ProbeExecutor::new(intent.kind == "diskio")?
         .probe_service(&service, &std::collections::BTreeMap::new())
         .await

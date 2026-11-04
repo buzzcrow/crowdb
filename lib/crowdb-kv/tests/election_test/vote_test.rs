@@ -9,7 +9,85 @@
 
 use crowdb_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
 use crowdb_kv::cluster::replica::{ReplicaHandler, VoteRequestPayload};
+use crowdb_kv::common::config::PxElectionConfig;
 use crowdb_kv::paxos::roles::{PxBallot, PxLogEntry};
+use std::time::Instant;
+
+#[tokio::test]
+async fn quorum_leased_leader_rejects_prevote_after_its_self_vote_lockout_expires() {
+    let replica = PxLocalReplica::new(1, PxLocalReplicaRole::Follower);
+    replica.become_candidate(1);
+    replica.become_leader();
+    // The original self-vote lockout expires during a long healthy tenure;
+    // quorum heartbeats continue renewing only the lock-free leader lease.
+    replica.clear_vote_lockout();
+    replica.renew_lease(Instant::now(), &PxElectionConfig::DEFAULT);
+    let request = make_vote_req(2, 2, 0, 0);
+    let reply = replica.on_pre_vote(request, 1).await.unwrap();
+    assert!(
+        !reply.granted,
+        "a valid quorum lease must protect the leader's own vote"
+    );
+    assert_eq!(replica.current_term_snapshot(), 1);
+    assert_eq!(replica.role(), PxLocalReplicaRole::Leader);
+
+    replica.reset_lease_to(Instant::now());
+    assert!(replica.on_pre_vote(request, 1).await.unwrap().granted);
+}
+
+#[tokio::test]
+async fn quorum_leased_leader_rejects_request_vote_after_its_self_vote_lockout_expires() {
+    let replica = PxLocalReplica::new(1, PxLocalReplicaRole::Follower);
+    replica.become_candidate(1);
+    replica.become_leader();
+    replica.clear_vote_lockout();
+    replica.renew_lease(Instant::now(), &PxElectionConfig::DEFAULT);
+    let request = make_vote_req(2, 2, 0, 0);
+    let reply = replica.on_request_vote(request, 1).await.unwrap();
+    assert!(
+        !reply.granted,
+        "a challenger must not depose a quorum-leased leader"
+    );
+    assert_eq!(replica.current_term_snapshot(), 1);
+    assert_eq!(replica.role(), PxLocalReplicaRole::Leader);
+
+    replica.reset_lease_to(Instant::now());
+    assert!(replica.on_request_vote(request, 1).await.unwrap().granted);
+    assert_eq!(replica.current_term_snapshot(), 2);
+    assert_eq!(replica.role(), PxLocalReplicaRole::Follower);
+}
+
+#[tokio::test]
+async fn two_lagging_voters_cannot_use_the_healthy_leader_to_form_a_prevote_quorum() {
+    let voters: Vec<_> = (1..=5)
+        .map(|id| PxLocalReplica::new(id, PxLocalReplicaRole::Follower))
+        .collect();
+    let leader = &voters[0];
+    leader.become_candidate(1);
+    leader.become_leader();
+    leader.clear_vote_lockout();
+    leader.renew_lease(Instant::now(), &PxElectionConfig::DEFAULT);
+    for follower in &voters[1..3] {
+        assert!(
+            follower
+                .on_request_vote(make_vote_req(1, 1, 0, 0), 1)
+                .await
+                .unwrap()
+                .granted
+        );
+    }
+    for lagging in &voters[3..] {
+        lagging.become_follower(1);
+        lagging.clear_vote_lockout();
+    }
+    let request = make_vote_req(2, 5, 0, 0);
+    let mut grants = 1; // Challenger's own pre-vote.
+    for peer in &voters[..4] {
+        grants += usize::from(peer.on_pre_vote(request, 1).await.unwrap().granted);
+    }
+    assert_eq!(grants, 2, "only the isolated minority may grant this pre-vote");
+    assert_eq!(leader.role(), PxLocalReplicaRole::Leader);
+}
 
 fn make_vote_req(term: u64, candidate_id: u64, tip_slot: u64, tip_term: u64) -> VoteRequestPayload {
     VoteRequestPayload {

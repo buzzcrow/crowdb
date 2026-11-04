@@ -4,7 +4,10 @@
 #[path = "common/member_trust.rs"]
 mod trust;
 
-use crowdb_monitor::{accept_member_trust_for_tests, DeploymentProfile, NodeServiceForTests, StatusStore};
+use crowdb_monitor::{
+    accept_member_trust_for_tests, accept_node_policy, DeploymentProfile, NodeServiceForTests, StatusStore,
+};
+use crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides;
 use std::{
     os::unix::fs::PermissionsExt,
     sync::atomic::{AtomicBool, Ordering},
@@ -16,6 +19,15 @@ use std::{
 async fn retained_quorum_startup_does_not_block_discovery_or_confuse_liveness_with_health() {
     let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("kv-resume");
     let root = directory.path();
+    accept_node_policy(
+        root,
+        &NodeDeploymentOverrides::default(),
+        &NodeDeploymentOverrides {
+            initial_voters: Some(3),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let trust = trust::fixture(root);
     accept_member_trust_for_tests(root, &trust).unwrap();
     let mut profile = DeploymentProfile::load(

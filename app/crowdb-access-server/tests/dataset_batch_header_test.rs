@@ -12,23 +12,24 @@ const SNAPSHOT: &str = "11111111111111111111111111111111";
 
 #[test]
 fn ordered_cells_preserve_unicode_missing_tombstone_empty_and_chunk_wire_bytes() {
-    let (prefix, metadata) = DatasetHttpService::batch_header_for_tests(resolved(Some("游标\"/next")))
-        .expect("bounded batch header");
+    let (prefix, metadata) =
+        DatasetHttpService::batch_header_for_tests(resolved(Some("\u{6e38}\u{6807}\"/next")))
+            .expect("bounded batch header");
     let expected = concat!(
         "{\"snapshot\":\"11111111111111111111111111111111\",",
         "\"sample_ids\":[\"YQ==\",\"+/8=\"],\"fields\":[",
-        "{\"sample\":\"YQ==\",\"field\":\"空\",\"state\":\"value\",\"length\":0,",
+        "{\"sample\":\"YQ==\",\"field\":\"\u{7a7a}\",\"state\":\"value\",\"length\":0,",
         "\"md5\":\"d41d8cd98f00b204e9800998ecf8427e\"},",
         "{\"sample\":\"YQ==\",\"field\":\"erased\",\"state\":\"tombstone\",\"length\":0,\"md5\":null},",
         "{\"sample\":\"YQ==\",\"field\":\"absent\",\"state\":\"missing\",\"length\":0,\"md5\":null},",
         "{\"sample\":\"YQ==\",\"field\":\"blob\",\"state\":\"value\",\"length\":1,",
         "\"md5\":\"9dd4e461268c8034f5c8564e155c67a6\"},",
-        "{\"sample\":\"+/8=\",\"field\":\"空\",\"state\":\"missing\",\"length\":0,\"md5\":null},",
+        "{\"sample\":\"+/8=\",\"field\":\"\u{7a7a}\",\"state\":\"missing\",\"length\":0,\"md5\":null},",
         "{\"sample\":\"+/8=\",\"field\":\"erased\",\"state\":\"missing\",\"length\":0,\"md5\":null},",
         "{\"sample\":\"+/8=\",\"field\":\"absent\",\"state\":\"missing\",\"length\":0,\"md5\":null},",
         "{\"sample\":\"+/8=\",\"field\":\"blob\",\"state\":\"value\",\"length\":4294967297,",
         "\"md5\":\"abababababababababababababababab\"}],",
-        "\"next\":\"游标\\\"/next\",\"end\":false}"
+        "\"next\":\"\u{6e38}\u{6807}\\\"/next\",\"end\":false}"
     );
     assert_wire(&prefix, &metadata, expected);
 }
@@ -39,7 +40,7 @@ fn terminal_header_keeps_sample_and_field_order_without_a_cursor() {
     assert!(metadata.ends_with(b",\"next\":null,\"end\":true}"));
     let value: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
     assert_eq!(value["sample_ids"], serde_json::json!(["YQ==", "+/8="]));
-    assert_eq!(value["fields"][0]["field"], "空");
+    assert_eq!(value["fields"][0]["field"], "\u{7a7a}");
     assert_eq!(value["fields"][7]["sample"], "+/8=");
     assert_eq!(value["next"], serde_json::Value::Null);
     assert_eq!(value["end"], true);
@@ -88,12 +89,14 @@ fn assert_wire(prefix: &Bytes, metadata: &Bytes, expected: &str) {
 fn resolved(next: Option<&str>) -> ResolvedReadPage {
     let mut value = empty(next.map(str::to_owned));
     value.page.ids = vec![b"a".to_vec(), vec![0xfb, 0xff]];
-    value.page.fields = ["空", "erased", "absent", "blob"].map(str::to_owned).to_vec();
+    value.page.fields = ["\u{7a7a}", "erased", "absent", "blob"]
+        .map(str::to_owned)
+        .to_vec();
     value.samples = vec![
         SampleView {
             sample_id: b"a".to_vec(),
             fields: BTreeMap::from([
-                ("空".into(), inline(b"")),
+                ("\u{7a7a}".into(), inline(b"")),
                 ("erased".into(), FieldLocator::Tombstone),
                 ("blob".into(), inline(b"x")),
             ]),

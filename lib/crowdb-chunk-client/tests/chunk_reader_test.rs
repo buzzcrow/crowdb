@@ -34,6 +34,12 @@ mod frame_revision;
 #[path = "chunk_reader_test/layout_cache.rs"]
 mod layout_cache;
 
+#[path = "chunk_reader_test/mirror_locality.rs"]
+mod mirror_locality;
+
+#[path = "common/mirror_locality.rs"]
+mod mirror_locality_fixture;
+
 struct MemoryDiskIo {
     shards: Vec<(DiskId, Bytes)>,
     failed: Vec<DiskId>,

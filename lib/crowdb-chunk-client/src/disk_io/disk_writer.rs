@@ -193,6 +193,17 @@ pub trait DiskWriter: Send + Sync {
         ))
     }
 
+    /// Read a bounded control range through the independently provisioned priority lane.
+    async fn read_priority(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        segment_offset: u64,
+        length: u32,
+    ) -> Result<Bytes> {
+        self.read(seg, unit_bytes, segment_offset, length).await
+    }
+
     /// Read while preserving backing metadata when the transport provides it.
     async fn read_payload(
         &self,

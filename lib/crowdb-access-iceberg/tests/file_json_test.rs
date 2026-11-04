@@ -41,7 +41,7 @@ async fn json_sealing_streams_large_strings_and_split_utf8_without_changing_cano
     let validator = JsonSealer::new(store.clone(), 2, 1024 * 1024, 64).unwrap();
     for bytes in [
         br#"{"n":1e+2,"a":[null,true,false],"s":"{\"x\"}"}"#.to_vec(),
-        "{\"字段\":\"冰😀\"}".as_bytes().to_vec(),
+        "{\"\u{5b57}\u{6bb5}\":\"\u{51b0}😀\"}".as_bytes().to_vec(),
         format!("{{\"large\":\"{}\"}}", "x".repeat(100_000)).into_bytes(),
     ] {
         let size = if bytes.len() < 100 { 7 } else { 2048 };

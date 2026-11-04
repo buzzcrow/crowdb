@@ -19,6 +19,7 @@ async fn a_preflight_review_is_not_admission_and_discard_is_operation_fenced_and
     let discovery = uuid::Uuid::new_v4().to_string();
     let operation = uuid::Uuid::new_v4().to_string();
     let record = NodeRecord {
+        web_port: 9090,
         discovery_id: discovery.clone(),
         operation_id: operation.clone(),
         node_id: 1,

@@ -35,6 +35,10 @@ pub struct StripReader {
 }
 
 impl StripReader {
+    pub(crate) fn disk_topology(&self) -> Option<crowdb_diskio_client::DiskTopologyView> {
+        self.disk_io.disk_topology()
+    }
+
     pub fn new(
         disk_io: Arc<dyn DiskWriter>,
         recovery_memory: Arc<Semaphore>,

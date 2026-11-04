@@ -176,7 +176,7 @@ class BlockingWriteTransport final : public ChunkTransport
         uint32_t       observed = max_active_writes_.load(std::memory_order_relaxed);
         while (observed < active && !max_active_writes_.compare_exchange_weak(observed, active)) {
         }
-        active_writes_.notify_all();
+        max_active_writes_.notify_all();
         if (hold_writes_.load(std::memory_order_acquire)) {
             release_writes_.wait(false, std::memory_order_acquire);
         }
@@ -213,10 +213,11 @@ class BlockingWriteTransport final : public ChunkTransport
 
     void wait_for_concurrent_writes(uint32_t count)
     {
-        uint32_t active = active_writes_.load(std::memory_order_acquire);
-        while (active < count) {
-            active_writes_.wait(active, std::memory_order_acquire);
-            active = active_writes_.load(std::memory_order_acquire);
+        // An active count is visible before its corresponding maximum is published.
+        uint32_t observed = max_active_writes_.load(std::memory_order_acquire);
+        while (observed < count) {
+            max_active_writes_.wait(observed, std::memory_order_acquire);
+            observed = max_active_writes_.load(std::memory_order_acquire);
         }
     }
 

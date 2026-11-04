@@ -19,9 +19,9 @@ use fixture::TestNamespace;
 #[tokio::test]
 async fn lookup_walks_stable_parents_without_writing_or_creating_ancestors() {
     let fixture = TestNamespace::new().await;
-    let parent = fixture.authority(None, &["数据库"]);
+    let parent = fixture.authority(None, &["\u{6570}\u{636e}\u{5e93}"]);
     fixture.publish(&parent).await;
-    let child = fixture.authority(Some(parent.namespace), &["数据库", "child"]);
+    let child = fixture.authority(Some(parent.namespace), &["\u{6570}\u{636e}\u{5e93}", "child"]);
     fixture.publish(&child).await;
     let repository = NamespaceRepository::new(fixture.store.clone());
     let writes = fixture.store.writes.load(Ordering::SeqCst);
@@ -29,7 +29,11 @@ async fn lookup_walks_stable_parents_without_writing_or_creating_ancestors() {
         repository.load(fixture.context, &child.identifier).await.unwrap(),
         Some(child)
     );
-    for names in [vec!["child"], vec!["absent", "child"], vec!["数据库", "absent"]] {
+    for names in [
+        vec!["child"],
+        vec!["absent", "child"],
+        vec!["\u{6570}\u{636e}\u{5e93}", "absent"],
+    ] {
         let identifier = NamespaceIdentifier::new(names.into_iter().map(String::from).collect()).unwrap();
         assert!(!repository.exists(fixture.context, &identifier).await.unwrap());
     }

@@ -87,12 +87,19 @@ impl ServerClient {
         self.get_json("/health").await
     }
 
-    /// `GET /topology`.
+    /// `GET /topology`. Resolve wildcard store listeners against the
+    /// reporting management origin before callers cache them. Explicit peer
+    /// endpoints retain their advertised addresses.
     ///
     /// # Errors
     /// Returns `Error::UpstreamRpc` for transport / decode failures.
     pub async fn topology(&self) -> Result<Vec<StoreView>> {
-        let resp: TopologyResponse = self.get_json("/topology").await?;
+        let mut resp: TopologyResponse = self.get_json("/topology").await?;
+        for store in &mut resp.stores {
+            if let Some(endpoint) = &store.listen_addr {
+                store.listen_addr = Some(self.resolve_rpc_endpoint(endpoint)?);
+            }
+        }
         Ok(resp.stores)
     }
 

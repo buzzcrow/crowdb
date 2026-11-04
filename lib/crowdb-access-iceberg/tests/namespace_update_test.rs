@@ -27,7 +27,7 @@ fn request(fixture: &TestNamespace, authority: &NamespaceAuthority) -> Namespace
         identifier: authority.identifier.clone(),
         changes: PropertyChanges {
             removals: vec!["old".into(), "absent".into()],
-            updates: BTreeMap::from([("owner".into(), "数据库".into())]),
+            updates: BTreeMap::from([("owner".into(), "\u{6570}\u{636e}\u{5e93}".into())]),
         },
     }
 }
@@ -66,7 +66,10 @@ async fn property_publication_is_atomic_and_does_not_change_identity_or_admissio
     assert_eq!(selected.pending_operation, None);
     assert_eq!(
         selected.properties.entries(),
-        &BTreeMap::from([("keep".into(), "value".into()), ("owner".into(), "数据库".into()),])
+        &BTreeMap::from([
+            ("keep".into(), "value".into()),
+            ("owner".into(), "\u{6570}\u{636e}\u{5e93}".into()),
+        ])
     );
     let before = fixture.store.writes.load(Ordering::Relaxed);
     let replay = repository.update_properties(&request).await.unwrap().unwrap();
@@ -109,14 +112,20 @@ async fn independent_requests_apply_changes_to_current_properties_without_a_ledg
     repository.update_properties(&request).await.unwrap();
     request.changes.updates.insert("owner".into(), "second".into());
     repository.update_properties(&request).await.unwrap();
-    request.changes.updates.insert("owner".into(), "数据库".into());
+    request
+        .changes
+        .updates
+        .insert("owner".into(), "\u{6570}\u{636e}\u{5e93}".into());
     repository.update_properties(&request).await.unwrap();
     let selected = repository
         .load(fixture.context, &authority.identifier)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(selected.properties.entries().get("owner").unwrap(), "数据库");
+    assert_eq!(
+        selected.properties.entries().get("owner").unwrap(),
+        "\u{6570}\u{636e}\u{5e93}"
+    );
     assert_eq!(selected.property_revision, authority.property_revision + 3);
     assert!(selected.pending_operation.is_none());
 }
@@ -184,7 +193,10 @@ async fn concurrent_property_writers_rebase_only_after_a_definitive_cas_loss() {
         .unwrap()
         .unwrap();
     assert_eq!(selected.property_revision, authority.property_revision + 2);
-    assert_eq!(selected.properties.entries().get("owner").unwrap(), "数据库");
+    assert_eq!(
+        selected.properties.entries().get("owner").unwrap(),
+        "\u{6570}\u{636e}\u{5e93}"
+    );
     assert_eq!(selected.properties.entries().get("second").unwrap(), "retained");
     assert_eq!(selected.properties.entries().get("keep").unwrap(), "value");
     assert_eq!(selected.pending_operation, None);
@@ -342,7 +354,10 @@ async fn four_real_property_conflicts_merge_the_observed_authority_without_get()
             "retained"
         );
     }
-    assert_eq!(selected.properties.entries().get("owner").unwrap(), "数据库");
+    assert_eq!(
+        selected.properties.entries().get("owner").unwrap(),
+        "\u{6570}\u{636e}\u{5e93}"
+    );
     assert_eq!(selected.properties.entries().get("keep").unwrap(), "value");
 }
 

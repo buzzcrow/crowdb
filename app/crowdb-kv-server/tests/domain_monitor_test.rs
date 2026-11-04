@@ -29,6 +29,8 @@ use crowdb_protocol::key::{
     DomainMonitorKey, InstanceKey, ServingGrantKey, TextKey,
 };
 
+#[path = "common/grant_isolation.rs"]
+mod grant_isolation;
 #[path = "common/grant_process.rs"]
 mod grant_process;
 #[path = "common/process_lease.rs"]
@@ -38,6 +40,8 @@ mod test_process;
 mod catalog_publication;
 #[path = "common/endpoint_publication.rs"]
 mod endpoint_publication;
+#[path = "common/split_materialization.rs"]
+mod split_materialization;
 
 struct CountingDriver {
     ticks: Arc<AtomicUsize>,
@@ -544,6 +548,7 @@ async fn chunk_kv_driver_plans_dead_owner_recovery_once_and_waits_for_target() {
             .generation,
         1
     );
+    grant_process::assert_returned_source_is_excluded(&control, &policy, partition_id).await;
 }
 
 #[allow(clippy::too_many_lines)]

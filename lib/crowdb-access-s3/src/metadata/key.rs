@@ -341,6 +341,38 @@ impl MetadataKey {
         key.extend_from_slice(&revision.to_be_bytes());
         Ok(key)
     }
+
+    pub(crate) fn matches_multipart_index(tenant: &TenantId, key: &[u8], value: &[u8]) -> bool {
+        let namespace = namespace_prefix(tenant);
+        let Some(pointer) = value.strip_prefix(namespace.as_slice()) else {
+            return false;
+        };
+        if pointer.len() != 34 {
+            return false;
+        }
+        let mut bucket = [0; 16];
+        bucket.copy_from_slice(&pointer[..16]);
+        let bucket = BucketId::new(bucket);
+        let mut upload = [0; 16];
+        upload.copy_from_slice(&pointer[17..33]);
+        if upload == [0; 16] || value != Self::multipart_session(tenant, bucket, &upload) {
+            return false;
+        }
+        let prefix = Self::multipart_session_prefix(tenant, bucket);
+        let Some(encoded) = key
+            .strip_prefix(prefix.as_slice())
+            .and_then(|key| key.strip_suffix(&upload))
+        else {
+            return false;
+        };
+        if encoded.len() > MAX_KEY_BYTES * 2 + 2 {
+            return false;
+        }
+        let Some(object) = decode_ordered_component(encoded) else {
+            return false;
+        };
+        Self::multipart_upload_index(tenant, bucket, &object, &upload).is_ok_and(|expected| expected == key)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -390,6 +422,25 @@ fn append_ordered_bytes_prefix(output: &mut Vec<u8>, value: &[u8]) {
             value => output.push(*value),
         }
     }
+}
+
+fn decode_ordered_component(mut encoded: &[u8]) -> Option<Vec<u8>> {
+    let mut decoded = Vec::new();
+    while let Some((&first, remaining)) = encoded.split_first() {
+        encoded = remaining;
+        if first != 0 {
+            decoded.push(first);
+            continue;
+        }
+        let (&escape, remaining) = encoded.split_first()?;
+        match escape {
+            0 => return remaining.is_empty().then_some(decoded),
+            0xff => decoded.push(0),
+            _ => return None,
+        }
+        encoded = remaining;
+    }
+    None
 }
 
 fn increment_lexicographic(value: &mut Vec<u8>) {

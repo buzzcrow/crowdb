@@ -116,7 +116,7 @@ fn key_byte_limit_is_enforced_before_encoding() {
 #[test]
 fn name_fields_preserve_utf8_delimiters_and_parent_identity() {
     let parent = NamespaceId::random();
-    for name in ["a/b", "a%1Fb", "数据.表", "a:1"] {
+    for name in ["a/b", "a%1Fb", "\u{6570}\u{636e}.\u{8868}", "a:1"] {
         let suffix = NameSuffix {
             parent: Some(parent),
             name,

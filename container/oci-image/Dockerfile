@@ -45,6 +45,6 @@ ENV PATH="/opt/crowdb/bin:${PATH}" \
     CROWDB_RUNTIME_ROOT="/opt/crowdb/run"
 USER root
 VOLUME ["/opt/crowdb/data"]
-EXPOSE 9090 9091 9092 9093 9095 2222
+EXPOSE 9090 16000 17000 18000 9095 2222
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/crowdb/bin/entrypoint"]

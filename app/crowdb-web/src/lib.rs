@@ -35,7 +35,19 @@ pub mod state;
 pub use node::observation::{start_node_observer, NodeObserver};
 #[cfg(feature = "test-util")]
 pub use services::observation::remote_access_health_for_tests;
+#[cfg(feature = "test-util")]
+pub use services::observation::{
+    invalidate_service_observation_for_tests, ServiceObservationMutationForTests,
+};
+pub use services::observation::{start_service_observer, ServiceObserver};
+#[cfg(feature = "test-util")]
+pub use services::observation::{
+    start_service_observer_for_tests, ProcessObservationForTests, ServiceObservationSourceForTests,
+};
 pub use state::AppState;
+
+#[cfg(feature = "test-util")]
+pub use node::authority::projection::project_confirmed_servers_for_tests;
 
 #[cfg(feature = "test-util")]
 pub use node::observation::{node_observation_time_for_tests, start_node_observer_for_tests};

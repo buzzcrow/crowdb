@@ -23,7 +23,7 @@ export function observeDefaultDeployments(page: Page) {
     const identity = key(response);
     if (identity) replies.set(identity, [...(replies.get(identity) ?? []), response]);
   });
-  const expectedWait = (response: Response, kind: string) => response.status() === 409 && ['chunkdb', 'chunk-kv'].includes(kind);
+  const expectedWait = (response: Response, kind: string) => response.status() === 409 && ['chunkdb', 'chunk-kv', 'access-server'].includes(kind);
   async function completed(nodes: number[], kind: string) {
     const timeout = process.platform === 'darwin' ? 30_000 : 10_000;
     let found: { node: number; response: Response } | undefined;
@@ -65,7 +65,8 @@ export function observeDefaultDeployments(page: Page) {
   }
   async function verifyResponse(response: Response, kind: string) {
     if (expectedWait(response, kind)) {
-      expect((await response.json()).error).toMatch(/^Waiting: /);
+      const node = Number(new URL(response.url()).pathname.split('/')[3]);
+      expect(await response.json()).toMatchObject({ error: expect.stringMatching(/^Waiting: /), service: kind, node_id: node, retryable: true });
     } else {
       expect(response.status(), await response.text()).toBe(201);
     }

@@ -199,21 +199,43 @@ The `ballot_round` field in the ChosenNotice flatbuffer enables this verificatio
 
 When a follower detects a gap (missing or stale slot in the chosen range), it sends a unary `FetchGap(slot)` request to the leader. The leader:
 
-- Has the chosen value locally → replies with the full entry (payload + ballot + term).
-- Does not have it → runs classic Paxos (`repair_once`, §9) to resolve the slot, then replies with the resolved value (or NoOp).
+- Has completed leader recovery and retains the value within its contiguous
+  chosen prefix → replies with the full entry (payload + ballot + term).
+- Otherwise → returns pending/not found. Normal leader recovery or independent
+  gap repair must establish the chosen value before a later request can fetch it.
 
-On receipt, the follower overwrites any stale accepted value with the chosen value, updates its chosen frontier, and wakes the apply loop. FetchGap is bounded by `MAX_INFLIGHT_FETCHGAP` (default 16) to avoid flooding the leader.
+On receipt, a durable follower first writes the original Accepted entry to its
+WAL, then installs it, advances the chosen frontier and wakes the apply loop.
+Historical entries retain their original election term; a newer local term
+does not reject committed history. Failed persistence leaves the gap pending.
+Learning a proven chosen value does not answer a new Accept request and must
+not discard a later promise. It retains the original entry alongside that
+higher promise; an already higher accepted ballot must carry the same value.
+Replay rebuilds highest accepted values before restoring promise fences, so
+the physical order of historical fetch and later promise records cannot lose
+either durable fact. Accepted history alone is never a FetchGap chosen proof.
+`MAX_INFLIGHT_FETCHGAP` (default 16) bounds the entire fetch/persist/install
+operation, including error and cancellation paths.
 
 This replaces the previous leader-driven catch-up that ran inline in `run_heartbeat_round` (up to 64 synchronous `send_accept().await` calls per lagging follower). That inline catch-up could exceed `heartbeat_interval` and trigger spurious elections. The heartbeat round is now pure liveness + lease: one RPC round-trip, no catch-up work.
 
 ### 9A.4 Snapshot Fallback
 
-If a follower's gap count exceeds `catchup_snapshot_threshold` (default `bulk_prepare_window` = 1024), the follower stops issuing FetchGap requests and logs a warning. The full snapshot-install path for running replicas is deferred; the threshold gate prevents FetchGap storms against the leader when a follower is severely lagging (e.g. after a long network partition).
+If a follower's gap count exceeds `catchup_snapshot_threshold` (default 1024),
+it records the large backlog and continues FetchGap under the same fixed
+16-request limit. A missing automatic snapshot path must not disable catch-up.
 
 The bounded snapshot protocol is used only while bootstrapping a fresh,
 unpublished member. It does not replace the engine of a running follower and
-is not invoked by this threshold. A live replacement requires a separate
+is not invoked by this diagnostic threshold. A live replacement requires a separate
 atomic engine-generation publication design.
+
+A recovered durable engine's gap-free resume watermark remains authoritative
+when WAL reclamation removed the boundary record or all preceding segments.
+Restore retains that complete chosen/applied prefix without capping it to the
+remaining WAL tip. If the exact boundary term is unavailable, its historical
+term is reported as zero (unknown); voting freshness still uses the durable
+acceptor log tip. Higher retained entries replay after the snapshot prefix.
 
 ### 9A.5 Apply Loop
 
@@ -315,19 +337,29 @@ See [WAL garbage collection](design-crowdb-kv-wal.md#7-garbage-collection).
 
 ## 12. Tunables and Defaults
 
-| Parameter | Default | Where it lives |
-| --- | --- | --- |
-| `max_inflight_proposals` | 32 | `PaxosConfig` (total semaphore permits) |
-| `reject_on_inflight_window_full` | `false` | `PaxosConfig` (internal, not CLI-exposed) |
-| `coalesce_max_keys` | 32 | `PaxosConfig` (max ops per coalesced batch; 0 = off) |
-| `coalesce_drain_threshold` | 1 | `PaxosConfig` (skip drain at this inflight count) |
-| `max_paxos_retries` | 3 | `PaxosConfig` (per-slot Phase-2 retries) |
-| `max_slot_retries` | 3 | `PaxosConfig` (new-slot retries before giving up) |
-| `retry_base_backoff_ms` | 5 | `PaxosConfig` (exponential backoff base) |
-| `bulk_prepare_window` | 1024 | `PxElectionConfig` (bulk Phase-1 batch size) |
-| `catchup_snapshot_threshold` | 1024 | `PxElectionConfig` (gap count above which FetchGap is skipped in favor of snapshot fallback) |
+| Parameter                        | Default | Where it lives                                                        |
+| -------------------------------- | ------- | --------------------------------------------------------------------- |
+| `max_inflight_proposals`         | 32      | `PaxosConfig` (total semaphore permits)                               |
+| `reject_on_inflight_window_full` | `false` | `PaxosConfig` (internal, not CLI-exposed)                             |
+| `coalesce_max_keys`              | 32      | `PaxosConfig` (max ops per coalesced batch; 0 = off)                  |
+| `coalesce_drain_threshold`       | 1       | `PaxosConfig` (skip drain at this inflight count)                     |
+| `max_paxos_retries`              | 3       | `PaxosConfig` (per-slot Phase-2 retries)                              |
+| `max_slot_retries`               | 3       | `PaxosConfig` (new-slot retries before giving up)                     |
+| `retry_base_backoff_ms`          | 5       | `PaxosConfig` (exponential backoff base)                              |
+| `bulk_prepare_window`            | 1024    | `PxElectionConfig` (bulk Phase-1 batch size)                          |
+| `catchup_snapshot_threshold`     | 1024    | `PxElectionConfig` (diagnostic threshold; bounded FetchGap continues) |
 
-The bulk Phase-1 typically resolves open gaps in a single RTT. Steady-state gaps are closed one-at-a-time after each heartbeat round, so worst-case gap-clear time is bounded by `heartbeat_interval × gap_count`. Follower-side gaps (missing or stale chosen slots) are closed by FetchGap at the follower's own pace, bounded by `MAX_INFLIGHT_FETCHGAP` (default 16) concurrent requests.
+Bulk Phase 1 recovers independent slots concurrently, with at most
+`bulk_prepare_window` complete Prepare/Accept operations in flight. It starts
+at the new leader's own contiguous frontier, adopts quorum values and opens
+reads only after the entire observed prefix has resolved and applied. Tenure
+cancellation prevents prepared slots from proceeding to Accept.
+
+Steady-state gap repair starts only after initial recovery has completed;
+the two paths never compete for the same slot. Each background pass drains
+its observed backlog independently of heartbeat cadence. Follower-side gaps
+use at most `MAX_INFLIGHT_FETCHGAP` (default 16) concurrent requests, including
+backlogs above the snapshot diagnostic threshold.
 
 ---
 

@@ -55,6 +55,19 @@ pub(super) fn node_profile(config: &super::NodeRuntimeConfig) -> Result<Deployme
     Ok(profile)
 }
 
+pub(super) fn ports_from_root(root: &std::path::Path) -> Result<(u16, u16)> {
+    let policy = crate::node::read_node_policy(root)?.ok_or("accepted node policy is absent")?;
+    policy.setup.paxos_kv_ports().ok_or_else(|| {
+        "accepted node policy has no enabled Paxos KV listeners"
+            .to_owned()
+            .into()
+    })
+}
+
+pub(super) fn ports(profile: &DeploymentProfile) -> Result<(u16, u16)> {
+    ports_from_root(&profile.paths.data_root)
+}
+
 pub(super) async fn bind(
     profile: &DeploymentProfile,
     processes: &mut ProcessManager,
@@ -99,18 +112,19 @@ pub(super) async fn start_kv(
     accepted: &AcceptedNode,
 ) -> Result<()> {
     ensure_process(profile, processes, accepted).await?;
-    wait_ready(processes).await
+    wait_ready(profile, processes).await
 }
 
-async fn wait_ready(processes: &mut ProcessManager) -> Result<()> {
+async fn wait_ready(profile: &DeploymentProfile, processes: &mut ProcessManager) -> Result<()> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(1))
         .build()?;
+    let (management_port, _) = ports(profile)?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         if client
-            .get("http://127.0.0.1:10000/health")
+            .get(format!("http://127.0.0.1:{management_port}/health"))
             .send()
             .await
             .is_ok_and(|reply| reply.status().is_success())
@@ -143,7 +157,7 @@ pub(super) async fn start_for_cleanup(
     accepted: &AcceptedNode,
 ) -> Result<()> {
     spawn(profile, processes, accepted).await?;
-    wait_ready(processes).await
+    wait_ready(profile, processes).await
 }
 
 async fn spawn(
@@ -168,15 +182,19 @@ async fn spawn(
         .join("kv")
         .join(format!("node-{}", accepted.node_id));
     std::fs::create_dir_all(&root)?;
+    let (management_port, rpc_port) = ports(profile)?;
+    let rpc_health_port = rpc_port
+        .checked_add(1)
+        .ok_or("Paxos KV RPC listener has no health port")?;
     kv.args = vec![
         "--node-recovery-root".into(),
         profile.paths.data_root.to_string_lossy().into_owned(),
         "--root".into(),
         root.to_string_lossy().into_owned(),
         "--management-port".into(),
-        "10000".into(),
+        management_port.to_string(),
         "--ports".into(),
-        "10100,10101".into(),
+        format!("{rpc_port},{rpc_health_port}"),
         "--instance-id".into(),
         accepted.node_id.to_string(),
         "--node-id".into(),

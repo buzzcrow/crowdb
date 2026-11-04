@@ -203,6 +203,48 @@ async fn immutable_configured_scope_covers_disks_before_usage_advertisements_cat
 }
 
 #[tokio::test]
+async fn configured_scope_waits_for_its_rack_membership_fence() {
+    use crowdb_protocol::common::{DiskioHardwareScope, NodeValue, RackValue};
+    let fixture = TestStorage::start().await;
+    let hardware = &fixture.hardware;
+    let svc = ServiceRegistryClient::from_shared(hardware.shared_kv());
+    let scope = DiskioHardwareScope {
+        version: 1,
+        rack_id: 99,
+        node_id: 99,
+        disk_group_id: 0,
+    };
+    assert!(
+        svc.heartbeat_diskio_scoped(99, "pending:7200", &scope, &[], &[])
+            .await
+            .is_err(),
+        "a first scope cannot publish before its Rack admission fence exists"
+    );
+    let pinned = svc.read_instance("diskio", 99).await.unwrap().unwrap();
+    assert!(pinned.extra.unwrap().diskdb.unwrap().diskio_scope.is_none());
+    hardware
+        .add_rack(
+            99,
+            &RackValue {
+                node_ids: vec![99],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    hardware.add_node(99, 99, &NodeValue::default()).await.unwrap();
+    svc.heartbeat_diskio_scoped(99, "ready:7200", &scope, &[], &[])
+        .await
+        .unwrap();
+    let mut other = scope.clone();
+    other.disk_group_id = 3;
+    assert!(svc
+        .heartbeat_diskio_scoped(99, "other:7200", &other, &[], &[])
+        .await
+        .is_err());
+}
+
+#[tokio::test]
 async fn simultaneous_first_scope_selection_pins_one_configuration() {
     use crowdb_protocol::common::DiskioHardwareScope;
     let fixture = TestStorage::start().await;
@@ -215,9 +257,24 @@ async fn simultaneous_first_scope_selection_pins_one_configuration() {
     };
     let mut second = first.clone();
     second.disk_group_id = 3;
-    let (a, b) = tokio::join!(
-        svc.heartbeat_diskio_scoped(7, "a:7200", &first, &[], &[]),
-        svc.heartbeat_diskio_scoped(7, "b:7200", &second, &[], &[])
-    );
-    assert_ne!(a.is_ok(), b.is_ok(), "a={a:?}, b={b:?}");
+    for instance_id in 7..39 {
+        let (a, b) = tokio::join!(
+            svc.heartbeat_diskio_scoped(instance_id, "a:7200", &first, &[], &[]),
+            svc.heartbeat_diskio_scoped(instance_id, "b:7200", &second, &[], &[])
+        );
+        assert_ne!(a.is_ok(), b.is_ok(), "instance={instance_id}, a={a:?}, b={b:?}");
+        let (winner, loser) = if a.is_ok() {
+            (&first, &second)
+        } else {
+            (&second, &first)
+        };
+        assert!(svc
+            .heartbeat_diskio_scoped(instance_id, "winner:7200", winner, &[], &[])
+            .await
+            .is_ok());
+        assert!(svc
+            .heartbeat_diskio_scoped(instance_id, "loser:7200", loser, &[], &[])
+            .await
+            .is_err());
+    }
 }

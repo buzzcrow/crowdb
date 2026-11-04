@@ -12,6 +12,7 @@
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use crowdb_kv::cluster::group_election::LeaderElection;
 use crowdb_kv::cluster::replica::StepDownRequestPayload;
 use crowdb_kv::rpc::{KvGetRequest, KvSetRequest};
 
@@ -21,7 +22,13 @@ async fn wait_for_leader(cluster: &TestCluster, timeout: Duration) -> Option<u64
     let start = Instant::now();
     while start.elapsed() < timeout {
         if let Some(node) = cluster.elected_leader() {
-            return Some(node.get_group(1).expect("group").local_replica().id);
+            let group = node.get_group(1).expect("group");
+            let replica = group.local_replica();
+            if group.proposing_term() == replica.current_term_snapshot()
+                && replica.lease_read_valid(Instant::now())
+            {
+                return Some(replica.id);
+            }
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
@@ -107,6 +114,7 @@ async fn put_via_leader(cluster: &TestCluster, key: &[u8], val: &[u8], req_id: u
         .await
         .expect("put rpc")
         .into_inner();
+    assert!(resp.ok, "write {key:?} failed: {resp:?}");
     resp.ok
 }
 
@@ -184,4 +192,91 @@ async fn leader_change_simulation() {
     poll_for_value(&cluster, b"lc2", b"second", Duration::from_secs(3)).await;
 
     cluster.shutdown().await;
+}
+
+#[tokio::test]
+async fn leader_wait_does_not_accept_role_before_a_current_quorum_lease() {
+    let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
+    wait_for_leader(&cluster, Duration::from_secs(3))
+        .await
+        .expect("initial leader");
+    let node = cluster.elected_leader().expect("leader role");
+    let group = node.get_group(1).expect("group");
+    group.local_replica().reset_lease_to(Instant::now());
+    assert!(group.local_replica().is_leader());
+    {
+        let waiting = wait_for_leader(&cluster, Duration::from_secs(3));
+        tokio::pin!(waiting);
+        assert!(
+            futures::poll!(&mut waiting).is_pending(),
+            "leader role alone cannot authorize the next one-shot write"
+        );
+        waiting
+            .await
+            .expect("quorum-backed leader within the original bound");
+    }
+    assert!(put_via_leader(&cluster, b"ready-leader", b"once", 3).await);
+    cluster.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn prior_tenure_admin_wakeup_cannot_step_down_a_newly_elected_leader() {
+    use crowdb_kv::cluster::group::PxGroup;
+    use crowdb_kv::cluster::group_election::spawn;
+    use crowdb_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
+    use crowdb_kv::common::config::PxElectionConfig;
+    use std::sync::Arc;
+
+    let config = PxElectionConfig::for_tests();
+    let mut group = PxGroup::new(731, PxLocalReplica::new(19, PxLocalReplicaRole::Leader));
+    group.set_election_config(config);
+    let group = Arc::new(group);
+    let replica = group.local_replica();
+    let previous_term = replica.current_term_snapshot();
+    // The admin request arrives before the previous leader loop consumes its
+    // wakeup. Its immediate role fence is real; the Notify permit is retained.
+    assert!(
+        replica
+            .handle_step_down(&StepDownRequestPayload {
+                term: previous_term,
+                target_leader_id: replica.id,
+                reason: "step down before the leader loop starts".into(),
+            })
+            .accepted
+    );
+    assert_eq!(replica.role(), PxLocalReplicaRole::Follower);
+
+    let cancel = group.tenure_cancel();
+    let driver = spawn(Arc::downgrade(&group), config, cancel.clone());
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(Duration::from_millis(config.election_max_ms + 1)).await;
+    // Keep this task runnable so paused time cannot auto-advance to another
+    // election and conceal a stale-wakeup step-down of this exact tenure.
+    for _ in 0..30 {
+        tokio::task::yield_now().await;
+    }
+    let elected_term = replica.current_term_snapshot();
+    let role = replica.role();
+    let fresh_step_down = (role == PxLocalReplicaRole::Leader).then(|| {
+        replica.handle_step_down(&StepDownRequestPayload {
+            term: elected_term,
+            target_leader_id: replica.id,
+            reason: "a new request still fences the current tenure".into(),
+        })
+    });
+    cancel.cancel();
+    driver.await.unwrap();
+    assert!(
+        elected_term > previous_term,
+        "the real driver must complete a new election"
+    );
+    assert_eq!(
+        role,
+        PxLocalReplicaRole::Leader,
+        "a prior-tenure admin wakeup stepped down the new leader"
+    );
+    assert!(fresh_step_down.unwrap().accepted);
+    assert_eq!(replica.role(), PxLocalReplicaRole::Follower);
 }

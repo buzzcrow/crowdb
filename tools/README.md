@@ -127,5 +127,5 @@ pixi run test profile containerd-cluster
 pixi run test-e2e-iceberg
 ```
 
-On a fresh checkout, `test-cpp` depends on the unified build and `test-console-ui`
-depends on dependency installation before dispatch.
+On a fresh checkout, `test-cpp` and `test-storage` depend on the native library
+build, while `test-console-ui` depends on dependency installation before dispatch.

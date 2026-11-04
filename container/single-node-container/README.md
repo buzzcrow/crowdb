@@ -61,9 +61,11 @@ remain independent of public origins.
 
 All members of one local cluster share the accepted client credential set.
 Retain each member's own data volume across stop and image replacement.
-Default `oci-clean` removes all recorded clusters, their unused owned bridges
-and owned data. Use `--cluster NAME` to select one cluster and `--keep-data` to
-retain its volumes and restart receipts.
+Default `oci-clean` preserves running clusters and removes stopped clusters,
+their owned data, and unused Docker containers, networks, volumes and build
+cache. Use `--cluster NAME` to explicitly stop and remove one cluster, or
+`--all` to stop and remove all recorded clusters. Use `--keep-data` to retain
+volumes and restart receipts. See the [cleanup contract](../oci-image/README.md#local-cluster-shortcuts).
 Ordinary `docker compose down` also preserves its named volumes.
 
 ## Tested S3 client recipes

@@ -47,21 +47,23 @@ Temporary plans live under `doc/working/`; flow analyses live under
 
 ## Dev Environment (`doc/dev/`)
 
-| Doc                          | When to read                                                           |
-| ---------------------------- | ---------------------------------------------------------------------- |
-| `doc/dev/crash_debugging.md` | Core collection, host setup, GDB, and exact-build symbols.             |
-| `doc/dev/env_setup.md`       | Benchmark commands, sentinels, prerequisites, and perf-counter setup.  |
-| `doc/dev/hyper_fork.md`      | Hyper fork branches, submodule, build, sync, validation, and recovery. |
-| `tools/README.md`            | Tool directories, Pixi task entry points, CI checks, and suite timing. |
+| Doc                                  | When to read                                                                     |
+| ------------------------------------ | -------------------------------------------------------------------------------- |
+| `doc/dev/crash_debugging.md`         | Core collection, host setup, GDB, and exact-build symbols.                       |
+| `doc/dev/env_setup.md`               | Benchmark commands, sentinels, prerequisites, and perf-counter setup.            |
+| `doc/dev/hyper_fork.md`              | Hyper fork branches, submodule, build, sync, validation, and recovery.           |
+| `doc/dev/physical-node-test-plan.md` | Physical cases, Wi-Fi profiles, loaded latency, recovery gates and evidence.     |
+| `tools/README.md`                    | Tool directories, Pixi task entry points, CI checks, and suite timing.           |
 
 ## Component Acceptance
 
-| Doc                                         | When to read                                          |
-| ------------------------------------------- | ----------------------------------------------------- |
-| `app/crowdb-access-server/tests/README.md`  | Access gates, SDK commands and Dataset measurements.  |
-| `e2e-test/README.md`                        | Container domains, browser/SDK ownership and timings. |
-| `container/single-node-container/README.md` | Container build, publication and tested client setup. |
-| `e2e-test/clients/ecosystem/README.md`      | Manual pinned client/engine matrix and exclusions.    |
+| Doc                                         | When to read                                            |
+| ------------------------------------------- | ------------------------------------------------------- |
+| `app/crowdb-access-server/tests/README.md`  | Access gates, SDK commands and Dataset measurements.    |
+| `e2e-test/README.md`                        | Container domains, browser/SDK ownership and timings.   |
+| `container/single-node-container/README.md` | Container build, publication and tested client setup.   |
+| `container/oci-image/README.md`             | Shared OCI builds, launch examples and retained inputs. |
+| `e2e-test/clients/ecosystem/README.md`      | Manual pinned client/engine matrix and exclusions.      |
 
 
 ## Project Files (repo root)

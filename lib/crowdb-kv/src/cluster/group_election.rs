@@ -23,13 +23,15 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, trace, warn, Instrument};
+use tracing::{debug, info, trace, Instrument};
 
-use crate::cluster::group::{AcceptAttempt, PrepareAttempt, PxGroup, RemoteReplicaKind};
+use crate::cluster::group::{PxGroup, RemoteReplicaKind};
 use crate::cluster::local_replica::PxLocalReplicaRole;
 use crate::common::config::PxElectionConfig;
 use crate::paxos::roles::SlotIndex;
 use crate::paxos::PxNodeId;
+
+mod recovery;
 
 /// Bundle handed off from `run_candidate_election` to `run_leader_state`
 /// when a candidate wins quorum. Carries the floor / ceiling needed by
@@ -84,9 +86,8 @@ pub trait LeaderElection {
     ///
     /// Inputs:
     ///
-    /// - `floor` = `max(local.contiguous_chosen, peer_contiguous_chosen_max)`
-    ///   — values from peer `RequestVote` / `PreVote` replies (the election
-    ///   driver supplies the aggregate via `peer_contiguous_chosen_max`).
+    /// - `floor` = the local contiguous-chosen frontier. A peer's higher
+    ///   frontier does not prove that its payloads are present locally.
     /// - `ceiling` = `max(local.acceptor.highest_seen_slot,
     ///                   self.next_slot - 1,
     ///                   peer_highest_seen_slot_max)`.
@@ -100,9 +101,9 @@ pub trait LeaderElection {
     ///    is decided (and the contiguous-chosen watermark can advance).
     /// 3. Re-Accept via the existing `run_accept_phase`.
     ///
-    /// After issuing (not waiting on completion of) the batch, `next_slot`
-    /// is bumped to `ceiling + 1` so steady-state proposals continue past
-    /// the repaired range (§4.4).
+    /// At most `cfg.bulk_prepare_window` slots recover concurrently. Once
+    /// the entire range is resolved and applied, reads may be admitted.
+    /// `next_slot` is advanced to `ceiling + 1` after the sweep.
     ///
     /// Cancellation: the `cancel` token is checked before each slot. On
     /// cancel the loop aborts without re-Accepting any further slots — the
@@ -176,8 +177,6 @@ impl LeaderElection for PxGroup {
         *driver_guard = Some(handle);
     }
 
-    #[tracing::instrument(level = "info", skip_all, fields(s = self.log_store_id().unwrap_or(0), g = self.group_id, replica = self.local_replica().id, term))]
-    #[allow(clippy::too_many_lines)]
     async fn run_bulk_phase1(
         &self,
         term: u64,
@@ -186,146 +185,14 @@ impl LeaderElection for PxGroup {
         cfg: PxElectionConfig,
         cancel: CancellationToken,
     ) {
-        let replica = self.local_replica();
-        let group_id = self.group_id;
-        // Voting-only quorum -- see the matching fix/comment on
-        // `PxGroup::propose` in `group.rs`.
-        let quorum = self.quorum();
-
-        // Floor is the leader's OWN committed frontier — deliberately NOT maxed
-        // with `peer_contiguous_chosen_max`. After a restart a replica can win
-        // election while missing committed slots it never received (the value
-        // lived only as a `ChosenNotice` watermark, which carries no payload).
-        // Maxing the floor with the peers' commit point would SKIP exactly
-        // those slots, leaving the new leader serving a stale/old value for a
-        // committed key (e.g. a resurrected delete, or a missing put). Sweeping
-        // from the leader's own frontier forces Phase 1 to re-derive every
-        // higher slot from the quorum and adopt the real chosen value. This is
-        // safe because Phase 1 contacts a quorum: a committed value is held by
-        // at least one quorum member, so it is recovered rather than
-        // overwritten.
-        let _ = peer_contiguous_chosen_max;
-        let floor = replica.contiguous_chosen();
-        let local_ceiling = replica.highest_seen_slot();
-        let next_slot_minus_one = self.next_slot.load(Ordering::Acquire).saturating_sub(1);
-        let ceiling = local_ceiling
-            .max(next_slot_minus_one)
-            .max(peer_highest_seen_slot_max);
-
-        debug!(
-            group_id,
+        self.recover_open_prefix(
             term,
-            floor,
-            ceiling,
-            local_contiguous_chosen = replica.contiguous_chosen(),
-            local_highest_seen_slot = local_ceiling,
             peer_contiguous_chosen_max,
             peer_highest_seen_slot_max,
-            "bulk phase 1 start"
-        );
-
-        if ceiling <= floor {
-            tokio::select! {
-                () = replica.await_apply_fence(floor) => {}
-                () = cancel.cancelled() => return,
-            }
-            self.leader_read_ready.store(true, Ordering::Release);
-            debug!(term, "bulk phase 1 skipped (empty range)");
-            return;
-        }
-
-        let mut slots_repaired = 0u64;
-        let mut all_resolved = true;
-        let window = cfg.bulk_prepare_window.max(1);
-
-        for slot in (floor + 1)..=ceiling {
-            if cancel.is_cancelled() {
-                warn!(
-                    group_id,
-                    term, slot, slots_repaired, "bulk phase 1 cancelled (step down)"
-                );
-                return;
-            }
-            if slots_repaired >= window {
-                tokio::task::yield_now().await;
-                slots_repaired = 0;
-            }
-
-            // Issue Phase-1 Prepare at ballot (0, me) under term T with an
-            // empty payload so any adopted foreign value comes strictly
-            // from a remote's previously-Accepted entry; if none exist
-            // the entry stays a NoOp (we re-tag below).
-            let attempt = self
-                .run_prepare_phase(replica, slot, bytes::Bytes::new(), quorum, 0)
-                .await;
-            let mut entry = match attempt {
-                PrepareAttempt::Proceed { entry, .. } => entry,
-                PrepareAttempt::Retry { error, .. } | PrepareAttempt::Fail { error } => {
-                    all_resolved = false;
-                    warn!(
-                        group_id,
-                        term,
-                        slot,
-                        error = error.keyword(),
-                        "bulk phase 1 prepare failed; will be retried by next leader"
-                    );
-                    continue;
-                }
-            };
-
-            entry.term = term;
-
-            match self.run_accept_phase(replica, &entry, quorum).await {
-                AcceptAttempt::Chosen => {
-                    replica.learn_chosen(&entry, &[]).await;
-                    self.fan_out_chosen_notice(&entry, group_id);
-                    slots_repaired += 1;
-                }
-                AcceptAttempt::Retry { error, .. } | AcceptAttempt::Fail { error } => {
-                    all_resolved = false;
-                    warn!(
-                        group_id,
-                        term,
-                        slot,
-                        error = error.keyword(),
-                        "bulk phase 1 accept failed; will be retried by next leader"
-                    );
-                }
-            }
-        }
-
-        let next = ceiling.saturating_add(1);
-        self.next_slot.fetch_max(next, Ordering::AcqRel);
-        if !all_resolved {
-            warn!(
-                group_id,
-                term, ceiling, "bulk phase 1 incomplete; leader recovery remains closed"
-            );
-            return;
-        }
-        tokio::select! {
-            () = replica.await_apply_fence(ceiling) => {}
-            () = cancel.cancelled() => return,
-        }
-        self.leader_read_ready.store(true, Ordering::Release);
-        // R65: advance `known_commit_slot` to the leader's own
-        // `contiguous_chosen` after the sweep. Leaders don't receive
-        // heartbeats or ChosenNotice, so without this the apply loop
-        // would never learn about slots the leader accepted as a follower
-        // (before winning the election) or slots resolved by the sweep.
-        // All slots up to `contiguous_chosen` are now confirmed chosen by
-        // the quorum that responded to Prepare — safe to apply.
-        let cc = replica.contiguous_chosen();
-        replica.advance_known_commit_slot(cc);
-        replica.wake_apply_loop();
-        debug!(
-            group_id,
-            term,
-            ceiling,
-            next_slot = next,
-            contiguous_chosen = cc,
-            "bulk phase 1 done"
-        );
+            cfg,
+            cancel,
+        )
+        .await;
     }
 }
 

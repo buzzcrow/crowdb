@@ -180,7 +180,10 @@ async fn cross_strip_tail_header_survives_later_growth_and_the_next_append() {
             created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
-        StreamConfig::default(),
+        StreamConfig {
+            chunk_capacity_bytes: 2 * 1024 * 1024,
+            ..StreamConfig::default()
+        },
         metadata.clone(),
         metadata.clone(),
         chunks.clone(),
@@ -192,11 +195,11 @@ async fn cross_strip_tail_header_survives_later_growth_and_the_next_append() {
     let chunk_id = range.chunk_id.unwrap();
     let complete_end = 1024 * 1024 - 7;
     assert_eq!(chunks.durable_cursor(chunk_id, 9).await.unwrap().offset, 0);
-    assert_eq!(chunks.current_capacity(chunk_id).await.unwrap(), 8 * 1024 * 1024);
+    assert_eq!(chunks.current_capacity(chunk_id).await.unwrap(), 2 * 1024 * 1024);
     assert_eq!(observed_end(&allocator, &disks, name).await, complete_end);
     let publications = metadata.metadata_publish_count();
     chunks
-        .grow_mirrored(name, 9, chunk_id, 9 * 1024 * 1024)
+        .grow_mirrored(name, 9, chunk_id, 3 * 1024 * 1024)
         .await
         .unwrap()
         .unwrap();
@@ -281,7 +284,7 @@ async fn uncertain_growth_initialization_cannot_be_retried_or_written() {
     let end = strip.append(&store, name, 9, active.chunk_id, b"retained").await;
     disks.fail_fsync_once.store(11, Ordering::Release);
     assert!(store
-        .grow_mirrored(name, 9, active.chunk_id, active.capacity + 1)
+        .grow_mirrored(name, 9, active.chunk_id, 4 * 1024 * 1024)
         .await
         .is_err());
     // All three added strips complete their submitted work, including the healthy
@@ -289,7 +292,7 @@ async fn uncertain_growth_initialization_cannot_be_retried_or_written() {
     assert_eq!(disks.fsyncs.load(Ordering::Acquire), 9);
     let submissions = disks.writes.lock().unwrap().len();
     assert!(store
-        .grow_mirrored(name, 9, active.chunk_id, active.capacity + 1)
+        .grow_mirrored(name, 9, active.chunk_id, 4 * 1024 * 1024)
         .await
         .is_err());
     assert_eq!(disks.writes.lock().unwrap().len(), submissions);

@@ -113,6 +113,7 @@ pub(crate) async fn prepare(
         record.clone()
     } else {
         NodeRecord {
+            web_port: 9090,
             discovery_id: id.to_string(),
             node_id: super::admission::next_node_id(&config, &records)?,
             physical_host_id: handshake.physical_host_id,

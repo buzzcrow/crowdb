@@ -12,7 +12,7 @@ from botocore.exceptions import ClientError
 class BatchDeleteCases:
     def test_batch_delete_preserves_exact_keys_and_quiet(self):
         bucket = self.bucket + "-batch"
-        keys = ["escaped/<&>.bin", "unicode/边界%25+.bin", "literal\rline.bin"]
+        keys = ["escaped/<&>.bin", "unicode/\u8fb9\u754c%25+.bin", "literal\rline.bin"]
         self.client.create_bucket(Bucket=bucket)
         for key in keys + ["retained"]:
             self.client.put_object(Bucket=bucket, Key=key, Body=b"selected")
@@ -35,7 +35,7 @@ class BatchDeleteCases:
         if phase not in ("all", "initial", "retry", "new-publication"):
             raise ValueError("unknown batch-delete phase")
         bucket = self.bucket + "-batch-limit"
-        keys = [f"bulk/{index:04}/<&>边界" for index in range(1000)]
+        keys = [f"bulk/{index:04}/<&>\u8fb9\u754c" for index in range(1000)]
         selection = {"Objects": [{"Key": key} for key in keys]}
         if phase in ("all", "initial"):
             self.client.create_bucket(Bucket=bucket)

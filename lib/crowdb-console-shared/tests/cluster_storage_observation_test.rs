@@ -280,6 +280,7 @@ async fn diskless_member_does_not_require_an_unused_storage_reservation() {
         &NodeRegistry {
             cluster_id: authority.bootstrap.identity.cluster_id.clone(),
             nodes: vec![NodeRecord {
+                web_port: 9090,
                 discovery_id: node.discovery_id.clone(),
                 node_id: 2,
                 rack_id: 4,
@@ -311,4 +312,107 @@ async fn diskless_member_does_not_require_an_unused_storage_reservation() {
         "Diskless is an accepted choice, not missing disk evidence: {:?}",
         report.observation.dependencies
     );
+}
+
+#[tokio::test]
+async fn kv_only_collection_uses_confirmed_web_ports_without_preparing_storage() {
+    use crowdb_console_shared::deployment::registry::{self, NodeRecord, NodeRegistry};
+    use crowdb_protocol::mgmt::{
+        cluster::{ClusterPhase, DependencyKind},
+        node::{
+            observation::NodeServiceObservation,
+            setup::{SetupServiceKind, SetupStorage},
+        },
+    };
+    let authority = TestPreparationAuthority::start(&[2]).await;
+    let mut node = local(&authority);
+    node.policy.setup.storage = SetupStorage::Diskless;
+    for service in &mut node.policy.setup.services {
+        service.enabled = service.kind == SetupServiceKind::PaxosKv;
+    }
+    node.observed_at_unix_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    node.services = vec![NodeServiceObservation {
+        service_id: "kv".into(),
+        kind: "kv".into(),
+        operation_id: None,
+        state: DependencyState::Ready,
+        detail: "current supervised KV".into(),
+        observed_at_unix_ms: node.observed_at_unix_ms,
+        max_age_ms: 3000,
+        reason_code: None,
+    }];
+    let mut remote = node.clone();
+    remote.discovery_id = uuid::Uuid::new_v4().to_string();
+    remote.binding.as_mut().unwrap().node_id = 7;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let response = remote.clone();
+    let task = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            axum::Router::new().route(
+                "/api/cluster/node-observation",
+                axum::routing::get(move || {
+                    let value = response.clone();
+                    async move { axum::Json(value) }
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+    let records = [
+        (2, node.discovery_id.clone(), 9090),
+        (7, remote.discovery_id.clone(), port),
+    ]
+    .into_iter()
+    .map(|(node_id, discovery_id, web_port)| NodeRecord {
+        node_id,
+        discovery_id,
+        web_port,
+        rack_id: 4,
+        physical_host_id: "owned".into(),
+        host: "127.0.0.1".into(),
+        ssh_port: 2222,
+        ssh_user: "crowdb".into(),
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        confirmed: true,
+        host_key: None,
+        cancelled: false,
+    })
+    .collect();
+    registry::publish(
+        authority.ctx.kv(),
+        &NodeRegistry {
+            cluster_id: authority.bootstrap.identity.cluster_id.clone(),
+            nodes: records,
+        },
+    )
+    .await
+    .unwrap();
+    let report = collect(&authority.ctx, node).await.unwrap();
+    task.abort();
+    assert_eq!(report.phase, ClusterPhase::Ready, "{:?}", report.reasons);
+    assert_eq!(report.observation.members.len(), 2);
+    assert!(report
+        .observation
+        .members
+        .iter()
+        .any(|member| member.node_id == Some(7)
+            && member.management_endpoints == [format!("http://127.0.0.1:{port}")]));
+    assert!(!report.observation.dependencies.iter().any(|fact| matches!(
+        fact.kind,
+        DependencyKind::Metadata | DependencyKind::Storage | DependencyKind::Protocol
+    )));
+    assert!(preparation::read(&authority.ctx, &authority.bootstrap.identity)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(authority.ctx.sysmd().get_group(0, 1).await.unwrap().is_none());
 }

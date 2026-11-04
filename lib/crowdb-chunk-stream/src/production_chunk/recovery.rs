@@ -7,9 +7,11 @@ use super::{io_error, update_state, Ordering, ProductionStreamChunkStore};
 use crate::{ActiveChunkDescriptor, RecoveredStreamTail, Result, StreamError, StreamName};
 use async_trait::async_trait;
 use crowdb_chunk_client::{replay_frame_prefix, select_frame_prefix, FrameExtentSink, MirroredFrameReaders};
-use crowdb_protocol::chunkdb::rpc::{ChunkState, QueryChunkRequest};
+use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, QueryChunkRequest};
 use crowdb_protocol::frame::{ScannedFrameExtent, MAX_FRAME_SCAN_INPUT_BYTES};
 use std::{sync::Arc, time::Duration};
+
+mod drain;
 
 struct RecoveredExtents(Vec<ScannedFrameExtent>);
 
@@ -45,21 +47,23 @@ impl ProductionStreamChunkStore {
         {
             return Err(StreamError::StaleWriter);
         }
+        if chunk.state == ChunkState::Deleted as i32 && !finalized_empty_chunk(&chunk) {
+            return Err(StreamError::Corruption(
+                "deleted stream chunk lacks empty finalization proof".into(),
+            ));
+        }
         let state = self.install(chunk.clone())?;
+        if chunk.strips.is_empty() {
+            let recovered = empty_sealed_tail(&chunk, active)?;
+            self.verify_recovery_snapshot(&chunk).await?;
+            context.check_io()?;
+            update_state(&state, chunk);
+            return Ok(recovered);
+        }
         let deadline = tokio::time::Instant::from_std(context.deadline())
             .min(tokio::time::Instant::now() + Duration::from_secs(60));
-        for strip in &chunk.strips {
-            let Some(crowdb_protocol::chunkdb::rpc::Strip::MirrorStrip(mirror)) = &strip.strip else {
-                return Err(StreamError::Corruption("recovery chunk is not mirrored".into()));
-            };
-            for segment in &mirror.segments {
-                context.check_io()?;
-                self.disk_writer
-                    .drain_segment(segment, u64::from(strip.unit_kb) * 1024, deadline.into_std())
-                    .await
-                    .map_err(io_error)?;
-            }
-        }
+        self.drain_recovery_layout(&chunk, &context, deadline.into_std())
+            .await?;
         let readers =
             MirroredFrameReaders::new(Arc::new(chunk.clone()), name, self.disk_writer.clone(), deadline)
                 .map_err(|error| observation_error(&error))?;
@@ -91,17 +95,7 @@ impl ProductionStreamChunkStore {
         )
         .await
         .map_err(|error| observation_error(&error))?;
-        let refreshed = self
-            .allocator
-            .query_chunk(QueryChunkRequest {
-                chunk_id: Some(active.chunk_id),
-            })
-            .await
-            .map_err(io_error)?
-            .chunk;
-        if refreshed.as_ref() != Some(&chunk) {
-            return Err(StreamError::StaleWriter);
-        }
+        self.verify_recovery_snapshot(&chunk).await?;
         context.check_io()?;
         update_state(&state, chunk);
         state
@@ -113,6 +107,60 @@ impl ProductionStreamChunkStore {
             extents: extents.0,
         })
     }
+    async fn verify_recovery_snapshot(&self, chunk: &Chunk) -> Result<()> {
+        let refreshed = self
+            .allocator
+            .query_chunk(QueryChunkRequest { chunk_id: chunk.id })
+            .await
+            .map_err(io_error)?
+            .chunk;
+        if refreshed.as_ref() != Some(chunk) {
+            return Err(StreamError::StaleWriter);
+        }
+        Ok(())
+    }
+}
+
+fn empty_sealed_tail(chunk: &Chunk, active: &ActiveChunkDescriptor) -> Result<RecoveredStreamTail> {
+    use crowdb_protocol::chunk_stream::StreamPurpose;
+    let valid_purpose = [StreamPurpose::Wal, StreamPurpose::Stream]
+        .into_iter()
+        .any(|purpose| purpose.matches(active.chunk_id) && chunk.chunk_type == purpose.chunk_type() as i32);
+    // Finalization may delete the already sealed empty tail. Its durable zero
+    // boundary has no physical bytes to scan; no nonempty tombstone is accepted.
+    if !valid_purpose
+        || chunk.writer_epoch == 0
+        || (chunk.state != ChunkState::Sealed as i32 && !finalized_empty_chunk(chunk))
+        || chunk.capacity != 0
+        || chunk.sealed_length != 0
+        || chunk.acknowledged_cursor != 0
+        || active.acknowledged_cursor != 0
+        || active.physical_start != 0
+    {
+        return Err(StreamError::Corruption("invalid empty sealed tail".into()));
+    }
+    Ok(RecoveredStreamTail {
+        physical_end: 0,
+        logical_end: active.logical_start,
+        extents: Vec::new(),
+    })
+}
+
+pub(super) fn finalized_empty_chunk(chunk: &Chunk) -> bool {
+    use crowdb_protocol::chunk_stream::StreamPurpose;
+    chunk.state == ChunkState::Deleted as i32
+        && chunk.sealed_ts_ms != 0
+        && chunk.writer_epoch != 0
+        && chunk.strips.is_empty()
+        && chunk.cleanup_intents.is_empty()
+        && chunk.capacity == 0
+        && chunk.sealed_length == 0
+        && chunk.acknowledged_cursor == 0
+        && chunk.id.is_some_and(|id| {
+            [StreamPurpose::Wal, StreamPurpose::Stream]
+                .into_iter()
+                .any(|purpose| purpose.matches(id) && chunk.chunk_type == purpose.chunk_type() as i32)
+        })
 }
 
 fn observation_error(error: &crowdb_chunk_client::FrameObservationError) -> StreamError {

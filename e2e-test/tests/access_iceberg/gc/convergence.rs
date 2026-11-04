@@ -36,26 +36,36 @@ struct TestGcConvergence {
 async fn expired_inline_backlog_completes_with_foreground_progress() {
     let stack = TestNativeStorage::new();
     let (store, context, table) = seed_table(&stack).await;
-    let backlog = seed_expired_backlog(store.as_ref(), context, table, 128).await;
+    let started = Instant::now();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3300);
+    let pressure = TestGcPressure::prepare_before(deadline).await.unwrap();
+    let backlog = tokio::time::timeout_at(
+        deadline,
+        seed_expired_backlog(store.as_ref(), context, table, 128),
+    )
+    .await
+    .expect("inline GC backlog seed exceeded the existing case deadline");
     assert_eq!(backlog.files.len(), 128);
     assert!(backlog.files.len() > usize::from(GcLimits::default().page_items));
     assert!(backlog.dropped_ms + GcTask::PURGE_DELAY_MS < now_ms());
-    let server = TestFrontend::start(12).await;
     let mut check = TestGcConvergence {
         store,
         context,
         table,
         backlog,
-        started: Instant::now(),
+        started,
         task_gets: 0,
         verification_gets: 0,
         observations: Vec::new(),
         last: None,
-        pressure: None,
+        pressure: Some(pressure),
     };
     check.report("seeded");
-    let result =
-        tokio::time::timeout(Duration::from_secs(3300), check.run(&server.origin, &stack.seeds)).await;
+    let result = tokio::time::timeout_at(deadline, async {
+        TestFrontend::start(12).await;
+        check.run(&stack.seeds).await
+    })
+    .await;
     let result = result.unwrap_or_else(|_| Err("inline GC convergence exceeded 3300 seconds".into()));
     if let Err(error) = result {
         check.report("failed");
@@ -68,15 +78,15 @@ async fn expired_inline_backlog_completes_with_foreground_progress() {
         if let Some(pressure) = &mut check.pressure {
             pressure.stop().await;
         }
-        server.stop().await;
+        crate::common::control::node("stop", 12).await;
         panic!("inline GC convergence failed: {error}");
     }
     check.report("complete");
-    server.stop().await;
+    crate::common::control::node("stop", 12).await;
 }
 
 impl TestGcConvergence {
-    async fn run(&mut self, origin: &str, seeds: &[String]) -> Result<(), String> {
+    async fn run(&mut self, seeds: &[String]) -> Result<(), String> {
         let identity = OperationId::from_bytes(self.table.as_bytes()).map_err(|error| error.to_string())?;
         let repository = GcRepository::new(self.store.clone());
         loop {
@@ -87,8 +97,14 @@ impl TestGcConvergence {
                 .map_err(|error| error.to_string())?
             {
                 self.observe(&task)?;
-                if let Some(pressure) = &mut self.pressure {
-                    pressure.observe(task.deleted).await?;
+                let pressure = self
+                    .pressure
+                    .as_mut()
+                    .ok_or("prepared foreground pressure is missing")?;
+                if pressure.released() {
+                    pressure
+                        .observe(task.deleted, task.phase == GcPhase::Complete)
+                        .await?;
                 } else if task.deleted > 0 {
                     if task.phase == GcPhase::Complete {
                         return Err("GC completed before the foreground overlap could be started".into());
@@ -100,7 +116,7 @@ impl TestGcConvergence {
                             "revision":task.revision,"phase":format!("{:?}",task.phase),
                         })
                     );
-                    self.pressure = Some(TestGcPressure::start(origin, seeds.to_vec())?);
+                    pressure.release(seeds.to_vec())?;
                 }
                 if task.phase == GcPhase::Complete
                     && self.pressure.as_ref().is_some_and(TestGcPressure::complete)

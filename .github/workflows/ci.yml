@@ -63,8 +63,6 @@ jobs:
       uses: ./.github/actions/compilation-cache
     - name: Clean env
       run: pixi run clean --runtime-only
-    - name: Build C++ libs
-      run: pixi run build
     - name: Run C++ and FFI tests
       run: pixi run test-cpp
     - name: Capture runner state on failure
@@ -171,8 +169,6 @@ jobs:
       uses: ./.github/actions/compilation-cache
     - name: Clean env
       run: pixi run clean --runtime-only
-    - name: Build C++ libs (crowdb-diskio subprocess)
-      run: pixi run build
     - name: Run storage component tests
       run: pixi run test-storage
     - name: Capture runner state on failure
@@ -212,6 +208,11 @@ jobs:
   AccessTests:
     timeout-minutes: 90
     runs-on: ubuntu-24.04
+    env:
+      # Keep function symbols and panic locations without duplicating native
+      # DWARF across hundreds of linked test executables.
+      CARGO_PROFILE_TEST_STRIP: debuginfo
+      CARGO_BUILD_JOBS: "4"
     steps:
     - uses: actions/checkout@v4
       with:
@@ -227,6 +228,12 @@ jobs:
       with:
         pixi-version: v0.77.0
     - uses: ./.github/actions/compilation-cache
+      with:
+        family: access-ci-v2
+        directories: |
+          target/debug
+          sdk/target/release
+          sdk/target/sdist/release
     - name: Clean env
       run: pixi run clean --runtime-only
     - name: Run access component tests
@@ -658,6 +665,11 @@ jobs:
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
         pixi-version: v0.77.0
+    - name: Install owned network fault tools
+      if: matrix.partition == 'console-api'
+      run: |
+        pixi run sudo apt-get update
+        pixi run sudo apt-get install -y iptables
     - uses: ./.github/actions/restore-compiled
       with:
         artifact: ${{ needs.BuildClients.outputs.artifact }}

@@ -42,6 +42,8 @@ pub enum StoreError {
     Route(#[from] crate::routing::RouteError),
     #[error("kv client error: {0}")]
     Kv(String),
+    #[error("kv write outcome is unknown: {0}")]
+    OutcomeUnknown(String),
     #[error("serialization error: {0}")]
     Serde(String),
     #[error("chunk is outside this runtime domain or service slot authority")]
@@ -117,7 +119,7 @@ impl ChunkStore {
             Err(crowdb_kv_client::Error::OutcomeUnknown) => match self.get_chunk(id).await {
                 Ok(stored) if stored == *chunk => Ok(()),
                 Ok(_) | Err(StoreError::ChunkNotFound) => Err(StoreError::Conflict),
-                Err(error) => Err(error),
+                Err(error) => Err(StoreError::OutcomeUnknown(error.to_string())),
             },
             Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {
                 Err(StoreError::ChunkAlreadyExists)

@@ -90,7 +90,7 @@ def create_docker_nodes(cluster, indexes):
                      "--env", f"CROWDB_CLUSTER={cluster.run_id}",
                      "--env", f"CROWDB_INITIAL_VOTERS={cluster.node_count}"]
         for protocol, port in ports(cluster.port_base + index * 10).items():
-            internal = 9090 + (port - cluster.port_base - index * 10)
+            internal = {"UI": 9090, "S3": 16000, "ICEBERG": 17000, "DATASET": 18000}[protocol]
             arguments += ["--publish", f"127.0.0.1:{port}:{internal}"]
             if protocol != "UI":
                 arguments += ["--env", f"CROWDB_{protocol}_PUBLIC_URI=http://127.0.0.1:{port}"]

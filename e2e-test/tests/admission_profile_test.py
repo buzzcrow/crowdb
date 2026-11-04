@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 import run
@@ -92,3 +93,8 @@ class AdmissionProfileTest(unittest.TestCase):
             self.assertNotEqual(policies[0], policies[1])
             self.assertTrue(all(policy.parent == Path(directory) for policy in policies))
             self.assertEqual(policies[0].read_text(), policies[1].read_text())
+            accepted = tomllib.loads(policies[0].read_text())
+            enabled = [service for service in accepted["services"] if service["enabled"]]
+            self.assertEqual(accepted["storage"], {"mode": "diskless"})
+            self.assertEqual(enabled, [{"kind": "paxos-kv", "enabled": True,
+                "listeners": {"http_port": 10000, "rpc_port": 10100}}])

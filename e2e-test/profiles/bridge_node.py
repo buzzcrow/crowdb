@@ -11,6 +11,7 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from admission_profile import cleanup as cleanup_runtime
+from profiles.setup_choices import diskless_policy
 
 IMAGE = os.environ["CROWDB_CONTAINER_IMAGE"]
 PREFIX = os.environ["CROWDB_E2E_PROFILE_NAME"]
@@ -32,12 +33,10 @@ def start_node(name, *, default_setup=False):
     data = DATA / name.removeprefix(PREFIX + "-")
     data.mkdir(mode=0o755)
     policy = DATA / (name.removeprefix(PREFIX + "-") + ("-default-policy.toml" if default_setup else "-policy.toml"))
-    kinds = ("paxos-kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access-server")
-    services = ", ".join(f'{{ kind = "{kind}", enabled = false }}' for kind in kinds)
     if default_setup:
         policy.write_text('[storage]\nmode = "automatic"\ncapacity_bytes = 17179869184\nreserve_bytes = 1073741824\nsparse = false\n')
     else:
-        policy.write_text(f'services = [{services}]\n[storage]\nmode = "diskless"\n')
+        policy.write_text(diskless_policy())
     docker("run", "--rm", "--name", PREFIX + "-prepare", "--network", "none",
            "--label", f"org.crowdb.e2e.run={PREFIX}", "--user", "0",
            "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "32m", "--entrypoint", "/bin/chown",

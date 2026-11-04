@@ -23,6 +23,7 @@ mod frame_views;
 mod framing;
 mod layout;
 mod layout_cache;
+mod locality;
 mod location;
 mod stream;
 mod verified_frame;
@@ -37,6 +38,8 @@ const DEFAULT_STREAM_WINDOW: usize = 1024 * 1024;
 /// Bounded retry, streaming, and EC-recovery memory policy.
 #[derive(Debug, Clone)]
 pub struct ChunkReadPolicy {
+    /// Prefer this node, then its rack, when retained routing covers a mirror.
+    pub preferred_node_id: Option<u64>,
     pub stream_window_bytes: usize,
     pub stream_slots: usize,
     pub global_stream_bytes: usize,
@@ -92,6 +95,7 @@ impl LayoutSnapshot {
 impl Default for ChunkReadPolicy {
     fn default() -> Self {
         Self {
+            preferred_node_id: None,
             stream_window_bytes: DEFAULT_STREAM_WINDOW,
             stream_slots: 3,
             global_stream_bytes: 256 * 1024 * 1024,
@@ -204,9 +208,10 @@ impl ChunkReader {
         let deadline = started
             + Duration::from_millis(response.layout_validity_ms)
                 .saturating_sub(self.policy.layout_safety_margin);
-        let chunk = response
+        let mut chunk = response
             .chunk
             .ok_or_else(|| ReadError::ChunkDeleted(format!("{}:{}", chunk_id.high, chunk_id.low)))?;
+        self.prefer_local_mirrors(&mut chunk);
         Ok(LayoutSnapshot {
             chunk_id,
             chunk: Arc::new(chunk),

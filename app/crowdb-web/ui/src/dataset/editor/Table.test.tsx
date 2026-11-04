@@ -43,7 +43,7 @@ it('edits a Sample as one row, persists only metadata and does not publish on Sa
 it('patches a cell without losing other Fields and rejects unbounded authoring input', () => {
   const op = setCell(draft(), btoa('note'), 'label', textValue('keep'));
   expect(setCell(op, btoa('note'), 'content', { kind: 'upload', id: '3'.repeat(32), length: '12', md5: '4'.repeat(32) }).mapping!.samples[0]).toMatchObject({ fields: [{ name: 'label' }, { name: 'content' }] });
-  expect(() => textValue('字'.repeat(22000))).toThrow('64 KiB');
+  expect(() => textValue('\u5b57'.repeat(22000))).toThrow('64 KiB');
   expect(() => checkLimits({ ...op, mapping: { ...op.mapping!, samples: Array(1001).fill(op.mapping!.samples[0]) } })).toThrow('1000');
 });
 it('projects new columns as Missing without asking the parent for unknown Fields', async () => {

@@ -22,7 +22,11 @@ fn authority() -> NamespaceAuthority {
         pending_operation: None,
         creating_child: None,
         rename: None,
-        properties: NamespaceProperties::new(BTreeMap::from([("owner".into(), "数据库".into())])).unwrap(),
+        properties: NamespaceProperties::new(BTreeMap::from([(
+            "owner".into(),
+            "\u{6570}\u{636e}\u{5e93}".into(),
+        )]))
+        .unwrap(),
     }
 }
 
@@ -132,7 +136,7 @@ fn child_ranges_are_parent_scoped_and_separate_namespace_and_table_indexes() {
         Some(NamespaceId::from_bytes(&[255; 16]).unwrap()),
     ] {
         let range = child_range(catalog, parent, CatalogScope::NamespaceName).unwrap();
-        for name in ["a", "longer", "数据库"] {
+        for name in ["a", "longer", "\u{6570}\u{636e}\u{5e93}"] {
             let key = name_key(catalog, parent, name).unwrap().encode().unwrap();
             assert!(range.contains(&key));
             assert!(

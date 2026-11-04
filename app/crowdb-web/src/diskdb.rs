@@ -7,6 +7,8 @@ pub mod lifecycle;
 pub mod proxy;
 mod remote;
 pub(crate) use remote::configuration as planned_configuration;
+#[cfg(feature = "test-util")]
+pub use remote::configuration as configuration_for_tests;
 
 pub use lifecycle::*;
 pub use proxy::*;

@@ -68,7 +68,8 @@ BufferPool::BufferPool(size_t capacity_bytes, uint32_t page_bytes, PageStore *st
     if (num_frames_ == 0) {
         num_frames_ = 1;
     }
-    arena_.assign(static_cast<size_t>(num_frames_) * page_bytes_, 0);
+    // Misses load a complete validated frame; fresh frames are zeroed on acquisition.
+    arena_ = std::make_unique_for_overwrite<uint8_t[]>(static_cast<size_t>(num_frames_) * page_bytes_);
     frames_.resize(num_frames_);
     stats_.num_frames = num_frames_;
 

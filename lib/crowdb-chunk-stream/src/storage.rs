@@ -74,6 +74,11 @@ pub trait StreamMetadataStore: Send + Sync {
 
 #[async_trait]
 pub trait StreamChunkStore: Send + Sync {
+    /// Maximum physical capacity supported by one chunk in this store.
+    fn capacity_limit(&self) -> u64 {
+        crowdb_chunk_client::STREAM_CHUNK_BYTES
+    }
+
     /// Required synchronized replica count for append traffic accounting.
     fn mirror_copies(&self) -> u32;
     fn bind_writer(&self, name: StreamName, epoch: u64, session: std::sync::Arc<crate::StreamWriterSession>);

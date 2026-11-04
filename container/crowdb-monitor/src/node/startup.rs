@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use super::durable;
 
 mod policy;
-pub use policy::{accept_node_policy, read_node_policy};
+pub use policy::{
+    accept_node_policy, accept_node_policy_with_port_offset, read_node_policy,
+    resolve_node_policy_with_port_offset,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

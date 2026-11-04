@@ -17,6 +17,8 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use super::super::{dependencies, S3Dispatcher, StorageReadiness};
 
+const OBSERVATION_BUDGET: Duration = dependencies::PROBE_BUDGET.saturating_add(Duration::from_millis(100));
+
 pub(super) const MAX_AGE: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
@@ -82,16 +84,43 @@ impl S3Dispatcher {
                 u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
             });
         let observed = tokio::time::timeout(
-            Duration::from_millis(800),
+            OBSERVATION_BUDGET,
             Arc::clone(&self.operations).observe_dependencies(),
         )
         .await
         .unwrap_or_else(|_| {
             Some(StorageReadiness {
-                metadata: Err("Dependency observation exceeded its 800 ms deadline".into()),
-                chunks: Err("Dependency observation exceeded its 800 ms deadline".into()),
+                metadata: Err(format!(
+                    "Dependency observation exceeded its {} ms deadline",
+                    OBSERVATION_BUDGET.as_millis()
+                )),
+                chunks: Err(format!(
+                    "Dependency observation exceeded its {} ms deadline",
+                    OBSERVATION_BUDGET.as_millis()
+                )),
             })
         });
+        let generation = self
+            .observations
+            .latest
+            .load()
+            .as_ref()
+            .map_or(1, |last| last.generation + 1);
+        if let Some(failed) = observed
+            .as_ref()
+            .filter(|value| value.metadata.is_err() || value.chunks.is_err())
+        {
+            tracing::warn!(
+                generation,
+                configured_budget_ms = u64::try_from(dependencies::PROBE_BUDGET.as_millis()).unwrap_or(u64::MAX),
+                observation_budget_ms = u64::try_from(OBSERVATION_BUDGET.as_millis()).unwrap_or(u64::MAX),
+                total_elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                checked_at_unix_ms,
+                metadata_error = ?failed.metadata.as_ref().err(),
+                chunks_error = ?failed.chunks.as_ref().err(),
+                "Access dependency observation failed; background sampling continues"
+            );
+        }
         let mut health = self
             .health
             .snapshot(&self.metrics, self.body_allocator.as_deref());
@@ -113,12 +142,6 @@ impl S3Dispatcher {
                 DependencyHealth::Unavailable
             };
         }
-        let generation = self
-            .observations
-            .latest
-            .load()
-            .as_ref()
-            .map_or(1, |last| last.generation + 1);
         HealthObservation {
             health,
             details,

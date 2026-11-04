@@ -28,7 +28,7 @@ pub(super) async fn accept(
     target: &NodeEntry,
     choices: Option<NodeSetupChoices>,
     expected: Option<crowdb_protocol::mgmt::node::deployment::FormationPolicy>,
-) -> Result<(), Failure> {
+) -> Result<NodeSetupChoices, Failure> {
     let mut target = target.clone();
     target.ssh_password = None;
     target.ssh_key = Some(super::node_key_path(state).to_string_lossy().into_owned());
@@ -75,6 +75,7 @@ pub(super) async fn accept(
             })
             .unwrap_or_default()
     };
+    let accepted_choices = choices.clone();
     let request = NodeSetupRequest {
         version: 1,
         discovery_id: record.discovery_id.clone(),
@@ -88,7 +89,7 @@ pub(super) async fn accept(
     let observed: NodeSetupStatus =
         serde_json::from_value(value).map_err(|error| err_502(error.to_string()))?;
     validate(state, record, &observed)?;
-    Ok(())
+    Ok(accepted_choices)
 }
 
 pub(crate) async fn status(

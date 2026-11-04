@@ -70,21 +70,30 @@ impl Docker {
         }
         Ok(())
     }
-    pub async fn objects(&self, kind: &str) -> Result<Vec<Value>> {
+    pub async fn objects(&self, record: &Launch, kind: &str) -> Result<Vec<Value>> {
         let args = if kind == "container" {
-            strings(&["ps", "-aq"])
+            strings(&["ps", "-a", "--format", "{{.Names}}"])
         } else {
-            strings(&[kind, "ls", "-q"])
+            strings(&[kind, "ls", "--format", "{{.Name}}"])
         };
-        let ids = self.call(&args).await?;
-        if ids.is_empty() {
+        let listed = self.call(&args).await?;
+        let names: Vec<_> = listed
+            .lines()
+            .filter(|name| {
+                if kind == "network" {
+                    *name == record.resource_name(kind, 0)
+                } else {
+                    (1..=record.nodes).any(|index| *name == record.resource_name(kind, index))
+                }
+            })
+            .collect();
+        if names.is_empty() {
             return Ok(Vec::new());
         }
+        // Other fixtures may remove their resources between list and inspect.
+        // Inspect only this receipt's exact names, then verify their ownership.
         let mut args = strings(&[kind, "inspect"]);
-        args.extend(ids.lines().map(String::from));
-        if args.len() > 4098 {
-            return Err(invalid("Docker resource inventory exceeds bound"));
-        }
+        args.extend(names.into_iter().map(String::from));
         serde_json::from_str(&self.call(&args).await?)
             .map_err(|_| invalid("invalid Docker resource observation"))
     }
@@ -99,7 +108,7 @@ impl Docker {
     }
     pub async fn ensure(&self, record: &Launch, kind: &str, name: &str) -> Result<Value> {
         if let Some(item) = self
-            .objects(kind)
+            .objects(record, kind)
             .await?
             .into_iter()
             .find(|item| object_name(item) == name)

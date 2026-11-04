@@ -7,6 +7,11 @@ use crowdb_protocol::chunkdb::rpc::{AllocateChunkRequest, AllocateChunkResponse}
 use crowdb_protocol::common::ChunkId;
 use std::{sync::Arc, time::Duration};
 
+enum RouteRefresh {
+    Periodic,
+    AfterFailure,
+}
+
 impl ChunkdbClient {
     pub(super) async fn with_rpc_retry<T, F, Fut>(&self, chunk_id: Option<&ChunkId>, op: F) -> Result<T>
     where
@@ -14,7 +19,7 @@ impl ChunkdbClient {
         Fut: std::future::Future<Output = Result<T>>,
     {
         self.rpc_transport
-            .with_request_identity(self.retry_rpc(chunk_id, false, op))
+            .with_request_identity(self.retry_rpc(chunk_id, false, RouteRefresh::Periodic, op))
             .await
     }
 
@@ -24,12 +29,30 @@ impl ChunkdbClient {
         Fut: std::future::Future<Output = Result<T>>,
     {
         self.rpc_transport
-            .with_request_identity(self.retry_rpc(chunk_id, true, op))
+            .with_request_identity(self.retry_rpc(chunk_id, true, RouteRefresh::Periodic, op))
+            .await
+    }
+
+    /// A real readiness point read must not enumerate authority before using
+    /// an initialized route. Cold discovery and failed-route recovery remain.
+    pub(crate) async fn with_probe_retry<T, F, Fut>(&self, chunk_id: &ChunkId, op: F) -> Result<T>
+    where
+        F: Fn(Arc<ChunkdbRpcTransport>, String) -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        self.rpc_transport
+            .with_request_identity(self.retry_rpc(Some(chunk_id), true, RouteRefresh::AfterFailure, op))
             .await
     }
 
     /// Execute a crowdb-rpc call with retry on transient errors.
-    async fn retry_rpc<T, F, Fut>(&self, chunk_id: Option<&ChunkId>, read_only: bool, op: F) -> Result<T>
+    async fn retry_rpc<T, F, Fut>(
+        &self,
+        chunk_id: Option<&ChunkId>,
+        read_only: bool,
+        refresh: RouteRefresh,
+        op: F,
+    ) -> Result<T>
     where
         F: Fn(Arc<ChunkdbRpcTransport>, String) -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
@@ -39,7 +62,10 @@ impl ChunkdbClient {
         let mut attempts = 0u32;
         let mut backoff = self.retry.initial_backoff;
         loop {
-            let endpoints = self.endpoints_for_chunk(chunk_id).await?;
+            let endpoints = match refresh {
+                RouteRefresh::Periodic => self.endpoints_for_chunk(chunk_id).await?,
+                RouteRefresh::AfterFailure => self.cached_endpoints_for_chunk(chunk_id).await?,
+            };
             let mut last_error = None;
             for endpoint in endpoints {
                 match tokio::time::timeout_at(deadline, op(Arc::clone(&transport), endpoint))
@@ -123,8 +149,13 @@ impl ChunkdbClient {
                 }) {
                     Ok(response) => return Ok(response),
                     Err(
-                        error @ (ChunkdbClientError::NotMyRange(_) | ChunkdbClientError::ConnectFailed(_)),
+                        error @ (ChunkdbClientError::NotMyRange(_)
+                        | ChunkdbClientError::ConnectFailed(_)
+                        | ChunkdbClientError::Unavailable(_)),
                     ) => {
+                        // The server reports KV quorum loss as Unavailable
+                        // only after allocation has rolled back its physical
+                        // strips, so retrying starts a fresh safe allocation.
                         safe_retry = Some(error);
                     }
                     Err(error) => return Err(error),

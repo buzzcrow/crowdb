@@ -313,6 +313,46 @@ fn transfer(phase: TransferPhase) -> TransferTransition {
     }
 }
 
+#[tokio::test]
+async fn returning_source_releases_its_writer_after_durable_lease_exclusion() {
+    for (epoch, prepared) in [(3, false), (3, true), (4, true)] {
+        let store = Arc::new(Group0ControlStore::new(Arc::new(MemoryKv::default())));
+        let mut transition = transfer(TransferPhase::TargetPreparing);
+        transition.target_artifact = transition.artifact.clone();
+        transition.release_proof = Some(AuthorityReleaseProof::LeaseExpired {
+            activation_not_before_ms: 105,
+        });
+        store.persist_transfer_transition(&transition, 0).await.unwrap();
+        let source = partition(id(1), KeyRange::default(), epoch, &artifact(11), prepared).await;
+        let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap());
+        service.install_partition(&source).unwrap();
+        let executor = Arc::new(
+            TransitionExecutor::with_storage(
+                1,
+                service,
+                Arc::new(FakeStorage {
+                    recovered: source.clone(),
+                    split: split_artifact(&split_transition()),
+                    expected_split_parent_range: None,
+                }),
+                8,
+            )
+            .unwrap(),
+        );
+        let processor = TransitionProcessor::new(1, store, executor);
+        processor.tick().await.unwrap();
+        processor.tick().await.unwrap();
+        assert_eq!(
+            source.lifecycle(),
+            if epoch == 3 {
+                PartitionLifecycle::TransferQuiesced
+            } else {
+                PartitionLifecycle::Prepared
+            }
+        );
+    }
+}
+
 fn split_transition() -> SplitTransition {
     SplitTransition {
         transition_id: id(91),

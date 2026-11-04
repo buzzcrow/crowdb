@@ -240,11 +240,16 @@ impl MultipartPartRecord {
         upload_id: &[u8; 16],
         number: u16,
     ) -> Result<Self, MultipartRecordError> {
-        let record: Self = decode(PART_MAGIC, bytes)?;
-        record.validate()?;
+        let record = Self::decode_unbound(bytes)?;
         if record.bucket_id != bucket || &record.upload_id != upload_id || record.number != number {
             return Err(MultipartRecordError::Identity);
         }
+        Ok(record)
+    }
+
+    pub(crate) fn decode_unbound(bytes: &[u8]) -> Result<Self, MultipartRecordError> {
+        let record: Self = decode(PART_MAGIC, bytes)?;
+        record.validate()?;
         Ok(record)
     }
 

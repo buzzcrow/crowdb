@@ -103,7 +103,7 @@ fn every_root_phase_round_trips_with_its_exact_catalog_and_deadline() {
 #[test]
 fn authority_round_trip_binds_identity_to_its_key() {
     let catalog = CatalogId::random();
-    let record = StorageRecord::Authority(CatalogAuthority::new(catalog, "目录".into()).unwrap());
+    let record = StorageRecord::Authority(CatalogAuthority::new(catalog, "\u{76ee}\u{5f55}".into()).unwrap());
     let encoded = record.encode().unwrap();
     let key = IcebergKey::Catalog {
         catalog,

@@ -26,6 +26,14 @@ pub(crate) async fn native_browser() -> Value {
     request_with_timeout(json!({"action": "run-native-browser"}), Duration::from_secs(305)).await
 }
 
+pub(crate) async fn native_browser_with_journal(bucket: &str) -> Value {
+    request_with_timeout(
+        json!({"action":"run-native-browser", "journal_bucket":bucket}),
+        Duration::from_secs(305),
+    )
+    .await
+}
+
 pub(crate) async fn native_browser_with_chunks(chunks: Value) -> Value {
     request_with_timeout(
         json!({"action":"run-native-browser", "chunks": chunks}),

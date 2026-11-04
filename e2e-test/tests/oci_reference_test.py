@@ -126,6 +126,9 @@ class OciReferenceOwnershipTest(unittest.TestCase):
         self.assertIn('type=volume,source=owned-node1-data,target=/opt/crowdb/data', create)
         self.assertEqual(create[create.index('--network') + 1], 'owned-recovered')
         self.assertNotIn('owned-node1-cold-data', create)
+        published = [create[index+1] for index, arg in enumerate(create) if arg == '--publish']
+        self.assertEqual(published, ['127.0.0.1:20000:9090', '127.0.0.1:20001:16000',
+                                    '127.0.0.1:20002:17000', '127.0.0.1:20003:18000'])
 
     def test_cold_network_scope_still_rejects_foreign_names_and_attachments(self):
         cluster = self.cluster()

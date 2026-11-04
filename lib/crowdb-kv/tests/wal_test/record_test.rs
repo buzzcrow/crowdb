@@ -8,6 +8,15 @@ use crowdb_kv::paxos::roles::{PxBallot, PxLogEntry};
 use crowdb_kv::wal::record::{RecordError, RecordType, WALRecord, MIN_RECORD_SIZE};
 
 #[test]
+fn short_frame_marker_is_rejected() {
+    for frame_len in 0_u32..55 {
+        let mut frame = vec![0; 128];
+        frame[..4].copy_from_slice(&frame_len.to_le_bytes());
+        assert!(matches!(WALRecord::decode(&frame), Err(RecordError::Truncated)));
+    }
+}
+
+#[test]
 fn encode_decode_roundtrip_accepted() {
     let entry = PxLogEntry {
         slot: 42,

@@ -27,13 +27,25 @@ class InstallDepsTest(unittest.TestCase):
             log = root / 'commands'
             for name in ('git', 'cargo', 'pixi', 'uname', 'npm'):
                 stub = binaries / name
-                stub.write_text('#!/bin/sh\n'
-                    + ('printf "%s\\n" "$TEST_PLATFORM"\n' if name == 'uname' else
-                       f'printf "%s\\n" "{name} $*" >> "$TEST_COMMANDS"\n'
-                       'case "$*" in\n'
-                       '  *--setup-apparmor*) exit "$TEST_SETUP_EXIT" ;;\n'
-                       f'  ci) exit "$TEST_UI_EXIT" ;;\n'
-                       'esac\n'))
+                stub_lines = ['#!/bin/sh\n']
+                if name == 'uname':
+                    stub_lines.append('printf "%s\\n" "$TEST_PLATFORM"\n')
+                else:
+                    if name == 'pixi':
+                        stub_lines.extend([
+                            'if [ "$1" = completion ]; then\n',
+                            '  printf "%s\\n" \'complete -W "stub-task" pixi\'\n',
+                            '  exit 0\n',
+                            'fi\n',
+                        ])
+                    stub_lines.extend([
+                        f'printf "%s\\n" "{name} $*" >> "$TEST_COMMANDS"\n',
+                        'case "$*" in\n',
+                        '  *--setup-apparmor*) exit "$TEST_SETUP_EXIT" ;;\n',
+                        f'  ci) exit "$TEST_UI_EXIT" ;;\n',
+                        'esac\n',
+                    ])
+                stub.write_text(''.join(stub_lines))
                 stub.chmod(0o755)
             environment = dict(os.environ, HOME=str(root), PIXI_PROJECT_ROOT=str(root), TEST_PLATFORM=platform,
                 TEST_COMMANDS=str(log), TEST_SETUP_EXIT='1' if fail_setup else '0',
@@ -45,6 +57,22 @@ class InstallDepsTest(unittest.TestCase):
                 if result.returncode:
                     break
             return result, log.read_text().splitlines(), (root / '.bashrc').read_text()
+
+    def assert_completion_loads_in_new_bash(self, bashrc):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / '.bashrc').write_text(bashrc)
+            binaries = root / 'bin'
+            binaries.mkdir()
+            pixi = binaries / 'pixi'
+            pixi.write_text('#!/bin/sh\n'
+                            'printf \'complete -W "stub-task" pixi\\n\'\n')
+            pixi.chmod(0o755)
+            environment = dict(os.environ, HOME=str(root), PATH=str(binaries) + os.pathsep + os.environ['PATH'])
+            result = subprocess.run(['bash', '-ic', 'complete -p pixi'], env=environment,
+                                    text=True, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('stub-task', result.stdout)
 
     def test_linux_sets_up_host_before_ui_and_cargo_dependencies(self):
         result, commands, _ = self.execute('Linux x86_64')
@@ -83,6 +111,8 @@ class InstallDepsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(bashrc.startswith(original))
         self.assertIn('source <(pixi completion --shell bash)', bashrc)
+        self.assertIn('CROWDB Pixi Bash completion', bashrc)
+        self.assertIn("source /", result.stdout)
 
     def test_repeated_dependency_setup_does_not_duplicate_completion(self):
         result, _, bashrc = self.execute('Linux x86_64', repeats=2)
@@ -96,6 +126,11 @@ class InstallDepsTest(unittest.TestCase):
                 result, _, bashrc = self.execute('Linux x86_64', bashrc=original)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(bashrc, original)
+
+    def test_new_bash_loads_completion_block(self):
+        result, _, bashrc = self.execute('Darwin arm64')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_completion_loads_in_new_bash(bashrc)
 
 
 if __name__ == '__main__':

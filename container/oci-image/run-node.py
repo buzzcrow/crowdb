@@ -20,9 +20,13 @@ def digest_reference(reference):
     return digest.startswith("sha256:") and len(digest) == 71 and all(c in "0123456789abcdef" for c in digest[7:])
 
 
-# Fixed in-image listeners; host networking admits only one node per host.
-HOST_PORTS = (2222, 7100, 7101, 7200, 7300, 7301, 7400, 7401,
-              9090, 9091, 9092, 9093, 9094, 9095, 10000, 10100)
+# Base listeners used by one node. Host-network instances add
+# ``CROWDB_PORT_OFFSET`` to every listener before the policy is sealed. These
+# values mirror the canonical service blocks in
+# ``lib/crowdb-protocol/src/port/ports.rs``.
+HOST_PORTS = (2222, 9090, 9095, 10000, 10100, 10101, 11000, 11100, 11200,
+              12000, 12100, 12200, 13000, 14000, 15100, 15200, 16000, 17000,
+              18000, 19000)
 
 
 def check_host_ports(ports=HOST_PORTS):
@@ -35,6 +39,15 @@ def check_host_ports(ports=HOST_PORTS):
                 listener.bind(("0.0.0.0", port))
             except OSError as error:
                 raise ValueError(f"host node TCP port {port} is already occupied") from error
+
+
+def shifted_ports(offset):
+    if not isinstance(offset, int) or offset < 0:
+        raise ValueError("port offset must be a non-negative integer")
+    ports = tuple(port + offset for port in HOST_PORTS)
+    if any(port > 65535 for port in ports):
+        raise ValueError("port offset shifts a node listener beyond port 65535")
+    return ports
 
 
 def validate(args, parser, check_ports=True):
@@ -53,6 +66,10 @@ def validate(args, parser, check_ports=True):
         parser.error("CPU shares must be between 2 and 262144")
     if args.worker_threads is not None and args.worker_threads < 1:
         parser.error("worker thread count must be positive")
+    try:
+        ports = shifted_ports(getattr(args, "port_offset", 0))
+    except ValueError as error:
+        parser.error(str(error))
     available = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // (1024 * 1024)
     if not (0 < args.cpus <= (os.cpu_count() or 1)) or not 512 <= args.memory_mib <= available:
         parser.error("CPU and memory boundaries must fit the host; memory must be at least 512 MiB")
@@ -83,7 +100,7 @@ def validate(args, parser, check_ports=True):
         try:
             socket.if_nametoindex(args.interface)
             if check_ports:
-                check_host_ports()
+                check_host_ports(ports)
         except (OSError, ValueError) as error:
             parser.error(str(error))
     elif args.runtime != "docker":
@@ -118,6 +135,8 @@ def main():
     parser.add_argument("--seed", action="append", default=[])
     parser.add_argument("--cluster", required=True)
     parser.add_argument("--initial-voters", type=int, choices=(1, 3), default=3)
+    parser.add_argument("--port-offset", type=int, default=0,
+                        help="Add this offset to every host-network node listener")
     args = parser.parse_args()
     validate(args, parser)
     runtime = Runtime(args.runtime, args.address, "crowdb-" + args.cluster, args.snapshotter)

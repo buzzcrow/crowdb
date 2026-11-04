@@ -1,7 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use async_trait::async_trait;
 use russh::keys::key::{KeyPair, PublicKey};
@@ -12,12 +15,14 @@ use russh::{Channel, ChannelId, CryptoVec};
 #[allow(dead_code)]
 pub enum TestReply {
     Stdout(Vec<u8>),
+    DelayedStdout(Vec<u8>, std::time::Duration),
     Failure(String),
 }
 
 pub struct TestSshServer {
     pub port: u16,
     server: tokio::task::JoinHandle<()>,
+    connections: Arc<AtomicUsize>,
 }
 
 impl Drop for TestSshServer {
@@ -28,6 +33,9 @@ impl Drop for TestSshServer {
 
 #[allow(dead_code)]
 impl TestSshServer {
+    pub fn connections(&self) -> usize {
+        self.connections.load(Ordering::Relaxed)
+    }
     pub async fn start(key: PublicKey) -> Self {
         Self::start_with_reply(key, None).await
     }
@@ -51,12 +59,15 @@ impl TestSshServer {
             keys: vec![host],
             ..Default::default()
         });
+        let connections = Arc::new(AtomicUsize::new(0));
+        let accepted_count = Arc::clone(&connections);
         let server = tokio::spawn(async move {
             let mut sessions = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
                     accepted = listener.accept() => {
                         let (stream, _) = accepted.unwrap();
+                        accepted_count.fetch_add(1, Ordering::Relaxed);
                         let config = config.clone();
                         let handler = TestHandler { key: key.clone(), reply: reply.clone() };
                         sessions.spawn(async move {
@@ -69,7 +80,11 @@ impl TestSshServer {
                 }
             }
         });
-        Self { port, server }
+        Self {
+            port,
+            server,
+            connections,
+        }
     }
 }
 
@@ -106,6 +121,11 @@ impl Handler for TestHandler {
         if let Some(reply) = &self.reply {
             match reply {
                 TestReply::Stdout(bytes) => {
+                    session.data(channel, CryptoVec::from_slice(bytes));
+                    session.exit_status_request(channel, 0);
+                }
+                TestReply::DelayedStdout(bytes, delay) => {
+                    tokio::time::sleep(*delay).await;
                     session.data(channel, CryptoVec::from_slice(bytes));
                     session.exit_status_request(channel, 0);
                 }

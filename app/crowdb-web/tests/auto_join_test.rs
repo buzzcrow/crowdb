@@ -189,6 +189,7 @@ async fn two_authenticated_nodes_wait_in_uuid_order_without_initializing() {
             ssh_credential_ref: Some("id_ed25519".into()),
         });
         let record = NodeRecord {
+            web_port: 9090,
             discovery_id: discovery_id.into(),
             node_id,
             physical_host_id: "host".into(),

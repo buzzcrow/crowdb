@@ -28,7 +28,14 @@ fn native_uri_preserves_immutable_identity_and_exact_filename() {
     assert_eq!(table.to_string().len(), StorageTablePath::PREFIX_BYTES);
     assert_eq!(table.to_string().parse::<StorageTablePath>().unwrap(), table);
     assert_eq!(table.uri(), format!("s3://iceberg/{table}"));
-    for filename in ["metadata/v1.json", "数据/a+b", "a%2Fb", "a//b", "a/", "a b"] {
+    for filename in [
+        "metadata/v1.json",
+        "\u{6570}\u{636e}/a+b",
+        "a%2Fb",
+        "a//b",
+        "a/",
+        "a b",
+    ] {
         let location = table.logical_file(filename).unwrap();
         assert_eq!(location.table(), table);
         assert_eq!(location.relative_key(), filename);
@@ -87,7 +94,7 @@ fn filename_limit_counts_three_ids_and_utf8_bytes() {
         location
     );
     assert!(table.file(&(filename + "x")).is_err());
-    assert!(table.file(&("x".repeat(available - 1) + "冰")).is_err());
+    assert!(table.file(&("x".repeat(available - 1) + "\u{51b0}")).is_err());
 }
 
 #[test]

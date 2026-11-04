@@ -57,9 +57,12 @@ fn batch_route_and_exact_keys() {
     )
     .unwrap();
     assert_eq!(route.operation, S3Operation::DeleteObjects);
-    let selection = DeleteSelection::parse("<Delete><Object><Key>a&amp;&lt;雪</Key></Object><Object><Key>a&amp;&lt;雪</Key></Object><Quiet>true</Quiet></Delete>".as_bytes()).unwrap();
+    let selection = DeleteSelection::parse("<Delete><Object><Key>a&amp;&lt;\u{96ea}</Key></Object><Object><Key>a&amp;&lt;\u{96ea}</Key></Object><Quiet>true</Quiet></Delete>".as_bytes()).unwrap();
     assert!(selection.quiet);
-    assert_eq!(selection.keys, vec!["a&<雪".as_bytes(), "a&<雪".as_bytes()]);
+    assert_eq!(
+        selection.keys,
+        vec!["a&<\u{96ea}".as_bytes(), "a&<\u{96ea}".as_bytes()]
+    );
 }
 
 #[test]

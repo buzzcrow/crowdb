@@ -9,6 +9,8 @@ use crowdb_access_s3::{metadata::MetadataKey, metrics::DependencyHealth};
 
 use super::operations::ProductionS3Operations;
 
+pub(super) const PROBE_BUDGET: Duration = Duration::from_secs(2);
+
 pub type DependencyProbeFuture = Pin<Box<dyn Future<Output = Option<StorageReadiness>> + Send + 'static>>;
 
 pub struct StorageReadiness {
@@ -18,8 +20,8 @@ pub struct StorageReadiness {
 
 impl ProductionS3Operations {
     pub(super) async fn observe_storage(&self) -> StorageReadiness {
-        let (metadata, chunks) = tokio::join!(
-            bounded("metadata", async {
+        observe_storage_dependencies(
+            async {
                 self.storage
                     .metadata
                     .get(
@@ -29,24 +31,50 @@ impl ProductionS3Operations {
                     .await
                     .map_err(|error| error.to_string())?;
                 Ok("Routed Chunk-KV bucket namespace read succeeded".into())
-            }),
-            async {
-                Box::pin(self.storage.chunks.observe_readiness(Duration::from_millis(750)))
+            },
+            |budget| async move {
+                Box::pin(self.storage.chunks.observe_readiness(budget))
                     .await
                     .map_err(|error| error.to_string())
             },
-        );
-        StorageReadiness { metadata, chunks }
+        )
+        .await
     }
+
+    #[cfg(feature = "test-util")]
+    /// Exercise the production dependency join and caller budget with controlled reads.
+    pub async fn observe_storage_dependencies_for_tests<M, C, F>(metadata: M, chunks: C) -> StorageReadiness
+    where
+        M: Future<Output = Result<String, String>>,
+        C: FnOnce(Duration) -> F,
+        F: Future<Output = Result<String, String>>,
+    {
+        observe_storage_dependencies(metadata, chunks).await
+    }
+}
+
+async fn observe_storage_dependencies<M, C, F>(metadata: M, chunks: C) -> StorageReadiness
+where
+    M: Future<Output = Result<String, String>>,
+    C: FnOnce(Duration) -> F,
+    F: Future<Output = Result<String, String>>,
+{
+    let (metadata, chunks) = tokio::join!(bounded("metadata", metadata), chunks(PROBE_BUDGET));
+    StorageReadiness { metadata, chunks }
 }
 
 pub(super) async fn bounded(
     dependency: &str,
     probe: impl Future<Output = Result<String, String>>,
 ) -> Result<String, String> {
-    tokio::time::timeout(Duration::from_millis(750), probe)
+    tokio::time::timeout(PROBE_BUDGET, probe)
         .await
-        .unwrap_or_else(|_| Err(format!("{dependency} read exceeded its 750 ms deadline")))
+        .unwrap_or_else(|_| {
+            Err(format!(
+                "{dependency} read exceeded its {} ms deadline",
+                PROBE_BUDGET.as_millis()
+            ))
+        })
 }
 
 pub(super) fn health(result: &Result<String, String>) -> DependencyHealth {

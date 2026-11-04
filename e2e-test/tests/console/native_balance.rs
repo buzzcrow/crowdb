@@ -20,6 +20,7 @@ use std::{
 };
 
 pub(super) async fn settle(context: &TestNativeContext) {
+    let started = Instant::now();
     let kv = context.kv.clone();
     let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(kv.clone()));
     let registry = ServiceRegistryClient::from_shared(kv.clone());
@@ -29,9 +30,56 @@ pub(super) async fn settle(context: &TestNativeContext) {
         Arc::new(ChunkKvRpcTransport::new(64, 1, 2)),
     )
     .unwrap();
+    let phase = Instant::now();
+    eprintln!("[PHASE] native production balance seed started: 512 records");
     seed_values(&client).await;
-    wait_balanced(&source, &registry, &kv, Instant::now()).await;
+    eprintln!(
+        "[PHASE] native production balance seed completed: phase_ms={}, total_ms={}",
+        phase.elapsed().as_millis(),
+        started.elapsed().as_millis()
+    );
+    let phase = Instant::now();
+    let catalog = wait_balanced(&source, &registry, &kv, phase).await;
+    eprintln!(
+        "[PHASE] native production balance converged: phase_ms={}, total_ms={}, partitions={}, owners={}",
+        phase.elapsed().as_millis(),
+        started.elapsed().as_millis(),
+        catalog.entries().len(),
+        counts(&catalog).len()
+    );
+    let phase = Instant::now();
     verify_values(&client).await;
+    eprintln!(
+        "[PHASE] native production balance verified 512 records: phase_ms={}, total_ms={}",
+        phase.elapsed().as_millis(),
+        started.elapsed().as_millis()
+    );
+}
+
+pub(super) async fn settle_existing(context: &TestNativeContext) {
+    let source = Group0ChunkKvRangeCatalogSource::from_shared(context.kv.clone());
+    let started = Instant::now();
+    let mut interval = tokio::time::interval(Duration::from_millis(100));
+    loop {
+        interval.tick().await;
+        let catalog = load(&source).await;
+        if catalog.entries().iter().all(|entry| {
+            entry.state == ChunkKvRangeCatalogPartitionState::Serving
+                && entry.transition_id.is_none()
+                && entry.artifact.tail_overlay.is_none()
+        }) && placement_ready(&context.kv, catalog.generation()).await
+        {
+            eprintln!(
+                "[PHASE] native fixture placement settled in {:?}",
+                started.elapsed()
+            );
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(40),
+            "native fixture's normal placement did not settle"
+        );
+    }
 }
 
 async fn seed_values(client: &ChunkKvClient) {

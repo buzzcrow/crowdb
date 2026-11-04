@@ -242,6 +242,27 @@ impl DiskWriter for MetricsDiskWriter {
         result
     }
 
+    async fn read_priority(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        segment_offset: u64,
+        length: u32,
+    ) -> Result<Bytes> {
+        let mut operation = self.metrics.diskio_read.start();
+        let result = self
+            .inner
+            .read_priority(seg, unit_bytes, segment_offset, length)
+            .await;
+        if let Ok(data) = &result {
+            self.metrics
+                .diskio_read_bytes
+                .observe(u64::try_from(data.len()).unwrap_or(u64::MAX));
+            operation.mark_success();
+        }
+        result
+    }
+
     async fn write_at_byte_offset(
         &self,
         seg: &Segment,

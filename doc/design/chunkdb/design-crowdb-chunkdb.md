@@ -477,6 +477,12 @@ Site (data center)
 - healthy physical-disk locations, allocatable capacity observations, and a
   monotonic publication generation.
 
+Located DiskIO registrations overlay hardware intent with current placement
+availability. A configured disk group is eligible only while a matching live
+process reports it opened. Retained expired registrations exclude stopped
+physical owners; expiry is evaluated at selection time even without a refresh.
+This does not change durable hardware status or relax failure-domain constraints.
+
 Usage observations include only allocatable disks and carry their sample time.
 Missing or stale observations remove capacity ranking information; they never
 relax a rack, node, or disk safety constraint. Per-disk-group in-flight bytes

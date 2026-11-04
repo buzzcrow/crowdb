@@ -33,6 +33,9 @@ mod durable;
 #[path = "common/small_native.rs"]
 mod native;
 
+#[path = "small_object_test/staged_reservation.rs"]
+mod staged_reservation;
+
 fn frame_bytes(payload_bytes: usize) -> u64 {
     u64::try_from(payload_bytes).unwrap() + 35
 }
@@ -109,7 +112,7 @@ impl ChunkAllocator for MockAllocator {
             high: u64::try_from(req.chunk_type).unwrap() << 56,
             low,
         });
-        let strips: Vec<_> = (0..req.strip_count.max(1))
+        let strips: Vec<_> = (0..req.strip_count)
             .map(|sequence| make_strip(chunk_id, sequence, req.copy_count.max(1)))
             .collect();
         let chunk = Chunk {
@@ -126,7 +129,7 @@ impl ChunkAllocator for MockAllocator {
             acknowledged_cursor: 0,
             closed_strip_sequence: None,
             writer_lease_deadline_ms: req.writer_lease_ms,
-            next_strip_sequence: req.strip_count.max(1),
+            next_strip_sequence: req.strip_count,
             cleanup_intents: vec![],
             last_strip_replacement: None,
             owner_key: req.owner_key,

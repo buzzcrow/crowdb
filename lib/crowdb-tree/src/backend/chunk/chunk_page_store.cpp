@@ -850,6 +850,9 @@ bool ChunkPageStore::inherited_snapshot_matches(const PageStore &source_store) c
 
 std::shared_ptr<const ChunkManifest> ChunkPageStore::reuse_base_manifest() const
 {
+    if (staged_initialized_) {
+        return staged_base_;
+    }
     auto bootstrap = bootstrap_layout_.load(std::memory_order_acquire);
     if (bootstrap != nullptr) {
         return bootstrap;
@@ -860,22 +863,6 @@ std::shared_ptr<const ChunkManifest> ChunkPageStore::reuse_base_manifest() const
     }
     auto current = catalog_->load(config_.tree_id);
     return current == nullptr ? inherited_manifest_ : current;
-}
-
-const ChunkPagePack *ChunkPageStore::find_reusable_pack(const ChunkManifest &base, uint64_t logical_offset,
-                                                        uint32_t length, ChunkCancellation cancellation) const
-{
-    const ChunkPagePack *found = find_pack_at(base, logical_offset, length);
-    if (found == nullptr) {
-        return nullptr;
-    }
-    std::shared_ptr<const std::vector<uint8_t>> persisted;
-    Status                                      status = read_pack(found->ref, &persisted, cancellation);
-    if (!status.ok() || persisted->size() != length ||
-        std::memcmp(persisted->data(), staged_.data() + logical_offset, length) != 0) {
-        return nullptr;
-    }
-    return found;
 }
 
 const ChunkPagePack *ChunkPageStore::find_pack_at(const ChunkManifest &base, uint64_t logical_offset, uint32_t length)
@@ -935,38 +922,6 @@ Status ChunkPageStore::validate_manifest(const ChunkManifest &manifest, const Ro
     if (logical_offset > manifest.logical_size || reused_packs != manifest.packs_reused ||
         reused_pack_bytes != manifest.pack_bytes_reused) {
         return Status::corruption("chunk manifest coverage or reuse counters are inconsistent");
-    }
-    return Status::Ok();
-}
-
-Status ChunkPageStore::materialize_active(std::vector<uint8_t> *out) const
-{
-    auto manifest = reuse_base_manifest();
-    if (manifest == nullptr) {
-        out->clear();
-        return Status::Ok();
-    }
-    if (manifest->owner_epoch > config_.owner_epoch) {
-        return Status::corruption("chunk manifest checksum or epoch is invalid");
-    }
-    const RootCatalog &manifest_catalog =
-        manifest == inherited_manifest_ && inherited_catalog_ != nullptr ? *inherited_catalog_ : *catalog_;
-    Status manifest_status = validate_manifest(*manifest, manifest_catalog);
-    if (!manifest_status.ok()) {
-        return manifest_status;
-    }
-    out->assign(manifest->logical_size, 0);
-    for (const ChunkPagePack &pack : manifest->packs) {
-        const ChunkPageRef &ref = pack.ref;
-        if (pack.logical_offset > out->size() || ref.length > out->size() - pack.logical_offset) {
-            return Status::corruption("chunk page pack checksum or bounds are invalid");
-        }
-        std::shared_ptr<const std::vector<uint8_t>> payload;
-        Status                                      read_status = read_pack(ref, &payload, {});
-        if (!read_status.ok()) {
-            return read_status;
-        }
-        std::memcpy(out->data() + pack.logical_offset, payload->data(), payload->size());
     }
     return Status::Ok();
 }
@@ -1234,6 +1189,7 @@ Status ChunkPageStore::sync_cancellable(ChunkCancellation cancellation)
     layout_valid_until_ms_.store(monotonic_millis() + config_.layout_validity_ms, std::memory_order_release);
     staged_initialized_ = false;
     staged_.clear();
+    staged_base_.reset();
     dirty_ranges_.clear();
     inherited_manifest_.reset();
     inherited_catalog_.reset();

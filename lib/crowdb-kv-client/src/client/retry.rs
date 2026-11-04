@@ -60,9 +60,12 @@ impl CrowdbKvClient {
     /// handled by [`Self::follow_not_leader`] before this is checked).
     /// Checks the structured `error_code` first, falling back to the
     /// string for old servers that don't set the code (default 0 =
-    /// `KvErrorNone`).
+    /// `KvErrorNone`). A removed replica may still have a cached route but no
+    /// local group; discover its successor instead of repeating that route.
     pub(crate) fn is_unknown_leader(error_code: i32, error: &str) -> bool {
-        error_code == KvErrorCode::KvErrorNotLeader as i32 || error == "not leader"
+        error_code == KvErrorCode::KvErrorNotLeader as i32
+            || error == "not leader"
+            || error == "no kv group configured for request group_id"
     }
 
     /// After an [`Self::is_unknown_leader`] failure, give the election a
@@ -81,7 +84,11 @@ impl CrowdbKvClient {
         self.metrics.record_unknown_leader_wait();
         self.metrics.record_leader_query();
         self.metrics.record_topology_refresh();
-        if let Err(e) = self.topology.refresh().await {
+        if let Err(e) = self
+            .topology
+            .refresh_after_failure(store_id, group_id, endpoint)
+            .await
+        {
             if matches!(e, Error::NoSeeds) {
                 warn!(error = %e, "topology refresh failed in wait_and_refresh_leader");
                 return endpoint.to_string();
@@ -114,7 +121,11 @@ impl CrowdbKvClient {
     ) -> String {
         self.metrics.record_topology_refresh();
         let mut no_seeds = false;
-        if let Err(e) = self.topology.refresh().await {
+        if let Err(e) = self
+            .topology
+            .refresh_after_failure(store_id, group_id, current)
+            .await
+        {
             if matches!(e, Error::NoSeeds) {
                 no_seeds = true;
             }

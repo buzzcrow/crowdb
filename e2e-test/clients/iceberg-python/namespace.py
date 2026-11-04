@@ -75,7 +75,7 @@ def main():
 def verify_namespaces(uri, properties):
     writer = load_catalog("crowdb", **(properties | {"token": "w" * 32}))
     namespace = ("client-" + uuid.uuid4().hex,)
-    child = namespace + ("冰+a%2F",)
+    child = namespace + ("\u51b0+a%2F",)
     writer.create_namespace(namespace, {"owner": "original"})
     assert writer.namespace_exists(namespace)
     assert writer.load_namespace_properties(namespace) == {"owner": "original"}

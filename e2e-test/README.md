@@ -15,6 +15,12 @@ Test clients run on the host against inspected node-container IPs and fixed
 ports, with three node containers for a three-node cluster. Fresh one- through eight-node profiles exercise management, membership,
 async operations and multi-store routing. Host bridge IP reachability is
 required; remote Docker and Linux-VM routing are not implicitly supported.
+The CLI terminal-writer fault also requires host `iptables-nft`, its shared
+libraries and xtables extensions. A short-lived release-image helper receives
+NET_ADMIN only inside each verified owned CLI bridge namespace and drops the
+accepted DiskIO listener for forty seconds. Monitor and logging keep running;
+the helper never enters the host network namespace. Tool fingerprints, rule
+verification and failure-safe rule cleanup remain in the case artifacts.
 Containers supply server subsets or clusters from the formal release image;
 they are not test execution environments. Domain profiles configure that same
 server artifact rather than introducing separate test-server builds.

@@ -503,8 +503,13 @@ impl PxGroup {
                 }
                 // Admin step-down via StepDown RPC.
                 () = replica.admin_step_down_signal.notified() => {
-                    self.step_down(&tenure_cancel, leader_term, StepDownReason::Admin);
-                    return;
+                    // Accepted requests fence the role before publishing the wakeup.
+                    // A permit retained from an earlier tenure cannot dismiss a
+                    // replica that has since become leader again.
+                    if replica.role() != PxLocalReplicaRole::Leader {
+                        self.step_down(&tenure_cancel, leader_term, StepDownReason::Admin);
+                        return;
+                    }
                 }
                 _ = ticker.tick() => {
                     match self.run_heartbeat_round(cfg, leader_term).await {
@@ -522,7 +527,10 @@ impl PxGroup {
                             }
                             // Keep at most one repair in flight. Prepare or
                             // persistence IO must not occupy the heartbeat loop.
-                            if gap_repair.as_ref().map_or(true, tokio::task::JoinHandle::is_finished) {
+                            if self.leader_read_ready()
+                                && recovery_task.as_ref().map_or(true, tokio::task::JoinHandle::is_finished)
+                                && gap_repair.as_ref().map_or(true, tokio::task::JoinHandle::is_finished)
+                            {
                                 gap_repair = self.start_gap_repair(&tenure_cancel);
                             }
                         }

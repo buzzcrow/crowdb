@@ -51,6 +51,7 @@ pub fn add_log_stderr(level: &str) {
 
 /// Flush and stop the C++ spdlog logger. Call at process exit.
 pub fn shutdown_logging() {
+    crate::owned_route::drain_before_native_shutdown();
     unsafe { sys::crowdb_rpc_shutdown_logging() };
 }
 

@@ -13,81 +13,8 @@ use crowdb_console_shared::{
     config::{ServerEntry, ServiceType},
     deployment::services,
 };
-use crowdb_protocol::mgmt::node::{NodeControl, NodeServiceAction, NodeServiceIntent};
+use crowdb_protocol::mgmt::node::{NodeServiceAction, NodeServiceIntent};
 use serde_json::{json, Value};
-
-#[derive(Default)]
-pub(super) struct ProcessObservations {
-    pub pids: std::collections::BTreeMap<(u64, String), u32>,
-    exhausted: std::collections::BTreeSet<(u64, String)>,
-}
-
-impl ProcessObservations {
-    fn record(&mut self, node: u64, value: &Value, intents: &[NodeServiceIntent]) {
-        if let Some(processes) = value["processes"].as_object() {
-            for (id, value) in processes {
-                if let Some(pid) = value
-                    .as_u64()
-                    .and_then(|pid| u32::try_from(pid).ok())
-                    .filter(|pid| *pid > 0)
-                {
-                    self.pids.insert((node, id.clone()), pid);
-                }
-            }
-        }
-        for intent in intents.iter().filter(|intent| intent.node_id == node) {
-            let failure = &value["service_failures"][&intent.service_id];
-            if failure["operation_id"] == intent.operation_id && failure["exhausted"] == true {
-                self.exhausted.insert((node, intent.service_id.clone()));
-            }
-        }
-    }
-
-    pub fn start_pending(&self, entry: &ServerEntry, remote: bool, pid: Option<u32>) -> bool {
-        remote
-            && entry.auto_start
-            && pid.is_none()
-            && !entry
-                .node_id
-                .is_some_and(|node| self.exhausted.contains(&(node, entry.id.clone())))
-    }
-}
-
-pub(super) async fn processes(
-    state: &AppState,
-    config: &crowdb_console_shared::ConsoleConfig,
-    intents: &[NodeServiceIntent],
-) -> ProcessObservations {
-    let Some(binding) = crate::node::cluster_binding(state).ok().flatten() else {
-        return ProcessObservations::default();
-    };
-    let cluster = &binding.bootstrap.cluster_id;
-    let observations = futures::future::join_all(config.nodes.iter().map(|node| async move {
-        let mut target = node.clone();
-        target.ssh_key = Some(crate::node::node_key_path(state).to_string_lossy().into_owned());
-        let command = NodeControl::Processes {
-            cluster_id: cluster.clone(),
-            node_id: node.id,
-        };
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            crowdb_console_shared::deployment::admission::remote_control(&target, &command),
-        )
-        .await
-        .ok()?
-        .ok()?;
-        if result["node_id"] != node.id || result["cluster_id"] != *cluster {
-            return None;
-        }
-        Some((node.id, result))
-    }))
-    .await;
-    let mut processes = ProcessObservations::default();
-    for (node, observation) in observations.into_iter().flatten() {
-        processes.record(node, &observation, intents);
-    }
-    processes
-}
 
 pub(crate) async fn act(
     state: &AppState,
@@ -115,9 +42,7 @@ pub(crate) async fn act(
     node.ssh_key = Some(crate::node::node_key_path(state).to_string_lossy().into_owned());
     intent.operation_id = uuid::Uuid::new_v4().to_string();
     intent.action = action;
-    let result = services::execute(state.kv_client().await.as_ref(), &node, intent)
-        .await
-        .map_err(map_config_err)?;
+    let result = execute(state, &node, intent).await.map_err(map_config_err)?;
     refresh(state).await.map_err(map_config_err)?;
     Ok(Json(
         json!({"id": id, "pid":result["pid"], "removed":matches!(action, NodeServiceAction::Delete), "data_preserved":true}),
@@ -131,12 +56,43 @@ pub(crate) async fn refresh(state: &AppState) -> crowdb_console_shared::error::R
 pub(super) async fn refresh_with_intents(
     state: &AppState,
 ) -> crowdb_console_shared::error::Result<Vec<NodeServiceIntent>> {
-    let intents = services::list(state.kv_client().await.as_ref()).await?;
-    let mut config = state
-        .config
-        .write()
-        .map_err(|error| crowdb_console_shared::error::Error::Config(error.to_string()))?;
-    for intent in &intents {
+    let binding = crate::node::cluster_binding(state).ok().flatten();
+    state.service_observations.synchronize(binding.as_ref());
+    let epoch = state.service_observations.latest.load().authority_epoch;
+    let started = tokio::time::Instant::now();
+    let intents: Vec<_> = services::list(state.kv_client().await.as_ref())
+        .await?
+        .into_iter()
+        .filter(|intent| {
+            binding
+                .as_ref()
+                .is_some_and(|binding| intent.cluster_id == binding.bootstrap.cluster_id)
+        })
+        .collect();
+    if binding.as_ref().is_some_and(|binding| {
+        crate::node::cluster_binding(state).ok().flatten().as_ref() == Some(binding)
+            && state
+                .service_observations
+                .authority(binding, epoch, started, &intents)
+    }) {
+        project_intents(state, &intents);
+    }
+    Ok(intents)
+}
+
+pub(super) fn project_intents(state: &AppState, intents: &[NodeServiceIntent]) {
+    let mut config = state.config.write().unwrap();
+    let current = state.service_observations.latest.load_full();
+    if crate::node::cluster_binding(state).ok().flatten() != current.binding {
+        return;
+    }
+    let Some(authority) = &current.authority else {
+        return;
+    };
+    for intent in intents {
+        if !authority.intents.contains(intent) {
+            continue;
+        }
         // KV endpoints come from admitted node bootstrap, not auxiliary
         // service configuration. Its lifecycle intent must not erase them.
         if intent.kind == "kv" {
@@ -150,10 +106,9 @@ pub(super) async fn refresh_with_intents(
             config.servers.push(entry);
         }
     }
-    Ok(intents)
 }
 
-fn project(intent: &NodeServiceIntent) -> Option<ServerEntry> {
+pub(super) fn project(intent: &NodeServiceIntent) -> Option<ServerEntry> {
     let value: toml::Value = toml::from_str(&intent.configuration).ok()?;
     let (kind, http, rpc) = match intent.kind.as_str() {
         "diskdb" => (
@@ -259,11 +214,16 @@ pub(crate) async fn kv_action(
         configuration: format!("node_id = {node_id}\n"),
         environment: std::collections::BTreeMap::new(),
     };
-    services::execute(state.kv_client().await.as_ref(), &node, intent)
-        .await
-        .map_err(map_config_err)
+    execute(state, &node, intent).await.map_err(map_config_err)
 }
 
-#[cfg(test)]
-#[path = "../../tests/internal/service_start_pending_test.rs"]
-mod tests;
+pub(crate) async fn execute(
+    state: &AppState,
+    node: &crowdb_console_shared::config::NodeEntry,
+    intent: NodeServiceIntent,
+) -> crowdb_console_shared::error::Result<Value> {
+    let mutation = super::observation::ServiceObservations::mutation(state, node.id, &intent.service_id);
+    let result = services::execute(state.kv_client().await.as_ref(), node, intent.clone()).await?;
+    mutation.complete(state, intent, &result);
+    Ok(result)
+}

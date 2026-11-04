@@ -25,14 +25,26 @@ use crowdb_protocol::chunkdb::rpc::{
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
 
+#[path = "production_chunk_test/finalized_empty.rs"]
+mod finalized_empty;
+
 #[path = "production_chunk_test/recovery.rs"]
 mod recovery;
+
+#[path = "production_chunk_test/recovery_drain.rs"]
+mod recovery_drain;
 
 #[path = "production_chunk_test/local_progress.rs"]
 mod local_progress;
 
 #[path = "production_chunk_test/growth.rs"]
 mod growth;
+
+#[path = "production_chunk_test/capacity_refresh.rs"]
+mod capacity_refresh;
+
+#[path = "common/initialization_window.rs"]
+mod initialization_window;
 
 #[path = "production_chunk_test/preparation.rs"]
 mod preparation;
@@ -441,6 +453,7 @@ struct Disks {
     initialization_started: tokio::sync::Notify,
     initialization_resume: tokio::sync::Notify,
     drain_delay_ms: AtomicU64,
+    fail_all_drains: AtomicBool,
     active_drains: AtomicUsize,
     max_active_drains: AtomicUsize,
     completed_drains: AtomicUsize,
@@ -482,7 +495,11 @@ impl DiskWriter for Disks {
         if delay != 0 {
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         }
-        let result = self.fsync(segment).await;
+        let result = if self.fail_all_drains.load(Ordering::Acquire) {
+            Err(IoError::WriteFailed("all mirror drains unavailable".into()))
+        } else {
+            self.fsync(segment).await
+        };
         self.active_drains.fetch_sub(1, Ordering::AcqRel);
         self.completed_drains.fetch_add(1, Ordering::AcqRel);
         result
@@ -643,7 +660,7 @@ async fn production_store_grows_and_writes_across_mirror_strips() {
         .unwrap();
     assert_eq!(active.capacity, 1024 * 1024);
     let grown = store
-        .grow_mirrored(name, 9, active.chunk_id, active.capacity + 1)
+        .grow_mirrored(name, 9, active.chunk_id, 8 * 1024 * 1024)
         .await
         .unwrap()
         .unwrap();
@@ -867,7 +884,10 @@ async fn stream_repair_preserves_a_batch_crossing_mirror_strips() {
             created_at_ms: StreamRecord::creation_time_ms(),
         },
         9,
-        StreamConfig::default(),
+        StreamConfig {
+            chunk_capacity_bytes: 2 * 1024 * 1024,
+            ..StreamConfig::default()
+        },
         Arc::clone(&metadata) as Arc<dyn StreamRegistry>,
         metadata as Arc<dyn StreamMetadataStore>,
         chunks,
@@ -888,7 +908,7 @@ async fn stream_repair_preserves_a_batch_crossing_mirror_strips() {
     assert_eq!(&read[prefix.len()..], suffix.as_ref());
     assert_eq!(stream.metrics().rollovers, 0);
     let chunk = allocator.chunk.lock().unwrap().clone().unwrap();
-    assert_eq!(chunk.strips.len(), 8);
+    assert_eq!(chunk.strips.len(), 2);
     let Some(Strip::MirrorStrip(mirror)) = &chunk.strips[1].strip else {
         panic!("expected mirror strip");
     };

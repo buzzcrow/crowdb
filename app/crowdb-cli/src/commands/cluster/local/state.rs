@@ -152,7 +152,7 @@ impl Launch {
     pub fn validate(&self) -> Result<()> {
         let owner =
             uuid::Uuid::parse_str(&self.owner).map_err(|_| invalid("invalid cluster ownership token"))?;
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
             || !name_valid(&self.cluster)
             || owner.is_nil()
             || owner.to_string() != self.owner
@@ -181,6 +181,18 @@ impl Launch {
         (0..self.nodes)
             .map(|index| format!("http://127.0.0.1:{}", self.port_base + u16::from(index) * 10))
             .collect()
+    }
+    pub fn container_ports(&self) -> [u16; 4] {
+        if self.version == 1 {
+            [9090, 9091, 9092, 9093]
+        } else {
+            [
+                9090,
+                crowdb_protocol::ACCESS_SERVER_HTTP_BASE,
+                crowdb_protocol::ACCESS_SERVER_ICEBERG_HTTP_BASE,
+                crowdb_protocol::ACCESS_SERVER_DATASET_HTTP_BASE,
+            ]
+        }
     }
     pub fn resource_name(&self, kind: &str, index: u8) -> String {
         let base = format!("crowdb-{}", self.cluster);

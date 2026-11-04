@@ -24,6 +24,31 @@ pub struct DiskPlacement {
 }
 
 impl DiskTopologyView {
+    /// Build a metadata-only observation without opening transport connections.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn from_routes_for_tests(routes: Vec<super::TestDiskRoute>) -> Self {
+        let mut snapshot = RouteSnapshot::empty();
+        snapshot.generation = 1;
+        for route in routes {
+            let endpoint: Arc<str> = Arc::from(route.endpoint);
+            snapshot.routes.insert(
+                route.disk_id,
+                crate::topology::DiskRoute {
+                    rack_id: route.rack_id,
+                    node_id: route.node_id,
+                    disk_group_id: route.disk_group_id,
+                    instance_id: route.instance_id,
+                    pool_key: Arc::from(format!("{}@{}", route.instance_id, endpoint)),
+                    endpoint,
+                },
+            );
+        }
+        Self {
+            snapshot: Arc::new(snapshot),
+        }
+    }
+
     /// Process-local route-cache generation, independent of catalog epochs.
     #[must_use]
     pub fn generation(&self) -> u64 {

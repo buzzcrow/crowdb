@@ -26,7 +26,7 @@ test('Docker default setup: submit storage and services then close the initiatin
     for (const checkbox of await dialog.getByRole('region', { name: 'Node service choices' }).getByRole('checkbox').all()) await expect(checkbox).toBeChecked();
     await expect(dialog.getByLabel('Managed file capacity (GiB)', { exact: true })).toHaveValue('16');
     await expect(dialog.getByLabel('Managed file capacity (GiB)', { exact: true })).toBeDisabled();
-    await expect(dialog.getByLabel('crowdb-disk-db RPC port', { exact: true })).toHaveValue('7100');
+    await expect(dialog.getByLabel('crowdb-disk-db RPC port', { exact: true })).toHaveValue('11200');
     await expect(dialog.getByLabel('crowdb-disk-db RPC port', { exact: true })).toBeDisabled();
     await dialog.getByRole('button', { name: 'Join and start', exact: true }).click();
     await expect(dialog).toHaveCount(0, { timeout: 10_000 });
@@ -58,8 +58,8 @@ test('Docker default setup: progress is visible in the node properties', async (
   const groups = (await usage.json()).disk_groups;
   expect(groups.map((group: { disk_group_id: number }) => group.disk_group_id)).toContain(1);
   const disk = groups.find((group: { disk_group_id: number }) => group.disk_group_id === 1).disks[0];
-  expect(disk.zone_count).toBe(64);
-  expect(disk.zone_size_units * disk.unit_size_bytes).toBe(256 * 1024 * 1024);
+  expect(disk.zone_count).toBe(1);
+  expect(disk.zone_size_units * disk.unit_size_bytes).toBe(16 * 1024 ** 3);
   const bitmap = await page.request.get(`${process.env.CROWDB_NODE_UI_ORIGIN}/api/diskdb/usage?dg=1&disk=${disk.disk_id}&zone=0`);
   expect(bitmap.ok(), await bitmap.text()).toBe(true);
   expect((await bitmap.json()).disk_groups[0].disks[0].zone_usages[0].usage_bitmap).toMatch(/^[0-9a-f]+$/);

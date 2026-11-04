@@ -21,6 +21,7 @@ pub mod metrics;
 pub mod placement_rebalance;
 pub mod placement_repair;
 pub mod range_guard;
+pub mod readiness;
 pub mod relocation;
 pub mod repair;
 pub mod routing;

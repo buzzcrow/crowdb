@@ -22,6 +22,7 @@ use crowdb_console_shared::{config::ServerEntry, ConsoleConfig};
 #[derive(Clone)]
 pub struct AppState {
     pub(crate) node_observations: Arc<crate::node::observation::NodeObservations>,
+    pub(crate) service_observations: Arc<crate::services::observation::ServiceObservations>,
     pub(crate) service_operations: Arc<arc_swap::ArcSwap<std::collections::HashSet<String>>>,
     pub config: Arc<RwLock<ConsoleConfig>>,
     pub(crate) config_path: Option<PathBuf>,
@@ -100,6 +101,7 @@ impl AppState {
     pub fn with_runtime_root(config: ConsoleConfig, runtime_root: PathBuf) -> Self {
         Self {
             node_observations: Arc::default(),
+            service_observations: Arc::default(),
             service_operations: Arc::new(arc_swap::ArcSwap::from_pointee(std::collections::HashSet::new())),
             config: Arc::new(RwLock::new(config)),
             config_path: None,

@@ -96,12 +96,22 @@ pub async fn run_gc_with_watermark(wal: &WalEngine, gc_slot: u64) -> io::Result<
     let mut unlinked = 0usize;
     let disk_paths = wal.disk_group_paths();
 
-    // Collect segments eligible for GC.
-    let eligible: Vec<(u64, usize, std::path::PathBuf)> = wal
-        .index()
-        .segments_snapshot()
+    // Slot progress cannot replace election durability. Keep one segment proving
+    // the highest term and one carrying the latest vote, including mixed segments.
+    let segments = wal.index().segments_snapshot();
+    let term_segment = segments
+        .iter()
+        .max_by_key(|meta| (meta.max_term, meta.segment_id))
+        .map(|meta| meta.segment_id);
+    let vote_segment = segments
+        .iter()
+        .filter_map(|meta| meta.vote_term.map(|term| (term, meta.segment_id)))
+        .max()
+        .map(|(_, id)| id);
+    let eligible: Vec<(u64, usize, std::path::PathBuf)> = segments
         .iter()
         .filter(|meta| meta.max_slot > 0 && meta.max_slot < gc_slot)
+        .filter(|meta| Some(meta.segment_id) != term_segment && Some(meta.segment_id) != vote_segment)
         .map(|meta| {
             let dir = &disk_paths[meta.disk_idx];
             let filename = format!("seg-{:07}.ck", meta.segment_id);

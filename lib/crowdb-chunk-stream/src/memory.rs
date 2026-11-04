@@ -395,6 +395,10 @@ impl StreamRegistry for MemoryStreamStore {
 
 #[async_trait]
 impl StreamChunkStore for MemoryStreamStore {
+    fn capacity_limit(&self) -> u64 {
+        self.chunk_capacity
+    }
+
     fn bind_writer(&self, _name: StreamName, _epoch: u64, _session: Arc<crate::StreamWriterSession>) {}
     fn mirror_copies(&self) -> u32 {
         1

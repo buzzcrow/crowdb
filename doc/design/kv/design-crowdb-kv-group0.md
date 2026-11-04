@@ -396,6 +396,16 @@ Vec<u64>`; kv-server carries `hosted_stores`, `hosted_groups`,
 (`register_diskdb`/`heartbeat_diskdb`/`read_all_diskdb_instances`) and
 kv-server wrappers delegate to the generic methods.
 
+DiskIO physical identity and configured hardware scope are immutable once
+accepted. Physical identity is pinned with instance-revision CAS before scope
+publication. The first configured scope requires an existing Rack record and
+is published atomically with an advance of that Rack's revision, fencing
+concurrent disk membership changes. Revalidate the instance after reading the
+Rack revision so another first-scope publication cannot be overwritten. If the
+Rack is absent, retain the physical pin and reject scope publication; an
+instance-only write cannot substitute for the Rack fence. Ordinary heartbeats
+with the same accepted scope update liveness without advancing the Rack.
+
 ### 4.2 Services registered
 
 - **diskdb** — `/srv/diskdb/<instance_id>`. Heartbeat includes

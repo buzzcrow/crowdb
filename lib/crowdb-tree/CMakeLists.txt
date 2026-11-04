@@ -100,7 +100,9 @@ include(GoogleTest)
 
 file(GLOB_RECURSE CROWDB_TREE_TEST_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp)
 if(NOT (LIBURING_INCLUDE_DIR AND LIBURING_LIB))
-  list(REMOVE_ITEM CROWDB_TREE_TEST_SRC ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/reactor_test.cpp)
+  list(REMOVE_ITEM CROWDB_TREE_TEST_SRC
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/reactor_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/block_async_page_store_test.cpp)
 endif()
 list(APPEND CROWDB_TREE_TEST_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-common/cpp/tests/test_main.cpp)
 add_executable(crowdb_tree_tests ${CROWDB_TREE_TEST_SRC})

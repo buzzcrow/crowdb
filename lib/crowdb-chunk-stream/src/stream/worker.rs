@@ -170,6 +170,8 @@ async fn process_append_batch(
     let result = write_with_recovery(state, &requests, bytes).await;
     match result {
         Ok(ranges) => {
+            preparation::start(state, bytes);
+            successor::start(state);
             for (request, range) in requests.into_iter().zip(ranges) {
                 state
                     .queued_bytes

@@ -382,16 +382,63 @@ async fn restore_from_replay_with_engine_resumes_from_last_applied_slot() {
     assert!(restored.accepted_at(3).await.is_some());
 }
 
-/// Defensive fallback: if the engine's resume floor doesn't line up with an
-/// accepted entry in the WAL-rebuilt acceptor (not expected in practice --
-/// an engine can only durably apply a slot that was itself accepted and
-/// WAL-logged -- but not a correctness invariant this restore path should
-/// ever trust blindly), restore still skips straight to `resume_from + 1`
-/// (never re-attempts the skipped prefix -- see the "no safe fallback"
-/// rationale on `restore_from_replay_with_engine`) but leaves the frontier
-/// at its conservative fresh-learner default instead of guessing a term.
+#[tokio::test]
+async fn durable_snapshot_prefix_survives_reclaimed_wal_boundary_records() {
+    let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("snapshot-reclaimed-boundary");
+    let options = CrowdbTreeConfig {
+        path: Some(tmp.path().to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let engine = CrowdbTreeEngine::open(&options).unwrap();
+    for slot in 1..=3 {
+        engine
+            .apply(
+                slot,
+                &Batch::decode(&Bytes::from(encode_put_payload(
+                    b"durable",
+                    &[u8::try_from(slot).unwrap()],
+                ))),
+            )
+            .into_ready()
+            .unwrap();
+    }
+    engine.flush();
+    assert_eq!(engine.persist_snapshot(), 3);
+    drop(engine);
+    let backend = sim_backend();
+    let disks = vec![PathBuf::from("/reclaimed")];
+    let wal = WalEngine::create(backend.clone(), test_config(&disks), 1)
+        .await
+        .unwrap();
+    wal.seal_all().await.unwrap();
+    let replay = replay_group(&backend, &disks, 1).await.unwrap();
+    assert!(replay.records.is_empty());
+    let restored = PxLocalReplica::restore_from_replay_with_engine(
+        7,
+        PxLocalReplicaRole::Follower,
+        &replay,
+        Box::new(CrowdbTreeEngine::open(&options).unwrap()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(restored.learner.engine_get(b"durable").await, Some((3, vec![3])));
+    assert_eq!(
+        restored.contiguous_applied(),
+        3,
+        "snapshot prefix must not become an unfillable WAL gap"
+    );
+    assert_eq!(restored.contiguous_chosen(), 3);
+    assert_eq!(
+        restored.last_chosen_term(),
+        0,
+        "a reclaimed boundary has an unknown historical term"
+    );
+}
+
+/// The durable engine owns its covered prefix even when the retained WAL
+/// omits the boundary. Later entries must extend that prefix normally.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn restore_from_replay_with_engine_falls_back_when_resume_slot_has_no_accepted_entry() {
+async fn restore_from_replay_with_engine_keeps_prefix_when_resume_slot_has_no_accepted_entry() {
     let backend = sim_backend();
     let disks = vec![PathBuf::from("/wal")];
     let config = test_config(&disks);
@@ -414,22 +461,15 @@ async fn restore_from_replay_with_engine_falls_back_when_resume_slot_has_no_acce
     // accepted entry for. `last_applied_slot()` is itself a contiguous
     // watermark (crowdb-tree folds `received_slots_` forward from its own
     // frontier), so reaching floor 2 legitimately requires applying slot 1
-    // too -- modeling an engine that durably has extra data at slot 2 with
-    // no independent WAL corroboration (e.g. a lost/truncated WAL record),
-    // rather than an outright-impossible-via-the-API state.
+    // too. The retained WAL may omit the already durable boundary after
+    // reclamation; it need not corroborate that complete prefix again.
     let engine = CrowdbTreeEngine::open(&CrowdbTreeConfig::default()).expect("open crowdb-tree engine");
     engine
-        .apply(
-            1,
-            &Batch::decode(&Bytes::from(encode_put_payload(b"phantom1", b"x"))),
-        )
+        .apply(1, &Batch::decode(&Bytes::from(encode_put_payload(b"k1", b"v1"))))
         .into_ready()
         .unwrap();
     engine
-        .apply(
-            2,
-            &Batch::decode(&Bytes::from(encode_put_payload(b"phantom2", b"y"))),
-        )
+        .apply(2, &Batch::decode(&Bytes::from(encode_put_payload(b"k2", b"v2"))))
         .into_ready()
         .unwrap();
     engine.handle().flush().expect("flush");
@@ -448,21 +488,22 @@ async fn restore_from_replay_with_engine_falls_back_when_resume_slot_has_no_acce
     .await
     .unwrap();
 
-    // Slots 1 and 2 are skipped outright (never re-attempted -- see the
-    // rationale above), so slot 1's WAL value is *not* recovered here: an
-    // honest, safe degradation for this assumed-impossible mismatch, not a
-    // silent correctness violation (nothing that was ever safely writable
-    // is lost or corrupted). Slot 3, past the skipped prefix, replays
-    // normally.
-    assert_eq!(restored.learner.engine_get(b"k1").await.map(|(_, v)| v), None);
+    // Slots 1 and 2 retain the engine's complete prefix. Slot 3 extends it
+    // normally without needing the reclaimed boundary record.
+    assert_eq!(
+        restored.learner.engine_get(b"k1").await.map(|(_, v)| v),
+        Some(b"v1".to_vec())
+    );
+    assert_eq!(
+        restored.learner.engine_get(b"k2").await.map(|(_, v)| v),
+        Some(b"v2".to_vec())
+    );
     assert_eq!(
         restored.learner.engine_get(b"k3").await.map(|(_, v)| v),
         Some(b"v3".to_vec())
     );
-    // No accepted entry at the resume floor (slot 2) to seed a term from, so
-    // the frontier stays at the fresh-learner default until slot 3's
-    // out-of-order `learn()` bumps the max-ever-seen high-water mark.
-    assert_eq!(restored.contiguous_chosen(), 0);
+    assert_eq!(restored.contiguous_chosen(), 3);
+    assert_eq!(restored.contiguous_applied(), 3);
     assert_eq!(restored.last_chosen_slot(), 3);
     assert_eq!(restored.last_chosen_term(), 1);
 }

@@ -125,7 +125,7 @@ async fn forward(
                 return;
             }
             // Capability advertisements precede application replies and do not
-            // establish that the conditional write has completed.
+            // establish that the application request has completed.
             let handshake = message_type == 0xfffe;
             if !handshake && armed.swap(false, Ordering::SeqCst) {
                 dropped.fetch_add(1, Ordering::SeqCst);

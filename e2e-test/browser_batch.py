@@ -4,23 +4,46 @@
 
 import concurrent.futures
 from contextlib import ExitStack
+from fixture_result import CaseNotExecuted
 from resource_dispatch import resource_batches
 
 
 class BatchFixture:
     """Retain each client's failure until its own deferred lifecycle teardown."""
-    def __init__(self, cluster):
+    def __init__(self, cluster, case_name, errors):
         self.cluster = cluster
+        self.case_name = getattr(cluster, 'case_name', case_name)
+        self.errors = errors
         self.failure = None
 
     def __enter__(self):
         return self.cluster.__enter__()
 
     def __exit__(self, kind, error, traceback):
-        if error is None and self.failure is not None:
+        if self.failure is not None:
             error = self.failure
             kind, traceback = type(error), error.__traceback__
-        return self.cluster.__exit__(kind, error, traceback)
+        try:
+            return self.cluster.__exit__(kind, error, traceback)
+        except Exception as cleanup_error:
+            # An unwind error belongs to this fixture, not the next peer.
+            self.errors.append(cleanup_error)
+            return False
+
+
+def _enter_fixtures(stack, owners, errors):
+    clusters = []
+    for owner in owners:
+        try:
+            clusters.append(stack.enter_context(owner))
+        except BaseException as error:
+            # Keep startup first even when peer cleanup also fails.
+            if isinstance(error, Exception):
+                errors.append(error)
+            for entered in owners[:len(clusters)]:
+                entered.failure = CaseNotExecuted(owner.case_name)
+            raise
+    return clusters
 
 
 def run_browser_batches(cases, slots, prepare, execute, fail_fast=False,
@@ -31,8 +54,9 @@ def run_browser_batches(cases, slots, prepare, execute, fail_fast=False,
         # Keep all fixtures in this bounded batch until every client has ended.
         try:
             with ExitStack() as stack:
-                owners = [BatchFixture(prepare(case)) for case in batch]
-                clusters = [stack.enter_context(owner) for owner in owners]
+                owners = [BatchFixture(prepare(case), getattr(case, 'name', str(case)), errors)
+                          for case in batch]
+                clusters = _enter_fixtures(stack, owners, errors)
                 with concurrent.futures.ThreadPoolExecutor(max_workers=slots) as pool:
                     futures = {pool.submit(execute, case, cluster): owner
                                for case, cluster, owner in zip(batch, clusters, owners)}
@@ -43,7 +67,8 @@ def run_browser_batches(cases, slots, prepare, execute, fail_fast=False,
                             futures[future].failure = error
                             errors.append(error)
         except Exception as error:
-            errors.append(error)
+            if not any(error is previous for previous in errors):
+                errors.append(error)
         if fail_fast and errors:
             break
     return errors

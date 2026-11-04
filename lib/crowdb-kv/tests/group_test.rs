@@ -86,6 +86,12 @@ mod g4_learner_stream;
 #[path = "group_test/g5_recovery_test.rs"]
 mod g5_recovery;
 
+#[path = "group_test/recovery_backlog_test.rs"]
+mod recovery_backlog;
+
+#[path = "group_test/fetch_gap_durability_test.rs"]
+mod fetch_gap_durability;
+
 #[path = "group_test/g6_reconfig_test.rs"]
 mod g6_reconfig;
 

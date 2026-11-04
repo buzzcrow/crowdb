@@ -11,7 +11,7 @@ catalog = load_catalog("ui-round-trip", type="rest", uri=sys.argv[1])
 table = catalog.load_table((sys.argv[2], "events"))
 # The UI create response vends a writer grant; Console GETs vend read grants.
 table.io = load_file_io({**table.io.properties, **json.load(sys.stdin)}, location=table.location())
-expected = [{"id": 1, "message": "three nodes"}, {"id": 2, "message": "雪"}, {"id": 3, "message": "S3 + Iceberg"}]
+expected = [{"id": 1, "message": "three nodes"}, {"id": 2, "message": "\u96ea"}, {"id": 3, "message": "S3 + Iceberg"}]
 table.append(pa.Table.from_pylist(expected, schema=pa.schema([("id", pa.int64()), ("message", pa.string())])))
 actual = catalog.load_table((sys.argv[2], "events")).scan().to_arrow().to_pylist()
 assert sorted(actual, key=lambda row: row["id"]) == expected, actual

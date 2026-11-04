@@ -179,6 +179,17 @@ source. `conn_for` derives the client-facing crowdb-rpc port from the base
 port via the `KV_CLIENT_RPC_BASE` offset. Pool selection returns its
 generation, and retryable errors invalidate only that generation.
 
+Callers with concurrent bulk scans and latency-bounded point reads may opt
+into `with_isolated_point_reads`, or construct `CrowdbKvClient` with
+`new_with_isolated_point_reads`. Get replies then use one additional connection
+per endpoint, sharing the existing RPC workers, request-ID source, completion
+pool, tunables and deadlines. Scans and mutations retain their ordinary pool.
+Errors invalidate the selected pool's exact generation; explicit reconnect
+clears both pools. The default constructor retains its existing connection
+behavior. ChunkDB enables this mode so actual metadata point reads do not wait
+behind an incomplete background scan response. Isolation does not cache success
+or convert rejection, transport failure or an expired caller deadline to Ready.
+
 Unary methods (`send_put`, `send_get`, `send_delete`, `send_batch_write`,
 `send_scan`, `send_journal_scan`): build request flatbuffer →
 `rpc.call` → await → parse via `Ref` wrapper → map to the existing
@@ -262,6 +273,15 @@ or cyclic hints consume the configured retry budget and use the existing
 election wait and topology refresh rather than issuing an unbounded RPC loop.
 Scan and journal continuations reset this redirect history after a successful
 page. Conditional writes retain their original mutation identity on retries.
+
+After a transport failure or leadership rejection without a usable hint,
+discovery searches the target group across management seeds. A reachable seed
+that repeats the rejected RPC endpoint cannot hide another member's replacement
+route. Concurrent refreshes share the existing refresh gate and interval; a
+newer cached route is reused without another fetch. If no replacement is known,
+the operation retains its original bounded election wait/backoff and retry
+budget. Discovery never establishes authority for a mutation; the destination
+still applies its normal leadership and conditional-write checks.
 
 `TopologyCache` publishes one immutable `TopologySnapshot`. Every group route
 contains its leader, replica endpoints, read cursor, endpoint statistics, and

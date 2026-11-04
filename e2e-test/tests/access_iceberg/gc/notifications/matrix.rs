@@ -33,20 +33,33 @@ struct TestMatrix {
 async fn restarted_cleaners_finish_large_and_sparse_backlogs_beside_an_invalid_catalog() {
     let stack = TestNativeStorage::new();
     let (store, context, table) = seed_table(&stack).await;
-    let large = TestLargeRange::write(&stack, store.clone(), context, table).await;
-    let records = TestMatrixRecords::seed(store, context, table, large.file.clone()).await;
+    let started = Instant::now();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(720);
+    let pressure = TestGcPressure::prepare_before(deadline).await.unwrap();
+    let large = tokio::time::timeout_at(
+        deadline,
+        TestLargeRange::write(&stack, store.clone(), context, table),
+    )
+    .await
+    .expect("GC matrix large range seed exceeded the existing case deadline");
+    let records = tokio::time::timeout_at(
+        deadline,
+        TestMatrixRecords::seed(store, context, table, large.file.clone()),
+    )
+    .await
+    .expect("GC matrix record seed exceeded the existing case deadline");
     let mut check = TestMatrix {
         records,
         large,
         servers: Vec::new(),
-        pressure: None,
-        started: Instant::now(),
+        pressure: Some(pressure),
+        started,
         observations: Vec::new(),
         last_revision: None,
         restarts: 0,
     };
-    let result = tokio::time::timeout(
-        Duration::from_secs(720),
+    let result = tokio::time::timeout_at(
+        deadline,
         std::panic::AssertUnwindSafe(check.run(&stack.seeds)).catch_unwind(),
     )
     .await;
@@ -124,8 +137,12 @@ impl TestMatrix {
             let multipart = self.records.multipart().await?;
             let deleted = task.deleted;
             self.observe(&task, multipart.as_ref());
-            if let Some(pressure) = &mut self.pressure {
-                pressure.observe(deleted).await?;
+            let pressure = self
+                .pressure
+                .as_mut()
+                .ok_or("prepared foreground pressure is missing")?;
+            if pressure.released() {
+                pressure.observe(deleted, task.phase == GcPhase::Complete).await?;
             } else if deleted > 0 {
                 let remaining = self.records.remaining().await?;
                 if task.phase == GcPhase::Complete || remaining == 0 {
@@ -135,7 +152,7 @@ impl TestMatrix {
                     "gc_matrix_foreground_start {}",
                     serde_json::json!({"elapsed_ms":self.started.elapsed().as_millis(),"deleted":deleted,"remaining_canonical":remaining,"revision":task.revision,"phase":format!("{:?}",task.phase)})
                 );
-                self.pressure = Some(TestGcPressure::start(&self.servers[0].origin, seeds.to_vec())?);
+                pressure.release(seeds.to_vec())?;
             }
             if task.phase == GcPhase::Complete
                 && self.records.sparse_complete().await?

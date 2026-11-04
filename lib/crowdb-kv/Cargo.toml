@@ -21,7 +21,7 @@ workspace = true
 test-util = []
 
 [dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "time", "net", "fs", "sync", "io-util"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "fs", "sync", "io-util"] }
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
 bytes = "1"
@@ -105,6 +105,14 @@ path = "tests/store_test.rs"
 [[test]]
 name = "wal_test"
 path = "tests/wal_test.rs"
+
+[[test]]
+name = "replay_memory_test"
+path = "tests/replay_memory_test.rs"
+
+[[test]]
+name = "replay_compaction_memory_test"
+path = "tests/replay_compaction_memory_test.rs"
 
 [[bench]]
 name = "wal"

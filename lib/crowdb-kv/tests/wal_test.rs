@@ -18,6 +18,9 @@ mod wal_engine_test;
 #[path = "wal_test/replay_test.rs"]
 mod replay_test;
 
+#[path = "wal_test/replay_compaction_test.rs"]
+mod replay_compaction_test;
+
 #[path = "wal_test/gc_test.rs"]
 mod gc_test;
 
@@ -26,6 +29,9 @@ mod pipeline_backend_test;
 
 #[path = "wal_test/block_backend_test.rs"]
 mod block_backend_test;
+
+#[path = "wal_test/block_runtime_test.rs"]
+mod block_runtime_test;
 
 #[path = "wal_test/block_restore_test.rs"]
 mod block_restore_test;

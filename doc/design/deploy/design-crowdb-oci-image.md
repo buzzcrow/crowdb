@@ -304,18 +304,22 @@ file hashes. Resume accepts the same inputs and exact owned container, or
 recreates that container against the retained data. A foreign same-name object,
 changed daemon or changed configuration fails before start/stop effects.
 Application UUID binding is separate and can be sealed only after observing
-that cluster. One cleanup entry point selects all recorded bridge and host-network
-clusters by default, or one explicitly named cluster. Cleanup verifies the same
-ownership and removes containers, unused owned bridges, node data and matching
-launch/application receipts. Bridge data is held in owned Docker volumes. Host
-data deletion requires the retained storage declaration to match accepted media
+that cluster. Default cleanup selects stopped recorded bridge and host-network
+clusters and preserves a running cluster's containers, data and restart receipts.
+Explicit cluster or all-cluster teardown can stop the selected containers.
+Cleanup verifies the same ownership and removes containers, unused owned bridges,
+node data and matching launch/application receipts. Bridge data is held in owned
+Docker volumes. Host data deletion requires the retained storage declaration to match accepted media
 and rejects symlinked roots, nested mounts, overlapping recorded data directories
 and bind mounts referenced by another container in the selected runtime. Supplied
 disk files, raw devices and external policy/password inputs are preserved;
 cleanup never wipes their contents. Retaining data and restart receipts is an
 explicit cleanup option. Failures leave ownership retryable until data deletion
-and target-binding removal complete. Containerd-only cleanup requires no Docker
-daemon or CLI binary.
+and target-binding removal complete. Unscoped Docker cleanup also removes stopped
+containers without receipts, unreferenced named and anonymous volumes, unused
+networks and unused build cache. Retained cluster resources remain protected;
+non-force runtime removal rejects concurrent restarts or new references.
+Containerd-only cleanup requires no Docker daemon or CLI binary.
 
 Explicit monitor liveness/readiness probes report node health. A dedicated
 systemd unit restarts the containerd daemon, and its restart plugin applies the

@@ -10,9 +10,12 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -23,21 +26,50 @@ namespace
 {
 // Maps a DiskIOUring callback's raw CQE `res` (>=0 bytes transferred, <0
 // -errno) to a Status, treating a short read/write (res >= 0 but < the
-// requested `len`) as an io_error too -- a single-shot op per
-// submit_read/write call, unlike the synchronous stores' internal
-// retry-until-full-length loop; a later phase can add that retry if real
-// usage needs it.
+// requested `len`) as an io_error too. Each extent is submitted once;
+// crossing a block boundary does not retry a short read in the first file.
 Status result_to_status(int res, size_t len, const char *op)
 {
     if (res < 0) {
         return Status::io_error(std::string(op) + ": " + std::strerror(-res));
     }
-    if (static_cast<size_t>(res) < len) {
+    if (std::cmp_less(res, len)) {
         return Status::io_error(std::string("short ") + op + " (" + std::to_string(res) + " of " + std::to_string(len) +
                                 " bytes)");
     }
     return Status::Ok();
 }
+
+struct ExtentRead
+{
+    int      fd;
+    void    *buffer;
+    size_t   length;
+    uint64_t offset;
+};
+
+struct ExtentReads : std::enable_shared_from_this<ExtentReads>
+{
+    ::crowdb::common::DiskIOUring *uring = nullptr;
+    std::vector<ExtentRead>        parts;
+    AsyncCompletion                completion;
+
+    void submit(size_t index)
+    {
+        const auto &part = parts[index];
+        uring->submit_read(part.fd, part.buffer, part.length, static_cast<off_t>(part.offset),
+                           [state = shared_from_this(), index, length = part.length](int result) {
+                               Status status = result_to_status(result, length, "read");
+                               if (!status.ok() || index + 1 == state->parts.size()) {
+                                   if (state->completion) {
+                                       state->completion.complete(std::move(status));
+                                   }
+                                   return;
+                               }
+                               state->submit(index + 1);
+                           });
+    }
+};
 
 // RAII aligned buffer for O_DIRECT writes via io_uring. std::vector memory
 // is not guaranteed IU-aligned; this wraps posix_memalign + memcpy.
@@ -92,6 +124,35 @@ BlockAsyncPageStore::BlockAsyncPageStore(BlockPageStore *store, ::crowdb::common
 
 uint64_t BlockAsyncPageStore::submit_read(PageAddr addr, void *buf, size_t len, AsyncCompletion on_complete)
 {
+    if (len == 0 || len > std::numeric_limits<uint64_t>::max() - addr) {
+        if (on_complete) {
+            on_complete.complete(len == 0 ? Status::Ok() : Status::invalid_argument("read range overflow"));
+        }
+        return 0;
+    }
+    const uint64_t block_size = store_->block_size();
+    if (block_size > 0 && len > block_size - (addr % block_size)) {
+        auto state        = std::make_shared<ExtentReads>();
+        state->uring      = uring_;
+        state->completion = on_complete;
+        size_t done       = 0;
+        while (done < len) {
+            uint64_t local = 0;
+            int      fd    = store_->fd_for_offset(addr + done, &local);
+            if (fd < 0) {
+                if (on_complete) {
+                    on_complete.complete(Status::io_error("BlockAsyncPageStore: no fd for offset"));
+                }
+                return 0;
+            }
+            size_t chunk = std::min(static_cast<uint64_t>(len - done), block_size - local);
+            state->parts.push_back(
+                {.fd = fd, .buffer = static_cast<uint8_t *>(buf) + done, .length = chunk, .offset = local});
+            done += chunk;
+        }
+        state->submit(0);
+        return 0;
+    }
     uint64_t local = 0;
     int      fd    = store_->fd_for_offset(addr, &local);
     if (fd < 0) {
@@ -188,7 +249,7 @@ uint64_t BlockAsyncPageStore::submit_write(PageAddr addr, const void *buf, size_
 
                 state->pending++;
                 uring_->submit_write(fd, write_buf, chunk, static_cast<off_t>(local), [state, chunk](int res) {
-                    if (res < 0 || static_cast<size_t>(res) < chunk) {
+                    if (res < 0 || std::cmp_less(res, chunk)) {
                         Status s = result_to_status(res, chunk, "write");
                         if (state->first_error.ok()) {
                             state->first_error = std::move(s);

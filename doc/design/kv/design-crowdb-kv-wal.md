@@ -177,7 +177,10 @@ Each individual `Accept` is small (tens of bytes overhead + payload). Per-record
 The durable operation is backend-specific:
 
 - **Filesystem file backend:** append with normal file writes, then `fdatasync` / equivalent durable flush.
-- **Block-device backend:** issue aligned direct writes. If the device requires 4 KiB sectors, the WAL writer pads or read-modify-writes through the block backend's alignment planner; no filesystem `fdatasync` is involved.
+- **Block-device backend:** issue aligned positional writes, using direct I/O
+  when selected. If the device requires 4 KiB sectors, the WAL writer pads or
+  read-modify-writes through the alignment planner. The real file-backed
+  implementation then calls `sync_data` before releasing durable acknowledgments.
 - **RAM / SCM / simulated backends:** use the backend's own durability contract. A volatile RAM backend is for tests only and may complete immediately; persistent-memory backends may require cache-line flush / fence semantics instead of filesystem sync.
 
 The acceptor code talks to `WalEngine::append_*` and does not branch on these backend details.
@@ -248,6 +251,20 @@ enum with four variants:
   `fdatasync` calls `sync_data`. Whether the path is a regular file, a raw
   block device, or a tmpfs file makes no difference; in Unix, a block device
   *is* a file.
+
+On the production multi-thread Tokio runtime, including a runtime with one
+worker, synchronous block-device file and layout operations use Tokio's
+[`block_in_place`](https://docs.rs/tokio/1.52.3/tokio/task/fn.block_in_place.html).
+This allows independently spawned apply, RPC, and timer tasks
+to run while the OS call blocks. The closure completes before returning, so
+borrowed WAL buffers and the file remain live without an extra payload copy.
+Write, durable flush, index publication, and acknowledgment keep their original
+ordering and error behavior. This changes scheduling rather than durability,
+timeouts, retries, or configured worker/resource limits. Current-thread and
+non-runtime callers retain synchronous compatibility; they do not gain
+concurrent task progress. The production path uses independently spawned WAL
+workers on the ordinary multi-thread runtime, not a `LocalSet` or same-task
+`join!` branches.
 
 `BlockDevice` has two constructors selected by the `O_DIRECT` flag:
 
@@ -360,6 +377,9 @@ The split matters: replay/restore are purely *local* (this node's WAL), but `Acc
    tail from a crash mid-write); later segments are still processed.
 3. Rebuild per-`(group, slot)` acceptor state keeping the **highest-ballot**
    `Promised` / `Accepted` per slot (later/higher-ballot records win, Paxos rule).
+   Retain promises and accepted values independently while scanning; release
+   superseded payloads immediately. Segment locations, counts and election
+   state still account for every verified record.
 4. `current_term` = max `term` across all records.
 5. `voted_for` = the node from the latest `VoteGranted` whose `term == current_term`. This is election safety state, not just debug metadata: after crash, the node must not grant a second vote in the same term.
 Output: `ReplayResult { records, max_segment_id, current_term, voted_for }`.
@@ -400,6 +420,13 @@ outright; see `../tree/design-crowdb-tree-engine.md`).
 ### 6.3 Wiring a live group (`create_group_with_wal`)
 
 `replay_group` → create `WalEngine` and resume `next_segment_id = max_segment_id + 1` → `restore_from_replay` → `set_wal` → wrap in `PxGroup`.
+
+- Seed the live pipeline index with the verified replay index before starting
+  writers. Its slot locations and segment metadata cover retained history as
+  well as future appends, so GC can reclaim pre-restart segments.
+- Initialize the WAL's local snapshot watermark from the freshly opened
+  engine's durable resume floor. Peer progress and the reclamation certificate
+  remain independent gates; local recovery does not authorize prefix removal.
 
 The group also records a conservative local slot tip:
 
@@ -466,9 +493,12 @@ the node fails out of the group and rebuilds from peers via snapshot install.
 
 ### 6.7 Replay performance
 
-Replay is sequential disk reads, parallelized across disks; WAL sizes stay small
-because of GC (§7), so replays are typically sub-second. The dominant cost is
-state machine snapshot load (if any), not WAL read.
+Binary replay uses a 1 MiB read-ahead buffer for frame markers, format probes
+and complete frames. A larger frame receives enough space for its own length.
+Every frame still passes its normal CRC and format checks. Retained payloads
+own their bytes so replacing an accepted record can release it independently
+of neighboring records in the input buffer. Memory scales with the retained
+highest-ballot state and index, rather than the number of replaced versions.
 
 ---
 
@@ -492,6 +522,14 @@ contract is in [slot retention](design-crowdb-kv-slot.md#11-interaction-with-sna
 ### 7.2 GC granularity
 
 GC runs at **segment granularity**, not record granularity. A whole segment is unlinked from disk when *every* record in it has `slot < gc_slot`. This is cheap (one `unlink()` per segment) and avoids any in-place rewriting.
+
+- Slot-based eligibility does not retire election state. Retain a segment
+  proving the highest term and the segment containing the latest vote at the
+  highest recorded vote term, even when their slot records are below the GC
+  watermark. A mixed vote/data segment follows the same rule.
+- Derive these election fields from every verified record during replay and
+  update them as live segments are written. They are in-memory index metadata;
+  WAL record and segment formats remain unchanged.
 
 ### 7.3 GC trigger
 

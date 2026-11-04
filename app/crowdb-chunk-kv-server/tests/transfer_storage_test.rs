@@ -163,3 +163,89 @@ async fn only_published_matching_target_can_claim_mutable_root() {
         .await
         .is_err());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn released_recovery_marker_does_not_block_the_first_target_checkpoint() {
+    let metadata = metadata::TestMetadata::start().await;
+    let kv = metadata.client.clone();
+    let source_entry = source();
+    let source = open_root_catalog_for_tests(kv.clone(), 0, 1, &source_entry)
+        .await
+        .unwrap();
+    source.publish(42, 0, 1, 1, b"source-root").unwrap();
+    publish_assignment(kv.clone(), source_entry.clone(), 1).await;
+
+    // Lease-excluded recovery adopts the original stream without an overlay.
+    let mut recovered_entry = source_entry;
+    recovered_entry.owner.instance_id = 2;
+    recovered_entry.owner_epoch = 2;
+    recovered_entry.state = ChunkKvRangeCatalogPartitionState::Prepared;
+    recovered_entry.transition_id = Some(Id128 { high: 5, low: 6 });
+    let recovered = open_root_catalog_for_tests(kv.clone(), 0, 1, &recovered_entry)
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered.publish(42, 1, 2, 2, b"target-root"),
+        Err(CtError::Unavailable)
+    );
+
+    // The monitor may release the completed marker before the target's first
+    // checkpoint; the exact Serving assignment still establishes ownership.
+    recovered_entry.state = ChunkKvRangeCatalogPartitionState::Serving;
+    recovered_entry.transition_id = None;
+    publish_assignment(kv.clone(), recovered_entry.clone(), 2).await;
+    recovered.publish(42, 1, 2, 2, b"target-root").unwrap();
+    assert_eq!(
+        source.publish(42, 2, 1, 3, b"stale-source"),
+        Err(CtError::Unavailable)
+    );
+    let reopened = open_root_catalog_for_tests(kv, 0, 1, &recovered_entry)
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.load(42, RootCatalogObject::CurrentManifest).unwrap(),
+        Some(b"target-root".to_vec())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn released_marker_on_another_assignment_does_not_authorize_the_prepared_root() {
+    for mismatch in ["owner", "epoch", "tree", "stream"] {
+        let metadata = metadata::TestMetadata::start().await;
+        let kv = metadata.client.clone();
+        let source_entry = source();
+        let source = open_root_catalog_for_tests(kv.clone(), 0, 1, &source_entry)
+            .await
+            .unwrap();
+        source.publish(42, 0, 1, 1, b"source-root").unwrap();
+        publish_assignment(kv.clone(), source_entry.clone(), 1).await;
+        let mut prepared = source_entry;
+        prepared.owner.instance_id = 2;
+        prepared.owner_epoch = 2;
+        prepared.state = ChunkKvRangeCatalogPartitionState::Prepared;
+        prepared.transition_id = Some(Id128 { high: 5, low: 6 });
+        let target = open_root_catalog_for_tests(kv.clone(), 0, 1, &prepared)
+            .await
+            .unwrap();
+        let mut published = prepared;
+        published.state = ChunkKvRangeCatalogPartitionState::Serving;
+        published.transition_id = None;
+        match mismatch {
+            "owner" => published.owner.instance_id = 3,
+            "epoch" => published.owner_epoch = 3,
+            "tree" => published.artifact.tree_id = 43,
+            "stream" => published.artifact.stream_name.low = 3,
+            _ => unreachable!(),
+        }
+        publish_assignment(kv, published, 2).await;
+        assert_eq!(
+            target.publish(42, 1, 2, 2, b"unpublished-target"),
+            Err(CtError::Unavailable),
+            "released marker must not bypass {mismatch} identity"
+        );
+        assert_eq!(
+            source.load(42, RootCatalogObject::CurrentManifest).unwrap(),
+            Some(b"source-root".to_vec())
+        );
+    }
+}

@@ -158,7 +158,7 @@ KV_CASES = (
     Case("kv.recovery", "kv::snapshot::snapshot_import_precedes_wiring_and_catches_up_tail",
          (0, 1, 2), groups_per_node=((1,), (1,), ())),
     Case("kv.membership", "kv::reconfiguration::quorum_expands_and_shrinks_without_losing_writes",
-         (0, 1, 2, 3, 4)),
+         (0, 1, 2, 3, 4), groups_per_node=((1,), (1,), (1,), (), ())),
     Case("kv.routing", "kv::cluster::topology_and_follower_hint", (10, 20, 30), True),
     Case("kv.routing", "kv::cluster::dynamic_groups_isolate_data", (0, 1, 2), True),
     Case("kv.management", "kv::management::management_lifecycle"),
@@ -846,6 +846,10 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.crash_restart()
                 cluster.client(bundle, "verify", case.name)
             else:
+                if case.scope == "console.native.browser.dataset":
+                    # Production placement and browser execution each retain the
+                    # case's bounded client budget in the same owned fixture.
+                    cluster.client(bundle, "prepare", case.name)
                 cluster.client(bundle, case.name.rsplit("::", 1)[-1], case.name)
 
     def stable_network(case):

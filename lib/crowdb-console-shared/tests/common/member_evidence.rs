@@ -34,6 +34,7 @@ impl TestMemberEvidence {
             configuration_digest: "accepted-digest".into(),
         };
         let expected = NodeRecord {
+            web_port: 9090,
             discovery_id: uuid::Uuid::new_v4().to_string(),
             node_id: 1,
             physical_host_id: "test-host".into(),

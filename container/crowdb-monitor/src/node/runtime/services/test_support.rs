@@ -73,12 +73,35 @@ impl NodeServiceForTests {
     }
 
     /// # Errors
+    /// Propagates owned test KV child startup failures.
+    pub async fn start_kv_child_for_tests(&mut self) -> Result<u32> {
+        let service = super::super::service(&self.profile, "kv")?;
+        Ok(self
+            .processes
+            .start(&service, &std::collections::BTreeMap::new())
+            .await?)
+    }
+
+    /// # Errors
     /// Propagates failure to stop the owned KV child.
     pub async fn stop_kv_for_tests(&mut self) -> Result<()> {
         self.processes
             .stop("kv", std::time::Duration::from_secs(1))
             .await?;
         Ok(())
+    }
+
+    /// # Errors
+    /// Propagates failure to stop one fixture-owned managed child.
+    pub async fn stop_child_for_tests(&mut self, id: &str) -> Result<()> {
+        self.processes.stop(id, std::time::Duration::from_secs(1)).await?;
+        Ok(())
+    }
+
+    /// # Errors
+    /// Rejects superseded recovery observations before stopping an owned process.
+    pub async fn stop_unhealthy_for_tests(&mut self, intent: &NodeServiceIntent) -> Result<()> {
+        super::stop_unhealthy(&self.profile, &mut self.processes, intent).await
     }
 
     /// # Errors
@@ -92,8 +115,13 @@ impl NodeServiceForTests {
     /// # Errors
     /// Propagates authority, journal and process observation errors.
     pub async fn reconcile_for_tests(&mut self) -> Result<()> {
-        super::super::health::NodeHealth::new(&self.profile)?
-            .reconcile_services(&self.profile, &mut self.processes)
+        if self.health.is_none() {
+            self.health = Some(super::super::health::NodeHealth::new(&self.profile)?);
+        }
+        self.health
+            .as_mut()
+            .ok_or("missing test health worker")?
+            .reconcile_services_for_tests(&self.profile, &mut self.processes)
             .await
     }
 
@@ -106,6 +134,27 @@ impl NodeServiceForTests {
     /// # Errors
     /// Propagates bounded failure observation errors.
     pub fn failures_for_tests(&mut self) -> Result<Value> {
-        failures(&self.profile.paths.data_root, &self.processes.live_pids()?)
+        let binding = super::durable::read::<crowdb_protocol::mgmt::node::NodeBinding>(
+            &self.profile.paths.data_root.join("node-binding.json"),
+        )?
+        .ok_or("node is unbound")?;
+        failures(
+            &self.profile.paths.data_root,
+            &self.processes.live_pids()?,
+            &binding,
+        )
+    }
+
+    /// Read the production bound namespace of this fixture's actual children.
+    ///
+    /// # Errors
+    /// Propagates binding, process and durable observation failures.
+    pub fn owned_processes_for_tests(&mut self, cluster: &str, node: u64) -> Result<Value> {
+        super::super::observation::processes(
+            &self.profile.paths.data_root,
+            &mut self.processes,
+            cluster,
+            node,
+        )
     }
 }

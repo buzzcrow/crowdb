@@ -141,16 +141,27 @@ pub struct CrowdbKvClient {
 impl CrowdbKvClient {
     #[must_use]
     pub fn new(config: ClientConfig) -> Self {
-        Self::build(config, None)
+        Self::build(config, None, false)
+    }
+
+    /// Keep point reads independent of bulk response frames on this client's
+    /// existing transport, with one additional connection per endpoint.
+    #[must_use]
+    pub fn new_with_isolated_point_reads(config: ClientConfig) -> Self {
+        Self::build(config, None, true)
     }
 
     /// Create a client using an existing shared RPC transport.
     #[must_use]
     pub fn new_with_rpc_transport(config: ClientConfig, transport: Arc<crate::KvRpcTransport>) -> Self {
-        Self::build(config, Some(transport))
+        Self::build(config, Some(transport), false)
     }
 
-    fn build(config: ClientConfig, transport: Option<Arc<crate::KvRpcTransport>>) -> Self {
+    fn build(
+        config: ClientConfig,
+        transport: Option<Arc<crate::KvRpcTransport>>,
+        isolated_point_reads: bool,
+    ) -> Self {
         // A standalone client is normal at process startup. Keep the
         // distinction available for diagnostics without warning on each
         // test listener restart or each independently deployed process.
@@ -174,14 +185,19 @@ impl CrowdbKvClient {
             metrics: Arc::new(ClientMetrics::default()),
             read_endpoint_policy: config.read_endpoint_policy,
             rpc_transport: Some(transport.unwrap_or_else(|| {
-                std::sync::Arc::new(crate::KvRpcTransport::with_pool_size(
+                let transport = crate::KvRpcTransport::with_pool_size(
                     config.pool_size_per_endpoint,
                     config.enable_nagle,
                     config.quickack,
                     config.event_write,
                     config.send_queue_capacity,
                     config.rpc_workers,
-                ))
+                );
+                Arc::new(if isolated_point_reads {
+                    transport.with_isolated_point_reads()
+                } else {
+                    transport
+                })
             })),
         }
     }

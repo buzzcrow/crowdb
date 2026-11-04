@@ -259,12 +259,11 @@ pub struct PxElectionConfig {
     /// Maximum admissible clock skew across the cluster. Subtracted from the
     /// leader's `lease_read_until` to remain safe under skew.
     pub max_clock_skew_ms: u64,
-    /// Slots scanned per bulk-Phase-1 batch (new-leader open-prefix repair).
+    /// Maximum concurrent slots in new-leader open-prefix recovery.
     pub bulk_prepare_window: u64,
-    /// R65: gap count threshold for snapshot fallback. When a follower's
-    /// gap count exceeds this, `FetchGap` is skipped and a warning is logged
-    /// (full automatic snapshot install for running replicas is a
-    /// follow-up). Default matches `bulk_prepare_window` (1024).
+    /// Gap count at which snapshot catch-up would be useful. Atomic snapshot
+    /// replacement for running replicas is not implemented, so bounded
+    /// `FetchGap` continues above this diagnostic threshold. Default: 1024.
     pub catchup_snapshot_threshold: u64,
     /// Test-only override: when `true`, the election driver task is not
     /// spawned. Used by `testkit::cluster::start_cluster` to keep legacy M1/M2

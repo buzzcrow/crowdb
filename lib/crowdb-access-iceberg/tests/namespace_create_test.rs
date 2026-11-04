@@ -25,7 +25,11 @@ fn request(fixture: &TestNamespace, names: &[&str]) -> NamespaceCreateRequest {
         },
         principal: "writer".into(),
         identifier: NamespaceIdentifier::new(names.iter().map(|name| (*name).into()).collect()).unwrap(),
-        properties: NamespaceProperties::new(BTreeMap::from([("owner".into(), "数据库".into())])).unwrap(),
+        properties: NamespaceProperties::new(BTreeMap::from([(
+            "owner".into(),
+            "\u{6570}\u{636e}\u{5e93}".into(),
+        )]))
+        .unwrap(),
     }
 }
 
@@ -72,7 +76,7 @@ async fn native_create_publishes_complete_resources_and_retries_existing_names_a
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&outcome.body).unwrap(),
             serde_json::json!({
-                "namespace": names, "properties": {"owner": "数据库"},
+                "namespace": names, "properties": {"owner": "\u{6570}\u{636e}\u{5e93}"},
             })
         );
         let authority = reader

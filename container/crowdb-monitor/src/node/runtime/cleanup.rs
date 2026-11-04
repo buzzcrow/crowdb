@@ -47,8 +47,9 @@ pub(super) async fn execute(
         .no_proxy()
         .timeout(Duration::from_secs(30))
         .build()?;
+    let (management_port, _) = super::kv::ports(profile)?;
     let response = client
-        .post("http://127.0.0.1:10000/system/cleanup")
+        .post(format!("http://127.0.0.1:{management_port}/system/cleanup"))
         .json(&json!({"bootstrap": bootstrap, "confirm_delete_system_store": true}))
         .send()
         .await;

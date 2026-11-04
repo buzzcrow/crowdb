@@ -185,9 +185,15 @@ pub async fn create_group_with_wal(
         wal_config.wal_record_format = crowdb_kv::wal::WalRecordFormat::TextLine;
     }
     wal_config.wal_skip_fsync = config.wal_skip_fsync;
-    let replay = replay_group(&wal_backend, &wal_config.wal_disks, group_id).await?;
-    let next_seg = replay.max_segment_id.saturating_add(1).max(1);
-    let wal = WalEngine::create_with_next_segment_id(wal_backend, wal_config, group_id, next_seg).await?;
+    let mut replay = replay_group(&wal_backend, &wal_config.wal_disks, group_id).await?;
+    let wal = WalEngine::create_from_replay(
+        wal_backend,
+        wal_config,
+        group_id,
+        replay.max_segment_id,
+        std::mem::take(&mut replay.index),
+    )
+    .await?;
 
     let mut local_replica = {
         let engine = open_crowdb_tree_engine(
@@ -198,6 +204,7 @@ pub async fn create_group_with_wal(
             &config.log_dir,
         )
         .await?;
+        wal.set_snapshot_slot(engine.resume_from_slot());
         PxLocalReplica::restore_from_replay_with_engine(replica_id, initial_role, &replay, engine).await?
     };
     local_replica.set_wal(wal);

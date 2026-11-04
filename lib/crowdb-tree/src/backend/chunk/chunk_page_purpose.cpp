@@ -32,12 +32,21 @@ Status ChunkPageStore::write_typed_at(PagePurpose purpose, uint64_t off, const u
         return Status::resource_exhausted("chunk page write exceeds address space");
     }
     if (!staged_initialized_) {
-        Status status = materialize_active(&staged_);
-        if (!status.ok()) {
-            return status;
+        staged_base_ = reuse_base_manifest();
+        if (staged_base_ != nullptr) {
+            if (staged_base_->owner_epoch > config_.owner_epoch) {
+                return Status::corruption("chunk manifest checksum or epoch is invalid");
+            }
+            const RootCatalog &base_catalog =
+                staged_base_ == inherited_manifest_ && inherited_catalog_ != nullptr ? *inherited_catalog_ : *catalog_;
+            Status status = validate_manifest(*staged_base_, base_catalog);
+            if (!status.ok()) {
+                return status;
+            }
         }
+        staged_.reset(staged_base_ == nullptr ? 0 : staged_base_->logical_size);
         staged_purposes_.clear();
-        auto base = reuse_base_manifest();
+        auto base = staged_base_;
         if (base != nullptr) {
             for (const auto &pack : base->packs) {
                 staged_purposes_.assign(pack.logical_offset, pack.ref.length, chunk_purpose(pack.ref.chunk_id));
@@ -45,12 +54,13 @@ Status ChunkPageStore::write_typed_at(PagePurpose purpose, uint64_t off, const u
         }
         staged_initialized_ = true;
     }
-    const size_t end = static_cast<size_t>(off) + len;
-    if (end > staged_.size()) {
-        staged_.resize(end, 0);
+    const size_t end    = static_cast<size_t>(off) + len;
+    Status       status = prepare_staged_write(off, len);
+    if (!status.ok()) {
+        return status;
     }
+    staged_.write(off, std::span<const uint8_t>(buf, len));
     if (len != 0) {
-        std::memcpy(staged_.data() + off, buf, len);
         dirty_ranges_.emplace_back(off, len);
         staged_purposes_.assign(off, len, purpose);
     }

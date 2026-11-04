@@ -3,7 +3,7 @@
 
 //! Grant publication serialized with process replacement and renewal.
 
-use super::{catalog, operation_error, wall_time_ms};
+use super::{catalog, operation_error, read_transfers, wall_time_ms};
 use crate::group0_control_plane::Group0ControlPlane;
 use bytes::Bytes;
 use crowdb_kv::cluster::group_operations::KvGroupMutation;
@@ -13,7 +13,7 @@ use crowdb_protocol::{
     common::InstanceValue,
     key::{InstanceKey, ServingGrantKey, StreamProcessLeaseKey, TextKey},
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 struct ReadyInstance {
     process_epoch: u64,
@@ -28,13 +28,26 @@ pub(super) async fn issue(
         return Ok(());
     };
     let ready = read_ready(control, descriptor).await?;
-    let mut assignments: HashMap<u64, Vec<ServingAssignment>> = HashMap::new();
+    let released: HashSet<_> = read_transfers(control)
+        .await?
+        .into_iter()
+        .filter(|(transition, _)| transition.release_proof.is_some())
+        .map(|(transition, _)| {
+            (
+                transition.source.instance_id,
+                transition.partition_id,
+                transition.source_epoch,
+            )
+        })
+        .collect();
+    let mut assignments: BTreeMap<u64, Vec<ServingAssignment>> = BTreeMap::new();
     for entry in catalog.pages.iter().flat_map(|page| &page.entries) {
         let assignment = ServingAssignment {
             partition_id: entry.partition_id,
             owner_epoch: entry.owner_epoch,
         };
         if entry.state == ChunkKvRangeCatalogPartitionState::Serving
+            && !released.contains(&(entry.owner.instance_id, entry.partition_id, entry.owner_epoch))
             && ready
                 .get(&entry.owner.instance_id)
                 .is_some_and(|instance| instance.assignments.contains(&assignment))
@@ -45,8 +58,9 @@ pub(super) async fn issue(
                 .push(assignment);
         }
     }
+    let mut failures = Vec::new();
     for (instance_id, assignments) in assignments {
-        publish(
+        if let Err(error) = publish(
             control,
             descriptor,
             instance_id,
@@ -54,9 +68,19 @@ pub(super) async fn issue(
             catalog.head.generation,
             assignments,
         )
-        .await?;
+        .await
+        {
+            failures.push(format!("instance {instance_id}: {error}"));
+        }
     }
-    Ok(())
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "serving grant publication failed: {}",
+            failures.join("; ")
+        ))
+    }
 }
 
 async fn publish(

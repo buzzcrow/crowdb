@@ -165,11 +165,11 @@ async fn main() {
         .parse()
         .expect("valid rpc_listen_addr");
 
-    // Build KV client for group-0 topology access.
+    // Share discovery and metadata while keeping point reads off scan frames.
     let mut kv_config = ClientConfig::new(config.server.kv_server_mgmt_seeds.clone());
     kv_config.pool_size_per_endpoint = config.server.kv_pool_size;
     kv_config.rpc_workers = config.server.kv_rpc_workers;
-    let kv = Arc::new(CrowdbKvClient::new(kv_config));
+    let kv = Arc::new(CrowdbKvClient::new_with_isolated_point_reads(kv_config));
     let hw = HardwareClient::from_shared(Arc::clone(&kv));
     let refresh_hw = HardwareClient::from_shared(Arc::clone(&kv));
     let watch = WatchNotifyClient::from_shared(Arc::clone(&kv));
@@ -325,35 +325,10 @@ async fn main() {
         },
     );
 
-    let range_refresh_guard = Arc::clone(&range_guard);
-    let range_refresh_kv = Arc::clone(&kv);
-    let range_refresh_stop = stop_rx.clone();
-    let range_refresh_instance = config
-        .server
-        .instance_id
-        .as_ref()
-        .and_then(|value| value.parse::<u64>().ok());
-    let range_refresh_handle = tokio::spawn(async move {
-        let Some(instance_id) = range_refresh_instance else {
-            return;
-        };
-        let mut stop = range_refresh_stop;
-        let mut ticker = tokio::time::interval(Duration::from_secs(1));
-        loop {
-            tokio::select! {
-                _ = ticker.tick() => {
-                    if let Err(error) = range_refresh_guard.load_from_group0(&range_refresh_kv, instance_id).await {
-                        warn!(%error, instance_id, "periodic range guard refresh failed");
-                    }
-                }
-                changed = stop.changed() => {
-                    if changed.is_ok() && *stop.borrow() {
-                        return;
-                    }
-                }
-            }
-        }
-    });
+    let readiness = Arc::new(crowdb_chunkdb::readiness::RangeReadiness::new(Arc::clone(
+        &range_guard,
+    )));
+    let range_refresh_handle = Arc::clone(&readiness).start(Arc::clone(&kv), instance_id, stop_rx.clone());
 
     // Diskdb client pool + chunk allocator.
     let pool = Arc::new(DiskdbClientPool::with_transport(
@@ -454,15 +429,6 @@ async fn main() {
     info!(%rpc_listen_addr, "crowdb-rpc server listening");
 
     // Start HTTP health + metrics + cache invalidation server.
-    let readiness = HttpReadiness {
-        range_guard: Arc::clone(&range_guard),
-        kv: Arc::clone(&kv),
-        instance_id: config
-            .server
-            .instance_id
-            .as_ref()
-            .and_then(|value| value.parse().ok()),
-    };
     let http_handle = tokio::spawn(run_http_server(
         http_listen_addr,
         readiness,
@@ -605,30 +571,17 @@ fn spawn_chunkdb_keepalive(
     Some(handle)
 }
 
-struct HttpReadiness {
-    range_guard: Arc<RangeGuard>,
-    kv: Arc<CrowdbKvClient>,
-    instance_id: Option<u64>,
-}
-
 /// HTTP server — health, metrics, cache invalidation endpoints.
 async fn run_http_server(
     addr: SocketAddr,
-    readiness: HttpReadiness,
+    readiness: Arc<crowdb_chunkdb::readiness::RangeReadiness>,
     locks: Arc<ChunkLockMap>,
     conversion_metrics: Arc<crowdb_chunkdb::metrics::ConversionMetrics>,
     repair_metrics: Arc<crowdb_chunkdb::metrics::RepairMetrics>,
     conversion: [Arc<ConversionCoordinator>; 2],
 ) {
-    let app = axum::Router::new()
-        .route(
-            "/ready",
-            axum::routing::get(move || {
-                let range_guard = Arc::clone(&readiness.range_guard);
-                let kv = Arc::clone(&readiness.kv);
-                async move { ready_response(&range_guard, &kv, readiness.instance_id).await }
-            }),
-        )
+    let app = readiness
+        .router()
         .route("/health", axum::routing::get(|| async { "ok" }))
         .route(
             "/metrics",
@@ -712,29 +665,6 @@ async fn run_http_server(
     info!(%addr, "HTTP server listening");
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind http addr");
     axum::serve(listener, app).await.expect("HTTP server error");
-}
-
-async fn ready_response(
-    range_guard: &RangeGuard,
-    kv: &Arc<CrowdbKvClient>,
-    instance_id: Option<u64>,
-) -> (axum::http::StatusCode, &'static str) {
-    if let Some(instance_id) = instance_id {
-        if range_guard.load_from_group0(kv, instance_id).await.is_err() {
-            return (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "range ownership refresh failed",
-            );
-        }
-    }
-    if range_guard.is_ready() {
-        (axum::http::StatusCode::OK, "ok")
-    } else {
-        (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "range ownership pending",
-        )
-    }
 }
 
 fn load_config(args: &Cli) -> ChunkdbConfig {

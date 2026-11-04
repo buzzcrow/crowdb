@@ -7,7 +7,6 @@ use crate::{
     state::AppState,
 };
 use axum::{http::StatusCode, Json};
-use crowdb_console_shared::deployment::services;
 use crowdb_protocol::mgmt::node::{NodeServiceAction, NodeServiceIntent};
 use std::fmt::Write as _;
 
@@ -37,7 +36,7 @@ pub(super) async fn deploy(
         configuration,
         environment: std::collections::BTreeMap::default(),
     };
-    let reply = services::execute(state.kv_client().await.as_ref(), &node, intent)
+    let reply = crate::services::remote::execute(state, &node, intent)
         .await
         .map_err(map_config_err)?;
     crate::services::remote::refresh(state)
@@ -57,7 +56,11 @@ pub(super) async fn deploy(
     ))
 }
 
-pub(crate) fn configuration(
+/// Build a retained `DiskDB` configuration from validated listener choices.
+///
+/// # Errors
+/// Rejects zero, overflowing or overlapping listener ports.
+pub fn configuration(
     node: &crowdb_console_shared::config::NodeEntry,
     seeds: &[String],
     body: &DeployDiskdbBody,

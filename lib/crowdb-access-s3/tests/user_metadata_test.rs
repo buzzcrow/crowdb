@@ -40,7 +40,7 @@ fn metadata_enforces_exact_combined_size_and_unique_valid_headers() {
     for (name, value) in [
         ("x-amz-meta-", "empty-name"),
         ("x-amz-meta-a", "tab\tvalue"),
-        ("x-amz-meta-a", "雪"),
+        ("x-amz-meta-a", "\u{96ea}"),
     ] {
         input.clear();
         input.insert(name, HeaderValue::from_bytes(value.as_bytes()).unwrap());

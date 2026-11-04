@@ -13,6 +13,20 @@ use parking_lot::Mutex;
 use super::io_backend::OpenOptions;
 use super::pipeline_backend::WalBlockAlignment;
 
+/// Hand the multi-thread runtime's worker duties back before blocking on storage.
+/// Borrowed WAL buffers stay on the caller's stack without an extra payload copy.
+/// Current-thread runtimes retain their synchronous behavior: they cannot hand off
+/// a worker and Tokio rejects `block_in_place` there.
+pub(super) fn blocking_io<T>(operation: impl FnOnce() -> T) -> T {
+    let can_handoff = tokio::runtime::Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
+    if can_handoff {
+        tokio::task::block_in_place(operation)
+    } else {
+        operation()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct BlockDeviceController {
     inner: Arc<BlockDeviceControllerInner>,
@@ -103,6 +117,16 @@ pub struct BlockDevice {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     use_direct_io: bool,
     rmw_count: Arc<AtomicU64>,
+    #[cfg(feature = "test-util")]
+    io_gate: Arc<std::sync::OnceLock<TestIoGate>>,
+}
+
+#[cfg(feature = "test-util")]
+struct TestIoGate {
+    sync: bool,
+    armed: AtomicBool,
+    entered: Arc<std::sync::Barrier>,
+    release: Arc<std::sync::Barrier>,
 }
 
 impl BlockDevice {
@@ -134,6 +158,40 @@ impl BlockDevice {
             alignment,
             use_direct_io,
             rmw_count: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "test-util")]
+            io_gate: Arc::new(std::sync::OnceLock::new()),
+        }
+    }
+
+    /// Hold the next physical write or sync before entering the real file operation.
+    ///
+    /// # Panics
+    /// Panics if a gate was already installed on this device.
+    #[cfg(feature = "test-util")]
+    pub fn set_io_gate_for_tests(
+        &self,
+        sync: bool,
+        entered: Arc<std::sync::Barrier>,
+        release: Arc<std::sync::Barrier>,
+    ) {
+        assert!(self
+            .io_gate
+            .set(TestIoGate {
+                sync,
+                armed: AtomicBool::new(true),
+                entered,
+                release
+            })
+            .is_ok());
+    }
+
+    #[cfg(feature = "test-util")]
+    fn pause_io_for_tests(&self, sync: bool) {
+        if let Some(gate) = self.io_gate.get() {
+            if gate.sync == sync && gate.armed.swap(false, Ordering::AcqRel) {
+                gate.entered.wait();
+                gate.release.wait();
+            }
         }
     }
 
@@ -159,6 +217,10 @@ impl BlockDevice {
     }
 
     pub(crate) fn open_segment(&self, segment_path: &Path, opts: &OpenOptions) -> io::Result<BlockSegment> {
+        blocking_io(|| self.open_segment_file(segment_path, opts))
+    }
+
+    fn open_segment_file(&self, segment_path: &Path, opts: &OpenOptions) -> io::Result<BlockSegment> {
         let segment_path = segment_path.to_path_buf();
         let mut std_opts = std::fs::OpenOptions::new();
         std_opts.read(true).write(true);
@@ -185,32 +247,34 @@ impl BlockDevice {
 
     #[allow(clippy::unused_self)]
     pub(super) fn rename_segment(&self, from: &Path, to: &Path) -> io::Result<()> {
-        std::fs::rename(from, to)
+        blocking_io(|| std::fs::rename(from, to))
     }
 
     #[allow(clippy::unused_self)]
     pub(super) fn unlink_segment(&self, segment_path: &Path) -> io::Result<()> {
-        std::fs::remove_file(segment_path)
+        blocking_io(|| std::fs::remove_file(segment_path))
     }
 
     #[allow(clippy::unused_self)]
     pub(super) fn list_layout(&self, layout_path: &Path) -> io::Result<Vec<PathBuf>> {
-        let mut entries = Vec::new();
-        let rd = std::fs::read_dir(layout_path)?;
-        for entry in rd.flatten() {
-            entries.push(entry.path());
-        }
-        Ok(entries)
+        blocking_io(|| {
+            let mut entries = Vec::new();
+            let rd = std::fs::read_dir(layout_path)?;
+            for entry in rd.flatten() {
+                entries.push(entry.path());
+            }
+            Ok(entries)
+        })
     }
 
     #[allow(clippy::unused_self)]
     pub(super) fn create_layout(&self, layout_path: &Path) -> io::Result<()> {
-        std::fs::create_dir_all(layout_path)
+        blocking_io(|| std::fs::create_dir_all(layout_path))
     }
 
     #[allow(clippy::unused_self)]
     pub(super) fn contains_path(&self, path: &Path) -> bool {
-        path.exists()
+        blocking_io(|| path.exists())
     }
 }
 
@@ -227,12 +291,16 @@ pub(crate) struct BlockSegment {
 
 impl BlockSegment {
     pub(super) fn write_at(&self, data: &[u8], offset: u64) -> io::Result<usize> {
+        #[cfg(feature = "test-util")]
+        self.device.pause_io_for_tests(false);
         self.write_bytes_to_file(&self.file, data, offset)?;
         self.device.write_count.fetch_add(1, Ordering::AcqRel);
         Ok(data.len())
     }
 
     pub(super) fn write_vectored_at(&self, bufs: &[std::io::IoSlice<'_>], offset: u64) -> io::Result<usize> {
+        #[cfg(feature = "test-util")]
+        self.device.pause_io_for_tests(false);
         let total_len: usize = bufs.iter().map(|b| b.len()).sum();
         let mut cur_offset = offset;
         for buf in bufs {
@@ -312,6 +380,8 @@ impl BlockSegment {
     }
 
     pub(super) fn fdatasync(&self) -> io::Result<()> {
+        #[cfg(feature = "test-util")]
+        self.device.pause_io_for_tests(true);
         self.device.fdatasync_count.fetch_add(1, Ordering::AcqRel);
         self.file.sync_data()?;
         Ok(())

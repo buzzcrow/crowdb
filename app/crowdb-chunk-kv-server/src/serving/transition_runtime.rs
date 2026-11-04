@@ -57,6 +57,9 @@ impl TransitionProcessor {
         mut revision: u64,
     ) -> Result<(), MonitorError> {
         let mut machine = TransferStateMachine::restore(transition)?;
+        self.executor
+            .release_excluded_source(machine.transition())
+            .await?;
         if machine.transition().source.instance_id == self.instance_id
             && machine.transition().phase == TransferPhase::Planned
         {

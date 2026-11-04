@@ -61,6 +61,7 @@ async fn setup() -> (TestPreparationAuthority, NodeRuntimeObservation) {
         &NodeRegistry {
             cluster_id: authority.bootstrap.identity.cluster_id.clone(),
             nodes: vec![NodeRecord {
+                web_port: 9090,
                 discovery_id: discovery_id.clone(),
                 node_id: 2,
                 physical_host_id: "owned-host".into(),

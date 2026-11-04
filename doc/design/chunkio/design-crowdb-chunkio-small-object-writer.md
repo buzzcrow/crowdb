@@ -154,6 +154,13 @@ Resource allocation releases the existing chunk lifecycle guard; publication
 reacquires it and revalidates ownership and sequence. No extra persistent
 high-water record is required.
 
+Lease renewal refreshes the authoritative readable layout while retaining the
+writer's exact staged, unconsumed strip as a local write view. This also applies
+to an empty prepared replacement. Renewal does not add that strip to published
+capacity or advance the readable cursor. Consume still precedes the mirror
+write, and Confirm still follows its durability. A changed chunk identity, writer epoch, or staged strip
+fails the writer instead of selecting a later reservation and leaving a gap.
+
 When automatic conversion is enabled and at least eight strips remain, one
 special reservation allocates eight mirror sets with the configured copy
 count and four parity segments from a joint placement plan. Each completed

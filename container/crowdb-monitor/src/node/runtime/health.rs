@@ -5,16 +5,18 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use super::{durable, AcceptedNode, Result};
-use crate::{
-    DeploymentProfile, MonitorPhase, MonitorStatus, ProcessManager, ServiceProfile, ServiceStatus,
-    StatusStore,
-};
+use crate::{DeploymentProfile, MonitorPhase, MonitorStatus, ProcessManager, ServiceProfile, StatusStore};
+
+mod intents;
+mod observations;
 
 pub(super) struct NodeHealth {
     store: StatusStore,
     status: MonitorStatus,
     attempts: BTreeMap<String, u32>,
+    probe_failures: BTreeMap<String, u32>,
     probes: crate::ProbeExecutor,
+    intents: intents::ServiceIntents,
 }
 
 impl NodeHealth {
@@ -24,7 +26,9 @@ impl NodeHealth {
             store: StatusStore::new(&profile.paths.run_root)?,
             status: MonitorStatus::new(identity.uuid(), MonitorPhase::Initializing),
             attempts: BTreeMap::new(),
+            probe_failures: BTreeMap::new(),
             probes: crate::ProbeExecutor::new(true)?,
+            intents: intents::ServiceIntents::default(),
         })
     }
 
@@ -54,61 +58,7 @@ impl NodeHealth {
             }
         }
         self.reconcile_services(profile, processes).await?;
-        self.status.services.clear();
-        let retained = super::services::retained(profile)?;
-        let mut ids = vec!["web".to_owned(), "kv".to_owned()];
-        ids.extend(retained.iter().cloned().map(|intent| intent.service_id));
-        for id in &ids {
-            if processes.owns(id) {
-                let mut healthy = processes.alive(id)?;
-                if healthy {
-                    if id == "web" || id == "kv" {
-                        let service = if id == "web" {
-                            web.clone()
-                        } else {
-                            super::service(profile, "kv")?
-                        };
-                        healthy = self
-                            .probes
-                            .probe_service(&service, &BTreeMap::new())
-                            .await
-                            .is_ok();
-                    } else if let Some(intent) = retained
-                        .iter()
-                        .find(|intent| intent.service_id == *id && intent.kind != "kv")
-                    {
-                        healthy = match super::probes::for_intent(profile, intent) {
-                            Ok(service) => self
-                                .probes
-                                .probe_service(&service, &BTreeMap::new())
-                                .await
-                                .is_ok(),
-                            Err(_) => false,
-                        };
-                    }
-                }
-                self.status.services.insert(
-                    id.clone(),
-                    ServiceStatus {
-                        operation_id: retained
-                            .iter()
-                            .find(|intent| intent.service_id == *id || (id == "kv" && intent.kind == "kv"))
-                            .map(|intent| intent.operation_id.clone()),
-                        pid: processes.pid(id),
-                        generation: 1 + u64::from(*self.attempts.get(id.as_str()).unwrap_or(&0)),
-                        healthy,
-                        restart_attempts: *self.attempts.get(id.as_str()).unwrap_or(&0),
-                    },
-                );
-            }
-        }
-        self.status.phase = if self.status.services.values().all(|service| service.healthy) {
-            MonitorPhase::Ready
-        } else {
-            MonitorPhase::Restarting
-        };
-        self.store.publish(&mut self.status)?;
-        Ok(())
+        self.observe(profile, web, processes).await
     }
 
     pub(in crate::node::runtime) async fn reconcile_services(
@@ -116,32 +66,105 @@ impl NodeHealth {
         profile: &DeploymentProfile,
         processes: &mut ProcessManager,
     ) -> Result<()> {
-        if !profile.paths.data_root.join("node-binding.json").exists() {
-            return Ok(());
+        if let Some(intents) = self.intents.poll(profile).await {
+            self.apply_services(profile, processes, &intents).await?;
         }
-        let intents = match super::services::desired(profile).await {
-            Ok(intents) => intents,
-            Err(error) => {
-                tracing::debug!(%error, "service recovery awaits committed intents");
-                return Ok(());
-            }
-        };
-        for intent in &intents {
-            if !super::services::pending(profile, intent, processes)? {
+        Ok(())
+    }
+
+    async fn apply_services(
+        &mut self,
+        profile: &DeploymentProfile,
+        processes: &mut ProcessManager,
+        intents: &[crowdb_protocol::mgmt::node::NodeServiceIntent],
+    ) -> Result<()> {
+        for intent in intents {
+            let pending = super::services::pending(profile, intent, processes)?;
+            let restart_unhealthy = if !pending
+                && matches!(
+                    intent.action,
+                    crowdb_protocol::mgmt::node::NodeServiceAction::Start
+                        | crowdb_protocol::mgmt::node::NodeServiceAction::Restart
+                ) {
+                self.restart_if_unhealthy(profile, intent, processes).await?
+            } else {
+                false
+            };
+            if !pending && !restart_unhealthy {
                 continue;
             }
-            if let Err(error) = super::services::dependencies_ready(profile, intent, &intents).await {
+            if let Err(error) = super::services::dependencies_ready(profile, intent, intents).await {
                 tracing::debug!(service = %intent.service_id, %error, "service recovery waits for dependencies");
                 continue;
             }
-            match super::services::execute(profile, processes, intent.clone()).await {
+            if restart_unhealthy {
+                if let Err(error) = super::services::stop_unhealthy(profile, processes, intent).await {
+                    tracing::debug!(service = %intent.service_id, %error, "unhealthy service recovery awaits current authority");
+                    continue;
+                }
+            }
+            match super::services::reconcile(profile, processes, intent.clone()).await {
                 Ok(_) => {
                     *self.attempts.entry(intent.service_id.clone()).or_default() += 1;
+                    self.probe_failures.remove(&intent.service_id);
                 }
                 Err(error) => eprintln!("service recovery deferred for {}: {error}", intent.service_id),
             }
         }
         Ok(())
+    }
+
+    pub(super) async fn stop(&mut self) {
+        self.intents.stop().await;
+    }
+
+    #[cfg(feature = "test-util")]
+    pub(in crate::node::runtime) async fn reconcile_services_for_tests(
+        &mut self,
+        profile: &DeploymentProfile,
+        processes: &mut ProcessManager,
+    ) -> Result<()> {
+        let intents = super::services::desired(profile).await?;
+        self.apply_services(profile, processes, &intents).await
+    }
+
+    async fn restart_if_unhealthy(
+        &mut self,
+        profile: &DeploymentProfile,
+        intent: &crowdb_protocol::mgmt::node::NodeServiceIntent,
+        processes: &mut ProcessManager,
+    ) -> Result<bool> {
+        let process_id = if intent.kind == "kv" {
+            "kv"
+        } else {
+            &intent.service_id
+        };
+        if !processes.owns(process_id) || !processes.alive(process_id)? {
+            self.probe_failures.remove(&intent.service_id);
+            return Ok(false);
+        }
+        // An ownership handover can withdraw readiness while the service is
+        // still advancing its durable transition. Restart only a failed live
+        // listener; keep readiness probes for the published health snapshot.
+        let service = match super::probes::liveness_for_intent(profile, intent) {
+            Ok(service) => service,
+            Err(error) => {
+                tracing::debug!(service = %intent.service_id, %error, "service health probe unavailable");
+                return Ok(false);
+            }
+        };
+        if self
+            .probes
+            .probe_service(&service, &BTreeMap::new())
+            .await
+            .is_ok()
+        {
+            self.probe_failures.remove(&intent.service_id);
+            return Ok(false);
+        }
+        let failures = self.probe_failures.entry(intent.service_id.clone()).or_default();
+        *failures = failures.saturating_add(1);
+        Ok(*failures >= service.probe.failure_threshold)
     }
 
     fn restart_allowed(&mut self, id: &str) -> Result<()> {

@@ -16,7 +16,11 @@
 //! window; `CrowdbKvClient` selects the transport via
 //! `with_rpc_transport`.
 
+mod connections;
 mod owned;
+mod point_reads;
+
+use connections::normalize_endpoint;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -59,6 +63,7 @@ pub struct KvRpcTransport {
     server: Arc<RpcServer>,
     rpc: Arc<RpcClient>,
     connections: ConnectionPoolIndex,
+    point_connections: Option<ConnectionPoolIndex>,
     next_req_id: AtomicU64,
 }
 
@@ -66,114 +71,14 @@ impl std::fmt::Debug for KvRpcTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KvRpcTransport")
             .field("next_req_id", &self.next_req_id.load(Ordering::Relaxed))
+            .field("isolated_point_reads", &self.point_connections.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl KvRpcTransport {
-    /// Create a new crowdb-rpc transport with `pool_size` connections
-    /// per endpoint, using the given RPC tunables and `workers` I/O
-    /// worker threads. The `RpcServer` is the client-side transport —
-    /// it does not listen but is used to establish connections to
-    /// remote endpoints.
-    #[must_use]
-    pub fn with_pool_size(
-        pool_size: usize,
-        enable_nagle: bool,
-        quickack: bool,
-        event_write: bool,
-        send_queue_capacity: u32,
-        workers: u32,
-    ) -> Self {
-        let server = Arc::new(RpcServer::with_engines(None, 1, workers));
-        server.set_tcp_nodelay(!enable_nagle);
-        server.set_quickack(quickack);
-        server.set_event_write(event_write);
-        server.set_send_queue_capacity(send_queue_capacity);
-        server.start();
-        server.register_conn_count_gauge("rpc.client.connections");
-        let rpc = Arc::new(RpcClient::new());
-        rpc.set_completion_pool_size(1024);
-        rpc.start_reaper(5_000_000_000, 500_000_000);
-        Self {
-            server,
-            rpc,
-            connections: ConnectionPoolIndex::new(pool_size, None),
-            next_req_id: AtomicU64::new(1),
-        }
-    }
-
-    /// Create a new crowdb-rpc transport with a single connection per
-    /// endpoint and default tunables (backward-compatible).
-    #[must_use]
-    pub fn new() -> Self {
-        Self::with_pool_size(1, false, false, false, 4096, 2)
-    }
-
     fn next_id(&self) -> u64 {
         self.next_req_id.fetch_add(1, Ordering::Relaxed)
-    }
-
-    /// Clear all cached connections. Called after a server restart to
-    /// force reconnection on the next request.
-    pub fn clear_connections(&self) {
-        self.connections.clear();
-    }
-
-    /// Convert an `RpcError` to `Error`, dropping cached connections
-    /// for `endpoint` on connection-level errors (closed/reset) and
-    /// `Timeout`. `Timeout` can indicate a dead connection whose TCP
-    /// FIN has not yet been processed by the epoll worker (e.g. the
-    /// remote process was killed and restarted on the same port) — the
-    /// reaper fails the pending request but leaves the stale fd in the
-    /// pool, so retrying on the same connection would time out again.
-    /// Dropping forces `conn_for` to establish a fresh connection.
-    /// `SendQueueFull` is truly transient (the connection is alive but
-    /// the send queue is full) so the pool is preserved. Preserves the
-    /// endpoint in the error message.
-    fn map_rpc_err(&self, e: RpcError, endpoint: &str, generation: u64) -> Error {
-        if matches!(
-            e,
-            RpcError::ConnectionClosed | RpcError::ConnectionError | RpcError::Timeout
-        ) {
-            self.connections
-                .invalidate(&normalize_endpoint(endpoint), generation);
-        }
-        Error::Transport {
-            endpoint: endpoint.to_string(),
-            status: format!("rpc error: {e:?}"),
-        }
-    }
-
-    /// Get or create a `Connection` for the given endpoint, round-
-    /// robining across the pool. The crowdb-rpc server listens on the
-    /// same port as the crowdb-rpc endpoint (no port derivation).
-    fn conn_for(&self, rpc_endpoint: &str) -> Result<SelectedConnection> {
-        let normalized = normalize_endpoint(rpc_endpoint);
-        let (host, port) = parse_endpoint(&normalized).map_err(|e| Error::InvalidEndpoint {
-            endpoint: rpc_endpoint.to_string(),
-            reason: e,
-        })?;
-        self.connections
-            .get_or_try_install(&normalized, || {
-                let conn = self.server.connect(&host, port).map_err(|e| Error::Transport {
-                    endpoint: rpc_endpoint.to_string(),
-                    status: format!("rpc connect to {host}:{port}: {e:?}"),
-                })?;
-                self.rpc.attach(&conn);
-                Ok(conn)
-            })
-            .map_err(|error| match error {
-                ConnectionPoolError::Closed => Error::Transport {
-                    endpoint: rpc_endpoint.to_string(),
-                    status: "connection closed during acquisition".into(),
-                },
-                ConnectionPoolError::Connect(error) => error,
-                ConnectionPoolError::Capacity { max_endpoints } => Error::Transport {
-                    endpoint: rpc_endpoint.to_string(),
-                    status: format!("endpoint connection limit {max_endpoints} reached"),
-                },
-            })
     }
 
     /// Send a `Put` request via crowdb-rpc. Returns the
@@ -294,78 +199,6 @@ impl KvRpcTransport {
             status: "put CAS response missing control buffer".into(),
         })?;
         parse_kv_response(control.bytes())
-    }
-
-    /// Send a `Get` request via crowdb-rpc.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn send_get(
-        &self,
-        rpc_endpoint: &str,
-        key: &[u8],
-        request_id: u64,
-        request_create_ms: u64,
-        group_id: u64,
-        read_mode: ReadMode,
-        min_slot: u64,
-    ) -> Result<KvResponse> {
-        self.send_get_with_forwarded(
-            rpc_endpoint,
-            key,
-            request_id,
-            request_create_ms,
-            group_id,
-            read_mode,
-            min_slot,
-            false,
-        )
-        .await
-    }
-
-    /// Send a `Get` request with an explicit forwarded loop-guard flag.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn send_get_with_forwarded(
-        &self,
-        rpc_endpoint: &str,
-        key: &[u8],
-        request_id: u64,
-        request_create_ms: u64,
-        group_id: u64,
-        read_mode: ReadMode,
-        min_slot: u64,
-        forwarded: bool,
-    ) -> Result<KvResponse> {
-        let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
-        let mut builder = FlatBufferBuilder::new();
-        let fb_key = builder.create_vector(key);
-        let args = FBKvGetRequestArgs {
-            id: req_id,
-            rpc_create_nano: 0,
-            version: 1,
-            key: Some(fb_key),
-            request_id,
-            request_create_ms,
-            group_id,
-            read_mode: read_mode_to_fb(read_mode),
-            min_slot,
-            forwarded,
-        };
-        let req = FBKvGetRequest::create(&mut builder, &args);
-        builder.finish(req, None);
-        let control = Buffer::from_bytes(builder.finished_data());
-        let msg_type = FBMsgType::EKvGetRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
-        let resp = fut
-            .await
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
-        let ctrl = resp.control.ok_or_else(|| Error::Transport {
-            endpoint: rpc_endpoint.to_string(),
-            status: "get response missing control buffer".into(),
-        })?;
-        parse_kv_response(ctrl.bytes())
     }
 
     /// Send a `Delete` request via crowdb-rpc.
@@ -1160,27 +993,4 @@ fn fb_ret_code_to_kv_error_code(code: FBKvClientRetCode) -> i32 {
         FBKvClientRetCode::OutcomeUnknown => KvErrorCode::KvErrorOutcomeUnknown as i32,
         _ => KvErrorCode::KvErrorInternal as i32,
     }
-}
-
-fn normalize_endpoint(endpoint: &str) -> String {
-    let with_scheme = if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
-        endpoint.to_string()
-    } else {
-        format!("http://{endpoint}")
-    };
-    with_scheme.replacen("://0.0.0.0:", "://127.0.0.1:", 1)
-}
-
-fn parse_endpoint(endpoint: &str) -> std::result::Result<(String, i32), String> {
-    let without_scheme = endpoint
-        .strip_prefix("http://")
-        .or_else(|| endpoint.strip_prefix("https://"))
-        .unwrap_or(endpoint);
-    let (host, port_str) = without_scheme
-        .rsplit_once(':')
-        .ok_or_else(|| format!("invalid endpoint: {endpoint}"))?;
-    let port: i32 = port_str
-        .parse()
-        .map_err(|_| format!("invalid port in endpoint: {endpoint}"))?;
-    Ok((host.to_string(), port))
 }

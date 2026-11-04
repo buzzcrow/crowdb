@@ -5,6 +5,7 @@ import { test, expect } from '../fixtures/realBackend';
 import { diskMenu } from '../fixtures/capacity';
 import { nativeProcessAlive } from '../fixtures/nativeProcess';
 import { liveService, service, serviceRow, stoppedService, unchangedService, type LiveService } from '../fixtures/serviceLifecycle';
+import { step } from '../fixtures/stepTimer';
 
 // Baseline: 15.9s (2026-10-12).
 test('full deploy flow: deploy diskdb via UI, restart, stop, delete via context menu', async ({ page, request }) => {
@@ -100,11 +101,22 @@ async function diskDbLifecycle(page: Page, request: APIRequestContext, kv: LiveS
 }
 
 async function kvLifecycle(page: Page, request: APIRequestContext, original: LiveService, ddb: LiveService) {
+  const before = await request.get('/api/node/status');
+  expect(before.ok(), await before.text()).toBe(true);
+  const authority = await before.json();
+  expect(authority).toMatchObject({ phase: 'active', available: true, cluster_id: expect.any(String), operation_id: expect.any(String) });
   await act(page, original, 'Stop CrowDB Storage', '/api/nodes/1/server/stop');
   await stoppedService(request, original);
   await unchangedService(request, ddb);
   await expect(serviceRow(page, original).getByTitle('Healthy', { exact: true })).toHaveCount(0, { timeout: 10_000 });
   await expect(serviceRow(page, ddb).getByTitle('Healthy', { exact: true })).toBeVisible({ timeout: 10_000 });
+  // The stopped process may have been Group 0's leader. Confirm its successor
+  // before submitting the one restart mutation, using the election budget.
+  await step('KV lifecycle: surviving Group 0 authority', () => expect.poll(async () => {
+    const response = await request.get('/api/node/status');
+    expect(response.ok(), await response.text()).toBe(true);
+    return response.json();
+  }, { timeout: 10_000, intervals: [100] }).toEqual(authority));
   await act(page, original, 'Restart CrowDB Storage', '/api/nodes/1/server/restart');
   const resumed = await liveService(request, 'paxos-kv', original.pid);
   await unchangedService(request, ddb);

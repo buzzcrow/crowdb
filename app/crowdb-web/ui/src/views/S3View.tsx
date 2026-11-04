@@ -169,6 +169,7 @@ export function S3View({ active, readonly, onChunk }: { active: boolean; readonl
     if (action === 'abort') { await listUploads(undefined, target.bucket); return; }
     if (action === 'create' || action === 'delete-bucket') { if (target.bucket === bucket) root(); await listBuckets(undefined, bucketListedPrefix); }
     else if (target.bucket === bucket) {
+      if (action === 'delete-object') setRows(current => current.filter(row => row.key !== target.key));
       if (selected?.key === target.key) { setPreview(''); setDetail(null); if (action === 'delete-object') setSelected(null); }
       await loadObjects(bucket, undefined, listedPrefix);
       if (action === 'replace' && selected && selected.key === target.key) {

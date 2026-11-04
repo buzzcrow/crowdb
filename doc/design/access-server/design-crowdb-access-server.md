@@ -214,9 +214,26 @@ address; a missing address requires deployment reconciliation before restart.
 One Access background sampler runs every second and publishes an immutable
 health snapshot through ArcSwap. It independently checks the routed Chunk-KV
 bucket namespace, ChunkDB and online disks through the process's storage clients.
-Metadata and chunk checks have separate deadlines inside an 800 ms total bound;
-only one sampling round can run at a time. Physical checks read existing disk
+Metadata and chunk checks run concurrently with a two-second dependency budget;
+hardware discovery, ChunkDB and disk headers share that chunk-check budget. A
+2100 ms outer watchdog bounds the full round and cancels unfinished work. Only
+one sampling round can run at a time; missed one-second ticks are skipped rather
+than overlapping or replayed. A failed round publishes unavailable evidence and
+logs its generation, configured budgets, elapsed time and dependency errors.
+Sampling continues after every failure, and a later successful generation
+recovers readiness without a restart. Failure never extends the probe budget,
+adds a retry or changes the response to Ready. Physical checks read existing disk
 bytes without creating objects, allocating chunks or repairing storage.
+ChunkDB point checks use the validated service route and actual owner/storage
+reads. They do not initiate an ordinary periodic full registry refresh before
+the query; cold discovery and failed-route refresh retain the existing rules
+and shared deadline. A cached route never substitutes for a current response.
+Each physical check reads a 4096-byte disk header through the storage client's
+bounded priority connection group. It retains the same authoritative disk route
+and shares the chunk check's total deadline. Bulk response bytes on a normal
+connection cannot delay that header through TCP response ordering. A rejected,
+short or late header still fails the observation; the priority lane supplies no
+additional retry or grace period.
 Credential-cache freshness, listener state, native-pool pressure and cleanup
 backlog are included in the same snapshot. Application requests only record
 their own errors and metrics; their outcomes cannot overwrite health evidence.
@@ -224,8 +241,11 @@ their own errors and metrics; their outcomes cannot overwrite health evidence.
 Health requests read the snapshot without dependency I/O or a new sampling task.
 Responses retain the check timestamp, generation, age, exact flags and diagnostic.
 New observations replace old failures or successes. Evidence older than three
-seconds, or an absent first sample, reports Unknown and HTTP 503; readers never
-extend its validity or clear it to Ready. Process stop is an immediate lifecycle
+seconds from the sampling start, or an absent first sample, reports Unknown and
+HTTP 503; readers never extend its validity or clear it to Ready. Completion
+does not renew the start timestamp. Consecutive slow successful rounds can leave
+an expired-evidence interval before the next round completes; retain that 503
+and recover only when a new current generation is published. Process stop is an immediate lifecycle
 fence even when the cached sample was healthy. The sampler is cancelled with the
 listener. Recovery needs neither application traffic nor an Access restart.
 

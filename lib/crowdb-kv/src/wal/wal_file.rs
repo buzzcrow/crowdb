@@ -39,7 +39,7 @@ impl WalFile {
             WalFileInner::File(f) => f.write_at(data, offset).await,
             WalFileInner::Uring(f) => f.write_at(data, offset).await,
             WalFileInner::MemBlock(f) => f.write_at(data, offset),
-            WalFileInner::Block(f) => f.write_at(data, offset),
+            WalFileInner::Block(f) => block_backend::blocking_io(|| f.write_at(data, offset)),
         }
     }
 
@@ -58,7 +58,7 @@ impl WalFile {
             WalFileInner::File(f) => f.write_vectored_at(bufs, offset).await,
             WalFileInner::Uring(f) => f.write_vectored_at(bufs, offset).await,
             WalFileInner::MemBlock(f) => f.write_vectored_at(bufs, offset),
-            WalFileInner::Block(f) => f.write_vectored_at(bufs, offset),
+            WalFileInner::Block(f) => block_backend::blocking_io(|| f.write_vectored_at(bufs, offset)),
         }
     }
 
@@ -71,7 +71,7 @@ impl WalFile {
             WalFileInner::File(f) => f.read_at(buf, offset).await,
             WalFileInner::Uring(f) => f.read_at(buf, offset).await,
             WalFileInner::MemBlock(f) => f.read_at(buf, offset),
-            WalFileInner::Block(f) => f.read_at(buf, offset),
+            WalFileInner::Block(f) => block_backend::blocking_io(|| f.read_at(buf, offset)),
         }
     }
 
@@ -84,7 +84,7 @@ impl WalFile {
             WalFileInner::File(f) => f.read_exact_at(buf, offset).await,
             WalFileInner::Uring(f) => f.read_exact_at(buf, offset).await,
             WalFileInner::MemBlock(f) => f.read_exact_at(buf, offset),
-            WalFileInner::Block(f) => f.read_exact_at(buf, offset),
+            WalFileInner::Block(f) => block_backend::blocking_io(|| f.read_exact_at(buf, offset)),
         }
     }
 
@@ -97,7 +97,7 @@ impl WalFile {
             WalFileInner::File(f) => f.fdatasync().await,
             WalFileInner::Uring(f) => f.fdatasync().await,
             WalFileInner::MemBlock(f) => f.fdatasync(),
-            WalFileInner::Block(f) => f.fdatasync(),
+            WalFileInner::Block(f) => block_backend::blocking_io(|| f.fdatasync()),
         }
     }
 
@@ -110,7 +110,7 @@ impl WalFile {
             WalFileInner::File(f) => f.fsync().await,
             WalFileInner::Uring(f) => f.fsync().await,
             WalFileInner::MemBlock(f) => f.fsync(),
-            WalFileInner::Block(f) => f.fsync(),
+            WalFileInner::Block(f) => block_backend::blocking_io(|| f.fsync()),
         }
     }
 
@@ -133,7 +133,7 @@ impl WalFile {
             WalFileInner::File(f) => f.len().await,
             WalFileInner::Uring(f) => f.len(),
             WalFileInner::MemBlock(f) => f.len(),
-            WalFileInner::Block(f) => f.len(),
+            WalFileInner::Block(f) => block_backend::blocking_io(|| f.len()),
         }
     }
 
@@ -146,7 +146,7 @@ impl WalFile {
             WalFileInner::File(f) => f.truncate(len).await,
             WalFileInner::Uring(f) => f.truncate(len),
             WalFileInner::MemBlock(f) => f.truncate(len),
-            WalFileInner::Block(f) => f.truncate(len),
+            WalFileInner::Block(f) => block_backend::blocking_io(|| f.truncate(len)),
         }
     }
 }

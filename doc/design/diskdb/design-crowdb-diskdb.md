@@ -367,6 +367,11 @@ disk-group's bound data group.
   `diskdb-ownership` monitor assigns bound disk-groups to live, fencing-capable
   DiskDB instances. Missing or dead owners are replaced; count balancing moves
   at most one healthy group per tick. Updates compare the owner record revision.
+  Before a live capable owner's one-hour placement lease expires, the monitor
+  renews it through the same revision-checked publication path without changing
+  the instance or process epoch. The DiskDB observes the new map generation and
+  reacquires its data-group fence. Fresh leases are not rewritten each tick;
+  renewals defer count balancing until the next snapshot.
 - **Binding map** (`/hw/dg_bind/...`) — the console recommends the ordinary KV group with the fewest
   bound DiskGroups cluster-wide and allows an explicit override at creation and publishes the binding, hardware record,
   and node membership atomically. Missing selections, Group 0, and unknown

@@ -36,9 +36,13 @@ def stop(docker, record):
             docker.call("stop", "--time", "20", item["Id"])
 
 
-def clean(docker, record, delete_data=False, directory=RECORDS):
+def clean(docker, record, delete_data=False, directory=RECORDS, *, stop_running=True):
     binding = owned_binding(record, directory) if delete_data else None
-    stop(docker, record)
+    check_daemon(docker, record)
+    if stop_running:
+        stop(docker, record)
+    elif any(item['State']['Running'] for item in docker.owned(record, 'container')):
+        raise ValueError('cluster is running; refusing cleanup')
     for item in docker.owned(record, "container"):
         item = current(docker, record, "container", item["Id"])
         if item["State"]["Running"]:

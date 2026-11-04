@@ -18,6 +18,9 @@ mod validation;
 #[tokio::test]
 #[ignore = "requires the normal release-monitor container fixture"]
 async fn selected_kv_services_recover_acknowledged_data() {
+    if std::env::var("CROWDB_E2E_PHASE").as_deref() == Ok("write") {
+        kv_bootstrap::create_witness_group().await;
+    }
     witness(false).await;
 }
 

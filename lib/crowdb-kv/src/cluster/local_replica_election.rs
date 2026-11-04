@@ -127,12 +127,16 @@ impl PxLocalReplica {
     /// - `req.term > current_term` (we'd vote in that term), AND
     /// - candidate's log is up-to-date, AND
     /// - `now >= vote_lockout_until`.
+    ///
+    /// A leader's quorum-renewed lease also protects its own vote after the
+    /// original self-vote lockout has expired.
     pub(super) fn handle_pre_vote(&self, req: VoteRequestPayload) -> VoteReply {
         let now = Instant::now();
         let state = self.election_state.lock();
         let granted = req.term > state.current_term
             && self.candidate_log_up_to_date(&req)
-            && now >= state.vote_lockout_until;
+            && now >= state.vote_lockout_until
+            && (state.role != PxLocalReplicaRole::Leader || self.lease_read_until() <= now);
         let term = state.current_term;
         drop(state);
         let (contiguous_chosen, last_chosen_term, highest_seen_slot) = self.frontier_triple();
@@ -167,7 +171,8 @@ impl PxLocalReplica {
 
         let (granted, term) = {
             let mut state = self.election_state.lock();
-            let lockout_ok = now >= state.vote_lockout_until;
+            let lockout_ok = now >= state.vote_lockout_until
+                && (state.role != PxLocalReplicaRole::Leader || self.lease_read_until() <= now);
             let term_ok = req.term > state.current_term
                 || (req.term == state.current_term
                     && state.voted_for.map_or(true, |v| v == req.candidate_id));

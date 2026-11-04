@@ -219,7 +219,8 @@ async fn main() -> std::process::ExitCode {
     let recovery_service = &service;
     let instance_id = config.instance_id;
     match catalog
-        .recover_current(
+        .recover_current_for_instance(
+            instance_id,
             std::time::Instant::now() + std::time::Duration::from_secs(60),
             |pages| async move {
                 recover_assigned_partitions(recovery_storage, recovery_service, &pages, instance_id).await
@@ -589,10 +590,12 @@ async fn main() -> std::process::ExitCode {
         refresh_task,
     ));
     info!("chunk KV background workers stopped");
-    if let Err(error) = service.drain_writers().await {
-        warn!(%error, "WAL writer drain incomplete; restart must retain lease exclusion");
+    match service.drain_writers().await {
+        Ok(()) => info!("chunk KV WAL writer drain complete"),
+        Err(error) => {
+            warn!(%error, "WAL writer drain incomplete; restart must retain lease exclusion");
+        }
     }
-    info!("chunk KV WAL writer drain complete");
     if let Err(error) = process_lease.withdraw_observation().await {
         warn!(%error, "failed to unregister chunk KV instance");
     }
