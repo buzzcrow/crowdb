@@ -23,7 +23,7 @@ Shared storage also separates serving capacity from storage capacity. A range ca
 
 ## Metadata and control
 
-[Paxos-KV](design-crowdb-paxos-kv.md) maintains replicated KV state with Multi-Paxos, a WAL, and the Tree engine. It forms the metadata foundation shown at the bottom of the diagram. Group 0 is the system group, containing system metadata such as service registrations and ownership information. Groups 1–X hold other replicated KV state. Payload I/O reaches DiskIO through the Chunk client independently of this metadata path.
+[Paxos-KV](design-crowdb-paxos-kv.md) maintains replicated key-value (KV) state with Multi-Paxos, a write-ahead log (WAL), and the Tree engine. Group 0 is the system group, containing metadata such as service registrations and ownership information. Nonzero groups hold other replicated KV state, including storage-service metadata. Payload I/O reaches DiskIO through the Chunk client independently of this metadata path.
 
 Its write path runs multiple slots concurrently. Each can reach a durable quorum independently, and the Tree engine preserves per-key slot ordering when application completes out of order. Independent blind updates therefore use concurrency through replication and storage, while reads and recovery retain their required progress boundaries.
 
@@ -52,15 +52,15 @@ Logical key order also stays independent of physical byte placement. A prefix ca
 
 ### Committing an Iceberg table
 
-An engine writes immutable files through the Iceberg file interface directly into Chunk storage. Native upload returns a signed URI containing the Chunk root; the loader places that URI in standard manifests. The catalog checks the table update's requirements and publishes the new head with one compare-and-swap. Readers use the selected snapshot and manifests, then reconstruct the native file descriptor from a direct URI without another Iceberg file-record query.
+An engine writes immutable files through the Iceberg file interface into Chunk storage. Native upload returns a signed URI containing the Chunk directory root; the loader places that URI in standard manifests. The catalog checks the table update's requirements and publishes the new head with one compare-and-swap (CAS). After snapshot and manifest selection, the authenticated file endpoint reconstructs the storage descriptor from a direct URI without another Iceberg file-record query.
 
-Catalog and FileIO coordinate identity, publication, small-file placement, and cleanup within CROWDB. Standard table metadata remains intact, while a separate S3 storage backend and its extra namespace resolution are unnecessary. See [Iceberg](design-crowdb-access-iceberg.md).
+Catalog and FileIO coordinate identity, publication, small-file placement, and cleanup within CROWDB. This direct URI avoids a metadata lookup; the file endpoint still serves the HTTP transfer. See [Iceberg](design-crowdb-access-iceberg.md).
 
 ### Reading a Dataset batch
 
 The access library binds a Snapshot and Split, selects sample metadata, and projects the requested fields. Inline values are already available; uploaded fields resolve to Chunk ranges. The Chunk client reads only those payloads, preserving bounded buffers through delivery.
 
-The native path runs that access-library work inside the training process. RDMA carries payloads from storage nodes directly to its retained buffers, eliminating the Access Server relay. Sample identities and shared Chunk storage also avoid requiring one filesystem file per sample. See [Dataset](design-crowdb-access-dataset.md) and the [native SDK](design-crowdb-sdk-native.md).
+The native path runs that access-library work inside the training process and reads from storage nodes over RDMA or TCP. It returns retained host buffers and eliminates the Access Server relay. Sample identities and shared Chunk storage also avoid requiring one filesystem file per sample. See [Dataset](design-crowdb-access-dataset.md) and the [native SDK](design-crowdb-sdk-native.md).
 
 ### Publishing an S3 object
 
@@ -76,7 +76,7 @@ Shared backing removes a full private range copy from the transfer's critical pa
 
 ## Resource control reaches across the stack
 
-Large objects and training batches make buffer lifetime a system concern. The Chunk client bounds preparation, queued payloads, outstanding I/O, and EC work. RPC accounts for registered memory and transport queues; the native SDK also accounts for buffers held by the application after a read completes. These limits cover different resources and release them at their actual completion or ownership boundaries.
+Large objects and training batches make buffer lifetime a system concern. The Chunk client bounds preparation, queued payloads, outstanding I/O, and erasure-coding (EC) work. RPC accounts for registered memory and transport queues; the native SDK also accounts for buffers held by the application after a read completes. These limits cover different resources and release them at their actual completion or ownership boundaries.
 
 For example, a training worker may finish receiving a batch while still holding it for decoding or a host-to-device copy. Those allocations remain charged until release. When capacity is occupied, later reads wait or reach their deadline, and backpressure limits further production. The design follows memory through useful application work, making sustained concurrency manageable even when the consumer is slower than the network.
 

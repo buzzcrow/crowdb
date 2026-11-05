@@ -3,7 +3,7 @@
 
 # CROWDB - Design: Storage RPC
 
-`crowdb-rpc` puts RDMA at the center of CROWDB's high-performance internal data path, with TCP as the fallback for environments without a usable RDMA connection. The transport connects storage services and native consumers through registered buffers and asynchronous completion, carrying memory ownership across the boundaries where ordinary message handling often adds staging and copies.
+`crowdb-rpc` carries internal requests and payloads between storage services and native applications. Its remote direct memory access (RDMA) backend uses registered buffers and asynchronous completion to reduce staging and copying. TCP supports ordinary networks and can serve as a connection-setup fallback when deployment policy allows it.
 
 A C++ engine supplies connections, framing, workers, and both transport backends; `crowdb-rpc-ffi` exposes them to Rust. Services use the same request and payload model on either path. Deployment policy enables RDMA and controls whether setup may fall back to TCP.
 
@@ -13,7 +13,9 @@ The RDMA backend manages registered memory, posted receives, work requests, and 
 
 The value appears across the complete I/O path. A DiskIO read can fill a registered buffer for transport; a native consumer can retain the received allocation while processing its bytes. A direct native client also removes the Access Server payload relay. CROWDB can therefore optimize both the network transfer and the handoffs on either side of it. The [DiskIO design](design-crowdb-diskio.md#a-short-path-from-request-to-device) and [native SDK](design-crowdb-sdk-native.md) describe those paths.
 
-## Control and payload take different paths
+<a id="control-and-payload-take-different-paths"></a>
+
+## Control fields and payload buffers stay separate
 
 A control message describes the operation. Payload views describe the bytes it transfers and retain their owners. The transport can keep those allocations alive until asynchronous send or receive work completes, without forcing every caller to serialize the payload into a new message buffer first.
 
@@ -29,9 +31,9 @@ Consider a burst of writes that arrives faster than the disks can complete it. R
 
 When downstream capacity is occupied, those limits stop or delay further production. A slow disk or consumer therefore becomes visible as backpressure, rather than an invitation to accumulate more payloads. Separate budgets account for request concurrency, bytes, and processing resources; a count of completed RPCs alone cannot describe the system's available capacity.
 
-The receive pool, send queue, storage pipeline, and consumer each release capacity when their part of the work actually finishes. They can share a payload allocation without pretending that these are the same event. That is especially valuable for RDMA, where registered memory is a finite resource: reusing an allocation saves staging work only if its lifetime remains visible to every stage that retains it.
+The receive pool, send queue, storage pipeline, and consumer each release capacity at a different point. Sharing a payload allocation preserves its owner across those stages; it does not make their completion events interchangeable. Registered memory stays occupied while any stage still retains it.
 
-Ownership also survives cancellation. If a write times out after device submission, the caller can stop waiting while the device still references the buffer. The retained owner keeps that allocation valid until the outstanding work finishes. On reads, application-held results remain charged after transport completion. This connects RDMA efficiency with controlled memory use under sustained load. The [native SDK](design-crowdb-sdk-native.md#completed-reads-still-consume-capacity) carries that accounting through to the consumer.
+Ownership also survives cancellation. If a write times out after device submission, the caller can stop waiting while the device still references the buffer. The retained owner keeps that allocation valid until the outstanding work finishes. On reads, the [native SDK](design-crowdb-sdk-native.md#completed-reads-still-consume-capacity) continues to account for application-held results after transport completion.
 
 ## TCP provides a practical fallback
 
@@ -39,13 +41,11 @@ TCP keeps the same storage services usable on ordinary hosts and networks. Its b
 
 Performance-sensitive deployments can disable fallback to require RDMA. This makes the chosen transport an explicit operational policy: a workload that requires RDMA fails setup visibly instead of silently running on another path.
 
-Fallback happens before payload submission. Once an RDMA operation has an uncertain outcome, the transport reports that failure; it does not splice TCP bytes onto a partial result or transparently replay the operation. The service's request semantics determine whether a subsequent retry is safe.
+Fallback is a connection-setup decision. It does not switch an accepted RDMA operation to TCP after a transfer error. An uncertain outcome is reported to the caller, and the transport neither appends a TCP suffix to partial data nor transparently replays the operation. The service's request semantics determine whether a subsequent retry is safe.
 
 ## Why own an RPC engine?
 
 A storage RPC engine can make registered memory and asynchronous I/O part of its basic interface. Control fields remain small, payload buffers keep their owners, and completion releases resources at the right stage. RDMA receives the design attention required by the fast path, while TCP preserves deployment flexibility through the same service boundary.
-
-Owning that boundary lets the Chunk client, DiskIO, and native SDK agree on memory lifetime. It removes avoidable staging at supported handoffs and lets resource admission span several libraries. The transport becomes part of the storage pipeline, with an interface shaped around moving bytes efficiently between devices and consumers.
 
 Internal RPC operates within the cluster's trust boundary; externally authenticated applications use the access interfaces. Public protocol compatibility remains with those interfaces.
 

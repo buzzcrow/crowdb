@@ -3,7 +3,7 @@
 
 # CROWDB - Design: Cluster Management
 
-CROWDB connects deployment and recovery to the durable state of the storage system. `crowdb-monitor` discovers nodes, supervises processes, and executes deployment work. Group 0 stores system metadata. Console operations coordinate management through the same service model.
+`crowdb-monitor` discovers nodes, supervises local service processes, and executes deployment work. Paxos-KV Group 0 stores the durable system metadata that governs membership, registrations, and ownership. The Web UI and CLI submit management operations through shared console logic.
 
 A process can be alive while it is recovering, fenced, or unable to serve its assigned data. The management design keeps those conditions visible instead of treating process existence as complete readiness.
 
@@ -21,11 +21,11 @@ Bootstrap establishes the initial control services and then the storage services
 
 The interfaces can differ in interaction without inventing different meanings for a disk removal or service deployment. Business authority remains with the service that owns the underlying state. An operator's request enters that service's lifecycle rather than rewriting observed state in the UI.
 
-This arrangement also gives diagnosis a common vocabulary: the requested operation, durable ownership, observed processes, and readiness can be examined separately when an operation does not finish.
+When an operation stalls, operators can inspect its requested state, durable ownership, observed process, and readiness separately. A running process alone does not prove that recovery or an ownership transfer has completed.
 
 ## Service lifecycle inside a node
 
-The monitor owns the service processes inside a node container: it starts them, observes readiness, coordinates shutdown, and recovers their lifecycle after restart. The container runtime establishes the node's CPU and memory budget and attaches host resources. This leaves service ordering with the component that understands storage dependencies.
+The monitor owns the service processes inside a node container: it starts them, observes readiness, coordinates shutdown, and restores the appropriate processes after restart. Each storage service recovers its own data and validates its serving authority. The container runtime establishes the node's CPU and memory budget and attaches host resources.
 
 Retaining data and accepted identity across restart is essential. A recreated container reopens the intended node state; a fresh image does not authorize initialization over existing storage. The [container deployment design](design-crowdb-deployment.md) explains OCI packaging, runtime independence, host networking, block devices, and resource limits.
 

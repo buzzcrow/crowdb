@@ -3,52 +3,59 @@
 
 # CROWDB Design
 
-Start with the product design, then use Scope to choose an architecture or component article. These English overviews explain the design; component READMEs provide usage and operational instructions.
+These overviews explain CROWDB's architecture, capabilities, and design trade-offs. Start with the [product design](design-crowdb.md) for workloads and advantages, then read the [architecture](design-crowdb-architecture.md) to see how the components fit together. Component READMEs provide API usage, configuration, and operational instructions.
+
+For a shorter path through the design:
+
+- **Application access:** choose [Iceberg](design-crowdb-access-iceberg.md), [Dataset](design-crowdb-access-dataset.md), or [S3](design-crowdb-access-server.md). Trusted Dataset and S3 applications can also use the [native SDK](design-crowdb-sdk-native.md).
+- **Metadata and recovery:** compare [Paxos-KV](design-crowdb-paxos-kv.md) and [Chunk-KV](design-crowdb-chunk-kv.md), then follow their links to Tree and ChunkStream.
+- **Payload I/O:** start with [Chunk storage](design-crowdb-chunkdb.md), then follow allocation, device I/O, and transport into DiskDB, DiskIO, and RPC.
+- **Operations:** read [cluster management](design-crowdb-monitor.md) and [container deployment](design-crowdb-deployment.md).
 
 ## Product and architecture
 
-| File name                                                      | Scope                                                                                          |
-| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| [design-crowdb.md](design-crowdb.md)                           | Workloads, shared storage, independent scaling, coordinated recovery, and design advantages.   |
-| [design-crowdb-architecture.md](design-crowdb-architecture.md) | Component roles, logical/physical placement, serving capacity, recovery, and resource control. |
+| Document                                      | Scope                                                                                          |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| [Product design](design-crowdb.md)            | Workloads, shared storage, independent scaling, coordinated recovery, and design advantages.   |
+| [Architecture](design-crowdb-architecture.md) | Component roles, logical/physical placement, serving capacity, recovery, and resource control. |
 
 ## Components
 
-| File name                                                          | Scope                                                                                                |
-| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| [design-crowdb-access-iceberg.md](design-crowdb-access-iceberg.md) | Native writes, direct-URI reads, table commits, and integrated file lifecycle.                       |
-| [design-crowdb-access-dataset.md](design-crowdb-access-dataset.md) | Sample-oriented storage, small payloads, Snapshot/Split selection, and direct training I/O.          |
-| [design-crowdb-access-server.md](design-crowdb-access-server.md)   | Host, S3 buckets and objects, streaming, multipart, and authentication.                              |
-| [design-crowdb-sdk-native.md](design-crowdb-sdk-native.md)         | Direct RDMA, gateway bypass, caller-held capacity, retained buffers, and GPU integration direction.  |
-| [design-crowdb-paxos-kv.md](design-crowdb-paxos-kv.md)             | Concurrent slot writes, per-key apply ordering, stores/groups/replicas, and durable metadata.        |
-| [design-crowdb-chunk-kv.md](design-crowdb-chunk-kv.md)             | Ordered metadata, independent payload placement, smooth split/transfer, and serving capacity.        |
-| [design-crowdb-tree.md](design-crowdb-tree.md)                     | Concurrent skiplists, Bw-tree mapping, fork/join flush, external-WAL recovery, and dual backends.    |
-| [design-crowdb-chunk-stream.md](design-crowdb-chunk-stream.md)     | Reusable durable byte streams, journal composition, rollover/recovery/trim, and future interfaces.   |
-| [design-crowdb-chunkdb.md](design-crowdb-chunkdb.md)               | Chunk placement, large/small write pipelines, EC, read flow, and repair.                             |
-| [design-crowdb-diskdb.md](design-crowdb-diskdb.md)                 | Disk/zone allocation, durable records, capacity accounting, and recovery.                            |
-| [design-crowdb-diskio.md](design-crowdb-diskio.md)                 | Addressed byte I/O, asynchronous backends, completion, and buffer lifetime.                          |
-| [design-crowdb-rpc.md](design-crowdb-rpc.md)                       | RDMA data paths, buffer ownership, resource backpressure, asynchronous completion, and TCP fallback. |
-| [design-crowdb-monitor.md](design-crowdb-monitor.md)               | System metadata in Group 0, node discovery, service supervision, and console operations.             |
-| [design-crowdb-deployment.md](design-crowdb-deployment.md)         | OCI packaging, runtime independence, host networking/devices, and CPU/memory limits.                 |
+| Document                                               | Scope                                                                                                |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| [Iceberg storage](design-crowdb-access-iceberg.md)     | Native writes, direct-URI reads, table commits, and integrated file lifecycle.                       |
+| [Dataset storage](design-crowdb-access-dataset.md)     | Sample-oriented storage, small payloads, Snapshot/Split selection, and direct training I/O.          |
+| [Access Server and S3](design-crowdb-access-server.md) | Host, S3 buckets and objects, streaming, multipart, and authentication.                              |
+| [Native SDK](design-crowdb-sdk-native.md)              | Direct Dataset/S3 access, RDMA/TCP, retained host buffers, capacity budgets, and future GPU work.    |
+| [Paxos-KV](design-crowdb-paxos-kv.md)                  | Concurrent slot writes, per-key apply ordering, stores/groups/replicas, and durable metadata.        |
+| [Chunk-KV](design-crowdb-chunk-kv.md)                  | Ordered metadata, independent payload placement, smooth split/transfer, and serving capacity.        |
+| [Tree storage engine](design-crowdb-tree.md)           | Concurrent skiplists, page mapping, fork/join flush, checkpoints, and external-WAL recovery.         |
+| [ChunkStream](design-crowdb-chunk-stream.md)           | Reusable durable byte streams, journal composition, rollover/recovery/trim, and future interfaces.   |
+| [Chunk storage](design-crowdb-chunkdb.md)              | Chunk placement, large/small write pipelines, EC, read flow, and repair.                             |
+| [DiskDB allocation](design-crowdb-diskdb.md)           | Disk/zone allocation, durable records, capacity accounting, and recovery.                            |
+| [DiskIO](design-crowdb-diskio.md)                      | Addressed byte I/O, asynchronous backends, completion, and buffer lifetime.                          |
+| [Storage RPC](design-crowdb-rpc.md)                    | RDMA data paths, buffer ownership, resource backpressure, asynchronous completion, and TCP fallback. |
+| [Cluster management](design-crowdb-monitor.md)         | System metadata in Group 0, node discovery, service supervision, and console operations.             |
+| [Container deployment](design-crowdb-deployment.md)    | OCI packaging, runtime independence, host networking/devices, and CPU/memory limits.                 |
 
 ## Usage and validation
 
-| File name                                                                                    | Scope                                                                          |
-| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| [sdk/README.md](../../sdk/README.md)                                                         | Portable Dataset HTTP SDK for Rust/Python, examples, packaging, and limits.    |
-| [lib/crowdb-sdk-native/README.md](../../lib/crowdb-sdk-native/README.md)                     | Native Rust API usage, memory budgets, transport options, and shutdown.        |
-| [lib/crowdb-sdk-native-python/README.md](../../lib/crowdb-sdk-native-python/README.md)       | Trusted native Python packaging, buffers, and application lifetime.            |
-| [container/single-node-container/README.md](../../container/single-node-container/README.md) | Local node storage, listener setup, and client examples.                       |
-| [container/oci-image/README.md](../../container/oci-image/README.md)                         | OCI build, launch, host deployment, persistent data, and lifecycle.            |
-| [app/crowdb-access-server/tests/README.md](../../app/crowdb-access-server/tests/README.md)   | Access acceptance evidence and client/engine validation boundaries.            |
-| [e2e-test/README.md](../../e2e-test/README.md)                                               | Container suites, deployment/restart checks, service ownership, and artifacts. |
-| [e2e-test/clients/ecosystem/README.md](../../e2e-test/clients/ecosystem/README.md)           | Pinned external client/engine matrix and manual acceptance.                    |
-| [lib/crowdb-tree/bench/README.md](../../lib/crowdb-tree/bench/README.md)                     | Targeted Tree benchmark conditions, reproduction, and interpretation.          |
-| [tools/README.md](../../tools/README.md)                                                     | Tool directories, Pixi task entry points, and validation commands.             |
+| Document                                                                  | Scope                                                                          |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| [Dataset HTTP SDK](../../sdk/README.md)                                   | Portable Dataset HTTP SDK for Rust/Python, examples, packaging, and limits.    |
+| [Native Rust SDK](../../lib/crowdb-sdk-native/README.md)                  | Native Rust API usage, memory budgets, transport options, and shutdown.        |
+| [Native Python SDK](../../lib/crowdb-sdk-native-python/README.md)         | Trusted native Python packaging, buffers, and application lifetime.            |
+| [Local node guide](../../container/single-node-container/README.md)       | Local node storage, listener setup, and client examples.                       |
+| [OCI image guide](../../container/oci-image/README.md)                    | OCI build, launch, host deployment, persistent data, and lifecycle.            |
+| [Access acceptance guide](../../app/crowdb-access-server/tests/README.md) | Access acceptance evidence and client/engine validation boundaries.            |
+| [E2E guide](../../e2e-test/README.md)                                     | Container suites, deployment/restart checks, service ownership, and artifacts. |
+| [Ecosystem matrix](../../e2e-test/clients/ecosystem/README.md)            | Pinned external client/engine matrix and manual acceptance.                    |
+| [Tree benchmark guide](../../lib/crowdb-tree/bench/README.md)             | Targeted Tree benchmark conditions, reproduction, and interpretation.          |
+| [Tools guide](../../tools/README.md)                                      | Tool directories, Pixi task entry points, and validation commands.             |
 
 ## Project files
 
-| File name                                      | Scope                                                      |
+| Document                                       | Scope                                                      |
 | ---------------------------------------------- | ---------------------------------------------------------- |
 | [README.md](../../README.md)                   | Product introduction and deployment options.               |
 | [CONTRIBUTING.md](../../CONTRIBUTING.md)       | Environment, development workflow, and contribution rules. |

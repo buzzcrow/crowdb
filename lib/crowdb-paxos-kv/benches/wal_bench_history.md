@@ -4,8 +4,7 @@
 
 - **What**: Multi-threaded WAL append throughput with durable flush ack.
 - **Payload**: 1 KB per record (fixed).
-- **Backends**: `mem` (in-memory `BlockDevice`), `file` (Tokio buffered file),
-  `uring` (buffered file with CQE-backed write/read/sync), and aligned `block`.
+- **Backends**: `mem` (in-memory `BlockDevice`), `file` (Tokio buffered file), `uring` (buffered file with CQE-backed write/read/sync), and aligned `block`.
 - **Thread counts**: 1, 32, 128 concurrent loader tasks.
 - **Duration**: 5 seconds per case (time-based, not fixed record count).
 - **Metrics**: records, TPS, per-record avg latency, per-batch avg latency, avg batch size.
@@ -111,6 +110,4 @@ cargo bench --bench wal -- file_128
 | file_32   | 52,606  | 10,514 | 95.1   | 1,522.6      | 16.0      |
 | uring_32  | 51,330  | 10,259 | 97.5   | 1,560.1      | 16.0      |
 
-The buffered io_uring path preserved durability and recovery but was 2.4%
-slower in this single run. Durable device flush latency dominates, so `uring`
-remains explicit rather than becoming the automatic default.
+The buffered io_uring path preserved durability and recovery but was 2.4% slower in this single run. Durable device flush latency dominates, so `uring` remains explicit rather than becoming the automatic default.

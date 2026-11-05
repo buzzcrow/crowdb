@@ -5,7 +5,7 @@
 
 CROWDB stores Iceberg tables, snapshots, manifests, and files directly on its distributed storage core. `crowdb-access-iceberg` provides the REST catalog and file interface; the Chunk client and DiskIO store the bytes. Analytical engines retain query planning and execution. There is no separate S3 storage backend in this path.
 
-The integration reaches into the read path. A native upload returns a signed URI that carries the file's Chunk location. Once a manifest selects that URI, a reader can reach the file's storage descriptor without another Iceberg file-metadata lookup. This removes a repeated namespace round trip from analytical data access while keeping standard Iceberg manifests and table metadata.
+A native upload returns a signed URI that carries the file's Chunk location. Once a manifest selects that URI, the file endpoint can reconstruct the storage descriptor without another Iceberg file-metadata lookup. The URI saves a namespace round trip while preserving standard manifests and table metadata; it does not bypass the file endpoint or grant access by itself.
 
 ## Names can change without moving table data
 
@@ -13,7 +13,7 @@ Catalogs contain namespaces; namespaces contain named tables. CROWDB gives these
 
 A rename changes the name mapping while preserving the table's storage identity. File references do not need to follow a renamed directory across physical disks. This keeps administrative changes proportional to metadata work and protects the distinction between a readable name and the owner of stored data.
 
-Table metadata records snapshots; manifest lists and manifests identify the files that belong to a snapshot. The canonical Iceberg metadata remains the recoverable table state. Derived indexes or projections can help specific access patterns, but they do not become a second definition of the table. Standard metadata is a particularly valuable boundary: it preserves the relationship with the Iceberg ecosystem while allowing CROWDB to organize physical storage independently.
+Table metadata records snapshots; manifest lists and manifests identify the files that belong to a snapshot. Canonical Iceberg metadata defines the recoverable table state. Derived indexes can accelerate access, but do not become a second definition of the table. CROWDB can therefore change physical placement without changing the table format an engine reads.
 
 ## From an engine write to a published table
 
@@ -21,7 +21,7 @@ Table metadata records snapshots; manifest lists and manifests identify the file
 
 The native loader streams Parquet bytes through the Iceberg upload interface into Chunk storage. Completion verifies the content and seals an immutable, owner-bound directory root. CROWDB signs that root descriptor into the returned URI and publishes the file record. The record supports ownership, listing, and cleanup; the URI already contains the information needed to reconstruct the read descriptor.
 
-The loader uses the returned URI as the file reference in standard manifests, then stores the manifest list and submits the table update to the REST catalog. The catalog validates the requirements, prepares immutable metadata JSON, and publishes the new table head with one compare-and-swap in Chunk-KV. File transfers proceed independently; the atomic table decision stays small.
+The loader uses the returned URI as the file reference in standard manifests, then stores the manifest list and submits the table update to the REST catalog. The catalog validates the requirements, prepares immutable metadata JSON, and publishes the new table head with one compare-and-swap (CAS) in Chunk-KV. The head identifies the current table metadata. File transfers proceed independently; the atomic table decision stays small.
 
 S3-compatible FileIO requests terminate at CROWDB's Iceberg file interface. They reach native Chunk storage directly and retain Iceberg file ownership and lifecycle. The familiar protocol gives engines an integration point without inserting a separate object-storage service between the catalog and its files.
 
@@ -33,7 +33,7 @@ A reader first selects a table snapshot and follows its manifest list and manife
 
 This is a useful optimization at the scale of an analytical scan. A URI selected from a manifest is already a storage reference, so opening each data file does not require another Iceberg KV query to discover its location or state. Large files keep their extent directory in Chunk storage, allowing a bounded locator and bounded range traversal even when the file spans many extents.
 
-The locator identifies stable storage, while the Chunk layer resolves the current mirror or EC layout. Replica repair and physical placement can therefore evolve without rewriting every manifest reference. Permissions remain checked, and verified root identity prevents an old URI from reading a different file after storage reuse.
+The locator identifies stable storage, while the Chunk layer resolves the current replicated or erasure-coded layout. Replica repair and physical placement can therefore evolve without rewriting every manifest reference. The locator signature protects the descriptor's integrity; a separate request grant authorizes access. The endpoint also probes the owner-bound directory root, preventing an old URI from reading a different file after storage reuse.
 
 Ordinary SDK writers that choose a logical filename before upload keep that filename and resolve its file record on read. The direct-URI optimization applies to the native upload path, which returns the final URI before manifests are constructed. Both paths use CROWDB's own storage.
 
@@ -51,8 +51,8 @@ This avoids making a small file pay for its own physical storage container. Batc
 
 Some deployments compose an independent catalog with an object store. CROWDB brings table publication and file storage under one design, making the returned URI, durable completion, and cleanup agree at their source. Direct locators are one concrete payoff: the write path prepares the information that makes later reads cheaper.
 
-This is also an opportunity to address metadata growth. Small control records can remain in distributed KV storage while larger immutable metadata and file content use Chunk storage. The catalog retains a bounded working set instead of treating every table operation as an invitation to load all historical content into memory.
+Small control records can remain in distributed KV storage while larger immutable metadata and file content use Chunk storage. Catalog operations enforce metadata size and preparation limits; direct locators keep file-open work independent of a separate file-record lookup.
 
-The result is a shorter path from a table file reference to its bytes: one integrated catalog/file lifecycle, native Chunk storage, and direct locators where the upload path controls file naming. The [access acceptance guide](../../app/crowdb-access-server/tests/README.md) and [ecosystem matrix](../../e2e-test/clients/ecosystem/README.md) describe the supported client and engine combinations.
+The [access acceptance guide](../../app/crowdb-access-server/tests/README.md) and [ecosystem matrix](../../e2e-test/clients/ecosystem/README.md) describe the supported client and engine combinations.
 
 Implementation entry points are the [direct locator codec](../../lib/crowdb-access-iceberg/src/file/direct_location.rs), [file read handler](../../app/crowdb-access-server/src/iceberg/file_http/read.rs), and [table commit](../../lib/crowdb-access-iceberg/src/commit/direct.rs). The [architecture](design-crowdb-architecture.md) shows how metadata and file traffic reach the shared storage services.

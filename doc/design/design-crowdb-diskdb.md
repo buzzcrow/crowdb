@@ -9,13 +9,15 @@ This separation lets CROWDB make allocation a durable metadata operation without
 
 ## Durable records and working allocation state
 
-`crowdb-diskdb` manages disk groups across multiple nodes. A disk group belongs to one node and contains disks; a node can have several disk groups. Each disk is divided into zones and allocation blocks. Group 0 stores topology and owner bindings, while each disk group has an explicit Paxos-KV data-group binding for its allocation records. The client routes requests to the current DiskDB owner. Durable allocation records establish ownership. Working structures such as bitmaps make allocation and free-space queries efficient, but they can be reconstructed from the persisted records.
+`crowdb-diskdb` manages disk groups across multiple nodes. A disk group belongs to one node and contains disks; a node can have several disk groups. Each disk is divided into logical zones and allocation blocks. These zones are allocator regions and do not require zoned hardware.
+
+Group 0 stores topology and owner bindings. Each disk group is bound to a nonzero Paxos-KV data group for its allocation records, and the client routes requests to the current DiskDB owner. Durable records establish ownership; in-memory bitmaps accelerate allocation and free-space queries and can be rebuilt from those records.
 
 That distinction is valuable after a restart. The server can rebuild the working representation from the recorded facts rather than treating a partially updated in-memory bitmap as the only account of disk ownership. Scanner and recovery work reconcile the durable and operational views.
 
 ![DiskDB routes allocations across disk groups on multiple nodes, with durable records in Paxos-KV.](../assets/disk-allocation.svg)
 
-Freeing space also changes ownership. It must be reflected in the durable allocation model before that space is safely reused. Zone maintenance and compaction manage the representation and accumulated work behind those decisions.
+Freeing space first persists a free record. It does not immediately clear the allocation bitmap. Compaction matches the free record to the allocation it releases before clearing the corresponding bits for reuse. This conservative accounting prevents an old free request from releasing a newer allocation at the same address.
 
 ## Capacity is more than a free-byte counter
 
@@ -23,11 +25,11 @@ Operators need to understand disks, zones, allocated space, and the work that ca
 
 These observations help placement and management, while the allocator remains responsible for the actual decision to grant space. A cached capacity report is useful for choosing candidates, but it cannot reserve the bytes it describes.
 
-Keeping capacity reporting near allocation makes its meaning easier to explain. Physical space, allocated space, and logical user data are different quantities, particularly with replication, erasure coding, and deferred cleanup.
+Physical capacity, allocated capacity, and logical user-data size are different quantities. Replication and erasure coding add physical bytes; deferred cleanup can keep freed allocations counted as busy until compaction makes them reusable. Capacity reports describe allocator state, not simply the sum of visible object lengths.
 
 ## Why allocation is a separate service
 
-An allocation changes durable ownership. A read of an existing allocation usually does not. Combining both into one broad operation would make it harder to optimize their different frequencies and failure behavior.
+Allocation changes durable ownership; reading an existing allocation normally leaves ownership unchanged. Keeping them separate lets payload clients reuse established locations without an allocation transaction for every I/O.
 
 DiskDB gives CROWDB a focused place for disk lifecycle, space accounting, and rebuildable allocation state. DiskIO can concentrate on efficient byte operations, while ChunkDB chooses how several allocations form a protected layout.
 

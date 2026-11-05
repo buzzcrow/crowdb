@@ -3,7 +3,7 @@
 
 # CROWDB - Design: Container Deployment
 
-CROWDB packages a storage node as an OCI image. The image carries the services and their runtime dependencies; the host supplies the network, storage devices, and persistent node state. This makes container deployment a repeatable way to run a high-performance storage system while preserving direct access to the hardware that does the work.
+CROWDB packages a storage node as an Open Container Initiative (OCI) image for Linux amd64. The image carries services and runtime dependencies; the host supplies the network, storage devices, and persistent node state. Operators can replace the software image while keeping node identity and data on the host.
 
 The recommended performance-oriented configuration uses host networking and explicitly attached host block devices. The container runtime manages CPU and memory through cgroups. Network and storage paths stay close to the host, while compute and memory consumption remain controlled.
 
@@ -17,7 +17,7 @@ This keeps a useful operational boundary. Container tooling distributes software
 
 ## Host networking keeps the data path direct
 
-Host networking places service listeners on the host's network interfaces. Storage clients reach the node's actual endpoints without a container bridge, address translation, or a port-forwarding layer in the payload path. RDMA can use the host network and the required RDMA devices directly, with TCP available according to the configured fallback policy.
+Host networking places service listeners on the host's network interfaces. Storage clients reach the node's advertised endpoints without a container bridge, container address translation, or container port forwarding in the payload path. RDMA also requires explicit device access and suitable memory-registration permissions; host networking alone does not enable it. TCP remains available according to transport policy.
 
 One node container per physical host is the natural production layout for the fixed service ports. It also makes the relationship between advertised addresses, physical topology, and the machine serving I/O easy to inspect. The launcher validates the effective host network namespace rather than assuming that the requested setting took effect.
 
@@ -33,7 +33,7 @@ Node identity and retained state live in a persistent host directory or volume, 
 
 The runtime applies the node's CPU and memory policy through cgroups. A CPU ceiling caps consumption; relative CPU shares allow the node to use otherwise idle capacity while controlling its weight under contention. A memory limit bounds the container's aggregate footprint. Launch validation checks the effective cgroup settings, so the accepted deployment describes actual limits.
 
-Inside that budget, CROWDB controls its own worker pools, registered memory, caches, and in-flight I/O. Those internal limits provide backpressure before a workload exhausts the container's resources. Container limits and storage admission work at different scales: one bounds the node, the other keeps its concurrent work within usable capacity.
+Inside that budget, CROWDB limits worker pools, registered memory, caches, and in-flight I/O. Operators must size those limits together with service overhead to fit the container's budget. Storage admission can delay or reject work under pressure; the cgroup limit bounds the whole container and can terminate processes if memory is exhausted.
 
 ## The runtime starts the node; the monitor runs its services
 

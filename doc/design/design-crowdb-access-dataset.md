@@ -7,7 +7,7 @@ CROWDB's Dataset storage is built around datasets, samples, and fields. A traini
 
 Iceberg integration implements an established table format and catalog interface. CROWDB Dataset defines its own sample-oriented storage contract: immutable input, field projection, Split selection, worker partitioning, and resumable reads. It is independent of Iceberg tables and S3 buckets, and does not require a training framework's data types to become storage types.
 
-`crowdb-access-dataset` owns that model and its publication rules. Chunk-KV stores the metadata, while Chunk storage holds larger field payloads. The native RDMA path connects trusted training processes directly to storage nodes, with GPU-memory delivery as the next integration step.
+`crowdb-access-dataset` owns that model and its publication rules. Chunk-KV stores the metadata, while Chunk storage holds larger field payloads. Trusted training processes can use the native SDK to read directly from storage nodes into host buffers over RDMA or TCP. Direct GPU-memory delivery is future work.
 
 ## Small samples do not need small physical files
 
@@ -15,7 +15,7 @@ A file-per-sample layout makes a batch perform repeated path resolution, file me
 
 CROWDB gives samples and fields identities in its distributed metadata and aggregates their bytes in shared Chunks. Small fields can remain inline. Eligible uploaded payloads use the shared small-object writer, which batches many objects across a bounded set of pipelines and active chunks. Each field keeps its own location and integrity information while allocation and physical I/O are shared.
 
-That separates the unit an application understands from the unit the disks handle. A sample can stay small and independently selectable without demanding its own file, filesystem inode, or exclusive physical chunk. Dataset reads operate on sample metadata and payload ranges; they avoid routing every sample through a general filesystem namespace.
+An independently selectable sample therefore needs no filesystem inode or exclusive physical chunk. Dataset reads resolve sample metadata and payload ranges directly.
 
 The benefit extends beyond file counts. Field projection can skip an image when only a label is needed, Split selection can narrow the sample set before payload I/O, and read batches can aggregate the selected work. Small-object efficiency becomes part of the storage design rather than a packaging convention every training job must maintain.
 
@@ -31,9 +31,9 @@ Resource preparation and head publication are separate operations. A client can 
 
 ![Dataset read binds a Snapshot and Split, selects and projects metadata, reads inline or uploaded fields, and returns a verified batch with a continuation.](../assets/dataset-read.svg)
 
-A read first resolves `latest` or `stable`, if used, to an immutable Snapshot ID and binds any selected Split revision. The read plan fixes sample selection, projected fields, ordering or deterministic shuffle, worker partitioning, and batch policy. Its continuation also records the current position, so another server can replay the same batch.
+A read first resolves `latest` or `stable`, if used, to an immutable Snapshot ID and binds any selected Split revision. These names are mutable pointers; subsequent batches use the resolved IDs. The read plan fixes sample selection, projected fields, ordering or deterministic shuffle, worker partitioning, and batch policy. A continuation carries that binding and the current position, allowing another server to replay the same batch.
 
-This avoids tying a long training run to a server-side read session. Workers can restart with a saved continuation, and a slow worker need not keep an idle session alive. Reads remain subject to data retention: an old continuation is a position, not a promise to preserve deleted data forever.
+Workers can restart with a saved continuation without keeping a server-side read session alive. The continuation does not retain storage: deletion rejects new reads and defers physical cleanup for a grace period. Already admitted transfers may finish during that period; a long-running job must keep its input available independently of its saved position.
 
 Selection inspects bounded metadata windows in Chunk-KV. Split filtering precedes deterministic shuffle and worker partitioning; field projection identifies the values the application actually requested. The reader does not load a complete Manifest or fetch every field merely to build one batch.
 
@@ -49,11 +49,11 @@ The same principle applies to Split revisions. Changing the current Split does n
 
 ## RDMA keeps the training data path direct
 
-In an internal training cluster, the native SDK embeds the Dataset access library in the application. It resolves the selected metadata and reads Chunk payloads directly from DiskIO nodes over the configured RDMA connections. Bytes do not need to travel from a disk node to Access Server and then cross the network again to the training process.
+In an internal training cluster, the native SDK embeds the Dataset access library in the application. It resolves metadata and reads Chunk payloads directly from DiskIO nodes over the configured transport. With RDMA enabled, registered buffers can carry the received bytes into the application. This removes the Access Server relay and its additional network transfer.
 
-This removes a gateway relay, its HTTP handling, and its forwarding buffers from the bulk-data path. Registered buffers and retained ownership carry the result into the application without an extra SDK copy on eligible paths. The useful optimization is the whole chain: select fewer bytes, aggregate small payload work, transfer directly, and keep the received allocation alive until its consumer finishes.
+Registered buffers and retained ownership carry the result into the application without an extra SDK copy on eligible paths. The useful optimization is the whole chain: select fewer bytes, aggregate small payload work, transfer directly, and keep the received allocation alive until its consumer finishes.
 
-RDMA is the completed first step toward the GPU path. The current native interface delivers host buffers that can stay valid through an asynchronous host-to-device copy. Direct delivery into GPU memory through RDMA and GDS / GPUDirect integration is the next direction, with the aim of removing host staging as well as gateway forwarding. See the [native SDK design](design-crowdb-sdk-native.md) for that boundary.
+The current native interface delivers host buffers that can stay valid through an asynchronous host-to-device copy. It does not expose GPU pointers or direct GPU delivery. See the [native SDK design](design-crowdb-sdk-native.md#extend-the-direct-path-toward-gpu-memory) for the proposed extension.
 
 ## Portable access uses the same Dataset model
 

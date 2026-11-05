@@ -3,9 +3,9 @@
 
 # CROWDB - Design: Chunk-KV
 
-Chunk-KV presents a range-based tree whose ordered key space can split dynamically into partitions. Those partitions can be distributed across different serving nodes. Their Tree pages and WAL remain in shared Chunk storage, allowing metadata serving to move without requiring a full private database copy at every destination.
+Chunk-KV serves an ordered key-value index divided into range partitions. Partitions can split as the index grows and move between serving nodes. Their Tree pages and write-ahead logs (WALs) remain in shared Chunk storage, so a destination can reopen the durable state without first receiving a full private database copy.
 
-The design targets the growing metadata behind table files, datasets, and object namespaces. Listing is central to these workloads: enumerate a prefix, continue from a key, walk a dataset's records, or scan a table's metadata. Chunk-KV makes those operations native to its distribution model, then uses smooth split and transfer to adapt that ordered key space as it grows.
+The design targets metadata behind table files, datasets, and object namespaces. These workloads repeatedly enumerate a prefix, resume from a key, or scan ordered records. Range partitioning keeps those operations in the primary index; split and transfer adapt the index's serving placement as demand changes.
 
 ## Range partitioning fits a list-oriented system
 
@@ -22,8 +22,6 @@ Range partitioning organizes the metadata keys. The referenced file, sample, or 
 Consider objects named `photos/2026/0001`, `photos/2026/0002`, and `photos/2026/0003`. Their names are neighbors for listing, but their records may point to different Chunks with layouts spanning different storage nodes. Listing finds the next names through the ordered metadata ranges. Reading an object's body follows its locations through the Chunk client to DiskIO, without sending that body through the metadata range server.
 
 This gives listing and bulk I/O different ways to scale. The index routes a prefix scan through the relevant ordered ranges; payload clients reach the DiskIO nodes selected by each Chunk layout. Physical rebalance or protection changes can update those layouts without reordering the names. Metadata hot ranges still need split and transfer, but their boundaries do not force all referenced bytes through the range server or onto its disks.
-
-The distinction is useful for a busy tenant or dataset. Its metadata can split into more serving ranges as enumeration and updates grow, while payload placement continues to use the cluster's disks and failure domains. Ordered traversal does not require accepting one physical storage bottleneck for everything under the same prefix.
 
 ## A range-based tree across nodes
 
@@ -49,15 +47,13 @@ A live transfer pins a shared Tree base and records a matching WAL cursor. The d
 
 Cutover closes the old owner's admission, drains accepted mutations, and fixes the final source cursor. A higher owner epoch and a published catalog assignment give the destination its authority. The target finishes the remaining WAL suffix before answering reads or conditional mutations. During that catch-up state, eligible unconditional writes can already enter its durable WAL; readers wait within bounded deadlines.
 
-Smooth transfer comes from reducing the work that must happen at cutover. Shared backing removes the full-range copy from that critical path, advance catch-up reduces the remaining suffix, and explicit fencing keeps old and new owners from acting as competing writers. Cache warming, replay, and final readiness still matter, so placement considers readiness and capacity before releasing the source.
+Shared backing removes the full-range copy from cutover, advance catch-up reduces the remaining suffix, and explicit fencing prevents competing owners from acknowledging writes. Transfer still has a cutover interval: draining, remaining replay, and cache warming affect request latency. A shared root makes movement cheaper; it does not make it instantaneous.
 
 ## Serving capacity and storage capacity
 
-Shared backing changes the cost of adding a metadata server. The new server needs a usable shared root, the required journal suffix, and authority to serve. It can take over a range without first storing a complete private copy of its persistent index. Split creates suitable units of work; transfer places those units on the available serving capacity.
+Adding a metadata server supplies CPU and cache capacity; adding disks supplies storage capacity and physical I/O bandwidth. Split creates ranges that can be placed independently, and transfer lets a new server open those ranges from their shared roots and journal suffixes. Moving a range owner need not relocate its physical Chunks.
 
-That separates two operational needs. More CPU and cache capacity can serve a busier namespace, while more disks can provide additional storage capacity and bandwidth. Moving a range owner need not move its physical Chunks at the same time. Cache warming, page reads, and replay still consume resources, but copying the entire index is removed as a prerequisite for every new owner.
-
-Consider a namespace whose stored size changes little while more clients begin listing and updating it. A new serving node can take over selected ranges using their existing shared backing. The preparation work follows the roots, journal suffixes, and working sets it needs to serve. With storage tied to private local replicas, a destination that lacks the range state would first need to acquire a usable copy. Shared backing lets the destination open that state where it already lives.
+For a namespace whose size changes little while listing and update traffic grows, a new server can take selected ranges using their existing backing. It still spends resources on replay and page reads, but its preparation does not require copying the entire persistent index.
 
 If the constraint is disk capacity or physical I/O, operators instead add storage resources and rebalance Chunks. Adding a range server alone cannot increase those disks' bandwidth. Keeping the two operations separate lets the deployment address the resource under pressure, while durable pages remain protected during serving changes. For a large namespace, this makes expansion less tightly coupled to the total size of its persistent index.
 
@@ -65,7 +61,7 @@ If the constraint is disk capacity or physical I/O, operators instead add storag
 
 Paxos-KV supplies replicated agreement and durable control state. Chunk-KV uses shared storage to separate a range's serving process from its durable pages and journal. These are complementary ways to pay for reliability.
 
-The lower KV stores the records that manage the shared storage, rather than another full copy of every upper KV value. Chunk-KV's Tree pages and journal bytes live in Chunks protected by the storage layer. Its range server can therefore focus on mutation ordering, index access, and serving ownership, while Paxos-KV preserves the durable control state that makes that arrangement possible.
+Paxos-KV stores records that manage shared storage, rather than another full copy of every Chunk-KV value. Chunk-KV's Tree pages and journal bytes live in Chunks protected by the storage layer. Its range server handles mutation ordering and index access, while replicated control metadata establishes who may serve the range.
 
 The trade-off is dependence on the shared Chunk services and their latency, availability, and repair behavior. CROWDB accepts that dependency because those services already protect the platform's payload and storage state. The design reuses a substantial storage investment instead of repeating it inside every metadata range.
 
