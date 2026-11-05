@@ -114,6 +114,7 @@ class TreeCore : public std::enable_shared_from_this<TreeCore>
     Status                 install_native(std::vector<NativeFrame> frames, NativeStreamInfo info);
 #ifdef CROWDB_TREE_TEST_UTIL
     void set_before_generation_install_for_tests(std::function<void()> callback);
+    void set_flush_handoff_wait_for_tests(std::function<bool(uint64_t, std::function<void()>)> callback);
 #endif
 
     void   get_async(Slice key, std::function<void(Status, GetView)> complete);

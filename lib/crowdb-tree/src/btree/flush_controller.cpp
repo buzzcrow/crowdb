@@ -20,6 +20,11 @@ thread_local void            *prepare_context_for_tests = nullptr;
 } // namespace
 
 #ifdef CROWDB_TREE_TEST_UTIL
+void FlushController::set_handoff_wait_for_tests(std::function<bool(uint64_t, std::function<void()>)> callback)
+{
+    state_->options.handoff_wait_for_tests = std::move(callback);
+}
+
 void set_flush_prepare_hook_for_tests(FlushPrepareHook hook, void *context) noexcept
 {
     prepare_hook_for_tests    = hook;

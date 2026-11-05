@@ -345,6 +345,9 @@ void FlushBatch::State::Subtree::fork()
 
 void FlushBatch::State::Subtree::reset_work()
 {
+#ifdef CROWDB_TREE_TEST_UTIL
+    handoff_test_waited = false;
+#endif
     finished       = false;
     status         = Status::Ok();
     children_ready = false;

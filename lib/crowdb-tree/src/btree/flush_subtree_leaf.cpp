@@ -57,6 +57,13 @@ void FlushBatch::State::Subtree::leaf()
     }
     if (!range && !handed_off) {
 #ifdef CROWDB_TREE_TEST_UTIL
+        if (!handoff_test_waited && owner.options.handoff_wait_for_tests) {
+            handoff_test_waited = true;
+            if (owner.options.handoff_wait_for_tests(pid,
+                                                     [this, keep = owner.weak_from_this().lock()] { schedule(); })) {
+                return;
+            }
+        }
         if (owner.options.before_handoff_for_tests) {
             owner.options.before_handoff_for_tests(pid);
         }

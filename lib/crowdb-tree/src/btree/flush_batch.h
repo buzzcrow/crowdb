@@ -67,9 +67,10 @@ struct FlushBatchOptions
     // Runs after publication admission and before source closure.
     std::function<void()> before_capture_for_tests = nullptr;
     // Called after a bounded run is owned and all source guards are released.
-    std::function<void(size_t, size_t)>     after_run_for_tests      = nullptr;
-    std::function<void(uint64_t)>           before_handoff_for_tests = nullptr;
-    std::function<void(uint64_t, uint32_t)> after_page_for_tests     = nullptr;
+    std::function<void(size_t, size_t)>                  after_run_for_tests      = nullptr;
+    std::function<void(uint64_t)>                        before_handoff_for_tests = nullptr;
+    std::function<bool(uint64_t, std::function<void()>)> handoff_wait_for_tests   = nullptr;
+    std::function<void(uint64_t, uint32_t)>              after_page_for_tests     = nullptr;
 #endif
 };
 

@@ -48,13 +48,16 @@ struct FlushBatch::State::Subtree
     uint64_t     pid;
     PageKeyRange bounds;
     bool         active;
-    bool         finished       = false;
-    bool         handed_off     = false;
-    bool         children_ready = false;
-    bool         joined         = false;
-    bool         writing        = false;
-    size_t       persist_at     = 0;
-    uint64_t     final_root     = kInvalidPageId;
+    bool         finished   = false;
+    bool         handed_off = false;
+#ifdef CROWDB_TREE_TEST_UTIL
+    bool handoff_test_waited = false;
+#endif
+    bool     children_ready = false;
+    bool     joined         = false;
+    bool     writing        = false;
+    size_t   persist_at     = 0;
+    uint64_t final_root     = kInvalidPageId;
 
     struct FinalPage
     {

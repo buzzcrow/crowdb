@@ -75,6 +75,9 @@ class FlushOperation
 class FlushController
 {
   public:
+#ifdef CROWDB_TREE_TEST_UTIL
+    void set_handoff_wait_for_tests(std::function<bool(uint64_t, std::function<void()>)> callback);
+#endif
     FlushController(PublicationCoordinator &publisher, detail::FlushRuntime &runtime, SourceAdmission &sources,
                     const std::atomic<uint64_t> &contiguous, std::shared_ptr<detail::FlushRuntime::Lane> lane,
                     FlushBatchOptions options = {}, FlushBatch::Maintenance maintenance = {},

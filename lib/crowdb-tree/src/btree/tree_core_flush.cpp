@@ -70,6 +70,13 @@ void FlushReceiver::set_stopped() const noexcept
 }
 } // namespace
 
+#ifdef CROWDB_TREE_TEST_UTIL
+void TreeCore::set_flush_handoff_wait_for_tests(std::function<bool(uint64_t, std::function<void()>)> callback)
+{
+    state_->flush->set_handoff_wait_for_tests(std::move(callback));
+}
+#endif
+
 Status TreeCore::prepare_flush(std::shared_ptr<FlushOperation> *out)
 {
     return prepare_flush(out, {});
