@@ -16,7 +16,7 @@ struct TestCoreChunk
     std::unique_ptr<Crowdbtree>                    tree;
     bool                                           attempted_open = false;
 
-    TestCoreChunk()
+    explicit TestCoreChunk(size_t pin_capacity = 256) : backend(pin_capacity)
     {
         TreeRuntimeOptions host;
         host.workers         = 1;

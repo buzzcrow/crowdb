@@ -18,12 +18,12 @@ struct TestRootBackend
     std::shared_ptr<detail::ChunkRuntimeIds> ids =
         std::make_shared<detail::ChunkRuntimeIds>(1, 23, uint64_t{45} << 32U);
 
-    TestRootBackend()
+    explicit TestRootBackend(size_t pin_capacity = 256)
     {
-        EXPECT_TRUE(
-            detail::ChunkPinReleaseQueue::create(
-                credits.credits.bytes, 256, std::make_shared<int>(1), [](void *) noexcept {}, nullptr, &catalog->queue)
-                .ok());
+        EXPECT_TRUE(detail::ChunkPinReleaseQueue::create(
+                        credits.credits.bytes, pin_capacity, std::make_shared<int>(1), [](void *) noexcept {}, nullptr,
+                        &catalog->queue)
+                        .ok());
         domain->backend_id = 17;
         domain->tree       = 19;
         domain->epoch      = 1;

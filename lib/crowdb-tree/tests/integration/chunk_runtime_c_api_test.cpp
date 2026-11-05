@@ -86,6 +86,15 @@ TEST(ChunkRuntimeCAbi, PublicTreeUsesSameHostAndCommitsWalWithTheRoot)
     ASSERT_EQ(ct_chunk_page_store_get_manifest_generation(store.get(), &root), 0);
     EXPECT_EQ(wal, 4096U);
     EXPECT_EQ(root, 1U);
+    const auto writes   = backend.transport->writes;
+    const auto begins   = backend.catalog->begin_calls;
+    const auto prepares = backend.catalog->prepare_calls;
+    ASSERT_EQ(ct_snapshot(tree.get(), &coverage), 0);
+    ASSERT_EQ(ct_chunk_page_store_get_manifest_generation(store.get(), &root), 0);
+    EXPECT_EQ(root, 1U);
+    EXPECT_EQ(backend.transport->writes, writes);
+    EXPECT_EQ(backend.catalog->begin_calls, begins);
+    EXPECT_EQ(backend.catalog->prepare_calls, prepares);
     tree.reset();
     raw_tree = nullptr;
     EXPECT_EQ(ct_open_with_runtime(&options, runtime.get(), nullptr, &raw_tree),

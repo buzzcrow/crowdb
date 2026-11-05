@@ -224,7 +224,7 @@ Status recover_chunk(ChunkOpen &open, const Config &config, std::shared_ptr<cons
         *initial                      = recovered->result().state;
         open.backend->max_frame_bytes = recovery->max_frame_bytes();
         open.backend->max_blob_bytes  = recovery->max_blob_bytes();
-        open.backend->recovered(identity);
+        open.backend->recovered(identity, recovery->take_manifest());
     }
     return status;
 }

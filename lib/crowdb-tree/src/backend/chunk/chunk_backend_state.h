@@ -25,10 +25,11 @@ struct ChunkBackendState final : CheckpointBackend
     detail::ChunkRuntimePageStore            *facade = nullptr;
     // Reserved for the catalog's actual root-retention owner, including old
     // committed roots until authority GC retires their reference windows.
-    std::shared_ptr<const void> checkpoint_roles;
-    std::atomic<uint64_t>       root_generation{0};
-    std::atomic<bool>           collection_active{false};
-    detail::ChunkCollector      collector;
+    std::shared_ptr<const void>                           checkpoint_roles;
+    std::atomic<std::shared_ptr<const ChunkRootManifest>> committed_root;
+    std::atomic<uint64_t>                                 root_generation{0};
+    std::atomic<bool>                                     collection_active{false};
+    detail::ChunkCollector                                collector;
 
     [[nodiscard]] bool                supported() const noexcept override;
     [[nodiscard]] BackingStatsSampler backing_sampler() const noexcept override;
@@ -53,7 +54,7 @@ struct ChunkBackendState final : CheckpointBackend
     [[nodiscard]] size_t                reservation_allocation_bound() const noexcept override;
     Status prepare_checkpoint(BackendCheckpointInput input, std::shared_ptr<BackendCheckpoint> *out) override;
     void   close_writer() noexcept override;
-    void   recovered(const ChunkRootIdentity &identity) noexcept;
+    void   recovered(const ChunkRootIdentity &identity, std::shared_ptr<const ChunkRootManifest> root = {}) noexcept;
     void   completed(const ChunkRootCommit &operation) noexcept;
     [[nodiscard]] ChunkRootIdentity next_identity(const PublishedTreeState &view) const noexcept;
     [[nodiscard]] PageWriteOperation::ReserveExtent

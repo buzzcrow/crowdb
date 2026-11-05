@@ -3,6 +3,7 @@
 #include "chunk_backend_state.h"
 #include "chunk_protocol_operation.h"
 #include "snapshot/chunk_root_commit.h"
+#include "snapshot/snapshot_baseline.h"
 
 namespace crowdb::tree
 {
@@ -50,7 +51,11 @@ bool ChunkBackendState::supported() const noexcept
 std::optional<size_t> ChunkBackendState::checkpoint_allocation_bound(size_t frames, size_t heads) const noexcept
 {
     return detail::AllocationBound()
-        .add(ChunkRootCommit::allocation_bound(frames))
+        .add(ChunkRootCommit::allocation_bound(frames,
+                                               [&] {
+                                                   const auto root = committed_root.load(std::memory_order_acquire);
+                                                   return root ? root->indexes.size() : 0;
+                                               }()))
         .add(ChunkRootCommit::window_allocation_bound(heads))
         .add(ChunkProtocolOperation::allocation_bound())
         .add(detail::shared_allocation_bound<ChunkCheckpoint>())
@@ -70,7 +75,9 @@ Status ChunkBackendState::prepare_checkpoint(BackendCheckpointInput input, std::
     auto result                = detail::reserved_shared<ChunkCheckpoint>(input.budget.bytes);
     result->backend            = this;
     auto status = ChunkRootCommit::create(input.pages, domain, ids, identity, input.budget.bytes, input.budget.bytes,
-                                          &result->commit, input.max_dependency_steps);
+                                          &result->commit, input.max_dependency_steps,
+                                          committed_root.load(std::memory_order_acquire),
+                                          input.view.snapshot_baseline ? input.view.snapshot_baseline->pages : nullptr);
     if (!status.ok()) {
         return status;
     }

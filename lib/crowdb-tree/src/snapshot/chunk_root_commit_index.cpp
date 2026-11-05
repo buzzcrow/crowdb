@@ -12,33 +12,33 @@ Status ChunkRootCommit::index()
         return Status::Ok();
     }
     std::array<const DurableCapturedFrame *, kChunkIndexFrameLimit> frames{};
-    size_t                                                          count = 0;
-    auto                                                            next  = page_;
-    while (next != pages_->frames.end() && count < frames.size()) {
+    const ChunkIndexReference                                      *previous = nullptr;
+    if (previous_) {
+        while (previous_index_ < previous_->indexes.size() &&
+               previous_->indexes[previous_index_].last_page < page_->first) {
+            ++previous_index_;
+        }
+        if (previous_index_ < previous_->indexes.size()) {
+            previous = &previous_->indexes[previous_index_];
+        }
+    }
+    size_t   count = 0;
+    auto     next  = page_;
+    uint64_t last  = UINT64_MAX;
+    if (previous != nullptr) {
+        last = page_->first < previous->first_page ? previous->first_page - 1 : previous->last_page;
+    }
+    while (next != pages_->frames.end() && count < frames.size() && next->first <= last) {
         if (next->first != next->second.page_id) {
             return fail(Status::corruption("Chunk checkpoint page identity mismatch"));
         }
         frames[count++] = &next->second;
         ++next;
     }
-    ChunkMetadataBytes bytes{detail::ReservationAllocator<uint8_t>(window_)};
-    auto status = encode_chunk_index(root_.identity, root_.indexes.size(), std::span(frames).first(count), &bytes);
-    if (!status.ok()) {
-        return fail(std::move(status));
-    }
-    detail::ChunkStageId id;
-    detail::ChunkId      chunk;
-    status = ids_->next(PagePurpose::kPageIndex, &id, &chunk);
-    if (!status.ok()) {
-        return fail(std::move(status));
-    }
-    std::shared_ptr<ChunkPackBacking> backing;
-    status = prepare_chunk_backing(domain_, id, chunk, static_cast<uint32_t>(bytes.size()), PagePurpose::kPageIndex,
-                                   metadata_, &backing);
-    if (!status.ok()) {
-        return fail(std::move(status));
-    }
-    status = write_chunk_backing(*backing, bytes, window_);
+    std::shared_ptr<const ChunkPackBacking> backing;
+    const auto                              selected = std::span(frames).first(count);
+    auto status = previous != nullptr && unchanged(selected, *previous) ? reuse_index(*previous, &backing)
+                                                                        : write_index(selected, &backing);
     if (!status.ok()) {
         return fail(std::move(status));
     }
@@ -49,7 +49,7 @@ Status ChunkRootCommit::index()
     if (root_.stored_references > detail::kMaxCandidateReferences) {
         return fail(Status::resource_exhausted());
     }
-    references_.insert(id);
+    references_.insert(backing->pack.stage);
     root_.indexes.push_back({.first_page  = frames[0]->page_id,
                              .last_page   = frames[count - 1]->page_id,
                              .frame_count = count,

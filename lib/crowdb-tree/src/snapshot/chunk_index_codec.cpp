@@ -124,7 +124,8 @@ Status decode_chunk_index_header(std::span<const uint8_t> bytes, const ChunkRoot
     }
     if (bytes.size() > kChunkIndexWindowBytes || !verified(bytes, kChunkIndexHeaderBytes) ||
         word(bytes, 0) != kIndexMagic || word(bytes, 1) != 1 || word(bytes, 2) != identity.tree ||
-        word(bytes, 3) != identity.root_generation || word(bytes, 4) != ordinal || word(bytes, 5) == 0 ||
+        word(bytes, 3) == 0 || word(bytes, 3) > identity.root_generation ||
+        (word(bytes, 3) == identity.root_generation && word(bytes, 4) != ordinal) || word(bytes, 5) == 0 ||
         word(bytes, 5) > kChunkIndexFrameLimit) {
         return Status::corruption("Chunk index checksum, format or identity mismatch");
     }

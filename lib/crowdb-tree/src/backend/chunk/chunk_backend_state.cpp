@@ -30,8 +30,10 @@ void ChunkBackendState::close_writer() noexcept
     writer_session.reset();
 }
 
-void ChunkBackendState::recovered(const ChunkRootIdentity &identity) noexcept
+void ChunkBackendState::recovered(const ChunkRootIdentity                 &identity,
+                                  std::shared_ptr<const ChunkRootManifest> root) noexcept
 {
+    committed_root.store(std::move(root), std::memory_order_release);
     durable_coverage.store(identity.coverage, std::memory_order_release);
     snapshot_sequence.store(identity.snapshot_sequence, std::memory_order_release);
     root_generation.store(identity.root_generation, std::memory_order_release);
@@ -41,7 +43,7 @@ void ChunkBackendState::recovered(const ChunkRootIdentity &identity) noexcept
 void ChunkBackendState::completed(const ChunkRootCommit &operation) noexcept
 {
     if (operation.committed()) {
-        recovered(operation.identity());
+        recovered(operation.identity(), operation.manifest());
     }
     if (operation.needs_recovery() || !operation.done()) {
         needs_recovery.store(true, std::memory_order_release);

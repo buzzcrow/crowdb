@@ -18,6 +18,8 @@ class TestRootTransport : public detail::ChunkTransport
     detail::MemoryChunkTransport                                       memory;
     std::map<std::array<uint64_t, 2>, detail::ChunkAllocationIdentity> receipts;
     std::function<void()>                                              before_allocate;
+    size_t                                                             writes        = 0;
+    size_t                                                             written_bytes = 0;
     std::map<std::array<uint64_t /*unused*/, 2>, detail::ChunkId>      ids;
 
     bool fixed_staging_supported() const noexcept override
@@ -91,6 +93,8 @@ class TestRootTransport : public detail::ChunkTransport
 
     Status write_mirror(detail::ChunkId id, uint32_t mirror, uint64_t offset, const uint8_t *data, size_t size) override
     {
+        ++writes;
+        written_bytes += size;
         return memory.write_mirror(ids.at({id.high, id.low}), mirror, offset, data, size);
     }
 

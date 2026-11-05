@@ -24,7 +24,8 @@ std::optional<size_t> ChunkRootRecovery::allocation_bound(const ChunkRootManifes
     using namespace detail;
     constexpr size_t node_links = 4 * sizeof(void *);
     return AllocationBound(shared_allocation_bound<ChunkRootRecovery>() +
-                           shared_allocation_bound<CapturedDurablePages>())
+                           shared_allocation_bound<CapturedDurablePages>() +
+                           shared_allocation_bound<ChunkRootManifest>())
         .add(chunk_pin_validation_bound())
         .add_product(root.indexes.size(), sizeof(ChunkIndexReference) + chunk_backing_allocation_bound())
         .add_product(root.frame_count,
@@ -91,6 +92,14 @@ Status ChunkRootRecovery::next_pin(detail::ChunkStageId *out)
 {
     detail::ChunkId unused;
     return ids_->next(PagePurpose::kBtreePage, out, &unused);
+}
+
+std::shared_ptr<const ChunkRootManifest> ChunkRootRecovery::take_manifest()
+{
+    if (!done_ || !status_.ok()) {
+        return {};
+    }
+    return detail::reserved_shared<ChunkRootManifest>(metadata_, std::move(root_));
 }
 
 Status ChunkRootRecovery::step(bool stopped) noexcept

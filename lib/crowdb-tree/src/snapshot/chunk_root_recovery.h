@@ -63,7 +63,8 @@ class ChunkRootRecovery
         return max_blob_bytes_;
     }
 
-    bool retire_step() noexcept;
+    bool                                     retire_step() noexcept;
+    std::shared_ptr<const ChunkRootManifest> take_manifest();
 
   private:
     struct LeafProtection
