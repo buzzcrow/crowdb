@@ -16,9 +16,9 @@ Status primary_bytes(Slice key, const LogicalCell &cell, const PageMaintenanceLi
 {
     const bool   overflow  = !cell.tombstone() && (cell.overflow() || cell.value.size() > limits.inline_value_bytes);
     const size_t value     = overflow ? kOverflowCellSize : kCellHeaderSize + cell.value.size();
-    const auto   available = limits.primary_page_bytes - kPageOverhead - kLeafSlotSize;
+    const auto   available = kMaxPhysicalPageBytes - kPageOverhead - kLeafSlotSize;
     if (key.size() > available || value > available - key.size()) {
-        return Status::invalid_argument("one key/cell cannot fit an uncompressed primary leaf frame");
+        return Status::invalid_argument("leaf record exceeds the physical page safety bound");
     }
     *bytes = key.size() + value + kLeafSlotSize;
     return Status::Ok();

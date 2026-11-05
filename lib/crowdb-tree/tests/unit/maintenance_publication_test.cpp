@@ -365,7 +365,7 @@ TEST(MaintenancePublication, CoalescePreservesUnknownSummaryAndLogicalIdentity)
     EXPECT_FALSE(after->stats.checkpoint_mapping_pending);
 }
 
-TEST(MaintenancePublication, InnerSeparatorByteLimitRejectsBeforePublication)
+TEST(MaintenancePublication, ExceptionalSeparatorStillBuildsACompleteBoundedRoot)
 {
     PublicationCoordinator publisher;
     seed_leaf(
@@ -375,9 +375,12 @@ TEST(MaintenancePublication, InnerSeparatorByteLimitRejectsBeforePublication)
     auto       options      = maintenance_limits();
     options.max_inner_bytes = kFrameHeaderSize + kFrameTrailerSize + (2 * sizeof(uint64_t)) + kInnerSlotSize + 1;
     auto plan               = build_split_publication(before, 0, maintenance_record(1), options);
-    EXPECT_EQ(plan.status.code(), Code::kInvalidArgument);
-    EXPECT_FALSE(plan.changed());
+    ASSERT_TRUE(plan.status.ok()) << plan.status.to_string();
+    EXPECT_TRUE(plan.changed());
     EXPECT_EQ(publisher.capture(), before);
+    ASSERT_TRUE(publish_maintenance(publisher, std::move(plan.transaction)).status.ok());
+    const auto after = publisher.capture();
+    EXPECT_GT(after->mapping.get(after->root_page_id)->level, 0U);
 }
 } // namespace
 } // namespace crowdb::tree

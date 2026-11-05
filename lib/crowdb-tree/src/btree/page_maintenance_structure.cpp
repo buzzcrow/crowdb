@@ -85,7 +85,7 @@ LeafSplitResult split_leaf_ranges(const LeafLayoutPlan &layout, std::span<const 
         return result;
     }
     for (size_t i = 0; i < targets.size(); ++i) {
-        if (targets[i].page_id == kInvalidPageId || layout.primary_bytes[i] > limits.primary_page_bytes ||
+        if (targets[i].page_id == kInvalidPageId || layout.primary_bytes[i] > kMaxPhysicalPageBytes ||
             targets[i].version.route_generation <= layout.source->route_generation) {
             result.status = Status::invalid_argument("split target needs a new route generation and valid layout");
             return result;

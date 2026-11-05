@@ -10,10 +10,21 @@
 #include "snapshot/flush_persistence.h"
 #include "snapshot/primary_backing.h"
 
+#include <bit>
 #include <cassert>
 
 namespace crowdb::tree
 {
+namespace
+{
+size_t final_frame_bytes(const PublishedPage &page, size_t normal)
+{
+    const auto required = std::max(page.metrics.page_size_known ? page.metrics.page_size_bytes : 0,
+                                   page.primary ? size_t{page.primary->frame.frame_bytes} : 0);
+    return required > kMaxPhysicalPageBytes ? required : std::max(normal, std::bit_ceil(required));
+}
+} // namespace
+
 struct FlushPersistence::Page : std::enable_shared_from_this<Page>
 {
     struct Receiver
@@ -66,13 +77,28 @@ struct FlushPersistence::Page : std::enable_shared_from_this<Page>
 
     void start()
     {
-        auto &preparation              = *owner->preparation_;
-        limits                         = preparation.options.write;
+        auto &preparation = *owner->preparation_;
+        limits            = preparation.options.write;
+        const auto bytes  = final_frame_bytes(*input.page, limits.frames.encode.frame_bytes);
+        if (bytes > kMaxPhysicalPageBytes) {
+            finish(Status::invalid_argument("final page exceeds the physical page safety bound"));
+            return;
+        }
+        if (bytes > limits.frames.encode.frame_bytes) {
+            CRB_LOG_WARN("persistent page {} uses {} bytes above the ordinary {} byte target", input.page_id, bytes,
+                         limits.frames.encode.frame_bytes);
+        }
+        limits.frames.encode.frame_bytes = static_cast<uint32_t>(bytes);
+        limits.write.max_frame_bytes     = bytes;
+        if (input.page->leaf) {
+            limits.frames.encode.max_sources =
+                std::max<size_t>(1, input.page->leaf->bases.size() + input.page->leaf->overlays.size());
+        }
         limits.frames.max_depth        = 1;
         limits.frames.reuse_backend_id = preparation.core->local_backend()
                                            ? preparation.core->local_backend()->ledger->limits().backend_id
                                            : preparation.core->chunk_backend()->backend_identity();
-        auto result                    = preparation.work(*owner->initial_, nullptr, &work, 0, owner->io_);
+        auto result                    = preparation.work(*owner->initial_, nullptr, &work, 0, owner->io_, &limits);
         if (!result.ok()) {
             finish(std::move(result));
             return;
@@ -188,7 +214,7 @@ struct FlushPersistence::Page : std::enable_shared_from_this<Page>
             finish(Status::resource_exhausted("durable mapping segment bound overflow"));
             return;
         }
-        result = preparation.work(*owner->initial_, &plan, &work, *bound, owner->io_);
+        result = preparation.work(*owner->initial_, &plan, &work, *bound, owner->io_, &limits);
         if (!result.ok()) {
             finish(std::move(result));
             return;
@@ -293,11 +319,16 @@ struct FlushPersistence::Page : std::enable_shared_from_this<Page>
 void FlushPersistence::write(PageEncodeInput input, FlushBatchOptions::ReserveOverflow reserve,
                              FlushBatchOptions::PersistComplete done)
 try {
-    const auto  backend = preparation_->core->local_backend()
-                            ? preparation_->core->local_backend()->ledger->limits().backend_id
-                            : preparation_->core->chunk_backend()->backend_identity();
-    const auto &limits  = preparation_->options.write.frames;
-    const bool  same_summary =
+    const auto  backend     = preparation_->core->local_backend()
+                                ? preparation_->core->local_backend()->ledger->limits().backend_id
+                                : preparation_->core->chunk_backend()->backend_identity();
+    const auto &limits      = preparation_->options.write.frames;
+    const auto  frame_bytes = final_frame_bytes(*input.page, limits.encode.frame_bytes);
+    if (frame_bytes > kMaxPhysicalPageBytes) {
+        done(Status::invalid_argument("final page exceeds the physical page safety bound"), {});
+        return;
+    }
+    const bool same_summary =
         !input.children_summary ||
         (input.page->primary && input.page->primary->frame.summary &&
          input.page->primary->frame.summary->live_counts_known == input.children_summary->live_counts_known &&
@@ -310,10 +341,10 @@ try {
         input.page->primary->frame.backing == inherited_->frames.at(input.page_id).backing &&
         !limits.exclusion.overlaps(*inherited_->frames.at(input.page_id).backing) &&
         (input.page->leaf ? can_reuse_primary(*input.page, input.page_id, input.context.range, input.gc_floor, backend,
-                                              limits.encode.frame_bytes)
+                                              static_cast<uint32_t>(frame_bytes))
                           : input.context.inner_fences &&
                                 can_reuse_inner_primary(*input.page, input.page_id, *input.context.inner_fences,
-                                                        backend, limits.encode.frame_bytes))) {
+                                                        backend, static_cast<uint32_t>(frame_bytes)))) {
         done(Status::Ok(), input.page);
         return;
     }

@@ -97,8 +97,8 @@ Status MaintenanceBuilder::partition_inner(uint64_t pid, uint32_t level, const I
         return status;
     }
     for (const auto &separator : inner.separators) {
-        if (separator.size() > options.max_inner_bytes - kInnerOverhead - sizeof(uint64_t) - kInnerSlotSize) {
-            return Status::invalid_argument("one separator cannot fit an inner page with two children");
+        if (separator.size() > kMaxPhysicalPageBytes - kInnerOverhead - sizeof(uint64_t) - kInnerSlotSize) {
+            return Status::invalid_argument("inner separator exceeds the physical page safety bound");
         }
     }
     size_t begin = 0;
@@ -107,7 +107,7 @@ Status MaintenanceBuilder::partition_inner(uint64_t pid, uint32_t level, const I
         size_t bytes = kInnerOverhead;
         while (end < inner.children.size() && end - begin < options.max_inner_children) {
             const size_t added = sizeof(uint64_t) + kInnerSlotSize + inner.separators[end - 1].size();
-            if (added > options.max_inner_bytes - bytes) {
+            if (end != begin + 1 && added > options.max_inner_bytes - std::min(bytes, options.max_inner_bytes)) {
                 break;
             }
             bytes += added;

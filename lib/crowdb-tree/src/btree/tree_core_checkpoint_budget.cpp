@@ -58,13 +58,15 @@ CheckpointOptions defaults(const TreeCore &core)
     return options;
 }
 
-Status Preparation::plan_work(const PublishedTreeState &view, const CapturedWritePlan *plan, WorkPlan *out) const
+Status Preparation::plan_work(const PublishedTreeState &view, const CapturedWritePlan *plan, WorkPlan *out,
+                              const CapturedWriteLimits *write_limits) const
 {
     using namespace detail;
+    const auto &writing = write_limits != nullptr ? *write_limits : options.write;
     if (plan != nullptr && plan->reused_primary_frames > plan->primary_frames) {
         return Status::invalid_argument("checkpoint reuse count exceeds its primary count");
     }
-    auto frames = options.write.frames;
+    auto frames = writing.frames;
     if (options.select_oldest_page) {
         auto status = select_writeback_page(view, frames, &frames.selected_page);
         if (!status.ok()) {
@@ -75,7 +77,7 @@ Status Preparation::plan_work(const PublishedTreeState &view, const CapturedWrit
         }
     }
     const auto   root  = view.mapping.get(view.root_page_id);
-    const size_t depth = root && !frames.selected_page ? root->level + 1ULL : 1;
+    const size_t depth = write_limits == nullptr && root && !frames.selected_page ? root->level + 1ULL : 1;
     if (depth > frames.max_depth) {
         return Status::resource_exhausted("checkpoint route depth limit");
     }
@@ -102,12 +104,12 @@ Status Preparation::plan_work(const PublishedTreeState &view, const CapturedWrit
                     core->chunk_backend()->checkpoint_allocation_bound(plan->frame_count_upper, plan->reference_heads));
             }
             else {
-                bound.add(LocalCheckpointOperation::allocation_bound(plan->segments, options.write.write.iu_size));
+                bound.add(LocalCheckpointOperation::allocation_bound(plan->segments, writing.write.iu_size));
             }
         }
         const auto reservation = core->chunk_backend() ? core->chunk_backend()->reservation_allocation_bound()
                                                        : ExtentLedger::reservation_metadata_bound();
-        auto       write       = options.write;
+        auto       write       = writing;
         write.frames           = frames;
         bound
             .add(CapturedWriteOperation::allocation_bound(write, plan->frame_count_upper,
@@ -115,7 +117,7 @@ Status Preparation::plan_work(const PublishedTreeState &view, const CapturedWrit
             .add(CapturedRebaseOperation::allocation_bound(
                 plan->primary_frames - plan->reused_primary_frames, frames.encode.max_sources,
                 core->publisher().tracks_cache_residency(), plan->rebase_batches))
-            .add(PageWriteOperation::allocation_bound(options.write.write))
+            .add(PageWriteOperation::allocation_bound(writing.write))
             .add_product(plan->primary_frames, reservation)
             .add_product(plan->new_overflow_frames, reservation)
             .add_product(plan->resident_dependency_entries, reservation)
@@ -141,10 +143,8 @@ Status Preparation::plan_work(const PublishedTreeState &view, const CapturedWrit
     if (!write_calls) {
         return Status::resource_exhausted("backend checkpoint write count overflow");
     }
-    const auto max_write = AllocationBound(options.write.write.max_frame_bytes)
-                               .add(kDurableBlobHeader)
-                               .add(options.write.write.iu_size)
-                               .value();
+    const auto max_write =
+        AllocationBound(writing.write.max_frame_bytes).add(kDurableBlobHeader).add(writing.write.iu_size).value();
     if (!max_write) {
         return Status::resource_exhausted("backend write size overflow");
     }
@@ -195,11 +195,12 @@ Status Preparation::bind_work(const WorkPlan &plan, detail::ResourceBudget::Cred
 }
 
 Status Preparation::work(const PublishedTreeState &view, const CapturedWritePlan *plan, CheckpointWork *out,
-                         size_t extra_bytes, std::shared_ptr<detail::AllocationReservation> shared_io)
+                         size_t extra_bytes, std::shared_ptr<detail::AllocationReservation> shared_io,
+                         const CapturedWriteLimits *write_limits)
 {
     using namespace detail;
     WorkPlan bound;
-    auto     status = plan_work(view, plan, &bound);
+    auto     status = plan_work(view, plan, &bound, write_limits);
     if (!status.ok()) {
         return status;
     }

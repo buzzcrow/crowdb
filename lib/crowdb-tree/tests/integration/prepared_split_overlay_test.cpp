@@ -136,6 +136,7 @@ TEST_F(PreparedSplit, InstallDoesNotWaitForCpuAndIsIdempotentOnlyForItsExactFron
     std::thread           caller([&] { status = token->try_install(1, &installed); });
     caller.join(); // must not need the blocked native worker
     blocked.release.release();
+    core->binding()->drain();
     ASSERT_TRUE(status.ok()) << status.to_string();
     EXPECT_EQ(token->committed_frontier(), 1U);
     EXPECT_TRUE(token->try_install(1, &installed).ok());

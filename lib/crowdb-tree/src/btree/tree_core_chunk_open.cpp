@@ -5,6 +5,7 @@
 #include "backend/chunk/legacy_chunk_read_store.h"
 #include "btree/backing_identity.h"
 #include "btree/tree_core.h"
+#include "btree/tree_core_geometry.h"
 #include "runtime/tree_runtime_internal.h"
 #include "snapshot/chunk_root_recovery.h"
 #include "snapshot/operation_wait.h"
@@ -187,7 +188,7 @@ Status recover_chunk(ChunkOpen &open, const Config &config, std::shared_ptr<cons
     }
     const auto          identity = loaded->root.identity;
     ChunkRecoveryLimits limits;
-    limits.max_frame_bytes = std::max(limits.max_frame_bytes, size_t{config.frame_bytes});
+    limits.max_frame_bytes = std::max(limits.max_frame_bytes, physical_frame_capacity(config));
     limits.max_blob_bytes  = round_up_to_iu(limits.max_frame_bytes + kDurableBlobHeader, open.backend->iu_size);
     const auto metadata    = ChunkRootRecovery::allocation_bound(loaded->root);
     const auto window      = ChunkRootRecovery::window_allocation_bound(limits);

@@ -262,11 +262,11 @@ Status TreeCore::State::initialize(TreeCoreBootstrap bootstrap)
         std::pmr::get_default_resource(), cache,
         PublicationBootstrap{
             .metadata = publication_metadata, .initial = initial, .source_catalog = sources->catalog()});
-    loads.max_frame_bytes     = config.frame_bytes;
-    loads.max_blob_bytes      = static_cast<size_t>(config.frame_bytes) + 64;
+    loads.max_frame_bytes     = physical_frame_capacity(config);
+    loads.max_blob_bytes      = loads.max_frame_bytes + 64;
     loads.max_inner_children  = config.inner_max_keys + 1ULL;
-    loads.max_inner_key_bytes = config.frame_bytes;
-    loads.max_leaf_key_bytes  = config.frame_bytes;
+    loads.max_inner_key_bytes = loads.max_frame_bytes;
+    loads.max_leaf_key_bytes  = loads.max_frame_bytes;
     if (local && local->inherited) {
         for (const auto &[pid, frame] : local->inherited->frames) {
             (void)pid;
@@ -341,7 +341,8 @@ Status TreeCore::create(Config config, std::shared_ptr<TreeRuntimeBinding> bindi
                         std::shared_ptr<TreeCore> *out)
 try {
     if (!binding || out == nullptr || *out || !config.runtime || config.frame_bytes < 512 ||
-        config.buffer_pool_bytes < config.frame_bytes || config.inner_max_keys == 0) {
+        config.frame_bytes > kMaxPhysicalPageBytes || config.buffer_pool_bytes < config.frame_bytes ||
+        config.inner_max_keys == 0) {
         return Status::invalid_argument("Tree core requires runtime, bounded frames and empty output");
     }
     if (config.page_store != nullptr && !bootstrap.local && !bootstrap.chunk) {

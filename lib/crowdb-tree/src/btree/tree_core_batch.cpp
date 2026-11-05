@@ -20,12 +20,11 @@ bool primary_write_fits(const Config &config, size_t key_bytes, size_t value_byt
     constexpr size_t overhead = kFrameHeaderSize + kFrameTrailerSize;
     constexpr size_t inner    = overhead + (2 * sizeof(uint64_t)) + kInnerSlotSize;
     constexpr size_t leaf     = overhead + kLeafSlotSize;
-    if (config.frame_bytes < inner || config.frame_bytes < leaf || key_bytes > config.frame_bytes - inner ||
-        key_bytes > config.frame_bytes - leaf) {
+    if (key_bytes > kMaxPhysicalPageBytes - inner || key_bytes > kMaxPhysicalPageBytes - leaf) {
         return false;
     }
     const auto inline_bytes = config.max_inline_value == 0 ? config.frame_bytes / 4 : config.max_inline_value;
-    const auto available    = config.frame_bytes - leaf - key_bytes;
+    const auto available    = kMaxPhysicalPageBytes - leaf - key_bytes;
     if (tombstone) {
         return kCellHeaderSize <= available;
     }

@@ -6,6 +6,7 @@
 #include "btree/allocation_bound.h"
 #include "btree/backing_identity.h"
 #include "btree/tree_core.h"
+#include "btree/tree_core_geometry.h"
 #include "crowdb-tree/backend/page_store.h"
 #include "snapshot/local_recovery.h"
 #include "snapshot/operation_wait.h"
@@ -97,7 +98,7 @@ Status recover_open(const Config &config, const std::shared_ptr<TreeRuntimeBindi
     }
     lifetime.store = lifetime.ticket->backend(local->store.get());
     LocalRecoveryLimits limits;
-    limits.max_frame_bytes = std::max<size_t>(limits.max_frame_bytes, config.frame_bytes);
+    limits.max_frame_bytes = std::max(limits.max_frame_bytes, physical_frame_capacity(config));
     limits.max_blob_bytes  = round_up_to_iu(limits.max_frame_bytes + kDurableBlobHeader, config.page_store->iu_size());
     ExtentLedgerLimits domain{.backend_id   = detail::allocate_backend_identity(),
                               .region_begin = snapshot::region_base_for(config.page_store->iu_size()),
@@ -205,7 +206,7 @@ try {
     if (detail::backend_size(*config.page_store, credits.budget.backend) <
         snapshot::superblock_slot_bytes(config.page_store->iu_size())) {
         LocalRecoveryLimits limits;
-        limits.max_frame_bytes = std::max<size_t>(limits.max_frame_bytes, config.frame_bytes);
+        limits.max_frame_bytes = std::max(limits.max_frame_bytes, physical_frame_capacity(config));
         limits.max_blob_bytes =
             round_up_to_iu(limits.max_frame_bytes + kDurableBlobHeader, config.page_store->iu_size());
         recovery_bound = detail::AllocationBound()

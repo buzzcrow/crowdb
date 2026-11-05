@@ -27,16 +27,16 @@ class PrimaryLayoutAdmission : public testing::Test
     std::unique_ptr<Crowdbtree> tree;
 };
 
-TEST_F(PrimaryLayoutAdmission, UnrepresentableBatchLeavesEveryInputAndFrontierUnchanged)
+TEST_F(PrimaryLayoutAdmission, RejectedBatchLeavesEveryInputAndFrontierUnchanged)
 {
     Batch invalid{
         .ops = {{.key = "first", .kind = OpKind::kPut, .value = "valid"},
-                {.key = "oversized", .kind = OpKind::kPut, .value = std::string(4096, 'v')}}
+                {.key = std::string(4097, 'k'), .kind = OpKind::kPut, .value = "value"}}
     };
     EXPECT_EQ(tree->apply(1, invalid).code(), Code::kInvalidArgument);
     EXPECT_FALSE(tree->get_view("first").found());
     EXPECT_EQ(tree->contiguous_slot(), 0U);
-    EXPECT_EQ(tree->put(std::string(4096, 'k'), "value").code(), Code::kInvalidArgument);
+    EXPECT_EQ(tree->put(std::string(4097, 'k'), "value").code(), Code::kInvalidArgument);
     EXPECT_EQ(tree->contiguous_slot(), 0U);
     ASSERT_TRUE(tree->put("accepted", "value").ok());
     EXPECT_EQ(tree->contiguous_slot(), 1U);
@@ -44,14 +44,15 @@ TEST_F(PrimaryLayoutAdmission, UnrepresentableBatchLeavesEveryInputAndFrontierUn
     EXPECT_EQ(tree->get_view("accepted").value().to_string(), "value");
 }
 
-TEST_F(PrimaryLayoutAdmission, EncodedAndExternalInputsUseTheSameLayoutValidation)
+TEST_F(PrimaryLayoutAdmission, EncodedAndExternalInputsUseTheSameDeclaredKeyLimit)
 {
+    const std::string                   key(4097, 'k');
     std::vector<Crowdbtree::encoded_op> encoded;
-    encoded.push_back({.key = "encoded", .cell = encode_cell_buf(1, OpKind::kPut, std::string(4096, 'v'))});
+    encoded.push_back({.key = key, .cell = encode_cell_buf(1, OpKind::kPut, std::string(4096, 'v'))});
     EXPECT_EQ(tree->apply_encoded(1, std::move(encoded)).code(), Code::kInvalidArgument);
     std::vector<Crowdbtree::external_op> external;
     auto                                 value = buffer::alloc(4096);
-    external.push_back({.key = "external", .flags = 0, .value = std::move(value)});
+    external.push_back({.key = key, .flags = 0, .value = std::move(value)});
     EXPECT_EQ(tree->apply_external(1, std::move(external)).code(), Code::kInvalidArgument);
     EXPECT_EQ(tree->contiguous_slot(), 0U);
     EXPECT_FALSE(tree->get_view("encoded").found());
@@ -62,14 +63,16 @@ TEST_F(PrimaryLayoutAdmission, PreproposalAndReplayRejectBeforeChargingOrClaimin
 {
     auto             *core = TreeCoreAccess::get(*tree);
     const std::string value(4096, 'v');
-    const auto        input = [&](size_t) { return CoreWriteInput{.key = "key", .value = value}; };
+    const std::string key(4097, 'k');
+    const auto        input = [&](size_t) { return CoreWriteInput{.key = key, .value = value}; };
     core->binding()->drain();
     const auto baseline = core->binding()->account()->snapshot();
     for (const auto category : {detail::BudgetClass::kAdmittedWriter, detail::BudgetClass::kGapRepair}) {
         std::shared_ptr<TreeApplyOperation> operation;
         EXPECT_EQ(core->prepare_apply(1, input, category, 0, &operation).code(), Code::kInvalidArgument);
         EXPECT_FALSE(operation);
-        SourceWriteOptions             options{.account = core->binding()->account()};
+        SourceWriteOptions options{.account = core->binding()->account()};
+        options.max_key_size = config.max_key_size;
         std::shared_ptr<AdmittedBatch> batch;
         EXPECT_EQ(AdmittedBatch::create(config, options, 20'000, 1, input, category, &batch).code(),
                   Code::kInvalidArgument);

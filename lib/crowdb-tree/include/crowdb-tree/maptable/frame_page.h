@@ -44,6 +44,8 @@ inline constexpr size_t kFrameHeaderSize  = 128;
 inline constexpr size_t kFrameTrailerSize = 8;  // logical_len u32 + crc32c u32
 inline constexpr size_t kLeafSlotSize     = 12; // rec_off, key_len, cell_len (u32)
 inline constexpr size_t kInnerSlotSize    = 8;  // rec_off, key_len (u32)
+// Safety bound, independent of the ordinary split target or transport frames.
+inline constexpr size_t kMaxPhysicalPageBytes = 32 * 1024 * 1024;
 
 struct PageSummary
 {

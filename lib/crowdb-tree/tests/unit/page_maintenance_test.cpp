@@ -234,7 +234,7 @@ TEST(PageMaintenance, SplitSharesResidentBaseAndClipsEveryView)
     }
 }
 
-TEST(PageMaintenance, LargeValuePlansOverflowAndOversizeKeyIsExplicitlyRejected)
+TEST(PageMaintenance, LargeValuePlansOverflowAndExceptionalKeyRemainsOnePage)
 {
     auto page = std::make_shared<PageState>();
     page->overlays.push_back(run(1, {
@@ -250,8 +250,11 @@ TEST(PageMaintenance, LargeValuePlansOverflowAndOversizeKeyIsExplicitlyRejected)
          )
     };
     layout = plan_leaf_layout(page, small_layout());
-    EXPECT_EQ(layout.status.code(), Code::kInvalidArgument);
-    EXPECT_TRUE(layout.primary_bytes.empty());
+    ASSERT_TRUE(layout.status.ok()) << layout.status.to_string();
+    ASSERT_EQ(layout.primary_bytes.size(), 1U);
+    EXPECT_GT(layout.primary_bytes.front(), small_layout().primary_page_bytes);
+    EXPECT_LE(layout.primary_bytes.front(), kMaxPhysicalPageBytes);
+    EXPECT_TRUE(layout.separators.empty());
 }
 
 TEST(PageMaintenance, SplitTargetBudgetDoesNotRejectOnePageThatAlreadyFits)

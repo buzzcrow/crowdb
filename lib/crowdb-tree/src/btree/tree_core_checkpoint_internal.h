@@ -41,12 +41,14 @@ struct Preparation
     std::shared_ptr<ApplyDispatcher> cpu_progress;
     std::shared_ptr<ApplyWaiters>    waiters;
     ~Preparation();
-    Status plan_work(const PublishedTreeState &view, const CapturedWritePlan *plan, WorkPlan *out) const;
+    Status plan_work(const PublishedTreeState &view, const CapturedWritePlan *plan, WorkPlan *out,
+                     const CapturedWriteLimits *write_limits = nullptr) const;
     Status bind_work(const WorkPlan &plan, detail::ResourceBudget::Credit bytes, detail::ResourceBudget::Credit backend,
                      detail::ResourceBudget::Credit io, CheckpointWork *out,
                      std::shared_ptr<detail::AllocationReservation> shared_io = {});
     Status work(const PublishedTreeState &view, const CapturedWritePlan *plan, CheckpointWork *out,
-                size_t extra_bytes = 0, std::shared_ptr<detail::AllocationReservation> shared_io = {});
+                size_t extra_bytes = 0, std::shared_ptr<detail::AllocationReservation> shared_io = {},
+                const CapturedWriteLimits *write_limits = nullptr);
 };
 
 // One phase at a time; the checkpoint owns its captured input and retains this
