@@ -41,6 +41,18 @@ struct CapturedEncodeContext
     std::shared_ptr<const void> overflow_dependencies = nullptr;
 };
 
+// The page owner supplies the final page and its completed child fences.
+// Encoding borrows this exact output; it does not build another mapping.
+struct PageEncodeInput
+{
+    std::shared_ptr<const PublishedPage> page;
+    uint64_t                             page_id;
+    uint64_t                             coverage;
+    uint64_t                             gc_floor;
+    uint64_t                             next_page_id;
+    CapturedEncodeContext                context;
+};
+
 struct ReservedOverflowIds
 {
     uint64_t first = kInvalidPageId;
@@ -139,6 +151,7 @@ class FinalPageEncoder
     [[nodiscard]] PageEncodeStep                            next(std::span<uint8_t> output);
 
   private:
+    friend PageEncodePreparation prepare_final_page(const PageEncodeInput &, const PageEncodeLimits &);
     friend PageEncodePreparation prepare_final_page(const std::shared_ptr<const PublishedTreeState> &, uint64_t,
                                                     const CapturedEncodeContext &, const PageEncodeLimits &);
     explicit FinalPageEncoder(std::shared_ptr<detail::FinalPageEncodeState> state) noexcept;
@@ -153,4 +166,5 @@ class FinalPageEncoder
 // Oversized primary layouts require structural maintenance first.
 PageEncodePreparation prepare_final_page(const std::shared_ptr<const PublishedTreeState> &captured, uint64_t pid,
                                          const CapturedEncodeContext &context, const PageEncodeLimits &limits = {});
+PageEncodePreparation prepare_final_page(const PageEncodeInput &input, const PageEncodeLimits &limits = {});
 } // namespace crowdb::tree

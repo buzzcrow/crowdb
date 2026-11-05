@@ -87,6 +87,73 @@ std::shared_ptr<PublishedTreeState> snapshot_tree(size_t leaves, size_t value_by
     return result;
 }
 
+TEST(CapturedFrames, FinalLeafOutputEncodesWithoutBuildingAnotherMapping)
+{
+    auto       output = published(page(
+        {
+            {.key = "a", .value = "final"}
+    },
+        {.upper = "m"}));
+    TestStream test;
+    ASSERT_TRUE(CapturedFrameStream::create({.page         = output,
+                                             .page_id      = 17,
+                                             .coverage     = 10,
+                                             .gc_floor     = 0,
+                                             .next_page_id = 24,
+                                             .context      = {.range = {.upper = "m"}}},
+                                            {}, test.runtime, test.lane, {.encode = {.frame_bytes = 512}}, {},
+                                            &test.stream)
+                    .ok());
+    output.reset();
+    Completion done;
+    test.next(&done);
+    ASSERT_EQ(done.values.load(), 1U);
+    ASSERT_TRUE(test.stream->result().complete);
+    EXPECT_EQ(test.stream->stats().pages, 1U);
+    EXPECT_EQ(test.stream->stats().loads, 0U);
+    EXPECT_EQ(test.frame().info.page_id, 17U);
+    const auto &buffer = test.frame().buffer->bytes;
+    ASSERT_TRUE(frame_validate(buffer.data(), buffer.size()));
+    LeafFrameView leaf(buffer.data(), buffer.size());
+    ASSERT_EQ(leaf.count(), 1U);
+    EXPECT_EQ(leaf.key(0).to_string(), "a");
+    EXPECT_EQ(CellView(leaf.cell(0)).value().to_string(), "final");
+}
+
+TEST(CapturedFrames, FinalIndexOutputUsesJoinedFencesWithoutTraversingChildren)
+{
+    auto inner        = std::make_shared<InnerPageState>();
+    inner->children   = {7, 12};
+    inner->separators = {"m"};
+    auto output       = std::make_shared<PublishedPage>();
+    output->level     = 2;
+    output->inner     = inner;
+    TestStream test;
+    ASSERT_TRUE(
+        CapturedFrameStream::create({.page         = output,
+                                     .page_id      = 20,
+                                     .coverage     = 10,
+                                     .gc_floor     = 0,
+                                     .next_page_id = 24,
+                                     .context = {.inner_fences = InnerEncodeFences{.lower_leaf = 3, .upper_leaf = 9}}},
+                                    {}, test.runtime, test.lane, {.encode = {.frame_bytes = 512}}, {}, &test.stream)
+            .ok());
+    Completion done;
+    test.next(&done);
+    ASSERT_EQ(done.values.load(), 1U);
+    ASSERT_TRUE(test.stream->result().complete);
+    EXPECT_EQ(test.stream->stats().pages, 1U);
+    EXPECT_EQ(test.stream->stats().loads, 0U);
+    EXPECT_EQ(test.frame().info.page_id, 20U);
+    const auto &buffer = test.frame().buffer->bytes;
+    ASSERT_TRUE(frame_validate(buffer.data(), buffer.size()));
+    InnerFrameView index(buffer.data(), buffer.size());
+    EXPECT_EQ(index.child_at(0), 7U);
+    EXPECT_EQ(index.child_at(1), 12U);
+    EXPECT_EQ(frame_lower_fence_page_id(buffer.data()), 3U);
+    EXPECT_EQ(frame_upper_fence_page_id(buffer.data()), 9U);
+}
+
 TEST(CapturedFrames, MaterializationBytesFollowTheLastOutputOwnerAfterStreamDestruction)
 {
     LoadCredits credits;

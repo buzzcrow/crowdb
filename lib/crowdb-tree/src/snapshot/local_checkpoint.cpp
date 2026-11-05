@@ -75,7 +75,7 @@ std::optional<size_t> LocalCheckpointOperation::allocation_bound(size_t segments
                            shared_allocation_bound<State::IoStep>())
         .add(std::max<uint64_t>(bytes, snapshot::superblock_slot_bytes(iu)))
         .add(std::bit_ceil(std::max<size_t>(4096, iu)) - 1)
-        .add_product(3 * (segments + 1), sizeof(DirEntry) + sizeof(ProtectedExtent))
+        .add_product(3 * (segments + 1), sizeof(DirEntry) + sizeof(CheckpointMetadata::Segment))
         .add_product(segments + 1, ExtentLedger::reservation_metadata_bound())
         .value();
 }
@@ -129,9 +129,11 @@ void LocalCheckpointOperation::State::begin()
         finish(std::move(status));
         return;
     }
-    admitted      = true;
-    iu            = registry->ledger_->limits().iu_size;
-    segment_bytes = round_up_to_iu(segment_image_encoded_size(kMappingSegmentSize), iu);
+    admitted            = true;
+    const auto sequence = registry->sequence_.load(std::memory_order_relaxed);
+    previous            = sequence == 0 ? nullptr : registry->anchors_[sequence % 2 == 0 ? 1 : 0];
+    iu                  = registry->ledger_->limits().iu_size;
+    segment_bytes       = round_up_to_iu(segment_image_encoded_size(kMappingSegmentSize), iu);
     window = detail::reserved_shared<Window>(budget.bytes,
                                              std::max<uint64_t>(segment_bytes, snapshot::superblock_slot_bytes(iu)),
                                              std::bit_ceil(std::max<size_t>(4096, iu)), budget.bytes);
@@ -155,12 +157,13 @@ void LocalCheckpointOperation::State::finish(Status status) noexcept
     const bool cancelled = !anchor_touched && stopped.load(std::memory_order_acquire);
     report.status        = cancelled ? Status::unavailable() : std::move(status);
     if (admitted) {
-        registry->finish(image, report.status.ok());
+        registry->finish(image, report.status.ok() && !unchanged);
     }
     if (report.status.ok()) {
-        report.checkpoint = std::move(image);
+        report.checkpoint = unchanged ? std::move(previous) : std::move(image);
     }
     image.reset();
+    previous.reset();
     window.reset();
     reserved.owner.reset();
     store.reset();

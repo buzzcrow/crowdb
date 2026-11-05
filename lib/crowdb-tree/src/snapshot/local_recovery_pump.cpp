@@ -101,7 +101,7 @@ void LocalRecoveryOperation::State::pump()
         segment();
         break;
     case Stage::SegmentProtected:
-        image->metadata->extents.push_back(recovered);
+        image->metadata->segments.emplace_back(directory[segment_index], recovered);
         read(recovered.address, recovered.length, Stage::SegmentRead);
         break;
     case Stage::SegmentRead:

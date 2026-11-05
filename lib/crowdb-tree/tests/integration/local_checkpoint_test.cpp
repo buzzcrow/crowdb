@@ -28,6 +28,105 @@ TEST(LocalCheckpoint, PersistsExistingFormatAndAdvancesOnlyAfterSecondBarrier)
     test.expect_read(std::string(3000, 'v'));
 }
 
+TEST(LocalCheckpoint, UnchangedCheckpointDoesNotWriteOrAdvanceSequence)
+{
+    TestCheckpoint test;
+    auto           pages = test.materialize();
+    ASSERT_TRUE(test.prepare(pages).ok());
+    Completion first;
+    test.run(&first);
+    ASSERT_EQ(first.values.load(), 1U) << first.status.to_string();
+    auto       original   = test.operation->result().checkpoint;
+    const auto events     = test.store->events.size();
+    const auto high_water = test.source.ledger->stats().address_high_water;
+    ASSERT_TRUE(test.prepare(std::make_shared<CapturedDurablePages>(*pages)).ok());
+    Completion unchanged;
+    test.run(&unchanged);
+    ASSERT_EQ(unchanged.values.load(), 1U) << unchanged.status.to_string();
+    EXPECT_EQ(test.operation->result().checkpoint, original);
+    EXPECT_EQ(test.store->events.size(), events);
+    EXPECT_EQ(test.registry->snapshot_sequence(), 1U);
+    EXPECT_EQ(test.source.ledger->stats().address_high_water, high_water);
+    auto advanced = std::make_shared<CapturedDurablePages>(*pages);
+    ++advanced->coverage;
+    ASSERT_TRUE(test.prepare(advanced).ok());
+    Completion coverage;
+    test.run(&coverage);
+    ASSERT_EQ(coverage.values.load(), 1U) << coverage.status.to_string();
+    EXPECT_EQ(test.registry->snapshot_sequence(), 2U);
+    EXPECT_EQ(test.registry->durable_coverage(), advanced->coverage);
+    EXPECT_EQ(test.store->events.size(), events + 3);
+    EXPECT_EQ(test.operation->result().checkpoint->metadata, original->metadata);
+    EXPECT_EQ(test.source.ledger->stats().address_high_water, high_water);
+}
+
+TEST(LocalCheckpoint, GcRetiresTheObsoleteAnchorWithoutRewritingUnchangedSegments)
+{
+    TestCheckpoint test;
+    ASSERT_TRUE(test.prepare().ok());
+    Completion first;
+    test.run(&first);
+    ASSERT_EQ(first.values.load(), 1U);
+    auto                      reader      = test.operation->result().checkpoint;
+    std::weak_ptr<const void> old_segment = reader->metadata->segments.front().second.owner;
+    auto                      next        = test.materialize("next");
+    ASSERT_TRUE(test.prepare(next).ok());
+    Completion second;
+    test.run(&second);
+    ASSERT_EQ(second.values.load(), 1U);
+    ASSERT_TRUE(test.registry->needs_anchor_retirement());
+    auto       latest = test.operation->result().checkpoint;
+    const auto before = test.store->events.size();
+    ASSERT_TRUE(test.prepare(next).ok());
+    Completion unchanged;
+    test.run(&unchanged);
+    ASSERT_EQ(unchanged.values.load(), 1U);
+    EXPECT_EQ(test.store->events.size(), before);
+    EXPECT_TRUE(test.registry->needs_anchor_retirement());
+    ASSERT_TRUE(test.prepare(next, {.retire_previous_anchor = true}).ok());
+    Completion retired;
+    test.run(&retired);
+    ASSERT_EQ(retired.values.load(), 1U) << retired.status.to_string();
+    EXPECT_EQ(test.store->events.size(), before + 3);
+    EXPECT_EQ(test.operation->result().checkpoint->metadata, latest->metadata);
+    EXPECT_EQ(test.registry->snapshot_sequence(), 3U);
+    EXPECT_FALSE(test.registry->needs_anchor_retirement());
+    EXPECT_FALSE(old_segment.expired());
+    reader.reset();
+    EXPECT_TRUE(old_segment.expired());
+    test.expect_read("next");
+}
+
+TEST(LocalCheckpoint, ExcludedMetadataSegmentIsRelocatedDespiteUnchangedPageSlots)
+{
+    TestCheckpoint test;
+    auto           pages = test.materialize();
+    ASSERT_TRUE(test.prepare(pages).ok());
+    Completion first;
+    test.run(&first);
+    ASSERT_EQ(first.values.load(), 1U);
+    auto        original = test.operation->result().checkpoint;
+    const auto &segment  = original->metadata->segments.front().second;
+    auto        fence    = await_ledger([&](auto done) {
+        return test.source.ledger->exclude_allocations(segment.address, segment.length,
+                                                       test.source.credits.credits.bytes, std::move(done));
+    });
+    ASSERT_TRUE(fence.status.ok());
+    const BackingExclusion exclusion{.address = segment.address, .length = segment.length};
+    const auto             before = test.store->events.size();
+    ASSERT_TRUE(test.prepare(pages, {.exclusion = exclusion}).ok());
+    Completion relocated;
+    test.run(&relocated);
+    ASSERT_EQ(relocated.values.load(), 1U) << relocated.status.to_string();
+    EXPECT_EQ(test.store->events.size(), before + 5);
+    const auto &current = test.operation->result().checkpoint->metadata->segments.front();
+    EXPECT_NE(current.first.image_addr, segment.address);
+    EXPECT_FALSE(exclusion.overlaps(current.second.address, current.second.length));
+    EXPECT_EQ(test.operation->result().checkpoint->pages, pages);
+    EXPECT_EQ(test.registry->snapshot_sequence(), 2U);
+    test.expect_read("v");
+}
+
 TEST(LocalCheckpoint, RotationRetainsBothAnchorsAndReaderOwners)
 {
     TestCheckpoint test;

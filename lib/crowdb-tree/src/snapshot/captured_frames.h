@@ -103,6 +103,10 @@ class CapturedFrameStream
                          std::shared_ptr<detail::FlushRuntime>       runtime,
                          std::shared_ptr<detail::FlushRuntime::Lane> lane, CapturedFrameLimits limits,
                          ReserveOverflow reserve_overflow, std::shared_ptr<CapturedFrameStream> *out);
+    static Status create(PageEncodeInput input, std::shared_ptr<PageLoader> loader,
+                         std::shared_ptr<detail::FlushRuntime>       runtime,
+                         std::shared_ptr<detail::FlushRuntime::Lane> lane, CapturedFrameLimits limits,
+                         ReserveOverflow reserve_overflow, std::shared_ptr<CapturedFrameStream> *out);
     [[nodiscard]] static std::optional<size_t> allocation_bound(const CapturedFrameLimits &limits) noexcept;
     [[nodiscard]] detail::CallbackSender       sender() noexcept;
     [[nodiscard]] const CapturedFrameResult   &result() const noexcept;

@@ -9,7 +9,7 @@ namespace crowdb::tree
 {
 struct LocalCompactionOperation::State : std::enable_shared_from_this<State>
 {
-    enum class Phase : uint8_t { kBegin, kSelected, kCheckpoint, kCleaned, kDone };
+    enum class Phase : uint8_t { kBegin, kRetireAnchor, kSelected, kCheckpoint, kCleaned, kDone };
 
     struct Receiver
     {

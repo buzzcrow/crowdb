@@ -7,6 +7,46 @@ namespace crowdb::tree
 {
 using namespace test_write;
 
+TEST(CapturedWrite, FinalPageStreamWritesAndReadsWithoutASnapshotMapping)
+{
+    TestCapturedWrite   test;
+    auto                output = published(page({
+        {.key = "a", .value = "final"}
+    }));
+    CapturedWriteLimits limits{
+        .frames = {.encode = {.frame_bytes = 512, .inline_value_bytes = 16, .metadata = test.credits.credits.bytes}},
+        .write  = {.max_frame_bytes = 512}};
+    std::shared_ptr<CapturedFrameStream> stream;
+    ASSERT_TRUE(CapturedFrameStream::create(
+                    {.page = output, .page_id = 17, .coverage = 10, .gc_floor = 0, .next_page_id = 24, .context = {}},
+                    {}, test.runtime, test.lane, limits.frames, {}, &stream)
+                    .ok());
+    auto pages          = std::make_shared<CapturedDurablePages>(test.credits.credits.bytes);
+    pages->root_page_id = 17;
+    pages->next_page_id = 24;
+    pages->coverage     = 10;
+    pages->generation   = 1;
+    ASSERT_TRUE(CapturedWriteOperation::create(std::move(stream), std::move(pages), test.store, test.runtime, test.lane,
+                                               limits, test.credits.credits,
+                                               extent_write_reservation(test.ledger, test.credits.credits.bytes), {},
+                                               &test.operation)
+                    .ok());
+    output.reset();
+    Completion done;
+    test.run(&done);
+    ASSERT_EQ(done.values.load(), 1U) << done.status.to_string();
+    const auto &result = test.operation->result();
+    ASSERT_TRUE(result.pages);
+    ASSERT_EQ(result.pages->frames.size(), 1U);
+    EXPECT_EQ(result.written_frames, 1U);
+    EXPECT_EQ(result.pages->root_page_id, 17U);
+    EXPECT_EQ(result.pages->next_page_id, 24U);
+    const auto    raw = test.read(result.pages->frames.at(17));
+    LeafFrameView leaf(raw.data(), raw.size());
+    ASSERT_EQ(leaf.count(), 1U);
+    EXPECT_EQ(CellView(leaf.cell(0)).value().to_string(), "final");
+}
+
 TEST(CapturedWrite, OverflowAndPrimaryUseOneWindowAndKeepProtectedReferencesAfterInputsEnd)
 {
     TestCapturedWrite test;

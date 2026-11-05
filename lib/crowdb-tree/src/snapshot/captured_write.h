@@ -56,6 +56,12 @@ class CapturedWriteOperation
                          PageWriteOperation::ReserveExtent           reserve_extent,
                          std::shared_ptr<const CapturedDurablePages> inherited,
                          std::shared_ptr<CapturedWriteOperation>    *out);
+    static Status create(std::shared_ptr<CapturedFrameStream> stream, std::shared_ptr<CapturedDurablePages> pages,
+                         std::shared_ptr<AsyncPageStore> store, std::shared_ptr<detail::FlushRuntime> runtime,
+                         std::shared_ptr<detail::FlushRuntime::Lane> lane, CapturedWriteLimits limits,
+                         PageLoadBudget budget, PageWriteOperation::ReserveExtent reserve_extent,
+                         std::shared_ptr<const CapturedDurablePages> inherited,
+                         std::shared_ptr<CapturedWriteOperation>    *out);
     [[nodiscard]] detail::CallbackSender     sender() noexcept;
     [[nodiscard]] const CapturedWriteResult &result() const noexcept;
     void                                     request_stop() noexcept;

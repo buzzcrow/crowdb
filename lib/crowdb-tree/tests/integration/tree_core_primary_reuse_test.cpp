@@ -21,6 +21,20 @@ struct TestCountedStore : MemPageStore
 
     mutable std::atomic<size_t> reads{0};
     std::atomic<size_t>         primary_writes{0};
+    std::atomic<size_t>         total_writes{0};
+    std::atomic<size_t>         barriers{0};
+
+    Status write_at(uint64_t address, const uint8_t *data, size_t bytes) override
+    {
+        total_writes.fetch_add(1);
+        return MemPageStore::write_at(address, data, bytes);
+    }
+
+    Status sync() override
+    {
+        barriers.fetch_add(1);
+        return MemPageStore::sync();
+    }
 
     Status read_at(uint64_t address, uint8_t *data, size_t bytes) const override
     {
@@ -33,7 +47,7 @@ struct TestCountedStore : MemPageStore
         if (purpose == PagePurpose::kBtreePage) {
             primary_writes.fetch_add(1);
         }
-        return MemPageStore::write_at(address, data, bytes);
+        return write_at(address, data, bytes);
     }
 };
 
@@ -95,6 +109,29 @@ TEST(TreeCorePrimaryReuse, ColdInlineAndOverflowCheckpointReusesWithoutPrimaryIo
     ASSERT_TRUE(test.core->checkpoint().ok());
     EXPECT_EQ(test.store->reads.load(), reopened_reads);
     EXPECT_EQ(test.store->primary_writes.load(), writes);
+}
+
+TEST(TreeCorePrimaryReuse, UnchangedCheckpointIsZeroIoAndKeepsSequenceAfterReopen)
+{
+    TestPrimaryReuse test;
+    ASSERT_TRUE(
+        test.core->apply(1, Batch{.ops = {{.key = "a", .kind = OpKind::kPut, .value = std::string(12000, 'v')}}}).ok());
+    uint64_t sequence = 0;
+    ASSERT_TRUE(test.core->checkpoint(nullptr, &sequence).ok());
+    ASSERT_GT(sequence, 0U);
+    const auto writes    = test.store->total_writes.load();
+    const auto barriers  = test.store->barriers.load();
+    uint64_t   unchanged = 0;
+    ASSERT_TRUE(test.core->checkpoint(nullptr, &unchanged).ok());
+    EXPECT_EQ(unchanged, sequence);
+    EXPECT_EQ(test.store->total_writes.load(), writes);
+    EXPECT_EQ(test.store->barriers.load(), barriers);
+    test.core.reset();
+    ASSERT_TRUE(TreeCore::open(test.config, &test.core).ok());
+    ASSERT_TRUE(test.core->checkpoint(nullptr, &unchanged).ok());
+    EXPECT_EQ(unchanged, sequence);
+    EXPECT_EQ(test.store->total_writes.load(), writes);
+    EXPECT_EQ(test.store->barriers.load(), barriers);
 }
 
 TEST(TreeCorePrimaryReuse, ExactReceiptReuseIsNotReportedAsDeferredRepresentationWork)

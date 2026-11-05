@@ -56,7 +56,14 @@ void CapturedFrameStream::State::validate(Path &path)
 bool CapturedFrameStream::State::initialize()
 {
     initialized = true;
-    if (limits.selected_page) {
+    if (single_page) {
+        stack.push_back({.pid    = single_page->page_id,
+                         .page   = single_page->page,
+                         .range  = single_page->context.range,
+                         .fences = single_page->context.inner_fences.value_or(InnerEncodeFences{})});
+        ++counters.pages;
+    }
+    else if (limits.selected_page) {
         const auto selected = view->mapping.get(*limits.selected_page);
         if (!selected || (selected->level == 0 && !selected->leaf)) {
             finish(Status::unavailable("selected writeback page was replaced"), true);
@@ -120,7 +127,8 @@ void CapturedFrameStream::State::step()
             return;
         }
     }
-    if (!limits.selected_page && path.page->level != 0 && path.child < path.page->inner->children.size()) {
+    if (!single_page && !limits.selected_page && path.page->level != 0 &&
+        path.child < path.page->inner->children.size()) {
         const auto &inner = *path.page->inner;
         const auto  index = path.child++;
         auto        range = path.range;
@@ -151,21 +159,18 @@ void CapturedFrameStream::State::prepare()
             return;
         }
     }
-    auto input = view;
-    if (path.page != view->mapping.get(path.pid)) {
-        // Only this page's private loaded descriptor is substituted. Unvisited
-        // PIDs and inner child validation still use the original captured root.
-        auto                   resolved = detail::reserved_shared<PublishedTreeState>(limits.encode.metadata, *view);
-        MappingView::CopyStats copied;
-        const PageReplacement  replacement{.page_id = path.pid, .expected = {}, .replacement = path.page};
-        resolved->mapping = view->mapping.replace({&replacement, 1}, copied, limits.encode.metadata);
-        input             = std::move(resolved);
-    }
-    CapturedEncodeContext context{.range = path.range, .overflow_dependencies = view};
+    CapturedEncodeContext context{
+        .range = path.range, .overflow_dependencies = single_page ? single_page->context.overflow_dependencies : view};
     if (path.page->level != 0) {
         context.inner_fences = path.fences;
     }
-    auto prepared = prepare_final_page(input, path.pid, context, limits.encode);
+    auto prepared = prepare_final_page({.page         = path.page,
+                                        .page_id      = path.pid,
+                                        .coverage     = single_page ? single_page->coverage : view->coverage,
+                                        .gc_floor     = single_page ? single_page->gc_floor : view->gc_floor,
+                                        .next_page_id = single_page ? single_page->next_page_id : view->next_page_id,
+                                        .context      = std::move(context)},
+                                       limits.encode);
     if (!prepared.status.ok()) {
         if (prepared.needs_split) {
             report.needs_split = path.pid;

@@ -75,7 +75,7 @@ Status append_leaf_entry(FinalPageEncodeState &state, Slice key, LogicalCell cel
 }
 } // namespace
 
-Status prepare_leaf(FinalPageEncodeState &state, const PublishedTreeState &captured,
+Status prepare_leaf(FinalPageEncodeState &state, uint64_t coverage, uint64_t gc_floor,
                     const CapturedEncodeContext &context, PageEncodePreparation *result)
 {
     const auto &page = state.page->leaf;
@@ -84,9 +84,8 @@ Status prepare_leaf(FinalPageEncodeState &state, const PublishedTreeState &captu
         return Status::invalid_argument("final leaf must match its captured routing range");
     }
     state.context  = context;
-    state.gc_floor = captured.gc_floor;
-    state.cursor.emplace(page, context.range, captured.coverage, state.limits.max_sources, false,
-                         state.limits.metadata);
+    state.gc_floor = gc_floor;
+    state.cursor.emplace(page, context.range, coverage, state.limits.max_sources, false, state.limits.metadata);
     const size_t capacity =
         std::min({state.limits.max_entries,
                   static_cast<size_t>((state.limits.frame_bytes - kPageOverhead) / (kLeafSlotSize + kCellHeaderSize)),

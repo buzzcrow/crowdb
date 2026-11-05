@@ -7,9 +7,10 @@ namespace crowdb::tree
 {
 bool CapturedFrameStream::State::reuse_primary()
 {
-    const auto &path = stack.back();
-    const bool  leaf = path.page->level == 0;
-    if (leaf ? !can_reuse_primary(*path.page, path.pid, path.range, view->gc_floor, limits.reuse_backend_id,
+    const auto &path     = stack.back();
+    const bool  leaf     = path.page->level == 0;
+    const auto  gc_floor = single_page ? single_page->gc_floor : view->gc_floor;
+    if (leaf ? !can_reuse_primary(*path.page, path.pid, path.range, gc_floor, limits.reuse_backend_id,
                                   limits.encode.frame_bytes)
              : !can_reuse_inner_primary(*path.page, path.pid, path.fences, limits.reuse_backend_id,
                                         limits.encode.frame_bytes)) {

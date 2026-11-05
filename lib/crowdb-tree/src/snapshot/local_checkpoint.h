@@ -3,6 +3,7 @@
 #pragma once
 
 #include "backend/local/extent_ledger.h"
+#include "crowdb-tree/maptable/mapping_persist.h"
 #include "snapshot/captured_write.h"
 #include "snapshot/commit_anchor.h"
 
@@ -12,20 +13,32 @@ namespace crowdb::tree
 {
 struct CheckpointMetadata
 {
+    using Segment = std::pair<DirEntry, ProtectedExtent>;
+
     explicit CheckpointMetadata(const std::shared_ptr<detail::AllocationReservation> &budget)
-        : extents(detail::ReservationAllocator<ProtectedExtent>(budget))
+        : extents(detail::ReservationAllocator<ProtectedExtent>(budget)),
+          segments(detail::ReservationAllocator<Segment>(budget))
     {
     }
 
     bool retire_step() noexcept
     {
-        for (size_t i = 0; i < 64 && !extents.empty(); ++i) {
-            extents.pop_back();
+        for (size_t i = 0; i < 64; ++i) {
+            if (!segments.empty()) {
+                segments.pop_back();
+            }
+            else if (!extents.empty()) {
+                extents.pop_back();
+            }
+            else {
+                return true;
+            }
         }
-        return extents.empty();
+        return segments.empty() && extents.empty();
     }
 
     detail::ReservedVector<ProtectedExtent> extents;
+    detail::ReservedVector<Segment>         segments;
 };
 
 struct ProtectedCheckpoint
@@ -75,6 +88,11 @@ class LocalCheckpointRegistry
         return uncertain_.load(std::memory_order_acquire);
     }
 
+    [[nodiscard]] bool needs_anchor_retirement() const noexcept
+    {
+        return obsolete_anchor_.load(std::memory_order_acquire);
+    }
+
   private:
     friend class LocalCheckpointOperation;
     LocalCheckpointRegistry() = default;
@@ -87,6 +105,7 @@ class LocalCheckpointRegistry
     std::shared_ptr<const ProtectedCheckpoint>                candidate_;
     std::atomic<bool>                                         busy_{false};
     std::atomic<bool>                                         uncertain_{false};
+    std::atomic<bool>                                         obsolete_anchor_{false};
     std::atomic<uint64_t>                                     coverage_{0};
     std::atomic<uint64_t>                                     sequence_{0};
     uint64_t                                                  generation_ = 0;
@@ -94,7 +113,9 @@ class LocalCheckpointRegistry
 
 struct LocalCheckpointLimits
 {
-    size_t max_segments = 1U << 16;
+    size_t           max_segments = 1U << 16;
+    BackingExclusion exclusion{};
+    bool             retire_previous_anchor = false;
 };
 
 struct LocalCheckpointResult

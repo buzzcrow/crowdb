@@ -131,6 +131,12 @@ void LocalRecoveryOperation::State::segment_read()
         finish(Status::corruption());
         return;
     }
+    if (limits.accept_legacy_chunk_refs && std::ranges::any_of(words, slot_word::is_page_ref)) {
+        // Preserve the old anchor's extent, but do not reuse its legacy slot
+        // encoding as an ordinary byte-location segment.
+        image->metadata->extents.push_back(std::move(image->metadata->segments.back().second));
+        image->metadata->segments.pop_back();
+    }
     word_index = 0;
     stage      = Stage::PageExtent;
     wake();

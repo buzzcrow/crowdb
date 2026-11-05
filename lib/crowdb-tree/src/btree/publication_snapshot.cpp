@@ -50,17 +50,23 @@ Status validate_snapshot_publication(const PublicationTransaction &transaction, 
     if (!transaction.checkpoint || !transaction.checkpoint->baseline) {
         return Status::Ok();
     }
-    const auto &action = *transaction.checkpoint;
-    const auto &base   = *action.baseline;
+    const auto &action   = *transaction.checkpoint;
+    const auto &base     = *action.baseline;
+    const auto &previous = current.snapshot_baseline;
+    const bool  reused   = previous && base.pages == previous->pages && base.coverage == previous->coverage &&
+                           base.generation == previous->generation && base.wal_offset == previous->wal_offset &&
+                           base.gc_floor >= previous->gc_floor && base.snapshot_sequence == previous->snapshot_sequence;
     if (action.action != CheckpointAction::Commit || base.capture_token != action.token ||
         base.generation != current.generation || !base.pages || base.pages->generation != base.generation ||
         base.pages->coverage != base.coverage || base.coverage != current.checkpoint_capture_coverage ||
         base.gc_floor != current.checkpoint_capture_floor || base.gc_floor > base.coverage ||
         base.snapshot_sequence == 0 || base.backend_id == 0 ||
         (!base.pages->frames.empty() && base.pages->backend_id != base.backend_id) ||
-        (current.snapshot_baseline && (base.coverage < current.snapshot_baseline->coverage ||
-                                       base.snapshot_sequence <= current.snapshot_baseline->snapshot_sequence ||
-                                       base.backend_id != current.snapshot_baseline->backend_id))) {
+        (current.snapshot_baseline &&
+         (base.coverage < current.snapshot_baseline->coverage ||
+          base.snapshot_sequence < current.snapshot_baseline->snapshot_sequence ||
+          (base.snapshot_sequence == current.snapshot_baseline->snapshot_sequence && !reused) ||
+          base.backend_id != current.snapshot_baseline->backend_id))) {
         return Status::invalid_argument("snapshot baseline differs from its committed capture");
     }
     return Status::Ok();

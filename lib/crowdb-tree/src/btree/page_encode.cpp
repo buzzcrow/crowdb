@@ -139,28 +139,71 @@ PageEncodeStep FinalPageEncoder::next_frame(std::span<uint8_t> output)
 PageEncodePreparation prepare_final_page(const std::shared_ptr<const PublishedTreeState> &captured, uint64_t pid,
                                          const CapturedEncodeContext &context, const PageEncodeLimits &limits)
 {
+    if (!captured) {
+        return {.status      = Status::invalid_argument("page encoding requires a fixed view"),
+                .needs_base  = {},
+                .needs_inner = {},
+                .encoder     = {}};
+    }
+    const auto page = captured->mapping.get(pid);
+    if (page && page->inner) {
+        for (const auto child_id : page->inner->children) {
+            const auto child = captured->mapping.get(child_id);
+            if (!child || child->level + uint64_t{1} != page->level) {
+                return {.status =
+                            Status::corruption("inner child is absent or has the wrong level in captured mapping"),
+                        .needs_base  = {},
+                        .needs_inner = {},
+                        .encoder     = {}};
+            }
+        }
+        if (context.inner_fences && context.inner_fences->lower_leaf != kInvalidPageId) {
+            for (const auto leaf_id : {context.inner_fences->lower_leaf, context.inner_fences->upper_leaf}) {
+                const auto leaf = captured->mapping.get(leaf_id);
+                if (!leaf || !leaf->leaf || leaf->level != 0 || !leaf->leaf->range.overlaps(context.range)) {
+                    return {.status      = Status::invalid_argument("inner fence leaf is absent from captured range"),
+                            .needs_base  = {},
+                            .needs_inner = {},
+                            .encoder     = {}};
+                }
+            }
+        }
+    }
+    return prepare_final_page({.page         = page,
+                               .page_id      = pid,
+                               .coverage     = captured->coverage,
+                               .gc_floor     = captured->gc_floor,
+                               .next_page_id = captured->next_page_id,
+                               .context      = context},
+                              limits);
+}
+
+PageEncodePreparation prepare_final_page(const PageEncodeInput &input, const PageEncodeLimits &limits)
+{
     PageEncodePreparation result;
+    const auto           &context     = input.context;
     const size_t          lower_bytes = context.range.lower.has_value() ? context.range.lower->size() : 0;
     const size_t          upper_bytes = context.range.upper.has_value() ? context.range.upper->size() : 0;
-    if (!captured || pid >= MappingView::kPageLimit ||
+    if (!input.page || input.page_id >= input.next_page_id || input.next_page_id > MappingView::kPageLimit ||
         (context.range.lower && context.range.upper && *context.range.lower > *context.range.upper) ||
         limits.frame_bytes <= kFrameHeaderSize + kFrameTrailerSize || limits.max_sources == 0 ||
-        limits.max_entries == 0 || limits.max_work_entries == 0 || captured->gc_floor > captured->coverage ||
+        limits.max_entries == 0 || limits.max_work_entries == 0 || input.gc_floor > input.coverage ||
         lower_bytes > limits.max_metadata_bytes || upper_bytes > limits.max_metadata_bytes - lower_bytes) {
-        result.status = Status::invalid_argument("invalid captured page encoding bounds");
+        result.status = Status::invalid_argument("invalid final page encoding bounds");
         return result;
     }
     try {
         auto state          = detail::reserved_shared<detail::FinalPageEncodeState>(limits.metadata, limits);
-        state->page         = captured->mapping.get(pid);
-        state->pid          = pid;
-        state->next_page_id = captured->next_page_id;
+        state->page         = input.page;
+        state->pid          = input.page_id;
+        state->next_page_id = input.next_page_id;
         if (!state->page) {
             result.status = Status::invalid_argument("encoded PID is absent from the captured mapping");
             return result;
         }
-        result.status = state->page->level == 0 ? detail::prepare_leaf(*state, *captured, context, &result)
-                                                : detail::prepare_inner(*state, *captured, context, &result);
+        result.status = state->page->level == 0
+                          ? detail::prepare_leaf(*state, input.coverage, input.gc_floor, context, &result)
+                          : detail::prepare_inner(*state, context, &result);
         if (result.status.ok() && !result.needs_base && !result.needs_inner) {
             detail::ReservationAllocator<FinalPageEncoder> allocator(limits.metadata);
             auto                                          *storage = allocator.allocate(1);

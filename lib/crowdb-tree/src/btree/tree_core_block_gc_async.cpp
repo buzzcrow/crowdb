@@ -102,6 +102,20 @@ struct Cleanup : std::enable_shared_from_this<Cleanup>
         attempt.reset();
         operation.reset();
         if (!exclusion.owner) {
+            if (local->checkpoints->needs_anchor_retirement()) {
+                auto options                            = defaults(*core);
+                options.cause                           = TreeWorkCause::GarbageCollection;
+                options.metadata.retire_previous_anchor = true;
+                const auto status                       = core->prepare_checkpoint(options, &operation);
+                if (!status.ok()) {
+                    return;
+                }
+                attempt.emplace(operation->sender(), shared_from_this());
+                stdexec::start(attempt->connected);
+                return;
+            }
+            core->publisher().reclaim();
+            core->binding()->account()->drain_retirements();
             reclaim_free_blocks(*core, metadata, backend);
             auto candidate = select_sparse_local_block(
                 *store, *local->ledger, local->gc_cursor.load(std::memory_order_relaxed), metadata, 0.5, backend);

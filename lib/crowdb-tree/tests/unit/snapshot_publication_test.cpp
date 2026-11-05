@@ -118,6 +118,60 @@ TEST(SnapshotPublication, BaselineMustBelongToTheExactCapturedFrontierAndToken)
     EXPECT_EQ(publisher.capture()->snapshot_baseline, baseline);
 }
 
+TEST(SnapshotPublication, UnchangedSequenceRequiresTheSameProtectedBaseline)
+{
+    PublicationCoordinator publisher;
+    ASSERT_TRUE(checkpoint(publisher, CheckpointAction::Capture, 1).status.ok());
+    auto pages                  = std::make_shared<CapturedDurablePages>(nullptr);
+    pages->generation           = 1;
+    auto baseline               = std::make_shared<SnapshotBaseline>();
+    baseline->generation        = 1;
+    baseline->capture_token     = 1;
+    baseline->snapshot_sequence = 1;
+    baseline->backend_id        = 17;
+    baseline->pages             = pages;
+    ASSERT_TRUE(
+        publish(publisher,
+                {
+                    .checkpoint =
+                        CheckpointPublication{.action = CheckpointAction::Commit, .token = 1, .baseline = baseline}
+    })
+            .status.ok());
+    ASSERT_TRUE(checkpoint(publisher, CheckpointAction::Capture, 2).status.ok());
+    auto reused           = std::make_shared<SnapshotBaseline>(*baseline);
+    reused->capture_token = 2;
+    for (const auto variant : {0, 1, 2}) {
+        auto wrong = std::make_shared<SnapshotBaseline>(*reused);
+        if (variant == 0) {
+            wrong->pages = std::make_shared<CapturedDurablePages>(*pages);
+        }
+        else if (variant == 1) {
+            ++wrong->wal_offset;
+        }
+        else {
+            ++wrong->backend_id;
+        }
+        EXPECT_EQ(
+            publish(publisher,
+                    {
+                        .checkpoint =
+                            CheckpointPublication{.action = CheckpointAction::Commit, .token = 2, .baseline = wrong}
+        })
+                .status.code(),
+            Code::kInvalidArgument);
+        EXPECT_EQ(publisher.capture()->snapshot_baseline, baseline);
+    }
+    ASSERT_TRUE(
+        publish(publisher,
+                {
+                    .checkpoint =
+                        CheckpointPublication{.action = CheckpointAction::Commit, .token = 2, .baseline = reused}
+    })
+            .status.ok());
+    EXPECT_EQ(publisher.capture()->snapshot_baseline, reused);
+    EXPECT_EQ(reused->snapshot_sequence, 1U);
+}
+
 #ifdef CROWDB_TREE_TEST_UTIL
 TEST(SnapshotPublication, FailureAfterPreparingChangesPublishesNeitherSelectionNorPendingState)
 {

@@ -35,9 +35,7 @@ Status LocalCheckpointOperation::State::pack_frame(const DurableCapturedFrame &f
 void LocalCheckpointOperation::State::segment()
 {
     if (position == image->pages->frames.end()) {
-        encoder.emplace(directory);
-        image->anchor.segdir_len = encoder->logical_bytes();
-        reserve(round_up_to_iu(encoder->logical_bytes(), iu), Stage::DirectoryReserved);
+        finish_segments();
         return;
     }
     if (directory.size() == limits.max_segments) {
@@ -50,6 +48,9 @@ void LocalCheckpointOperation::State::segment()
         return;
     }
     words.fill(0);
+    auto     old  = previous ? previous->pages->frames.lower_bound(index * kMappingSegmentSize)
+                             : CapturedDurablePages::Frames::const_iterator{};
+    bool     same = previous != nullptr;
     uint32_t live = 0;
     while (position != image->pages->frames.end() && position->first / kMappingSegmentSize == index) {
         const auto &[pid, frame] = *position;
@@ -59,9 +60,33 @@ void LocalCheckpointOperation::State::segment()
             finish(std::move(status));
             return;
         }
+        if (same) {
+            same = old != previous->pages->frames.end() && old->first == pid && old->second.backing &&
+                   words[pid % kMappingSegmentSize] ==
+                       slot_word::pack_unloaded(old->second.backing->address / iu,
+                                                static_cast<uint32_t>(old->second.backing->length / iu));
+            if (same) {
+                ++old;
+            }
+        }
         ++live;
         ++position;
     }
+    if (same && (old == previous->pages->frames.end() || old->first / kMappingSegmentSize != index)) {
+        const auto &segments = previous->metadata->segments;
+        const auto  found =
+            std::lower_bound(segments.begin(), segments.end(), index,
+                             [](const auto &segment, uint64_t pid) { return segment.first.seg_idx < pid; });
+        if (found != segments.end() && found->first.seg_idx == index &&
+            !limits.exclusion.overlaps(found->second.address, found->second.length)) {
+            directory.push_back(found->first);
+            image->metadata->segments.push_back(*found);
+            stage = Stage::Segment;
+            wake();
+            return;
+        }
+    }
+    reused_segments = false;
     const SegmentImageHeader header{.seg_idx    = static_cast<uint32_t>(index),
                                     .generation = image->anchor.snapshot_seq,
                                     .slot_count = kMappingSegmentSize,
@@ -76,6 +101,34 @@ void LocalCheckpointOperation::State::segment()
         return;
     }
     reserve(segment_bytes, Stage::SegmentReserved);
+}
+
+void LocalCheckpointOperation::State::finish_segments()
+{
+    if (previous && reused_segments && directory.size() == previous->metadata->segments.size() &&
+        snapshot::DirectoryEncoder(directory).logical_bytes() == previous->anchor.segdir_len &&
+        !limits.exclusion.overlaps(previous->anchor.segdir_addr, round_up_to_iu(previous->anchor.segdir_len, iu))) {
+        const auto &pages = *image->pages;
+        const auto &old   = *previous->pages;
+        unchanged         = !(limits.retire_previous_anchor && registry->needs_anchor_retirement()) &&
+                            pages.coverage == old.coverage && pages.generation == old.generation &&
+                            pages.root_page_id == old.root_page_id && pages.next_page_id == old.next_page_id &&
+                            image->anchor.leaf_count == previous->anchor.leaf_count &&
+                            image->anchor.inner_count == previous->anchor.inner_count;
+        if (unchanged) {
+            finish(Status::Ok());
+            return;
+        }
+        image->metadata           = previous->metadata;
+        image->anchor.segdir_addr = previous->anchor.segdir_addr;
+        image->anchor.segdir_len  = previous->anchor.segdir_len;
+        image->anchor.segdir_crc  = previous->anchor.segdir_crc;
+        io(true, 0, 0, Stage::BeforeAnchor);
+        return;
+    }
+    encoder.emplace(directory);
+    image->anchor.segdir_len = encoder->logical_bytes();
+    reserve(round_up_to_iu(encoder->logical_bytes(), iu), Stage::DirectoryReserved);
 }
 
 void LocalCheckpointOperation::State::directory_window()

@@ -25,7 +25,7 @@ CapturedFrameStream::State::State(std::shared_ptr<const PublishedTreeState> capt
                               : detail::reserved_shared<CapturedFrameBuffer>(limits.encode.metadata, limits.encode))
 {
     stack.reserve(limits.max_depth);
-    overflow_end = view->next_page_id;
+    overflow_end = view ? view->next_page_id : 0;
 }
 
 Status CapturedFrameStream::create(std::shared_ptr<const PublishedTreeState> captured,
@@ -60,6 +60,36 @@ Status CapturedFrameStream::create(std::shared_ptr<const PublishedTreeState> cap
     return Status::Ok();
 }
 
+Status CapturedFrameStream::create(PageEncodeInput input, std::shared_ptr<PageLoader> loader,
+                                   std::shared_ptr<detail::FlushRuntime>       runtime,
+                                   std::shared_ptr<detail::FlushRuntime::Lane> lane, CapturedFrameLimits limits,
+                                   ReserveOverflow reserve_overflow, std::shared_ptr<CapturedFrameStream> *out)
+{
+    if (!input.page || input.page_id >= input.next_page_id || input.next_page_id > MappingView::kPageLimit ||
+        input.gc_floor > input.coverage || !runtime || !lane || out == nullptr || limits.max_depth == 0 ||
+        limits.max_depth > 64 || limits.max_pages == 0 || limits.max_pages > MappingView::kPageLimit ||
+        limits.encode.frame_bytes <= kFrameHeaderSize + kFrameTrailerSize || limits.encode.max_sources == 0 ||
+        limits.encode.max_entries == 0 || limits.encode.max_work_entries == 0 || limits.selected_page ||
+        (input.page->level != 0 && !input.context.inner_fences)) {
+        return Status::invalid_argument("final page stream requires one owned output and bounded work");
+    }
+    try {
+        const auto metadata = limits.encode.metadata;
+        limits.max_depth    = 1;
+        auto state = detail::reserved_shared<State>(metadata, nullptr, std::move(loader), std::move(runtime),
+                                                    std::move(lane), std::move(limits), std::move(reserve_overflow));
+        state->overflow_end = input.next_page_id;
+        state->single_page  = std::move(input);
+        *out                = detail::reserved_construct<CapturedFrameStream>(metadata, [&](auto *storage) {
+            ::new (static_cast<void *>(storage)) CapturedFrameStream(std::move(state));
+        });
+    }
+    catch (const std::bad_alloc &) {
+        return Status::resource_exhausted();
+    }
+    return Status::Ok();
+}
+
 std::optional<size_t> CapturedFrameStream::allocation_bound(const CapturedFrameLimits &limits) noexcept
 {
     using namespace detail;
@@ -72,8 +102,7 @@ std::optional<size_t> CapturedFrameStream::allocation_bound(const CapturedFrameL
     }
     return AllocationBound(shared_allocation_bound<State>() + shared_allocation_bound<CapturedFrameStream>() +
                            shared_allocation_bound<State::Load>() + shared_allocation_bound<FinalPageEncodeState>() +
-                           shared_allocation_bound<FinalPageEncoder>() + shared_allocation_bound<PublishedTreeState>() +
-                           MappingView::path_copy_bound())
+                           shared_allocation_bound<FinalPageEncoder>())
         .add_product(limits.max_depth, sizeof(State::Path) + shared_allocation_bound<PublishedPage>())
         .add_product(2, std::max(*page, limits.page_metadata_bytes))
         .add(limits.encode.max_metadata_bytes)

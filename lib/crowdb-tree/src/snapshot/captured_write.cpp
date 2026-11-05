@@ -7,6 +7,22 @@
 
 namespace crowdb::tree
 {
+namespace
+{
+bool valid_write_limits(const CapturedWriteLimits &limits, const PageLoadBudget &budget)
+{
+    return limits.max_frames != 0 && !limits.frames.plan_only && limits.max_dependency_steps != 0 &&
+           limits.frames.encode.frame_bytes <= limits.write.max_frame_bytes &&
+           PageWriteOperation::allocation_bound(limits.write).has_value() &&
+           static_cast<bool>(budget.bytes) == static_cast<bool>(budget.io) &&
+           (!limits.frames.encode.metadata || limits.frames.encode.metadata == budget.bytes) &&
+           (!budget.bytes ||
+            ((budget.bytes->category() == detail::BudgetClass::kRouting ||
+              budget.bytes->category() == detail::BudgetClass::kReclaim) &&
+             budget.io->category() == detail::BudgetClass::kIo && budget.bytes->account() == budget.io->account()));
+}
+} // namespace
+
 std::optional<size_t> CapturedWriteOperation::allocation_bound(CapturedWriteLimits limits, size_t frame_count_upper,
                                                                size_t dependency_entries,
                                                                size_t reference_heads) noexcept
@@ -46,16 +62,47 @@ Status CapturedWriteOperation::create(std::shared_ptr<const PublishedTreeState> 
                                       std::shared_ptr<const CapturedDurablePages> inherited,
                                       std::shared_ptr<CapturedWriteOperation>    *out)
 {
-    if (!captured || !store || !runtime || !lane || !reserve_extent || out == nullptr || limits.max_frames == 0 ||
-        limits.frames.plan_only || limits.max_dependency_steps == 0 ||
-        limits.frames.encode.frame_bytes > limits.write.max_frame_bytes ||
-        !PageWriteOperation::allocation_bound(limits.write) ||
-        static_cast<bool>(budget.bytes) != static_cast<bool>(budget.io) ||
-        (limits.frames.encode.metadata && limits.frames.encode.metadata != budget.bytes) ||
-        (budget.bytes &&
-         ((budget.bytes->category() != detail::BudgetClass::kRouting &&
-           budget.bytes->category() != detail::BudgetClass::kReclaim) ||
-          budget.io->category() != detail::BudgetClass::kIo || budget.bytes->account() != budget.io->account()))) {
+    if (!captured || !store || !runtime || !lane || !reserve_extent || out == nullptr ||
+        !valid_write_limits(limits, budget)) {
+        return Status::invalid_argument();
+    }
+    try {
+        limits.frames.encode.metadata = budget.bytes;
+        limits.frames.cpu_progress    = budget.cpu_progress;
+        if (budget.work_metrics) {
+            limits.frames.encode.work_metrics = budget.work_metrics;
+            limits.frames.encode.cause        = budget.cause;
+        }
+        std::shared_ptr<CapturedFrameStream> stream;
+        auto status = CapturedFrameStream::create(captured, std::move(loader), runtime, lane, limits.frames,
+                                                  std::move(reserve_overflow), &stream);
+        if (!status.ok()) {
+            return status;
+        }
+        auto pages          = detail::reserved_shared<CapturedDurablePages>(budget.bytes, budget.bytes);
+        pages->root_page_id = captured->root_page_id;
+        pages->next_page_id = captured->next_page_id;
+        pages->coverage     = captured->coverage;
+        pages->generation   = captured->generation;
+        return create(std::move(stream), std::move(pages), std::move(store), std::move(runtime), std::move(lane),
+                      std::move(limits), std::move(budget), std::move(reserve_extent), std::move(inherited), out);
+    }
+    catch (const std::bad_alloc &) {
+        return Status::resource_exhausted();
+    }
+}
+
+Status CapturedWriteOperation::create(std::shared_ptr<CapturedFrameStream>        stream,
+                                      std::shared_ptr<CapturedDurablePages>       pages,
+                                      std::shared_ptr<AsyncPageStore>             store,
+                                      std::shared_ptr<detail::FlushRuntime>       runtime,
+                                      std::shared_ptr<detail::FlushRuntime::Lane> lane, CapturedWriteLimits limits,
+                                      PageLoadBudget budget, PageWriteOperation::ReserveExtent reserve_extent,
+                                      std::shared_ptr<const CapturedDurablePages> inherited,
+                                      std::shared_ptr<CapturedWriteOperation>    *out)
+{
+    if (!stream || !pages || !pages->frames.empty() || !store || !runtime || !lane || !reserve_extent ||
+        out == nullptr || !valid_write_limits(limits, budget)) {
         return Status::invalid_argument();
     }
     if (limits.write.chunk_backed ? dynamic_cast<ScheduledPageStore *>(store.get()) == nullptr
@@ -77,17 +124,9 @@ Status CapturedWriteOperation::create(std::shared_ptr<const PublishedTreeState> 
         state->budget    = std::move(budget);
         state->reserve   = std::move(reserve_extent);
         state->inherited = std::move(inherited);
-        state->pages     = detail::reserved_shared<CapturedDurablePages>(state->budget.bytes, state->budget.bytes);
-        state->pages->root_page_id = captured->root_page_id;
-        state->pages->next_page_id = captured->next_page_id;
-        state->pages->coverage     = captured->coverage;
-        state->pages->generation   = captured->generation;
-        auto status = CapturedFrameStream::create(std::move(captured), std::move(loader), state->runtime, state->lane,
-                                                  state->limits.frames, std::move(reserve_overflow), &state->stream);
-        if (!status.ok()) {
-            return status;
-        }
-        *out = detail::reserved_construct<CapturedWriteOperation>(state->budget.bytes, [&](auto *storage) {
+        state->pages     = std::move(pages);
+        state->stream    = std::move(stream);
+        *out             = detail::reserved_construct<CapturedWriteOperation>(state->budget.bytes, [&](auto *storage) {
             ::new (static_cast<void *>(storage)) CapturedWriteOperation(std::move(state));
         });
     }

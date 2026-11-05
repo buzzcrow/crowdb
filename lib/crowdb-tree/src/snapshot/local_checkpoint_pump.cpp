@@ -90,8 +90,8 @@ void LocalCheckpointOperation::State::pump()
         segment();
         break;
     case Stage::SegmentReserved:
-        image->metadata->extents.push_back(reserved);
         segment_entry.image_addr = reserved.address;
+        image->metadata->segments.emplace_back(segment_entry, reserved);
         directory.push_back(segment_entry);
         io(false, reserved.address, segment_bytes, Stage::SegmentWritten);
         break;

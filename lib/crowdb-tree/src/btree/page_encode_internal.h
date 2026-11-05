@@ -44,10 +44,9 @@ struct FinalPageEncodeState
     bool                                                                                  prepared       = false;
 };
 
-Status prepare_leaf(FinalPageEncodeState &state, const PublishedTreeState &captured,
+Status prepare_leaf(FinalPageEncodeState &state, uint64_t coverage, uint64_t gc_floor,
                     const CapturedEncodeContext &context, PageEncodePreparation *result);
 Status advance_leaf(FinalPageEncodeState &state, PageEncodePreparation *result);
-Status prepare_inner(FinalPageEncodeState &state, const PublishedTreeState &captured,
-                     const CapturedEncodeContext &context, PageEncodePreparation *result);
+Status prepare_inner(FinalPageEncodeState &state, const CapturedEncodeContext &context, PageEncodePreparation *result);
 void   encode_primary(FinalPageEncodeState &state, uint8_t *output);
 } // namespace crowdb::tree::detail

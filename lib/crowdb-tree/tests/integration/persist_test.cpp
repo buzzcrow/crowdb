@@ -1083,6 +1083,7 @@ void prepare_sparse_compaction(const std::string &path, const std::set<std::stri
     // Keep clean old leaves in their original blocks and rotate both
     // anchors; automatic GC must not consume the intended candidate.
     ASSERT_TRUE(t.snapshot().ok());
+    ASSERT_TRUE(t.apply(++slot, Batch{}).ok());
     ASSERT_TRUE(t.snapshot().ok());
 }
 

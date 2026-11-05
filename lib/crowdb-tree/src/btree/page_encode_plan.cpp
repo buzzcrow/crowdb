@@ -6,8 +6,7 @@
 
 namespace crowdb::tree::detail
 {
-Status prepare_inner(FinalPageEncodeState &state, const PublishedTreeState &captured,
-                     const CapturedEncodeContext &context, PageEncodePreparation *result)
+Status prepare_inner(FinalPageEncodeState &state, const CapturedEncodeContext &context, PageEncodePreparation *result)
 {
     constexpr uint64_t kPageOverhead = kFrameHeaderSize + kFrameTrailerSize;
     if (state.page->leaf) {
@@ -43,9 +42,8 @@ Status prepare_inner(FinalPageEncodeState &state, const PublishedTreeState &capt
         used += key.size() + kInnerSlotSize;
     }
     for (const auto pid : inner.children) {
-        const auto child = captured.mapping.get(pid);
-        if (!child || child->level + uint64_t{1} != state.page->level) {
-            return Status::corruption("inner child is absent or has the wrong level in captured mapping");
+        if (pid >= state.next_page_id || pid == state.pid) {
+            return Status::corruption("final inner child has an invalid page identity");
         }
     }
     const auto fences = context.inner_fences.value();
@@ -54,9 +52,8 @@ Status prepare_inner(FinalPageEncodeState &state, const PublishedTreeState &capt
     }
     if (fences.lower_leaf != kInvalidPageId) {
         for (const auto pid : {fences.lower_leaf, fences.upper_leaf}) {
-            const auto leaf = captured.mapping.get(pid);
-            if (!leaf || !leaf->leaf || leaf->level != 0 || !leaf->leaf->range.overlaps(context.range)) {
-                return Status::invalid_argument("inner fence leaf is absent from captured range");
+            if (pid >= state.next_page_id || pid == state.pid) {
+                return Status::invalid_argument("final inner fence has an invalid page identity");
             }
         }
     }

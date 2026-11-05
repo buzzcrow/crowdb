@@ -30,15 +30,16 @@ void LocalCompactionOperation::State::child_done(Status status) noexcept
 
 void LocalCompactionOperation::State::checkpoint()
 {
-    auto options                   = checkpoint_detail::defaults(*core);
-    options.cause                  = TreeWorkCause::GarbageCollection;
+    auto options                            = checkpoint_detail::defaults(*core);
+    options.cause                           = TreeWorkCause::GarbageCollection;
+    options.metadata.retire_previous_anchor = true;
     options.write.frames.exclusion = {.address = candidate.exclusion.address, .length = candidate.exclusion.length};
     const auto status              = core->prepare_checkpoint(options, &child, ticket);
     if (!status.ok()) {
         finish(status.without_message());
         return;
     }
-    phase = Phase::kCheckpoint;
+    phase = candidate.exclusion.owner ? Phase::kCheckpoint : Phase::kRetireAnchor;
     child_ready.store(false, std::memory_order_release);
     attempt.emplace(child->sender(), weak_from_this().lock());
     stdexec::start(attempt->connected);
@@ -58,11 +59,15 @@ void LocalCompactionOperation::State::pump()
             finish(Status::Ok());
             return;
         }
+        if (local->checkpoints->needs_anchor_retirement()) {
+            checkpoint();
+            return;
+        }
         phase = Phase::kSelected;
         backend_progress->request(backend_node, weak_from_this().lock());
         return;
     }
-    if (phase == Phase::kCheckpoint && stopped.load(std::memory_order_acquire)) {
+    if ((phase == Phase::kCheckpoint || phase == Phase::kRetireAnchor) && stopped.load(std::memory_order_acquire)) {
         child->request_stop();
     }
     if (!child_ready.load(std::memory_order_acquire)) {
@@ -75,12 +80,22 @@ void LocalCompactionOperation::State::pump()
         child.reset();
         ++rotations;
     }
+    else if (phase == Phase::kRetireAnchor) {
+        attempt.reset();
+        child.reset();
+    }
     if (!child_status.ok()) {
         finish(child_status.without_message());
         return;
     }
     if (stopped.load(std::memory_order_acquire)) {
         finish(Status::unavailable());
+        return;
+    }
+    if (phase == Phase::kRetireAnchor) {
+        phase = Phase::kSelected;
+        child_ready.store(false, std::memory_order_release);
+        backend_progress->request(backend_node, weak_from_this().lock());
         return;
     }
     if (phase == Phase::kCleaned || !candidate.exclusion.owner) {

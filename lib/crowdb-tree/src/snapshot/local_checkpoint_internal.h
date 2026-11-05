@@ -60,6 +60,7 @@ struct LocalCheckpointOperation::State : std::enable_shared_from_this<State>
     void        pump();
     void        begin();
     void        segment();
+    void        finish_segments();
     Status      pack_frame(const DurableCapturedFrame &frame, uint64_t *word);
     void        directory_window();
     void        anchor();
@@ -75,6 +76,7 @@ struct LocalCheckpointOperation::State : std::enable_shared_from_this<State>
     std::shared_ptr<detail::FlushRuntime>        runtime;
     std::shared_ptr<detail::FlushRuntime::Lane>  lane;
     std::shared_ptr<ProtectedCheckpoint>         image;
+    std::shared_ptr<const ProtectedCheckpoint>   previous;
     std::shared_ptr<Window>                      window;
     detail::ReservedVector<DirEntry>             directory;
     std::optional<snapshot::DirectoryEncoder>    encoder;
@@ -88,6 +90,8 @@ struct LocalCheckpointOperation::State : std::enable_shared_from_this<State>
     uint32_t                                     iu                = 0;
     Stage                                        stage             = Stage::Begin;
     bool                                         admitted          = false;
+    bool                                         reused_segments   = true;
+    bool                                         unchanged         = false;
     bool                                         anchor_touched    = false;
     bool                                         waiting           = false;
     Status                                       event_status;

@@ -53,6 +53,7 @@ struct CapturedFrameStream::State : std::enable_shared_from_this<State>
     void        finish(Status status, bool fatal = false) noexcept;
 
     std::shared_ptr<const PublishedTreeState>   view;
+    std::optional<PageEncodeInput>              single_page;
     std::shared_ptr<PageLoader>                 loader;
     std::shared_ptr<detail::FlushRuntime>       runtime;
     std::shared_ptr<detail::FlushRuntime::Lane> lane;

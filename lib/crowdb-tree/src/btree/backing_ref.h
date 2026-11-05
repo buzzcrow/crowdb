@@ -86,11 +86,15 @@ struct BackingExclusion
     uint64_t address = 0;
     uint64_t length  = 0;
 
+    [[nodiscard]] bool overlaps(uint64_t begin, uint64_t bytes) const noexcept
+    {
+        return length != 0 && bytes != 0 && (begin >= address ? begin - address < length : address - begin < bytes);
+    }
+
     [[nodiscard]] bool overlaps(const BackingRef &backing) const noexcept
     {
-        return length != 0 && backing.storage == BackingStorage::kDurableBlob && backing.reloadable() &&
-               (backing.address >= address ? backing.address - address < length
-                                           : address - backing.address < backing.length);
+        return backing.storage == BackingStorage::kDurableBlob && backing.reloadable() &&
+               overlaps(backing.address, backing.length);
     }
 };
 } // namespace crowdb::tree

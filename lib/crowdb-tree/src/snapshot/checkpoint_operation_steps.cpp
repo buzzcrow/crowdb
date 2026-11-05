@@ -276,8 +276,11 @@ void CheckpointOperation::State::written()
         begin_chunk_checkpoint();
         return;
     }
-    auto status = LocalCheckpointOperation::create(written_pages, backend->checkpoints, store, runtime, lane,
-                                                   options.metadata, budget, &checkpoint);
+    auto metadata                   = options.metadata;
+    metadata.exclusion              = options.write.frames.exclusion;
+    metadata.retire_previous_anchor = metadata.retire_previous_anchor || metadata.exclusion.length != 0;
+    auto status = LocalCheckpointOperation::create(written_pages, backend->checkpoints, store, runtime, lane, metadata,
+                                                   budget, &checkpoint);
     if (!status.ok()) {
         reconcile(std::move(status));
         return;
@@ -294,6 +297,9 @@ void CheckpointOperation::State::checkpointed()
             reconcile(chunk_checkpoint->status());
             return;
         }
+    }
+    else {
+        written_pages = checkpoint->result().checkpoint->pages;
     }
     report.durable_committed = true;
     if (commit_metrics) {

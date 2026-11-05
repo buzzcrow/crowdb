@@ -4,6 +4,14 @@
 
 namespace crowdb::tree
 {
+namespace
+{
+bool anchors_differ(const std::array<std::shared_ptr<const ProtectedCheckpoint>, 2> &anchors)
+{
+    return anchors[0] && anchors[1] && anchors[0]->anchor.segdir_addr != anchors[1]->anchor.segdir_addr;
+}
+} // namespace
+
 Status LocalCheckpointRegistry::create(std::shared_ptr<ExtentLedger>                             ledger,
                                        std::shared_ptr<detail::AllocationReservation>            metadata,
                                        std::array<std::shared_ptr<const ProtectedCheckpoint>, 2> recovered,
@@ -24,8 +32,9 @@ Status LocalCheckpointRegistry::create(std::shared_ptr<ExtentLedger>            
                 continue;
             }
             const auto &anchor = image->anchor;
-            if (!image->pages || anchor.snapshot_seq == 0 || (anchor.snapshot_seq % 2 == 0 ? 1U : 0U) != slot ||
-                anchor.magic != snapshot::kAnchorMagic || anchor.format_version != snapshot::kFormatVersion ||
+            if (!image->pages || !image->metadata || anchor.snapshot_seq == 0 ||
+                (anchor.snapshot_seq % 2 == 0 ? 1U : 0U) != slot || anchor.magic != snapshot::kAnchorMagic ||
+                anchor.format_version != snapshot::kFormatVersion ||
                 anchor.last_applied_slot != image->pages->coverage ||
                 (!image->pages->frames.empty() && image->pages->backend_id != registry->ledger_->limits().backend_id)) {
                 return Status::invalid_argument();
@@ -37,7 +46,8 @@ Status LocalCheckpointRegistry::create(std::shared_ptr<ExtentLedger>            
             }
         }
         registry->anchors_ = std::move(recovered);
-        *out               = std::move(registry);
+        registry->obsolete_anchor_.store(anchors_differ(registry->anchors_));
+        *out = std::move(registry);
     }
     catch (const std::bad_alloc &) {
         return Status::resource_exhausted();
@@ -71,6 +81,7 @@ void LocalCheckpointRegistry::finish(std::shared_ptr<const ProtectedCheckpoint> 
         const auto &anchor                             = candidate->anchor;
         generation_                                    = candidate->pages->generation;
         anchors_[anchor.snapshot_seq % 2 == 0 ? 1 : 0] = std::move(candidate);
+        obsolete_anchor_.store(anchors_differ(anchors_), std::memory_order_release);
         sequence_.store(anchor.snapshot_seq, std::memory_order_release);
         coverage_.store(anchor.last_applied_slot, std::memory_order_release);
         candidate_.reset();
