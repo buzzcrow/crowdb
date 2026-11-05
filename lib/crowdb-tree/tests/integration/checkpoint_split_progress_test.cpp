@@ -39,6 +39,8 @@ uint64_t checkpoint_jobs(size_t entries)
     auto *core = TreeCoreAccess::get(tree);
     core->binding()->account()->drain_retirements();
     core->binding()->lane()->drain();
+    EXPECT_EQ(core->capture()->stats.split_candidate_pages, 0U);
+    EXPECT_GT(core->capture()->stats.leaf_pages, 1U);
     const auto                           before = config.runtime->snapshot().cpu.completed;
     std::shared_ptr<CheckpointOperation> operation;
     status = core->prepare_checkpoint(checkpoint_detail::defaults(*core), &operation);
@@ -49,7 +51,7 @@ uint64_t checkpoint_jobs(size_t entries)
     status = detail::wait_snapshot_operation(operation);
     EXPECT_TRUE(status.ok()) << status.to_string();
     EXPECT_EQ(operation->result().durable_coverage, entries);
-    EXPECT_GT(operation->result().structural_windows, 1U);
+    EXPECT_EQ(operation->result().structural_windows, 0U);
     operation.reset();
     core->binding()->account()->drain_retirements();
     core->binding()->lane()->drain();
@@ -63,7 +65,7 @@ uint64_t checkpoint_jobs(size_t entries)
 }
 } // namespace
 
-TEST(CheckpointSplitProgress, DoublingOneOversizedLeafKeepsCheckpointWorkBelowQuadraticGrowth)
+TEST(CheckpointSplitProgress, DoublingFlushOutputKeepsCheckpointWorkBelowQuadraticGrowth)
 {
     const auto small = checkpoint_jobs(512);
     const auto large = checkpoint_jobs(1024);

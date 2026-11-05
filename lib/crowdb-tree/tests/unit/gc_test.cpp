@@ -269,8 +269,10 @@ TEST(Gc, CompactSparseBlocksRespectsByteBudget)
     ASSERT_TRUE(BlockPageStore::open_blocks(tmp.path, 0, 0, blk, 1, &store).ok());
     store->set_sync_mode(SyncMode::kSkip);
     Config opt;
-    opt.page_store                    = store.get();
-    opt.leaf_split_bytes              = 256;
+    opt.page_store       = store.get();
+    opt.leaf_split_bytes = 256;
+    // Keep surviving pages in their original extents to create sparse blocks.
+    opt.leaf_merge_bytes              = 0;
     opt.merge_gc_block_free_threshold = 0.01;
     // Very small budget: only the first block should be selected.
     opt.merge_gc_max_relocation_bytes = blk / 4;
@@ -289,6 +291,8 @@ TEST(Gc, CompactSparseBlocksRespectsByteBudget)
     ASSERT_TRUE(flush_1.ok()) << flush_1.to_string();
     const auto snapshot_1 = t.snapshot();
     ASSERT_TRUE(snapshot_1.ok()) << snapshot_1.to_string();
+    ASSERT_GE(local->ledger->stats().address_high_water, 3 * blk)
+        << "fixture must populate multiple complete non-anchor blocks";
 
     // Delete most keys to make blocks sparse.
     for (int i = 0; i < 200; ++i) {
@@ -336,8 +340,10 @@ TEST(Gc, CompactSparseBlocksMaintainsDataIntegrity)
     ASSERT_TRUE(BlockPageStore::open_blocks(tmp.path, 0, 0, blk, 1, &store).ok());
     store->set_sync_mode(SyncMode::kSkip);
     Config opt;
-    opt.page_store                    = store.get();
-    opt.leaf_split_bytes              = 256;
+    opt.page_store       = store.get();
+    opt.leaf_split_bytes = 256;
+    // Keep surviving pages in their original extents to create sparse blocks.
+    opt.leaf_merge_bytes              = 0;
     opt.merge_gc_block_free_threshold = 0.30;
     opt.merge_gc_max_relocation_bytes = 8 * 1024 * 1024;
     Crowdbtree t(opt);

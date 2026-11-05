@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 #include "allocation_bound.h"
-#include "flush_batch_internal.h"
+#include "flush_subtree.h"
 #include "page_cache_residency.h"
 
 #include <algorithm>
@@ -40,6 +40,23 @@ std::optional<size_t> FlushBatch::metadata_reserve_bound(const MappingView &mapp
     // controller admission. Retain its complete source-free base once.
     bytes.add(PublicationCoordinator::complete_view_reserve_bytes());
     bytes.add(PublishedRouteCursor::allocation_bound(options.max_route_depth));
+    const auto paths = AllocationBound(ranges).add_product(ranges, mapping_bounds.max_level).add(1).value();
+    const auto slots =
+        AllocationBound().add_product(ranges, (mapping_bounds.max_inner_bytes / sizeof(uint64_t)) + 1).value();
+    if (!paths || !slots) {
+        return {};
+    }
+    bytes.add_product(*paths, shared_allocation_bound<State::Subtree>() + sizeof(detail::MaintenanceBuilder) +
+                                  State::Subtree::fork_bytes());
+    const auto child_slots =
+        AllocationBound()
+            .add_product(std::min(mapping_bounds.leaf_pages, *slots),
+                         sizeof(std::shared_ptr<State::Subtree>) + sizeof(uint64_t) + sizeof(OwnedKey))
+            .value();
+    if (!child_slots) {
+        return {};
+    }
+    bytes.add_product(mapping_bounds.max_level, *child_slots);
     bytes.add(detail::BoundedRangeJoin::allocation_bound(options.parallelism));
 
     // Every accepted range can leave a retired COW root alive. Count all paths,

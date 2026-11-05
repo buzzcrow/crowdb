@@ -56,8 +56,12 @@ try {
             return Status::invalid_argument("every closed source must participate in the captured batch");
         }
     }
-    state->lane                      = std::move(lane);
-    state->options                   = std::move(options);
+    state->lane    = std::move(lane);
+    state->options = std::move(options);
+    if (state->options.consolidation) {
+        state->options.consolidation->pages.gc_floor =
+            std::max(state->captured->gc_floor, std::min(publisher.requested_gc_floor(), frontier));
+    }
     state->maintenance               = std::move(maintenance);
     state->report.batch_id           = batch_id;
     state->report.floor              = state->captured->coverage;

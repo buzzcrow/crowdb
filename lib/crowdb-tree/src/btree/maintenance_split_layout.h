@@ -28,6 +28,8 @@ class SplitWindowCursor
   public:
     SplitWindowCursor(std::shared_ptr<const PageState> page, const PageMaintenanceLimits &limits);
     Status advance();
+    // A work/output window yields without ending the complete flush layout.
+    Status advance_complete();
 
     [[nodiscard]] bool done() const noexcept
     {
@@ -47,6 +49,7 @@ class SplitWindowCursor
     }
 
   private:
+    Status                           advance(bool complete);
     std::shared_ptr<const PageState> page_;
     PageMaintenanceLimits            limits_;
     SplitWindowLayout                layout_;

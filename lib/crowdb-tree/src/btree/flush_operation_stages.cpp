@@ -206,6 +206,7 @@ Status FlushOperation::State::acknowledge(const PublishedTreeState &view)
     expected_sources.reset();
     published_sources.reset();
     options.loader.reset();
+    options.consolidation_loader.reset();
     metadata->seal();
     // Automatic maintenance still owns the prepaid cold-page load window.
     // The terminal flush path seals Routing and I/O after its last callback.

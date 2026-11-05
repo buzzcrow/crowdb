@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 #include "btree/flush_batch.h"
+#include "btree/published_route.h"
 
 #include <gtest/gtest.h>
 
@@ -399,6 +400,245 @@ TEST(ParallelFlush, CannotDropAnotherClosedTableFromBatchInputs)
     EXPECT_EQ(FlushBatch::prepare(publisher, runtime, lane, 1, 2, {}, {}, &batch, inputs).code(),
               Code::kInvalidArgument);
     EXPECT_EQ(publisher.capture()->coverage, 0U);
+}
+
+TEST(ParallelFlush, SubtreeConsolidatesWhileAnotherLeafHandoffIsPending)
+{
+    detail::FlushRuntime   runtime(4, 64);
+    auto                   lane = std::make_shared<detail::FlushRuntime::Lane>(64);
+    PublicationCoordinator publisher;
+    initialize(publisher, {
+                              table({{"a", 1}, {"z", 1}}
+                              ), table({{"a", 2}, {"z", 2}}
+                              )
+    });
+    std::promise<void>  right_entered;
+    auto                right_ready = right_entered.get_future().share();
+    std::promise<void>  left_finished;
+    auto                left_ready = left_finished.get_future().share();
+    std::atomic<size_t> leaves{0};
+    FlushBatchOptions   options;
+    options.consolidation.emplace();
+    // Keep both pages to inspect their distinct task completion order.
+    options.consolidation->pages.merge_trigger_bytes = 0;
+    options.before_handoff_for_tests                 = [&](uint64_t pid) {
+        if (pid == 0) {
+            EXPECT_EQ(right_ready.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+        }
+        else {
+            right_entered.set_value();
+            EXPECT_EQ(left_ready.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+            EXPECT_EQ(publisher.capture()->coverage, 0U);
+        }
+    };
+    options.after_page_for_tests = [&](uint64_t pid, uint32_t level) {
+        if (level == 0) {
+            EXPECT_EQ(publisher.capture()->mapping.get(pid)->leaf->lookup(pid == 0 ? "a" : "z").cell.slot, 2U);
+            leaves.fetch_add(1);
+            if (pid == 0) {
+                left_finished.set_value();
+            }
+        }
+        else {
+            EXPECT_EQ(leaves.load(), 2U);
+        }
+    };
+    std::shared_ptr<FlushBatch> batch;
+    ASSERT_TRUE(FlushBatch::prepare(publisher, runtime, lane, 1, 2, options, {}, &batch).ok());
+    ASSERT_TRUE(stdexec::sync_wait(batch->sender()).has_value());
+    runtime.drain();
+    ASSERT_TRUE(batch->result().handoff_status.ok()) << batch->result().handoff_status.to_string();
+    EXPECT_EQ(publisher.capture()->coverage, 2U);
+    EXPECT_EQ(publisher.capture()->stats.leaf_pages, 2U);
+    EXPECT_EQ(publisher.capture()->mapping.get(0)->metrics.overlay_runs, 1U);
+    EXPECT_EQ(publisher.capture()->mapping.get(1)->metrics.overlay_runs, 1U);
+}
+
+TEST(ParallelFlush, CompleteSubtreeSplitContinuesAcrossEveryWorkAndOutputWindow)
+{
+    for (const size_t workers : {1U, 4U}) {
+        detail::FlushRuntime   runtime(workers, 128);
+        auto                   lane = std::make_shared<detail::FlushRuntime::Lane>(128);
+        PublicationCoordinator publisher;
+        auto                   source = std::make_shared<MemTable>();
+        for (const auto *prefix : {"a", "z"}) {
+            for (size_t i = 0; i < 24; ++i) {
+                const auto key = std::string(prefix) + (i < 10 ? "0" : "") + std::to_string(i);
+                ASSERT_TRUE(source->upsert(key, 1, encode_cell_buf(1, OpKind::kPut, std::string(32, 'v'))));
+            }
+        }
+        source->close();
+        initialize(publisher, {source});
+        auto              before = publisher.capture();
+        FlushBatchOptions options;
+        options.run_limits.max_entries = 2;
+        options.consolidation.emplace();
+        auto &limits                              = options.consolidation->pages;
+        limits.max_work_entries                   = 1;
+        limits.max_output_pages                   = 2;
+        limits.primary_page_bytes                 = 512;
+        limits.target_page_bytes                  = 256;
+        limits.merge_target_bytes                 = 192;
+        limits.merge_trigger_bytes                = 0;
+        options.consolidation->max_inner_children = 2;
+        std::shared_ptr<FlushBatch> batch;
+        ASSERT_TRUE(FlushBatch::prepare(publisher, runtime, lane, 1, 1, options, {}, &batch).ok());
+        ASSERT_TRUE(stdexec::sync_wait(batch->sender()).has_value());
+        runtime.drain();
+        ASSERT_TRUE(batch->result().handoff_status.ok()) << batch->result().handoff_status.to_string();
+        auto after = publisher.capture();
+        EXPECT_EQ(after->coverage, 1U);
+        EXPECT_GT(after->stats.leaf_pages, 2U);
+        EXPECT_GT(after->stats.height, 2U);
+        EXPECT_EQ(after->stats.kv_known_count, 48U);
+        for (const auto *prefix : {"a", "z"}) {
+            for (size_t i = 0; i < 24; ++i) {
+                const auto           key = std::string(prefix) + (i < 10 ? "0" : "") + std::to_string(i);
+                PublishedRouteCursor route(after->root_page_id, after->mapping, 64, false);
+                ASSERT_TRUE(route.seek(Slice(key), false).ok());
+                ASSERT_TRUE(route.leaf());
+                const auto found = route.leaf()->lookup(key);
+                ASSERT_EQ(found.state, LogicalLookupState::kValue);
+                EXPECT_EQ(found.cell.value.to_string(), std::string(32, 'v'));
+            }
+        }
+        after->mapping.visit(nullptr, [](void *, uint64_t, const auto &page) {
+            if (page->leaf) {
+                EXPECT_TRUE(page->metrics.page_size_known);
+                EXPECT_TRUE(page->metrics.kv_known);
+                EXPECT_FALSE(page->metrics.split_candidate);
+            }
+        });
+        EXPECT_EQ(before->stats.leaf_pages, 2U);
+        EXPECT_EQ(before->coverage, 0U);
+        EXPECT_EQ(before->mapping.get(0)->leaf->lookup("a00").state, LogicalLookupState::kMissing);
+    }
+}
+
+TEST(ParallelFlush, ParentMergesFinalLeavesAndContractsRootWithoutChangingOldView)
+{
+    detail::FlushRuntime   runtime(4, 32);
+    auto                   lane = std::make_shared<detail::FlushRuntime::Lane>(32);
+    PublicationCoordinator publisher;
+    initialize(publisher, {
+                              table({{"a", 1}, {"z", 1}}
+                              ), table({{"a", 2}, {"z", 2}}
+                              )
+    });
+    auto              before = publisher.capture();
+    FlushBatchOptions options;
+    options.consolidation.emplace();
+    std::shared_ptr<FlushBatch> batch;
+    ASSERT_TRUE(FlushBatch::prepare(publisher, runtime, lane, 1, 2, options, {}, &batch).ok());
+    ASSERT_TRUE(stdexec::sync_wait(batch->sender()));
+    runtime.drain();
+    ASSERT_TRUE(batch->result().handoff_status.ok()) << batch->result().handoff_status.to_string();
+    auto after = publisher.capture();
+    EXPECT_EQ(after->stats.height, 1U);
+    EXPECT_EQ(after->stats.leaf_pages, 1U);
+    EXPECT_EQ(after->stats.inner_pages, 0U);
+    const auto root = after->mapping.get(after->root_page_id);
+    ASSERT_TRUE(root->leaf);
+    EXPECT_EQ(root->leaf->lookup("a").cell.slot, 2U);
+    EXPECT_EQ(root->leaf->lookup("z").cell.slot, 2U);
+    EXPECT_EQ(before->root_page_id, 2U);
+    ASSERT_TRUE(before->mapping.get(2)->inner);
+    EXPECT_EQ(before->mapping.get(2)->inner->children.size(), 2U);
+    EXPECT_EQ(before->coverage, 0U);
+}
+
+TEST(ParallelFlush, FailedChildDrainsAcceptedSiblingsAndRetryReusesHandoff)
+{
+    detail::FlushRuntime   runtime(4, 64);
+    auto                   lane = std::make_shared<detail::FlushRuntime::Lane>(64);
+    PublicationCoordinator publisher;
+    initialize(publisher, {
+                              table({{"a", 1}, {"z", 1}}
+                              )
+    });
+    std::promise<void> failed;
+    auto               saw_failure = failed.get_future();
+    std::promise<void> release;
+    auto               released = release.get_future().share();
+    std::atomic<bool>  inject{true};
+    FlushBatchOptions  options;
+    options.consolidation.emplace();
+    options.consolidation->pages.merge_trigger_bytes = 0;
+    options.before_handoff_for_tests                 = [&](uint64_t pid) {
+        if (pid == 1) {
+            EXPECT_EQ(released.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+        }
+    };
+    options.after_page_for_tests = [&](uint64_t pid, uint32_t level) {
+        if (level == 0 && pid == 0 && inject.exchange(false)) {
+            failed.set_value();
+            throw std::runtime_error("injected leaf failure");
+        }
+    };
+    std::shared_ptr<FlushBatch> batch;
+    ASSERT_TRUE(FlushBatch::prepare(publisher, runtime, lane, 1, 1, options, {}, &batch).ok());
+    std::promise<void> terminal;
+    auto               finished  = terminal.get_future();
+    auto               operation = stdexec::connect(batch->sender(), Receiver{&terminal});
+    stdexec::start(operation);
+    EXPECT_EQ(saw_failure.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    EXPECT_EQ(finished.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
+    EXPECT_EQ(publisher.capture()->coverage, 0U);
+    release.set_value();
+    finished.get();
+    runtime.drain();
+    EXPECT_FALSE(batch->result().handoff_status.ok());
+    EXPECT_EQ(publisher.capture()->coverage, 0U);
+    const auto left_runs = publisher.capture()->mapping.get(0)->leaf->overlays.size();
+    ASSERT_TRUE(stdexec::sync_wait(batch->sender()));
+    runtime.drain();
+    ASSERT_TRUE(batch->result().handoff_status.ok()) << batch->result().handoff_status.to_string();
+    EXPECT_EQ(publisher.capture()->coverage, 1U);
+    EXPECT_EQ(publisher.capture()->mapping.get(0)->leaf->overlays.size(), left_runs);
+}
+
+TEST(ParallelFlush, NoOpFrontierPreservesUnchangedRouting)
+{
+    detail::FlushRuntime   runtime(2, 32);
+    auto                   lane = std::make_shared<detail::FlushRuntime::Lane>(32);
+    PublicationCoordinator publisher;
+    initialize(publisher, {table({})});
+    auto lower                  = std::make_shared<PublishedPage>();
+    auto lower_route            = std::make_shared<InnerPageState>();
+    lower_route->children       = {2};
+    lower->inner                = std::move(lower_route);
+    lower->level                = 2;
+    lower->metrics.leaf         = false;
+    auto upper                  = std::make_shared<PublishedPage>();
+    auto upper_route            = std::make_shared<InnerPageState>();
+    upper_route->children       = {3};
+    upper->inner                = std::move(upper_route);
+    upper->level                = 3;
+    upper->metrics.leaf         = false;
+    auto request                = std::make_shared<PublicationRequest>();
+    request->transaction.record = std::make_shared<InstallRecord>(InstallToken{.generation = 1, .sequence = 1});
+    request->transaction.pages  = {
+        {.page_id = 3, .expected = {}, .replacement = lower},
+        {.page_id = 4, .expected = {}, .replacement = upper}
+    };
+    request->transaction.root_page_id = 4;
+    request->on_done = [](PublicationResult result) { EXPECT_TRUE(result.status.ok()) << result.status.to_string(); };
+    ASSERT_TRUE(publisher.try_submit(request));
+    auto              before = publisher.capture();
+    FlushBatchOptions options;
+    options.consolidation.emplace();
+    std::shared_ptr<FlushBatch> batch;
+    ASSERT_TRUE(FlushBatch::prepare(publisher, runtime, lane, 1, 1, options, {}, &batch).ok());
+    ASSERT_TRUE(stdexec::sync_wait(batch->sender()));
+    runtime.drain();
+    ASSERT_TRUE(batch->result().handoff_status.ok()) << batch->result().handoff_status.to_string();
+    const auto after = publisher.capture();
+    EXPECT_EQ(after->coverage, 1U);
+    EXPECT_EQ(after->root_page_id, before->root_page_id);
+    EXPECT_EQ(after->stats.inner_pages, before->stats.inner_pages);
+    for (uint64_t pid = 0; pid < before->next_page_id; ++pid) {
+        EXPECT_EQ(after->mapping.get(pid), before->mapping.get(pid));
+    }
 }
 } // namespace
 } // namespace crowdb::tree

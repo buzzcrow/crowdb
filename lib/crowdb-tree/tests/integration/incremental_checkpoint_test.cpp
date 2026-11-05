@@ -180,7 +180,7 @@ TEST(IncrementalCheckpoint, LargeTreeEditPreservesUntouchedPhysicalPages)
     const auto windows = work->counters.snapshot()[static_cast<size_t>(TreeWorkCause::Checkpoint)]
                                                   [static_cast<size_t>(TreeWorkCounter::SplitOperations)] -
                          before_splits;
-    EXPECT_GT(windows, 0U);
+    EXPECT_EQ(windows, 0U);
     RecordProperty("checkpoint_split_transactions", std::to_string(windows));
     RecordProperty("initial_checkpoint_ms", std::to_string(elapsed.count()));
     const auto before = durable_locations(tree);

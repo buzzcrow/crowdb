@@ -38,23 +38,38 @@ std::shared_ptr<const PublishedPage> append_runs(const PublishedPage            
 
 void FlushBatch::State::start_range(size_t index, detail::BoundedRangeJoin::Completion done)
 {
-    if (ranges[index].record->committed.load(std::memory_order_acquire)) {
-        done();
+    auto &range = ranges[index];
+    range.index = index;
+    range.join_completion.emplace(std::move(done));
+    start_range(range, {.context = &range, .complete = +[](void *raw, Status status) noexcept {
+                            auto &target = *static_cast<Range *>(raw);
+                            if (target.join_completion) {
+                                auto completion = std::move(*target.join_completion);
+                                target.join_completion.reset();
+                                completion(std::move(status));
+                            }
+                        }});
+}
+
+void FlushBatch::State::start_range(Range &range, RangeComplete done)
+{
+    if (range.record->committed.load(std::memory_order_acquire)) {
+        finish_range(range, done);
         return;
     }
     if ((lifecycle.load(std::memory_order_acquire) & kStopped) != 0) {
-        finish_range(index, done, Status::unavailable("flush stopped before range dispatch"));
+        finish_range(range, done, Status::unavailable("flush stopped before range dispatch"));
         return;
     }
-    if (!ranges[index].probed && DispatchScope::take(*this)) {
-        ranges[index].probed = true;
+    if (!range.probed && DispatchScope::take(*this)) {
+        range.probed = true;
         publisher.work_metrics()->dispatch.inline_probe();
-        execute_range(index, done, true);
+        execute_range(range, done, true);
         return;
     }
-    ranges[index].probed = true;
-    auto work            = detail::reserved_unique<Work>(metadata, shared_from_this(), index, done);
-    auto status          = runtime.try_submit(lane, &Work::execute, work.get());
+    range.probed = true;
+    auto work    = detail::reserved_unique<Work>(metadata, shared_from_this(), range, done);
+    auto status  = runtime.try_submit(lane, &Work::execute, work.get());
     if (status.ok()) {
         publisher.work_metrics()->dispatch.queued_step();
         [[maybe_unused]] auto *scheduled = work.release();
@@ -65,7 +80,7 @@ void FlushBatch::State::start_range(size_t index, detail::BoundedRangeJoin::Comp
         options.cpu_progress->request(ready->node, ready->owner);
     }
     else {
-        finish_range(index, done, std::move(status));
+        finish_range(range, done, std::move(status));
     }
 }
 
@@ -74,57 +89,55 @@ void FlushBatch::State::Work::execute(void *context) noexcept
     auto                        *raw = static_cast<Work *>(context);
     detail::ReservedUnique<Work> work(raw, detail::ReservationDeleter<Work>{raw->owner->metadata});
     DispatchScope                scope(*work->owner);
-    work->owner->execute_range(work->index, work->done, false);
+    work->owner->execute_range(work->range, work->done, false);
 }
 
-void FlushBatch::State::execute_range(size_t index, detail::BoundedRangeJoin::Completion done,
-                                      bool inline_probe) noexcept
+void FlushBatch::State::execute_range(Range &range, RangeComplete done, bool inline_probe) noexcept
 {
     try {
-        auto &metrics = ranges[index].metrics;
+        auto &metrics = range.metrics;
         if (!metrics) {
             record_work(publisher.work_metrics(), TreeWorkCounter::FlushRangeJobs, 1, TreeWorkCause::Flush);
             metrics = detail::reserved_shared<TreeMetricsOperation>(metadata, publisher.work_metrics(),
                                                                     TreeStage::FlushRange, tree_metrics_now_ns());
         }
-        install(index, done, inline_probe);
+        install(range, done, inline_probe);
     }
     catch (const std::bad_alloc &) {
-        finish_range(index, done, Status::resource_exhausted());
+        finish_range(range, done, Status::resource_exhausted());
     }
     catch (const std::exception &) {
-        finish_range(index, done, Status::internal_error());
+        finish_range(range, done, Status::internal_error());
     }
 }
 
-void FlushBatch::State::install(size_t index, detail::BoundedRangeJoin::Completion done, bool inline_probe)
+void FlushBatch::State::install(Range &range, RangeComplete done, bool inline_probe)
 {
     if ((lifecycle.load(std::memory_order_acquire) & kStopped) != 0) {
-        finish_range(index, done, Status::unavailable("flush stopped before range execution"));
+        finish_range(range, done, Status::unavailable("flush stopped before range execution"));
         return;
     }
-    auto &range = ranges[index];
     if (!range.ready && range.runs.size() < range.next_install_at) {
         auto status = prepare_run(range, inline_probe);
         if (!status.ok()) {
-            finish_range(index, done, std::move(status));
+            finish_range(range, done, std::move(status));
             return;
         }
 #ifdef CROWDB_TREE_TEST_UTIL
         if (options.after_run_for_tests) {
-            options.after_run_for_tests(index, range.runs.size());
+            options.after_run_for_tests(range.index, range.runs.size());
         }
 #endif
         if (inline_probe && range.ready) {
             publisher.work_metrics()->dispatch.inline_range();
         }
         if (!range.ready && range.runs.size() < range.next_install_at) {
-            start_range(index, std::move(done));
+            start_range(range, done);
             return;
         }
     }
     if ((lifecycle.load(std::memory_order_acquire) & kStopped) != 0) {
-        finish_range(index, done, Status::unavailable("flush stopped before range publication"));
+        finish_range(range, done, Status::unavailable("flush stopped before range publication"));
         return;
     }
     if (!range.window_prepared) {
@@ -160,13 +173,13 @@ void FlushBatch::State::install(size_t index, detail::BoundedRangeJoin::Completi
         request->transaction.pages.push_back(
             {.page_id = range.page_id, .expected = range.expected, .replacement = range.prepared_page});
     }
-    request->on_done = [self = shared_from_this(), index, done](PublicationResult result) noexcept {
+    request->on_done = [self = shared_from_this(), &range, done](PublicationResult result) noexcept {
         if (!result.status.ok()) {
-            self->finish_range(index, done, std::move(result.status));
+            self->finish_range(range, done, std::move(result.status));
             return;
         }
         self->publisher.work_metrics()->dispatch.installed(result.copied.bytes);
-        auto &range = self->ranges[index];
+
         record_work(self->publisher.work_metrics(), TreeWorkCounter::FlushHandoffBytes,
                     range.bytes - range.installed_bytes, TreeWorkCause::Flush);
         range.installed_runs    = range.runs.size();
@@ -177,29 +190,29 @@ void FlushBatch::State::install(size_t index, detail::BoundedRangeJoin::Completi
         }
         range.window_prepared = false;
         if (!range.prepared_record) {
-            self->finish_range(index, done);
+            self->finish_range(range, done);
             return;
         }
         range.record          = std::move(range.prepared_record);
         range.next_install_at = range.next_install_at > SIZE_MAX / 2 ? SIZE_MAX : range.next_install_at * 2;
         try {
-            self->start_range(index, done);
+            self->start_range(range, done);
         }
         catch (const std::bad_alloc &) {
-            self->finish_range(index, done, Status::resource_exhausted());
+            self->finish_range(range, done, Status::resource_exhausted());
         }
         catch (const std::exception &) {
-            self->finish_range(index, done, Status::internal_error());
+            self->finish_range(range, done, Status::internal_error());
         }
     };
     if (!publisher.try_submit(request, options.publication)) {
-        finish_range(index, done, Status::resource_exhausted("publication queue is full or closed"));
+        finish_range(range, done, Status::resource_exhausted("publication queue is full or closed"));
     }
 }
 
-void FlushBatch::State::finish_range(size_t index, detail::BoundedRangeJoin::Completion done, Status status) noexcept
+void FlushBatch::State::finish_range(Range &range, RangeComplete done, Status status) noexcept
 {
-    auto metrics = std::move(ranges[index].metrics);
+    auto metrics = std::move(range.metrics);
     if (metrics) {
         auto outcome = status.ok() ? TreeOutcome::Success : TreeOutcome::Error;
         if ((lifecycle.load(std::memory_order_acquire) & kStopped) != 0) {
@@ -245,6 +258,13 @@ void FlushBatch::State::cover()
     for (const auto &range : ranges) {
         transaction.required_installs.push_back(range.record);
     }
+    if (subtree) {
+        auto status = collect_subtree(transaction);
+        if (!status.ok()) {
+            joined(std::move(status));
+            return;
+        }
+    }
     auto self        = shared_from_this();
     request->on_done = [self, detached](PublicationResult result) {
         self->report.handoff_status = std::move(result.status);
@@ -260,7 +280,9 @@ void FlushBatch::State::cover()
         self->captured.reset();
         self->inputs.reset();
         self->options.loader.reset();
+        self->options.consolidation_loader.reset();
         self->ranges.clear();
+        self->subtree.reset();
         self->maintain();
     };
     if (!publisher.try_submit(request, options.publication)) {

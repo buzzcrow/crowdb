@@ -4,6 +4,7 @@
 
 #include "flush_runtime.h"
 #include "logical_page.h"
+#include "maintenance_publication.h"
 #include "published_state.h"
 
 namespace crowdb::tree
@@ -32,19 +33,21 @@ struct FlushResult
 
 struct FlushBatchOptions
 {
-    RunLimits run_limits;
-    size_t    max_sources            = 64;
-    size_t    parallelism            = 4;
-    size_t    inline_entries         = 32;
-    size_t    inline_bytes           = 64 * 1024;
-    size_t    max_run_bytes          = 1024 * 1024;
-    size_t    inline_ranges_per_step = 8;
+    RunLimits                                    run_limits;
+    std::optional<MaintenancePublicationOptions> consolidation;
+    size_t                                       max_sources            = 64;
+    size_t                                       parallelism            = 4;
+    size_t                                       inline_entries         = 32;
+    size_t                                       inline_bytes           = 64 * 1024;
+    size_t                                       max_run_bytes          = 1024 * 1024;
+    size_t                                       inline_ranges_per_step = 8;
     // Install the first bounded run window early; later windows double so
     // immutable prefix-array copies remain linear in the batch input.
     size_t                           install_run_window      = 64;
     size_t                           routing_leaves_per_step = 64;
     size_t                           max_route_depth         = 64;
     std::shared_ptr<PageLoader>      loader                  = nullptr;
+    std::shared_ptr<PageLoader>      consolidation_loader    = nullptr;
     PageKeyRange                     selection;
     std::shared_ptr<ApplyDispatcher> cpu_progress = nullptr;
     std::shared_ptr<PublicationLane> publication  = nullptr;
@@ -54,7 +57,9 @@ struct FlushBatchOptions
     // Runs after publication admission and before source closure.
     std::function<void()> before_capture_for_tests = nullptr;
     // Called after a bounded run is owned and all source guards are released.
-    std::function<void(size_t, size_t)> after_run_for_tests = nullptr;
+    std::function<void(size_t, size_t)>     after_run_for_tests      = nullptr;
+    std::function<void(uint64_t)>           before_handoff_for_tests = nullptr;
+    std::function<void(uint64_t, uint32_t)> after_page_for_tests     = nullptr;
 #endif
 };
 

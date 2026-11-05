@@ -103,6 +103,10 @@ void FlushBatch::State::plan_step(std::shared_ptr<const InnerPageState> loaded, 
         acquire_route();
         return;
     }
+    if (options.consolidation) {
+        start_subtree();
+        return;
+    }
     if (!route) {
         route    = detail::reserved_unique<PublishedRouteCursor>(metadata, captured->root_page_id, captured->mapping,
                                                                  options.max_route_depth, false, metadata);

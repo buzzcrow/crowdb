@@ -34,7 +34,7 @@ class MaintenanceBuilder
 {
   public:
     MaintenanceBuilder(std::shared_ptr<const PublishedTreeState> captured, std::shared_ptr<InstallRecord> record,
-                       const MaintenancePublicationOptions &limits);
+                       const MaintenancePublicationOptions &limits, InlineFunction<Status(uint64_t *)> allocate = {});
     [[nodiscard]] Status validate() const;
     Status               path_to(uint64_t pid, MaintenancePath *path) const;
     Status               guard_path(const MaintenancePath &path);
@@ -54,17 +54,28 @@ class MaintenanceBuilder
     const std::shared_ptr<const PublishedTreeState> view;
     MaintenancePublicationOptions                   options;
 
-  private:
-    Status merge_inner_pair(const MaintenancePathEntry &ancestor, uint64_t target, bool *changed);
     Status partition_inner(uint64_t pid, uint32_t level, const InnerPageState &inner, MaintenanceChildren *output);
     Status grow_root(MaintenanceChildren children, uint32_t child_level);
-    std::shared_ptr<InstallRecord> record_;
+
+    [[nodiscard]] uint64_t root_page_id() const noexcept
+    {
+        return root_pid_;
+    }
+
+  private:
+    Status merge_inner_pair(const MaintenancePathEntry &ancestor, uint64_t target, bool *changed);
+    InlineFunction<Status(uint64_t *)> allocate_;
+    std::shared_ptr<InstallRecord>     record_;
     using Change = std::pair<const uint64_t, PageReplacement>;
     std::map<uint64_t, PageReplacement, std::less<>, ReservationAllocator<Change>> changes_;
     uint64_t                                                                       next_pid_;
     uint64_t                                                                       root_pid_;
     size_t                                                                         inner_merges_ = 0;
 };
+
+Status build_flush_leaf_outputs(MaintenanceBuilder &builder, uint64_t pid,
+                                const std::shared_ptr<const PublishedPage> &old, const struct SplitWindowLayout &layout,
+                                MaintenanceChildren *children);
 
 Status next_page_version(const PageState &left, const PageState *right, PageVersion *version);
 Status summarize_leaf(const std::shared_ptr<const PageState> &page, const PageMaintenanceLimits &limits,

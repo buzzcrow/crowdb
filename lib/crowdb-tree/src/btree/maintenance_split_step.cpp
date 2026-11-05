@@ -184,6 +184,33 @@ MaintenancePublicationResult build_split_step_publication(std::shared_ptr<const 
 
 namespace crowdb::tree::detail
 {
+Status build_flush_leaf_outputs(MaintenanceBuilder &builder, uint64_t pid,
+                                const std::shared_ptr<const PublishedPage> &old, const SplitWindowLayout &layout,
+                                MaintenanceChildren *children)
+{
+    if (!layout.source || layout.source->content_id != old->leaf->content_id ||
+        layout.source->representation_id != old->leaf->representation_id ||
+        layout.source->route_generation != old->leaf->route_generation ||
+        layout.source->range.lower != old->leaf->range.lower || layout.source->range.upper != old->leaf->range.upper ||
+        layout.primary_bytes.size() != layout.separators.size() + 1 ||
+        layout.statistics.size() != layout.primary_bytes.size()) {
+        return Status::invalid_argument("flush requires a complete leaf layout");
+    }
+    children->pids.push_back(pid);
+    children->separators = layout.separators;
+    for (size_t i = 0; i < layout.separators.size(); ++i) {
+        uint64_t output = 0;
+        auto     status = builder.allocate_pid(&output);
+        if (!status.ok()) {
+            return status;
+        }
+        children->pids.push_back(output);
+    }
+    PageVersion version;
+    auto        status = next_page_version(*old->leaf, nullptr, &version);
+    return status.ok() ? prepare_outputs(builder, old, *children, layout, version) : status;
+}
+
 MaintenancePublicationResult build_split_layout_publication(std::shared_ptr<const PublishedTreeState> view,
                                                             uint64_t leaf_pid, std::shared_ptr<InstallRecord> record,
                                                             const MaintenancePublicationOptions &options,

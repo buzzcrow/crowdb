@@ -96,9 +96,7 @@ Status bind_flush_reservations(PublicationCoordinator &publisher, const FlushPre
                                                                          .backend      = reserved.backend,
                                                                          .cpu_progress = preparation.cpu_progress,
                                                                          .cause        = TreeWorkCause::Flush});
-    // Maintenance runs after handoff metadata is sealed. Its bounded decoded
-    // bases use Routing directly instead of allocating new cache waiters there.
-    auto maintenance_loader = batch->loader;
+    batch->consolidation_loader = batch->loader;
     if (preparation.cache) {
         std::shared_ptr<PageLoader> binding;
         auto                        status =
@@ -108,19 +106,11 @@ Status bind_flush_reservations(PublicationCoordinator &publisher, const FlushPre
         }
         batch->loader = std::move(binding);
     }
-    auto maintenance_options                               = preparation.maintenance;
-    maintenance_options.publication.pages.max_output_pages = bounds.maintenance_output_pages;
-    auto fallback                                          = reserved_shared<ReclaimAdmission>(
-        reserved.handoff,
-        ReclaimAdmission{.publisher = &publisher, .account = account, .options = preparation.maintenance});
-    maintenance_options.prepaid                       = reserved.reclaim;
-    maintenance_options.publication.snapshot_metadata = reserved.snapshot;
-    maintenance_options.acquire_window = [fallback](const auto &mapping, auto *publication, auto *credit) {
-        return fallback->acquire_window(mapping, publication, credit);
-    };
-    *maintenance = make_page_maintenance(publisher, *preparation.runtime, lane, std::move(maintenance_options),
-                                         std::move(maintenance_loader), preparation.cpu_progress);
-    *out         = std::move(reserved);
+    batch->consolidation                         = preparation.maintenance.publication;
+    batch->consolidation->pages.max_output_pages = bounds.maintenance_output_pages;
+    batch->consolidation->metadata               = reserved.reclaim;
+    batch->consolidation->snapshot_metadata      = reserved.snapshot;
+    *out                                         = std::move(reserved);
     return Status::Ok();
 }
 

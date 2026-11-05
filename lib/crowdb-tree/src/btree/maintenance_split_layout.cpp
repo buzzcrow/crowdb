@@ -45,6 +45,16 @@ std::optional<BaseLoadRequest> SplitWindowCursor::needs_base() const
 
 Status SplitWindowCursor::advance()
 {
+    return advance(false);
+}
+
+Status SplitWindowCursor::advance_complete()
+{
+    return advance(true);
+}
+
+Status SplitWindowCursor::advance(bool complete)
+{
     const auto &limits = limits_;
     auto       *layout = &layout_;
     if (done_) {
@@ -61,9 +71,14 @@ Status SplitWindowCursor::advance()
     if (cursor_.needs_base()) {
         return Status::Ok();
     }
-    const auto outputs = limits.max_output_pages;
+    const auto outputs      = limits.max_output_pages;
+    size_t     step_entries = 0;
+    size_t     step_outputs = 0;
     while (cursor_.valid()) {
-        const bool work_limit = entries_ == limits.max_work_entries;
+        if (complete && step_entries == limits.max_work_entries) {
+            return Status::Ok();
+        }
+        const bool work_limit = !complete && entries_ == limits.max_work_entries;
         size_t     bytes      = 0;
         if (!work_limit) {
             const auto status = primary_bytes(cursor_.key(), cursor_.cell(), limits, &bytes);
@@ -80,12 +95,16 @@ Status SplitWindowCursor::advance()
             layout->statistics.push_back(current_stats_);
             layout->separators.emplace_back(cursor_.key(), limits.metadata);
             separator_bytes_ += cursor_.key().size();
-            if (work_limit || layout->separators.size() + 1 == outputs) {
+            ++step_outputs;
+            if (!complete && (work_limit || layout->separators.size() + 1 == outputs)) {
                 done_ = true;
                 return Status::Ok();
             }
             current_bytes_ = kPageOverhead;
             current_stats_ = {};
+            if (complete && step_outputs == outputs - 1) {
+                return Status::Ok();
+            }
         }
         auto status = accumulate_leaf_stats(cursor_.key(), cursor_.cell(), &current_stats_);
         if (!status.ok()) {
@@ -93,6 +112,7 @@ Status SplitWindowCursor::advance()
         }
         current_bytes_ += bytes;
         ++entries_;
+        ++step_entries;
         cursor_.next();
         if (!cursor_.status().ok()) {
             return cursor_.status();

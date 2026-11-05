@@ -154,7 +154,8 @@ Status validate_transaction(const PublishedTreeState &current, const Publication
     if (transaction.handoff) {
         const auto &handoff = *transaction.handoff;
         if (handoff.batch != transaction.record->token.batch || handoff.frontier <= current.coverage ||
-            (transaction.coverage && *transaction.coverage != handoff.frontier) || transaction.root_page_id) {
+            (transaction.coverage && *transaction.coverage != handoff.frontier) ||
+            (transaction.root_page_id && !transaction.coverage)) {
             return Status::invalid_argument("invalid handoff identity or frontier");
         }
         if (current.pending_handoff && current.pending_handoff != transaction.handoff) {

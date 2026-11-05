@@ -9,8 +9,34 @@ namespace crowdb::tree
 {
 struct FlushBatch::State : std::enable_shared_from_this<State>
 {
+    struct RangeComplete
+    {
+        void *context;
+        void (*complete)(void *, Status) noexcept;
+
+        void operator()(Status status) const noexcept
+        {
+            complete(context, std::move(status));
+        }
+    };
+
+    struct Subtree;
+    void                     start_subtree();
+    Status                   collect_subtree(PublicationTransaction &transaction);
+    void                     start_load() noexcept;
+    void                     start_leaves() noexcept;
+    std::atomic<Subtree *>   leaf_waiters{nullptr};
+    std::atomic<size_t>      active_leaves{0};
+    std::atomic<Subtree *>   load_waiters{nullptr};
+    std::atomic<bool>        load_active{false};
+    std::shared_ptr<Subtree> subtree;
+    std::atomic<uint64_t>    next_pid{0};
+    std::atomic<size_t>      next_range{0};
+
     struct Range
     {
+        size_t                                                 index           = 0;
+        std::optional<detail::BoundedRangeJoin::Completion>    join_completion = std::nullopt;
         uint64_t                                               page_id;
         PageKeyRange                                           bounds;
         std::shared_ptr<const PublishedPage>                   expected;
@@ -66,19 +92,19 @@ struct FlushBatch::State : std::enable_shared_from_this<State>
 
     struct Work
     {
-        Work(std::shared_ptr<State> state, size_t range, detail::BoundedRangeJoin::Completion completion)
+        Work(std::shared_ptr<State> state, Range &range, RangeComplete completion)
             : owner(std::move(state)),
-              index(range),
+              range(range),
               done(std::move(completion)),
               node(&Work::execute, this)
         {
         }
 
-        std::shared_ptr<State>               owner;
-        size_t                               index;
-        detail::BoundedRangeJoin::Completion done;
-        ApplyDispatcher::Node                node;
-        static void                          execute(void *context) noexcept;
+        std::shared_ptr<State> owner;
+        Range                 &range;
+        RangeComplete          done;
+        ApplyDispatcher::Node  node;
+        static void            execute(void *context) noexcept;
     };
 
     struct PlanWork
@@ -134,15 +160,16 @@ struct FlushBatch::State : std::enable_shared_from_this<State>
     void                    acquire_route();
     void                    start(detail::CallbackComplete callback, void *argument);
     void                    start_range(size_t index, detail::BoundedRangeJoin::Completion done);
+    void                    start_range(Range &range, RangeComplete done);
     Status                  prepare_run(Range &range, bool inline_probe);
-    void finish_range(size_t index, detail::BoundedRangeJoin::Completion done, Status status = Status::Ok()) noexcept;
-    void execute_range(size_t index, detail::BoundedRangeJoin::Completion done, bool inline_probe) noexcept;
-    void install(size_t index, detail::BoundedRangeJoin::Completion done, bool inline_probe);
-    void joined(Status status) noexcept;
-    void cover();
-    void maintain() noexcept;
-    void do_maintain();
-    void finish() noexcept;
+    void                    finish_range(Range &range, RangeComplete done, Status status = Status::Ok()) noexcept;
+    void                    execute_range(Range &range, RangeComplete done, bool inline_probe) noexcept;
+    void                    install(Range &range, RangeComplete done, bool inline_probe);
+    void                    joined(Status status) noexcept;
+    void                    cover();
+    void                    maintain() noexcept;
+    void                    do_maintain();
+    void                    finish() noexcept;
 
     PublicationCoordinator                                 &publisher;
     detail::FlushRuntime                                   &runtime;

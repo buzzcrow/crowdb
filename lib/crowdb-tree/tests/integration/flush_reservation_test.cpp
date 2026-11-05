@@ -339,8 +339,8 @@ TEST(FlushReservation, ColdRoutingUsesHeldBytesAndIoUnderCompleteHostPressure)
     EXPECT_EQ(operation->result().published_coverage, 2U);
     EXPECT_TRUE(operation->result().maintenance_status.ok()) << operation->result().maintenance_status.to_string();
     EXPECT_GT(operation->result().deferred_pages, 0U);
-    // Handoff caches the root once; cold maintenance has its own raw loader.
-    EXPECT_EQ(tree.store->reads.load(), 2U);
+    // One root load serves both routing and the parent join.
+    EXPECT_EQ(tree.store->reads.load(), 1U);
     EXPECT_EQ(tree.budget.snapshot().allocated[static_cast<size_t>(detail::BudgetClass::kIo)], 0U);
     EXPECT_EQ(tree.preparation.cache->snapshot().reserved_waiters, 0U);
     EXPECT_EQ(tree.preparation.cache->snapshot().misses, 1U);
@@ -380,9 +380,8 @@ TEST(FlushReservation, DescendingColdRoutePidsUseHeldCreditForEveryLoadedLevel)
     EXPECT_TRUE(operation->result().handoff_status.ok()) << operation->result().handoff_status.to_string();
     EXPECT_TRUE(operation->result().maintenance_status.ok()) << operation->result().maintenance_status.to_string();
     EXPECT_EQ(operation->result().published_coverage, 2U);
-    // Handoff and the separate inner-repair/layout windows each read the two
-    // descending route PIDs. Both maintenance windows use their held credit.
-    EXPECT_EQ(tree.store->reads.load(), 6U);
+    // Each descending routing page is loaded once for the complete flow.
+    EXPECT_EQ(tree.store->reads.load(), 2U);
     EXPECT_EQ(tree.preparation.cache->snapshot().misses, 2U);
     EXPECT_EQ(tree.preparation.cache->snapshot().reserved_waiters, 0U);
     EXPECT_EQ(tree.budget.snapshot().allocated[static_cast<size_t>(detail::BudgetClass::kIo)], 0U);
@@ -408,22 +407,23 @@ TEST(FlushReservation, LiveResidencyAndColdProxyPublicationUseHeldCreditUnderCom
         EXPECT_TRUE(operation->result().handoff_status.ok()) << operation->result().handoff_status.to_string();
         EXPECT_TRUE(operation->result().maintenance_status.ok()) << operation->result().maintenance_status.to_string();
         EXPECT_EQ(operation->result().published_coverage, 2U);
-        // Handoff caches the inner. Maintenance reads the inner and first leaf
-        // directly, then publishes that decoded leaf with its exact summary.
+        // Both leaves finish using temporary raw loads and retain their cold backing.
         EXPECT_EQ(tree.store->reads.load(), 3U);
         EXPECT_EQ(tree.cache->snapshot().misses, 1U);
         const auto view = tree.publisher.capture();
-        ASSERT_TRUE(view->mapping.get(0)->leaf->bases.front().resident);
+        EXPECT_FALSE(view->mapping.get(0)->leaf->bases.front().resident);
         EXPECT_FALSE(view->mapping.get(1)->leaf->bases.front().resident);
+        EXPECT_TRUE(view->mapping.get(0)->metrics.kv_known);
+        EXPECT_TRUE(view->mapping.get(1)->metrics.kv_known);
         EXPECT_FALSE(view->mapping.get(2)->inner);
-        EXPECT_EQ(tree.resources->snapshot().proxy_pages, 1U);
+        EXPECT_EQ(tree.resources->snapshot().proxy_pages, 2U);
         EXPECT_EQ(tree.resources->snapshot().resident_frames, 1U);
         EXPECT_EQ(tree.resources->snapshot().cache_pinned_bytes, 0U);
         EXPECT_EQ(tree.cache->snapshot().reserved_waiters, 0U);
         EXPECT_EQ(tree.budget.snapshot().allocated[static_cast<size_t>(detail::BudgetClass::kIo)], 0U);
         tree.cache->evict();
         tree.runtime->drain();
-        EXPECT_EQ(tree.resources->snapshot().proxy_pages, 2U);
+        EXPECT_EQ(tree.resources->snapshot().proxy_pages, 3U);
         EXPECT_EQ(tree.resources->snapshot().resident_frames, 0U);
         EXPECT_EQ(tree.resources->snapshot().cache_bytes, 0U);
     }

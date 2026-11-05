@@ -323,6 +323,7 @@ void FlushOperation::State::finish() noexcept
     if (!admitted && !capture && !batch) {
         source_pause.reset();
         options.loader.reset();
+        options.consolidation_loader.reset();
         metadata->seal();
         if (release_metadata) {
             release_metadata->seal();
@@ -331,6 +332,7 @@ void FlushOperation::State::finish() noexcept
     }
     else if (report.phase == FlushPhase::kComplete) {
         options.loader.reset();
+        options.consolidation_loader.reset();
         reservations.seal();
     }
     auto outcome = report.handoff_status.ok() ? TreeOutcome::Success : TreeOutcome::Error;

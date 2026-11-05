@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 #include "allocation_bound.h"
-#include "flush_reservation_internal.h"
+#include "flush_reservation.h"
 #include "page_cache.h"
 
 #include <algorithm>
@@ -86,7 +86,6 @@ Status flush_reserve_bounds(PublicationCoordinator &publisher, const PublishedTr
                        .add_product(source_count, 2 * sizeof(std::shared_ptr<MemTable>))
                        .add(2 * sizeof(std::shared_ptr<MemTable>))
                        .add_product(4, shared_allocation_bound<AllocationReservation>())
-                       .add(shared_allocation_bound<ReclaimAdmission>())
                        .add(preparation.cache ? SharedPageCache::binding_allocation_bound() : 0)
                        .add(preparation.cache ? preparation.cache->load_reserve_bound(root->level, workers)
                                               : std::optional<size_t>{0})
@@ -104,6 +103,10 @@ Status flush_reserve_bounds(PublicationCoordinator &publisher, const PublishedTr
     const auto cold_depth =
         path_depth +
         (root->level < 2 ? 0 : static_cast<size_t>(std::min<uint64_t>(view.stats.inner_pages, 3 * path_depth)));
+    const auto leaf_window = AllocationBound().add_product(cold_bases, batch.parallelism).value();
+    if (!leaf_window) {
+        return Status::resource_exhausted("flush cold leaf window bound overflow");
+    }
     // Only captured inner pages can become cold cache entries during this
     // operation. Maintenance-created inner pages already own resident routes.
     const auto routing =
@@ -112,7 +115,7 @@ Status flush_reserve_bounds(PublicationCoordinator &publisher, const PublishedTr
                 preparation.loads, root->level, workers,
                 preparation.cache ? std::min<uint64_t>(preparation.cache->retained_page_limit(), view.stats.inner_pages)
                                   : 0))
-            .add(AsyncStorePageLoader::primary_reserve_bound(preparation.loads, cold_depth, 1, cold_bases))
+            .add(AsyncStorePageLoader::primary_reserve_bound(preparation.loads, cold_depth, workers, *leaf_window))
             .value();
     const auto backend = backend_operation_bound(
         preparation.store.get(),

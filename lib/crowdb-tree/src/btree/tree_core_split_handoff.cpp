@@ -117,7 +117,12 @@ Status TreeCore::State::prepare_split_handoff(const SplitSourceSession &session,
             done(std::move(result), published->stats.dirty_pages);
             return;
         }
-        current->maintenance(std::move(published), std::move(done));
+        if (current->maintenance) {
+            current->maintenance(std::move(published), std::move(done));
+        }
+        else {
+            done(Status::Ok(), published->stats.dirty_pages);
+        }
     };
     status = FlushBatch::prepare(*publisher, *binding->cpu(), binding->lane(), session.session, end, std::move(options),
                                  std::move(acknowledge), &handoff->operation, std::move(inputs), metadata);

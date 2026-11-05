@@ -9,9 +9,11 @@ namespace crowdb::tree::detail
 {
 MaintenanceBuilder::MaintenanceBuilder(std::shared_ptr<const PublishedTreeState> captured,
                                        std::shared_ptr<InstallRecord>            record,
-                                       const MaintenancePublicationOptions      &limits)
+                                       const MaintenancePublicationOptions      &limits,
+                                       InlineFunction<Status(uint64_t *)>        allocate)
     : view(std::move(captured)),
       options(limits),
+      allocate_(std::move(allocate)),
       record_(std::move(record)),
       changes_(ReservationAllocator<Change>(limits.metadata)),
       next_pid_(view ? view->next_page_id : 0),
@@ -40,6 +42,9 @@ std::shared_ptr<const PublishedPage> MaintenanceBuilder::lookup(uint64_t pid) co
 
 Status MaintenanceBuilder::allocate_pid(uint64_t *pid)
 {
+    if (allocate_) {
+        return allocate_(pid);
+    }
     if (next_pid_ >= MappingView::kPageLimit) {
         return Status::resource_exhausted("maintenance PID space exhausted");
     }
