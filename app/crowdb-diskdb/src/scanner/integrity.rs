@@ -164,13 +164,13 @@ async fn scan_zone_records(
     // ZoneValue.
     let zone_key = crowdb_protocol::key::ZoneKey { disk_id, zone_index };
     let zone_bytes = zone_key.to_bytes();
-    if let Ok(crowdb_kv_client::GetOutcome::Found { value, .. }) = kv
+    if let Ok(crowdb_paxos_kv_client::GetOutcome::Found { value, .. }) = kv
         .kv()
         .get(
             store_id,
             group_id,
             &zone_bytes,
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await
@@ -203,7 +203,7 @@ async fn scan_zone_records(
             &[],
             &[],
             0,
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
             false,
             None,
@@ -230,7 +230,7 @@ async fn scan_zone_records(
             &[],
             &[],
             0,
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
             false,
             None,

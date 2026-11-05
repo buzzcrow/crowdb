@@ -19,10 +19,21 @@ Batch put(std::string key, std::string value)
     return Batch{{{.key = std::move(key), .kind = OpKind::kPut, .value = std::move(value)}}};
 }
 
+bool wait_closed(const std::shared_ptr<MemTable> &table)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!table->closed() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    return table->closed();
+}
+
 void expect_value(Crowdbtree &tree, uint64_t expected, const std::string &value)
 {
-    auto found = tree.get_view("x");
-    ASSERT_TRUE(found.found());
+    GetView found;
+    auto    status = RuntimeTreeAccess_for_tests::core(tree).get("x", &found);
+    ASSERT_TRUE(status.ok()) << status.to_string();
+    ASSERT_TRUE(found.found()) << "coverage=" << tree.last_applied_slot() << " expected=" << expected;
     EXPECT_EQ(found.slot(), expected);
     EXPECT_EQ(found.value().to_string(), value);
 }
@@ -35,22 +46,42 @@ TEST(MemTableHandoff, AcknowledgedResidualNeverRelocatesOrLeaksIntoL1)
     tree.force_advance_slot(843);
     ASSERT_TRUE(tree.flush().ok());
     tree.force_advance_slot(852);
-    auto boundary = [&] {
-        auto batch = MemTableAccess_for_tests::admit(tree);
-        batch.table->upsert("x", 853, encode_cell_buf(853, OpKind::kPut, "cursor24040"), batch.bound);
-        auto captured = MemTableAccess_for_tests::capture(tree);
-        MemTableAccess_for_tests::finish(tree, 853);
-        return captured;
-    }();
-    auto old_sources = MemTableAccess_for_tests::sources(tree);
-    auto borrowed    = tree.get_view("x");
+    auto               old_table = MemTableAccess_for_tests::active(tree);
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto               resume = release.get_future();
+    old_table->set_hook_for_tests(nullptr, nullptr);
+
+    struct Pause
+    {
+        std::promise<void> &entered;
+        std::future<void>  &resume;
+    } pause{.entered = entered, .resume = resume};
+
+    old_table->set_hook_for_tests(&pause, [](void *argument, ConcurrentSkipList::PausePoint point, Slice) {
+        if (point == ConcurrentSkipList::PausePoint::kBeforePrepare) {
+            auto &pause = *static_cast<Pause *>(argument);
+            pause.entered.set_value();
+            pause.resume.wait();
+        }
+    });
+    auto writer = std::async(std::launch::async, [&] { return tree.apply(853, put("x", "cursor24040")); });
+    entered.get_future().wait();
+    auto       capturing = std::async(std::launch::async, [&] { return MemTableAccess_for_tests::capture(tree); });
+    const bool closed    = wait_closed(old_table);
+    release.set_value();
+    ASSERT_TRUE(writer.get().ok());
+    auto boundary = capturing.get();
+    ASSERT_TRUE(closed);
+    old_table->set_hook_for_tests(nullptr, nullptr);
+    auto borrowed = tree.get_view("x");
     ASSERT_EQ(boundary.frontier, 852U);
     expect_value(tree, 853, "cursor24040");
     MemTableAccess_for_tests::publish(tree, boundary);
     expect_value(tree, 853, "cursor24040");
     EXPECT_EQ(tree.last_applied_slot(), 852U);
-    ASSERT_NE(old_sources.front()->find("x"), nullptr);
-    EXPECT_EQ(old_sources.front()->find("x")->slot, 853U);
+    ASSERT_NE(old_table->find("x"), nullptr);
+    EXPECT_EQ(old_table->find("x")->slot, 853U);
     auto        snapshot       = tree.snapshot_view();
     uint64_t    published_slot = 0;
     std::string published_value;
@@ -92,32 +123,51 @@ TEST(MemTableHandoff, CapturedPrefixSurvivesOverwriteInEitherOrder)
 
 TEST(MemTableHandoff, EmptyAdmittedWriterSurvivesCloseAndSuccessorProgresses)
 {
-    Crowdbtree         tree;
-    std::promise<void> admitted;
-    std::promise<void> resume;
-    auto               continuation = resume.get_future();
-    std::thread        writer([&] {
-        auto batch = MemTableAccess_for_tests::admit(tree);
-        admitted.set_value();
-        continuation.wait();
-        batch.table->upsert("x", 1, encode_cell_buf(1, OpKind::kPut, "old-writer"), batch.bound);
-        MemTableAccess_for_tests::finish(tree, 1);
+    Crowdbtree tree;
+    tree.force_advance_slot(1);
+    auto               old = MemTableAccess_for_tests::active(tree);
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto               resume = release.get_future();
+
+    struct Pause
+    {
+        std::promise<void> &entered;
+        std::future<void>  &resume;
+    } pause{.entered = entered, .resume = resume};
+
+    old->set_hook_for_tests(&pause, [](void *argument, ConcurrentSkipList::PausePoint point, Slice) {
+        if (point == ConcurrentSkipList::PausePoint::kBeforePrepare) {
+            auto &pause = *static_cast<Pause *>(argument);
+            pause.entered.set_value();
+            pause.resume.wait();
+        }
     });
-    admitted.get_future().wait();
-    auto boundary = MemTableAccess_for_tests::capture(tree);
-    EXPECT_EQ(boundary.tables.back()->writers(), 1U);
-    EXPECT_TRUE(boundary.tables.back()->closed());
-    EXPECT_FALSE(boundary.tables.back()->try_enter());
-    EXPECT_FALSE(boundary.tables.back()->validate_open());
-    ASSERT_TRUE(tree.apply(2, put("b", "successor")).ok());
-    resume.set_value();
-    writer.join();
+    auto writer = std::async(std::launch::async, [&] { return tree.apply(2, put("x", "old-writer")); });
+    entered.get_future().wait();
+    auto capture = std::async(std::launch::async, [&] { return MemTableAccess_for_tests::capture(tree); });
+    if (!wait_closed(old)) {
+        release.set_value();
+        writer.wait();
+        capture.wait();
+        FAIL() << "source did not close before the bounded deadline";
+    }
+    EXPECT_EQ(old->writers(), 1U);
+    EXPECT_FALSE(old->try_enter());
+    EXPECT_FALSE(old->validate_open());
+    RuntimeTreeAccess_for_tests::core(tree).binding()->drain();
+    EXPECT_TRUE(tree.apply(3, put("b", "successor")).ok());
+    release.set_value();
+    EXPECT_TRUE(writer.get().ok());
+    auto boundary = capture.get();
+    EXPECT_EQ(boundary.frontier, 1U);
+    old->set_hook_for_tests(nullptr, nullptr);
     MemTableAccess_for_tests::publish(tree, boundary);
-    EXPECT_EQ(tree.last_applied_slot(), 0U);
-    expect_value(tree, 1, "old-writer");
+    EXPECT_EQ(tree.last_applied_slot(), 1U);
+    expect_value(tree, 2, "old-writer");
     ASSERT_TRUE(tree.flush().ok());
-    EXPECT_EQ(tree.last_applied_slot(), 2U);
-    expect_value(tree, 1, "old-writer");
+    EXPECT_EQ(tree.last_applied_slot(), 3U);
+    expect_value(tree, 2, "old-writer");
 }
 
 TEST(MemTableHandoff, SuccessorCompletionCannotWidenCapturedFrontier)
@@ -150,26 +200,37 @@ TEST(MemTableHandoff, BorrowedResultOutlivesItsTreeAndGeneration)
 
 TEST(MemTableHandoff, AsyncFlushCanWaitWithoutBlockingTheCaller)
 {
-    Crowdbtree         tree;
+    Crowdbtree tree;
+    tree.force_advance_slot(1);
+    auto               old = MemTableAccess_for_tests::active(tree);
     std::promise<void> entered;
     std::promise<void> release;
-    auto               proceed = release.get_future();
-    std::thread        writer([&] {
-        auto batch = MemTableAccess_for_tests::admit(tree);
-        entered.set_value();
-        proceed.wait();
-        batch.table->upsert("x", 1, encode_cell_buf(1, OpKind::kPut, "late"), batch.bound);
-        MemTableAccess_for_tests::finish(tree, 1);
+    auto               resume = release.get_future();
+
+    struct Pause
+    {
+        std::promise<void> &entered;
+        std::future<void>  &resume;
+    } pause{.entered = entered, .resume = resume};
+
+    old->set_hook_for_tests(&pause, [](void *argument, ConcurrentSkipList::PausePoint point, Slice) {
+        if (point == ConcurrentSkipList::PausePoint::kBeforePrepare) {
+            auto &pause = *static_cast<Pause *>(argument);
+            pause.entered.set_value();
+            pause.resume.wait();
+        }
     });
+    auto writer = std::async(std::launch::async, [&] { return tree.apply(2, put("x", "late")); });
     entered.get_future().wait();
     std::promise<Status> completion;
     auto                 done = completion.get_future();
     tree.flush_async([&](Status status) { completion.set_value(std::move(status)); });
-    // Reaching this line must not depend on releasing the old writer.
+    EXPECT_EQ(done.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
     release.set_value();
-    writer.join();
+    EXPECT_TRUE(writer.get().ok());
     EXPECT_TRUE(done.get().ok());
-    expect_value(tree, 1, "late");
+    old->set_hook_for_tests(nullptr, nullptr);
+    expect_value(tree, 2, "late");
 }
 
 TEST(MemTableHandoff, EncodedMismatchCannotCreditUnpublishedFutureSlot)

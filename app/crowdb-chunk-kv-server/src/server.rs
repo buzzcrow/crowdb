@@ -11,7 +11,7 @@ use crowdb_chunk_kv::{
     ChunkKvError, CompareCondition, JournalPosition, MutationOperation, MutationResult, Partition,
     PreparedSplitWriterArtifact, RequestId, SplitArtifact, ValueRevision,
 };
-use crowdb_kv_client::StreamProcessAuthority;
+use crowdb_paxos_kv_client::StreamProcessAuthority;
 use crowdb_protocol::chunk_kv::{
     BatchMutationRequest, BatchMutationResponse, BatchMutationResult, ChunkKvRangeCatalogEntry,
     ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPartitionState, ChunkKvResponse,
@@ -34,6 +34,7 @@ mod authority;
 mod drain;
 mod group;
 use assignments::{local_partition_for_entry, partition_matches_entry};
+mod legacy_retirement;
 mod load_sampling;
 mod maintenance;
 mod observation;
@@ -42,6 +43,7 @@ mod readiness;
 mod recovery;
 pub use readiness::RangeReadiness;
 mod reconcile;
+mod resources;
 mod routing;
 mod scan;
 pub(crate) use observation::PageQuery;
@@ -378,9 +380,14 @@ impl ChunkKvService {
     #[must_use]
     pub fn registry_observation(&self, capacity_bytes: u64, request_rate: u64) -> ChunkKvExtra {
         let partitions = self.observed_partition_snapshot();
+        let mut scopes = std::collections::BTreeSet::new();
         let durable_bytes = partitions
             .values()
-            .filter_map(|partition| partition.estimated_bytes().ok())
+            .filter_map(|partition| match partition.backing_storage_stats() {
+                Ok(Some(stats)) => scopes.insert(stats.scope_id).then_some(stats.allocated_bytes),
+                Ok(None) => partition.estimated_bytes().ok(),
+                Err(_) => None,
+            })
             .fold(0_u64, u64::saturating_add);
         let mut hosted: Vec<_> = partitions
             .values()

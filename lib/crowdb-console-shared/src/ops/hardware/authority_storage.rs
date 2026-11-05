@@ -3,7 +3,7 @@
 
 //! Rack-fenced disk-group and disk mutations in Group 0.
 
-use crowdb_kv_client::{BatchOp, Error as KvError, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{BatchOp, Error as KvError, GetOutcome, ReadMode};
 use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskValue};
 use crowdb_protocol::key::{BindMapKey, DiskGroupKey, DiskKey, NodeKey, RackKey, TextKey};

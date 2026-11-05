@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 // CT4: inner base page + tree descent tests.
-#include "crowdb-tree/btree/descent.h"
-#include "crowdb-tree/maptable/mapping_table.h"
 #include "crowdb-tree/maptable/page.h"
+#include "mapping_table_test_support.h"
+#include "page_descent_test_support.h"
 
 #include <gtest/gtest.h>
 
@@ -49,17 +49,19 @@ TEST(InnerPage, child_index_for)
 
 TEST(Descent, SingleLeafRoot)
 {
-    MappingTable mt;
-    uint64_t     leaf_page_id = mt.allocate_page_id();
+    TestMappingTable mt;
+    uint64_t         leaf_page_id = mt.allocate_page_id();
     mt.store(leaf_page_id, LeafBase::build(make_entries(make_entry("a"))));
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, leaf_page_id, "a"), leaf_page_id);
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, leaf_page_id, "zzz"), leaf_page_id);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, leaf_page_id, "a"),
+              leaf_page_id);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, leaf_page_id, "zzz"),
+              leaf_page_id);
     delete mt.get_resident(leaf_page_id);
 }
 
 TEST(Descent, TwoLevelTree)
 {
-    MappingTable mt;
+    TestMappingTable mt;
     // Three leaves.
     uint64_t l0 = mt.allocate_page_id();
     uint64_t l1 = mt.allocate_page_id();
@@ -71,12 +73,12 @@ TEST(Descent, TwoLevelTree)
     uint64_t root = mt.allocate_page_id();
     mt.store(root, InnerBase::build({"k", "q"}, {l0, l1, l2}));
 
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, root, "a"), l0);
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, root, "j"), l0);
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, root, "k"), l1);
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, root, "p"), l1);
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, root, "q"), l2);
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, root, "zz"), l2);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, root, "a"), l0);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, root, "j"), l0);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, root, "k"), l1);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, root, "p"), l1);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, root, "q"), l2);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, root, "zz"), l2);
 
     for (uint64_t page_id : {l0, l1, l2, root}) {
         delete mt.get_resident(page_id);
@@ -85,7 +87,7 @@ TEST(Descent, TwoLevelTree)
 
 TEST(Descent, ThreeLevelTree)
 {
-    MappingTable mt;
+    TestMappingTable mt;
     // Leaves under two inner nodes, joined by a root.
     uint64_t la = mt.allocate_page_id();
     uint64_t lb = mt.allocate_page_id();
@@ -102,12 +104,12 @@ TEST(Descent, ThreeLevelTree)
     uint64_t root = mt.allocate_page_id(); // sep [m] -> [left, right]
     mt.store(root, InnerBase::build({"m"}, {left, right}));
 
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, root, "a"), la);
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, root, "e"), lb);
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, root, "f"), lb);
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, root, "m"), lc);
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, root, "t"), ld);
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, root, "zz"), ld);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, root, "a"), la);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, root, "e"), lb);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, root, "f"), lb);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, root, "m"), lc);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, root, "t"), ld);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, root, "zz"), ld);
 
     for (uint64_t page_id : {la, lb, lc, ld, left, right, root}) {
         delete mt.get_resident(page_id);
@@ -116,8 +118,9 @@ TEST(Descent, ThreeLevelTree)
 
 TEST(Descent, EmptyRoot)
 {
-    MappingTable mt;
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, kInvalidPageId, "a"), kInvalidPageId);
-    EXPECT_EQ(find_leaf_page_id([&](uint64_t p) { return mt.get_resident(p); }, 999, "a"),
+    TestMappingTable mt;
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, kInvalidPageId, "a"),
+              kInvalidPageId);
+    EXPECT_EQ(find_leaf_page_id_for_tests([&](uint64_t p) { return mt.get_resident(p); }, 999, "a"),
               kInvalidPageId); // unset page_id
 }

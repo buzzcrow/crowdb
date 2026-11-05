@@ -17,7 +17,7 @@ use crowdb_access_dataset::{
 use crowdb_chunk_client::{ChunkIoClient, RoutedDiskWriter, SmallWriteIntent};
 use crowdb_chunk_kv_client::{ChunkKvRpcTransport, ChunkKvRpcTransportConfig};
 use crowdb_diskio_client::DiskioClient;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::{
     chunkdb::rpc::{ChunkType, Location},
     common::ChunkId,
@@ -90,7 +90,7 @@ impl TestDatasetTransport {
         let authority = DatasetAuthority::new(store.clone());
         let runtime = ClientRuntime::adopt_clients(
             RuntimeClients {
-                control: Arc::new(CrowdbKvClient::new(ClientConfig::new(Vec::new()))),
+                control: Arc::new(PaxosKvClient::new(ClientConfig::new(Vec::new()))),
                 metadata,
                 metadata_transport: Arc::new(
                     ChunkKvRpcTransport::with_config(8, 1, 1, &ChunkKvRpcTransportConfig::default()).unwrap(),

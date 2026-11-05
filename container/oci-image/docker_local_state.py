@@ -11,6 +11,8 @@ import subprocess
 import stat
 import uuid
 
+from ports import WEB_BASE, ACCESS_SERVER_DATASET_HTTP_BASE
+
 CLUSTER = "org.crowdb.cluster"
 OWNER = "org.crowdb.cluster.owner"
 ROOT = Path(__file__).resolve().parents[2]
@@ -71,7 +73,7 @@ def load(cluster, directory=RECORDS):
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077 or metadata.st_size > 1024 * 1024:
         raise ValueError("cluster receipt must be a bounded private regular file")
     record = json.loads(path.read_text())
-    if record.get("version") not in (1, 2) or record.get("cluster") != cluster:
+    if record.get("version") not in (1, 2, 3) or record.get("cluster") != cluster:
         raise ValueError("invalid cluster receipt")
     required = {"version", "cluster", "owner", "runtime", "nodes", "port_base", "image", "image_id", "cpus", "memory_mib"}
     if set(record) != required or not isinstance(record["runtime"], dict):
@@ -79,10 +81,11 @@ def load(cluster, directory=RECORDS):
     owner = uuid.UUID(record["owner"])
     if owner.int == 0 or str(owner) != record["owner"]:
         raise ValueError("invalid cluster receipt owner")
+    spread = (ACCESS_SERVER_DATASET_HTTP_BASE - WEB_BASE) + 2 if record["version"] == 3 else 23
     if (set(record["runtime"]) != {"daemon", "context", "endpoint"}
             or not all(isinstance(value, str) and value for value in record["runtime"].values())
             or record["nodes"] not in (1, 3) or not isinstance(record["port_base"], int)
-            or not 1 <= record["port_base"] <= 65512
+            or not 1 <= record["port_base"] <= 65535 - spread
             or not isinstance(record["cpus"], (float, int)) or not math.isfinite(record["cpus"]) or record["cpus"] <= 0
             or not isinstance(record["memory_mib"], int) or record["memory_mib"] < 512
             or not all(isinstance(record[key], str) and record[key] for key in ("image", "image_id"))):

@@ -10,9 +10,9 @@ containerd/nerdctl. The [OCI image design](design-crowdb-oci-image.md) defines
 construction, runtime resources and publication.
 
 The [console architecture](../console/design-crowdb-console.md) defines the
-shared operation layer; the [Group-0 architecture](../kv/design-crowdb-kv-group0.md)
+shared operation layer; the [Group-0 architecture](../kv/design-crowdb-paxos-kv-group0.md)
 defines system metadata; the
-[reconfiguration design](../kv/design-crowdb-kv-reconfiguration.md) governs
+[reconfiguration design](../kv/design-crowdb-paxos-kv-reconfiguration.md) governs
 Paxos voting membership. This design connects those responsibilities without
 making node discovery a membership protocol.
 

@@ -1,13 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// Per-service port bases. Ports are generated dynamically from these
-// bases (offset by the node-id suffix, then incremented past collisions
-// against ports already assigned in the console config). The bases are
-// dev defaults; production should override via a deployment config story.
-export const KV_SERVER_REST_PORT_BASE = 19910;
-export const KV_SERVER_RPC_PORT_BASE = 19920;
-export const DISKDB_RPC_PORT_BASE = 29920;
+import { PAXOS_KV_SERVER_MGMT_BASE, PAXOS_KV_SERVER_RPC_BASE, DISKDB_RPC_BASE } from '../../ports';
+export const KV_SERVER_REST_PORT_BASE = PAXOS_KV_SERVER_MGMT_BASE;
+export const KV_SERVER_RPC_PORT_BASE = PAXOS_KV_SERVER_RPC_BASE;
+export const DISKDB_RPC_PORT_BASE = DISKDB_RPC_BASE;
 
 const DIGIT_SUFFIX = /(\d+)$/;
 
@@ -125,7 +122,7 @@ function preferredPortStart(base: number, nodeId: number): number {
 
   const suffix = Number(match[1]);
   if (!Number.isFinite(suffix) || suffix < 0) return base;
-  return base + suffix;
+  return base + Math.max(0, suffix - 1);
 }
 
 export function deployPortDefaultsForNode(
@@ -178,26 +175,6 @@ export function diskdbPortDefaultsForNode(
   rpcStart = DISKDB_RPC_PORT_BASE,
   extraUsedRpcPorts: number[] = [],
 ): string {
-  // The public input is the base listener. DiskDB also binds base + 1 for
-  // HTTP readiness and base + 2 for crowdb-rpc, so reserve the whole range.
-  const usedPorts = new Set<number>();
-  for (const base of extraUsedRpcPorts) {
-    usedPorts.add(base);
-    usedPorts.add(base + 1);
-    usedPorts.add(base + 2);
-  }
-  for (const inst of instances) {
-    const endpoint = extractPort(inst.rpc_endpoint);
-    if (endpoint) {
-      usedPorts.add(endpoint - 2);
-      usedPorts.add(endpoint - 1);
-      usedPorts.add(endpoint);
-    }
-  }
-
-  let candidate = preferredPortStart(rpcStart, nodeId);
-  while (candidate < 65534 && [candidate, candidate + 1, candidate + 2].some((port) => usedPorts.has(port))) {
-    candidate += 1;
-  }
-  return String(candidate);
+  const usedPorts = [...extraUsedRpcPorts, ...instances.map(instance => extractPort(instance.rpc_endpoint)).filter((port): port is number => port !== null)];
+  return nextAvailablePort(usedPorts, preferredPortStart(rpcStart, nodeId));
 }

@@ -144,11 +144,7 @@ fn valid_listeners(service: &SetupService, ports: &mut BTreeSet<u16>) -> bool {
                 || listeners.health_port.is_some()
                 || listeners.dataset_port.is_some()))
         || (service.kind == AccessServer && listeners.rpc_port.is_some())
-        || (service.kind != Diskdb && listeners.listen_port.is_some())
         || (service.kind == Diskio && listeners.http_port.is_some())
-        || (service.kind == Diskdb
-            && (listeners.listen_port.is_some() != listeners.http_port.is_some()
-                || (listeners.listen_port.is_some() && listeners.rpc_port.is_none())))
     {
         return false;
     }
@@ -156,7 +152,6 @@ fn valid_listeners(service: &SetupService, ports: &mut BTreeSet<u16>) -> bool {
         return true;
     }
     for port in [
-        listeners.listen_port,
         listeners.http_port,
         listeners.rpc_port,
         listeners.s3_port,
@@ -168,11 +163,6 @@ fn valid_listeners(service: &SetupService, ports: &mut BTreeSet<u16>) -> bool {
     {
         if port == 0 || !ports.insert(port) {
             return false;
-        }
-    }
-    if service.kind == Diskdb && listeners.listen_port.is_none() {
-        if let Some(port) = listeners.rpc_port {
-            return port <= 65533 && ports.insert(port + 1) && ports.insert(port + 2);
         }
     }
     true

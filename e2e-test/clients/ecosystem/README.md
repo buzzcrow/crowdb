@@ -12,7 +12,7 @@
   `pixi run -e iceberg-ecosystem test-iceberg-container-ecosystem`.
   No default task or default CI job depends on this environment or test.
 - Every run owns an isolated bridge network and normal release node with private
-  mounted data. Host SDK/JVM clients access its inspected IP and fixed port 9092;
+  mounted data. Host SDK/JVM clients access its inspected IP and fixed port 8135;
   the optional pinned Trino engine shares that bridge on port 8080. No host
   ports are published. Node recreation preserves the same data, IP and credentials.
   Cleanup removes owned containers/networks and retains data/log/crash files

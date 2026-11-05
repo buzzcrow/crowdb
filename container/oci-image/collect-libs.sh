@@ -24,7 +24,7 @@ if [[ -d "$provider_root" && -d "$provider_config" ]]; then
 fi
 
 for binary in \
-    crowdb-monitor crowdb-kv-server crowdb-diskdb crowdb-diskio \
+    crowdb-monitor crowdb-paxos-kv-server crowdb-diskdb crowdb-diskio \
     crowdb-chunkdb crowdb-chunk-kv-server crowdb-access-server \
     crowdb-web; do
     if [[ "$binary" == crowdb-diskio ]]; then
@@ -66,7 +66,7 @@ for binary in "$output"/bin/* "$output"/lib/libibverbs/*.so; do
     done < "$output/dependencies.txt"
     patchelf --set-rpath '/opt/crowdb/lib' "$binary"
 done
-if [[ ! -f "$output/lib/libcrowdb_kv_client.so" ]]; then
+if [[ ! -f "$output/lib/libcrowdb_paxos_kv_client.so" ]]; then
     echo 'DiskIO FFI library was not collected' >&2
     exit 1
 fi

@@ -34,6 +34,7 @@ class RdmaCompletionTest : public ::testing::Test
     RegisteredBufferPool        slots{16U << 20, 32};
     SystemBufferPool            buffers{64};
     TestCompletionQueue         queue;
+    EpollEngine                 engine;
     RdmaTransport               transport{test_config()};
     std::shared_ptr<Connection> connection = std::make_shared<Connection>(1, "test", &slots);
 
@@ -258,9 +259,8 @@ TEST_F(RdmaCompletionTest, FixedPollerRetainsEarlyReceiveAndWakesOnHandlerPublic
     queue.ready.push_back(completion);
     TestRdmaTransport::set_cq(transport, &queue.cq);
     TestRdmaTransport::watch_frames(transport, connection, 0);
-    EpollEngine generic;
-    ASSERT_EQ(generic.init(), 0);
-    transport.register_events(&generic);
+    ASSERT_EQ(engine.init(), 0);
+    transport.register_events(&engine);
     transport.start();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     while (transport.stats().pending_deferred_receives.load() == 0 && std::chrono::steady_clock::now() < deadline)
@@ -268,7 +268,7 @@ TEST_F(RdmaCompletionTest, FixedPollerRetainsEarlyReceiveAndWakesOnHandlerPublic
     ASSERT_EQ(transport.stats().pending_deferred_receives.load(), 1U);
     EXPECT_EQ(transport.handle_external_event(3), 0);
     std::array<EngineEvent, 8> events{};
-    EXPECT_EQ(generic.wait(events.data(), events.size(), 0), 0);
+    EXPECT_EQ(engine.wait(events.data(), events.size(), 0), 0);
     std::atomic<bool> received{false};
     std::thread::id   callback_thread;
     connection->set_on_frame([&](Frame *frame, Connection *) {
@@ -535,7 +535,6 @@ TEST_F(RdmaCompletionTest, BoundedCqBatchContinuesThroughEpollUntilDrained)
         queue.ready.push_back(TestCompletionQueue::completion(token));
     }
     TestRdmaTransport::set_cq(transport, &queue.cq);
-    EpollEngine engine;
     ASSERT_EQ(engine.init(), 0);
     transport.register_events(&engine);
     EXPECT_EQ(transport.drain_cq(2), 2);

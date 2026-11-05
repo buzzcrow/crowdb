@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, CrowdbSysmdClient};
+use crowdb_paxos_kv_client::{ClientConfig, CrowdbSysmdClient, PaxosKvClient};
 use crowdb_protocol::common::{GroupValue, ReplicaValue, StoreValue};
 use thiserror::Error;
 
@@ -14,7 +14,7 @@ const STEP: &str = "logical-topology";
 #[derive(Debug, Error)]
 pub enum LogicalBootstrapError {
     #[error("Group 0 logical topology request failed: {0}")]
-    Client(#[from] crowdb_kv_client::Error),
+    Client(#[from] crowdb_paxos_kv_client::Error),
     #[error("bootstrap manifest failed: {0}")]
     Manifest(#[from] ManifestError),
     #[error("monitor lifecycle log failed: {0}")]
@@ -40,7 +40,7 @@ impl LogicalBootstrap {
     #[must_use]
     pub fn new(management_seed: String) -> Self {
         Self {
-            client: CrowdbSysmdClient::new(CrowdbKvClient::new(ClientConfig::new(vec![management_seed]))),
+            client: CrowdbSysmdClient::new(PaxosKvClient::new(ClientConfig::new(vec![management_seed]))),
         }
     }
 
@@ -221,7 +221,7 @@ fn expected(profile: &DeploymentProfile) -> Expected {
 }
 
 fn verify_write(
-    write: Result<(), crowdb_kv_client::Error>,
+    write: Result<(), crowdb_paxos_kv_client::Error>,
     matches: bool,
 ) -> Result<(), LogicalBootstrapError> {
     if matches {

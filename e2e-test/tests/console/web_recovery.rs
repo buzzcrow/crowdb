@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_protocol::port::ports::WEB_BASE;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -8,7 +9,7 @@ use std::time::Duration;
 
 async fn request(http: &Client, path: &str, body: Option<Value>) -> Value {
     let addresses = crate::common::management::addresses(1);
-    let url = format!("http://{}:9090{path}", addresses[0]);
+    let url = format!("http://{}:{WEB_BASE}{path}", addresses[0]);
     let response = if let Some(body) = body {
         http.post(url).json(&body).send().await.unwrap()
     } else {

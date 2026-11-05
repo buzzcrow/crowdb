@@ -9,10 +9,11 @@ use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport};
 use crowdb_diskio_client::{
     DiskId as IoDiskId, DiskioClient, DiskioClientConfig, Durability, OperationOptions, SegmentTarget,
 };
-use crowdb_kv_client::{GetOutcome, HardwareClient, ReadMode, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{GetOutcome, HardwareClient, ReadMode, ServiceRegistryClient};
 use crowdb_protocol::{
     diskdb::rpc::{AllocateBlocksRequest, CommitBlocksRequest, Segment},
     key::{BinaryKey, BusyBlockKey, DiskKey},
+    port::ports::PAXOS_KV_SERVER_MGMT_BASE,
     DiskIdExt,
 };
 use reqwest::Method;
@@ -213,7 +214,7 @@ async fn write_committed(
             management_seeds: context
                 .addresses
                 .iter()
-                .map(|address| format!("http://{address}:10000"))
+                .map(|address| format!("http://{address}:{PAXOS_KV_SERVER_MGMT_BASE}"))
                 .collect(),
             normal_connections_per_endpoint: 1,
             priority_connections_per_endpoint: 1,

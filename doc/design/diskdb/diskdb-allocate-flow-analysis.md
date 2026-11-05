@@ -30,7 +30,7 @@ crowdb-cli workload task
   -> lock-free bitmap claim
   -> busy-record construction
   -> DdbKvClient::persist_busy_batch
-  -> KvRpcTransport connection pool
+  -> PaxosKvRpcTransport connection pool
   -> KV batch_write
   -> proposal coalescing and inflight admission
   -> Paxos accept quorum

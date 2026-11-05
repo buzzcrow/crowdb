@@ -3,6 +3,10 @@
 
 use std::any::Any;
 
+mod snapshot;
+mod split_overlay;
+pub use split_overlay::{InstalledSplit, PreparedSplitOverlay, SplitOverlayLimits};
+
 use async_trait::async_trait;
 
 use crate::{ChunkKvError, MutationOperation, Result, ScanEntry, ValueRevision};
@@ -77,6 +81,19 @@ pub trait PartitionTree: Send + Sync {
             "partition tree does not support split memtable views".into(),
         ))
     }
+    /// Prepare a private replayed destination while the parent keeps serving.
+    ///
+    /// # Errors
+    /// Rejects incompatible trees, insufficient capacity, or an expired prefix.
+    async fn arm_split_overlay(
+        &self,
+        _destination: &dyn PartitionTree,
+        _limits: SplitOverlayLimits,
+    ) -> Result<(std::sync::Arc<dyn PreparedSplitOverlay>, u64)> {
+        Err(ChunkKvError::InvalidRequest(
+            "partition tree does not support prepared split overlays".into(),
+        ))
+    }
     async fn install_split_memtable_overlay(
         &self,
         _source: &dyn PartitionTree,
@@ -128,6 +145,13 @@ pub trait PartitionTree: Send + Sync {
     fn runtime_stats(&self) -> Option<crowdb_tree_ffi::Stats> {
         None
     }
+    /// Samples admission resources without page traversal or backend I/O.
+    /// Non-runtime trees have no admission resource ledger.
+    /// # Errors
+    /// Returns a Tree diagnostic error when its resource ledger is unavailable.
+    fn resource_usage(&self) -> Result<Option<crowdb_tree_ffi::runtime::ResourceUsageSnapshot>> {
+        Ok(None)
+    }
     fn tree_summary(&self) -> Option<crowdb_tree_ffi::TreeSummary> {
         None
     }
@@ -144,7 +168,8 @@ pub trait PartitionTree: Send + Sync {
             "page inspection is unavailable for this tree backend".into(),
         ))
     }
-    /// Estimates retained pack bytes without reading keys, pages or remote metadata.
+    /// Samples allocated physical bytes, including mirrors, without I/O.
+    /// Old and staged output remains counted until physical deletion completes.
     ///
     /// # Errors
     /// Returns a storage error when the cached estimate cannot be read.
@@ -158,11 +183,20 @@ pub trait PartitionTree: Send + Sync {
     fn approximate_split_key(&self) -> Result<Option<Vec<u8>>> {
         Ok(None)
     }
-    /// Returns chunk-backend counters, or `None` for another backend.
+    /// Samples the physical backing ledger, or `None` for another backend.
     ///
     /// # Errors
     ///
     /// Returns a storage error when native counters cannot be read.
+    fn backing_stats(&self) -> Result<Option<crowdb_tree_ffi::BackingStatsSnapshot>> {
+        Ok(None)
+    }
+
+    /// Returns legacy mutable page-store counters, or `None` for another backend.
+    /// Runtime implementations reject this obsolete schema.
+    ///
+    /// # Errors
+    /// Returns a typed storage error when the schema is unsupported.
     fn chunk_stats(&self) -> Result<Option<crowdb_tree_ffi::ChunkPageStoreStats>> {
         Ok(None)
     }
@@ -199,6 +233,15 @@ pub trait PartitionTree: Send + Sync {
     fn reclaim_orphans(&self) -> Result<u64> {
         Ok(0)
     }
+    /// Continue one finite physical tree-storage collection pass, without
+    /// advancing root or WAL retention. Non-staged backends have no work here.
+    ///
+    /// # Errors
+    /// Returns a catalog authority or backend maintenance failure.
+    async fn collect_storage(&self) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Materializes one bounded pass of storage inherited from another tree.
     ///
     /// The returned tuple is `(bytes_written, complete)`. Backends without
@@ -275,23 +318,14 @@ impl PartitionTree for CrowdbPartitionTree {
         limit: usize,
         byte_budget: usize,
     ) -> Result<(Vec<ScanEntry>, bool)> {
-        let scan = match (start_key, start_inclusive) {
-            // A continuation is always exclusive and uses ct_scan's native
-            // lower-bound contract.
-            (Some(start_after), false) => self.tree.scan(
-                b"",
-                start_after,
-                end_key.unwrap_or_default(),
-                limit,
-                byte_budget,
-                false,
-                0,
-                false,
-            ),
-            (Some(start_key), true) => self.tree.scan_from(
+        if end_key.is_some_and(<[u8]>::is_empty) {
+            return Ok((Vec::new(), false));
+        }
+        let scan = match start_key {
+            Some(start_key) => self.tree.scan_from(
                 b"",
                 start_key,
-                true,
+                start_inclusive,
                 end_key.unwrap_or_default(),
                 limit,
                 byte_budget,
@@ -299,7 +333,7 @@ impl PartitionTree for CrowdbPartitionTree {
                 0,
                 false,
             ),
-            (None, _) => self.tree.scan(
+            None => self.tree.scan(
                 b"",
                 b"",
                 end_key.unwrap_or_default(),
@@ -334,6 +368,9 @@ impl PartitionTree for CrowdbPartitionTree {
         limit: usize,
         bytes: usize,
     ) -> Result<(Vec<ScanEntry>, bool)> {
+        if end.is_some_and(<[u8]>::is_empty) {
+            return Ok((Vec::new(), false));
+        }
         let (entries, truncated) = self
             .tree
             .scan_from_bounded(
@@ -469,20 +506,20 @@ impl PartitionTree for CrowdbPartitionTree {
         wal_replay_offset: u64,
     ) -> Result<(u64, u64, std::sync::Arc<dyn PartitionTree>)> {
         let (generation, applied_seq) = self.checkpoint(wal_replay_offset).await?;
-        let config = self.config.clone().ok_or_else(|| {
-            ChunkKvError::InvalidRequest("native tree was not opened from a retained configuration".into())
-        })?;
-        let tree_id = self.tree_id;
-        let snapshot = tokio::task::spawn_blocking(move || Self::open(tree_id, &config))
+        let tree = self.tree.clone();
+        let snapshot = tokio::task::spawn_blocking(move || tree.immutable_snapshot(generation, applied_seq))
             .await
-            .map_err(|error| ChunkKvError::TreeUnavailable(error.to_string()))??;
-        let observed = snapshot.tree.snapshot_state().map_err(map_tree_read_error)?;
-        if observed != (generation, applied_seq) {
-            return Err(ChunkKvError::TreeCorruption(format!(
-                "reopened split base is {observed:?}, expected ({generation}, {applied_seq})"
-            )));
-        }
-        Ok((generation, applied_seq, std::sync::Arc::new(snapshot)))
+            .map_err(|error| ChunkKvError::MaintenanceDegraded(error.to_string()))?
+            .map_err(map_tree_read_error)?;
+        Ok((
+            generation,
+            applied_seq,
+            std::sync::Arc::new(snapshot::CapturedPartitionTree::new(
+                self.tree_id,
+                self.root_manifest_generation()?,
+                snapshot,
+            )),
+        ))
     }
 
     async fn rebuild_range(
@@ -535,6 +572,35 @@ impl PartitionTree for CrowdbPartitionTree {
             .map_err(map_tree_read_error)
     }
 
+    async fn arm_split_overlay(
+        &self,
+        destination: &dyn PartitionTree,
+        limits: SplitOverlayLimits,
+    ) -> Result<(std::sync::Arc<dyn PreparedSplitOverlay>, u64)> {
+        let destination = destination.as_any().downcast_ref::<Self>().ok_or_else(|| {
+            ChunkKvError::InvalidRequest("split preparation destination is not a native tree".into())
+        })?;
+        let source = self.tree.clone();
+        let destination = destination.tree.clone();
+        let limits = crowdb_tree_ffi::SplitOverlayLimits {
+            max_records: u64::try_from(limits.max_records).map_err(|_| {
+                ChunkKvError::InvalidRequest("split request capacity exceeds native limits".into())
+            })?,
+            max_bytes: limits.max_bytes,
+        };
+        let prepared = tokio::task::spawn_blocking(move || source.arm_split_overlay(destination, limits))
+            .await
+            .map_err(|error| ChunkKvError::MaintenanceDegraded(error.to_string()))?
+            .map_err(map_tree_read_error)?;
+        let start = prepared.start_frontier();
+        Ok((
+            std::sync::Arc::new(split_overlay::NativePreparedOverlay(std::sync::Arc::new(
+                prepared,
+            ))),
+            start,
+        ))
+    }
+
     async fn install_split_memtable_overlay(
         &self,
         source: &dyn PartitionTree,
@@ -543,9 +609,14 @@ impl PartitionTree for CrowdbPartitionTree {
         let source = source.as_any().downcast_ref::<Self>().ok_or_else(|| {
             ChunkKvError::InvalidRequest("split overlay source is not a native tree".into())
         })?;
-        self.tree
-            .install_split_memtable_overlay(&source.tree, journal_frontier)
-            .map_err(map_tree_read_error)
+        let destination = std::sync::Arc::clone(&self.tree);
+        let source = std::sync::Arc::clone(&source.tree);
+        tokio::task::spawn_blocking(move || {
+            destination.install_split_memtable_overlay(&source, journal_frontier)
+        })
+        .await
+        .map_err(|error| ChunkKvError::MaintenanceDegraded(error.to_string()))?
+        .map_err(map_tree_read_error)
     }
 
     async fn clear_split_memtable_overlay(&self, source: &dyn PartitionTree) -> Result<()> {
@@ -588,12 +659,27 @@ impl PartitionTree for CrowdbPartitionTree {
             .map_err(map_tree_read_error)
     }
 
+    async fn collect_storage(&self) -> Result<bool> {
+        let tree = crowdb_tree_ffi::AsyncCrowdbtree::from_handle(std::sync::Arc::clone(&self.tree));
+        let report = match tree.collect_chunk_storage().await {
+            Ok(report) => report,
+            // Non-Chunk backends have no Chunk storage to collect.
+            Err(crowdb_tree_ffi::CtError::NotSupported) => return Ok(false),
+            Err(error) => return Err(map_tree_read_error(error)),
+        };
+        report.status.map_err(map_tree_read_error)?;
+        Ok(report.more)
+    }
+
     fn last_applied_seq(&self) -> u64 {
         self.tree.stats().contiguous_slot
     }
 
     fn runtime_stats(&self) -> Option<crowdb_tree_ffi::Stats> {
         Some(self.tree.stats())
+    }
+    fn resource_usage(&self) -> Result<Option<crowdb_tree_ffi::runtime::ResourceUsageSnapshot>> {
+        self.tree.resource_usage().map(Some).map_err(map_tree_read_error)
     }
 
     fn tree_summary(&self) -> Option<crowdb_tree_ffi::TreeSummary> {
@@ -648,22 +734,29 @@ impl PartitionTree for CrowdbPartitionTree {
     }
 
     fn chunk_stats(&self) -> Result<Option<crowdb_tree_ffi::ChunkPageStoreStats>> {
+        if self
+            .config
+            .as_ref()
+            .and_then(|config| config.page_store.as_ref())
+            .is_some_and(|store| store.is_chunk_backed())
+        {
+            return Err(map_tree_read_error(crowdb_tree_ffi::CtError::NotSupported));
+        }
+        Ok(None)
+    }
+
+    fn backing_stats(&self) -> Result<Option<crowdb_tree_ffi::BackingStatsSnapshot>> {
         self.config
             .as_ref()
             .and_then(|config| config.page_store.as_ref())
             .filter(|store| store.is_chunk_backed())
-            .map(|store| store.chunk_stats().map_err(map_tree_read_error))
+            .map(|_| self.tree.backing_stats().map_err(map_tree_read_error))
             .transpose()
     }
 
     fn estimated_bytes(&self) -> Result<u64> {
-        self.config
-            .as_ref()
-            .and_then(|config| config.page_store.as_ref())
-            .filter(|store| store.is_chunk_backed())
-            .map_or(Ok(0), |store| {
-                store.chunk_estimated_bytes().map_err(map_tree_read_error)
-            })
+        self.backing_stats()
+            .map(|snapshot| snapshot.map_or(0, |stats| stats.allocated_bytes))
     }
 
     fn approximate_split_key(&self) -> Result<Option<Vec<u8>>> {

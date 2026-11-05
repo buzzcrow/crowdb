@@ -35,7 +35,7 @@ fn matching_tentative(dg: &DdbDiskGroup, segment: &Segment, disk_id: DiskId) -> 
 #[derive(Clone, Debug)]
 pub enum FreeError {
     /// KV client error during lookup or persist.
-    Kv(Arc<crowdb_kv_client::Error>),
+    Kv(Arc<crowdb_paxos_kv_client::Error>),
     /// Block is not busy (no `BusyBlockKey` exists) — double-free or
     /// never allocated.
     NotBusy {
@@ -71,10 +71,10 @@ impl std::fmt::Display for FreeError {
 
 impl std::error::Error for FreeError {}
 
-impl From<crowdb_kv_client::Error> for FreeError {
-    fn from(e: crowdb_kv_client::Error) -> Self {
+impl From<crowdb_paxos_kv_client::Error> for FreeError {
+    fn from(e: crowdb_paxos_kv_client::Error) -> Self {
         match e {
-            crowdb_kv_client::Error::OutcomeUnknown => Self::OutcomeUnknown,
+            crowdb_paxos_kv_client::Error::OutcomeUnknown => Self::OutcomeUnknown,
             error => Self::Kv(Arc::new(error)),
         }
     }
@@ -389,7 +389,7 @@ pub async fn free_block(
     let scoped_kv = kv.for_group(dg);
     let kv = &scoped_kv;
     let disk_id = segment.disk_id.ok_or_else(|| {
-        FreeError::Kv(Arc::new(crowdb_kv_client::Error::SysdataDecode {
+        FreeError::Kv(Arc::new(crowdb_paxos_kv_client::Error::SysdataDecode {
             key: "segment.disk_id".to_string(),
             reason: "missing disk_id in Segment".to_string(),
         }))
@@ -529,7 +529,7 @@ pub fn prepare_free(
     let mut records = Vec::with_capacity(unique.len());
     for segment in &unique {
         let disk_id = segment.disk_id.ok_or_else(|| {
-            FreeError::Kv(Arc::new(crowdb_kv_client::Error::SysdataDecode {
+            FreeError::Kv(Arc::new(crowdb_paxos_kv_client::Error::SysdataDecode {
                 key: "segment.disk_id".to_string(),
                 reason: "missing disk_id in Segment".to_string(),
             }))
@@ -630,7 +630,7 @@ pub async fn commit_blocks(
     let mut unique = Vec::with_capacity(segments.len());
     for seg in segments {
         let disk_id = seg.disk_id.ok_or_else(|| {
-            FreeError::Kv(Arc::new(crowdb_kv_client::Error::SysdataDecode {
+            FreeError::Kv(Arc::new(crowdb_paxos_kv_client::Error::SysdataDecode {
                 key: "segment.disk_id".to_string(),
                 reason: "missing disk_id in Segment".to_string(),
             }))
@@ -699,7 +699,7 @@ pub async fn mark_blocks_corrupt(
     let mut marked = 0u32;
     for segment in segments {
         let disk_id = segment.disk_id.ok_or_else(|| {
-            FreeError::Kv(Arc::new(crowdb_kv_client::Error::SysdataDecode {
+            FreeError::Kv(Arc::new(crowdb_paxos_kv_client::Error::SysdataDecode {
                 key: "segment.disk_id".into(),
                 reason: "missing disk ID".into(),
             }))

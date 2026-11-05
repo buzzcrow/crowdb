@@ -7,11 +7,15 @@
 
 #include "chunk_cancellation.h"
 #include "chunk_page_staging.h"
+#include "chunk_protection.h"
 #include "chunk_purpose.h"
+#include "chunk_stage.h"
 #include "chunk_transport.h"
 #include "crowdb-tree/backend/async_page_store.h"
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/c_api.h"
+#include "crowdb-tree/chunk_protection_c_api.h"
+#include "crowdb-tree/chunk_stage_c_api.h"
 
 #include <array>
 #include <atomic>
@@ -27,6 +31,7 @@ namespace crowdb::tree::detail
 inline constexpr uint32_t kChunkManifestFormat = 7;
 
 class ChunkAsyncExecutor;
+class ChunkPinReleaseQueue;
 class ChunkPackPipeline;
 class ChunkPackPipelineImpl;
 
@@ -86,6 +91,61 @@ class RootCatalog
   public:
     virtual ~RootCatalog() = default;
 
+    // One catalog callback owner is one writer incarnation. A new open after
+    // close must claim a fresh catalog; delayed quiescence cannot close it.
+    bool claim_runtime_writer() noexcept
+    {
+        bool expected = false;
+        return runtime_writer_claimed_.compare_exchange_strong(expected, true, std::memory_order_acq_rel);
+    }
+
+    [[nodiscard]] virtual std::shared_ptr<ChunkPinReleaseQueue> pin_release_queue() const noexcept
+    {
+        return {};
+    }
+
+    virtual Status bind_pin_release_queue(std::shared_ptr<ChunkPinReleaseQueue> /*unused*/)
+    {
+        return Status::not_supported();
+    }
+
+    [[nodiscard]] virtual ChunkProtectionCatalog *protection() noexcept
+    {
+        return nullptr;
+    }
+
+    [[nodiscard]] virtual bool stage_schema_supported() const noexcept
+    {
+        return false;
+    }
+
+    virtual Status load_stage(uint64_t /*tree_id*/, ChunkStageId /*id*/,
+                              std::optional<ChunkStageRecord> * /*out*/) const
+    {
+        return Status::not_supported();
+    }
+
+    virtual Status compare_stage(uint64_t /*tree_id*/, uint64_t /*owner_epoch*/,
+                                 const std::optional<ChunkStageRecord> & /*expected*/,
+                                 const std::optional<ChunkStageRecord> & /*next*/)
+    {
+        return Status::not_supported();
+    }
+
+    virtual Status list_stages(uint64_t /*tree_id*/, std::optional<ChunkStageId> /*after*/, uint32_t /*limit*/,
+                               std::vector<ChunkStageRecord> * /*out*/) const
+    {
+        return Status::not_supported();
+    }
+
+    // Returns one bounded record using the caller's actual metadata allocator.
+    virtual Status next_stage(uint64_t /*tree_id*/, std::optional<ChunkStageId> /*after*/,
+                              const std::shared_ptr<AllocationBudget> & /*budget*/,
+                              std::optional<ChunkStageRecord> * /*out*/) const
+    {
+        return Status::not_supported();
+    }
+
     [[nodiscard]] virtual std::shared_ptr<const ChunkManifest> load(uint64_t tree_id) const               = 0;
     [[nodiscard]] virtual std::shared_ptr<const ChunkManifest> load_generation(uint64_t tree_id,
                                                                                uint64_t generation) const = 0;
@@ -104,6 +164,27 @@ class RootCatalog
     [[nodiscard]] virtual uint64_t retained_manifest_count(uint64_t tree_id) const                         = 0;
     [[nodiscard]] virtual uint64_t pinned_bytes(uint64_t tree_id) const                                    = 0;
     [[nodiscard]] virtual uint64_t oldest_pin_age_ms(uint64_t tree_id) const                               = 0;
+
+    virtual Status load_legacy_reference_owned(uint64_t /*tree*/, uint64_t /*object*/, ChunkRootBytes * /*out*/) const
+    {
+        return Status::not_supported();
+    }
+
+    // Immutable copy of the original root, persisted before migration commits.
+    virtual Status prepare_legacy_migration(uint64_t /*tree*/, uint64_t /*generation*/,
+                                            std::span<const uint8_t> /*root*/)
+    {
+        return Status::not_supported();
+    }
+
+    virtual Status load_legacy_migration_owned(uint64_t /*tree*/, uint64_t /*generation*/,
+                                               ChunkRootBytes * /*out*/) const
+    {
+        return Status::not_supported();
+    }
+
+  private:
+    std::atomic<bool> runtime_writer_claimed_{false};
 };
 
 // Test and embeddable catalog implementation. Its read side is one atomic
@@ -187,10 +268,60 @@ class MemoryRootCatalog final : public RootCatalog
     std::atomic<bool>                            release_publish_{false};
 };
 
-class CallbackRootCatalog final : public RootCatalog
+class CallbackRootCatalog final : public RootCatalog, public ChunkProtectionCatalog
 {
   public:
+    [[nodiscard]] std::shared_ptr<ChunkPinReleaseQueue> pin_release_queue() const noexcept override
+    {
+        return release_queue_;
+    }
+
+    // Host initialization only, before this catalog is exposed to a Tree.
+    Status bind_pin_release_queue(std::shared_ptr<ChunkPinReleaseQueue> queue) override
+    {
+        if (!queue || (release_queue_ && release_queue_ != queue)) {
+            return Status::invalid_argument();
+        }
+        release_queue_ = std::move(queue);
+        return Status::Ok();
+    }
+
     CallbackRootCatalog(ct_root_catalog_callbacks callbacks, void *context);
+    CallbackRootCatalog(ct_root_catalog_callbacks, ct_root_catalog_staging_callbacks, void *);
+    CallbackRootCatalog(ct_root_catalog_callbacks, ct_root_catalog_staging_callbacks,
+                        ct_root_catalog_protection_callbacks, void *);
+    [[nodiscard]] ChunkProtectionCatalog *protection() noexcept override;
+    [[nodiscard]] Status                  check_read_owner() const override;
+    Status                                writer_quiesced(uint64_t tree, uint64_t epoch) override;
+    Status load_root_bytes(uint64_t tree, uint64_t generation, std::vector<uint8_t> *out) const override;
+    Status load_root_owned(uint64_t tree, uint64_t generation, ChunkRootBytes *out) const override;
+    Status prepare_legacy_migration(uint64_t tree, uint64_t generation, std::span<const uint8_t> manifest) override;
+    Status load_legacy_migration_owned(uint64_t tree, uint64_t generation, ChunkRootBytes *out) const override;
+    Status load_legacy_reference_owned(uint64_t tree, uint64_t object, ChunkRootBytes *out) const override;
+    Status begin_candidate(uint64_t tree, const ChunkManifestCandidate & /*unused*/) override;
+    Status load_candidate(uint64_t                             tree, ChunkStageId /*unused*/,
+                          std::optional<ChunkCandidateStatus> *out) const override;
+    Status list_candidates(uint64_t tree, std::optional<ChunkStageId> after, uint32_t limit,
+                           std::vector<ChunkCandidateStatus> *out) const override;
+    Status prepare_references(uint64_t tree, ChunkStageId /*unused*/, uint64_t window,
+                              std::span<const ChunkStageId> /*unused*/) override;
+    Status finish_candidate(uint64_t tree, ChunkStageId /*unused*/, uint32_t action) override;
+    Status release_references(uint64_t tree, ChunkStageId /*unused*/, uint64_t window) override;
+    Status change_pin(uint64_t tree, ChunkStageId stage, ChunkStageId pin, bool acquire) override;
+    Status prune_pins(uint64_t tree, ChunkStageId /*unused*/, std::optional<ChunkStageId> after, uint32_t limit,
+                      ChunkPinProgress *out) override;
+    [[nodiscard]] bool stage_schema_supported() const noexcept override;
+    Status load_stage(uint64_t tree_id, ChunkStageId id, std::optional<ChunkStageRecord> *out) const override;
+    Status compare_stage(uint64_t tree_id, uint64_t owner_epoch, const std::optional<ChunkStageRecord> &expected,
+                         const std::optional<ChunkStageRecord> &next) override;
+    Status list_stages(uint64_t tree_id, std::optional<ChunkStageId> after, uint32_t limit,
+                       std::vector<ChunkStageRecord> *out) const override;
+    Status next_stage(uint64_t tree_id, std::optional<ChunkStageId> after,
+                      const std::shared_ptr<AllocationBudget> &budget,
+                      std::optional<ChunkStageRecord>         *out) const override;
+    Status next_candidate(uint64_t tree, std::optional<ChunkStageId> after,
+                          std::optional<ChunkCandidateStatus> *out) const override;
+
     ~CallbackRootCatalog() override;
 
     [[nodiscard]] std::shared_ptr<const ChunkManifest> load(uint64_t tree_id) const override;
@@ -225,8 +356,11 @@ class CallbackRootCatalog final : public RootCatalog
     }
 
   private:
-    ct_root_catalog_callbacks callbacks_;
-    void                     *context_;
+    std::shared_ptr<ChunkPinReleaseQueue> release_queue_;
+    ct_root_catalog_protection_callbacks  protection_{};
+    ct_root_catalog_staging_callbacks     staging_{};
+    ct_root_catalog_callbacks             callbacks_;
+    void                                 *context_;
 };
 
 struct ChunkPageStoreStats
@@ -291,6 +425,8 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catalog, std::shared_ptr<ChunkTransport> transport);
     ~ChunkPageStore() override;
 
+    [[nodiscard]] RuntimeFactory runtime_factory() const noexcept override;
+
     [[nodiscard]] const Status &open_status() const
     {
         return open_status_;
@@ -327,7 +463,8 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     }
 
     [[nodiscard]] ChunkPageStoreStats stats() const;
-    // Approximate retained pack bytes from the already opened layout, with no I/O.
+    // Approximate retained pack bytes from the already opened layout, with no
+    // I/O.
     [[nodiscard]] uint64_t estimated_bytes() const;
     uint64_t               reclaim_orphans();
     Status                 materialize_ownership(uint64_t *bytes_written, bool *complete) override;
@@ -353,6 +490,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
 
   private:
     friend class ChunkAsyncExecutor;
+    class ChunkPinReleaseQueue;
     friend class ChunkPackPipeline;
     friend class ChunkPackPipelineImpl;
     friend class MemoryRootCatalog;

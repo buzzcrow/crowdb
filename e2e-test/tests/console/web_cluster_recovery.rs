@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_protocol::port::ports::WEB_BASE;
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};
@@ -11,12 +12,12 @@ async fn prepare() {
     super::fixture::TestKvCluster::start().await;
     super::super::chunkdb::voting::register_actual_voters().await;
     let kv = std::sync::Arc::new(crate::common::hardware::kv_client());
-    let sysmd = crowdb_kv_client::CrowdbSysmdClient::from_shared(kv.clone());
+    let sysmd = crowdb_paxos_kv_client::CrowdbSysmdClient::from_shared(kv.clone());
     sysmd.add_store(0, &[1, 2, 3]).await.unwrap();
     for group in [0, 1] {
         sysmd.add_group(0, group).await.unwrap();
     }
-    let hardware = crowdb_kv_client::HardwareClient::from_shared(kv);
+    let hardware = crowdb_paxos_kv_client::HardwareClient::from_shared(kv);
     hardware
         .add_rack(
             1,
@@ -47,7 +48,7 @@ async fn prepare() {
 async fn call(http: &Client, method: Method, path: &str, body: Value) -> Value {
     let addresses = crate::common::management::addresses(4);
     let response = http
-        .request(method, format!("http://{}:9090{path}", addresses[3]))
+        .request(method, format!("http://{}:{WEB_BASE}{path}", addresses[3]))
         .json(&body)
         .send()
         .await
@@ -69,7 +70,7 @@ async fn standalone_recovers_three_member_group0_and_diskdb() {
         &http,
         Method::POST,
         "/api/nodes/1/diskdb/deploy",
-        json!({"rpc_port":7100, "listen_port":7100, "http_port":7101}),
+        json!({"rpc_port":7102, "http_port":7101}),
     )
     .await;
     assert!(deployed["pid"].as_u64().unwrap() > 1);

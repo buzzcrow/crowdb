@@ -11,6 +11,7 @@
 #include "chunk_catalog_codec.h"
 #include "chunk_frame.h"
 #include "chunk_pack_pipeline.h"
+#include "chunk_runtime_page_store.h"
 #include "crowdb-common/crc32c.h"
 #include "crowdb-common/log.h"
 #include "crowdb-protocol/frame.h"
@@ -432,16 +433,17 @@ Status MemoryRootCatalog::unpin_generation(uint64_t tree_id, uint64_t transition
         if (state == nullptr) {
             return Status::Ok();
         }
-        auto next = std::make_shared<CatalogState>(*state);
-        next->pins.erase(std::remove_if(next->pins.begin(), next->pins.end(),
-                                        [tree_id, transition_high, transition_low](const auto &pin) {
-                                            return pin.tree_id == tree_id && pin.transition_high == transition_high &&
-                                                   pin.transition_low == transition_low;
-                                        }),
-                         next->pins.end());
-        if (next->pins.size() == state->pins.size()) {
+        const auto pinned = std::find_if(state->pins.begin(), state->pins.end(),
+                                         [tree_id, transition_high, transition_low](const auto &pin) {
+                                             return pin.tree_id == tree_id && pin.transition_high == transition_high &&
+                                                    pin.transition_low == transition_low;
+                                         });
+        if (pinned == state->pins.end()) {
             return Status::Ok();
         }
+        const auto index = pinned - state->pins.begin();
+        auto       next  = std::make_shared<CatalogState>(*state);
+        next->pins.erase(next->pins.begin() + index);
         if (state_.compare_exchange_weak(state, next, std::memory_order_release, std::memory_order_acquire)) {
             return Status::Ok();
         }
@@ -833,7 +835,7 @@ bool ChunkPageStore::has_shared_ownership() const
         return false;
     }
     return std::any_of(manifest->packs.begin(), manifest->packs.end(),
-                       [this, &manifest](const ChunkPagePack &pack) { return pack.owner_tree_id != config_.tree_id; });
+                       [this](const ChunkPagePack &pack) { return pack.owner_tree_id != config_.tree_id; });
 }
 
 bool ChunkPageStore::inherited_snapshot_matches(const PageStore &source_store) const
@@ -1649,6 +1651,9 @@ ct_status ct_chunk_page_store_estimated_bytes(const ct_page_store *store, uint64
     if (store == nullptr || store->bundle == nullptr || out == nullptr) {
         return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
     }
+    if (dynamic_cast<crowdb::tree::detail::ChunkRuntimePageStore *>(store->bundle->store.get()) != nullptr) {
+        return static_cast<ct_status>(crowdb::tree::Code::kNotSupported);
+    }
     auto *chunk = dynamic_cast<crowdb::tree::detail::ChunkPageStore *>(store->bundle->store.get());
     if (chunk == nullptr) {
         return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
@@ -1661,6 +1666,9 @@ ct_status ct_chunk_page_store_get_stats(const ct_page_store *store, ct_chunk_pag
 {
     if (store == nullptr || store->bundle == nullptr || out == nullptr) {
         return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
+    }
+    if (dynamic_cast<crowdb::tree::detail::ChunkRuntimePageStore *>(store->bundle->store.get()) != nullptr) {
+        return static_cast<ct_status>(crowdb::tree::Code::kNotSupported);
     }
     auto *chunk = dynamic_cast<crowdb::tree::detail::ChunkPageStore *>(store->bundle->store.get());
     if (chunk == nullptr) {
@@ -1708,6 +1716,10 @@ ct_status ct_chunk_page_store_set_wal_replay_offset(ct_page_store *store, uint64
     if (store == nullptr || store->bundle == nullptr) {
         return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
     }
+    if (auto *runtime = dynamic_cast<crowdb::tree::detail::ChunkRuntimePageStore *>(store->bundle->store.get())) {
+        runtime->request_wal_offset(offset);
+        return 0;
+    }
     auto *chunk = dynamic_cast<crowdb::tree::detail::ChunkPageStore *>(store->bundle->store.get());
     return chunk == nullptr ? static_cast<ct_status>(crowdb::tree::Code::kOk)
                             : static_cast<ct_status>(chunk->set_wal_replay_offset(offset).code());
@@ -1717,6 +1729,11 @@ ct_status ct_chunk_page_store_get_wal_replay_offset(const ct_page_store *store, 
 {
     if (store == nullptr || store->bundle == nullptr || offset == nullptr) {
         return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
+    }
+    if (const auto *runtime =
+            dynamic_cast<const crowdb::tree::detail::ChunkRuntimePageStore *>(store->bundle->store.get())) {
+        *offset = runtime->durable_wal_offset();
+        return 0;
     }
     auto *chunk = dynamic_cast<crowdb::tree::detail::ChunkPageStore *>(store->bundle->store.get());
     if (chunk == nullptr) {
@@ -1730,6 +1747,11 @@ ct_status ct_chunk_page_store_get_manifest_generation(const ct_page_store *store
 {
     if (store == nullptr || store->bundle == nullptr || generation == nullptr) {
         return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
+    }
+    if (const auto *runtime =
+            dynamic_cast<const crowdb::tree::detail::ChunkRuntimePageStore *>(store->bundle->store.get())) {
+        *generation = runtime->manifest_generation();
+        return 0;
     }
     const auto *chunk = dynamic_cast<const crowdb::tree::detail::ChunkPageStore *>(store->bundle->store.get());
     return chunk == nullptr ? static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument)

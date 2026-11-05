@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbClientError, ChunkdbRpcTransport};
-use crowdb_kv_client::{GetOutcome, ReadMode, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{
     AllocateChunkRequest, Chunk, ChunkState, ChunkType, DeleteChunkRangeRequest, DeleteChunkRequest,
     QueryChunkRequest, SealChunkRequest, Strip, StripType,

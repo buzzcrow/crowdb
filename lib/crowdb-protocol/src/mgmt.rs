@@ -1,17 +1,17 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! HTTP management API request/response types for `crowdb-kv-server`.
+//! HTTP management API request/response types for `crowdb-paxos-kv-server`.
 //!
 //! These are the wire shapes for the kv-server's internal HTTP mgmt
 //! API (lifecycle endpoints, runtime state export). They live in
 //! `crowdb-protocol` (the single home for cross-component protocol
-//! types) so that `crowdb-kv-client`'s `KVClusterAdmin`,
+//! types) so that `crowdb-paxos-kv-client`'s `PaxosKvClusterAdmin`,
 //! `crowdb-console-shared`, `crowdb-web`, and `crowdb-cli` all import from
 //! one place.
 //!
-//! See `doc/design/kv/design-crowdb-kv-server.md` §2.4 for the endpoint
-//! list and `doc/design/kv/design-crowdb-kv-group0.md` §2.2 for the
+//! See `doc/design/kv/design-crowdb-paxos-kv-server.md` §2.4 for the endpoint
+//! list and `doc/design/kv/design-crowdb-paxos-kv-group0.md` §2.2 for the
 //! "internal API" decision.
 
 #![allow(clippy::struct_field_names)]
@@ -265,8 +265,8 @@ pub struct SystemInitResponse {
 //
 // These types are the wire shapes for `GET /topology`, `GET /health`,
 // and `GET /metrics`. They are cross-component (consumed by
-// `crowdb-kv-client`, `crowdb-console-shared`, `crowdb-web`, `crowdb-cli`)
-// and therefore live here per `design-crowdb-kv-group0.md` §2.4.
+// `crowdb-paxos-kv-client`, `crowdb-console-shared`, `crowdb-web`, `crowdb-cli`)
+// and therefore live here per `design-crowdb-paxos-kv-group0.md` §2.4.
 
 /// Severity of a layer's runtime status. Serializes as a lowercase
 /// string (`"ok"`, `"degraded"`, `"unhealthy"`).

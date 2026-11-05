@@ -1,112 +1,53 @@
 #!/usr/bin/env bash
-# --- CrowDB scan regression benchmark (lifecycle) ---
-# Usage: bash tools/benchmark/bench-kv-scan-regression.sh
-#
-# Regression sentinel for scan (list) throughput and latency. Uses the
-# `bench deploy` / `bench prepare` / `bench run` / `bench teardown`
-# lifecycle: deploy once, prepare once, run N sub-tests, teardown once.
-#
-# Configurations (all --workload list, mem mode, 3-node cluster):
-#   Single-thread (1T:1C) — isolate per-scan engine cost:
-#     - bounded_10:    O(limit) fast path (limit=10)
-#     - bounded_1k:    typical scan width (limit=1000, 64B, linearizable)
-#     - bounded_10k:   large bounded scan
-#     - full_100k:     full keyspace + byte-budget pagination
-#     - deep_pag_10:   O(limit) pushdown proof (start_after near end)
-#     - mixed_1k:      mixed value sizes (64B:70%,1KiB:20%,16KiB:10%)
-#     - minslot_1k:    MinSlot routing (vs bounded_1k's linearizable)
-#     - largeval_16k:  16KiB values (R67 regression: snapshot stall)
-#   Multi-thread (4T:4C) — max throughput + read-mode split:
-#     - lin_4t:        linearizable (all scans serialize on leader)
-#     - minslot_4t:    minslot (scans distributed across replicas)
-#
-# 14 runs × 20s ≈ 280s (no deploy/pre-pop overhead per sub-test).
-#
-# Reference platform: see doc/design/kv/kv-scan-flow-analysis.md. After
-# a run, update the "Latest Benchmark Results" section there with the
-# results and CPU model — absolute scan throughput is platform-dependent.
-#
-# Prerequisites:
-#   - pixi installed, project dependencies resolved
-#   - jq installed
-#   - release binary built (pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server)
+# Copyright 2026-present Gian <crow.db@outlook.com>
+# Licensed under the Apache License, Version 2.0.
+# Paxos-KV scan: externally started 3-node host-network containers, mem-block.
+# Run with pixi run bash tools/benchmark/bench-kv-scan-regression.sh.
+# Set KV_BENCH_DEPLOYMENT; optional KV_BENCH_CASES, DURATION, WARMUP, TAIL,
+# KEYSPACE, CLI and LOG_ROOT use the KV_BENCH_ prefix.
+# Defaults: 5s warmup / 20s measurement / 5s tail. <20s is a smoke run.
+# Keep every dated result, including failures. Old native process data below
+# remains a useful reference; compare code, resource and dataset conditions.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+source tools/benchmark/bench-kv-common.sh
 
-RUN_STAMP=$(date +%Y%m%d-%H%M%S)
-LOG_ROOT="${KV_SCAN_BENCH_LOG_ROOT:-${CROWDB_RUNTIME_ROOT:-$(pwd)/.crowdb-runtime}/artifacts/bench/kv-scan-regression-$RUN_STAMP}"
-RESULTS_FILE="${KV_SCAN_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
-REGRESSION_LOG_ROOT="$LOG_ROOT"
-source tools/benchmark/bench-regression-common.sh
-export CROWDB_LOG_ROOT="$LOG_ROOT"
-regression_init
-DURATION="${KV_SCAN_BENCH_DURATION:-20}"
-KEYSPACE="${KV_SCAN_BENCH_KEYSPACE:-100000}"
-CASES="${KV_SCAN_BENCH_CASES:-}"
-DEPLOY_NAME="kv-scan-regression-$$"
-
-# Keys are k{id:020} (zero-padded to 20 digits after 'k'), per
-# workload.rs format_key. start_after is an exclusive lower bound, so
-# to return the last N keys of a keyspace [0, KEYSPACE), set
-# start_after = k{KEYSPACE - N - 1:020}.
-pad_key() {
-    local id="$1"
-    printf "k%020d" "$id"
+run_case() {
+    local label="$1" limit="$2" threads="$3" mode="$4" size="$5"; shift 5
+    selected "$label" || return 0
+    local policy=leader mix=() KEYSPACE="$KEYSPACE"
+    if [[ "$label" == largeval_16k || "$label" == mixed_1k ]]; then
+        KEYSPACE="${KV_BENCH_LARGE_KEYSPACE:-100000}"
+    fi
+    [[ "$mode" != minslot ]] || policy=any-replica
+    [[ "$label" != mixed_1k ]] || mix=(--mixed-values)
+    prepare_dataset --value-size "$size" "${mix[@]}"
+    invoke "$label" scan --key-space "$KEYSPACE" --scan-limit "$limit" --value-size "$size" \
+        --loader-num "$threads" --connections "$threads" --read-mode "$mode" \
+        --read-endpoint-policy "$policy" "${mix[@]}" "$@"
 }
+run_case bounded_10 10 1 linearizable 64
+run_case bounded_1k 1000 1 linearizable 64
+run_case bounded_10k 10000 1 linearizable 64
+run_case full_keyspace "$KEYSPACE" 1 linearizable 64
+[[ "$KEYSPACE" -ge 11 ]] || { echo 'scan requires KEYSPACE >=11' >&2; exit 2; }
+printf -v deep_key 'k%020d' "$((KEYSPACE - 11))"
+printf -v reverse_key 'k%020d' 10
+run_case deep_pag_10 10 1 linearizable 64 --scan-start-after "$deep_key"
+run_case mixed_1k 1000 1 linearizable 64
+run_case minslot_1k 1000 1 minslot 64
+run_case reverse_1k 1000 1 linearizable 64 --reverse
+run_case reverse_deep_10 10 1 linearizable 64 --reverse --scan-start-after "$reverse_key"
+# Actually populate 16KiB values; historical runs below used 64B prepopulation.
+run_case largeval_16k 1000 1 linearizable 16384
+for threads in 4 16 32; do
+    run_case "lin_${threads}t" 1000 "$threads" linearizable 64
+    run_case "minslot_${threads}t" 1000 "$threads" minslot 64
+done
+run_case reverse_4t 1000 4 minslot 64 --reverse
+finish_cases
 
-run_subtest() {
-    local label="$1" limit="$2" prefix="$3" start_after="$4" value_size="$5" read_mode="$6" min_slot="$7" threads="$8" connections="$9" direction="${10}" mix="${11:-}"
-    if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
-        return
-    fi
-    local read_endpoint
-    if [ "$read_mode" = "minslot" ]; then
-        read_endpoint="any-replica"
-    else
-        read_endpoint="leader"
-    fi
-    local mix_arg=""
-    if [ -n "$mix" ]; then
-        mix_arg="--value-size-mix $mix"
-    fi
-    echo ">>> $label (${threads}T:${connections}C) ..."
-    local output
-    if ! output=$(regression_client_for "$CONFIG_FILE" \
-        bench kv scan --store 0 --group 1 --duration-secs "$DURATION" \
-        --loader-num "$threads" --connections "$connections" \
-        --read-mode "$read_mode" --min-slot "$min_slot" \
-        --read-endpoint-policy "$read_endpoint" \
-        --scan-limit "$limit" --scan-prefix "$prefix" --scan-start-after "$start_after" \
-        --scan-direction "$direction" \
-        --value-size "$value_size" \
-        --key-space "$KEYSPACE" --verify-bytes 0 $mix_arg 2>&1); then
-        echo "$output" >&2
-        return 1
-    fi
-    local json; json=$(regression_report_for "$CONFIG_FILE")
-    if [ -z "$json" ]; then
-        echo "    ERROR: no JSON output"; echo "$output"
-        echo -e "$label\t$limit\t$prefix\t$start_after\t$value_size\t$read_mode\t$direction\t${threads}T${connections}C\t0\t0\t0\t0\t0\t1" >> "$RESULTS_FILE"
-        return
-    fi
-    local ops_s avg_us p50_us p99_us p999_us errors
-    ops_s=$(echo "$json" | jq -r '.total_ops * 1000 / .duration_ms' | awk '{printf "%.0f", $1}')
-    avg_us=$(echo "$json" | jq -r '.by_op.list.latency_us.avg_us')
-    p50_us=$(echo "$json" | jq -r '.by_op.list.latency_us.p50_us')
-    p99_us=$(echo "$json" | jq -r '.by_op.list.latency_us.p99_us')
-    p999_us=$(echo "$json" | jq -r '.by_op.list.latency_us.p999_us // "unavailable"')
-    errors=$(echo "$json" | jq -r '.total_errors')
-    echo "    scans/s=$ops_s avg=${avg_us}us p50=${p50_us}us p99=${p99_us}us p999=${p999_us}us err=$errors"
-    echo -e "$label\t$limit\t$prefix\t$start_after\t$value_size\t$read_mode\t$direction\t${threads}T${connections}C\t$ops_s\t$avg_us\t$p50_us\t$p99_us\t$p999_us\t$errors" >> "$RESULTS_FILE"
-}
-
-# --- regression sentinel configs ---
-#
-# Regression policy: only update the reference table below when a new
-# run is strictly better (higher scans/s, lower latency, fewer errors).
-# If a run is worse, do NOT update — investigate and fix the regression
-# first, otherwise silent performance regressions slip in.
-#
+# ---- Native process history (no containers) ----
 # Reference results (2026-08-19, Apple M5 Pro, 18c, arm64, macOS 26.5):
 #   10s mem mode, 3-node cluster, 100k pre-populated keys, 64B values
 #   unless noted. Post-R67 (spawn_blocking maintenance).
@@ -173,60 +114,81 @@ run_subtest() {
 #   lin_32t          1000    32:32 22820    1342    1327    2072     0
 #   minslot_32t      1000    32:32 22823    1341    1318    2088     0    +0.0% vs lin
 
-echo -e "label\tlimit\tprefix\tstart_after\tvalue_size\tread_mode\tdirection\tT:C\tscans_s\tavg_us\tp50_us\tp99_us\tp999_us\terrors" > "$RESULTS_FILE"
+# ---- Host-network container history ----
+# 2026-10-27: AMD 5950X 32 logical CPUs; 3 x 8GiB/4-CPU containers, no cpuset;
+# workers=2, window/coalesce=32/16, peer pool=4, event-write, default election profile.
+# mem-block Tree/WAL, host network, management/RPC 10135/11135 + offsets 0/1/2.
+# 1M x 64B, 5/20/5s; same deployment after read matrix and a new dataset prefill.
+# Image: sha256:eb0dd67818e3f3ec2f81ba6969db8320f2dcd8a9c92c1bf727d1d1f7cce9d09d
+# Source tree: b984ab3e0838bee528d880e6bb83fc34c3c54663.
+# Raw reports: .crowdb-runtime/artifacts/bench/kv-review-scan/; server logs in kv-review-read/.
+# All zero errors/incomplete; full_keyspace now means 1M keys, unlike historical full_100k.
+# 2026-10-27 bounded_10 host-container ops/s=11496.8 latency_ns={"avg":86853.30406286966,"count":229936,"max":5065726,"min":56421,"p50":83967,"p99":139263,"p999":241663} passed=true
+# 2026-10-27 bounded_1k host-container ops/s=1361.15 latency_ns={"avg":734435.0102119531,"count":27223,"max":2934998,"min":601728,"p50":708607,"p99":983039,"p999":1327103} passed=true
+# 2026-10-27 full_keyspace host-container ops/s=0.55 latency_ns={"avg":1659944006.909091,"count":11,"max":1877296928,"min":1406636784,"p50":1635778559,"p99":1877296928,"p999":1877296928} passed=true
+# 2026-10-27 deep_pag_10 host-container ops/s=12500.65 latency_ns={"avg":79858.59522104851,"count":250013,"max":1251827,"min":54341,"p50":77823,"p99":127999,"p999":202751} passed=true
+# 2026-10-27 minslot_1k host-container ops/s=778.65 latency_ns={"avg":1283793.9630771207,"count":15573,"max":3995902,"min":568707,"p50":1236991,"p99":2752511,"p999":3407871} passed=true
+# 2026-10-27 reverse_1k host-container ops/s=370.05 latency_ns={"avg":2701686.825564113,"count":7401,"max":321203070,"min":2276460,"p50":2490367,"p99":4390911,"p999":4947967} passed=true
+# 2026-10-27 reverse_deep_10 host-container ops/s=6156.7 latency_ns={"avg":162273.8791560414,"count":123134,"max":1255176,"min":123632,"p50":160767,"p99":216063,"p999":245759} passed=true
 
-# Phase 1: deploy the cluster once via the explicit test fixture.
-echo "=== Deploying 3-node KV cluster via the explicit test fixture ==="
-CONFIG_FILE="$REGRESSION_CONFIG"
-regression_fixture_for "$CONFIG_FILE" setup -- --nodes 3 --kind kv \
-    --kv-backend mem-block --wal-backend mem-block
+# 2026-10-27: mixed + large-value scan, fresh 3 x 12GiB/4-CPU containers;
+# otherwise same image/server config above; 5/20/5s. 100k keys for these cases.
+# mixed: actual 70% 64B / 20% 1KiB / 10% 16KiB; largeval: actual 16KiB throughout.
+# Historical largeval rows with 64B prepopulation are not comparable as 16KiB workloads.
+# Raw reports + logs + CLI checksum: .crowdb-runtime/artifacts/bench/kv-review-scan-large/
+# 2026-10-27 mixed_1k host-container ops/s=224.3 latency_ns={"avg":4456280.788898796,"count":4486,"max":13092660,"min":1418798,"p50":4063231,"p99":11206655,"p999":12451839} passed=true
+# 2026-10-27 largeval_16k host-container ops/s=31.55 latency_ns={"avg":31667539.259904914,"count":631,"max":40593476,"min":24946544,"p50":31850495,"p99":37486591,"p999":40593476} passed=true
 
-# Create bench group 1 (group 0 sysdata preserved).
-echo "=== Creating bench group 0/1 (group 0 sysdata preserved) ==="
-regression_client_for "$CONFIG_FILE" \
-    kv group add -s 0 -g 1 -n 1,2,3 2>&1
+# 2026-10-27: no memory/CPU quota/cpuset, Tokio32/RPC2, 3-node host-network mem-block.
+# Image f576b3d9387c58c81df9c0e99bf1ca85659fac77ae05e285b539fb7840e7d9ff; 5/20/5s.
+# Dataset: 1000000 keys, value_size=64, mixed=False.
+# Raw: .crowdb-runtime/artifacts/bench/kv-review-unlimited/scan/; full verification passed.
+# 2026-10-27 bounded_10 host-container ops/s=13687.45 latency_ns={"avg":72957.76122287205,"count":273749,"max":1142009,"min":52030,"p50":71679,"p99":102399,"p999":130559} passed=true
 
-# Phase 2: pre-populate keys once (prepare data before measuring).
-echo "=== Pre-populating $KEYSPACE keys ==="
-regression_client_for "$CONFIG_FILE" \
-    bench kv prepare --store 0 --group 1 --keys "$KEYSPACE" --value-size 64 2>&1
+# 2026-10-27: no memory/CPU quota/cpuset, Tokio32/RPC2, 3-node host-network mem-block.
+# Image f576b3d9387c58c81df9c0e99bf1ca85659fac77ae05e285b539fb7840e7d9ff; 5/20/5s.
+# Dataset: 1000000 keys, value_size=64, mixed=False.
+# Raw: .crowdb-runtime/artifacts/bench/kv-review-unlimited/scan/; full verification passed.
+# 2026-10-27 bounded_1k host-container ops/s=1404.55 latency_ns={"avg":711771.9990744366,"count":28091,"max":1835865,"min":501384,"p50":708607,"p99":1081343,"p999":1261567} passed=true
 
-# Phase 3: run all sub-tests against the same cluster.
-echo "=== Single-thread (1T:1C) — per-scan engine cost ==="
-run_subtest "bounded_10"      10     "" ""                        64    linearizable auto 1 1 forward
-run_subtest "bounded_1k"      1000   "" ""                        64    linearizable auto 1 1 forward
-run_subtest "bounded_10k"     10000  "" ""                        64    linearizable auto 1 1 forward
-run_subtest "full_100k"       100000 "" ""                        64    linearizable auto 1 1 forward
-run_subtest "deep_pag_10"     10     "" "$(pad_key 99989)"        64    linearizable auto 1 1 forward
-run_subtest "mixed_1k"        1000   "" ""                        64    linearizable auto 1 1 forward "64:70,1024:20,16384:10"
-run_subtest "minslot_1k"      1000   "" ""                        64    minslot      zero 1 1 forward
-run_subtest "reverse_1k"      1000   "" ""                        64    linearizable auto 1 1 reverse
-run_subtest "reverse_deep_10" 10     "" "$(pad_key 10)"           64    linearizable auto 1 1 reverse
+# 2026-10-27: no memory/CPU quota/cpuset, Tokio32/RPC2, 3-node host-network mem-block.
+# Image f576b3d9387c58c81df9c0e99bf1ca85659fac77ae05e285b539fb7840e7d9ff; 5/20/5s.
+# Dataset: 1000000 keys, value_size=64, mixed=False.
+# Raw: .crowdb-runtime/artifacts/bench/kv-review-unlimited/scan/; full verification passed.
+# 2026-10-27 deep_pag_10 host-container ops/s=13140.55 latency_ns={"avg":75991.47226333753,"count":262811,"max":1056270,"min":51360,"p50":73215,"p99":134143,"p999":186367} passed=true
 
-echo "=== R67 regression — large value scan (snapshot stall) ==="
-# R67: 100k × 16KiB = 1.6 GB. Before the spawn_blocking fix,
-# persist_snapshot took 0.6-2.2s on Linux, blocking the async runtime
-# and causing leader-election churn (300-600ms timeout) → scan_errors.
-# This config must show 0 errors. Reference: doc/design/kv/kv-scan-flow-analysis.md (R67)
-# Note: this sub-test uses 16KiB values but the cluster was pre-populated
-# with 64B values. The scan still exercises the large-value code path
-# via --value-size 16384 (affects only the scan, not pre-populated data).
-# For a true 16KiB regression, deploy a separate cluster with 16KiB pre-pop.
-run_subtest "largeval_16k"    1000   "" ""                        16384 linearizable auto 1 1 forward
+# 2026-10-27: no memory/CPU quota/cpuset, Tokio32/RPC2, 3-node host-network mem-block.
+# Image f576b3d9387c58c81df9c0e99bf1ca85659fac77ae05e285b539fb7840e7d9ff; 5/20/5s.
+# Dataset: 1000000 keys, value_size=64, mixed=False.
+# Raw: .crowdb-runtime/artifacts/bench/kv-review-unlimited/scan/; full verification passed.
+# 2026-10-27 full_keyspace host-container ops/s=1.0 latency_ns={"avg":994163950.65,"count":20,"max":1068703819,"min":900398625,"p50":994050047,"p99":1068703819,"p999":1068703819} passed=true
 
-echo "=== Multi-thread — max throughput + read-mode split ==="
-run_subtest "lin_4t"          1000   "" ""                        64    linearizable auto 4 4 forward
-run_subtest "minslot_4t"      1000   "" ""                        64    minslot      zero 4 4 forward
-run_subtest "reverse_4t"      1000   "" ""                        64    minslot      zero 4 4 reverse
-run_subtest "lin_16t"         1000   "" ""                        64    linearizable auto 16 16 forward
-run_subtest "minslot_16t"     1000   "" ""                        64    minslot      zero 16 16 forward
-run_subtest "lin_32t"         1000   "" ""                        64    linearizable auto 32 32 forward
-run_subtest "minslot_32t"     1000   "" ""                        64    minslot      zero 32 32 forward
+# 2026-10-27: no memory/CPU quota/cpuset, Tokio32/RPC2, 3-node host-network mem-block.
+# Image f576b3d9387c58c81df9c0e99bf1ca85659fac77ae05e285b539fb7840e7d9ff; 5/20/5s.
+# Dataset: 1000000 keys, value_size=64, mixed=False.
+# Raw: .crowdb-runtime/artifacts/bench/kv-review-unlimited/scan/; full verification passed.
+# 2026-10-27 minslot_1k host-container ops/s=1272.2 latency_ns={"avg":785748.5947178117,"count":25444,"max":2498383,"min":519425,"p50":770047,"p99":1245183,"p999":1646591} passed=true
 
-# Phase 4: teardown via owned fixture shutdown.
-echo "=== Tearing down cluster ==="
-regression_fixture_for "$CONFIG_FILE" stop
+# 2026-10-27: no memory/CPU quota/cpuset, Tokio32/RPC2, 3-node host-network mem-block.
+# Image f576b3d9387c58c81df9c0e99bf1ca85659fac77ae05e285b539fb7840e7d9ff; 5/20/5s.
+# Dataset: 1000000 keys, value_size=64, mixed=False.
+# Raw: .crowdb-runtime/artifacts/bench/kv-review-unlimited/scan/; full verification passed.
+# 2026-10-27 reverse_1k host-container ops/s=399.35 latency_ns={"avg":2503342.7186678355,"count":7987,"max":4551340,"min":1948547,"p50":2473983,"p99":3506175,"p999":4079615} passed=true
 
-echo "=== DONE ==="
-echo "Results in $RESULTS_FILE"
-column -t -s$'\t' "$RESULTS_FILE"
+# 2026-10-27: no memory/CPU quota/cpuset, Tokio32/RPC2, 3-node host-network mem-block.
+# Image f576b3d9387c58c81df9c0e99bf1ca85659fac77ae05e285b539fb7840e7d9ff; 5/20/5s.
+# Dataset: 1000000 keys, value_size=64, mixed=False.
+# Raw: .crowdb-runtime/artifacts/bench/kv-review-unlimited/scan/; full verification passed.
+# 2026-10-27 reverse_deep_10 host-container ops/s=11787.55 latency_ns={"avg":84681.64017119758,"count":235751,"max":1082029,"min":57210,"p50":82431,"p99":134143,"p999":200703} passed=true
+
+# 2026-10-27: no memory/CPU quota/cpuset, Tokio32/RPC2, 3-node host-network mem-block.
+# Image f576b3d9387c58c81df9c0e99bf1ca85659fac77ae05e285b539fb7840e7d9ff; 5/20/5s.
+# Dataset: 100000 keys, value_size=64, mixed=True.
+# Raw: .crowdb-runtime/artifacts/bench/kv-review-unlimited/scan-mixed/; full verification passed.
+# 2026-10-27 mixed_1k host-container ops/s=181.1 latency_ns={"avg":5518864.853948095,"count":3622,"max":10438412,"min":1641084,"p50":5439487,"p99":8781823,"p999":10223615} passed=true
+
+# 2026-10-27: no memory/CPU quota/cpuset, Tokio32/RPC2, 3-node host-network mem-block.
+# Image f576b3d9387c58c81df9c0e99bf1ca85659fac77ae05e285b539fb7840e7d9ff; 5/20/5s.
+# Dataset: 100000 keys, value_size=16384, mixed=False.
+# Raw: .crowdb-runtime/artifacts/bench/kv-review-unlimited/scan-large/; full verification passed.
+# 2026-10-27 largeval_16k host-container ops/s=36.4 latency_ns={"avg":27400801.240384616,"count":728,"max":41199855,"min":18380413,"p50":26083327,"p99":39845887,"p999":41199855} passed=true

@@ -13,9 +13,7 @@ Client recipes: [container development](../../../container/single-node-container
   only actual pinned client operations against the container and a volume restart.
 - [S3 language SDKs](../../../e2e-test/clients/S3-SDK.md) and the Rust Iceberg SDK retain
   independent manual workflows. They are not default test dependencies.
-- Selected ORC and optional caches remain independent backlog ownership under
-  [ORC validation](../../../doc/backlog/R186-access-iceberg-orc-validation.md)
-  and [cache optimization](../../../doc/backlog/R185-access-iceberg-cache-invalidation.md).
+- Selected ORC validation and optional cache optimization remain deferred.
   The functional fixtures select Parquet and establish no cache speed guarantee.
 - Physical GC remains an independent opt-in runtime contract. Logical drop,
   clear, expiry and CAS loss do not authorize physical deletion by TTL alone.

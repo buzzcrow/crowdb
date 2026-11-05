@@ -5,6 +5,7 @@
 """Independent cluster cleanup, persistent endpoint changes and voting catch-up."""
 import json
 from bridge_node import start_node, origin_for, browser
+import default_ports as ports
 from setup_choices import diskless_setup
 
 
@@ -62,11 +63,11 @@ def verify(docker, request, wait, image, network, names, origins, cluster):
     origins.append(origin)
     for gid, replica_id in [(0, 601), (3, 600)]:
         request(origins[0], f"/api/stores/0/groups/{gid}/replicas", {"node_id":joined["node_id"], "replica_id":replica_id})
-        topology = json.loads(docker("exec", name, "curl", "-fsS", "http://127.0.0.1:10000/topology"))
+        topology = json.loads(docker("exec", name, "curl", "-fsS", f"http://127.0.0.1:{ports.PAXOS_KV_SERVER_MGMT_BASE}/topology"))
         group = next(group for store in topology["stores"] if store["store_id"] == 0 for group in store["groups"] if group["group_id"] == gid)
         assert group["local_replica_id"] == replica_id and group["read_state"]["contiguous_applied"] > 0, group
         for peer in names[:3]:
-            topology = json.loads(docker("exec", peer, "curl", "-fsS", "http://127.0.0.1:10000/topology"))
+            topology = json.loads(docker("exec", peer, "curl", "-fsS", f"http://127.0.0.1:{ports.PAXOS_KV_SERVER_MGMT_BASE}/topology"))
             group = next(group for store in topology["stores"] if store["store_id"] == 0 for group in store["groups"] if group["group_id"] == gid)
             assert any(remote["id"] == replica_id and remote["voting"] for remote in group["remotes"]), group
     assert request(origin, "/api/stores/0/groups/3/kv/get?key=remote-quorum")["value_utf8"] == "wired"

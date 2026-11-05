@@ -19,8 +19,8 @@ pub use client::{ChunkdbClient, NativeChunkRoutes, RetryConfig};
 pub use rpc_transport::ChunkdbRpcTransport;
 
 // Re-export RangeBindingClient so callers can construct it without a
-// direct crowdb-kv-client dependency for this one type.
-pub use crowdb_kv_client::RangeBindingClient;
+// direct crowdb-paxos-kv-client dependency for this one type.
+pub use crowdb_paxos_kv_client::RangeBindingClient;
 
 use thiserror::Error;
 

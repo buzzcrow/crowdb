@@ -2,6 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_monitor::DeploymentProfile;
+use crowdb_protocol::port::ports::{
+    ACCESS_SERVER_DATASET_HTTP_BASE, ACCESS_SERVER_HTTP_BASE, ACCESS_SERVER_ICEBERG_HTTP_BASE, WEB_BASE,
+};
 use std::{collections::BTreeMap, path::Path};
 
 fn catalog() -> DeploymentProfile {
@@ -34,7 +37,12 @@ fn node_catalog_has_no_prescribed_members_media_or_rendered_service_configuratio
         .collect();
     assert_eq!(
         endpoints,
-        BTreeMap::from([("web", 9090), ("s3", 9091), ("iceberg", 9092), ("dataset", 9093)])
+        BTreeMap::from([
+            ("web", WEB_BASE),
+            ("s3", ACCESS_SERVER_HTTP_BASE),
+            ("iceberg", ACCESS_SERVER_ICEBERG_HTTP_BASE),
+            ("dataset", ACCESS_SERVER_DATASET_HTTP_BASE),
+        ])
     );
 }
 

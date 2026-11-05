@@ -13,11 +13,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <future>
 #include <thread>
 
 namespace
 {
+volatile std::sig_atomic_t broken_pipe_signal = 0;
+
 int socketpair_nonblocking(int sockets[2])
 {
     if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {
@@ -125,6 +128,32 @@ TEST(ClientDisconnectTest, PeerCloseFailsSlabAndMapWithoutReaperAndPreservesOthe
     transport.stop();
     EXPECT_EQ(cleanups.load(), 1);
     ::close(second[1]);
+}
+
+TEST(ClientDisconnectTest, ClosedPeerFailsSendWithoutRaisingSigpipe)
+{
+    using namespace crowdb::rpc;
+    int sockets[2]{};
+    ASSERT_EQ(socketpair_nonblocking(sockets), 0);
+    SocketTransport transport(1, 1);
+    auto            connection = transport.create_connection(sockets[0], "closed-peer");
+    ::close(sockets[1]);
+    auto *frame    = new OutFrame{};
+    frame->control = transport.pool()->alloc(1);
+    ASSERT_NE(frame->control, nullptr);
+    frame->control->write("x", 1);
+    ASSERT_TRUE(connection->enqueue_send(frame));
+
+    broken_pipe_signal  = 0;
+    const auto previous = std::signal(SIGPIPE, [](int) { broken_pipe_signal = 1; });
+    ASSERT_NE(previous, SIG_ERR);
+    const bool sent = connection->try_send(connection->write_fd, nullptr);
+    std::signal(SIGPIPE, previous);
+    EXPECT_FALSE(sent);
+    EXPECT_EQ(broken_pipe_signal, 0);
+    EXPECT_FALSE(connection->is_open());
+    EXPECT_FALSE(connection->has_pending_send());
+    transport.stop();
 }
 
 TEST(ClientDisconnectTest, AttachedConnectionOutlivesFfiClientHandle)

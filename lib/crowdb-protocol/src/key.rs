@@ -1,10 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Key encoding for crowdb-kv.
+//! Key encoding for crowdb-paxos-kv.
 //!
 //! Defines the [`BinaryKey`] and [`TextKey`] traits and all key kinds
-//! stored in crowdb-kv. A key kind is a flat struct with hierarchy
+//! stored in crowdb-paxos-kv. A key kind is a flat struct with hierarchy
 //! fields; two encoding traits map the same struct to bytes:
 //!
 //! - [`BinaryKey`] — `magic_byte | type_tag:u16 BE | fields BE`,

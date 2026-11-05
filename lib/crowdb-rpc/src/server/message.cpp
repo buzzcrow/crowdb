@@ -4,6 +4,7 @@
 #include "crowdb-rpc/server/message.h"
 
 #include "common_msg_generated.h"
+#include "crowdb-protocol/flatbuffer.h"
 #include "msg_type_generated.h"
 #include "ret_code_generated.h"
 
@@ -30,7 +31,7 @@ void extract_control_fields(const uint8_t *control, uint32_t len, uint64_t &out_
     // Use Verifier to safely access fields on untrusted input.
     ::flatbuffers::Verifier verifier(control, len);
     if (verifier.VerifyBuffer<proto::ConnectionPingResponse>()) {
-        const auto *resp = ::flatbuffers::GetRoot<proto::ConnectionPingResponse>(control);
+        const auto *resp = protocol::flatbuffer_root<proto::ConnectionPingResponse>(control, len);
         if (resp != nullptr) {
             out_request_id           = resp->id();
             out_rpc_create_nano      = resp->rpc_create_nano();
@@ -39,7 +40,7 @@ void extract_control_fields(const uint8_t *control, uint32_t len, uint64_t &out_
         return;
     }
     if (verifier.VerifyBuffer<proto::ConnectionPingRequest>()) {
-        const auto *req = ::flatbuffers::GetRoot<proto::ConnectionPingRequest>(control);
+        const auto *req = protocol::flatbuffer_root<proto::ConnectionPingRequest>(control, len);
         if (req != nullptr) {
             out_request_id      = req->id();
             out_rpc_create_nano = req->rpc_create_nano();
@@ -47,7 +48,7 @@ void extract_control_fields(const uint8_t *control, uint32_t len, uint64_t &out_
         return;
     }
     if (verifier.VerifyBuffer<proto::UnknownMessage>()) {
-        const auto *unk = ::flatbuffers::GetRoot<proto::UnknownMessage>(control);
+        const auto *unk = protocol::flatbuffer_root<proto::UnknownMessage>(control, len);
         if (unk != nullptr) {
             out_request_id           = unk->id();
             out_rpc_create_nano      = unk->rpc_create_nano();

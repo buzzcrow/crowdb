@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use crowdb_protocol::mgmt::SystemBootstrapIdentity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

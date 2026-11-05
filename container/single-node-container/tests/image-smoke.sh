@@ -17,12 +17,17 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 volumes=$(docker image inspect --format '{{json .Config.Volumes}}' "$image")
 jq -e 'has("/opt/crowdb/data")' <<<"$volumes" >/dev/null
 exposed=$(docker image inspect --format '{{json .Config.ExposedPorts}}' "$image")
-for port in 9092 9091 9090 9095 2222; do
-    jq -e --arg port "$port/tcp" 'has($port)' <<<"$exposed" >/dev/null
-done
-for port in 10000 13000 15200; do
-    jq -e --arg port "$port/tcp" 'has($port) | not' <<<"$exposed" >/dev/null
-done
+PYTHONPATH=tools/ports python - "$exposed" <<'PY'
+import json
+import sys
+import default_ports
+
+expected = {f"{port}/tcp" for name, port in vars(default_ports).items()
+            if name.endswith("_BASE") or name == "SSH_PORT"}
+actual = set(json.loads(sys.argv[1]))
+if actual != expected:
+    raise SystemExit(f"image ports differ: missing={expected - actual}, extra={actual - expected}")
+PY
 
 docker run --rm --network none --entrypoint /opt/crowdb/bin/crowdb-monitor "$image" validate /opt/crowdb/etc/profile.toml
 docker run --rm --network none --entrypoint /bin/sh "$image" -ec '

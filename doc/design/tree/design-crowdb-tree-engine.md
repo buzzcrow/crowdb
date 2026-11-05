@@ -3,877 +3,363 @@
 
 # CROWDB - Design: crowdb-tree In-Memory Engine
 
-Depends on: [`design-crowdb-tree.md`](design-crowdb-tree.md), [`../kv/design-crowdb-kv-state-machine.md`](../kv/design-crowdb-kv-state-machine.md) (apply semantics, slot rules)
-Satisfies: [`design-crowdb-tree.md`](design-crowdb-tree.md) §2 (in-memory engine architecture)
+Depends on: [Tree overview](design-crowdb-tree.md), [state machine](../kv/design-crowdb-paxos-kv-state-machine.md)
+Satisfies: [Tree overview](design-crowdb-tree.md) §2
 
-This document specifies crowdb-tree's in-memory engine: the bounded 2-level
-structure (concurrent MemTable over a COW B+tree), the slot-aware value cell,
-the write path (apply → delta → consolidate → split/merge), the versioned root
-for consistent snapshots, epoch-based reclamation, and the read path. Then the
-two supporting layers that make that write/read path zero-copy: the `buffer`
-memory-ownership model, and the io_uring async FFI bridge that exposes it to
-Rust without blocking.
-
-On-disk format, backends, snapshot persistence, and recovery are in
-[`design-crowdb-tree-storage.md`](design-crowdb-tree-storage.md).
+This document defines source versions, immutable page publication, read
+ownership, resource accounting and async completion. Frame formats and durable
+root publication are specified by [durable storage](design-crowdb-tree-storage.md).
 
 ## Table of Contents
 
 - [1. The Tree Engine](#1-the-tree-engine)
-  - [1.1 Logical Model and the Slot-Aware Cell](#11-logical-model-and-the-slot-aware-cell)
-  - [1.2 Pages and Delta Records](#12-pages-and-delta-records)
-  - [1.3 Write Path: MemTable Ingest + Flush](#13-write-path-memtable-ingest--flush)
-  - [1.4 Consolidation, Split, and Merge](#14-consolidation-split-and-merge)
-  - [1.5 Versioned Root (Consistent Snapshots)](#15-versioned-root-consistent-snapshots)
-  - [1.6 Epoch-Based Reclamation](#16-epoch-based-reclamation)
-  - [1.7 Read Path](#17-read-path)
-  - [1.8 Concurrency Summary](#18-concurrency-summary)
-  - [1.9 Epoch-Protected MemTable (L0)](#19-epoch-protected-memtable-l0)
-  - [1.10 Scan Path Perf Baseline](#110-scan-path-perf-baseline)
 - [2. Memory and Buffer Management](#2-memory-and-buffer-management)
-  - [2.1 The `buffer` Abstraction](#21-the-buffer-abstraction)
-  - [2.2 Write and Read Pipelines](#22-write-and-read-pipelines)
-  - [2.3 Rust FFI Ownership](#23-rust-ffi-ownership)
 - [3. Async FFI Bridge](#3-async-ffi-bridge)
-  - [3.1 Problem and Design Principle](#31-problem-and-design-principle)
-  - [3.2 Architecture](#32-architecture)
-  - [3.3 Fast Path vs Slow Path](#33-fast-path-vs-slow-path)
-  - [3.4 Zero-Copy Value Across FFI](#34-zero-copy-value-across-ffi)
-  - [3.5 Decision Log](#35-decision-log)
-
----
+- [4. Rust-Side KVEngine Async Trait Shape](#4-rust-side-kvengine-async-trait-shape)
 
 ## 1. The Tree Engine
 
 ### 1.1 Logical Model and the Slot-Aware Cell
 
-crowdb-tree is an ordered map `key → (slot, cell)`, where `key` is an opaque byte
-string compared lexicographically, `slot` is the resolved consensus slot, and
-`cell` is a live value or a tombstone. It is a **bounded 2-level** structure
-(`design-crowdb-tree.md` D3):
+A key maps to the highest eligible `(slot, kind, value)` cell. Slot is carried
+in the value cell rather than the ordered key. Tombstones participate in slot
+selection and remain visible to retention-aware iteration until the external
+GC floor permits their removal.
 
-- **L0 — MemTable.** A concurrent skip list with one node per key. CAS
-  publishes nodes and immutable version descriptors. Ordinary reads resolve the
-  highest observed slot; retained prefix versions support contiguous flush.
-  Payloads may borrow external buffers without copying (§2).
-- **L1 — B+tree.** A **single-writer / multi-reader** B+tree with
-  copy-on-write base pages and a per-leaf delta chain. Inner pages hold
-  separator keys + child PIDs; leaf pages hold sorted `(key, slot, cell)`
-  entries and a `right_sibling` link for range scans. Reachable from a
-  `root_pid` through the mapping table
-  ([`design-crowdb-tree-storage.md §8`](design-crowdb-tree-storage.md#8-mapping-table)).
+L0 contains concurrent MemTables with retained versions. L1 contains immutable
+base references and overlay runs. A finite read/flush view fixes its source
+catalog, floor and mapping; selection cannot mix sources from one publication
+with pages from another.
 
-L1 mutation is serialized by the existing tree write mutex. Flush publishes
-only the captured contiguous prefix into L1; snapshot persistence establishes
-the durable replay point. Reads merge retained L0 sources with L1 (§1.7).
+**I1 — Prefix retention:** an out-of-order future value or tombstone must not
+hide the greatest value needed by an incomplete earlier prefix. Retention
+keeps that boundary value and versions above the retained prefix.
 
-Every value carries the slot and a kind flag:
+### 1.2 Immutable Pages and Overlay Runs
 
-```
-cell_payload := [slot: u64 LE][flags: u8][value bytes...]
-flags bit0 = tombstone (1 → value bytes empty)
-```
+`PageState` holds a half-open range, base references, overlay runs, content
+identity, route generation and sibling information. `BaseRef` separates the
+logical source from its resident representation and typed backing capability.
+A range proxy may share a base without encoding or copying its payloads.
 
-- **Highest-slot-wins:** on write, if the incoming `slot <= existing slot` for
-  a key, the write is skipped (idempotent).
-- **Tombstone:** a delete is a cell with the tombstone flag; it occupies space
-  until GC removes it below the watermark
-  ([`design-crowdb-tree-storage.md §9`](design-crowdb-tree-storage.md#9-garbage-collection)).
-  `get` on a tombstone returns `None`; `iter_all` returns the tombstone (for
-  `compare`).
+`OverlayBatch` owns sorted `EntryRef` descriptors and bounded key arena blocks.
+Each entry independently retains its `CellVersion`; keeping an overlay alive
+does not require retaining the entire source skip list or version descriptor.
+A leaf with only overlays is valid. Inner descriptors contain separators and
+child page identities; cold inner backing remains independently reloadable.
 
-This inlining is the single difference from a generic ordered KV engine; it is
-why a stock bw-tree cannot be used unmodified.
+### 1.3 Write Path: MemTable Ingest and Flush
 
-### 1.2 Pages and Delta Records
+A writer prepares the complete batch before publishing its first key. Its
+credit covers keys, payload capacity, nodes, version descriptors, history and
+reference/control storage. Failed preparation leaves keys and automatic slot
+allocation unchanged. Duplicate keys in one API batch use the last operation.
 
-A page is the unit of indexing, consolidation, and (when flushed) I/O. Leaf
-pages hold sorted key/cell entries plus an optional bloom filter and
-`right_sibling` link; inner pages hold separator keys + child PIDs only (no
-values), so they stay small and are written only at snapshot. The concrete
-on-disk/in-memory frame layout (identical representation, zero-copy) is
-specified in
-[`design-crowdb-tree-storage.md §3`](design-crowdb-tree-storage.md#3-on-disk-page-format-zero-copy-frame);
-this doc only needs the logical shape above.
+`SourceAdmission` registers writers against a source close/count word. A writer
+that loses admission to closure retries against the successor; an already
+admitted writer retains the resources needed to finish. Ordinary proposals and
+accepted gap repair use distinct resource capacity. Replay does not discard
+accepted work because the ordinary proposal queue is full.
 
-A **flush** prepends an immutable delta to each affected leaf's chain instead
-of rewriting the whole leaf. crowdb-tree needs only one data delta type, the
-**batch delta**: one slot's worth of mutations targeting a single leaf,
-entries sorted by key, each carrying its own cell. A single flushed slot may
-touch several leaves; the Flusher produces one batch delta per affected leaf
-(all stamped with the same `slot`; the slot fan-out is the *common* case, not
-an edge case). Put and Delete are not separate delta types — a delete is a
-tombstone cell inside the batch. SMO deltas (split/merge/index-insert) appear
-only transiently during a writer-exclusive split/merge (§1.4); there is no
-abort delta because there is no competing writer.
+Prepared ordinary proposals use temporary admission status when their apply
+or backend operation window is occupied. No consensus slot is chosen for that
+attempt. Once armed, their lifetime tickets retain accepted work through its
+last callback; a full pre-consensus window is distinct from allocation failure.
 
-### 1.3 Write Path: MemTable Ingest + Flush
+Flush planning can reversibly pause ordinary source admission to obtain a
+stable bound for all admitted writers, including those that have not applied.
+The pause precedes input or automatic-slot consumption; gap repair keeps its
+separate allowance. A paid owner holds the pause until source closure or
+rollback. Soft rotation checks the complete flush budget for the prospective
+source set and resumes on released credit without requiring another write.
 
-- `apply(slot, batch)` deduplicates each batch by key, with its last operation
-  winning. It selects Active, samples a pruning bound, and conditionally
-  registers one outstanding batch in that table's combined closed/count word.
-  Losing admission to closure retries against the successor.
-- Independent writers publish skip-list links and version descriptors by CAS.
-  Writers hold epoch protection through publication, accounting and retirement
-  submission. Successful slot bookkeeping precedes admission release; a failed
-  batch cannot complete its slot. Empty batches use the same admission path.
-- Encoded and external-value paths share this contract. Encoded cells must carry
-  the batch slot. External values retain their buffer owner; reads reconstruct
-  the header from the immutable slot/flags tuple.
-- A validated bound D allows retaining the highest version at or below D and
-  every version above D. A writer samples D before successful admission. After
-  slot completion it may refresh D only through another successful open-state
-  RMW. Descriptor bounds are monotonic. Allocation failure in optional merging
-  leaves the successful apply intact.
-- Rotation prepares the successor and pending capacity before closing Active.
-  Flush closes A, captures frontier F, then publishes B under source-selection
-  synchronization. Thus every pruning permission issued for A satisfies D <= F.
-  It captures a finite source set and waits only for its admitted writers.
-- Prefix cursors choose each key's highest slot <= F across the captured tables,
-  including retained versions. L1 publication uses sorted leaf groups. Only
-  after every group is published does the source catalog advance its floor to F
-  and detach wholly covered tables. Above-F records stay in their source table;
-  there is no drain-and-reinsert relocation.
-- A partially published flush retains its sources and old coverage floor.
-  Snapshot preparation is rejected until a successful flush repairs publication.
-  L1 publication alone does not authorize WAL reclamation; the persisted snapshot
-  frontier remains the durable recovery boundary.
-- Size and pending-table thresholds are soft. A stalled writer, reader or slot
-  gap can retain memory; this path does not impose a hard write-admission limit.
-  Native async flush uses a completion worker, and maintenance/split callers
-  offload waits from executor threads.
+Flush captures a finite contiguous prefix, closes captured sources, publishes
+the successor and asynchronously drains accepted writers. Parallel bounded
+range jobs transfer independently owned cell references to L1. Installation
+uses the current coordinator root and expected identities, with idempotent
+install tokens. See [flush flow](design-crowdb-tree-engine-flush-flow.md).
 
 ### 1.4 Consolidation, Split, and Merge
 
-When a leaf's delta chain exceeds `max_delta_len` (default 8) or
-`max_delta_bytes` (default 256 KiB), the chain is folded into a fresh leaf
-base page: replay the chain (highest slot wins per key, the authoritative
-point where the slot rule is enforced; tombstones are preserved, removed only
-by GC), then either build a new base page, or split/merge if the result
-crosses a size threshold.
+Coalescing merges sorted overlay runs without materializing value bytes. Layout
+analysis computes representable primary pages and bounded overflow dependencies.
+Local split may retain shared base/range proxies; encoding is performed when a
+representation actually requires it. Candidate pages and eligible sibling pairs
+are indexed by unique identity in the immutable published state.
 
-Because there is exactly one writer, the multi-phase cooperative SMO protocol
-of the pagetree reference is **dropped**: split/merge is a writer-exclusive
-in-place restructure followed by atomic mapping-table stores.
+Maintenance uses finite visit, entry, metadata, page-output and path bounds.
+Cold analysis loads one selected leaf and required routing descriptors, retains
+original expected identities and publishes only if they still match. A stale
+plan cannot replace newer logical contents. Repeated bounded invocations can
+advance classification, coalescing, split and merge without rescanning the
+entire tree from the beginning.
 
-- **Split** (leaf exceeds the target page size): partition entries at a
-  cumulative-byte midpoint, build left/right leaves, splice `right` into the
-  sibling chain, insert a new separator into the parent (may recurse/split
-  the parent).
-- **Merge** (leaf falls below `merge_threshold`, default target/4,
-  non-root): absorb into the left sibling if the combined size still fits,
-  rebuild, remove the parent's separator, free the old PID.
-
-Inner pages split/merge by the same logic (separator keys + child PIDs, no
-values). Root collapses when it has a single child; root grows a new level
-when an inner split propagates past the current root. Thresholds use a
-hysteresis gap (split at target, merge at target/4) to avoid split-merge
-oscillation.
+**I2 — Atomic accounting:** a committed structural transaction updates mapping,
+root, logical contributions and candidate membership together. Retries and
+unchanged classification do not duplicate counts or publish empty work.
 
 ### 1.5 Versioned Root (Consistent Snapshots)
 
-Ordinary point/range reads traverse the live overlay. `snapshot_view()` instead
-serializes with L1 publication, records the published slot and version, and pins
-L1 page chains for a stable `PinnedSnapshot`. It excludes unpublished L0 data.
-Pinned pages remain alive independently of subsequent COW publication and epoch
-retirement. Historical queries at an arbitrary older slot are not supported.
+`PublishedTreeState` contains the mapping, source catalog/floor, coverage,
+generation, commit sequence, root identity and aggregate logical statistics.
+Persistent radix COW copies only touched paths and segments. A retained state
+continues resolving its old page identities after later publications.
 
-Snapshot persistence writes the covered L1 state and its recovery frontier to
-the configured store. A stable in-memory view and a successfully persisted
-snapshot have different durability guarantees. Import builds a private candidate
-mapping before closing engine-generation admission. It drains old operations,
-publishes mappings, sources and slot state together, then admits new operations.
-Preparation failure preserves the old logical generation; borrowed allocations
-survive replacement through their lifetime owners.
+`PublicationCoordinator` owns the bounded commit lane. Prepared transactions
+validate expected pages and generation against the latest root, merge unrelated
+updates and publish one new state. The final commit segment has no allocation,
+cancellation or caller callbacks; completion notification follows publication.
+
+`PublishedSnapshot` owns a source-free view of the last complete L1 mapping
+and its coverage, independent of the facade lifetime. During partial handoff,
+the publication root retains that completed view alongside the changing live
+mapping; capture selects both mapping and coverage in one epoch-protected
+root read. Capturing a snapshot does not advance the flush frontier. Native
+and portable export, range rebuild and generation replacement retain their
+captured ownership through the same publication boundary.
+
+A split session fixes the complete L1 baseline paired with its captured source
+floor. A synchronous host capture joins an in-flight flush without blocking a
+runtime worker. A new session fixes its baseline only after capturing at least
+the frontier observed when capture began; an older pending operation may finish
+first. Later parent flushes do not change the fixed baseline.
+
+An existing session may already back a child's installed overlay. If intervening
+parent flushes leave a gap after that session's retained sources, beginning its
+shared view returns the older, continuously retained frontier. It does not claim
+the parent's newer frontier is available. Callers publish the fixed cutover and
+replay later slots; an explicit overlay request beyond the retained prefix is
+rejected before changing the child.
+
+An empty, unwritten child can inherit the missing prefix by copying the captured
+baseline through bounded portable work windows, reserving its complete output
+shape first. The
+replacement publishes independent L1 storage and retained L0 sources together
+after rechecking the child root under its ingress fence. Preparation failure
+leaves the child root and frontier unchanged. A nonempty child must already
+cover the required L1 prefix; missing history is rejected rather than credited.
 
 ### 1.6 Epoch-Based Reclamation
 
-Page lifetime (deletion / references / safe concurrent access) is governed by
-an epoch manager **owned by each `Crowdbtree` instance** (not shared): because
-the buffer pool and all retired pages are already tree-private, a per-tree
-epoch is simpler and lets `get`/`scan` hand back **borrowed zero-copy views**
-into resident frames that stay valid for the read guard's lifetime (§2.2).
+MemTable cursors and writers use a source's epoch lifetime to safely acquire
+raw immutable nodes/version descriptors. Cross-thread handoff obtains an
+independent `CellVersion` owner while still protected; it never reconstructs
+ownership from a raw pointer after leaving the guard.
 
-- A reader does `Enter()` (a single atomic store) before touching any page and
-  exits when its guard drops.
-- The writer `Retire()`s pages it replaces (old delta chains, old base pages,
-  freed leaf/inner pages from split/merge, unreferenced `RootVersion` pages).
-- A retired page is freed only after every thread that could hold a pointer
-  has left the epoch in which it was retired.
+Epoch participants register through CAS and cache the participant by manager
+identity. Nested guards share the participant. A source retains participants
+and pending retirements until its outstanding readers have left. Replaced
+version descriptors use preallocated retirement tickets; per-key mutation does
+not take a reclamation mutex.
 
-L1 page retirement uses `retire()` under the reclamation mutex. Concurrent
-MemTable writers enqueue preallocated retirement tickets through `defer()`'s
-lock-free CAS list; per-record publication never takes that mutex. Maintenance
-collects tickets, assigns retirement epochs and frees entries only below the
-minimum active participant epoch. Idle maintenance also drives reclamation.
+Published roots, descriptors, arrays and frame owners have independent shared
+ownership. Releasing the live root only starts retirement; retained snapshots,
+values, cache entries and callbacks can keep allocations alive. Host retirement
+services perform bounded disposal after the last relevant owner exits.
 
-**Guard entry and exit do not acquire a mutex.** First use on a thread allocates
-and CAS-registers a participant, then caches it by manager identity. Subsequent
-outermost entry publishes the current epoch; the outermost exit clears it.
-Nested guards share that participant. Participants are dynamically registered,
-not drawn from a fixed-capacity writer registry. The lifetime owner preserves
-participants and pending retirements while borrowed results outlive the tree.
-
-**Why not sharding instead?** Sharding (multiple `EpochManager` instances,
-reader hashed by thread) reduces contention but does not eliminate it. Each
-shard still needs a mutex, and retire/reclaim must coordinate across shards
-(take the min epoch across all of them). Lock-free EBR eliminates the mutex
-entirely on the reader path, which is strictly better, for less complexity.
-
-**Why epoch-based reclamation and not pin counts or hazard pointers?** The
-hard part of eviction/reclamation is not picking a victim; it is answering
-*"when is it safe to actually reuse a page's frame bytes?"* Readers are
-lock-free and read `Slice`s that point **directly into a frame**, so freeing
-or reusing memory a reader still holds a pointer into is a use-after-free.
-Three disciplines solve this:
-
-1. **Pin counts / refcounting** (textbook buffer pool): `pin++` before
-   touching a page, `pin--` after; evict only at `pin == 0`. Correct, but it
-   puts an atomic RMW on a shared cacheline on **every page touch on the read
-   hot path**, a real regression versus lock-free reads.
-2. **Hazard pointers:** a reader publishes each pointer it dereferences into
-   a per-thread slot before touching it; the reclaimer scans all threads'
-   slots before freeing. Lock-free and tightly memory-bounded, but the reader
-   pays a publish (store + fence + re-validation) per pointer, and a
-   root→…→leaf descent needs one hazard per level.
-3. **Epoch-based reclamation (EBR)**, crowdb-tree's choice for the sync read
-   hot path (`get`/`scan`/`get_view`). A reader brackets its **whole**
-   operation in one `Guard`; it never publishes which pointers it holds.
-   Reader cost is one enter/exit *per operation*, not per pointer. Trade-off
-   vs. hazard pointers: a single stalled guard blocks *all* reclamation
-   (worst-case unbounded retained memory), accepted because reads are short
-   (one `get`/`scan`) and there is a single writer, so the active-epoch
-   window is tiny.
-4. **Per-page refcount on handoff paths**, composes with EBR as an
-   orthogonal cross-thread lifetime mechanism. EBR protects the same-thread
-   walk (the `Guard` is thread-bound); refcount extends page lifetime across
-   threads after the walk hands off a borrowed `Slice` (`get_async` slow
-   path) or a pinned snapshot (`snapshot_view` → `PinnedSnapshot`). The
-   per-page `pin_state_` atomic on `PageBase` is only touched on the
-   handoff paths (one `fetch_add` on pin, one `fetch_sub` on unpin), NOT on
-   the sync `get`/`scan` hot path. The §1.6 rejection of refcount ("atomic
-   RMW on every page touch on the read hot path") stands for the hot path.
-   The epoch deleter sets a `kRetiredBit` via `fetch_or`; if pins are
-   outstanding (count > 0), the deleter defers and the last `unpin` frees.
-   This decouples page lifetime from the entering thread's participant slot,
-   eliminating the copy in `materialize_owned` and the stale-root GC delay
-   when a snapshot is handed to another thread.
+**I3 — Actual release:** neither logical removal nor queueing retirement reduces
+physical allocation counters. The allocator/deleter or confirmed physical
+backend delete is the release event.
 
 ### 1.7 Read Path
 
-- **L0 overlay.** Capture source owners and their L1 coverage floor together,
-  before loading L1 pointers. Ignore L0 cells at or below that captured floor,
-  including stale replays admitted before a new floor was published. Among
-  eligible L0 candidates choose the highest observed slot; a tombstone wins by
-  the same comparison. A hit can borrow its value while retaining its source
-  epoch. If L0 has no eligible candidate, resolve the L1 chain.
-- `scan(prefix, start_after, limit)` uses a **merge cursor** over L0 and the
-  L1 leaf chain: at each step take the smaller key, and on a key tie take the
-  highest observed slot. Within L1, walk the current leaf's live entries with a
-  `LeafChainCursor` (resolving the delta chain by highest slot), then follow
-  `right_sibling`.
-  Each cursor caches a coherent key/slot/value candidate. Ordinary scans do
-  not pin a common version, regardless of result size: different keys may
-  reflect different times or part of a concurrent batch. `start_after`
-  (empty = start from beginning) is an **exclusive lower bound** pushed down
-  into the engine: the descent targets the leaf that would contain
-  `start_after` (instead of the prefix start), and the merge loop skips keys
-  `<= start_after` natively, so a deep-pagination scan starts at the cursor
-  and applies the limit without over-fetching the prefix range. O(limit)
-  FFI + decode cost instead of O(prefix range) for a page near the end of a
-  large prefix.
-- `scan_directional_async(..., Reverse)` is the descending order-dual. It
-  chooses the greatest live L0/L1 key below the exclusive continuation,
-  resolves collisions by highest slot, suppresses tombstones, and repeatedly
-  descends to predecessor leaves. Its probes never demand-load a cold page on
-  the caller thread: the page ID is returned to the same reactor retry loop as
-  forward scan. With an empty continuation, `end_key` or the prefix successor
-  supplies the exclusive upper bound. No previous-leaf pointer is required.
-- **Lazy leaf resolution (`LeafChainCursor`).** A leaf chain is *never*
-  materialized for a scan. Every chain input is already key-sorted: each
-  `BatchDelta`'s entries, and the terminal `LeafBase`'s main frame slots,
-  except the in-frame delta overlay, which is bounded by `max_inframe_delta`
-  and pre-sorted once at cursor setup. The cursor merges those `k` streams
-  (`k <= max_delta_len + 2`) by linear min-key selection over the stream
-  heads, resolving highest-slot-wins per key as it goes, so producing one
-  entry costs O(k) and a `limit`-bounded scan never touches the rest of the
-  leaf. On an equal slot the winner is the stream visited earliest in chain
-  order (deltas head→tail, then the base's main entries, then its in-frame
-  overlay), the same resolution order a whole-chain fold would apply.
-  `seek()` binary-searches each stream, so the descent leaf's entries before
-  `start_after` / `prefix` are skipped rather than stepped over. Keys and
-  cells come out as Slices borrowed from the chain's own storage and are
-  copied only when an entry is actually emitted to the caller.
-  The whole-chain form (`resolve_chain_sorted`) is the same cursor drained
-  into an owned vector; it remains the right shape for the full-set callers
-  (`iter_all` / `compare`, `PinnedSnapshot::materialize`, GC's live walk).
-- **Zero-copy value returns.** An **L1** hit returns a *borrowed* `buffer`
-  pointing into the resident leaf frame (valid only for the guard's
-  lifetime, §2.2). An **L0** hit also returns a *borrowed* `buffer`
-  pointing directly into the MemTable's skip-list node cell version. The
-  epoch guard keeps the node alive past any concurrent overwrite/drain,
-  exactly as it keeps an L1 frame resident. An overflow value (assembled
-  from multiple pages, no single frame to borrow) is materialized into an
-  owned `buffer`.
-- `iter_all` traverses the live overlay and includes tombstones. Stable snapshot
-  export uses the separately pinned L1 view.
+Point reads and scans capture a consistent mapping/source view, choose matching
+half-open ranges, and merge eligible source/run/base cells by slot with stable
+tie ordering. Tombstones suppress older values; keys-only scans avoid value
+materialization. Forward and reverse cursors preserve inclusive/exclusive
+bounds, prefix/end limits and resumable byte budgets.
 
-Ordinary mutation does not hold a table-wide read/write token. Generation
-replacement fences new operations and waits for old operations to finish;
-borrowed results retain their allocation lifetime independently.
+Cold frames are loaded asynchronously through the captured typed backing.
+Reads use bounded retained-source and result windows; a scan does not reserve
+or load every leaf in the mapping. Overflow chains use the captured primary
+capability and have independent traversal, byte and cycle-detection bounds.
+Malformed frames fail before becoming trusted descriptors.
+
+A fixed snapshot entry cursor has no L0 sources. Its admission bound uses the
+captured mapping shape and known L1 value bytes; unknown summaries retain the
+configured maximum. Later live writes cannot enlarge that fixed window, and
+decoder validation limits remain unchanged.
+
+Owned read results retain only their necessary payload/frame owners. Packed
+scan output carries its allocation owner through C and Rust, so dropping the
+Tree or advancing a generation cannot invalidate returned data.
+
+The public result limit and byte budget apply across internal work windows;
+an unlimited public limit does not stop at the first window. A strict byte
+budget that cannot fit the first entry returns an empty, truncated result.
+Packed output uses an independent Routing allocation account. Growth pays for
+both buffers during replacement and returns an explicit resource error if the
+account cannot cover the new capacity; retained output remains charged until
+the caller frees it.
 
 ### 1.8 Concurrency Summary
 
-- Ingest: per-batch table admission, CAS node/version publication and epoch
-  protection. Existing source-selection and slot-bookkeeping locks remain.
-- Flush: serialized L1 mutation, finite old-writer wait and prefix publication.
-- Reads: owned source bundle, captured coverage floor and coherent cursor
-  candidates. Forward/reverse and async retry paths use observed versions.
-- Replacement: engine-generation admission excludes old apply/NoOp/read
-  operations while publishing privately prepared state. It does not reuse or
-  reset the outstanding count of an older table.
-- Split: a journal cutover is not L1 coverage. Overlay sources remain queryable
-  until prefix publication; an unpublished overlay prevents destination flush
-  from advertising that inherited frontier. Uncovered parent sources remain
-  pending when split ownership is released.
+Standalone C and Rust opens share the process runtime. Their per-Tree binding
+still validates and enforces queue, lifecycle and resource limits; omitting an
+explicit runtime does not discard that binding. Range rebuild uses the
+destination binding under the same rule.
 
-Demand loading retains the existing cold-path mutex. Allocation, source
-selection and slot bookkeeping mean the complete apply operation is not claimed
-to be lock-free merely because skip-list mutation is concurrent.
-
-- **I1 — Lifetime:** epoch borrowers and source owners jointly protect nodes,
-  descriptors, payloads and page chains through their final access.
-- **I2 — Completion:** Frozen means admission is closed and the batch count is
-  zero. Reader lifetime does not delay this transition.
-- **I3 — Resolution:** one node per key and coherent immutable descriptors
-  preserve highest-slot-wins, tombstones and equal-slot replay deduplication.
-- **I4 — Scan:** observed-version scans preserve ordering and uniqueness; a
-  stable key cannot disappear due to flush. No common snapshot slot is promised.
-- **I5 — Coverage filter:** a source bundle's floor excludes already-covered L0
-  versions without changing the traversal of older bundles.
-- **I6 — Publication:** L1 receives only versions within the captured contiguous
-  target. Complete L1 coverage and durable snapshot coverage remain separate.
+- The host shares bounded CPU workers and backend execution; each Tree has an
+  independent lane/account. New nested work yields while children are pending.
+- Source insertion uses CAS. Prepared writers can finish after source closure;
+  finite flush capture prevents new writers from extending a batch indefinitely.
+- Range preparation, reads, page encoding and I/O can overlap. The publication
+  lane serializes only validated root transitions.
+- Backend callbacks own their operation/buffer/permit state until one terminal.
+  Stop requests fence further dispatch and drain already accepted callbacks.
+- Tree close fences ingress and stops unaccepted soft-rotation waits before
+  joining ingress participants. It separately drains accepted chosen/replay
+  work and preserves its operation owners. Generation replacement follows the
+  same ingress ordering; finishing replacement cannot reopen a closed Tree.
+  Host shutdown drains Trees, backend and retirement work before destroying
+  their shared runtime resources.
 
 ### 1.9 Epoch-Protected MemTable (L0)
 
-- **Structure:** nodes contain immutable inline keys, atomic forward links and
-  an atomic `VersionSet*`. Level-zero CAS establishes membership; upper links
-  are an optimization. A paused insertion does not own unrelated keys. Height
-  selection uses thread-local state. Published nodes are never unlinked.
-- **Versions:** each immutable descriptor owns its current `CellVersion` and
-  retained history through shared payload references. It stores a monotonic
-  pruning bound. The common one-version descriptor has no history allocation.
-  CAS failure recomputes selection from the winning descriptor; an older writer
-  cannot restore a discarded redundant prefix version.
-- **Retention:** D=100 with versions 2, 80, 102 and 105 retains 80, 102 and 105.
-  Prefix targets 100, 102 and 105 therefore choose 80, 102 and 105. Reversed
-  arrival and future tombstones follow the same rule. A slot gap can retain many
-  versions; an admission window is not a bound on the global slot span.
-- **Reclamation:** retired descriptors use embedded, preallocated queue tickets.
-  Apply submits ownership by lock-free push; maintenance collects tickets into
-  epoch retirement. It does not acquire the reclamation mutex per overwrite or
-  run a collection pass on the apply path. Shared payload ownership prevents
-  descriptor copies from freeing values still used by newer descriptors.
-- **Readers:** cursor creation and advancement capture one candidate pointer.
-  Ranking and materialization use that same immutable tuple. Frozen tables stay
-  intact until fully covered and source owners are detached. Destruction queues
-  remaining nodes; outstanding guards retain the detached reclamation lifetime.
-- **Metrics:** successful overwrite, history retention and merging events are
-  aggregated once per batch. Retention distinguishes a gap at admission from
-  temporary pending-batch retention; these are event counts, not a gap rate.
-  Separate gauges report live history, descriptor/node/payload charges and
-  allocations awaiting reclamation. Managed byte charges include object sizes
-  and retained buffer lengths; allocator overhead and external-owner sharing
-  require process-memory measurements. Concurrent gauge samples are approximate.
-- **Descriptor copying:** `mt.version.copy.l` is a latency counter for rebuilding
-  an existing descriptor's payload-reference set, including pruning, candidates
-  discarded after a CAS conflict and aborted preparation. Its count is the
-  number of reconstruction attempts; sum/maximum measure individual attempt
-  durations. Samples are aggregated locally and submitted once per batch,
-  including failed batches. Payload bytes are shared, not copied. This is not
-  an I/O bandwidth metric or a count of successfully published versions.
+Nodes contain immutable inline keys, atomic forward links and an atomic
+`VersionSet*`. Level-zero CAS establishes membership; upper links accelerate
+search. Published nodes remain linked until source retirement. Immutable version
+descriptors own their current cell and retained history through shared owners.
+A monotonic pruning bound prevents a losing older writer from restoring an
+obsolete version set after a CAS conflict.
 
-### 1.10 Scan Path Perf Baseline
+For a retained prefix of 100, versions 2, 80, 102 and 105 retain 80, 102 and 105.
+Views at 100, 102 and 105 therefore choose the corresponding highest eligible
+version. Gaps can retain many versions; a proposal count limit is not a bound
+on the total slot span.
 
-Scan is part of the read flow but a separate perf track from random
-point reads (different cost shapes: per-entry overhead vs leaf-chain
-traversal vs per-byte copy). The regression sentinel is
-`tools/benchmark/bench-kv-scan-regression.sh` driving `crowdb-cli bench run --workload
-list` with `--scan-limit`, `--scan-prefix`, `--scan-start-after` flags
-against a 3-node mem-mode cluster, mirroring the write/read regression
-sentinels. The sync `scan` `start_after` pushdown correctness is
-covered by `ReadPath.ScanStartAfterCursorSkipsEarlierEntries` in
-`read_path_test.cpp`. Full baseline numbers and analysis are in
-`doc/design/kv/kv-scan-flow-analysis.md`; the raw TSV is in
-`doc/working/bench-scan-regression.tsv`.
-
-Key findings from the baseline (Apple M5 Pro, macOS, 1T:1C, 100k
-pre-populated keys):
-
-- **§1.7 O(limit) deep-pagination claim: confirmed.** Deep pagination
-  (`start_after` near end, limit=10) is 1.7x slower than from-start
-  (7084us vs 4236us): the O(log N) B+tree descent to a deeper leaf,
-  not O(prefix) over-fetch. If the engine over-fetched the prefix,
-  deep pagination would cost ~1.75s (the full-100k number), not 7ms.
-  The over-fetch proxy ratio is 1.7x; the etcd-style "fetch all then
-  truncate" regression would show ~400x.
-- **Per-scan fixed cost** (~4.2ms): ReadIndex consensus round + crowdb-rpc
-  roundtrip + B+tree descent. Dominates at small limit (10/100).
-- **Per-entry cost** (~0.3us/entry at 64B values): visible at limit
-  >= 10k. At limit=10k, avg=7.3ms vs 4.4ms at limit=10.
-- **crowdb-rpc 4 MiB message size limit**: scans returning > 4 MiB (full
-  100k keyspace at 64B values, or limit=1000 at 16KiB values) hit
-  crowdb-rpc's default `max_recv_message_length` and fail with transport
-  errors. This is the crowdb-rpc-message-size analog of etcd's range-read
-  OOM risk (issue #12342). A streaming scan response (mirroring etcd
-  PR #19766) or a raised max-message-size config is needed for
-  large-payload scans.
-- **Value-size anomaly (resolved)**: 1KiB values scanned 3.8x faster
-  than 64B despite returning 16x more data. The L0-snapshot hypothesis
-  was refuted by per-step measurement: `l0_snapshot` is 0us in
-  production (the maintenance loop drains L0 before measurement), and
-  even a full 100k-entry 64B snapshot is only ~120us against a ~3900us
-  scan. The real cause was eager whole-leaf resolution: `l1_resolve`
-  was 99.5% of the 64B C++ scan (3985us of 4004us) and 93% of the 1KiB
-  scan, because a leaf's entire live entry set was rebuilt per scan
-  regardless of `limit`. 64B values pack ~640 entries per 64 KiB leaf
-  vs ~58 for 1KiB, so the dense-leaf case paid ~11x more per leaf.
-  The lazy `LeafChainCursor` (§1.7) makes per-leaf cost O(limit):
-  microbench 100k keys, limit=1000, L1-only: 64B 1183us → 19.9us,
-  1KiB 476us → 32.2us; limit=10 at 64B 1163us → 0.4us. Cost now tracks
-  bytes returned rather than entries per leaf, so 64B is cheaper than
-  1KiB, as expected.
-
-Per-step scan instrumentation (`Crowdbtree::scan_profile()`, the `scan.*`
-metrics, and the `scan_step_profile` microbench under
-`-DCROWDB_TREE_BENCH=ON`) is what made this attributable: `l0_snapshot`,
-`l0_skip`, `l1_descent`, `l1_resolve`, `merge`, `total`. `l1_resolve`
-now covers per-leaf cursor setup + seek only; the per-entry cursor step
-is counted under `merge`, since timing each step would cost more than
-the step.
-
-Cost-split prioritization: with leaf resolution O(limit), the remaining
-scan cost is per-entry decode/copy plus the per-scan fixed cost
-(ReadIndex consensus round + crowdb-rpc roundtrip + descent, ~0.4-0.6ms),
-which dominates every bounded scan. The crowdb-rpc 4 MiB limit caps practical
-scan width before per-byte copy becomes dominant, so response-size work
-(pagination + byte budget) gates large-value scans more than per-byte
-copy does.
-
-Future gaps (not measured by the baseline): high-concurrency
-read-mode split (MinSlot vs Linearizable at > 1T:1C), and reverse scan
-(forward-only today). The L0 snapshot copy (O(N_l0) per scan) was closed
-by the L0 path; see §1.9.
-
----
+Source summaries and physical allocation counters have different
+meanings. Logical history/frozen bytes describe source contents; physical
+bytes include allocations retained by readers, history descriptors and
+independent payload owners. Concurrent samples can be approximate.
 
 ## 2. Memory and Buffer Management
 
-The write path used to copy key/value bytes **three times**: `encode_cell()`
-into a `std::string`, `MemTable::upsert` storing the string, `flush()`
-draining into a vector, and the frame builder writing into the frame. **Goal:
-allocate key/value memory once, at the earliest point (the Rust/C API
-boundary), then move it down to the MemTable and into the B+tree without
-copying.** The only unavoidable copy is the final placement into the slotted
-frame layout. That copy *is* page construction, not a redundant one. On the
-read side, `get`/`scan` hand back a **borrowed** view into the resident frame
-instead of a freshly-allocated `std::string`; the caller copies only if it
-needs to outlive the read guard.
+### 2.1 The buffer Abstraction
 
-### 2.1 The `buffer` Abstraction
+`buffer` is move-only and supports inline, owned and externally owned storage.
+Owned allocation capacity is the accounting unit, including header reserve;
+an explicit clone copies bytes. External slices retain a validated full backing
+identity/capacity and final drop owner. Incompatible host identity or unknown
+capacity uses an admitted owned copy.
 
-`buffer` (`lib/crowdb-tree/include/lib/crowdb-tree/buffer.h`) is a move-only byte container
-that is *either* owned (frees on destruction) *or* borrowed (a non-owning view
-whose lifetime is guaranteed elsewhere — a resident frame under an epoch
-guard). Design rules:
-
-- **Move-only.** A `buffer` is never implicitly copied; passing it down the
-  write path is a `std::move`. Deep copies are explicit (`clone()`).
-- **Two modes, one type.** The same type serves an owned write-path value and
-  a borrowed read-path view. A borrowed `buffer` never frees.
-- **Header reserve.** `alloc(cap, header_reserve)` over-allocates by
-  `header_reserve` so the cell header (`[slot][flags]`, §1.1) is written in
-  the reserved prefix and the value bytes follow contiguously — the encoded
-  cell is one contiguous buffer with no second allocation or copy.
-- **Small-buffer optimization (SBO) — required, not optional.** An owned
-  `buffer` whose total length fits `kInlineCap` (24 B) stores its bytes
-  **inline**, with no heap allocation, mirroring `std::string`'s SSO. This is
-  a *correctness-for-performance* rule: without it, replacing `std::string`
-  (which inlines ~15 B) with `buffer` on the write path would *regress* the
-  common small-key/small-value case by forcing a `malloc` where there was
-  none. A 9-byte cell header + up to 15 B of value stays inline.
-- **Allocator seam.** `alloc()` routes owned allocations larger than
-  `kInlineCap` through a single internal allocator hook (today: glibc
-  `malloc`); a size-classed pool or RDMA-pinned allocator could slot in here
-  later with no call-site changes. See [`todo_code.md`](../../working/todo_code.md) for
-  why that hasn't been done speculatively.
-- **MemTable = `absl::btree_map<std::string, cell_entry>`.** The KEY stays
-  `std::string`, the VALUE is a `cell_entry{slot, flags, cell}`. The
-  `cell` buffer is either **contiguous** (`kOwned`, full `[header][value]`,
-  used by snapshot import and the direct C API) or **split** (`kExternal`,
-  value-only borrowed from a Rust `Bytes`, the zero-copy consensus apply
-  path). The contiguous form is materialized at the API boundary
-  (`get`/`drain`/`snapshot`). **Why the key is not a `buffer`:** a B-tree stores
-  `pair<const Key, Value>` and *relocates* slots on node split/merge, which
-  requires moving the `const` key. A move-only `buffer` key falls back to
-  its deleted copy ctor and fails to compile. `std::string`'s SSO already
-  inlines small keys, so it is the correct key type; `buffer`'s SBO gives
-  the same inline benefit on the value side plus the borrowed read path.
-  `std::less<>` is transparent → heterogeneous `Slice`/`string_view`
-  lookup with no temporary key.
+Keys are copied into bounded node/arena storage. Payloads can remain shared
+from the public API through source versions and L1 overlays. Building a durable
+frame necessarily copies its selected bytes into that representation; this
+encoding event is distinct from ownership transfer.
 
 ### 2.2 Write and Read Pipelines
 
-```
-Write (consensus apply path — zero-copy):
-  Rust: Batch::decode produces Bytes slices (O(1) Arc ref-bump)
-  → CrowdbTreeEngine::apply: per-op Bytes::clone → BytesRef handle (Arc bump)
-  → ct_apply_batch_external: C++ wraps value as kExternal buffer (NO memcpy)
-  → apply_external → MemTable::upsert_external: cell_entry{slot, flags, value:kExternal}
-  → [payload Bytes stays alive, pinned by external buffers' Arc clones]
+`AllocationLease`, allocation reservations and typed credits associate real
+storage with a Tree account and its host budget. Reserved credit converts into
+allocated bytes without charging both simultaneously. Unused credit returns on
+rollback or sealing; allocated bytes remain until their actual deallocation.
 
-Write (contiguous-cell path — snapshot import / direct C API):
-  → allocate one buffer (value + reserved cell header)          ← the ONE allocation
-  → C FFI: ct_apply_put(tree, slot, key_ptr,klen, val_ptr,vlen)
-  → C++ wraps as buffer (copy at the boundary; §2.3)
-  → encode cell: write slot+flags into the reserved header       (no alloc, no copy)
-  → MemTable::upsert(key_buf, cell_buf): std::move into the map   (no copy)
-
-Flush (off the apply critical path):
-  → prefix snapshot: materialize selected cells → contiguous [header][value] (value memcpy HERE)
-  → frame builder copies bytes into the slotted frame layout     ← unavoidable (page construction)
-
-Read: get(key):
-  guard = epoch.enter()                       // keeps resident frames alive (§1.6)
-  L0 (MemTable) hit: must COPY (materializes split cell into [header][value]; one copy)
-  L1 (B+tree) hit:   return buffer::wrap(cell_value_ptr_in_frame, len)  // BORROWED, zero copy
-                      valid only while `guard` is held AND the frame stays resident
-```
-
-- **Apply critical path: zero value memcpy.** The value bytes are borrowed
-  from the Paxos payload `Bytes` via `kExternal` buffers; the `memcpy` is
-  deferred to flush (off the critical path). The total value-copy count is
-  2 (materialization at flush + frame construction), both on the Flusher
-  thread, none on the apply thread.
-- **L1 reads are zero-copy:** the returned `buffer` borrows the cell's value
-  bytes directly from the resident frame. **The epoch guard alone keeps the
-  frame resident.** Eviction does not free a page's frame directly, it
-  re-tags the mapping slot unloaded and epoch-retires the page, whose
-  destructor (which releases the frame) only runs after the epoch reclaims
-  it. A reader holding a guard therefore keeps the page alive, so the frame
-  stays pinned and the buffer pool's CLOCK sweep skips it; no separate pin
-  needs to be bundled into the returned handle.
-- **Caller contract:** a borrowed `buffer` is valid only while the caller
-  holds the read guard. To retain a value past the guard, the caller calls
-  `clone()` (owned copy) and releases the guard.
+Handoff, Routing, Reclaim, admitted-writer and gap-repair partitions prevent
+ordinary growth from consuming all capacity needed to complete accepted work.
+A complete reclaim operation receives its inputs, output, scratch, publication
+and callback allowance before starting. I/O operations use separate permits.
 
 ### 2.3 Rust FFI Ownership
 
-Three options for how Rust hands value memory to C++:
+Known Rust `Bytes` allocations cross the ABI with a stable backing identity,
+capacity and drop callback. Same-host slices share the payload charge; external
+control blocks, foreign owner/context and slice holders remain separately
+charged allocations. Failure/cancellation drops each transferred owner once.
 
-- **Option A — copy at the boundary.** Rust passes `*const u8` + len; C++
-  `buffer::alloc()`s and copies once at the FFI boundary. Simpler; one
-  copy remains at the boundary but the *internal* pipeline is zero-copy
-  (§2.2). Used by the simple single-op C API (`ct_apply_put`,
-  `ct_apply_batch`, `ct_apply_batch_slices`).
-- **Option B — handle-based ownership transfer.** The caller
-  allocates crowdb-tree-owned memory via `ct_alloc(key_len, val_len)`, which
-  returns an opaque `ct_write_handle` plus two writable pointers (key +
-  value). The caller writes key/value bytes directly into that memory,
-  then `ct_apply_put_owned(tree, slot, handle)` writes the cell header
-  (slot + flags) into the pre-allocated cell and moves key+cell into
-  `apply_encoded` — zero value memcpy. `ct_free_handle(handle)` is the
-  error/cancel path. The cell header layout (`kCellHeaderSize`) is
-  internal — the C API never exposes it, sidestepping the ABI-stability
-  concern that originally blocked this option. The Rust adapter wraps the
-  handle in a `WriteHandle` struct with RAII `Drop` (frees if not
-  consumed) and `apply(self, slot)` (consumes). `!Send + !Sync`. SBO is
-  preserved: small values (≤ 15 B) use inline storage, same as Option A.
-  Intended for direct API callers that want zero-copy single-op apply.
-- **Option C — external borrow from Rust `Bytes`.** The consensus
-  apply path (`CrowdbTreeEngine::apply`) uses `ct_apply_batch_external`:
-  each Put op's value `Bytes` is cloned (O(1) `Arc` bump) into a
-  `BytesRef` handle handed to C++. C++ wraps the value bytes as a
-  `kExternal` `buffer` (borrowed, no memcpy) and stores a **split cell**
-  in the MemTable — `cell_entry{slot, flags, value:kExternal}` — where
-  the 9-byte cell header is stored as fields, not as adjacent bytes. The
-  contiguous `[header][value]` cell is materialized at the MemTable API
-  boundary (`get`/prefix snapshot/`snapshot`), where a copy already exists,
-  all off the apply critical path. When the `kExternal` buffer is freed
-  (drain/overwrite), C++ calls back into Rust (`ct_release_bytes`) to
-  drop the `Arc<Bytes>` clone, keeping the payload allocation alive until
-  every borrowing buffer is freed. The `kExternal` mode adds zero size
-  overhead to `buffer` (the drop-control fields overlap the SBO `inbuf_`
-  array via a union). See §2.4.
+`PinnedValue::into_bytes` retains a native result owner through `Bytes::from_owner`.
+Packed scan owners follow the same principle. A shared output may be dropped
+on another thread or after the facade closes without retaining an unrelated
+source index or changing the charged capacity to the slice length.
 
-Ownership rule (extends `design-crowdb-tree.md §4`): a buffer *yielded* to
-`ct_apply_*` is owned by the tree and freed by it once flushed into a frame;
-a buffer *borrowed* into a call (not yielded) follows the existing "borrowed
-for the call's duration" rule. An **external** buffer (Option C) is
-borrowed from Rust and kept alive by an `Arc<Bytes>` refcount — C++ calls
-back into Rust to drop the ref when the buffer is freed (drain/overwrite),
-so the payload allocation survives until every borrowing buffer is released.
+### 2.4 Allocation Accounting and Ownership
 
-### 2.4 Zero-Copy Apply: Split-Cell External Buffers
+Allocation owners charge their actual capacity once and return it on final
+release. Shared cell, frame and external-buffer owners preserve that charge
+across source handoff, immutable views and Tree closure. Epoch guards protect
+borrowed accesses until reclamation is safe.
 
-**Design challenge.** The consensus apply path receives value bytes as
-`Bytes` slices into the packed Paxos payload, a single refcounted
-allocation shared by all ops in the batch. The contiguous-cell apply path
-(Option A/B) calls `encode_cell_buf`, which performs a value `memcpy`
-(64 KiB for a large value) on the apply thread, the dominant per-op cost
-for large values. The goal is to eliminate this copy for the consensus
-apply path without changing the contiguous cell representation downstream.
+Snapshot capture and split source installation retain existing immutable
+owners. They do not enumerate allocations or create per-reference statistics
+tokens. Source summaries describe current logical contents; allocation and
+budget counters describe physical occupancy and admission.
 
-**Why a naive external buffer doesn't work.** The cell is stored as one
-contiguous `buffer` `[9-byte header][value]` everywhere (`mem_entry.cell`,
-`leaf_entry.cell`, B+tree frames, snapshot I/O). `CellView` reads
-`slot()`/`flags()`/`value()` by slicing this contiguous memory. A
-`Bytes`-backed external buffer cannot satisfy this contiguity: the value
-bytes live in the packed payload `Bytes`, and the 9-byte header (known only
-at apply time) is not adjacent to them.
+### 2.5 Work and Runtime Metrics
 
-**Design.** Split the cell **only while it lives in the MemTable**;
-materialize the contiguous form at the memtable API boundary
-(`get`/prefix snapshot/`snapshot`), points where a copy already exists, all
-off the apply critical path. Everything downstream (flush, delta, frame,
-`leaf_entry`, `CellView`, snapshot I/O) sees contiguous cells unchanged.
+Each Tree records fixed stage summaries, terminal outcomes, event counters and
+bounded observations of unfinished work. Queue wait, execution and end-to-end
+pipeline durations describe different intervals; durations of parallel children
+must not be interpreted as elapsed time for their parent. When age observation
+slots fill, the sample reports incomplete coverage without rejecting work.
 
-- **`buffer::mode::kExternal`** — a buffer mode that borrows value bytes
-  from a Rust `Bytes` and calls `drop_fn(owner)` on destruction to
-  decrement the Rust refcount. The drop-control fields (`drop_fn`, `owner`)
-  overlap the SBO `inbuf_` array via a union — zero size overhead.
-  `clone()` deep-copies the borrowed bytes into an owned buffer; move
-  transfers `ext_` and releases the source without calling `drop_fn`.
-- **`cell_entry`** — the MemTable's internal map value: `{slot, flags, cell}`.
-  Contiguous: `cell` is `kOwned` (full `[header][value]`). Split: `cell` is
-  `kExternal` (value-only, borrowed). Tag: `cell.ownership() == kExternal`.
-  `materialize()` builds a contiguous `[header][value]` buffer from the
-  fields + borrowed value (one value `memcpy`, off the apply hot path).
-- **`apply_external(slot, vector<external_op>)`** — same semantics as
-  `apply_encoded` (oversized-key rejection, slot bookkeeping,
-  `maybe_swap_active`, intra-batch last-key-wins) but builds `cell_entry`
-  directly — no `encode_cell_buf`, no value `memcpy`.
-- **`ct_apply_batch_external`** — C API: `ct_ext_op{key, value, kind,
-  bytes_ref, drop_fn}`. Rust hands a `BytesRef` (boxed `Arc<Bytes>`) per Put
-  op; C++ wraps the value as `kExternal` and calls `drop_fn(bytes_ref)` when
-  the buffer is freed.
-- **`CrowdbTreeEngine::apply`** — unchanged `KVEngine::apply` trait; builds
-  `ExtOp`s from the `Batch`'s `Bytes` slices (O(1) `Arc::clone` per op) and
-  calls `apply_batch_external`. WAL replay goes through the same
-  `learner.learn` → `apply_entry` path, so it benefits automatically.
+Budget request waits are separated into Handoff, Routing, Reclaim, admitted
+writer, gap-repair and I/O classes. A wait runs from its first submission to its
+single grant, error or cancellation terminal; direct non-waiting reservations
+are separate. Shared-cache latency counts requests joining a load already in
+flight, ending after each waiter's own proof and pin validation. First loaders
+and ready cache hits are excluded from that wait summary.
 
----
+One collector owns destructive window sampling and shares an immutable result
+with logs and diagnostics. Cumulative samples never drain. Every supported C
+capture version advances the same window, including enabled distributions that
+an older output structure cannot expose. Versioned structures validate all
+headers before changing a window or caller output.
+
+Histograms are explicitly enabled for one Tree and one stage. They allocate no
+buckets by default; enabling charges the real fixed bucket storage to that
+Tree's Routing account. Concurrent enable calls retain one instance, and failed
+enable leaves business state unchanged. Terminal observations use atomic updates
+without allocating. Enabled storage survives with the metrics owners and is
+released with the last owner. Quantiles come from the distribution; they are not
+estimated from the summary average or maximum.
+
+The shared host runtime also exposes cumulative CPU and backend executor queue,
+execution and rejection counters, alongside reserved/allocated resources and
+budget waits. These samples cover all Trees using that runtime. They are relaxed
+cross-field observations, require no backend I/O, and remain readable after its
+Trees close while the runtime handle is retained.
+
+Periodic resource windows integrate non-draining samples to report average
+and sampled maximum occupancy. Tree samples include backend, ordinary apply
+and replay operation slots independently of runnable CPU queues. They also
+include the active source's ordinary/gap entry and key-byte allowances,
+including admitted writers that have not materialized records. These source
+counts reset on source rotation and do not measure retained older sources.
+Operation capacity denials are cumulative; source contention counters are not
+measured. Sampling age, gaps and errors accompany the occupancy windows.
 
 ## 3. Async FFI Bridge
 
-### 3.1 Problem and Design Principle
+Private sender operations compose bounded CPU jobs and asynchronous backend
+callbacks. Public headers expose opaque handles, status/result structures and
+callbacks, without leaking sender templates. The synchronous facade waits for
+its operation completion; async callers use native futures directly.
 
-Wrapping every synchronous C++ engine call in `tokio::task::spawn_blocking`
-has two problems: (1) every `get`/`apply`/`scan` hops through Tokio's blocking
-thread pool, and the ~5–10 μs scheduling overhead is significant relative to
-a μs-level in-memory operation; (2) a high-performance engine must not block
-async workers or rely on large thread pools for I/O. `spawn_blocking` is a
-workaround for synchronous I/O, not a long-term architecture.
+A native future retains accepted state and uses a notification fd to wake Rust.
+Rust checks readiness, registers an independently owned `AsyncFd`, and rechecks
+completion to avoid lost wakeups. Closing a former reactor cannot deregister a
+new native descriptor that reuses the same fd number.
 
-**Design principle: completion-based async I/O via io_uring. No blocking, no
-thread pools, no C++ coroutine dependency.**
+The first poll may already find a completed operation; callers must also handle
+pending CPU dispatch even for resident data. Tree work is not implemented by
+creating a new OS thread per flush or by wrapping all calls in `spawn_blocking`.
 
-- **C++ coroutine (`co_await`) is not used.** It would add compiler/runtime
-  surface and lifetime complexity at the C ABI without improving the kernel
-  I/O path. The boundary still needs an opaque handle Rust can poll, so
-  exposing coroutine state machines across FFI is the wrong abstraction.
-- **Folly futures are not used.** They bring a large dependency stack and an
-  executor model that duplicates Tokio on the Rust side; crowdb-tree only needs
-  a small completion object plus a notification fd.
-- **epoll is only the readiness fallback.** io_uring handles disk/block I/O;
-  `eventfd` handles C++→Rust wakeup, and Tokio already integrates that fd via
-  `AsyncFd` (epoll internally), so no separate epoll event loop for storage I/O.
+**I4 — Terminal ownership:** cancellation is a request, not permission to free
+accepted buffers. Exactly one success/error/stopped terminal releases the
+operation's remaining credits after its children and backend callbacks drain.
 
-### 3.2 Architecture
+## 4. Rust-Side KVEngine Async Trait Shape
 
-```
-  Tokio async runtime                         C++ engine
-  ┌──────────────────┐                ┌──────────────────────────┐
-  │  async fn get()  │                │  ct_get_async()          │
-  │  CtGetFuture     │──poll()───────►│  fast path? ──yes──► done│
-  │  .poll()         │                │     │ no                 │
-  │     │ pending    │◄──done=0───────│  submit io_uring SQE     │
-  │     │ register   │                │  return pending          │
-  │     │ waker on   │                │                          │
-  │     │ AsyncFd    │                │  polling thread (1)      │
-  │     │ (eventfd)  │◄──eventfd──────│  io_uring_enter loop     │
-  │     │ wake       │                │  CQE → callback          │
-  │  .poll() again   │──poll()───────►│  ct_future_poll → done=1 │
-  │  → Ready(result) │                │  return ct_buf           │
-  └──────────────────┘                └──────────────────────────┘
-```
+`KVFuture<T>` represents either an immediate result or a pending boxed future,
+allowing object-safe `KVEngine` calls without requiring a heap future for every
+immediate completion. `CrowdbTreeEngine` adapts owned native operations to that
+contract and retains one metrics collector for its lifetime.
 
-One DiskIOUring per `Crowdbtree` instance, on a dedicated C++ thread: it calls
-`io_uring_enter` (blocking until a CQE arrives or a timeout fires), peeks
-CQEs, dispatches each completion callback, then writes to its `eventfd` to
-wake the Rust side. The Rust side wraps that `eventfd` in Tokio's `AsyncFd`;
-a `ct_future` handle carries the pending state, result, and (for the fast
-path) an `EpochManager::Guard` keeping the frame resident (§3.4).
+Proposal admission produces a grant that survives the consensus decision and
+subsequent apply. Accepted apply/replay and NoOps drive the contiguous frontier;
+ordinary proposal backpressure cannot consume the gap-repair allowance.
 
-### 3.3 Fast Path vs Slow Path
-
-| Operation | Fast path (sync) | Slow path (io_uring) |
-|-----------|-----------------|---------------------|
-| `get` | L0 MemTable hit, L1 resident page hit | L1 cache miss → demand-load from disk |
-| `scan` | All pages resident | Any page needs demand-load |
-| `apply_put` / `apply_delete` | MemTable insert (no flush triggered) | Triggers flush → write to disk |
-| `flush` / `snapshot` | — | Always: write dirty pages to disk |
-| `snapshot_view` | All pages resident | Any page needs demand-load |
-
-The C++ engine determines the path internally: if the operation can complete
-without I/O, it fills the future synchronously (`state = kDone`) and returns;
-otherwise it submits SQE(s) to the DiskIOUring (`state = kPending`) and the
-DiskIOUring completes the future when I/O finishes. A `CtFuture`'s first
-`poll()` on the fast path resolves immediately, zero scheduling overhead,
-no thread switch; on the slow path it registers a waker on `AsyncFd` and
-resolves on the next DiskIOUring-driven wakeup.
-
-### 3.4 Zero-Copy Value Across FFI
-
-- **Fast path (PinnedValue):** the `ct_future` holds an
-  `EpochManager::Guard` that keeps the frame resident;
-  `ct_future_poll` returns a `ct_buf` pointing directly into the frame
-  bytes (borrowed, not owned). `AsyncCrowdbtree::try_get_pinned` wraps
-  this in a `PinnedValue`, a `!Send` RAII type that holds the
-  `ct_future` handle so the epoch guard stays alive until `PinnedValue`
-  is dropped. `PinnedValue::as_bytes()` borrows directly from the C++
-  frame with no `copy_buf` allocation. The `KVEngine::get_bytes` trait
-  method (default impl delegates to `get` + `Bytes::from(vec)`;
-  `CrowdbTreeEngine` overrides to use `try_get_pinned`) copies from
-  `PinnedValue` into `Bytes` before dropping the pin, eliminating the
-  intermediate `Vec<u8>` allocation. Total: one copy (frame → `Bytes`),
-  one allocation (`Bytes`), no `Vec<u8>`.
-- **Slow path:** the I/O read fills a C++-owned buffer; on completion
-  the future returns it as an owned `ct_buf` (C++ allocates, Rust
-  frees). For frame-borrowed values, the zero-copy path replaces the copy with a per-page
-  refcount pin: the polling thread pins the leaf base page(s) under its
-  epoch guard, releases the guard, and hands the `GetView` (still borrowing
-  the frame) across threads; `ct_future_free` unpins from the dropping
-  thread. `materialize_owned` remains only for overflow-chain values
-  (assembled from multiple pages, no single frame to borrow). The Rust
-  side then copies from the borrowed/owned buffer into `Vec<u8>` / `Bytes`.
-- **Key copy elimination:** `AsyncCrowdbtree::try_get` /
-  `try_get_pinned` accept `&[u8]` instead of `Vec<u8>`, since
-  `ct_get_async` copies the key internally into a
-  `std::shared_ptr<std::string>`. The Rust-side `key.to_vec()` is
-  eliminated, no C++ changes required.
-- **True zero-copy:** `PinnedValue::into_bytes()` creates a `Bytes`
-  via `Bytes::from_owner` backed by the C++ frame, no copy. The
-  `ct_future` handle (and its page refcount pins) is held by the `Bytes`
-  owner; when the last `Bytes` ref clone is dropped on any thread, the
-  owner's `Drop` runs, which drops the `PinnedValue`, which calls
-  `ct_future_free` to unpin. `PinnedValue` is `Send` (the per-page
-  refcount is thread-independent), enabling this cross-thread zero-copy
-  handoff. `CrowdbTreeEngine::get_bytes` uses this path directly.
-
-### 3.5 Decision Log
-
-| ID | Decision | Rationale |
-|----|----------|-----------|
-| D-Async1 | **Async FFI via io_uring + completion-based futures.** No `spawn_blocking`, no large thread pools, no C++ coroutine/Folly dependency. | A `ct_future` handle is the correct FFI abstraction for Rust polling; C++ coroutine and Folly executor state must not cross the C ABI. Fast path completes synchronously with zero scheduling overhead. |
-| D-Async2 | **One polling thread per `Crowdbtree`.** | Each tree has its own buffer pool and I/O; a per-tree DiskIOUring keeps I/O completions local and avoids cross-tree coordination. The DiskIOUring does no application logic — only CQE dispatch. |
-| D-Async3 | **`eventfd` for Rust↔C++ notification.** | Simplest kernel-level notification: one `write(8 bytes)` wakes Tokio's `AsyncFd`. Level-triggered, no missed events. Falls back to a pipe + `kqueue` on macOS. |
-| D-Async4 | **macOS dev path: in-memory store, no io_uring.** | io_uring is Linux-only. For dev/testing on macOS, the in-memory store completes synchronously (fast path only). Production runs on Linux with real io_uring. |
-
----
-
-## 4. Rust-Side `KVEngine` Async Trait Shape
-
-> **Merged from `design-crowdb-kv-async-kvengine.md` (2026-07).**
-> **Status:** implemented (landed 2026-07-09).
-> This section records the design of the Rust-side `KVEngine` trait's async
-> shape (`KVFuture<T>`) and why it looks the way it does, kept as the
-> rationale record for a decision that is easy to get wrong (the naive
-> `async-trait` conversion), not as a live plan.
-
-### 4.1 The Problem
-
-`KVEngine` is consumed as `Box<dyn KVEngine>` (`PxLearner::engine`), chosen at
-runtime via a CLI flag (`--kv-engine {memory,crowdb-tree}`). Its `get`/`scan`/
-`apply` need an async-capable return type so that a genuine I/O path
-(crowdb-tree demand-load miss, served by the io_uring engine, §3 "Async FFI
-Bridge") can suspend instead of blocking a Tokio worker thread on a
-synchronous `pread`. That is the exact anti-pattern the DiskIOUring exists to
-avoid at the C++/FFI layer, which would otherwise resurface immediately one
-layer up in Rust.
-
-### 4.2 The Central Tension: `dyn KVEngine` vs. `async fn` in Traits
-
-Native `async fn` in traits is **not `dyn`-compatible**. Three ways to square
-that with runtime engine selection:
-
-| Option | Cost |
-| --- | --- |
-| **(a) `async-trait` crate** | Boxes every async call into a `Pin<Box<dyn Future>>` via macro, one heap allocation **per call, including the fast in-memory path with no I/O**. Undoes the DiskIOUring's "fast path costs nothing" property one layer up. |
-| **(b) Generic `PxLearner<E: KVEngine>`** | Zero overhead, but `E` would need to propagate through `PxLocalReplica`, `PxGroup`, `PxKvStore`, and `DashMap<GroupId, PxGroup>`, too invasive for an engine chosen at runtime. |
-| **(c) Hybrid fast-path/slow-path future (chosen)** | Plain (non-`async`) `fn`s return a small custom future enum that resolves immediately (no allocation) for the fast path and only boxes a real future for the rare slow (I/O) path. Fully `dyn`-compatible; mirrors the exact fast/slow split the C++ layer already makes. |
-
-### 4.3 `KVFuture<T>` and the Trait Shape
-
-```rust
-pub enum KVFuture<T> {
-    Ready(Option<T>),                              // taken on first poll; re-polling panics
-    Pending(Pin<Box<dyn Future<Output = T> + Send>>),
-}
-
-impl<T> KVFuture<T> {
-    pub fn ready(v: T) -> Self { KVFuture::Ready(Some(v)) }
-}
-
-pub trait KVEngine: Send + Sync {
-    fn apply(&self, slot: u64, batch: &Batch) -> KVFuture<()>;
-    fn get(&self, key: &[u8]) -> KVFuture<Option<(u64, Vec<u8>)>>;
-    fn scan(&self, prefix: &[u8], limit: usize) -> KVFuture<(Vec<(Vec<u8>, u64, Vec<u8>)>, bool)>;
-    // iter_all / clear / compare / resume_from_slot /
-    // persist_snapshot / set_gc_watermark / compact_sparse_blocks: plain sync fns.
-    // Diagnostic/maintenance-path only (compare/iter_all: tests + snapshot
-    // export; the rest: restore path + the periodic group-maintenance
-    // task), never on the hot Paxos-accept / crowdb-rpc-read path, so a brief
-    // blocking call there is an acceptable trade-off.
-}
-```
-
-`Ready` costs nothing beyond the enum tag + inline value, no allocation, no
-`Pin<Box<..>>`. `InMemKV` always returns `Ready`. `CrowdbTreeEngine::get`
-(`lib/crowdb-kv/src/kv/crowdb_tree_engine.rs`) does the same fast-path check the C++
-layer does first, via `crowdb_tree_ffi::AsyncCrowdbtree::try_get`; on a resident
-hit/miss it returns `Ready` at zero extra cost, and only on a genuine
-demand-load miss does it construct `Pending`, wrapping the DiskIOUring-driven
-future `try_get` already builds. `CrowdbTreeEngine::scan`/`apply` always
-resolve `Ready` today (no async `scan`/`apply` C API exists yet, an honest
-gap, not an oversight; see `CrowdbTreeEngine`'s doc comment).
-
-### 4.4 Caller-Side Wiring
-
-`Learner::learn` is a native `async fn` (mirroring `Acceptor`'s existing
-`async fn accept`/`prepare` convention; neither trait is ever used as
-`dyn`, so native `async fn` is safe for both). `PxLearner::apply_entry`/
-`engine_get`/`engine_scan` are `async fn` and `.await` the `KVFuture`
-directly. `PxLocalReplica::learn_chosen`/`apply_committed_up_to` and
-`PxKvStore::kv_get`/`kv_scan` were already `async fn` (already awaited by
-every caller) and now genuinely `.await` a future that can suspend, instead
-of always resolving on the first poll.
-
-`engine_scan`/`apply_entry` stay `async fn` for signature uniformity with
-`engine_get`, but never actually suspend today, matching §4.3's note that
-`scan`/`apply` have no async C API yet.
-
-### 4.5 Testing
-
-- `kv/kv_future_test.rs`: `KVFuture::ready(v)` polls to `Ready(v)` on the
-  first poll without registering a waker; a `Pending` variant polls through
-  to the wrapped future's result; polling a completed `Ready` again panics.
-- `InMemKV` regression guard (`mem_kv_test.rs`): every call returns `Ready`
-  (asserted via `matches!`, not just the unwrapped value, so an accidental
-  switch to `Pending` fails loudly here first).
-- `CrowdbTreeEngine` regression tests (`crowdb_tree_engine_test.rs`): a resident
-  hit/miss returns `Ready`; `get_constructs_pending_for_genuine_demand_load_miss`
-  evicts a durable engine's resident leaf and asserts `get` returns `Pending`
-  and resolves to the right value.
-- `paxos/learner_async_test.rs`: the same fast/slow property one layer up,
-  through `PxLearner::engine_get`.
+Typed maintenance reports distinguish handoff, writeback, checkpoint and
+retirement progress. The host's finite idle loop checks actual candidates and
+backend availability, so stopped writes can still converge without advancing
+WAL durability from representation-only work.

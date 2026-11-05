@@ -9,7 +9,7 @@ use axum::{
     Json,
 };
 use crowdb_console_shared::deployment::PreparedBootstrap;
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use serde_json::{json, Value};
 
 use crate::{

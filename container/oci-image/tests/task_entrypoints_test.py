@@ -45,8 +45,8 @@ class TaskEntrypointsTest(unittest.TestCase):
         result, commands = self.execute('build-release.sh')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(commands[0].startswith('cmake -S lib/crowdb-tree'))
-        self.assertIn('cargo build --release --workspace --exclude crowdb-kv-client', commands)
-        self.assertIn('cargo build --release -p crowdb-kv-client --features ffi', commands)
+        self.assertIn('cargo build --release --workspace --exclude crowdb-paxos-kv-client', commands)
+        self.assertIn('cargo build --release -p crowdb-paxos-kv-client --features ffi', commands)
         self.assertIn('npm run build', commands)
         self.assertEqual(commands[-1], 'cargo test --workspace --all-targets --no-run')
 

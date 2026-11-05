@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "crowdb-rpc/control_allocator.h"
+
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -100,11 +102,12 @@ struct Buffer
     // External free callback: when set, release() calls free_cb(free_ctx)
     // instead of freeing `data` directly. Used for zero-copy buffers that
     // wrap externally-owned memory (e.g. a Rust Vec allocation).
-    void (*free_cb)(void *) = nullptr;
-    void *free_ctx          = nullptr;
+    void (*free_cb)(void *)   = nullptr;
+    void            *free_ctx = nullptr;
+    ControlAllocator control_allocator{};
 
-    // Transfer the final reference to an asynchronous receive recycler.
-    // The callback consumes that reference, including any repost attempt.
+    // Transfer the final reference to its owner-specific release handler.
+    // The callback consumes that reference, including any receive repost.
     void (*last_release_cb)(void *, Buffer *) = nullptr;
     void *last_release_ctx                    = nullptr;
 

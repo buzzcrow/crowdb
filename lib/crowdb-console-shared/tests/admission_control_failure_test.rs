@@ -10,7 +10,7 @@ mod ssh_server;
 #[tokio::test]
 async fn dependency_wait_survives_the_remote_monitor_control_boundary() {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("monitor-dependency-wait");
-    std::env::set_var("CROWDB_KV_KNOWN_HOSTS", root.path().join("known-hosts"));
+    std::env::set_var("CROWDB_PAXOS_KV_KNOWN_HOSTS", root.path().join("known-hosts"));
     let key = russh::keys::key::KeyPair::generate_ed25519().unwrap();
     let path = root.path().join("operator-key");
     russh::keys::encode_pkcs8_pem(&key, std::fs::File::create(&path).unwrap()).unwrap();

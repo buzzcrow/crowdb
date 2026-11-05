@@ -12,7 +12,7 @@ use axum::{
 };
 use cluster_target::TestClusterTarget;
 use crowdb_console_shared::deployment::CLUSTER_KEY;
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use serde_json::Value;
 use tower::ServiceExt;
 

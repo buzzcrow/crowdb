@@ -1,21 +1,21 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{BorrowedFd, OwnedFd, RawFd};
 use std::os::raw::c_int;
 use std::sync::Arc;
 
-use crate::error::{check, copy_buf, take_buf, CtError};
+use crate::error::{check, copy_buf, CtError};
 use crate::sys;
 use crate::tree::Crowdbtree;
 
 // Reactor-driven async futures.
 //
-// AsyncCrowdbtree::get/flush/snapshot/scan drive drive_ct_future below directly:
-// no spawn_blocking, no OS thread hop. A fast-path completion (get_view's
-// cached L0/L1 hit, or flush's always-in-memory work) resolves on the
-// *first* poll without ever touching the reactor; only a genuine
-// demand-load miss waits on the tree's eventfd.
+// Native reads, scans, admission and maintenance operations use completion
+// polling with eventfd notifications. CPU work runs on the shared native runtime;
+// even resident reads may be pending on their first poll. An already completed
+// operation returns immediately. Pending CPU work and backend I/O both wake the
+// eventfd pump when completion becomes observable.
 //
 // Fan-out note: this deliberately does *not* have every pending future call
 // `AsyncFd::poll_read_ready` on a shared registration -- that method's
@@ -27,17 +27,13 @@ use crate::tree::Crowdbtree;
 // waits on a `tokio::sync::Notify` the pump fans out to instead, which does
 // support any number of concurrent waiters.
 
-/// Non-owning view of a raw fd for `AsyncFd` registration. The engine's
-/// `DiskIOUring` owns the eventfds `ct_uring_eventfds` returns and closes
-/// them in its own destructor (~`DiskIOUring`); Rust must wrap them
-/// *without* taking closing ownership -- unlike `std::os::fd::OwnedFd`,
-/// this type's `Drop` is a no-op.
-pub(crate) struct RawFdView(pub(crate) RawFd);
-
-impl AsRawFd for RawFdView {
-    fn as_raw_fd(&self) -> RawFd {
-        self.0
-    }
+/// Give the pump an independent descriptor so native Tree closure cannot
+/// recycle a descriptor that Tokio has yet to deregister after task abort.
+///
+/// # Safety
+/// `fd` is a live native eventfd and its owner outlives this call.
+pub(crate) unsafe fn duplicate_eventfd(fd: RawFd) -> std::io::Result<OwnedFd> {
+    unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned()
 }
 
 extern "C" {
@@ -62,8 +58,8 @@ pub(crate) fn drain_eventfd(fd: RawFd) {
 /// The tree's lazily-spawned eventfd pump (see the module-level fan-out
 /// note above): `notify` is fanned out to every waiting `drive_ct_future`
 /// call each time the pump observes the eventfd fire; `task` is aborted by
-/// `Crowdbtree`'s `Drop` before `ct_close` runs (the eventfd itself becomes
-/// invalid once the Reactor is torn down).
+/// `Crowdbtree`'s `Drop` before `ct_close` runs. The pump owns a duplicate fd
+/// until Tokio deregisters it and drops the cancelled task.
 pub(crate) struct EventfdPump {
     pub(crate) notify: Arc<tokio::sync::Notify>,
     pub(crate) task: tokio::task::AbortHandle,
@@ -74,24 +70,17 @@ pub(crate) struct RawOutcome {
     pub(crate) found: bool,
     pub(crate) slot: u64,
     pub(crate) value: Vec<u8>,
+    pub(crate) packed: Option<bytes::Bytes>,
 }
 
-/// Which `ct_*_async` call produced a `FutureGuard` -- `ct_future_poll`'s
-/// freeing contract differs for `Get`:
-/// a resolved kGet future is deliberately *not* freed by `ct_future_poll`
-/// itself (its `out_value` may still borrow from a resident frame, kept
-/// alive by the future's own epoch guard), so the caller must free it
-/// explicitly once done reading -- unlike Flush/Snapshot/Scan, which
-/// `ct_future_poll` already frees on completion, same as before Phase 4.
-/// `Scan`'s `out_value` (follow-up) is always a *malloc'd*
-/// owned buffer (never borrowed, unlike Get) -- `try_poll_ct_future` must
-/// free it via `take_buf`, not `copy_buf`.
+/// Native future ownership kind. Get results borrow their bytes until the
+/// handle is freed; admission completions free themselves on polling. Owned
+/// scans use the versioned owner protocol and retain their result separately.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FutureKind {
     Get,
     Flush,
-    Snapshot,
-    Scan,
+    ScanOwned,
 }
 
 /// RAII guard for one in-flight `ct_future`: frees it via `ct_future_free`
@@ -121,7 +110,7 @@ unsafe impl Send for FutureGuard {}
 /// One synchronous `ct_future_poll` attempt. `None` if still pending;
 /// `Some` if done, in which case `guard` has already been nulled out --
 /// either `ct_future_poll` itself freed the underlying `ct_future`
-/// (Flush/Snapshot), or, for a `Get`, this function did so explicitly via
+/// (admission completion), or, for a `Get`, this function did so explicitly via
 /// `ct_future_free` right after copying `out_value`'s bytes out (which may
 /// be a *borrowed* pointer into a still-live frame -- see `copy_buf`).
 ///
@@ -132,6 +121,12 @@ pub(crate) fn try_poll_ct_future(
     guard: &mut FutureGuard,
     kind: FutureKind,
 ) -> Option<Result<RawOutcome, CtError>> {
+    if guard.0.is_null() {
+        return Some(Err(CtError::ResourceExhausted));
+    }
+    if kind == FutureKind::ScanOwned {
+        return crate::scan::owner::poll(guard);
+    }
     let mut done: c_int = 0;
     let mut found: c_int = 0;
     let mut slot: u64 = 0;
@@ -143,37 +138,25 @@ pub(crate) fn try_poll_ct_future(
     if done == 0 {
         return None;
     }
-    // Extracted unconditionally, before checking status: for Scan, `value`
-    // is always a malloc'd owned buffer (see FutureKind::Scan's doc
-    // comment) that must be freed via take_buf/ct_free_buf regardless of
-    // whether the underlying op errored (ct_future_poll's kScan branch
-    // populates *out_value with an owned buffer -- possibly empty, but
-    // still malloc'd -- either way; leaving `value` unhandled inside a
-    // match arm that only runs on Ok would leak it on an errored scan).
-    let value_bytes = if kind == FutureKind::Scan {
-        take_buf(value)
-    } else {
-        // copy_buf, not take_buf: for a Get, `value` may borrow from a
-        // still-live frame (zero-copy fast path) and must
-        // not be passed to ct_free_buf. Flush/Snapshot never populate
-        // `value` at all, so this is a no-op for them either way.
-        copy_buf(value)
-    };
+    // The get handle retains the borrowed result until after this copy.
+    // Admission completions return an empty buffer.
+    let value_bytes = copy_buf(value);
     let result = match check(rc) {
         Ok(()) => Ok(RawOutcome {
             found: found != 0,
             slot,
             value: value_bytes,
+            packed: None,
         }),
         Err(e) => Err(e),
     };
     if kind == FutureKind::Get {
         // ct_future_poll deliberately does *not* free a kGet future (see
-        // its doc comment in c_api.h) -- the epoch guard behind a
-        // zero-copy fast-path value must outlive the copy_buf call above.
+        // its doc comment in c_api.h). The owned read result must outlive
+        // the copy_buf call above.
         unsafe { sys::ct_future_free(guard.0) };
     }
-    // Flush/Snapshot: already freed by ct_future_poll itself. Either way,
+    // Admission completions are freed by ct_future_poll itself. Either way,
     // the underlying ct_future is gone now -- don't let FutureGuard's Drop
     // free it again.
     guard.0 = std::ptr::null_mut();
@@ -215,9 +198,24 @@ impl PinnedValue {
     /// per-page refcount is thread-independent, so `PinnedValue` is `Send`).
     /// When the last `Bytes` ref clone is dropped, the owner's `Drop` runs,
     /// which drops the `PinnedValue`, which calls `ct_future_free` to unpin.
+    ///
+    /// # Panics
+    /// Panics if the pre-admitted control window cannot satisfy its fixed owner layout.
     #[must_use]
     pub fn into_bytes(self) -> bytes::Bytes {
-        bytes::Bytes::from_owner(PinnedBytesOwner { pv: self })
+        self.try_into_bytes()
+            .expect("admitted immutable result control capacity")
+    }
+
+    /// Preserve the native allocation account through the Rust control block.
+    /// The exact box layout is claimed before allocation and refunded after
+    /// the last byte clone is destroyed and that box has been deallocated.
+    ///
+    /// # Errors
+    /// Returns a native admission error if the fixed owner control cannot be claimed.
+    pub fn try_into_bytes(self) -> Result<bytes::Bytes, CtError> {
+        let budget = crate::owner_budget::OwnerBudget::future(self.handle)?;
+        budget.wrap(PinnedBytesOwner { pv: self })
     }
 }
 
@@ -251,6 +249,9 @@ impl Drop for PinnedValue {
 pub(crate) fn try_poll_ct_future_pinned(
     guard: &mut FutureGuard,
 ) -> Option<Result<Option<(u64, PinnedValue)>, CtError>> {
+    if guard.0.is_null() {
+        return Some(Err(CtError::ResourceExhausted));
+    }
     let mut done: c_int = 0;
     let mut found: c_int = 0;
     let mut slot: u64 = 0;
@@ -286,15 +287,22 @@ pub(crate) fn try_poll_ct_future_pinned(
     Some(result)
 }
 
-/// Drives one `ct_get_async`/`ct_flush_async`/`ct_snapshot_async` handle to
-/// completion: polls it, and if not yet done, waits for the tree's eventfd
-/// pump to fan out a notification before polling again. A fast-path
-/// completion never reaches the `notified.await` at all.
+/// Drives a get, admission or owned-scan handle to completion: polls it and,
+/// if pending, waits for the tree's eventfd pump to fan out a notification.
+/// An operation already complete on the first poll needs no notification wait.
 pub(crate) async fn drive_ct_future(
-    mut guard: FutureGuard,
+    guard: FutureGuard,
     tree: &Arc<Crowdbtree>,
     kind: FutureKind,
 ) -> Result<RawOutcome, CtError> {
+    drive_completion(guard, tree, |guard| try_poll_ct_future(guard, kind)).await
+}
+
+pub(crate) async fn drive_completion<T>(
+    mut guard: FutureGuard,
+    tree: &Arc<Crowdbtree>,
+    mut poll: impl FnMut(&mut FutureGuard) -> Option<Result<T, CtError>>,
+) -> Result<T, CtError> {
     loop {
         // Construct (but do not yet await) the notification future *before*
         // checking ct_future_poll below, not after: Notify::notified
@@ -308,18 +316,16 @@ pub(crate) async fn drive_ct_future(
         let notify_arc = tree.eventfd_notify();
         let notified = notify_arc.as_ref().map(|n| n.notified());
 
-        if let Some(result) = try_poll_ct_future(&mut guard, kind) {
+        if let Some(result) = poll(&mut guard) {
             return result;
         }
 
         match notified {
             Some(n) => n.await,
             None => {
-                // No reactor wired (or the pump failed to spawn): per
-                // ct_get_async/ct_flush_async/ct_snapshot_async's contract,
-                // no reactor means every op already completes
-                // synchronously, so done=0 here should be unreachable --
-                // yield instead of busy-looping just in case.
+                // Without an available notification pump, yield before
+                // polling again. Native CPU work can still be pending even
+                // when no backend I/O is needed.
                 tokio::task::yield_now().await;
             }
         }

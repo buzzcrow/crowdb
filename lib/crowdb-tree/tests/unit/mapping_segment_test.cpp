@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 // #14a: standalone mapping-table segment struct.
-#include "crowdb-tree/maptable/mapping_segment.h"
 #include "crowdb-tree/maptable/mapping_slot.h"
+#include "mapping_segment_test_support.h"
 
 #include <gtest/gtest.h>
 
@@ -11,7 +11,7 @@ using namespace crowdb::tree;
 
 TEST(MappingSegment, ConstructsAllSlotsEmpty)
 {
-    MappingSegment seg(128);
+    TestMappingSegment seg(128);
     EXPECT_EQ(seg.slot_count, 128U);
     for (uint32_t i = 0; i < seg.slot_count; ++i) {
         EXPECT_TRUE(slot_word::is_empty(seg.slots[i].load()));
@@ -23,8 +23,8 @@ TEST(MappingSegment, ConstructsAllSlotsEmpty)
 
 TEST(MappingSegment, SlotsAreIndependentlyMutable)
 {
-    MappingSegment seg(4);
-    uint64_t       w = slot_word::pack_unloaded(42, 7);
+    TestMappingSegment seg(4);
+    uint64_t           w = slot_word::pack_unloaded(42, 7);
     seg.slots[2].store(w);
     seg.live_count.fetch_add(1);
     seg.write_seq.fetch_add(1);
@@ -41,7 +41,7 @@ TEST(MappingSegment, SlotsAreIndependentlyMutable)
 
 TEST(MappingSegment, GenerationBumpsIndependentlyOfSlots)
 {
-    MappingSegment seg(8);
+    TestMappingSegment seg(8);
     seg.generation.fetch_add(1);
     seg.generation.fetch_add(1);
     EXPECT_EQ(seg.generation.load(), 2U);
@@ -55,6 +55,6 @@ TEST(MappingSegment, GenerationBumpsIndependentlyOfSlots)
 TEST(MappingSegment, DefaultSizeMatchesOptionsDefault)
 {
     // Config.mapping_segment_slots default is 1024.
-    MappingSegment seg(1024);
+    TestMappingSegment seg(1024);
     EXPECT_EQ(seg.slot_count, 1024U);
 }

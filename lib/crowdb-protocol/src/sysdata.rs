@@ -4,11 +4,11 @@
 //! Entry return types for group-0 sysdata reads.
 //!
 //! These are the decoded form of a text-path key + its JSON value,
-//! produced by `HardwareClient` / `KVClusterMetaClient` reads. The key
+//! produced by `HardwareClient` / `PaxosKvClusterMetaClient` reads. The key
 //! fields (parsed from the path) are included alongside the value so
 //! callers do not need to re-parse the path.
 //!
-//! See `doc/design/kv/design-crowdb-kv-group0.md` §3.3.
+//! See `doc/design/kv/design-crowdb-paxos-kv-group0.md` §3.3.
 
 use crate::common_type::{DiskGroupId, NodeId, RackId};
 use crate::diskdb::rpc::DiskGroupValue;

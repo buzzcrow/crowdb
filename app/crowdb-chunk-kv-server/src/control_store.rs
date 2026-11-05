@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use crowdb_kv_client::{CrowdbKvClient, Error as KvClientError, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{Error as KvClientError, GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, DomainMonitorDescriptor, EnsureDomainMonitorOutcome,
     ServingGrant, SplitTransition, TransferTransition,
@@ -49,7 +49,7 @@ pub trait Group0Kv: Send + Sync {
 }
 
 #[async_trait]
-impl Group0Kv for CrowdbKvClient {
+impl Group0Kv for PaxosKvClient {
     async fn get(&self, key: &[u8]) -> Result<Option<VersionedValue>, Group0KvError> {
         match self
             .get(GROUP0_STORE, GROUP0_GROUP, key, ReadMode::Linearizable, None)
@@ -125,7 +125,7 @@ impl Group0Kv for CrowdbKvClient {
     async fn put_cas(&self, key: &[u8], value: &[u8], expected_revision: u64) -> Result<(), Group0KvError> {
         const MAX_BUSY_ATTEMPTS: usize = 20;
         for attempt in 0..MAX_BUSY_ATTEMPTS {
-            match CrowdbKvClient::put_cas(self, GROUP0_STORE, GROUP0_GROUP, key, value, expected_revision)
+            match PaxosKvClient::put_cas(self, GROUP0_STORE, GROUP0_GROUP, key, value, expected_revision)
                 .await
             {
                 Ok(_) => return Ok(()),
@@ -158,7 +158,7 @@ impl Group0ControlStore {
     }
 
     #[must_use]
-    pub fn from_client(kv: Arc<CrowdbKvClient>) -> Self {
+    pub fn from_client(kv: Arc<PaxosKvClient>) -> Self {
         Self { kv }
     }
 

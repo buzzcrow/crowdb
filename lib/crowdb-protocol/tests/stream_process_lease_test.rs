@@ -25,9 +25,18 @@ fn owner_keys_and_records_keep_purpose_instance_and_process_identity() {
             prior_exclusion_deadline_ms: 0,
             grant_sequence: 0,
             grant_expires_at_ms: 0,
+            revoked: false,
         };
         record.validate().unwrap();
         let value = serde_json::to_value(&record).unwrap();
+        assert!(!value.as_object().unwrap().contains_key("revoked"));
+        let mut excluded = record.clone();
+        excluded.revoked = true;
+        let excluded_bytes = serde_json::to_vec(&excluded).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<StreamProcessLease>(&excluded_bytes).unwrap(),
+            excluded
+        );
         assert_eq!(
             serde_json::from_value::<StreamProcessLease>(value.clone()).unwrap(),
             record
@@ -59,6 +68,7 @@ fn business_stream_processes_cannot_claim_wal_grant_fencing_fields() {
         prior_exclusion_deadline_ms: 0,
         grant_sequence: 1,
         grant_expires_at_ms: 3_000,
+        revoked: false,
     };
     assert!(record.validate().is_err());
     record.identity.purpose = StreamPurpose::Wal;

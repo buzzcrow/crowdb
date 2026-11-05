@@ -18,7 +18,7 @@ node_id = 701
 service_id = "kv"
 host = "localhost"
 ssh_port = 22
-binary_path = "/opt/crowdb/bin/crowdb-kv-server"
+binary_path = "/opt/crowdb/bin/crowdb-paxos-kv-server"
 service_config_path = "/opt/crowdb/data/service.toml"
 workspace = "/opt/crowdb/data"
 auto_start = true
@@ -28,7 +28,7 @@ readiness_url = "http://127.0.0.1:7000/topology"
         (data / "web.toml").write_text('''version = 1
 mode = "bare-metal"
 bind = "0.0.0.0"
-port = 9090
+port = 6135
 group0_management_seeds = ["http://127.0.0.1:9"]
 ui_root = "/opt/crowdb/ui"
 log_dir = "/opt/crowdb/data/log/web"
@@ -40,6 +40,6 @@ request_timeout_ms = 200
             ("server", "web", "--config", "/opt/crowdb/data/web.toml",
              "--registry", "/opt/crowdb/data/launches.toml"),
             address=str(subnet.network_address + 2)))
-        wait(lambda: HTTP.open(f"http://{self.addresses[0]}:9090/healthz", timeout=3).read(),
+        wait(lambda: HTTP.open(f"http://{self.addresses[0]}:6135/healthz", timeout=3).read(),
              lambda body: body == b"ok", "registry Web listener", seconds=5)
         return self

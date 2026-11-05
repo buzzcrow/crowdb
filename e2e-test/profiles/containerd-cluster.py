@@ -86,7 +86,7 @@ def main():
                    'pixi run --as-is --manifest-path container/oci-image/pixi.toml -e runtime '
                    'python e2e-test/profiles/containerd-host.py /opt/crowdb-e2e/archive.tar --serve')
             address = json.loads(docker("inspect", host))[0]["NetworkSettings"]["Networks"][prefix]["IPAddress"]
-            origins.append("http://" + address + ":9090")
+            origins.append("http://" + address + ":6135")
             # Host creation includes archive unpacking. Finish each owned host's
             # ordinary management startup before importing into another daemon.
             wait(lambda: request(origins[-1], '/api/node/candidates'),

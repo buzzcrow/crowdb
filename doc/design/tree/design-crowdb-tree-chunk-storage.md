@@ -10,333 +10,274 @@ Depends on: [`design-crowdb-tree.md`](design-crowdb-tree.md),
 Satisfies: [`design-crowdb-tree-storage.md`](design-crowdb-tree-storage.md)
 §1 (page-store abstraction)
 
-This document specifies the chunk-backed `PageStore`: immutable mirrored page
-packs, generation-fenced manifests, recovery, range rebuild, ownership
-materialization, and the boundaries for later physical reclamation.
+This document defines typed immutable Chunk backing, root publication and
+protection, physical collection, and explicit migration of logical-address
+manifests. Host ownership and WAL recovery remain in the Chunk-KV design.
 
 ## Table of Contents
 
-- [1. Architecture](#1-architecture)
-- [2. Page Packs and Addressing](#2-page-packs-and-addressing)
-- [3. Async Execution and Mirroring](#3-async-execution-and-mirroring)
-- [4. Manifest Publication and Recovery](#4-manifest-publication-and-recovery)
-- [5. Reads and Cache Validity](#5-reads-and-cache-validity)
-- [6. Range Rebuild and Sharing](#6-range-rebuild-and-sharing)
-- [7. Materialization and Reclamation](#7-materialization-and-reclamation)
-- [8. Correctness Invariants](#8-correctness-invariants)
-- [9. Configuration and Metrics](#9-configuration-and-metrics)
-- [10. Performance Evidence](#10-performance-evidence)
+- [1. Runtime and Backend Ownership](#1-runtime-and-backend-ownership)
+- [2. Fixed Packs and Root Identity](#2-fixed-packs-and-root-identity)
+- [3. Publication and Recovery](#3-publication-and-recovery)
+- [4. Readers and Process Fencing](#4-readers-and-process-fencing)
+- [5. Range Rebuild and Immutable Snapshots](#5-range-rebuild-and-immutable-snapshots)
+- [6. Typed Pack Collection](#6-typed-pack-collection)
+- [7. Explicit Legacy Migration](#7-explicit-legacy-migration)
+- [8. Legacy Physical Retirement](#8-legacy-physical-retirement)
+- [9. Accounting and Configuration](#9-accounting-and-configuration)
+- [10. Correctness Invariants](#10-correctness-invariants)
 
----
+## 1. Runtime and Backend Ownership
 
-## 1. Architecture
+`ChunkRuntimePageStore` is a backend facade injected into `TreeCore` with a
+shared `TreeRuntime`. It owns no private execution pool. The host shares CPU,
+backend execution, and the resource budget; each Tree retains its own lane,
+account, immutable publication state, and cache. Construction requires a
+fixed-pack transport, a staging/protection catalog, and a host pin-release
+service. Unsupported capabilities fail before an ordinary Tree is opened.
 
-`ChunkPageStore` implements both `PageStore` and `AsyncPageStore`. Tree
-algorithms depend only on those interfaces. The C API owns stores through an
-opaque `ct_page_store`; `ct_open` accepts an injected store and does not name
-or construct the chunk backend. The Rust chunk-KV owner selects the backend,
-provides the ownership epoch, and injects production catalog and transport
-dependencies.
+The C opaque store and Rust `PageStore::open_chunk_runtime` retain the catalog
+and transport domain. One catalog claim denotes one writer incarnation. Closing
+that writer drains accepted work and publishes its quiescence; reopening
+requires a fresh claim. Reader and snapshot owners can outlive the Tree.
+Their final releases enqueue paid pin work on the host service. The host keeps
+that service and the transports available until late owners and accepted
+release work have drained.
 
-`ChunkTransport` supplies chunk allocation, append, layout lookup, mirror I/O,
-and sealing. `RootCatalog` stores immutable reference-segment images and
-publishes one current manifest per tree. The production transport speaks the
-ChunkDB and DiskIO protocols directly; deterministic in-memory implementations
-exercise the same contracts in tests.
+`ChunkTransport` provides fixed allocation identity, mirrored immutable I/O,
+request-age fencing, ordered drain, and deletion receipts. The production
+adapter speaks ChunkDB and DiskIO protocols directly. Local-only links do not
+extract the Chunk/RPC implementation from the common archive.
 
-The common static tree archive contains the chunk and RPC-backed implementation,
-but an ordinary local-tree link extracts neither archive member nor its RPC
-symbols. Chunk implementation headers remain private, while the stable C ABI
-exposes construction, transport routes, statistics, and orphan accounting.
+## 2. Fixed Packs and Root Identity
 
-## 2. Page Packs and Addressing
+`BackingRef` identifies an immutable typed backing. A Chunk pack reference
+contains its stage identity, Chunk identity, byte offset, length, checksum, and
+purpose. It is not an address into a mutable logical byte image. BtreePage and
+PageIndex payloads have distinct Chunk purposes. Purpose alone never proves
+ownership or authorizes reuse or deletion.
 
-The tree writes a logical byte image. The chunk backend groups its dirty ranges
-into immutable packs of at most `pack_bytes`. Every pack has a logical offset
-and a `ChunkPageRef` containing chunk identity, physical offset, logical length,
-and frame revision. Frame footers own payload integrity and expected chunk
-identity; high-cardinality reference entries do not duplicate their checksums.
+A stage has a stable operation identity and a fixed allocation identity before
+allocation is submitted. Its durable state records allocation and reloadability
+progress. Mirrored bytes become reloadable only after all required writes and
+barriers succeed. A cancelled or failed attempt retains sufficient stage and
+allocation information for later reconciliation; it does not publish partial
+logical coverage.
 
-Pending writes form a sparse byte overlay on one captured immutable manifest.
-Starting a write does not materialize the published logical image or its holes.
-Partial writes capture only their intersected published packs, retaining the
-verified untouched bytes even if those mirrors become unavailable before commit.
-Later overlapping writes replace earlier bytes; overlay fragments are bounded
-to 64 KiB so replacing a small range cannot copy an arbitrarily large fragment.
-Each fragment retains its full logical coverage while storing trailing zeros
-implicitly. Zero padding therefore still overwrites base bytes and participates
-in coverage checks without retaining an allocation-unit buffer per padded page.
-Publication assembles one pack from verified base bytes and the overlay at a
-time. Unchanged packs still undergo frame verification before reuse. Both
-publication paths discard the overlay after commit, releasing its buffers.
-The tree releases each encoded snapshot page as soon as its store write
-completes, including asynchronous completion. It retains the page's publication
-identity through the final anchor barrier, without retaining a second copy of
-all bytes already accepted into the backend overlay.
-Snapshot preparation retains logical encoded page bytes. It reserves aligned
-addresses immediately but adds zero padding to the current page only at write
-submission, avoiding an additional allocation-unit padding copy of every page.
+`ChunkRootManifest` contains Tree identity, root generation, owner epoch,
+snapshot sequence, page generation, coverage, GC floor, root PID, next PID,
+WAL replay offset, and a bounded directory of immutable index packs. Index
+entries contain exact frame/backing and dependency references. Root and index
+records have independent magic, version, length, identity, and checksum checks.
+Root generation and snapshot sequence are separate monotonic identities.
 
-Mapping-table slots do not store physical chunk offsets. Their tagged 64-bit
-page-reference words name a logical location whose covering pack is resolved
-through immutable segmented reference tables. Untagged words remain valid for
-local stores and legacy mapping images. Mixed mapping images use their versioned
-codec so the two forms cannot be confused.
+## 3. Publication and Recovery
 
-Manifest formats 6 and 7 require concrete BtreePage/PageIndex chunk identities,
-retain the WAL replay offset and permit sorted, non-overlapping sparse pack
-layouts. A gap means that no live page references that logical pack range.
-Recovery validates arithmetic bounds, reference-segment checksums and complete
-pack coverage for every addressed page. Unsupported formats fail visibly.
+A checkpoint captures a finite source frontier and immutable page state. It
+writes or reuses verified primary backing, prepares the complete reference
+set, and commits one manifest candidate against the captured root generation
+and writer authority. Candidate preparation is windowed. Reference ownership
+precedes the root CAS so a crash cannot expose a root whose dependencies are
+collectible.
 
-New manifests use format 7 and packs use ordinary revision-2 common frames.
-Each frame has a 15-byte header and 20-byte footer, with at most 65,501 payload
-bytes; Stream grouping roles do not apply. Revision-1 packs remain readable.
-The serialized 28-byte reference uses its u32 length's high bit as the revision-2
-marker. Valid logical pack lengths are bounded by 256 MiB, so retained
-revision-1 lengths have that bit clear. In-memory logical lengths exclude the
-marker. Manifest and reference-segment CRCs cover the encoded marker, and
-format-6 manifests accept only legacy references. Exact reads derive physical
-length from the reference's revision without a separate header probe. Reused
-packs and immutable reference segments retain their original revisions.
+Only successful durable root publication advances the durable frontier and
+WAL replay offset. Handoff coverage and staged writeback do not authorize WAL
+trimming. A lost commit reply is resolved by looking up the same operation and
+root identity; it is not retried as a different publication.
 
-The backend uses the configured number of mirror copies. One B+tree chunk carries
-at most 256 MiB of logical pack data; this is a ceiling, not an initial reservation.
-BtreePage and PageIndex chunks initially allocate at most 4 MiB of logical strip
-capacity with the default 1 MiB strips. The ordered pack planner appends strips
-in 4 MiB growth windows as writes require them, before submitting mirror I/O.
-Physical allocation counts every replica of the allocated strips, not replicas
-of the maximum chunk size. Growth uses the observed ChunkDB revision, preserves
-writer authority, and cannot advance the acknowledged cursor. A failed or
-uncertain append never authorizes a write beyond the confirmed physical layout.
+Ordinary recovery loads the current root. Exact-generation recovery loads only
+the named retained root and never falls back to another generation. Absence at
+generation zero denotes a new Tree; malformed or unsupported existing bytes
+never silently open an empty Tree. Recovery validates the root, each index,
+frame identity, graph summaries, and overflow dependencies before publication.
+Bounded windows retain backend and protection owners through the final I/O.
 
-A pack never crosses the logical limit: the current chunk
-is sealed and the whole pack is appended to a new chunk. A reopened store starts
-with a fresh writable chunk. DiskIO owns device alignment; tree page records are
-tail-padded to the configured page alignment while logical lengths and checksums
-exclude padding.
+A later checkpoint may reuse immutable primary and overflow backing when its
+captured identity still matches. Reuse does not imply logical liveness outside
+the captured graph and does not turn an uncommitted stage into a durable root.
 
-Snapshot page bytes use BtreePage chunks. Persistent mapping segments,
-mapping directory, and retained tree anchors use PageIndex chunks through
-`write_typed_at` / `submit_typed_write`. Staging records purpose boundaries;
-packs split at a purpose boundary and chunks rotate when purpose changes.
-Adjacent equal-purpose staging ranges coalesce, so pack planning scans purpose
-transitions rather than every historical write boundary. Separate purpose
-chunks can increase allocation and frame overhead for small mapping images.
-Physical frame overhead also participates in capacity checks. Reuse and
-materialization preserve purpose encoded in each chunk identity.
+## 4. Readers and Process Fencing
 
-The direct-KV root catalog and immutable reference segments locate the logical
-image, including its PageIndex directory and anchors. Reading the mapping's own
-chunk therefore does not require that mapping to be loaded first. Snapshot
-publication makes page and mapping pack references visible together. Both
-purposes follow the same generation pins and reachability rules during split,
-sharing, materialization, and reclaim; purpose alone never authorizes freeing.
+Reads use the immutable captured mapping and its typed backing domain. Frame
+and overflow verification check the requested identity and stored checksums.
+The per-Tree cache pins verified immutable frames; cache eviction changes
+residency, not publication or durable reachability. Layout validity and read
+request-age checks are enforced at the transport boundary.
 
-## 3. Async Execution and Mirroring
+The catalog binds writer registrations and live pins to the host process
+lease. Pin, candidate, root, and collection mutations share an authority
+revision. A definite CAS conflict discards derived state and rereads within a
+finite retry bound. Transport ambiguity is returned for durable lookup; it is
+not treated as a CAS conflict.
 
-All backend operations enter a bounded lock-free queue. One ordered continuation
-worker preserves submission order, assigns stable nonzero operation IDs, skips
-cancelled queued work, and drains accepted completions during shutdown. Queue
-exhaustion completes immediately with `ResourceExhausted` and still follows the
-exactly-once callback contract.
+Writer quiescence excludes future writes after accepted work drains. It does
+not exclude readers. Removing a crashed process's pins requires authoritative
+process exclusion, including the applicable request-age boundary, and the
+recovery evidence required by the catalog. A new owner epoch alone cannot
+erase live old readers. The same-epoch writer incarnation is also checked.
 
-Pack construction admits at most `max_concurrent_packs`. Each pack fans out
-three mirror writes through sender composition. The pack is durable only after
-all mirrors acknowledge it. Failure or cancellation stops new admission, drains
-launched work, records possible unpublished objects, and prevents manifest
-publication.
+## 5. Range Rebuild and Immutable Snapshots
 
-The tree uses one backend-neutral completion descriptor. Every terminal future
-transition signals it exactly once after publishing completion state with
-release ordering. Linux uses `eventfd`; the portable fallback uses a
-nonblocking pipe. Rust polls the descriptor through its existing async reactor.
+`rebuild_range` captures a fixed immutable source and copies the selected native
+image into independently owned target backing. The target has an independent
+root lineage, mapping, PID allocation state, writer claim, and mutable source
+set. Source and target mutations cannot affect each other. Logical bounds are
+intersected at get/scan entry, including when a physically complete imported
+page contains keys outside the target range.
 
-## 4. Manifest Publication and Recovery
+Native and byte snapshot windows carry their allocation and backend owners.
+The immutable snapshot interface retains a captured root for repeated get,
+scan, and export operations without recapturing live Tree state. Closing the
+source Tree does not revoke that captured view. Final owners release their
+protection through the host service.
 
-`ChunkManifest` records tree identity, generation, owner epoch, logical size,
-the snapshot's WAL replay offset, pack entries, reference-segment directory,
-sharing counters, and checksums. Manifest directories and reference-segment
-images are immutable. The backend accepts supported typed manifests and
-rejects unknown formats before using their references.
+Topology artifacts that name an exact root retain durable generation pins.
+The pin is installed before the artifact becomes publishable and is released
+only after authoritative catalog state no longer names that root. A retry or
+crash may retain the pin longer; it cannot shorten the protected lifetime.
 
-A checkpoint captures the current catalog generation before it constructs any
-packs. Its new manifest is numbered `expected_generation + 1`. After pack and
-metadata durability barriers, `RootCatalog::publish` compares the same expected
-generation and ownership epoch. Only that compare-and-publish operation makes
-the checkpoint visible. Stale, failed, or ambiguous work remains unreachable
-and is accounted as orphan data.
+## 6. Typed Pack Collection
 
-Once a tree has written an anchor, a failed final durability barrier leaves
-that anchor pending under the existing snapshot serialization gate. Before
-preparing another snapshot, synchronous and asynchronous callers retry the
-pending barrier over the same staged image. Continued unavailability remains
-a typed failure; no new snapshot data is written until the pending barrier
-succeeds. Writes may continue into the live tree and are captured by the next
-snapshot. Failed publication never advances the tree's durable snapshot or WAL
-retention frontier.
+Collection reconciles candidate states, retained root references, live pins,
+and stage ownership. Retired stages pass through a durable deleting state
+before physical side effects. That transition excludes new references and
+pins for the reclaimed identity. Unresolved candidate outcomes remain
+protected until the same operation can be resolved.
 
-Recovery normally opens the newest epoch-valid, fully verified manifest. It
-may fall back only to the preceding complete retained generation. A caller
-holding topology recovery evidence may instead request one exact immutable
-root-catalog generation. Exact open never falls back to current, never accepts
-a cached generation with a different identity, and retains that bootstrap
-layout until the opened store successfully publishes its own successor. A
-successor publication first proves that the bootstrap is still current, so an
-old exact view cannot create a divergent root branch. Corruption, absence, and
-temporary availability remain distinct typed outcomes; an unavailable mirror
-does not poison mappings or convert a retryable read into corruption.
+Before deletion, the collector verifies the exact allocation receipt and
+excludes late writers and delayed allocation requests. DiskIO ordered drain
+completes before storage is released. ChunkDB's durable Deleted record retains
+strips while cleanup is incomplete; completion requires the expected identity,
+zero capacity, and no remaining strips. A deletion retry resumes the same
+identity. The reclaimed stage and physical accounting change only after that
+proof, including recovery of a previously acknowledged deletion.
 
-The root-catalog manifest generation and the tree snapshot sequence are
-different identities. The former orders publication of page-pack reachability;
-the latter is stored inside the tree image and orders logical tree snapshots.
-Recovery evidence records and validates both rather than using either counter
-as a substitute for the other.
+Catalog history pruning and physical deletion are separate operations. A
+manifest disappearing from metadata is never by itself proof that its bytes
+have been freed. Shared physical accounting deduplicates the immutable
+allocation identity across roots and observers.
 
-The tree owner sets a monotonic WAL replay offset before snapshot publication.
-The offset and tree snapshot become visible in the same root manifest. WAL
-retention advances only after that root is current, so recovery can always open
-the latest root and replay from its offset through the stream's latest durable
-tail without consulting a duplicated group-0 frontier.
+## 7. Explicit Legacy Migration
 
-## 5. Reads and Cache Validity
+Logical-address format-7 roots are accepted only by the explicit read-only
+migration adapter. Ordinary runtime open reports an unsupported legacy format
+and directs callers to `migrate_legacy_chunk`. The old page-store constructor
+is not a fallback writer for runtime Trees.
 
-A read resolves its mapping word and immutable reference segment, obtains a
-chunk layout, then reads and verifies the covering pack. Layouts are cached only
-until their `valid_until` deadline and are refreshed before later use.
+Migration requires stopped legacy writers and a registered, fenced migration
+owner. It pins the exact source generation and validates the full legacy
+manifest, segmented references, frame revisions, bounds, checksums, and graph.
+It copies the native image into new fixed packs and publishes a typed root
+through the normal candidate and authority protocol.
 
-The ordered worker owns one immutable verified pack cache. Adjacent asynchronous
-page reads covered by that pack reuse its bytes and avoid another DiskIO call.
-A different pack replaces the cache entry. Synchronous maintenance reads do not
-mutate this executor-owned cache. Cancellation is observed before submission,
-after transport completion, and before bytes or roots become visible.
+An immutable receipt containing the original manifest and pack directory is
+persisted before the root CAS. Until the CAS succeeds the old root remains
+recoverable. After an ambiguous reply, migration resolves the current typed
+root and that receipt without reissuing an unrelated publication. The exact
+source-generation pin remains held while the commit outcome is unknown. It is
+released idempotently after the committed typed root is established, or after a
+definite failure leaves the original root authoritative. Migration data
+completion does not imply legacy physical retirement.
 
-## 6. Range Rebuild and Sharing
+## 8. Legacy Physical Retirement
 
-Each persisted page carries checksummed lower and upper reachability fences.
-Range rebuild pins one source generation and walks native pages in bounded
-batches. Separator fences skip disjoint subtrees before their pages are loaded.
-Wholly contained pages reuse immutable pack and metadata references; boundary
-leaves, crossing ancestors, escaping siblings, and overflow chains are rebuilt.
+`ChunkKvStorage::collect_legacy_storage` is an explicit host maintenance entry
+for one production metadata namespace. Each call accepts a work limit from 1
+through 64; its returned reclaimed counts cover that invocation, while
+`complete` covers only persisted, known manifest receipts. Production split
+descendants inherit that namespace. Arbitrary sharing across independently managed catalogs is
+not covered by this proof.
 
-Each child has an independent root, mapping table, high-water allocation range,
-manifest lineage, and mutable state. Immutable reference-segment and mapping
-images may be shared until a changed entry triggers segment-level copy-on-write.
-Concurrent rebuild workers share only the immutable pinned source.
+The collector first installs a durable namespace marker that permanently
+rejects new format-7 publication. It then checks each Tree's current root and
+freezes legacy reader and generation-pin admission under the same per-Tree
+authority CAS used by publication. A current legacy root returns `LegacyRoot`
+until migration completes. Existing generation pins must be released through
+their real transition protocol.
 
-## 7. Materialization and Reclamation
+Publication provenance and each admitted legacy reader are recorded durably.
+Complete lineage inventory is established only with its first publication;
+a later registration cannot retroactively establish missing history. Pack
+owner Trees must belong to that proved namespace inventory.
+Every relevant process must have authoritative exclusion evidence; a closed
+writer is insufficient. The namespace scan and reader-proof scans retain
+bounded cursors. No deletion begins until the namespace proof completes.
+History pruning preserves an immutable legacy migration receipt before
+removing the corresponding manifest, with at most one newly copied legacy
+image in a pruning pass.
 
-Materialization first snapshots all valid retained tree anchors and derives the
-live anchor, directory, mapping-image, and page extents. The snapshot generation
-gate remains held while the chunk backend repacks those extents, so a foreground
-snapshot cannot invalidate the reachability image mid-pass.
+For each known Chunk, retirement persists its exact allocation receipt before
+ordered drain and deletion. Completion requires the same creation identity and
+an acknowledged physical release. Unknown replies retain the claim; a later
+invocation queries and resumes that identity. Missing or changed allocation
+evidence remains typed pending. Receipts survive completed deletion for
+idempotence and inspection. The host maintenance loop resumes only namespaces
+whose explicit start marker already exists; a normal maintenance pass cannot
+start an upgrade. Pending owner/pin proof waits for the next scheduled pass
+instead of creating an immediate busy retry.
 
-Packs outside the live extents are omitted. Shared live packs are copied into
-child-owned chunks under a byte budget, reference ordinals are made dense, and
-a sparse typed manifest is published through the normal generation fence.
-Later checkpoints preserve absent sparse ranges unless a new write dirties them.
-A failed reuse verification rewrites already materialized bytes; it never turns
-a live pack into a hole.
+Historical manifests without complete publication/reader provenance remain
+`MissingOwnerProof`. Their receipts and physical data are retained. The latest
+writer registration cannot reconstruct older reader owners. Similarly, a
+historical allocation whose manifest was already removed and has no receipt
+is outside this known-manifest census: enumerating an unattributed Chunk does
+not prove which Tree owned it. Neither case is reported as reclaimed. These
+limits do not prevent data migration or normal typed-pack collection.
 
-Historical manifests are immutable. Catalog retention and in-memory pins decide
-when manifest objects become logically reclaimable. The backend reports orphan
-and reclaim candidates but does not physically release strips. Expired-writer
-sealing and physical strip GC are independent maintenance services so either can
-resume after a tree or ChunkDB restart.
+## 9. Accounting and Configuration
 
-A topology transition that publishes an exact root generation uses a durable
-generation pin, not only a process-local reader reference. Its logical record is
-`root/<tree_id>/pin/<transition_id> = generation`; the durable chunk-KV catalog
-encodes each numeric identity in big-endian bytes below its root-catalog prefix.
-Creating the same transition-to-generation mapping is idempotent, while trying
-to reuse the transition identity for another generation fails closed. Pin
-creation also verifies that the named manifest still exists.
+Host resource admission covers runtime state, accepted operations, metadata,
+frame/payload storage, I/O windows, and retained output owners. Fixed-pack
+identity and physical allocation receipts underpin the backend ledger.
+`TreeBackingStats` exposes allocated physical capacity, including mirrors;
+`TreeWorkCollector` exports immutable collection windows and cumulative work
+counters. Host consumers deduplicate observations with the same scope. Capacity
+includes old or staged output until physical deletion is acknowledged, so it
+does not measure only the latest root's useful contents. Classification metrics
+do not create separate ownership records or scan the backing graph.
 
-If a process crashes after pinning but before persisting transition readiness,
-the durable phase still proves that no artifact can name the abandoned root.
-The repeated preparation removes that stale unpublished pin and installs the
-new attempt's generation before recording readiness. Once readiness is durable,
-the pin identity is immutable until catalog cleanup.
+The host samples `chunk_pin_release_slots` through the existing resource log
+windows. `limit` is the queue capacity; `used` and `allocated` count registered
+pins, including pins awaiting final release. `waiters` counts those pending
+releases, and `denied_host` counts capacity rejections. Samples do not pump the
+queue or reset counters. Averages and maxima describe sampled occupancy, while
+release latency remains unmeasured by this row. Chunk-KV configures this shared
+capacity with `storage.tree_pin_release_slots`, defaulting to 1,048,576. Local
+memory/block hosts have no Chunk pin-release queue and emit no such row.
 
-The ordered pin protocol is:
+Legacy `ChunkPageStoreStats` has no invented runtime equivalent. Its old C/Rust
+getter reports `NotSupported` for a runtime facade. Callers use the typed
+backing and work interfaces.
 
-1. Produce and durably publish root generation `g`.
-2. Persist the transition pin for `g` before making any split or transfer
-   artifact that names `g` publishable.
-3. Exact-open `g` on every recovery or target preparation; absence is an error
-   and never falls back to latest.
-4. Materialize and checkpoint an independently recoverable successor, then
-   publish catalog state that no longer names the exact-root overlay and clears
-   its transition marker.
-5. Only after observing that authoritative catalog generation, delete the pin.
-   Deletion is idempotent, so recovery may repeat it after an ambiguous result.
+`ChunkRuntimeOptions` specifies Tree and owner identity, optional exact root
+generation, I/O alignment, mirror copies, and maximum Chunk bytes. Defaults are
+64-KiB alignment, two mirrors, and a 256-MiB Chunk limit. Host worker, operation,
+byte-budget, and cache limits remain separate configuration. A configured hard
+limit is checked before work that depends on it is accepted.
 
-`reclaim_before(tree_id, n)` scans the durable pins for that tree and caps its
-effective upper bound at the oldest pinned generation. Manifest metadata and
-packs reachable from that generation therefore survive process and server
-restart. A crash may temporarily leak a pin, but cannot permit early deletion;
-the transition/materialization reconciler retries the final idempotent unpin.
+## 10. Correctness Invariants
 
-## 8. Correctness Invariants
-
-- **I1 — Durable before visible:** every referenced mirror and metadata image is
-  durable before its manifest can become current.
-- **I2 — One fenced successor:** generation `g + 1` publishes only by comparing
-  generation `g` and the current ownership epoch.
-- **I13 — Typed storage:** page and mapping payload never share a chunk;
-  mapping bootstrap references remain independently recoverable.
-- **I3 — Whole-pack rotation:** no page pack crosses the 256-MiB logical chunk
-  limit.
-- **I4 — Verified addressing:** every tagged page location resolves through a
-  checksummed immutable segment to complete manifest coverage.
-- **I5 — Sparse absence is stable:** an omitted pack range remains absent until
-  an overlapping logical write dirties it.
-- **I6 — Sharing is immutable:** lineages share only immutable packs and metadata
-  images; their first mutation uses copy-on-write.
-- **I7 — Rebuild isolation:** a child contains exactly its half-open key range
-  without foreign keys, sibling edges, or overflow references.
-- **I8 — Retention precedes release:** no physical strip is released while a
-  retained manifest or in-memory pin can name it.
-- **I9 — Exactly-once completion:** every admitted async operation completes its
-  callback once, including cancellation, overload, and shutdown.
-- **I10 — Root/WAL checkpoint:** a manifest's WAL replay offset becomes visible
-  atomically with its tree snapshot and never regresses within one lineage;
-  WAL trimming follows root publication.
-- **I11 — Exact root identity:** an exact-generation open reads only the named
-  root-catalog manifest and cannot publish a successor after another current
-  generation has won.
-- **I12 — Persistent transition pin:** a root generation named by a publishable
-  topology artifact remains reclaim-ineligible across restart until an
-  authoritative overlay-free catalog generation has been observed.
-
-## 9. Configuration and Metrics
-
-The bounded defaults are:
-
-- `pack_bytes`: 4 MiB;
-- `max_chunk_bytes`: 256 MiB hard ceiling;
-- `page_alignment` and `iu_size`: 64 KiB;
-- `max_concurrent_packs`: 8;
-- `max_pending_ops`: 256;
-- `layout_validity_ms`: at most 30 seconds; and
-- `materialization_bytes_per_pass`: 64 MiB.
-
-`ChunkPageStoreStats` exposes publication generations, pack writes and reuse,
-pack bytes, reads and cache hits, layout queries, mirror attempts and failures,
-retention pins, orphan bytes, materialization work, shared ownership, RPC and
-DiskIO operation latency, coalesced reads, completion wakeups, metadata sharing,
-manifest publication latency, and recovery latency. The C ABI and Rust wrapper
-preserve the same counter meanings.
-
-## 10. Performance Evidence
-
-A fixed 4-MiB in-memory transport workload measured these aggregate means on
-11 September 2026:
-
-- 64-KiB cold read: 0.79 ms real time, 89.6 MiB/s CPU throughput;
-- coalesced read: 4.4 us real time, 15.6 GiB/s CPU throughput; and
-- 4-MiB snapshot: 26.2 ms real time, 153.8 MiB/s.
-
-The benchmark validates bounded staging and cache behavior without claiming
-production network latency. Runtime RPC and DiskIO counters provide the
-production evidence needed to revisit the defaults.
+- **I1 — Durable before visible:** every reachable fixed pack and dependency is
+  durable and protected before its root candidate commits.
+- **I2 — One fenced successor:** publication compares root generation, owner
+  epoch, writer incarnation, and process authority.
+- **I3 — Immutable identity:** backing references name fixed verified content;
+  purpose or logical offset is never sufficient identity.
+- **I4 — Exact recovery:** exact-root open cannot silently substitute another
+  generation or interpret an unsupported format as an empty Tree.
+- **I5 — Independent rebuild:** target ownership and mutations are independent
+  of the captured source, and reads enforce the logical range.
+- **I6 — Readers survive writer close:** retained snapshots keep their backend
+  and protection owners until final release is processed.
+- **I7 — Process exclusion is explicit:** epoch advancement and writer
+  quiescence do not prove that old readers are gone.
+- **I8 — Physical proof precedes accounting release:** neither metadata removal
+  nor an ambiguous deletion reply decrements confirmed physical ownership.
+- **I9 — Bounded accepted work:** operations retain their prepaid CPU, metadata,
+  I/O, and terminal ownership until the real backend work completes.
+- **I10 — Durable frontier controls WAL:** handoff and staged writeback cannot
+  independently advance WAL retention.
+- **I11 — Migration preserves recovery:** original-root receipts precede CAS;
+  ambiguous outcomes resolve the same generation and operation.
+- **I12 — Missing legacy evidence retains bytes:** unknown historical owners or
+  unattributed allocations are explicit limits, never inferred GC permission.

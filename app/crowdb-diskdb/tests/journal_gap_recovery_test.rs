@@ -2,10 +2,10 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_diskdb::{ddb_kv_client::DdbKvClient, recovery::ZoneLoader};
-use crowdb_kv::cluster::group::PxGroup;
-use crowdb_kv::cluster::kv_server::KvServer;
-use crowdb_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv::cluster::group::PxGroup;
+use crowdb_paxos_kv::cluster::paxos_kv_server::PaxosKvServer;
+use crowdb_paxos_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::common::{DiskId, HwStatus};
 use crowdb_protocol::diskdb::rpc::DiskValue;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ async fn restart_with_reclaimed_journal_rebuilds_busy_units_before_allocating() 
     ));
     store.add_group(PxGroup::new(1, restored));
     store.start().await.unwrap();
-    let client = CrowdbKvClient::new(ClientConfig::new(vec![]));
+    let client = PaxosKvClient::new(ClientConfig::new(vec![]));
     let endpoint = store.listen_addr().unwrap().to_string();
     for group in [0, 1] {
         client.seed_leader(0, group, endpoint.clone());

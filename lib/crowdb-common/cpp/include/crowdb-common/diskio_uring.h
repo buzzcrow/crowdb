@@ -87,6 +87,31 @@ struct Topology
     bool                               attach_wq = false; // IORING_SETUP_ATTACH_WQ
 };
 
+// Caller-owned completion storage avoids hidden callable allocations. Hooks
+// claim actual entry storage before allocation and release it after free.
+struct IOAllocation
+{
+    std::shared_ptr<const void> owner                           = nullptr;
+    void                       *context                         = nullptr;
+    void *(*allocate)(void *, size_t, size_t)                   = nullptr;
+    void (*deallocate)(void *, void *, size_t, size_t) noexcept = nullptr;
+};
+
+struct IOCompletion
+{
+    void *context                          = nullptr;
+    void (*callback)(void *, int) noexcept = nullptr;
+    std::shared_ptr<const void> owner      = nullptr;
+    IOAllocation                allocation{};
+
+    void complete(int result) const noexcept
+    {
+        if (callback != nullptr) {
+            callback(context, result);
+        }
+    }
+};
+
 // DiskIOUring: multi-pipeline io_uring engine.
 //
 // fd→pipeline routing: register_fd(fd) assigns fd to a pipeline (auto or
@@ -172,6 +197,11 @@ class DiskIOUring
         submit_fsync(fd, false, std::move(on_complete));
     }
 
+    void submit_read_owned(int fd, void *buf, size_t len, off_t offset, IOCompletion complete);
+    void submit_write_owned(int fd, const void *buf, size_t len, off_t offset, IOCompletion complete);
+    void submit_fsync_owned(int fd, bool data_only, IOCompletion complete);
+    [[nodiscard]] static size_t owned_submission_allocation_bytes() noexcept;
+
     // Returns one eventfd per pipeline, for the Rust FFI to register with
     // tokio::io::AsyncFd. Each eventfd becomes readable after the poll
     // thread dispatches a batch of CQEs on that pipeline. The caller
@@ -186,6 +216,7 @@ class DiskIOUring
     struct CallbackEntry
     {
         std::function<void(int)> cb;
+        IOCompletion             owned{};
         int                      fd{-1};             // for in_flight decrement on dispatch
         CallbackEntry           *next_free{nullptr}; // poll-thread-only: deferred-delete list
         uint64_t                 queued_nanos{0};
@@ -257,6 +288,13 @@ class DiskIOUring
 
     // Lock-free SQE claim on a specific pipeline.
     void submit_lockfree(Pipeline &p, int fd, std::function<void(int)> on_complete, const Prep &prep);
+
+    void        submit_entry(Pipeline &pipeline, int fd, CallbackEntry *entry, const void *context,
+                             void (*prepare)(const void *, struct io_uring_sqe *));
+    void        submit_owned(int fd, void *buffer, size_t length, off_t offset, uint8_t opcode, bool data_only,
+                             IOCompletion complete);
+    static void complete_entry(CallbackEntry *entry, int result);
+    static void delete_entry(CallbackEntry *entry) noexcept;
 
     // Publish contiguous filled SQE slots to the kernel for one pipeline.
     static void publish_ready_sqes(Pipeline &p);

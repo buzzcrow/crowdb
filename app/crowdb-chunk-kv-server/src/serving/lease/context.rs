@@ -4,7 +4,7 @@
 //! Immutable admission context and shared grant-snapshot validation.
 
 use super::{AuthorityError, AuthoritySnapshot, AuthorityState, ServingAuthority};
-use crowdb_kv_client::StreamProcessContext;
+use crowdb_paxos_kv_client::StreamProcessContext;
 use crowdb_protocol::chunk_kv::{Id128, ServingAssignment};
 use std::time::Instant;
 

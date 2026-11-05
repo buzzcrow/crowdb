@@ -3,13 +3,13 @@
 
 use super::default_preparation::TestPreparationAuthority;
 use crowdb_console_shared::deployment::preparation::{self, DefaultPreparation};
-use crowdb_kv::{
-    cluster::{KvServer, PxKvStore},
-    common::config::CrowDBConfig,
+use crowdb_paxos_kv::{
+    cluster::{PaxosKvServer, PxKvStore},
+    common::config::PaxosKvConfig,
 };
-use crowdb_kv_server::{
+use crowdb_paxos_kv_server::{
     mgmt::{self, operation_registry::AppState},
-    store_registry::KvStoreRegistry,
+    store_registry::PaxosKvStoreRegistry,
 };
 use crowdb_protocol::common::KvServerIdentity;
 use std::sync::Arc;
@@ -35,15 +35,15 @@ impl TestDefaultMetadata {
         let mut endpoints = Vec::new();
         for (index, node) in members.iter().enumerate() {
             let path = root.path().join(format!("node-{node}"));
-            let config = CrowDBConfig {
+            let config = PaxosKvConfig {
                 config_root: path.join("config"),
                 data_root: path.join("data"),
                 wal_root: path.join("wal"),
                 wal_backend: "file".into(),
                 crowtree_backend: "file".into(),
-                ..CrowDBConfig::for_tests()
+                ..PaxosKvConfig::for_tests()
             };
-            let registry = Arc::new(KvStoreRegistry::with_config(config));
+            let registry = Arc::new(PaxosKvStoreRegistry::with_config(config));
             let store = if index == 0 {
                 Arc::clone(&authority.store)
             } else {

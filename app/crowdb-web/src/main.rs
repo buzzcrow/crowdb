@@ -17,7 +17,7 @@ struct Args {
     #[arg(long, conflicts_with = "config")]
     bind: Option<String>,
 
-    /// Port for the web server (default: 9090)
+    /// Port for the web server (default: 6135)
     #[arg(long, conflicts_with = "config", value_parser = clap::value_parser!(u16).range(1..))]
     port: Option<u16>,
 
@@ -49,7 +49,7 @@ struct Args {
     #[arg(long, conflicts_with = "config")]
     skip_startup_restore: bool,
 
-    /// Log directory. Default: ~/.crowdb-kv/log.
+    /// Log directory. Default: ~/.crowdb-paxos-kv/log.
     #[arg(long, conflicts_with = "config")]
     log_dir: Option<std::path::PathBuf>,
 
@@ -90,14 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let launch_registry = args.registry.as_deref().map(LaunchRegistry::load).transpose()?;
     let _log_guards = init_logging(&args, process_config.as_ref())?;
 
-    let bind = process_config.as_ref().map_or_else(
-        || args.bind.as_deref().unwrap_or("0.0.0.0"),
-        |config| config.bind.as_str(),
-    );
-    let port = process_config
-        .as_ref()
-        .map_or_else(|| args.port.unwrap_or(9090), |config| config.port);
-    let addr: SocketAddr = format!("{bind}:{port}").parse()?;
+    let addr = listen_address(&args, process_config.as_ref())?;
     info!(%addr, "crowdb-web starting");
 
     let mut test_namespace = if args.test_mode {
@@ -181,6 +174,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     auto_join.abort();
     drop(test_namespace);
     Ok(())
+}
+
+fn listen_address(
+    args: &Args,
+    process_config: Option<&WebProcessConfig>,
+) -> Result<SocketAddr, std::net::AddrParseError> {
+    let bind = process_config.map_or_else(
+        || args.bind.as_deref().unwrap_or("0.0.0.0"),
+        |config| config.bind.as_str(),
+    );
+    let port = process_config.map_or_else(
+        || args.port.unwrap_or(crowdb_protocol::WEB_BASE),
+        |config| config.port,
+    );
+    format!("{bind}:{port}").parse()
 }
 
 fn init_logging(

@@ -68,7 +68,7 @@ pub async fn load_zone_inner(
     let busy_ops = kv.journal_scan_busy(bind, min_slot, 0, &disk_id, zone_idx).await;
     let busy_ops = match busy_ops {
         Ok(ops) => ops,
-        Err(crowdb_kv_client::Error::JournalScanGcGap) => {
+        Err(crowdb_paxos_kv_client::Error::JournalScanGcGap) => {
             return Err(ZoneLoadError::JournalScanGcGap);
         }
         Err(e) => return Err(ZoneLoadError::Kv(e)),
@@ -120,7 +120,7 @@ pub async fn load_zone_inner(
     let free_ops = kv.journal_scan_free(bind, min_slot, 0, &disk_id, zone_idx).await;
     let free_ops = match free_ops {
         Ok(ops) => ops,
-        Err(crowdb_kv_client::Error::JournalScanGcGap) => {
+        Err(crowdb_paxos_kv_client::Error::JournalScanGcGap) => {
             return Err(ZoneLoadError::JournalScanGcGap);
         }
         Err(e) => return Err(ZoneLoadError::Kv(e)),

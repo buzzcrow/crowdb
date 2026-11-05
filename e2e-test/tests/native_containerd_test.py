@@ -92,8 +92,11 @@ class NativeContainerdTest(unittest.TestCase):
                 process.wait.assert_called_once_with(timeout=10)
 
     def test_host_fixture_imports_cannot_shadow_the_e2e_artifact_publisher(self):
-        result=subprocess.run([sys.executable,'-c',
-            'import native_containerd_profile; import publish; print(publish.__file__)'],
-            env=dict(os.environ,PYTHONPATH=str(Path(__file__).resolve().parents[1])),
-            capture_output=True,text=True,check=True,timeout=10)
-        self.assertEqual(Path(result.stdout.strip()).resolve(),Path(__file__).resolve().parents[1]/'publish.py')
+        directory = Path(__file__).resolve().parents[1]
+        for module in ('native_containerd_profile', 'paxos_kv_diagnostics_test'):
+            with self.subTest(module=module):
+                result=subprocess.run([sys.executable,'-c',
+                    f'import {module}; import publish; print(publish.__file__)'],
+                    env=dict(os.environ,PYTHONPATH=os.pathsep.join((str(directory), str(directory / 'tests')))),
+                    capture_output=True,text=True,check=True,timeout=10)
+                self.assertEqual(Path(result.stdout.strip()).resolve(),directory/'publish.py')

@@ -24,9 +24,12 @@
 // cannot reference (the mapping slot was already swapped).
 #pragma once
 
+#include "crowdb-tree/memory_budget.h"
 #include "crowdb-tree/memtable/allocation.h"
 
+#include <array>
 #include <atomic>
+#include <bit>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -46,9 +49,52 @@ class EpochManager
     // Cache-line padded so readers on different threads don't false-share.
     struct alignas(64) Participant
     {
-        std::atomic<uint64_t> local_epoch{0}; // 0 = inactive (not inside a guard)
-        Participant          *next{nullptr};  // intrusive list; published w/ release
-        uint32_t              nest{0};        // reentrancy depth (owner thread only)
+        std::atomic<uint64_t>             local_epoch{0}; // 0 = inactive (not inside a guard)
+        Participant                      *next{nullptr};  // intrusive list; published w/ release
+        uint32_t                          nest{0};        // reentrancy depth (owner thread only)
+        uint64_t                          thread_id{0};   // immutable after publication
+        std::shared_ptr<AllocationBudget> budget;
+    };
+
+    // The closed flag and head share one CAS word: a registration that read
+    // the old head cannot append after an immutable source seals its list.
+    class ParticipantList
+    {
+      public:
+        [[nodiscard]] Participant *load(std::memory_order order) const noexcept
+        {
+            return pointer(head_.load(order));
+        }
+
+        Participant *exchange(Participant *value, std::memory_order order = std::memory_order_seq_cst) noexcept
+        {
+            return pointer(head_.exchange(reinterpret_cast<uintptr_t>(value), order));
+        }
+
+        [[nodiscard]] bool sealed() const noexcept
+        {
+            return (head_.load(std::memory_order_acquire) & 1) != 0;
+        }
+
+        Participant *seal() noexcept
+        {
+            return pointer(head_.fetch_or(1, std::memory_order_acq_rel));
+        }
+
+        bool push(Participant *participant, uintptr_t head) noexcept;
+
+        [[nodiscard]] uintptr_t registration_head() const noexcept
+        {
+            return head_.load(std::memory_order_acquire);
+        }
+
+      private:
+        static Participant *pointer(uintptr_t value) noexcept
+        {
+            return std::bit_cast<Participant *>(value & ~uintptr_t{1});
+        }
+
+        std::atomic<uintptr_t> head_{0};
     };
 
   public:
@@ -107,14 +153,32 @@ class EpochManager
         std::shared_ptr<Lifetime> lifetime_;
     };
 
-    EpochManager();
+    explicit EpochManager(std::shared_ptr<AllocationBudget> budget = {}, bool enabled = true);
     ~EpochManager();
+
+    [[nodiscard]] bool source_sealed() const noexcept;
+#ifdef CROWDB_TREE_TEST_UTIL
+    void set_before_participant_append_for_tests(void (*hook)(void *), void *context) noexcept
+    {
+        append_hook_    = hook;
+        append_context_ = context;
+    }
+#endif
 
     EpochManager(const EpochManager &)            = delete;
     EpochManager &operator=(const EpochManager &) = delete;
 
     // Open a reader guard at the current epoch (lock-free).
-    Guard enter();
+    // A new thread's participant uses the current operation's credit when
+    // supplied. Existing participants require no new allocation after seal.
+    Guard enter(std::shared_ptr<AllocationBudget> budget = {});
+
+    [[nodiscard]] static size_t participant_allocation_bytes() noexcept
+    {
+        return sizeof(Participant);
+    }
+
+    [[nodiscard]] static size_t infrastructure_allocation_bound() noexcept;
 
     // Defer deletion of `ptr` until no guard opened at-or-before now remains.
     void retire(void *ptr, Deleter deleter);
@@ -139,7 +203,13 @@ class EpochManager
 
   private:
     friend class Guard;
-    Participant *participant_for_this_thread();
+    friend class MemTable;
+    void seal_source() noexcept;
+    friend class BlockDirectory;
+    // Exclusive backend teardown: no remaining guards or accepted operations.
+    bool         retire_backend_step() noexcept;
+    Participant *participant_for_this_thread(const std::shared_ptr<AllocationBudget> &budget);
+    static void  destroy_participant(Participant *participant) noexcept;
     size_t       reclaim_locked();   // caller holds reclaim_mu_
     uint64_t     min_active_epoch(); // oldest epoch any reader might still see
     size_t       reclaim_deferred_locked();
@@ -151,19 +221,19 @@ class EpochManager
         Deleter  deleter;
     };
 
-    std::shared_ptr<AllocationCounter> memtable_allocation_ = std::make_shared<AllocationCounter>(0);
+    std::shared_ptr<AllocationBudget>  budget_;
+    std::shared_ptr<AllocationCounter> memtable_allocation_;
     std::shared_ptr<Lifetime>          lifetime_;
     const uint64_t                     id_; // stable key for per-thread cache
     std::atomic<uint64_t>              global_epoch_{1};
-    std::atomic<Participant *>         participants_{nullptr}; // lock-free push list head
+    ParticipantList                    participants_;
+#ifdef CROWDB_TREE_TEST_UTIL
+    void (*append_hook_)(void *) = nullptr;
+    void *append_context_        = nullptr;
+#endif
 
-    // Recursive: a retired object's deleter can legitimately trigger another
-    // retire() on this *same* EpochManager before this call's reclaim_locked()
-    // returns (e.g. retire_orphaned_page's deferred mapping_.clear() can, as
-    // its very last live slot empties, recycle the owning MappingSegment via
-    // recycle_segment_if_empty() -> epoch.retire_object(seg) -- crowdb-tree.cpp/
-    // mapping_table.cpp share this one EpochManager). A plain mutex would
-    // deadlock on that same-thread re-entry.
+    // A retired object's deleter can retire another object on this same manager.
+    // Reclamation permits that same-thread re-entry.
     std::recursive_mutex    reclaim_mu_; // guards retired_ (writer side)
     std::vector<Retired>    retired_;
     std::atomic<Deferred *> deferred_{nullptr};

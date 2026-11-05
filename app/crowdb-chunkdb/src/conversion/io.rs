@@ -8,7 +8,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use crowdb_diskio_client::{DiskId, DiskioClient, DiskioClientConfig, Durability, SegmentTarget};
-use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::diskdb::rpc::Segment;
 
 use crate::chunkdb_config::ConversionIoConfig;

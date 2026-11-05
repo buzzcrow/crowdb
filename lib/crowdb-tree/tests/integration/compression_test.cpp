@@ -4,6 +4,7 @@
 // PT10.3: end-to-end page compression. snapshot writes compressed durable
 // blobs; reopen/demand-load/eviction decode them transparently; a tampered
 // stored byte fails CRC on reload.
+#include "btree/tree_core_access.h"
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
 #include "crowdb-tree/maptable/compressor.h"
@@ -41,9 +42,14 @@ std::string make_val(int i)
 void fill_buf(Crowdbtree *t, int K, std::map<std::string, std::string> *oracle)
 {
     for (int i = 0; i < K; ++i) {
-        std::string v = make_val(i);
-        ASSERT_TRUE(t->apply(i + 1, put_one(make_key(i), v)).ok());
-        ASSERT_TRUE(t->flush().ok());
+        std::string v       = make_val(i);
+        const auto  applied = t->apply(i + 1, put_one(make_key(i), v));
+        ASSERT_TRUE(applied.ok()) << "key=" << i << " " << applied.to_string();
+        const auto flushed = t->flush();
+        ASSERT_TRUE(flushed.ok()) << "key=" << i << " " << flushed.to_string();
+        // Flush completion acknowledges publication. Bound this codec test's
+        // accepted retirement windows before producing another complete flush.
+        TreeCoreAccess::get(*t)->binding()->account()->drain_retirements();
         (*oracle)[make_key(i)] = v;
     }
 }
@@ -70,7 +76,8 @@ TEST(Compression, CheckpointReopenWithCompressedPages)
     }
 
     std::unique_ptr<Crowdbtree> t2;
-    ASSERT_TRUE(Crowdbtree::open(opt, &t2).ok());
+    const auto                  reopened = Crowdbtree::open(opt, &t2);
+    ASSERT_TRUE(reopened.ok()) << reopened.to_string();
     EXPECT_GT(t2->height(), 1);
     for (const auto &kv : oracle) {
         std::string v;
@@ -135,7 +142,7 @@ TEST(Compression, CrcTamperRejectedOnReopen)
     }
 
     // Corrupt a page's stored bytes deep in the page region (past both 4 KiB
-    // superblock slots). The blob CRC must reject it on demand-load.
+    // superblock slots). Recovery verifies the blob CRC before publishing it.
     uint64_t off = (2 * 4096) + 64; // inside the first page's stored area
     uint8_t  b   = 0;
     ASSERT_TRUE(store.read_at(off, &b, 1).ok());
@@ -143,11 +150,7 @@ TEST(Compression, CrcTamperRejectedOnReopen)
     ASSERT_TRUE(store.write_at(off, &b, 1).ok());
 
     std::unique_ptr<Crowdbtree> t2;
-    ASSERT_TRUE(Crowdbtree::open(opt, &t2).ok()); // lazy: tags only
-    // Demand-load fails CRC -> the page reads as a miss, but the media fault is
-    // latched so a caller can detect the corruption.
-    std::string v;
-    uint64_t    s;
-    EXPECT_FALSE(t2->get(Slice("a"), &s, &v));
-    EXPECT_TRUE(t2->io_failed());
+    const auto                  reopened = Crowdbtree::open(opt, &t2);
+    EXPECT_EQ(reopened.code(), Code::kCorruption) << reopened.to_string();
+    EXPECT_FALSE(t2);
 }

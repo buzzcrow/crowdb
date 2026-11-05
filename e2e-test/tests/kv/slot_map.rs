@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use crowdb_kv_client::{ChunkSlotMapClient, CrowdbKvClient, GetOutcome, ReadMode};
-use crowdb_kv_client::{RangeBindingClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, GetOutcome, PaxosKvClient, ReadMode};
+use crowdb_paxos_kv_client::{RangeBindingClient, ServiceRegistryClient};
 use crowdb_protocol::chunk_slot::{
     ChunkSlot, ChunkSlotBinding, ChunkSlotBitmap, ChunkSlotMap, ChunkSlotMapHead, ChunkStorageGroup,
     CHUNK_SLOT_LAYOUT_VERSION,
@@ -12,7 +12,7 @@ use crowdb_protocol::chunk_slot::{
 use crowdb_protocol::key::{ChunkServiceSlotsKey, ChunkSlotMapHeadKey, TextKey};
 
 pub(super) struct TestGroup0 {
-    pub(super) kv: Arc<CrowdbKvClient>,
+    pub(super) kv: Arc<PaxosKvClient>,
 }
 impl TestGroup0 {
     pub(super) async fn start() -> Self {
@@ -134,7 +134,19 @@ async fn concurrent_initializers_cannot_combine_different_assignments() {
 async fn paginated_owner_records_preserve_empty_instances() {
     let test = TestGroup0::start().await;
     let client = ChunkSlotMapClient::new(Arc::clone(&test.kv));
-    let map = ChunkSlotMap::new(
+    let map = paginated_services();
+    client.initialize_service(&map).await.unwrap();
+    let actual = client.read_service().await.unwrap();
+    assert_eq!(actual.bindings().len(), 300);
+    assert_eq!(
+        actual.bindings().iter().filter(|b| b.slots.is_empty()).count(),
+        299
+    );
+    assert!(ChunkSlot::all().all(|slot| actual.owner(slot) == 1));
+}
+
+pub(super) fn paginated_services() -> ChunkSlotMap<u64> {
+    ChunkSlotMap::new(
         ChunkSlotMapHead {
             layout_version: CHUNK_SLOT_LAYOUT_VERSION,
             generation: 1,
@@ -152,15 +164,7 @@ async fn paginated_owner_records_preserve_empty_instances() {
             })
             .collect(),
     )
-    .unwrap();
-    client.initialize_service(&map).await.unwrap();
-    let actual = client.read_service().await.unwrap();
-    assert_eq!(actual.bindings().len(), 300);
-    assert_eq!(
-        actual.bindings().iter().filter(|b| b.slots.is_empty()).count(),
-        299
-    );
-    assert!(ChunkSlot::all().all(|slot| actual.owner(slot) == 1));
+    .unwrap()
 }
 
 #[tokio::test]

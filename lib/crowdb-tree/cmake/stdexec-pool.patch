@@ -1,0 +1,258 @@
+--- a/include/exec/static_thread_pool.hpp
++++ b/include/exec/static_thread_pool.hpp
+@@ -57,0 +58,2 @@
++#include "detail/pool_resource.hpp"
++#include <optional>
+@@ -129,2 +131,3 @@
+-      explicit remote_queue(std::size_t nthreads) noexcept
+-        : queues_(nthreads)
++      using queue_type = __atomic_intrusive_queue<&task_base::next_>;
++      explicit remote_queue(std::size_t nthreads, std::pmr::memory_resource* resource)
++        : queues_(nthreads, pool_allocator<queue_type>(resource))
+@@ -133 +136 @@
+-      explicit remote_queue(remote_queue* next, std::size_t nthreads) noexcept
++      explicit remote_queue(remote_queue* next, std::size_t nthreads, std::pmr::memory_resource* resource)
+@@ -135 +138 @@
+-        , queues_(nthreads)
++        , queues_(nthreads, pool_allocator<queue_type>(resource))
+@@ -139 +142 @@
+-      std::vector<__atomic_intrusive_queue<&task_base::next_>> queues_{};
++      pool_vector<queue_type> queues_;
+@@ -157,0 +161 @@
++      pool_allocator<remote_queue> allocator_;
+@@ -160 +164 @@
+-      explicit remote_queue_list(std::size_t nthreads) noexcept
++      explicit remote_queue_list(std::size_t nthreads, std::pmr::memory_resource* resource)
+@@ -164 +168,2 @@
+-        , this_remotes_(nthreads)
++        , this_remotes_(nthreads, resource)
++        , allocator_(resource)
+@@ -173 +178,2 @@
+-          delete tmp;
++          std::destroy_at(tmp);
++          allocator_.deallocate(tmp, 1);
+@@ -207 +213,3 @@
+-        auto* new_head = new remote_queue{head, nthreads_};
++        auto* new_head = allocator_.allocate(1);
++        try { std::construct_at(new_head, head, nthreads_, this_remotes_.queues_.get_allocator().resource()); }
++        catch (...) { allocator_.deallocate(new_head, 1); throw; }
+@@ -339 +347,4 @@
+-                                   numa_policy   numa   = get_numa_policy());
++                                   numa_policy   numa   = get_numa_policy(),
++                                   std::pmr::memory_resource* resource = nullptr,
++                                   pool_thread_factory factory = {});
++      static auto allocation_bound(std::uint32_t threads, bwos_params params = {}) noexcept -> std::optional<std::size_t>;
+@@ -419 +430 @@
+-                           nodemask const *     mask = &nodemask::any()) noexcept
++                           nodemask const *     mask = &nodemask::any())
+@@ -475 +486 @@
+-      auto get_scheduler() noexcept -> scheduler
++      auto get_scheduler() -> scheduler
+@@ -480 +491 @@
+-      auto get_scheduler_on_thread(std::size_t threadIndex) noexcept -> scheduler
++      auto get_scheduler_on_thread(std::size_t threadIndex) -> scheduler
+@@ -486 +497 @@
+-      auto get_constrained_scheduler(nodemask const * constraints) noexcept -> scheduler
++      auto get_constrained_scheduler(nodemask const * constraints) -> scheduler
+@@ -491 +502 @@
+-      auto get_remote_queue() noexcept -> remote_queue*
++      auto get_remote_queue() -> remote_queue*
+@@ -495 +506 @@
+-        for (std::thread& t: threads_)
++        for (pool_thread& t: threads_)
+@@ -545 +556 @@
+-          bwos::lifo_queue<task_base*, numa_allocator<task_base*>>* queue,
++          bwos::lifo_queue<task_base*, pool_allocator<task_base*>>* queue,
+@@ -571 +582 @@
+-        bwos::lifo_queue<task_base*, numa_allocator<task_base*>>* queue_;
++        bwos::lifo_queue<task_base*, pool_allocator<task_base*>>* queue_;
+@@ -599 +610 @@
+-                              numa_policy const &  numa) noexcept
++                              numa_policy const &  numa)
+@@ -603 +614,3 @@
+-                         numa_allocator<task_base*>(this->numa_node_))
++                         pool_allocator<task_base*>(pool->resource_, this->numa_node_))
++          , near_victims_(pool_allocator<workstealing_victim>(pool->resource_))
++          , all_victims_(pool_allocator<workstealing_victim>(pool->resource_))
+@@ -607,2 +620,2 @@
+-          std::random_device rd;
+-          rng_.seed(rd);
++          if (pool->resource_) rng_ = xorshift(0xc1f651c67c62c6e0ull ^ (std::uint64_t(index) + 1));
++          else { std::random_device rd; rng_.seed(rd); }
+@@ -618,2 +631,4 @@
+-        void victims(std::vector<workstealing_victim> const & victims)
+-        {
++        void victims(pool_vector<workstealing_victim> const & victims)
++        {
++          near_victims_.reserve(victims.size() - 1);
++          all_victims_.reserve(victims.size() - 1);
+@@ -673 +688 @@
+-        bwos::lifo_queue<task_base*, numa_allocator<task_base*>> local_queue_;
++        bwos::lifo_queue<task_base*, pool_allocator<task_base*>> local_queue_;
+@@ -678,2 +693,2 @@
+-        std::vector<workstealing_victim>                         near_victims_{};
+-        std::vector<workstealing_victim>                         all_victims_{};
++        pool_vector<workstealing_victim>                         near_victims_{};
++        pool_vector<workstealing_victim>                         all_victims_{};
+@@ -687,0 +703,2 @@
++      std::pmr::memory_resource* resource_;
++      pool_thread_factory factory_;
+@@ -693,2 +710,2 @@
+-      std::vector<std::thread>              threads_;
+-      std::vector<__optional<thread_state>> thread_states_;
++      pool_vector<pool_thread>              threads_;
++      pool_vector<__optional<thread_state>> thread_states_;
+@@ -716 +733 @@
+-      std::vector<thread_index_by_numa_node> thread_index_by_numa_node_;
++      pool_vector<thread_index_by_numa_node> thread_index_by_numa_node_;
+@@ -727,0 +745,32 @@
++    inline auto _static_thread_pool::allocation_bound(std::uint32_t threads, bwos_params params) noexcept
++      -> std::optional<std::size_t> {
++      constexpr auto limit = (std::numeric_limits<std::size_t>::max)() / 2;
++      if (!threads || threads > UINT16_MAX || !params.numBlocks || !params.blockSize || params.numBlocks > limit / 2) return {};
++      const auto blocks = std::bit_ceil(params.numBlocks);
++      std::size_t bytes = 0;
++      auto add = [&](std::size_t count, std::size_t size) {
++        if (size && count > (limit - bytes) / size) return false;
++        bytes += count * size;
++        return true;
++      };
++      using queue = bwos::lifo_queue<task_base*, pool_allocator<task_base*>>;
++      // Includes the one cached submitter queue, construction scratch and both
++      // victim lists. Other caller-thread queues, if used, are still charged.
++      if (!add(2 * std::size_t(threads), sizeof(remote_queue::queue_type)) ||
++          !add(1, sizeof(remote_queue)) || !add(threads, sizeof(pool_thread)) ||
++          !add(threads, sizeof(__optional<thread_state>)) ||
++          !add(threads, sizeof(thread_index_by_numa_node)) ||
++          !add(threads, sizeof(workstealing_victim)) ||
++          !add(params.blockSize, sizeof(task_base*))) return {};
++      const auto fixed_bytes = bytes;
++      bytes = 0;
++      if (!add(blocks, queue::block_storage_size()) ||
++          params.blockSize > limit / blocks ||
++          !add(blocks * params.blockSize, sizeof(task_base*)) ||
++          !add(2 * (std::size_t(threads) - 1), sizeof(workstealing_victim))) return {};
++      const auto per_thread = bytes;
++      bytes = fixed_bytes;
++      if (!add(threads, per_thread)) return {};
++      return bytes;
++    }
++
+@@ -734,2 +783,6 @@
+-                                                    numa_policy   numa)
+-      : remotes_(thread_count)
++                                                    numa_policy   numa,
++                                                    std::pmr::memory_resource* resource,
++                                                    pool_thread_factory factory)
++      : resource_(resource)
++      , factory_(factory)
++      , remotes_(thread_count, resource)
+@@ -738 +791,2 @@
+-      , thread_states_(thread_count)
++      , threads_(pool_allocator<pool_thread>(resource))
++      , thread_states_(thread_count, pool_allocator<__optional<thread_state>>(resource))
+@@ -739,0 +794 @@
++      , thread_index_by_numa_node_(pool_allocator<thread_index_by_numa_node>(resource))
+@@ -741,0 +797 @@
++      thread_index_by_numa_node_.reserve(thread_count);
+@@ -752 +808,2 @@
+-      std::vector<workstealing_victim> victims{};
++      pool_vector<workstealing_victim> victims{pool_allocator<workstealing_victim>(resource)};
++      victims.reserve(thread_count);
+@@ -768 +825,3 @@
+-          threads_.emplace_back([this, i] { run(i); });
++          threads_.emplace_back(factory_, [](void* context, std::uint32_t index) noexcept {
++            static_cast<_static_thread_pool*>(context)->run(index);
++          }, this, i);
+@@ -981 +1040 @@
+-                          bwos::lifo_queue<task_base*, numa_allocator<task_base*>>& local_queue)
++                          bwos::lifo_queue<task_base*, pool_allocator<task_base*>>& local_queue)
+@@ -1835,2 +1894,4 @@
+-                                numa_policy   numa   = get_numa_policy())
+-      : _pool_::_static_thread_pool(thread_count, params, std::move(numa))
++                                numa_policy   numa   = get_numa_policy(),
++                                std::pmr::memory_resource* resource = nullptr,
++                                pool_thread_factory factory = {})
++      : _pool_::_static_thread_pool(thread_count, params, std::move(numa), resource, factory)
+@@ -1837,0 +1899,2 @@
++
++    using _pool_::_static_thread_pool::allocation_bound;
+--- a/include/exec/detail/bwos_lifo_queue.hpp
++++ b/include/exec/detail/bwos_lifo_queue.hpp
+@@ -102,0 +103,2 @@
++
++    static auto block_storage_size() noexcept -> std::size_t { return sizeof(block_type); }
+--- /dev/null
++++ b/include/exec/detail/pool_resource.hpp
+@@ -0,0 +1,71 @@
++// Copyright 2026-present Gian <crow.db@outlook.com>
++// Licensed under the Apache License, Version 2.0.
++#pragma once
++#include "numa.hpp"
++#include <memory_resource>
++#include <limits>
++#include <thread>
++#include <utility>
++#include <vector>
++
++namespace experimental::execution {
++struct pool_thread_factory {
++  void* context{};
++  void* (*start)(void*, void (*)(void*, std::uint32_t) noexcept, void*, std::uint32_t){};
++  void (*join)(void*) noexcept{};
++  std::thread::id (*id)(void*) noexcept{};
++};
++namespace _pool_ {
++template<class T> class pool_allocator {
++public:
++  using value_type = T;
++  explicit pool_allocator(std::pmr::memory_resource* resource = nullptr, int node = 0) noexcept
++    : resource_(resource), node_(node) {}
++  template<class U> pool_allocator(const pool_allocator<U>& other) noexcept
++    : resource_(other.resource_), node_(other.node_) {}
++  std::pmr::memory_resource* resource() const noexcept { return resource_; }
++  T* allocate(std::size_t n) {
++    if (n > (std::numeric_limits<std::size_t>::max)() / sizeof(T)) throw std::bad_array_new_length();
++    if (resource_) return static_cast<T*>(resource_->allocate(n * sizeof(T), alignof(T)));
++    return numa_allocator<T>(node_).allocate(n);
++  }
++  void deallocate(T* pointer, std::size_t n) noexcept {
++    if (resource_) resource_->deallocate(pointer, n * sizeof(T), alignof(T));
++    else numa_allocator<T>(node_).deallocate(pointer, n);
++  }
++  friend bool operator==(const pool_allocator&, const pool_allocator&) noexcept = default;
++private:
++  template<class> friend class pool_allocator;
++  std::pmr::memory_resource* resource_;
++  int node_;
++};
++template<class T> using pool_vector = std::vector<T, pool_allocator<T>>;
++
++// A successful start transfers one handle; join releases it after the worker returns.
++class pool_thread {
++public:
++  pool_thread(pool_thread_factory factory, void (*run)(void*, std::uint32_t) noexcept,
++              void* context, std::uint32_t index) : factory_(factory) {
++    if (factory_.start) handle_ = factory_.start(factory_.context, run, context, index);
++    else thread_ = std::thread([=] { run(context, index); });
++  }
++  pool_thread(const pool_thread&) = delete;
++  pool_thread& operator=(const pool_thread&) = delete;
++  pool_thread(pool_thread&& other) noexcept
++    : factory_(other.factory_), handle_(std::exchange(other.handle_, nullptr)),
++      thread_(std::move(other.thread_)) {}
++  ~pool_thread() { if (handle_) std::terminate(); }
++  std::thread::id get_id() const noexcept {
++    return handle_ ? factory_.id(handle_) : thread_.get_id();
++  }
++  void join() noexcept {
++    if (handle_) factory_.join(std::exchange(handle_, nullptr));
++    else thread_.join();
++  }
++private:
++  pool_thread_factory factory_;
++  void* handle_{};
++  std::thread thread_;
++};
++}
++}

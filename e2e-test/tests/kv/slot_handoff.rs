@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::handoff_fixture::TestHandoffCluster;
-use crowdb_kv_client::{ChunkSlotMapClient, Error};
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, Error};
 use crowdb_protocol::chunk_slot::{
     ChunkServiceHandoff, ChunkServiceHandoffPhase, ChunkSlot, ChunkSlotFenceReceipt,
 };

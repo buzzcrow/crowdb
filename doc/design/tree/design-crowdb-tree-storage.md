@@ -3,823 +3,329 @@
 
 # CROWDB - Design: crowdb-tree Durable Storage
 
-Depends on: [`design-crowdb-tree.md`](design-crowdb-tree.md), [`design-crowdb-tree-engine.md`](design-crowdb-tree-engine.md), [`../kv/design-crowdb-kv.md`](../kv/design-crowdb-kv.md) §12.1, [`../kv/design-crowdb-kv-state-machine.md`](../kv/design-crowdb-kv-state-machine.md), [`../kv/design-crowdb-kv-wal.md`](../kv/design-crowdb-kv-wal.md), [`../kv/design-crowdb-kv-reconfiguration.md`](../kv/design-crowdb-kv-reconfiguration.md)
-Satisfies: [`design-crowdb-tree.md`](design-crowdb-tree.md) §2 (durable storage architecture)
+Depends on: [Tree overview](design-crowdb-tree.md), [Tree engine](design-crowdb-tree-engine.md)
+Satisfies: [Tree overview](design-crowdb-tree.md) §3.1
 
-This document specifies how crowdb-tree pages reach durable media and how that
-durability composes with the rest of CROWDB: the `PageStore` backend
-abstraction, the on-disk page format and alignment, the buffer pool (frame
-cache), snapshot + the internal-WAL decision + recovery, snapshot
-export/import, the mapping table (the B+tree's PID indirection layer and its
-own persistence), and the snapshot/GC flow integration with the learner and
-consensus WAL.
+This document specifies page storage, durable frame encoding, cache ownership,
+checkpoint/recovery and physical reclamation. The [Chunk storage design](design-crowdb-tree-chunk-storage.md)
+defines its catalog and mirrored pack protocol.
 
 ## Table of Contents
 
 - [1. PageStore Abstraction](#1-pagestore-abstraction)
 - [2. Backends](#2-backends)
-  - [2.1 TextPageStore — On-Disk Layout (Debug)](#21-textpagestore--on-disk-layout-debug)
-  - [2.2 BlockPageStore — On-Disk Layout (Production)](#22-blockpagestore--on-disk-layout-production)
-  - [2.3 Async I/O Architecture](#23-async-io-architecture)
-  - [2.4 fsync Policy](#24-fsync-policy)
-  - [2.5 Block Compaction](#25-block-compaction)
-- [3. On-Disk Page Format (Zero-Copy Frame)](#3-on-disk-page-format-zero-copy-frame)
-- [4. Buffer Pool (Frame Cache)](#4-buffer-pool-frame-cache)
+- [3. On-Disk Page Format](#3-on-disk-page-format-zero-copy-frame)
+- [4. Buffer Pool and Cache Residency](#4-buffer-pool-and-cache-residency)
 - [5. Internal WAL Decision](#5-internal-wal-decision)
 - [6. Snapshot, Recovery, and Export/Import](#6-snapshot-recovery-and-exportimport)
 - [7. Interaction with Consensus WAL GC](#7-interaction-with-consensus-wal-gc)
 - [8. Mapping Table](#8-mapping-table)
 - [9. Garbage Collection](#9-garbage-collection)
 - [10. New-Member Install Flow](#10-new-member-install-flow)
-
----
+- [11. Root and Physical Metrics](#11-root-and-physical-metrics)
 
 ## 1. PageStore Abstraction
 
-crowdb-tree's tree logic references pages by `PID` and is unaware of the storage
-medium. A `PageStore` maps a durable page slot to bytes; it is the only part
-of crowdb-tree that does I/O, and it is page-granular and **always asynchronous**
-(`read_page`/`write_page` complete via callback/future, matching
-[`../kv/design-crowdb-kv-wal.md`](../kv/design-crowdb-kv-wal.md)).
-The upper layer always uses the async API, regardless of whether the
-underlying platform has `io_uring` (Linux) or not (macOS/fallback). On
-Linux, `BlockAsyncPageStore` + `DiskIOUring` submit genuine `io_uring` SQEs;
-on macOS or without liburing, the `*_async` methods fall back to
-synchronous blocking I/O wrapped as immediately-ready completions, so the
-upper layer has a **unified async interface** with no sync/async split.
-No FFI on the I/O hot path. An injected store may use immutable chunk page
-packs; its manifest, recovery, and range-sharing rules are specified in
-[`design-crowdb-tree-chunk-storage.md`](design-crowdb-tree-chunk-storage.md).
+The engine identifies logical pages independently of their stored address.
+`BackingRef` carries the storage domain, address/length, content/fence proof and
+an owning capability. A captured reader resolves dependencies through that
+capability, including overflow owned by an older checkpoint.
 
-**IU = Indivisible Unit.** The minimum atomically-writable size. Leaf base
-pages are padded to a multiple of it so a page write cannot tear (§3). The IU
-is backend-configurable and may be as small as **1 byte** for byte-addressable
-media (in-memory test store, SCM) or a flash page (SSD); see §2. A small
-**page-allocation map** (free IUs in the backing file/device) is persisted
-alongside the root pointer in the commit anchor (§6).
+`AsyncPageStore` expresses accepted asynchronous work through completion
+callbacks. `ScheduledPageStore` accounts host I/O and keeps backend ownership
+through callbacks. Synchronous stores use the host's backend executor; native
+asynchronous stores use their completion interface. A Tree does not create a
+private executor for each operation.
 
----
+`CheckpointBackend` separates reloadable page writeback from durable root
+commit. A stored page can support eviction before it belongs to a committed
+checkpoint. Only root commit establishes a durable replay point.
+
+**I1 — Domain ownership:** incompatible runtime/backend bindings are rejected.
+Opening a second writable Tree on the same owned backend domain cannot bypass
+the first owner merely by constructing another facade.
 
 ## 2. Backends
 
-There are **three** `PageStore` implementations: a text-encoded debug store,
-a block-device store, and an injected chunk store. RDMA is **not** a separate
-backend: a remote page region is just a block device reached over the network,
-served by the same `BlockPageStore` with an RDMA medium driver.
-
-| Backend | Medium | IU | Notes |
-| --- | --- | --- | --- |
-| `TextPageStore` | Local filesystem directory | 1 byte (always) | Debug/test backend. Each page, anchor, and segment image is a separate human-readable text file. No compression. Implements `PageStore` with `iu_size()=1`; internally maps addresses to filenames. |
-| `BlockPageStore` | Raw block device or regular file, served by a pluggable medium driver: **SSD** (`O_DIRECT`), **SCM** (byte-addressable), **mem** (test), **RDMA-remote** (one-sided verbs to a remote region) | SSD: 16/64 KiB; SCM/mem: down to **1 byte**; RDMA: the remote region's IU | Production backend. Array-of-blocks growth: a group owns multiple fixed-size block files (`{path}.blk-{NNNN}`), allocated on demand. No filesystem; the allocation map owns the whole device/region. Byte-IU media skip page padding. |
-| `ChunkPageStore` | ChunkDB mirror strips through DiskIO | 64 KiB | Injected backend. Writes immutable checksummed packs, resolves tagged mapping references through immutable manifests, and publishes roots through a generation-fenced catalog. See the [chunk-storage design](design-crowdb-tree-chunk-storage.md). |
-
-All implement the same async `PageStore`. Local backends are selected at
-`ct_open`
-via `ct_options.backend` (0 = text debug, 1 = block). When `path` is
-null/empty, an in-memory `BlockPageStore` with IU=1 is used (test path).
-The chunk backend is constructed separately and injected through the opaque
-page-store handle.
-
-### 2.3 Async I/O Architecture
-
-`BlockPageStore` has an async twin, `BlockAsyncPageStore`, that submits all
-I/O through a `DiskIOUring` (io_uring event loop). The async path is used by
-`ct_get_async`, `ct_flush_async`, and `ct_snapshot_async`.
-
-| Platform | Mechanism | Status |
-| --- | --- | --- |
-| Linux (liburing) | `BlockAsyncPageStore` + `DiskIOUring` (io_uring SQE/CQE) | Production |
-| macOS / no liburing | Synchronous fallback (blocking `pwrite`/`pread`/`fdatasync` wrapped as immediately-ready completions) | Dev |
-
-**Linux (liburing)**: `BlockAsyncPageStore` maps global byte offsets to
-per-extent fds via `BlockPageStore::fd_for_offset()`, then submits
-`io_uring` SQEs through the `DiskIOUring`. Writes spanning multiple extents are
-split and chained; fsync chains across all dirty extent fds. Requires
-`CROWDB_TREE_HAVE_LIBURING` build flag.
-
-**macOS / no liburing**: `CROWDB_TREE_HAVE_LIBURING` is not defined. `ct_open`
-does not wire a `DiskIOUring` or `AsyncPageStore`. The `*_async` C API methods
-fall back to completing synchronously (blocking I/O wrapped as an
-immediately-ready completion). The upper-layer API is identical regardless
-of platform.
-
-**`FilePageStore`, `FileAsyncPageStore`, `IoEngine`, and `DirectIoEngine`
-are removed.** `TextPageStore` serves the testing role. `BlockAsyncPageStore`
-(array-of-blocks `io_uring`) is the production async backend. The
-platform-level fallback described above provides the async abstraction.
-
-### 2.4 fsync Policy
-
-`fsync`/`fdatasync` is **configurable** via `ct_options.sync_mode`:
-
-| Mode | Behavior | Use case |
-| --- | --- | --- |
-| `FullSync` (default) | `fdatasync` after every flush | Production durability |
-| `SkipSync` | No fsync; writes are flushed by OS page cache only | Testing/benchmarks |
-| `BatchSync` | fsync once per snapshot, not per flush | Throughput-sensitive testing |
-
-On macOS, `fsync` costs ~3ms per call (stable). `SkipSync` or `BatchSync`
-eliminates this overhead for test/CI runs. The same policy applies to WAL
-file sync (see `../kv/design-crowdb-kv-wal.md`).
-
-**RDMA-remote is deferred**, like any remote block device: it needs a local
-page cache (§4) with pinning + epoch-gated eviction, and remote allocation
-coordination. The v1 target is `TextPageStore` for debugging and
-`BlockPageStore` (in-memory and SSD) for production/tests.
-
-### 2.5 Block Compaction
-
-Block compaction reclaims physical space from sparse block files (`.blk-{NNNN}`)
-through two cooperating mechanisms: **gap filtering** controls where new
-allocations land during every snapshot, and **cadence-driven relocation**
-(`compact_sparse_blocks`) force-moves live extents out of the sparsest blocks
-on a configured interval. Both share the same free-ratio threshold and operate
-only in array-of-blocks mode (`open_blocks`, `block_size > 0`).
-
-**Gap filtering in `SpaceAllocator`.**
-
-`SpaceAllocator` is rebuilt every snapshot from the committed anchor's live
-extents (`build_allocator()` in `persist.cpp`). Its gap list is the complement
-of live extents within `[region_base, file_size)`. When `block_size > 0`,
-compute each block's free ratio (`gap_bytes / block_size`) and exclude gaps in
-blocks above `merge_gc_block_free_threshold` (default 70%) from the allocator's
-gap list.
-
-Filtered-out gaps are invisible to `alloc()`, so new writes never reuse space
-in sparse blocks. They land in dense blocks' gaps or append past EOF (which
-may trigger `allocate_new_block()`). Over successive snapshots, as dirty pages
-are rewritten, sparse blocks lose their live pages.
-
-**Cadence-driven relocation — `compact_sparse_blocks`.**
-
-Gap filtering drains sparse blocks gradually through normal write churn. When
-disk space is urgent or churn is low, `compact_sparse_blocks` force-relocates
-live extents out of the sparsest blocks in a single snapshot pass.
-
-Selection: compute each block's current free ratio from the newest valid
-anchor's live extents. Blocks whose free ratio is strictly greater than
-`merge_gc_block_free_threshold` are candidates. Sort by descending free ratio,
-then ascending block index. Accumulate candidate live bytes until the sum
-exceeds `merge_gc_max_relocation_bytes`; the first eligible block is always
-allowed even when it exceeds the budget so progress is possible. Block zero
-(anchor slots) is never selected.
-
-Prefetch: before taking `write_mutex_`, read every unloaded mapping slot in
-the selected blocks from the store. Retain the original packed mapping word
-with the decoded frame. Preparation rechecks that word under `write_mutex_`;
-a mismatch discards the prefetched candidate and the page is skipped for this
-pass. This keeps disk reads out of the writer critical section and adds no
-lock.
-
-Relocation: for each selected page (resident or validated prefetched
-unloaded), encode its durable blob, allocate a new address outside every
-source block, and queue the write through the normal prepared-snapshot
-pipeline. The owning mapping segment image is forced into the prepared
-generation. Unloaded relocations update the mapping word in the segment image
-directly. `PreparedSnapshot` tracks `blocks_selected`, `pages_relocated`, and
-`bytes_relocated`.
-
-Commit: the standard two-barrier snapshot protocol applies — page writes,
-segment images, directory, durability barrier, anchor, durability barrier.
-`finalize_prepared_snapshot` rereads both valid anchors, derives the protected
-block set, and deletes only nonzero blocks referenced by neither generation.
-`blocks_deleted` is recorded in the `PreparedSnapshot` and reported in
-`MergeGcStats`.
-
-**Block deletion.**
-
-`BlockPageStore::delete_block(idx)` closes the fd, removes the `BlockExtent`
-from `extents_`, and unlinks the `.blk-{NNNN}` file. The global address space
-shrinks; future `write_at` / `read_at` calls never target the deleted block.
-On reopen, `open_blocks()` scans the directory; the deleted file is gone and
-its index is not re-opened.
-
-**Crash safety.**
-
-Identical to normal snapshot crash safety. If the process dies mid-compaction:
-- Old blocks still exist; old addresses still valid.
-- New block has copied pages; new addresses valid.
-- Recovery uses whichever anchor is valid; the other references the old blocks.
-
-Block deletion only happens after the finalizer confirms neither valid anchor
-references the block. A crash before the finalizer leaves all blocks in place;
-the next snapshot or compaction pass will retry.
-
-**Cost.**
-
-- Gap filtering: zero additional I/O. O(gaps) for per-block free ratio
-  computation during `build_allocator()`.
-- Cadence-driven relocation: one snapshot pass worth of I/O for the relocated
-  pages, plus O(live_extents) for selection and O(anchors) for finalization.
-  The byte budget bounds the per-pass I/O burst.
-
-**Scope.**
-
-Only applies to `BlockPageStore` in array-of-blocks mode (`open_blocks`).
-Single-medium mode (`open`, `open_mem`) and `TextPageStore` have no multiple
-blocks; `block_size()` returns 0, gap filtering is skipped, and
-`compact_sparse_blocks` returns an empty `MergeGcStats` with no snapshot
-write.
+- `TextPageStore` is a human-readable Local debug store with byte IU.
+- `MemPageStore` keeps its byte-addressed data in sparse fixed-size 64 KiB
+  memory pages. Growth allocates only touched pages and never relocates existing
+  data. Reads of unwritten holes return zeroes within the logical high-water
+  mark. Its backing data is storage capacity, separate from Tree work credits;
+  `resident_bytes()` reports allocated data-page capacity without counting holes.
+- `BlockPageStore` allocates aligned extents in memory or local block files.
+  Its allocation metadata, directories and anchors are retained by the backend
+  independently of the facade.
+- `ChunkRuntimePageStore` uses immutable fixed page packs, typed backing and a
+  process-fenced root catalog. Its physical mirror ledger is canonical across
+  compatible facades for the same transport, retirement host and logical tree.
 
 ### 2.1 TextPageStore — On-Disk Layout (Debug)
 
-`TextPageStore` writes a directory of human-readable text files, one per
-durable object. The directory layout at `{path}/{store_id}-{partition_id}/`:
-
-```
-{path}/{store_id}-{partition_id}/
-  manifest.ck       # addr → (type, filename) mapping (text, one line per entry)
-  anchor-A.ck       # CommitAnchor A (text key=value format)
-  anchor-B.ck       # CommitAnchor B (text key=value format)
-  page-{addr}.ck    # One file per B-tree page blob (debug_codec annotated text)
-  seg-{N}.ck        # One file per mapping-table segment image (text)
-  segdir.ck         # Segment directory (text, one line per DirEntry)
-```
-
-All files use the `.ck` extension, the CROWDB-specific file suffix. The
-filename prefix (`anchor-`, `page-`, `seg-`, `segdir`, `manifest`) distinguishes
-the type; the `.ck` suffix identifies the file as CROWDB-owned. Editors open
-`.ck` files as text by default.
-
-**Manifest file**: lists `(addr, len, type, filename)` for every blob written.
-On open, `TextPageStore` reads the manifest to reconstruct the addr→file
-mapping. The manifest itself is human-readable text.
-
-**Anchor text format** (mirrors WAL's text segment header):
-```
-CROWDB_CT_ANCHOR magic=0x41435443 format_version=2 snapshot_seq=123 root_page_id=42
-last_applied_slot=99 next_page_id=100 segment_slots=1024 segdir_addr=4096
-segdir_len=2048 segdir_crc=deadbeef anchor_crc=cafebabe
-```
-
-**Page text format**: uses existing `encode_frame_text()` / `decode_frame_text()`
-from `debug_codec.h`. Each `page-{addr}` file contains the annotated frame text
-with `crowdb-tree-frame-text` header, `type leaf`/`type inner`/`type overflow`,
-per-slot fields, and a raw hex line for exact reconstruction.
-
-**Segment image text format**: `CROWDB_CT_SEGIMG` header with `seg_idx`,
-`generation`, `slot_count`, `live_count`, followed by one line per slot word
-(`slot[N] = (iu_index, iu_count)` or `empty`).
-
-**Segment directory text format**: `CROWDB_CT_SEGDIR` header, followed by one
-line per `DirEntry`: `seg_idx=N generation=G image_addr=A image_len=L
-crc=C`.
-
-**Limitations**: Compression is always `kNone` (text mode is for debugging).
-The `debug_codec` operates on uncompressed frames, so compressed blobs cannot
-round-trip through text.
+The debug backend stores page/metadata images and anchors as text records and
+maps logical addresses to those records. It implements the same Local
+checkpoint ordering and frame validation contracts; byte IU removes alignment
+padding but does not remove checksums or root publication ordering.
 
 ### 2.2 BlockPageStore — On-Disk Layout (Production)
 
-A group's storage is an **array of fixed-size block files**, not one
-pre-allocated file. When the current block fills up, `allocate_new_block()`
-creates the next file.
+Block storage grows through fixed-size `.blk-*` files or in-memory blocks.
+`SpaceAllocator` owns allocation/exclusion state. Frame addresses identify aligned
+IU extents; directory and anchor images identify the selected durable graph.
+Local recovery and compaction retain the backend domain so delayed readers and
+callbacks cannot access a destroyed allocator or file handle.
 
-**Block file naming**: `{store_id}-{partition_id}.blk-{NNNN}` (e.g.,
-`1-3.blk-0000`, `1-3.blk-0001`). `store_id` and `partition_id` are passed
-via `ct_options`. Block files use the `.blk` extension (binary, fixed-size);
-text/debug files use `.ck` (see §2.1).
+### 2.3 Async I/O Architecture
 
-**Internal state**:
-```
-struct BlockExtent {
-    std::unique_ptr<FileMedium> medium;  // one FileMedium per block file
-    uint64_t base_offset;   // global offset = block_idx * block_size
-    uint64_t used;          // high-water mark within this block
-    bool     dirty;
-};
-std::vector<BlockExtent> extents_;
-```
+`BlockAsyncPageStore` can submit Linux io_uring operations through its owned I/O
+backend. A synchronous store is adapted by the host backend executor. Both
+paths retain aligned buffers, I/O tickets and backend capabilities through the
+real terminal callback. CPU decoding runs on the bounded Tree CPU runtime.
 
-**Address space**: The global address space is linear:
-`global_off = block_idx * block_size + local_off`. `write_at(global_off, buf,
-len)` maps to `(extent_idx, local_off)`, splitting writes that cross extent
-boundaries. If `global_off + len > total_capacity`, `allocate_new_block()` is
-called first.
+Inline completion is allowed. A transport error after uncertain acceptance
+cannot release a ticket while a late callback may still access its buffer.
+Duplicate completion does not decrement resource or work counters twice.
 
-**On-disk binary layout** (within each `.blk-*` file):
-```
-block file (block_size bytes):
-+--------------------------------------------------+ 0
-| [Anchor A slot]  (superblock_slot_bytes, IU-aligned) |
-+--------------------------------------------------+ slot_bytes
-| [Anchor B slot]  (superblock_slot_bytes, IU-aligned) |
-+--------------------------------------------------+ 2 * slot_bytes
-| [Page/Segment image region]                       |
-|   ... page blobs, segment images, segment dir ... |
-|   ... allocated by SpaceAllocator, may have gaps ..|
-+--------------------------------------------------+ block_size
-```
+### 2.4 fsync Policy
 
-- **Anchor A/B**: Two IU-aligned slots at offsets 0 and `superblock_slot_bytes`.
-  Binary `CommitAnchor` struct (10 fields + CRC32C), zero-padded to IU boundary.
-  Alternating A/B by `snapshot_seq` parity.
-- **Page blobs**: Durable page frames (optionally LZ4-compressed), written at
-  addresses allocated by `SpaceAllocator`. Each blob is `[plen u32][payload]
-  [crc32c u32]`.
-- **Segment images**: `SegmentImageHeader` + packed slot words + CRC.
-- **Segment directory**: `DirEntry[]` + header + CRC.
-- **Gaps**: Free space between live extents. Reused by `SpaceAllocator` for
-  future allocations.
+Local checkpoint writes all required page and directory data before publishing
+its anchor. The selected sync policy determines the backend durability barriers;
+skip-sync configurations intentionally provide weaker crash durability.
+Logical flush and representation writeback do not claim checkpoint durability,
+even if their individual page writes have completed.
 
-**Recovery**: On `open()`, scan the directory for `{store_id}-{partition_id}.blk-*`
-files, sort by index, open all. The anchor in block 0 determines which blocks
-are live (via segment directory → segment images → page addresses).
+### 2.5 Block Compaction
 
-**Sync**: `fdatasync`/`fsync` all dirty extents (tracked per-extent dirty flag).
+Sparse-block compaction selects a bounded relocation set and reserves complete
+read, output, metadata and I/O resources. It writes relocated frames, publishes
+the updated checkpoint representation and retires old extents through actual
+backend ownership. A live reader or captured older root can keep an old extent
+excluded from reuse after the current root moves elsewhere.
 
-**Garbage collection**: Dead pages mark gaps in `SpaceAllocator` but block
-files are not deleted (deferred optimization; see plan Task 14, block
-compaction design).
-
----
+Physical accounting distinguishes committed, candidate, retired and free
+capacity. Relocation does not count as free; the block release service updates
+capacity only after the actual extent-release transition.
 
 ## 3. On-Disk Page Format (Zero-Copy Frame)
 
-**Decision: the in-memory and on-disk page representations are identical.**
-A page is a fixed-size *frame*; loading is one `read_page` into a frame with
-**no decode/copy**, and the B+tree reads, binary-searches, and compares keys
-directly on the frame bytes. Persisting is the reverse: write the frame bytes
-(optionally compressed) back. There is no separate "C++ object" form for base
-pages; leaf/inner pages become thin **views** over a frame, so the same
-comparison (`memcmp`) orders keys identically in memory, on disk, and across
-nodes.
+Encoded base pages use the same byte layout on disk and after loading. Leaf
+views binary-search keys and read cells directly from an owned validated frame.
+The live logical page is separate: it may combine several base ranges and
+immutable overlay runs. Persistence materializes that logical state into a
+new frame; ordinary writes do not insert into the captured base frame.
 
 ### 3.1 Frame geometry
 
-A frame is `page_bytes` long (default **16 KiB**, configurable; a multiple of
-the backend IU). All frames in a pool are the same size, so the buffer pool
-(§4) is a flat array with O(1) indexing. An entry larger than a frame's usable
-space spills to an **overflow chain**; the overflow policy is tiered:
-inline (≤ frame payload, zero-copy), small overflow (frame limit < v ≤ 1 MB,
-spill + warn), large overflow (1 MB < v ≤ 16 MB, spill + warn), rejected
-(> 16 MB, reject as a likely bug). Defaults: `Config.max_overflow_value` =
-1 MB, `Config.max_value_hard_limit` = 16 MB.
+`Config.frame_bytes` defaults to 64 KiB. Primary page capacity is capped by
+both that configuration and the public frame protocol payload limit. Leaf
+split/merge thresholds count record-region bytes; planning adds the 128-byte
+header and 8-byte trailer. A merged leaf must fit below three quarters of the
+split target, preserving hysteresis.
+
+Values above `max_inline_value` use overflow frames with independent backing
+owners. A zero configured threshold derives the limit from one quarter of the
+configured frame size. The leaf retains a pointer cell and logical value
+length; the full overflow chain is not copied into every read or captured leaf.
+Key size and complete operation allocation limits are checked before mutation.
 
 ### 3.2 Slotted layout
 
-The frame layout is the standard "sorted slot directory growing forward +
-records growing backward" so keys stay binary-searchable in place and inserts
-don't rewrite record bytes:
+A leaf frame contains:
 
-```
-frame (page_bytes):
-+--------------------------------------------------+ 0
-| FrameHeader (fixed, 64 B)                        |  magic, type, version, flags,
-|   slot_count u16, free_lo u16, free_hi u16,      |  self_pid, right_sibling,
-|   logical_len u32, lsn/last_applied_slot u64,    |  page_bytes, crc32c (trailer)
-|   self_pid u64, right_sibling u64 (leaf only)    |
-+--------------------------------------------------+ 64
-| Slot directory: Slot[slot_count]                 |  grows forward (free_lo)
-|   Slot = { rec_off u16, key_len u16, cell_len u16 } (sorted by key)
-+--------------------------------------------------+
-| ... free space ...                               |
-+--------------------------------------------------+ free_hi
-| Records: [key bytes][cell bytes] ...             |  grows backward from end
-+--------------------------------------------------+ page_bytes - trailer
-| Trailer: { logical_len u32, crc32c u32 }         |  CRC over [0, logical_len)
-+--------------------------------------------------+
-```
+- a 128-byte header with type, format, logical page identity, range fences,
+  slot/record offsets and subtree summary;
+- a sorted directory of 12-byte slots, each containing three `u32` values:
+  record offset, key length and cell length;
+- record bytes growing backward from the trailer, containing key and encoded
+  cell (slot, flags and inline value or overflow reference);
+- an 8-byte trailer containing logical length and CRC32C.
 
-Inner pages hold `n+1` child PIDs (fixed array) plus `n` separator keys (same
-sorted slot-directory style, no cells). `ChildIndexFor(key)` is an
-`upper_bound` binary search over the separators, reading them directly from
-the frame.
+Inner frames contain child PIDs and an 8-byte separator slot directory.
+Routing uses the separator upper bound. Builders consume sorted bounded input
+and stamp a complete immutable frame; later logical mutation publishes a new
+page descriptor or replacement frame.
 
-The slot directory is **kept sorted by key**, so lookup is a binary search
-reading each key directly as a `Slice` into the frame (zero copy). Insert
-appends the record at `free_hi` and splices a slot into sorted position (a
-small `memmove` of the slot array only, not the records); delete removes the
-slot (records become dead space, reclaimed by rewriting a fresh frame when
-dead space crosses a threshold, and because L1 is single-writer COW, most
-leaf mutation already produces a fresh frame anyway).
+### 3.3 Validation, alignment and compression
 
-### 3.3 Durability framing, alignment, compression
+Frame validation checks type/version, lengths, slot bounds, identity, ranges
+and checksum before exposing views. A corrupt referenced frame is an error;
+recovery must not silently discard committed content or create an empty Tree.
+Backend IU alignment and stored-envelope padding are separate from the logical
+frame capacity. Readers retain the actual stored allocation and buffer owner.
 
-- **`logical_len` + CRC32C trailer.** `logical_len` lets a reader ignore IU
-  zero padding; CRC32C covers `[0, logical_len)`. A CRC mismatch means a torn
-  page, and recovery falls back to the previous snapshot (§6).
-- **Alignment.** `BlockPageStore` with `iu_size > 1` (e.g. 4096 for NVMe)
-  writes frames as IU multiples with bounce-buffer read-modify-write for
-  unaligned offsets. `TextPageStore` always uses IU=1 (byte-addressable, no
-  alignment) since it writes human-readable text files. `BlockPageStore::open_mem`
-  also uses IU=1 for in-memory/SCM.
-- **Compression is per-page, on-disk only.** The frame body is optionally
-  compressed with LZ4 (a flag bit + algorithm id in the header), decompressed
-  into a full frame on load so in-memory access stays zero-copy and uniform.
-  A page whose compressed size ≥ its raw size is stored uncompressed. CRC is
-  computed over the *stored* bytes so torn-write detection is independent of
-  the codec.
+`Config.compression` defaults to `kNone`. With LZ4 enabled, the stored envelope
+records the codec, original/stored lengths and CRC of stored bytes. Incompressible
+frames remain raw. Decoding restores a validated frame before leaf access.
+CMake discovers system LZ4; the Rust FFI build can enable it through
+`CROWDB_TREE_LZ4_LIB`. Without the codec, new output remains raw and an existing
+LZ4 envelope returns `NotSupported`, preserving the stored data.
 
-### 3.6 Compression details
+## 4. Buffer Pool and Cache Residency
 
-`Config.compression` defaults to `kNone`; LZ4 is opt-in (`kLz4`) so behavior
-is deterministic across build environments rather than depending on what the
-build machine happens to have installed. The algorithm id is recorded per
-page, so mixed pages decode correctly regardless of the option in force when
-written. **LZ4 is a system dependency, not vendored:** `CMakeLists.txt`
-discovers a system LZ4 dev package and defines `CROWDB_TREE_HAVE_LZ4` when
-found; the FFI `cc`-based Rust build does not link LZ4 at all, and the
-compressor degrades to an identity codec when the library isn't linked, so
-correctness never depends on LZ4 being present, only the compression ratio
-does.
+`SharedPageCache` stores reloadable immutable frames under bounded page, byte
+and waiter limits. It deduplicates in-flight loads and separates demand and
+maintenance work. Bindings and waiter state are prepaid before accepted work
+can need them; a queue full of ordinary reads does not invalidate an accepted
+flush's routing credit.
 
----
+Logical page identity, current residency and physical frame lifetime are
+separate. Evicting a cache entry or publishing a proxy removes that residency
+reference; a read result or snapshot can still own the frame. The allocation
+charge persists until the last frame owner releases it.
 
-## 4. Buffer Pool (Frame Cache)
+Dirty logical pages require a reloadable backing representation before their
+resident data can be dropped. Bounded writeback installs such backing without
+advancing durable coverage. Idle host windows continue writeback and trimming
+after writes stop. Clean captured backing can be reused by checkpoint without
+loading its primary frame when its proof is still valid.
 
-The buffer pool is crowdb-tree's **only** holder of base-page memory: a
-fixed-capacity arena of equal-size frames, explicitly managed (not the OS page
-cache) so memory is bounded and eviction is epoch-correct for RDMA/SCM/SSD
-alike. This is the "4 GiB / 8 GiB btree cache" knob (`capacity_bytes` default
-`min(8 GiB, 25% RAM)`).
-
-- **No per-page heap objects.** Frames live in one contiguous arena
-  (`capacity_bytes / page_bytes` frames); pin/unpin update compact frame
-  metadata under the pool mutex.
-  The page table (`pid -> frame index`) is an open-addressing array, not
-  `std::unordered_map`, to keep the hot path branch-light and cache-friendly.
-- **Unused capacity.** Arena allocation preserves the configured frame count
-  without initializing every unused frame. Fresh and anonymous frames are
-  zeroed when acquired. A read miss loads and validates the complete frame
-  before publishing it, preserving initialization and stable frame addresses.
-- **Pinning and eviction.** A reader pins the leaf/inner frames along its
-  descent, reads via the view, then releases. Pinned frames are never
-  evicted. Eviction uses a **CLOCK (second-chance)** sweep: skip pinned and
-  dirty frames, clear the ref bit on the first pass, evict a clean unpinned
-  frame whose ref bit is 0. A dirty frame is written back before reuse.
-  Capacity is a hard cap; if every frame is pinned/dirty, new pins block
-  briefly and an eager dirty flush triggers.
-- **COW + dirty tracking.** L1 stays single-writer COW: to mutate page `pid`,
-  the Flusher builds the new page in a fresh frame, atomically publishes it
-  (mapping store), marks it dirty, and epoch-retires the old frame's logical
-  version. The **dirty set** (frames with `dirty == true`) is what snapshot
-  walks (§6) instead of the whole tree. This is what makes snapshots
-  incremental (only dirty frames are written) rather than a full rewrite.
-- **Anonymous frames.** A newly built page (flush/consolidate/split/merge)
-  has no durable address yet; it is dirty and pinned-resident until
-  snapshot assigns it one and clears the pin, becoming evictable. Between
-  snapshots, memory is bounded by *(working set since last snapshot) +
-  (resident clean cache)*; a write storm that outruns snapshot triggers an
-  eager snapshot (back-pressure, §6).
-
-The pool mutex protects the page table, CLOCK hand, and frame metadata, but is
-never held across `PageStore` I/O. A miss reserves its victim as `Loading`; a
-dirty eviction first reserves it as `Writeback`. The mapping stays visible
-during either operation, so another pin for that page waits on the frame state
-while hits on unrelated ready frames continue. Read failure removes the loading
-mapping and returns the frame to the free set. Writeback failure restores the
-old frame to `Ready` without eviction. `flush_dirty` uses the same reservation
-protocol one frame at a time.
-
-### 4.1 Why epoch reclamation, not pin counts, governs eviction safety
-
-Picking a CLOCK victim is the easy part; the hard part is *"when is it safe
-to reuse a page's frame bytes?"* Readers are lock-free and hold `Slice`s
-pointing directly into a frame with no per-page refcount, so this is
-identical to the general reclamation problem already solved by
-[`design-crowdb-tree-engine.md §1.6`](design-crowdb-tree-engine.md#16-epoch-based-reclamation).
-crowdb-tree deliberately reuses that mechanism rather than introducing a second
-one: dropping a resident page is structurally the same as a COW replace
-(`mapping.StoreUnloaded(pid, addr, len); retire(old_page)`), and the evicted
-frame is returned to the pool's free list only when the epoch reclaimer frees
-the page, i.e. after every overlapping reader guard has drained. So frame
-reuse is epoch-safe for free, with no extra read-path pins and no hazard
-scan. This is also why the pool's own CLOCK must never evict a base frame
-directly: the pool knows nothing about mapping slots or epochs and would
-reuse bytes a lock-free reader still points at. Base frames are therefore
-pinned so the pool's victim search skips them; eviction is instead driven by
-the single writer, which does the retire + re-tag above.
-
-One precondition matters for correctness: re-tagging a slot `unloaded(addr,
-len)` is only valid once the page's durable bytes at `addr` equal its live
-frame exactly. A demand-loaded page already satisfies this; a freshly
-built/consolidated page does not until a snapshot assigns it an address and
-writes that exact frame, so general eviction of freshly-written pages is
-gated on the snapshot pipeline (§6) having run at least once for that page.
-
----
+**I2 — Eviction safety:** a proxy retains a readable typed backing capability.
+No cache eviction rewrites logical content, advances the source floor or
+invalidates an already returned owner.
 
 ## 5. Internal WAL Decision
 
-**Decision: crowdb-tree does NOT keep a redo WAL of data operations. Recovery is
-snapshot + consensus replay**, consistent with `../kv/design-crowdb-kv-state-machine.md §2.1`
-and `../kv/design-crowdb-kv.md §8`.
-
-- The consensus layer already has a durable WAL of chosen entries
-  ([`../kv/design-crowdb-kv-wal.md`](../kv/design-crowdb-kv-wal.md)). Adding a second op-log in crowdb-tree
-  duplicates durability machinery.
-- crowdb-tree persists a **snapshot** at `last_applied_slot`. On restart, slots
-  `> last_applied_slot` are re-applied from the consensus WAL / re-learned via
-  consensus recovery. Worst-case redo work is bounded by the snapshot
-  interval, not unbounded.
-
-A crash between snapshots loses only the in-memory deltas since the last
-snapshot, which the consensus layer re-applies. The engine reports its
-restored `last_applied_slot` so the learner knows where to resume (§6.2). A
-structural mini-journal for in-progress split/merge is unnecessary because
-SMOs are writer-exclusive and only their consolidated result is ever flushed;
-a crash mid-SMO simply reverts to the last snapshot.
-
----
+crowdb-tree has no operation redo log. The host consensus WAL owns the durable
+chosen-operation sequence; Tree checkpoints own durable materialized state.
+Recovery loads the selected root and replays the external WAL suffix after its
+coverage. Chunk catalog metadata is a root/ownership protocol, not a second
+user-operation WAL.
 
 ## 6. Snapshot, Recovery, and Export/Import
 
-`persist_snapshot()` makes the engine's materialized state durable up to
-`last_applied_slot` and produces a `RootVersion`
-([`design-crowdb-tree-engine.md §1.5`](design-crowdb-tree-engine.md#15-versioned-root-consistent-snapshots)).
-Two staged movements, no leveled compaction (crowdb-tree is not an LSM):
+A checkpoint captures one immutable published view after finite prefix handoff.
+It retains sources, mapping, typed primary backing and overflow dependencies.
+`CapturedFrameStream` reuses valid durable receipts or materializes bounded frames,
+then `LocalCheckpoint` or the Chunk root protocol commits the complete graph.
+See [checkpoint flow](design-crowdb-tree-engine-snapshot-flow.md).
 
-```
-apply(slot,batch)            flush (Flusher, 1/tree)         snapshot (cadence)
-   L0 MemTable   ───────────▶  L1 frames (buffer pool)  ───────────▶  PageStore
- (concurrent map)   batched,        single-writer COW          incremental, dirty
-                  hot-key collapse   into frame builders        frames only + fsync
-```
+Snapshot persistence is page-granular. Changed Tree pages and pages explicitly
+selected for GC or relocation receive new backing; unchanged pages and
+mapping/reference segment images retain their stored identities. Local's small
+segment directory may be rewritten when segment entries change. With no
+persistent-state change, the existing durable root is reused without data or
+metadata writes or a new snapshot sequence. Root publication changes
+reachability; Tree GC reclaims old physical data only after retained roots,
+candidates, readers and accepted I/O no longer require it.
 
-1. **L0 → L1 (flush).** The Flusher builds a **new frame** per touched leaf
-   directly from the old frame's entries merged with the batch
-   (highest-slot-wins); no serialization step, the builder writes the final
-   on-disk bytes directly, and the old frame is epoch-retired. This is fast
-   because hot keys already collapsed in L0, so it's one frame rebuild per
-   touched leaf per flush (not per key), and the rebuilt frame **is** the
-   durable image (snapshot never re-encodes it).
-2. **L1 → PageStore (snapshot).** Walks the dirty set (§4), not the whole
-   tree, and writes only dirty frames (optionally compressed), remaps
-   `pid -> PageAddr`, fsyncs, then commits the anchor (below). Cost is
-   proportional to pages dirtied since the last snapshot, not tree size.
-3. **Durability barrier ordering.** Dirty frames + directory fsync **before**
-   the commit write; a crash never exposes a commit referencing a
-   half-written frame (CRC also guards this).
+The current runtime metadata path still rebuilds Local segment images and Chunk
+indexes. It does not yet satisfy this incremental metadata contract; zero
+data-frame writes alone do not establish a no-op checkpoint.
 
-**Back-pressure:** if L0 grows faster than the Flusher drains (e.g. a slow
-device), `apply` throttles once L0 crosses a high-water mark, and the buffer
-pool's dirty ratio triggers an eager snapshot, keeping memory bounded under
-write storms.
+Local recovery validates anchor/directory metadata, frame identity and
+structural relationships before exposing a Tree. Logical descriptors may
+retain cold frames and load them through the owned backend as required.
+Corrupt or incompatible roots fail explicitly; they do not silently produce
+an empty writable database.
 
-**Recovery** is lazy: only the commit anchor and the mapping-table directory
-(§8) are read eagerly; base pages are demand-loaded on first access, so
-restart stays fast even for large trees. A page failing CRC on first read
-indicates media corruption (the anchor that referenced it was already
-committed). The engine fails the node out of the group, and it rejoins via
-snapshot install (§10) from a healthy peer. After recovery the learner sets
-`contiguous_applied = last_applied_slot` and resumes consensus catch-up for
-higher slots.
+A checkpoint can commit while newer writes exist. Representation rebase checks
+the captured content/route/run identities and retains newer overlays. A stale
+rebase is deferred; it never overwrites current content or revokes the
+successfully committed captured root.
 
 ### 6.1 Snapshot Export / Import
 
-**Decision: export is a byte stream, with a thin "to a file" convenience
-wrapper.** The streaming form is the primitive; it feeds the network
-snapshot-transfer service for new-member install (§10) without ever touching
-local disk. Dumping to a `.ctsnap` file is just streaming into a file writer.
-The same code serves both "send to a peer" and "dump to a bin file."
+Native export emits actual captured frames, including cold data that a normal
+checkpoint could reuse without reading. Portable export emits logical entries.
+Both iterate a stable immutable view using bounded materialization windows;
+outputs retain their actual owner after iterator or Tree destruction.
 
-Two on-the-wire formats, selected at export-begin:
+Import validates frames, root/child graph, ranges, slot fences and overflow
+dependencies before replacing a generation through the coordinator. Corruption,
+admission failure or cancellation during staging leaves the old generation and
+its writer usable. Imported resident overflow retains independent owners and
+can later be checkpointed without a global mutable resolver.
 
-| Format | Layout | Use |
-| --- | --- | --- |
-| **Portable** (default) | versioned header `{magic, format, slot}`, then key-sorted `(klen,key,slot,kind,vlen,value)` tuples in fixed ≤1 MiB chunks, end marker, whole-stream CRC32C | cross-engine parity (in-mem ↔ crowdb-tree), durable archival; deterministic chunk boundaries ⇒ resumable |
-| **Native** | header + raw frame images + a remapped manifest | fast crowdb-tree→crowdb-tree transfer; skips tuple re-encode |
-
-The portable format is deterministic and engine-independent; an exported
-`.ctsnap` re-imports identically on any backend/page size. The header's
-`slot` is the engine's `last_applied_slot` at export time (there is no
-`at_slot` parameter; historical snapshot export is not supported; a
-snapshot always exports the current, latest durable state).
-
-- **Export** pins the current `RootVersion` and streams over the pinned,
-  immutable tree; the pin releases at the end. Newer snapshots may supersede
-  it meanwhile (refcount keeps it alive).
-- **Import** bulk-loads bottom-up into fully-consolidated immutable frames in
-  a staging area (never touching the live tree), verifies the end-to-end
-  CRC, then atomically swaps in a new `RootVersion` with `last_applied_slot`
-  = the slot from the export stream header; the old version is
-  epoch-retired. Readers see the previous state until the swap.
-- Resumability/throttling live **above** the engine; the engine only
-  guarantees deterministic, chunk-boundary-stable export and atomic import.
-
-The exact C ABI (`ct_snapshot_export_begin/next/end`,
-`ct_snapshot_import*`, and the rest of the surface: `ct_open`, `ct_apply`,
-`ct_get`, `ct_scan`, `ct_snapshot_view`, `ct_set_gc_watermark`,
-`ct_compact_sparse_blocks`, ...) is specified in
-[`lib/crowdb-tree/include/lib/crowdb-tree/c_api.h`](../../../lib/crowdb-tree/include/lib/crowdb-tree/c_api.h).
-That header is the single source of truth for signatures; this document
-only records the shape and rationale.
-
----
+Local compatibility migration reads the supported durable format into a staged
+runtime generation, validates it and publishes through the ordinary checkpoint
+protocol. Chunk compatibility migration has a distinct explicit stop-writes
+contract, described by the Chunk storage design.
 
 ## 7. Interaction with Consensus WAL GC
 
-crowdb-tree consumes two slot watermarks the learner already tracks, plus its
-own `last_applied_slot`:
+The host separately tracks applied, handed-off and durable coverage. A Tree
+writeback report cannot authorize WAL truncation. `persist_snapshot` returns
+the committed durable prefix; the learner combines that prefix with its quorum
+and safe-slot policy before advancing its external GC floor.
 
-| Watermark | Source | Meaning |
-| --- | --- | --- |
-| `last_applied_slot` | crowdb-tree (per snapshot) | Highest slot whose effects are durable in the engine's last snapshot. |
-| `snapshot_slot` | learner / replicator | State at this slot is durable on leader + ≥1 peer. |
-| `safe_slot` | learner (`contiguous_applied` min across members) | Every learner has applied through here. |
+Logical retention is bounded by the supplied safe/snapshot floor. Old snapshots
+continue owning the representation they captured even after the current Tree
+prunes tombstones or superseded values. Logical GC and physical backend
+reclamation therefore have different completion times.
 
-`set_gc_watermark(snapshot_slot, safe_slot)` is called by the learner
-whenever these advance; crowdb-tree stores them and uses
-`gc_slot = min(snapshot_slot, safe_slot)` to gate reclamation (§9), matching
-`../kv/design-crowdb-kv-state-machine.md §7`.
-
-The consensus WAL's own GC ([`../kv/design-crowdb-kv-wal.md`](../kv/design-crowdb-kv-wal.md)) uses this same
-`gc_slot` rule: a WAL segment may be unlinked only when all its records have
-`slot < min(last_applied_slot across members, safe_slot, snapshot_slot)`.
-Because a restarting node resumes at its own `last_applied_slot` and
-re-learns the rest, the consensus WAL must retain entries above the
-**minimum** `last_applied_slot` of any member that might restart and replay
-locally. This couples the two GC watermarks: crowdb-tree advancing
-`last_applied_slot` (via snapshots) is what eventually lets the consensus WAL
-drop old segments.
-
-**Restart flow:**
-
-```
-node restart:
-    1. consensus WAL replay rebuilds ACCEPTOR state only
-       (Promised / Accepted / VoteGranted)  — ../kv/design-crowdb-kv-wal.md
-    2. crowdb-tree.recover() loads the commit anchor -> last_applied_slot = L
-    3. learner sets contiguous_applied = L
-    4. slots (L, max_chosen] are re-learned (heartbeat catch-up or new-leader
-       bulk Phase 1) and re-applied to crowdb-tree via apply(slot, batch)
-```
-
-Re-applying slots `<= L` is harmless: highest-slot-wins makes them no-ops. So
-the consensus WAL need only retain entries `> min(last_applied_slot across
-members)`.
-
----
+**I3 — Replay safety:** after restart, operations above the selected durable
+coverage remain necessary even if their former process had completed handoff
+or staged writeback.
 
 ## 8. Mapping Table
 
-The mapping table is the B+tree's indirection layer: every structural
-reference (root, sibling, inner child) is a logical `PID`, and the table
-translates a `PID` to the page's current location, a resident in-memory
-page or an unloaded durable address. It follows the Bw-Tree/LLAMA idea
-(tree links are logical PIDs so moving a page between memory and disk changes
-only one entry; page state is installed by replacing one entry) but
-simplifies it for crowdb-tree's constraints: **single-writer atomic store**
-instead of a multi-writer CAS (the Flusher/reclaimer is the only writer;
-readers only load), COW root versions, and no internal data WAL. So the
-durable mapping table is a **snapshoted metadata image of `PID -> PageAddr`**,
-not a second redo log.
+`MappingView` is a persistent radix COW structure from logical page IDs to
+immutable published descriptors. Transactions specify unique ordered page IDs
+and expected old owners. Root acquisition retains the entire view needed by
+that reader; later publication cannot redirect its IDs to another generation.
 
-**Decisions:**
+COW copies touched paths and segments. Each path aggregates logical page
+contributions and bounded maintenance summaries, including maximum captured
+leaf descriptor/base-array size and oldest candidate timestamps. Removing or
+replacing a child updates those summaries, including shrinking maxima.
 
-| Decision | Rationale |
-|----------|-----------|
-| **No PID recycling** (`next_page_id_` is monotonic). | A reused PID could be seen by a stale reader as the new page — silent wrong data. Data integrity outweighs the memory saved. |
-| **Segment recycling — yes.** | Slots are grouped into fixed-size segments (default 1024 slots/segment); when every slot in a segment is empty, its memory is freed. Bounds growth to live segments, not total split/merge count. Safe because PIDs are never reused, so a freed interior segment is never re-created. |
-| **Sparse segments are acceptable.** | One live slot pins an ~8 KB segment. Migrating the slot to compact it would change the PID (referenced everywhere) — far worse. Segment size is tunable. |
-| **Segment-level persistence, not a full manifest.** | Persist only *dirty* segments as self-describing images; the mapping table itself is the durable structure, avoiding an O(N) DFS-walk-and-write-everything on every snapshot (the old full-manifest approach cost ~120 MB of I/O per snapshot for a 100 GB tree even if few pages changed). |
-| **Backend-neutral format.** | All I/O via `PageStore` (`allocate`/`write_page`/`read_page`/`free`/`flush`) — no fixed superblock/manifest region tied to the file backend, so block/RDMA work the same way. |
-| **Tiny fixed commit anchor + a separate segment directory.** | The anchor is a small fixed A/B record (the atomic commit point); it points to a segment-directory image, so the commit stays atomic even for thousands of segments — the directory (cost ~195 KB for a 100 GB tree) decouples the possibly-large segment list from the tiny atomic anchor. |
+Local durable metadata uses CRC-protected mapping segment images, a segment
+directory and an anchor. In-memory pointers are never persisted. Recovery
+translates validated stored references into typed backing and immutable
+descriptors; it does not expose a mutable tagged-slot mapping to ordinary Tree
+writers. Chunk roots instead describe fixed immutable packs and their indexes.
 
-**In-memory structure:** each `PID` maps to a 64-bit **packed slot word**,
-the same encoding in memory and on disk. `0` = empty; `bit0=0` = resident
-(an in-memory pointer, never persisted); `bit0=1` = unloaded (a durable
-`(iu_index, iu_count)` descriptor). On disk a slot is only "empty" or a
-tagged unloaded descriptor, so a segment image is literally the array of
-packed words; recovery installs them with **zero decode**. `Get(pid)` is a
-lock-free atomic load under an epoch guard; an unloaded slot demand-loads via
-the buffer pool (§4), publishes the resident tag, and returns the frame.
+Generation replacement, import, split, maintenance and checkpoint rebase all
+publish through `PublicationCoordinator`. Cache readiness changes only a
+representation's residency and does not independently mutate the logical root.
 
-**Segment recycling** runs in the epoch deleter, after all guards that could
-see the page have drained: clear the slot, decrement the segment's live
-count, and if it hits zero, atomically swap the segment pointer to null and
-epoch-retire the old segment. A reader that loads a null segment or an empty
-slot treats the PID as gone and retries from the root, never wrong data.
-
-**On-disk format** (all records are `PageStore` allocations, self-describing,
-CRC-protected): a **segment image** per dirty segment per snapshot (header +
-the raw packed-word array, ~8 KB for 1024 slots); a **segment directory
-image**, rewritten whenever any segment's generation changes, mapping
-`seg_idx -> (generation, image_addr, image_len)`; and a **commit anchor**
-(fixed size, A/B double-buffered at reserved IU 0/1) holding
-`{snapshot_seq, root_pid, last_applied_slot, next_page_id, segment_slots,
-segdir_addr/len/crc}` plus a CRC. The anchor is the commit point; its small
-fixed size makes the A/B swap atomic on every backend, and a snapshot always
-writes to the slot *not* named by the current highest-seq anchor, so a torn
-write never destroys the last committed one.
-
-**Binary layout** (BlockPageStore, see §2.2): The anchor, segment images,
-and segment directory are stored as binary blobs at addresses allocated by
-`SpaceAllocator` within `.blk-*` files. The anchor occupies IU slots 0 and 1
-in block 0.
-
-**Text layout** (TextPageStore, see §2.1): The anchor is stored as
-`anchor-A.ck`/`anchor-B.ck` text files. Segment images are `seg-{N}.ck` text
-files. The segment directory is a `segdir.ck` text file. A `manifest.ck` file
-maps addresses to filenames. All are human-readable for debugging.
-
-**Snapshot** integrates with §6's pipeline: write dirty frames and assign
-durable addresses, serialize each dirty segment (pack `unloaded` or the
-frame's new durable address per slot), rewrite the directory if any
-generation changed, `flush()` (frames + images + directory durable), then
-write the commit anchor and `flush()` again (the actual commit point), then
-clear dirty bits and schedule old-image cleanup. **Recovery** picks the
-highest-`snapshot_seq` anchor with a valid CRC, reads the segment directory
-it points to, and for each entry reads that segment's image and installs its
-packed words directly; no page bytes are read eagerly.
-
-**Old image cleanup** uses a two-generation rule: after anchor `N` commits,
-images referenced only by anchors `< N-1` are freed. This tolerates a crash
-during cleanup, since the still-referenced generation is always intact.
-
-**Concurrency invariants:** the Flusher (and the epoch reclaimer it drives)
-are the only slot writers; no CAS needed for slot stores, readers only
-atomic-load. Segment install/retire is a single atomic store/CAS. Slot
-clearing and segment retire happen in the epoch deleter, after all
-overlapping reader guards drain.
-
----
+**I4 — Publication safety:** a stale expected identity cannot clear or replace a
+newer page. Metadata summaries and mapping contents belong to the same
+published state.
 
 ## 9. Garbage Collection
 
-Logical retention GC folds tombstones and stale versions during snapshot
-preparation, gated by `gc_slot = min(snapshot_slot, safe_slot)` (§7). There
-is no standalone resident-tree sweep; `set_gc_watermark` advances the floor
-and the next snapshot does the folding.
+Logical tombstone/version retention follows the external floor. Physical
+reclamation follows real ownership and backend proof:
 
-1. **Tombstones.** A tombstone cell written at slot `t` is folded during
-   snapshot preparation when `t <= gc_slot`. The snapshot walk inspects
-   clean resident `LeafBase` pages and rebuilds only those containing
-   eligible tombstones via `resolve_leaf_chain_for_rebuild`.
-2. **Stale root versions.** A `RootVersion` with `refcount == 0` and
-   `last_applied_slot < gc_slot` is retired, and pages reachable only from
-   it are freed.
+- Epoch retirement frees source nodes/descriptors only after protected readers
+  leave, while independently shared cell payloads may outlive the source.
+- Root/page/array/frame retirement waits for old views, output handles and cache
+  owners. A logical retirement marker does not itself free allocation bytes.
+- Local extent release waits for exclusion and retained backend owners.
+- Chunk collection requires candidate identity, process/catalog authority,
+  reference protection and confirmed drain/delete. Shared mirror capacity is
+  deduplicated by canonical physical identity.
 
-Triggers: the maintenance loop calls `set_gc_watermark` on every tick
-(default ~50ms) with `group_snapshot_slot` and `group_safe_slot`. Snapshot
-preparation folds eligible tombstones whenever a snapshot runs (either the
-periodic persist-snapshot cadence or a `compact_sparse_blocks` pass, §2.5).
-Physical block reclamation is handled by `compact_sparse_blocks` on a
-separate cadence (`merge_gc_interval_ms`, default 0 = disabled). EBR
-remains automatic memory reclamation for retired pages.
-
-`MergeGcStats` reports blocks selected, pages relocated, bytes relocated,
-and blocks deleted from `compact_sparse_blocks`. Tombstone folding counts
-are not separately reported; the snapshot's `pages_written` reflects
-rebuilt leaves.
-
----
+Bounded host maintenance drives these queues when writes stop. A retained user
+handle can legitimately delay convergence; diagnostics expose that reason and
+the age of unfinished work instead of reporting those bytes as already free.
 
 ## 10. New-Member Install Flow
 
-For a new or far-lagging member:
+The sender captures a stable durable/logical prefix and streams native frames
+or portable entries. The receiver stages and validates an independent
+generation, commits its durable root, then replays the consensus WAL suffix.
+Installation failure preserves the prior generation. Range rebuild and split
+handoff honor their half-open range and captured slot floor; child writes do
+not invalidate the parent's retained captured owners.
 
-```
-1. Leader picks a snapshot slot S (>= its last_applied_slot).
-2. Leader engine: snapshot_export() streams chunks via the snapshot service.
-   S = leader's last_applied_slot at export time (always the latest durable state).
-3. New member engine: snapshot_import(stream) builds + swaps in the tree at S.
-4. New member sets contiguous_applied = S, then streams consensus WAL
-   (S+1, current_max_chosen] and applies via apply(slot, batch).
-5. compare(view) against an existing learner -> empty diff (parity gate).
-```
+## 11. Root and Physical Metrics
 
-Resumability and throttling are handled by the snapshot module above the
-engine; crowdb-tree only provides deterministic, chunk-boundary-stable export
-and atomic import (§6.1).
+`TreeStatsSnapshot` reports incrementally maintained logical contributions with
+version/commit identity. Known and unknown page sizes remain explicit: an
+unmaterialized overlay does not invent exact encoded bytes. Dirty, reloadable,
+checkpoint-pending and merge-candidate membership have separate meanings.
 
-**Steady-state write + periodic durability, for reference:**
+The durable root summary is fenced by root version and covered slot. It excludes
+later WAL/L0 writes; unknown child summaries propagate unknown rather than zero.
+Live keys/value bytes exclude tombstones and overwritten values. Overflow
+payloads contribute logical length, while overflow frames contribute structural
+capacity.
 
-```
-learner.learn(entry) -> engine.apply(slot, batch)         // in-memory deltas
-... every snapshot_every_slots / dirty threshold ...
-engine.persist_snapshot() -> last_applied_slot advances    // durable + new RootVersion
-learner observes safe_slot/snapshot_slot advance -> engine.set_gc_watermark(...)
-background -> engine.compact_sparse_blocks()                // block relocation + deletion
-```
-
-These flows require no change to the learner's public contract beyond the
-async `KVEngine` surface (`design-crowdb-tree.md §3`). `InMemKV` implements the
-same methods (snapshot/GC are near-no-ops in memory) so tests exercise the
-same code paths on both engines.
-## Root metrics
-
-The tree publishes a cached summary for the selected durable root. Its
-`root_version` and `covered_slot` fence the observation; WAL and memtable
-entries after that slot are excluded. An empty durable root reports exact zero
-live keys and bytes while retaining its reachable root page cost. A tree that
-has no selected durable root reports `exact = false`; its numeric fields are
-diagnostic only and must not authorize a size based split or move.
-
-`live_kv`, `live_key_bytes`, `live_value_bytes`, and `live_logical_bytes` count
-the current visible value once. Tombstones and overwritten versions do not
-count. Overflow values contribute their logical length; their pointer cells and
-overflow frames are structural storage. `reachable_leaf_pages`,
-`reachable_inner_pages`, and `reachable_overflow_pages` classify pages reachable
-from the serving root. `reachable_page_capacity_bytes` is page capacity, kept
-separate from logical data bytes. The summary is replaced only after the page,
-directory, and root anchor have passed their durability barrier and is rebuilt
-from the selected root during reopen.
-
-The current unpublished frame format keeps `format_version = 1`; its 128-byte
-header reserves the summary fields for every leaf and inner page. Inner-page
-fields are the sum of the reachable child summaries, and the page CRC covers
-those fields. A root is exact only when every reachable child summary is exact;
-an unavailable or partial child never contributes as zero. This is an internal
-layout extension of the existing format, not a version-2 compatibility path.
+Physical backing metrics expose scope identity for host deduplication. A
+metrics-only sampler may outlive the Tree without pinning backend or page
+owners. Reference-reason byte counts overlap and must not be summed as physical
+capacity. Ordinary collectors use incremental state; a complete graph/owner
+reconciliation is an explicit diagnostic with completeness and quiescence
+reported in its result.

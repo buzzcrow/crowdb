@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::client_data::fixture_client;
-use crowdb_kv_client::ReadMode;
+use crowdb_paxos_kv_client::ReadMode;
 
 const STORE_ID: u64 = 1;
 const GROUP_ID: u64 = 1;
@@ -107,18 +107,20 @@ async fn scan_keys_only_and_scan_count() {
 async fn scan_deadline_returns_partial_result() {
     let client = fixture_client().await;
 
-    // Populate enough keys that the engine merge loop's periodic deadline
-    // check (every 1024 entries) fires mid-scan.
+    // Keep the full scan corpus while each setup proposal fits the native
+    // tree's reserved replay window.
     let items: Vec<_> = (0..3000u64)
-        .map(|i| crowdb_kv_client::BatchOp::Put {
+        .map(|i| crowdb_paxos_kv_client::BatchOp::Put {
             key: bytes::Bytes::from(format!("k{i:05}")),
             value: bytes::Bytes::from_static(b"v"),
         })
         .collect();
-    client
-        .batch_write(STORE_ID, GROUP_ID, &items)
-        .await
-        .expect("populate scan");
+    for batch in items.chunks(64) {
+        client
+            .batch_write(STORE_ID, GROUP_ID, batch)
+            .await
+            .expect("populate scan");
+    }
 
     // No deadline: full scan returns all 3000 entries.
     let full = client

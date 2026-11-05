@@ -113,7 +113,7 @@ pub(super) fn selected(name: &str, args: &StartArgs) -> Result<bool> {
         }
         if args.port_base.is_some() {
             return Err(invalid(
-                "host networking uses port 9090; --port-base is for a local bridge",
+                "host networking uses the default Console Web port; --port-base is for a local bridge",
             ));
         }
         return Ok(true);

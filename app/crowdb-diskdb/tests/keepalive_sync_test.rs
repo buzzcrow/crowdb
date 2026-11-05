@@ -32,7 +32,10 @@ async fn owner_without_bind_does_not_publish_disk_group() {
         .set_owner(RACK_ID, NODE_ID, DG_ID, INSTANCE_ID + 1, u64::MAX)
         .await;
     assert!(
-        matches!(replacement, Err(crowdb_kv_client::Error::OwnerConflict { .. })),
+        matches!(
+            replacement,
+            Err(crowdb_paxos_kv_client::Error::OwnerConflict { .. })
+        ),
         "different owner must be rejected"
     );
 

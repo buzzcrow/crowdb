@@ -34,7 +34,7 @@ TEST(ExternalOwnership, EmptyValueReleasesItsTransferredOwner)
     int  drops = 0;
     auto op    = external(&drops, nullptr, 0);
     ASSERT_EQ(ct_apply_batch_external(tree, 1, &op, 1), 0);
-    EXPECT_EQ(drops, 0);
+    EXPECT_EQ(drops, 1);
     ct_close(tree);
     EXPECT_EQ(drops, 1);
 }
@@ -64,4 +64,66 @@ TEST(ExternalOwnership, InvalidLaterOperationReleasesEveryTransferredOwner)
     for (int count : drops) {
         EXPECT_EQ(count, 1);
     }
+}
+
+TEST(ExternalOwnership, NullTreeAndInvalidValueReleaseTransferredOwners)
+{
+    int  drops = 0;
+    auto op    = external(&drops, nullptr, 12);
+    EXPECT_NE(ct_apply_batch_external(nullptr, 1, &op, 1), 0);
+    EXPECT_EQ(drops, 1);
+    ct_options options{};
+    ct_tree   *tree = nullptr;
+    ASSERT_EQ(ct_open(&options, &tree), 0);
+    EXPECT_NE(ct_apply_batch_external(tree, 1, &op, 1), 0);
+    EXPECT_EQ(drops, 2);
+    ct_close(tree);
+    EXPECT_EQ(drops, 2);
+}
+
+TEST(ExternalOwnership, ControlledCopyDoesNotRetainOrAliasUnknownPayload)
+{
+    ct_options options{};
+    ct_tree   *tree = nullptr;
+    ASSERT_EQ(ct_open(&options, &tree), 0);
+    std::array<uint8_t, 128> payload{};
+    payload.fill('v');
+    int  drops = 0;
+    auto op    = external(&drops, payload.data() + 32, 64);
+    ASSERT_EQ(ct_apply_batch_external(tree, 1, &op, 1), 0);
+    EXPECT_EQ(drops, 1);
+    payload.fill('x');
+    int32_t  found = 0;
+    uint64_t slot  = 0;
+    ct_buf   value{};
+    ASSERT_EQ(ct_get(tree, op.key, op.key_len, &found, &slot, &value), 0);
+    EXPECT_EQ(found, 1);
+    EXPECT_EQ(slot, 1U);
+    EXPECT_EQ(std::string(reinterpret_cast<const char *>(value.data), value.len), std::string(64, 'v'));
+    ct_free_buf(&value);
+    ct_close(tree);
+    EXPECT_EQ(drops, 1);
+}
+
+TEST(ExternalOwnership, ControlledCopyAllocationFailureReleasesInput)
+{
+    ct_options options{};
+    ct_tree   *tree = nullptr;
+    ASSERT_EQ(ct_open(&options, &tree), 0);
+    int           drops = 0;
+    const uint8_t value = 'v';
+    auto          op    = external(&drops, &value, std::numeric_limits<size_t>::max());
+    EXPECT_NE(ct_apply_batch_external(tree, 1, &op, 1), 0);
+    EXPECT_EQ(drops, 1);
+    ct_close(tree);
+    EXPECT_EQ(drops, 1);
+}
+
+TEST(ExternalOwnership, OwnedHandleIsConsumedWhenTreeIsNull)
+{
+    ct_write_handle *handle = nullptr;
+    ct_write_ptrs    pointers{};
+    ASSERT_EQ(ct_alloc(nullptr, 3, 1024, &handle, &pointers), 0);
+    ASSERT_NE(handle, nullptr);
+    EXPECT_NE(ct_apply_put_owned(nullptr, 1, handle), 0);
 }

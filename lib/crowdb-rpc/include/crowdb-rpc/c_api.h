@@ -244,6 +244,8 @@ void crowdb_rpc_client_attach(crowdb_rpc_client_t client, crowdb_rpc_conn_t conn
 
 // Completion callback — invoked on the C++ I/O thread when the response
 // arrives or on error. Must be O(1) and non-blocking.
+// Takes ownership of each non-null buffer and must release it with
+// crowdb_rpc_buffer_release after use.
 typedef void (*crowdb_rpc_on_complete)(uint64_t request_id, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
                                        crowdb_rpc_status status, void *user_data);
 

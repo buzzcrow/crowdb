@@ -4,7 +4,8 @@
 //! Normal three-node storage prerequisites shared by public Console clients.
 
 use super::native_context::TestNativeContext;
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
+use crowdb_protocol::port::ports::DISKDB_HTTP_BASE;
 use reqwest::Method;
 use serde_json::{json, Value};
 use std::{collections::BTreeSet, time::Duration};
@@ -121,12 +122,12 @@ async fn verify_manual_metadata(context: &TestNativeContext) {
                 0,
                 0,
                 crowdb_console_shared::deployment::preparation::DEFAULT_PREPARATION_KEY,
-                crowdb_kv_client::ReadMode::Linearizable,
+                crowdb_paxos_kv_client::ReadMode::Linearizable,
                 None
             )
             .await
             .unwrap(),
-        crowdb_kv_client::GetOutcome::NotFound,
+        crowdb_paxos_kv_client::GetOutcome::NotFound,
     ));
 }
 
@@ -149,7 +150,7 @@ pub(super) async fn disks(context: &TestNativeContext, units: [u64; 3]) {
 
 async fn wait_diskdb(context: &TestNativeContext) {
     for node in 1..=3 {
-        ready(context, node, 7101, "/ready").await;
+        ready(context, node, DISKDB_HTTP_BASE, "/ready").await;
     }
     let registry = ServiceRegistryClient::from_shared(context.kv.clone());
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -161,7 +162,7 @@ async fn wait_diskdb(context: &TestNativeContext) {
                     context
                         .addresses
                         .iter()
-                        .any(|address| value.rpc_endpoint == format!("{address}:7102"))
+                        .any(|address| value.rpc_endpoint == format!("{address}:7100"))
                 })
                 .flat_map(|(_, value)| {
                     value

@@ -14,7 +14,7 @@ use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
 use crowdb_chunkdb::task::{TaskExecutor, TaskManager, TaskStore};
 use crowdb_chunkdb::topology::build_snapshot;
 use crowdb_common::metrics::MetricsRegistry;
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use crowdb_protocol::chunk_task::{ChunkTaskValue, RepairTargetCheckpoint, RepairTargetPhase};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkType, Strip, StripType};
 use crowdb_protocol::common::{ChunkId, InstanceValue};

@@ -4,7 +4,7 @@
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_diskio_client::{DiskId, DiskioClient, DiskioClientConfig, SegmentTarget};
-use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{Chunk, Location, QueryChunkRequest};
 use crowdb_protocol::diskdb::rpc::Segment;
 use std::sync::Arc;

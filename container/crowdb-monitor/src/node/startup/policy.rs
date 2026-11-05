@@ -108,7 +108,6 @@ pub fn resolve_node_policy_with_port_offset(
 fn shift_service_ports(services: &mut [SetupService], offset: u16) -> io::Result<()> {
     for service in services {
         for port in [
-            &mut service.listeners.listen_port,
             &mut service.listeners.http_port,
             &mut service.listeners.rpc_port,
             &mut service.listeners.s3_port,

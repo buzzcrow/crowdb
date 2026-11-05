@@ -4,6 +4,7 @@
 set -euo pipefail
 [[ $(uname -sm) == "Linux x86_64" ]] || { echo "Linux amd64 build host required; macOS VM backend is reserved" >&2; exit 1; }
 cd "$(git rev-parse --show-toplevel)"
+python tools/ports/generate.py --check
 source_tree=$(python container/oci-image/source_tree.py)
 case "${CROWDB_KEEP_DEBUG_INFO:-0}" in
     0) cmake_debug_args=() ;;
@@ -14,11 +15,11 @@ case "${CROWDB_KEEP_DEBUG_INFO:-0}" in
     *) echo 'CROWDB_KEEP_DEBUG_INFO must be 0 or 1' >&2; exit 1 ;;
 esac
 # Build on the host, reusing the existing Cargo, CMake and npm artifacts.
-cargo build --locked --release -p crowdb-kv-client --features ffi
+cargo build --locked --release -p crowdb-paxos-kv-client --features ffi
 cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release "${cmake_debug_args[@]}"
 cmake --build app/crowdb-diskio/build --parallel "$(getconf _NPROCESSORS_ONLN)" --target crowdb-diskio
-cargo build --locked --release --features crowdb-kv-client/ffi \
-    -p crowdb-kv-client -p crowdb-monitor -p crowdb-kv-server -p crowdb-diskdb \
+cargo build --locked --release --features crowdb-paxos-kv-client/ffi \
+    -p crowdb-paxos-kv-client -p crowdb-monitor -p crowdb-paxos-kv-server -p crowdb-diskdb \
     -p crowdb-chunkdb -p crowdb-chunk-kv-server \
     -p crowdb-access-server -p crowdb-web
 (cd app/crowdb-web/ui && npm ci --prefer-offline && npm run build)

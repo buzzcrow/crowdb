@@ -5,10 +5,10 @@
 //! Election, server packaging and persisted KV recovery belong to container E2E.
 
 use crowdb_diskdb::ddb_kv_client::DdbKvClient;
-use crowdb_kv::cluster::group::PxGroup;
-use crowdb_kv::cluster::kv_server::KvServer;
-use crowdb_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv::cluster::group::PxGroup;
+use crowdb_paxos_kv::cluster::paxos_kv_server::PaxosKvServer;
+use crowdb_paxos_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient, ServiceRegistryClient};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -40,8 +40,8 @@ impl TestMetadata {
         }
     }
 
-    fn client(&self) -> CrowdbKvClient {
-        let client = CrowdbKvClient::new(ClientConfig::new(vec![]));
+    fn client(&self) -> PaxosKvClient {
+        let client = PaxosKvClient::new(ClientConfig::new(vec![]));
         client.seed_leader(0, 0, self.group0_leader_endpoint.clone());
         client.seed_leader(0, 1, self.group1_leader_endpoint.clone());
         client

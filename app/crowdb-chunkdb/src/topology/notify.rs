@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use super::{build_snapshot, TopologyCache, CHUNKDB_WATCH_PREFIXES, G0_GROUP, G0_STORE};
-use crowdb_kv_client::{HardwareClient, WatchNotifyClient};
+use crowdb_paxos_kv_client::{HardwareClient, WatchNotifyClient};
 
 /// chunkdb-side watch/notify handler for topology updates.
 pub struct NotifyHandler {

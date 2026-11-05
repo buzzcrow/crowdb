@@ -6,7 +6,7 @@
 mod slot_groups;
 
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
-use crowdb_kv_client::{ChunkSlotMapClient, RangeBindingClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, RangeBindingClient, ServiceRegistryClient};
 use crowdb_protocol::chunk_slot::{ChunkSlot, ChunkSlotBootstrap, ChunkStorageGroup};
 use crowdb_protocol::chunkdb::rpc::AllocateChunkRequest;
 use crowdb_protocol::fb::FBMsgType;

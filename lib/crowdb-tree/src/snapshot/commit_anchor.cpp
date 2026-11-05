@@ -11,7 +11,7 @@ namespace crowdb::tree::snapshot
 {
 namespace
 {
-constexpr size_t kAnchorFixedFields = 4 + 4 + (8 * 4) + 4 + 8 + 4 + 4 + 4 + 8 + 8 + 4;
+constexpr size_t kAnchorFixedFields = 4 + 4 + (8 * 4) + 4 + 8 + 4 + 4 + 8 + 8 + 4;
 
 void put_u32(std::vector<uint8_t> *out, uint32_t v)
 {
@@ -66,23 +66,22 @@ void encode_anchor(const CommitAnchor &anchor, uint64_t slot_bytes, std::vector<
     out->resize(slot_bytes, 0); // zero pad to the IU-aligned slot size
 }
 
-namespace
+bool decode_anchor(std::span<const uint8_t> input, CommitAnchor *out)
 {
-bool decode_anchor(const uint8_t *buf, CommitAnchor *a)
-{
-    if (get_u32(buf) != kAnchorMagic) {
+    if (input.size() < kAnchorFixedFields || out == nullptr) {
+        return false;
+    }
+    const auto *buf = input.data();
+    if (get_u32(buf) != kAnchorMagic || get_u32(buf + 4) != kFormatVersion) {
         return false;
     }
     uint32_t stored_crc = get_u32(buf + (kAnchorFixedFields - 4));
     if (crowdb::common::crc32c(buf, kAnchorFixedFields - 4) != stored_crc) {
         return false;
     }
-    a->magic          = get_u32(buf);
-    a->format_version = get_u32(buf + 4);
-    if (a->format_version != kFormatVersion) {
-        // Clean-break format: no older format to accept.
-        return false;
-    }
+    auto *a              = out;
+    a->magic             = get_u32(buf);
+    a->format_version    = get_u32(buf + 4);
     a->snapshot_seq      = get_u64(buf + 8);
     a->root_page_id      = get_u64(buf + 16);
     a->last_applied_slot = get_u64(buf + 24);
@@ -95,7 +94,6 @@ bool decode_anchor(const uint8_t *buf, CommitAnchor *a)
     a->inner_count       = get_u64(buf + 68);
     return true;
 }
-} // namespace
 
 Status read_valid_anchors(const PageStore &store, uint32_t iu, std::vector<CommitAnchor> *out)
 {
@@ -115,7 +113,7 @@ Status read_valid_anchors(const PageStore &store, uint32_t iu, std::vector<Commi
             return status;
         }
         CommitAnchor a;
-        if (!decode_anchor(buf.data(), &a)) {
+        if (!decode_anchor(buf, &a)) {
             continue;
         }
         out->push_back(a);

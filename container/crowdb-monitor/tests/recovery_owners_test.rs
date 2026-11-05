@@ -5,7 +5,7 @@
 mod node_setup;
 
 use crowdb_console_shared::{ops::OpContext, ConsoleConfig};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::{
     common::ReplicaValue,
     kv_membership::GroupMember,
@@ -28,7 +28,7 @@ async fn installing_membership_authorizes_catchup_routes_before_replica_promotio
     let authority = node_setup::TestAuthority::start(root.path(), &request).await;
     authority.kv.refresh_topology().await.unwrap();
     assert_eq!(authority.registry.nodes[0].node_id, 2);
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+    let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
         authority.binding.management_seeds.clone(),
     )));
     let ctx = OpContext::with_shared_client_preserving_hint(

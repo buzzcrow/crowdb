@@ -19,12 +19,11 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
     const value = /^\d+$/.test(suffix) ? BigInt(suffix) : 0n;
     return value > maximum ? value : maximum;
   }, 0n) + 1n));
-  const base = { chunkdb: 43200, diskio: 44000, 'chunk-kv': 45100, 'access-server': 9092 }[kind];
-  const [httpPort, setHttpPort] = useState(String(base));
-  const [rpcPort, setRpcPort] = useState(String(kind === 'diskio' ? base : base + 100));
-  const [s3Port, setS3Port] = useState('9091');
-  const [datasetPort, setDatasetPort] = useState('9093');
-  const [healthPort, setHealthPort] = useState('9094');
+  const [httpPort, setHttpPort] = useState('');
+  const [rpcPort, setRpcPort] = useState('');
+  const [s3Port, setS3Port] = useState('');
+  const [datasetPort, setDatasetPort] = useState('');
+  const [healthPort, setHealthPort] = useState('');
   const [diskGroup, setDiskGroup] = useState(String(diskGroups[0]?.id ?? ''));
   const [store, setStore] = useState(String(stores.find(store => String(store.store_id) !== '0')?.store_id ?? stores[0]?.store_id ?? ''));
   const firstGroup = stores.find(entry => String(entry.store_id) === store)?.groups.find(entry => String(entry.group_id) !== '0');

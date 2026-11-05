@@ -7,7 +7,7 @@ use super::{corrupt, storage_error, StreamChunkRecordSnapshot, StreamChunkRecord
 use crate::{ChunkId, Result, StreamError};
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, GetOutcome};
+use crowdb_paxos_kv_client::{BatchOp, GetOutcome};
 use crowdb_protocol::chunk_stream::{StreamName, StreamProcessLease};
 use serde::{Deserialize, Serialize};
 use std::{

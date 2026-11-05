@@ -46,11 +46,7 @@ export function validNodeSetup(choices: NodeSetupChoices): boolean {
         ports.add(Number(value));
       }
     }
-    if (service.kind === 'diskdb' && service.listeners.rpc_port != null) {
-      const base = service.listeners.rpc_port;
-      if (base > 65533 || ports.has(base + 1) || ports.has(base + 2)) return false;
-      ports.add(base + 1); ports.add(base + 2);
-    }
+
   }
   const storage = choices.storage;
   if (storage.mode === 'diskless') return true;

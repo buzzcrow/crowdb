@@ -1,12 +1,11 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// PT6c-5.4: writer-driven eviction of clean resident bases. An
-// evicted leaf re-tags its mapping slot `unloaded` and epoch-retires the page;
-// the next access demand-loads it. Run under TSan for the eviction-vs-reader
-// race (epoch-deferred frame reuse).
+// Clean cache eviction preserves the immutable publication and independent
+// read owners; the next uncached access reloads the same backing.
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
+#include "runtime_tree_access.h"
 
 #include <gtest/gtest.h>
 
@@ -44,6 +43,17 @@ void fill_buf(Crowdbtree *t, int K, std::map<std::string, std::string> *oracle)
     }
 }
 
+void warm_cache(Crowdbtree &tree, const std::map<std::string, std::string> &oracle)
+{
+    for (const auto &[key, value] : oracle) {
+        GetView    result;
+        const auto status = RuntimeTreeAccess_for_tests::core(tree).get(Slice(key), &result);
+        ASSERT_TRUE(status.ok()) << status.to_string();
+        ASSERT_TRUE(result.found()) << key;
+        ASSERT_EQ(result.value().to_string(), value);
+    }
+}
+
 // Counts read_at calls so a test can observe whether a specific page was
 // demand-loaded (evicted, then reloaded) vs. still resident (plan-tree #17
 // recency-ranked eviction).
@@ -77,14 +87,15 @@ TEST(Eviction, EvictedLeavesFreeMemoryAndReloadCorrectly)
     std::map<std::string, std::string> oracle;
     fill_buf(&t, 200, &oracle);
     ASSERT_TRUE(t.snapshot(nullptr).ok()); // all reachable pages now clean
+    ASSERT_NO_FATAL_FAILURE(warm_cache(t, oracle));
 
-    uint32_t before  = t.buffer_pool()->stats().used;
+    uint32_t before  = t.stats().buffer_pool_used;
     size_t   evicted = t.evict_clean_leaves(2); // keep at most 2 resident leaves
     EXPECT_GT(evicted, 0U);
 
     // No reader guards are open, so the epoch manager reclaims the retired pages
     // synchronously and their frames return to the pool: residency drops.
-    uint32_t after = t.buffer_pool()->stats().used;
+    uint32_t after = t.stats().buffer_pool_used;
     EXPECT_LT(after, before);
 
     // Every value is still readable — evicted leaves demand-load on access.
@@ -113,6 +124,7 @@ TEST(Eviction, EvictIsIdempotentAndSkipsDirty)
     EXPECT_EQ(t.evict_clean_leaves(0), 0U);
 
     ASSERT_TRUE(t.snapshot(nullptr).ok()); // pages become clean
+    ASSERT_NO_FATAL_FAILURE(warm_cache(t, oracle));
     size_t first = t.evict_clean_leaves(1);
     EXPECT_GT(first, 0U);
     // A second pass with everything already unloaded evicts nothing more.
@@ -134,6 +146,13 @@ TEST(Eviction, ConcurrentReadersWhileEvicting)
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;
     opt.frame_bytes      = 4096;
+    // Six simultaneous point windows each prepay the supported 64 MiB
+    // overflow value plus decoder/control storage. Quota exhaustion is
+    // covered separately; this case exercises readers racing cache eviction.
+    TreeRuntimeOptions runtime;
+    runtime.limits.routing_bytes             = 1024ULL * 1024 * 1024;
+    opt.runtime_binding.limits.routing_bytes = 768ULL * 1024 * 1024;
+    ASSERT_TRUE(TreeRuntime::create(runtime, &opt.runtime).ok());
     Crowdbtree t(opt);
 
     const int                          K = 250;
@@ -148,11 +167,12 @@ TEST(Eviction, ConcurrentReadersWhileEvicting)
     for (int r = 0; r < 6; ++r) {
         readers.emplace_back([&, r] {
             std::mt19937 rng(9000 + r);
-            std::string  v;
-            uint64_t     s;
             while (!stop.load(std::memory_order_relaxed)) {
-                int i = static_cast<int>(rng() % K);
-                if (!t.get(Slice(make_key(i)), &s, &v) || v != "val" + std::to_string(i)) {
+                int        i = static_cast<int>(rng() % K);
+                GetView    result;
+                const auto status = RuntimeTreeAccess_for_tests::core(t).get(Slice(make_key(i)), &result);
+                if (!status.ok() || !result.found() || result.value().to_string() != "val" + std::to_string(i)) {
+                    ADD_FAILURE() << "reader " << r << ", key " << i << ": " << status.to_string();
                     fail.store(true);
                     return;
                 }
@@ -187,7 +207,8 @@ TEST(Eviction, RecentlyTouchedLeafSurvivesEvictionOverColderOnes)
 
     std::map<std::string, std::string> oracle;
     fill_buf(&t, 200, &oracle);
-    ASSERT_TRUE(t.snapshot(nullptr).ok()); // clean + resident, touch order == snapshot's DFS walk
+    ASSERT_TRUE(t.snapshot(nullptr).ok());
+    ASSERT_NO_FATAL_FAILURE(warm_cache(t, oracle));
 
     // Re-touch the very first key's leaf so it becomes the *most* recently
     // touched -- recency ranking should keep it resident longer than leaves
@@ -229,6 +250,7 @@ TEST(Eviction, EvictCleanInnerNeverTouchesLeaves)
     std::map<std::string, std::string> oracle;
     fill_buf(&t, 300, &oracle); // enough keys for several inner levels
     ASSERT_TRUE(t.snapshot(nullptr).ok());
+    ASSERT_NO_FATAL_FAILURE(warm_cache(t, oracle));
 
     int reads_before = store.reads.load();
     // Aggressive inner budget: keep at most 1 inner base resident. Leaves
@@ -356,13 +378,14 @@ TEST(Eviction, InstallSnapshotReclaimsResidentLeavesEvenWhenInnerAncestorWasEvic
     std::map<std::string, std::string> oracle;
     fill_buf(&t, 300, &oracle);
     ASSERT_TRUE(t.snapshot(nullptr).ok());
+    ASSERT_NO_FATAL_FAILURE(warm_cache(t, oracle));
 
     // Evict every inner base -- every leaf remains fully resident underneath
     // a now-entirely-unloaded inner chain, including the root itself.
     size_t inner_evicted = t.evict_clean_inner(0);
     EXPECT_GT(inner_evicted, 0U);
 
-    uint32_t used_before = t.buffer_pool()->stats().used;
+    uint32_t used_before = t.stats().buffer_pool_used;
     EXPECT_GT(used_before, 0U) << "every leaf should still be resident (never evicted)";
 
     // Replaces the whole live tree -- must reclaim every still-resident
@@ -372,7 +395,7 @@ TEST(Eviction, InstallSnapshotReclaimsResidentLeavesEvenWhenInnerAncestorWasEvic
     // No reader guards are open, so the epoch manager reclaims synchronously
     // (same assumption the leaf-eviction tests above rely on): only the
     // freshly-built empty root should remain resident.
-    EXPECT_EQ(t.buffer_pool()->stats().used, 1U)
-        << "install_snapshot must reclaim the old tree's still-resident leaves "
-           "even though their ancestor chain was unloaded";
+    RuntimeTreeAccess_for_tests::reclaim(t);
+    EXPECT_EQ(t.stats().buffer_pool_used, 0U) << "install_snapshot must reclaim the old tree's still-resident leaves "
+                                                 "even though their ancestor chain was unloaded";
 }

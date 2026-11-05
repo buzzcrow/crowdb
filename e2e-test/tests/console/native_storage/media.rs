@@ -4,7 +4,7 @@
 //! Trusted legacy bootstrap for freshly truncated, owned native fixture files.
 
 use super::TestNativeContext;
-use crowdb_kv_client::HardwareClient;
+use crowdb_paxos_kv_client::HardwareClient;
 use crowdb_protocol::{
     common::{DiskId, HwStatus},
     disk_storage::DiskStorageRecord,

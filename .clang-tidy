@@ -1,8 +1,10 @@
 ---
 # Suppressed checks — fix-its are unsafe or the warning source is
-# third-party macro noise. See coding SKILL.md § "C++ clang-tidy".
+# third-party macro noise.
 # These checks can change ownership, ABI, overload resolution, or hot-path
 # behavior through their fix-its; keep them visible only when reviewed locally.
+# Public member const-qualification changes C++ ABI and requires deliberate
+# interface review rather than a lint-driven conversion.
 # Fixed async completion tokens transfer heap ownership through opaque context
 # pointers. NewDeleteLeaks does not model the backend invoking their deleters;
 # completion ownership is covered by ASan and async lifetime tests instead.
@@ -24,6 +26,7 @@ Checks: >-
   -performance-unnecessary-value-param,
   -performance-move-const-arg,
   -readability-convert-member-functions-to-static,
+  -readability-make-member-function-const,
   -modernize-use-ranges,
   -modernize-avoid-c-arrays,
   -readability-non-const-parameter,

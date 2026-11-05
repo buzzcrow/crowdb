@@ -187,22 +187,28 @@ bool BufferArena::detach(Buffer *buffer)
     const auto state = buffer->ownership.load(std::memory_order_acquire);
     if (state != BufferOwnership::Available && state != BufferOwnership::CallerOwned)
         return false;
-    auto context = std::make_unique<DetachedRelease>(DetachedRelease{this, buffer->pool_index, buffer});
     entries_[buffer->pool_index].buffer.store(nullptr, std::memory_order_release);
-    buffer->pool     = nullptr;
-    buffer->free_ctx = context.release();
-    buffer->free_cb  = &BufferArena::release_detached;
+    buffer->pool             = nullptr;
+    buffer->last_release_ctx = this;
+    buffer->last_release_cb  = &BufferArena::release_detached;
     return true;
 }
 
-void BufferArena::release_detached(void *context)
+void BufferArena::release_detached(void *context, Buffer *buffer)
 {
-    const auto release = std::unique_ptr<DetachedRelease>(static_cast<DetachedRelease *>(context));
-    const auto state   = release->buffer->ownership.load(std::memory_order_acquire);
+    auto *arena = static_cast<BufferArena *>(context);
+    // The facade may already be gone. Retain the arena through descriptor
+    // destruction and the final return of its entry and outstanding credit.
+    const auto owner = std::move(buffer->pool_owner);
+    const auto index = buffer->pool_index;
+    const auto state = buffer->ownership.load(std::memory_order_acquire);
     if (state != BufferOwnership::Available && state != BufferOwnership::CallerOwned)
-        release->arena->quarantined.fetch_add(release->buffer->allocation_capacity, std::memory_order_relaxed);
-    release->arena->outstanding.fetch_sub(1, std::memory_order_release);
-    release->arena->push_entry(release->arena->unused_entries_, release->index);
+        arena->quarantined.fetch_add(buffer->allocation_capacity, std::memory_order_relaxed);
+    const auto allocator = buffer->control_allocator;
+    allocator.destroy(buffer->ref);
+    allocator.destroy(buffer);
+    arena->outstanding.fetch_sub(1, std::memory_order_release);
+    arena->push_entry(arena->unused_entries_, index);
 }
 
 } // namespace crowdb::rpc

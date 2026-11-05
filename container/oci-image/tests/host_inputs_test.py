@@ -19,8 +19,8 @@ class HostInputsTest(unittest.TestCase):
     def test_port_offset_shifts_every_host_listener_for_additional_instances(self):
         shifted = run_node.shifted_ports(1)
         self.assertEqual(shifted[0], 2223)
-        self.assertIn(10001, shifted)
-        self.assertIn(10101, shifted)
+        self.assertIn(run_node.ports.PAXOS_KV_SERVER_MGMT_BASE + 1, shifted)
+        self.assertIn(run_node.ports.PAXOS_KV_SERVER_RPC_BASE + 1, shifted)
         with self.assertRaisesRegex(ValueError, "beyond port 65535"):
             run_node.shifted_ports(65535)
 

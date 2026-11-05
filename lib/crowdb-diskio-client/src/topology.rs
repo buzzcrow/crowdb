@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crowdb_kv_client::{DiskRecord, HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{DiskRecord, HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::common::InstanceValue;
 
 use crate::{DiskId, DiskioError, DiskioResult};

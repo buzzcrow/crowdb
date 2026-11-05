@@ -6,7 +6,7 @@
 use super::{authorize, journal, Result};
 use crate::node::storage::blank;
 use crowdb_diskio_client::{DiskId, DiskioClient, DiskioClientConfig, OperationOptions, SegmentTarget};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient};
 use crowdb_protocol::{
     common::HwStatus,
     key::DiskKey,
@@ -26,7 +26,7 @@ pub(super) async fn run_with_inputs(
     let mut state = journal::status(root, id)?;
     let binding = authorize(root, &state.request).await?;
     let retirement = super::retirement(root, &binding);
-    let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(
+    let hardware = HardwareClient::new(PaxosKvClient::new(ClientConfig::new(
         binding.management_seeds.clone(),
     )));
     let record = &state.request.record;

@@ -220,6 +220,7 @@ async fn catch_up_inner(state: &mut super::WorkerState, request: &TransferCatchU
     let seed = super::RecoverySeed {
         applied_seq: state.applied_seq.load(Ordering::Acquire),
         applied_position: 0,
+        applied_end: 0,
         retry_replay_offset: state.retry_replay_offset.load(Ordering::Acquire),
         results: state.results.clone(),
         result_order: state.result_order.clone(),
@@ -264,6 +265,7 @@ async fn catch_up_inner(state: &mut super::WorkerState, request: &TransferCatchU
         .journal_durable_seq
         .store(seed.applied_seq, Ordering::Release);
     state.applied_seq.store(seed.applied_seq, Ordering::Release);
+    state.applied_end = seed.applied_end;
     state
         .applied_position
         .store(seed.applied_position, Ordering::Release);

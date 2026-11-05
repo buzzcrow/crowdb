@@ -227,4 +227,4 @@ fi
 
 echo
 echo "== all checks passed =="
-echo "next: pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server"
+echo "next: pixi run -- cargo build --release -p crowdb-cli -p crowdb-paxos-kv-server"

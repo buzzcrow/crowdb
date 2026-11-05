@@ -3,6 +3,7 @@
 
 // CT14: concurrent readers while a single writer applies/flushes/splits/merges.
 // Run under TSan/ASan to catch races and use-after-free in epoch reclamation.
+#include "btree/tree_core_access.h"
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
 
@@ -11,6 +12,7 @@
 #include <array>
 #include <atomic>
 #include <cstdio>
+#include <exception>
 #include <map>
 #include <memory>
 #include <random>
@@ -58,7 +60,7 @@ TEST(Stress, ConcurrentDemandLoadAfterRecovery)
 
     std::unique_ptr<Crowdbtree> t2;
     ASSERT_TRUE(Crowdbtree::open(opt, &t2).ok());
-    EXPECT_EQ(t2->buffer_pool()->stats().used, 0U); // nothing loaded yet
+    EXPECT_EQ(t2->stats().buffer_pool_used, 0U); // nothing loaded yet
 
     std::atomic<bool>        fail{false};
     std::vector<std::thread> readers;
@@ -81,7 +83,7 @@ TEST(Stress, ConcurrentDemandLoadAfterRecovery)
         th.join();
     }
     EXPECT_FALSE(fail.load());
-    EXPECT_GT(t2->buffer_pool()->stats().used, 0U); // demand-loaded into the pool
+    EXPECT_GT(t2->stats().buffer_pool_used, 0U); // demand-loaded into the pool
 }
 
 TEST(Stress, ConcurrentReadersSingleWriter)
@@ -184,13 +186,21 @@ TEST(Stress, ConcurrentReadersSingleWriter)
 // (run under TSan/ASan).
 TEST(Stress, ConcurrentScanDuringChurnNoCorruption)
 {
-    Config opt;
-    opt.max_delta_len    = 2;
-    opt.leaf_split_bytes = 160;
-    opt.leaf_merge_bytes = 50;
-    opt.inner_max_keys   = 8;
-    opt.inner_merge_keys = 3;
+    Config             opt;
+    TreeRuntimeOptions host;
+    // Four concurrent scans each retain a complete bounded read window.
+    host.limits.routing_bytes = 1536ULL * 1024 * 1024;
+    ASSERT_TRUE(TreeRuntime::create(host, &opt.runtime).ok());
+    opt.runtime_binding.limits.routing_bytes = 1024ULL * 1024 * 1024;
+    // A complete flush window and roots awaiting concurrent readers coexist.
+    opt.runtime_binding.limits.reclaim_bytes = 128ULL * 1024 * 1024;
+    opt.max_delta_len                        = 2;
+    opt.leaf_split_bytes                     = 160;
+    opt.leaf_merge_bytes                     = 50;
+    opt.inner_max_keys                       = 8;
+    opt.inner_merge_keys                     = 3;
     Crowdbtree t(opt);
+    const auto account = TreeCoreAccess::get(t)->binding()->account();
 
     const int         K = 300;
     std::atomic<bool> stop{false};
@@ -233,55 +243,73 @@ TEST(Stress, ConcurrentScanDuringChurnNoCorruption)
                     }
                 }
                 scans.fetch_add(1, std::memory_order_relaxed);
+                // Release the completed scan before admitting another read
+                // window; publication does not drain asynchronous retirement.
+                out.clear();
+                account->drain_retirements();
             }
         });
     }
 
-    std::mt19937 rng(43);
-    uint64_t     slot = 0;
-    for (int step = 0; step < 6000; ++step) {
-        ++slot;
-        std::string key = make_key(static_cast<int>(rng() % K));
-        if ((rng() % 4) == 0) {
-            ASSERT_TRUE(t.apply(slot, Batch{{{.key = key, .kind = OpKind::kDelete, .value = ""}}}).ok());
+    int        failed_step = -1;
+    const auto status      = [&]() -> Status {
+        std::mt19937 rng(43);
+        uint64_t     slot = 0;
+        for (int step = 0; step < 6000; ++step) {
+            failed_step = step;
+            ++slot;
+            std::string key = make_key(static_cast<int>(rng() % K));
+            Status      applied;
+            if ((rng() % 4) == 0) {
+                applied = t.apply(slot, Batch{{{.key = key, .kind = OpKind::kDelete, .value = ""}}});
+            }
+            else {
+                std::string val = "v" + std::to_string(slot);
+                applied         = t.apply(slot, Batch{{{.key = key, .kind = OpKind::kPut, .value = val}}});
+            }
+            if (!applied.ok()) {
+                return applied;
+            }
+            if ((rng() % 6) == 0) {
+                auto flushed = t.flush();
+                if (!flushed.ok()) {
+                    return flushed;
+                }
+            }
         }
-        else {
-            std::string val = "v" + std::to_string(slot);
-            ASSERT_TRUE(t.apply(slot, Batch{{{.key = key, .kind = OpKind::kPut, .value = val}}}).ok());
-        }
-        if ((rng() % 6) == 0) {
-            ASSERT_TRUE(t.flush().ok());
-        }
-    }
-    ASSERT_TRUE(t.flush().ok());
+        return t.flush();
+    }();
 
     stop.store(true);
     for (auto &th : scanners) {
         th.join();
     }
+    EXPECT_TRUE(status.ok()) << "step=" << failed_step << " " << status.to_string();
     EXPECT_FALSE(bad.load());
     EXPECT_GT(scans.load(), 0);
 }
 
-// plan-tree #8: snapshot_view() no longer holds write_mutex_ (epoch guard
-// only), walking L1 via the same right_sibling technique as scan(). This
-// hammers snapshot_view() concurrently with heavy split/merge/flush churn and
-// checks the invariants that must hold for any torn/mid-mutation snapshot:
-// sorted order, no duplicate keys, well-formed values, and that at_slot is a
-// valid *lower bound* (every key/value the snapshot's own get() resolves to
-// is consistent with some slot <= the highest slot applied so far -- entries
-// may run ahead of at_slot, per the at_slot-captured-before-the-walk
-// argument in snapshot_view()'s header comment, but must never show a value
-// that couldn't have existed at any real point in time).
+// Four viewers retain complete L1 snapshots while one writer applies, flushes,
+// splits and merges. Every snapshot must stay sorted and contain only values
+// from successful writes, including when a handoff publishes several ranges.
 TEST(Stress, ConcurrentSnapshotViewDuringChurnNoCorruption)
 {
-    Config opt;
-    opt.max_delta_len    = 2;
-    opt.leaf_split_bytes = 160;
-    opt.leaf_merge_bytes = 50;
-    opt.inner_max_keys   = 8;
-    opt.inner_merge_keys = 3;
+    Config             opt;
+    TreeRuntimeOptions host;
+    // Four simultaneous snapshot materializers each own a complete bounded
+    // read window. Keep the original concurrency under an explicit host quota.
+    host.limits.routing_bytes = 1536ULL * 1024 * 1024;
+    ASSERT_TRUE(TreeRuntime::create(host, &opt.runtime).ok());
+    opt.runtime_binding.limits.routing_bytes = 1024ULL * 1024 * 1024;
+    // Keep the complete flush window funded while old views retire.
+    opt.runtime_binding.limits.reclaim_bytes = 128ULL * 1024 * 1024;
+    opt.max_delta_len                        = 2;
+    opt.leaf_split_bytes                     = 160;
+    opt.leaf_merge_bytes                     = 50;
+    opt.inner_max_keys                       = 8;
+    opt.inner_merge_keys                     = 3;
     Crowdbtree t(opt);
+    const auto account = TreeCoreAccess::get(t)->binding()->account();
 
     const int             K = 300;
     std::atomic<bool>     stop{false};
@@ -289,64 +317,93 @@ TEST(Stress, ConcurrentSnapshotViewDuringChurnNoCorruption)
     std::atomic<bool>     bad{false};
     std::atomic<uint64_t> max_slot_seen{0};
 
-    std::vector<std::thread> viewers;
+    std::array<std::exception_ptr, 4> failures;
+    std::vector<std::thread>          viewers;
     viewers.reserve(4);
-    for (int r = 0; r < 4; ++r) {
+    for (auto &failure : failures) {
         viewers.emplace_back([&] {
-            while (!stop.load(std::memory_order_relaxed) && !bad.load(std::memory_order_relaxed)) {
-                auto snap = t.snapshot_view();
-                if (snap == nullptr) {
-                    bad.store(true);
-                    return;
-                }
-                uint64_t    ceiling = max_slot_seen.load(std::memory_order_acquire);
-                const auto &entries = snap->entries();
-                for (size_t i = 0; i < entries.size(); ++i) {
-                    if (i > 0 && !(Slice(entries[i - 1].key).compare(Slice(entries[i].key)) < 0)) {
-                        bad.store(true); // not strictly increasing -> duplicate or out of order
-                        return;
-                    }
-                    CellView v{Slice(entries[i].cell)};
-                    // Every applied value/tombstone carries a slot that was
-                    // real at some point; it can never exceed the highest
-                    // slot any apply() call had returned from so far.
-                    if (v.slot() > ceiling + 1) { // +1: benign race with the counter's own update below
+            try {
+                while (!stop.load(std::memory_order_relaxed) && !bad.load(std::memory_order_relaxed)) {
+                    auto snap = t.snapshot_view();
+                    if (snap == nullptr) {
                         bad.store(true);
                         return;
                     }
-                    if (!v.is_tombstone() && (v.value().empty() || v.value().data()[0] != 'v')) {
-                        bad.store(true); // corrupted value
-                        return;
+                    uint64_t    ceiling = max_slot_seen.load(std::memory_order_acquire);
+                    const auto &entries = snap->entries();
+                    for (size_t i = 0; i < entries.size(); ++i) {
+                        if (i > 0 && !(Slice(entries[i - 1].key).compare(Slice(entries[i].key)) < 0)) {
+                            bad.store(true); // not strictly increasing -> duplicate or out of order
+                            return;
+                        }
+                        CellView v{Slice(entries[i].cell)};
+                        // Every applied value/tombstone carries a slot that was
+                        // real at some point; it can never exceed the highest
+                        // slot any apply() call had returned from so far.
+                        if (v.slot() > ceiling + 1) { // +1: benign race with the counter's own update below
+                            bad.store(true);
+                            return;
+                        }
+                        if (!v.is_tombstone() && (v.value().empty() || v.value().data()[0] != 'v')) {
+                            bad.store(true); // corrupted value
+                            return;
+                        }
                     }
+                    views.fetch_add(1, std::memory_order_relaxed);
+                    // Complete this accepted read window before admitting the
+                    // next. All four host viewers release their snapshots and
+                    // wait here, so retired windows cannot grow without bound.
+                    snap.reset();
+                    account->drain_retirements();
                 }
-                views.fetch_add(1, std::memory_order_relaxed);
+            }
+            catch (...) {
+                failure = std::current_exception();
+                bad.store(true);
             }
         });
     }
 
-    std::mt19937 rng(44);
-    uint64_t     slot = 0;
-    for (int step = 0; step < 6000; ++step) {
-        ++slot;
-        std::string key = make_key(static_cast<int>(rng() % K));
-        if ((rng() % 4) == 0) {
-            ASSERT_TRUE(t.apply(slot, Batch{{{.key = key, .kind = OpKind::kDelete, .value = ""}}}).ok());
+    int        failed_step = -1;
+    const auto status      = [&]() -> Status {
+        std::mt19937 rng(44);
+        uint64_t     slot = 0;
+        for (int step = 0; step < 6000; ++step) {
+            failed_step = step;
+            ++slot;
+            std::string key = make_key(static_cast<int>(rng() % K));
+            Status      applied;
+            if ((rng() % 4) == 0) {
+                applied = t.apply(slot, Batch{{{.key = key, .kind = OpKind::kDelete, .value = ""}}});
+            }
+            else {
+                std::string val = "v" + std::to_string(slot);
+                applied         = t.apply(slot, Batch{{{.key = key, .kind = OpKind::kPut, .value = val}}});
+            }
+            if (!applied.ok()) {
+                return applied;
+            }
+            max_slot_seen.store(slot, std::memory_order_release);
+            if ((rng() % 6) == 0) {
+                auto flushed = t.flush();
+                if (!flushed.ok()) {
+                    return flushed;
+                }
+            }
         }
-        else {
-            std::string val = "v" + std::to_string(slot);
-            ASSERT_TRUE(t.apply(slot, Batch{{{.key = key, .kind = OpKind::kPut, .value = val}}}).ok());
-        }
-        max_slot_seen.store(slot, std::memory_order_release);
-        if ((rng() % 6) == 0) {
-            ASSERT_TRUE(t.flush().ok());
-        }
-    }
-    ASSERT_TRUE(t.flush().ok());
+        return t.flush();
+    }();
 
     stop.store(true);
     for (auto &th : viewers) {
         th.join();
     }
+    for (const auto &failure : failures) {
+        if (failure) {
+            EXPECT_NO_THROW(std::rethrow_exception(failure));
+        }
+    }
+    EXPECT_TRUE(status.ok()) << status.to_string() << " step=" << failed_step;
     EXPECT_FALSE(bad.load());
     EXPECT_GT(views.load(), 0);
 }

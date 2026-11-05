@@ -52,6 +52,9 @@ impl Partition {
         let pending = reclaimed > 0;
         self.metadata_reclaim
             .store(Some(Arc::new(MetadataReclaim { generation, pending })));
-        Ok(pending)
+        // Keep the two finite cursors independent. A tree error leaves the
+        // completed WAL metadata watermark intact and does not authorize trim.
+        let tree_pending = self.tree.collect_storage().await?;
+        Ok(pending || tree_pending)
     }
 }

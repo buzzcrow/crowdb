@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::KVClusterMetaClient;
+use crowdb_paxos_kv_client::PaxosKvClusterMetaClient;
 use crowdb_protocol::common::ReplicaValue;
 
 pub(crate) async fn register_actual_voters() {
@@ -11,7 +11,7 @@ pub(crate) async fn register_actual_voters() {
         3,
         "production metadata needs three owned KV nodes"
     );
-    let metadata = KVClusterMetaClient::new(crate::common::hardware::kv_client());
+    let metadata = PaxosKvClusterMetaClient::new(crate::common::hardware::kv_client());
     metadata.add_store(0, &[1, 2, 3]).await.unwrap();
     for (index, address) in addresses.iter().enumerate() {
         let topology: serde_json::Value = reqwest::Client::new()

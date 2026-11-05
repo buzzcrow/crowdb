@@ -20,8 +20,8 @@ use crowdb_access_server::credentials::CredentialAuthority;
 #[ignore = "requires the owned release access storage containers"]
 async fn credentials() {
     let ips = crate::common::management::addresses(12);
-    let kv = Arc::new(crowdb_kv_client::CrowdbKvClient::new(
-        crowdb_kv_client::ClientConfig::new(
+    let kv = Arc::new(crowdb_paxos_kv_client::PaxosKvClient::new(
+        crowdb_paxos_kv_client::ClientConfig::new(
             ips[..3]
                 .iter()
                 .map(|ip| crate::common::management::origin(ip))

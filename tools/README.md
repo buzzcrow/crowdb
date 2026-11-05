@@ -50,8 +50,9 @@ pixi run clean --runtime-only
 pixi run bash tools/test-metrics/measure.sh test-access test-console
 ```
 
-For test ownership and timings, read
-[`doc/working/test.md`](../doc/working/test.md). CI calls component tasks;
+For test ownership, inspect the component task and its checked CI map.
+Measure timings with `test-metrics/measure.sh`; retained run results are
+under `.crowdb-runtime/artifacts/measure-tests/`. CI calls component tasks;
 update the package groups in `pixi-tasks/test.py` and the checked CI map, then run
 `check-ci-test-tasks`.
 Feature-gated or ignored client tests need explicit task selection.

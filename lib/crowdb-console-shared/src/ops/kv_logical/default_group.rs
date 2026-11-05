@@ -86,7 +86,7 @@ pub async fn ensure(ctx: &OpContext, accepted: &DefaultPreparation) -> Result<bo
             group.store_id,
             group.group_id,
             b"/deployment/default-readiness",
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         ),
     )

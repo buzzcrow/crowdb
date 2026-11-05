@@ -10,7 +10,7 @@
     clippy::too_many_lines
 )]
 
-//! Hand-written Rust types replacing the prost-generated `crowdb_kv.rpc`
+//! Hand-written Rust types replacing the prost-generated `crowdb_paxos_kv.rpc`
 //! consensus types. API-compatible with the former
 //! proto-generated structs.
 

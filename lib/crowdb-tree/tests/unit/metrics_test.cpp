@@ -258,12 +258,11 @@ TEST(MetricsRegistry, FlushMetricsStrFormat)
     std::string out = t.flush_metrics_str(5.0, "2026-07-15T16:30:05.123Z", 0);
     ASSERT_FALSE(out.empty());
     EXPECT_NE(out.find("cpp-tree\n"), std::string::npos);
-    // Latency section should use us units.
-    EXPECT_NE(out.find("us"), std::string::npos);
-    // Bandwidth section should use MB.
-    EXPECT_NE(out.find("MB"), std::string::npos);
-    // tps column should be present.
-    EXPECT_NE(out.find("tps"), std::string::npos);
+    // Native registry exports cumulative fixed-schema gauges; the host
+    // collector computes rates from its independently owned window.
+    EXPECT_NE(out.find("s.0.g.0.memory.allocated.bytes.g"), std::string::npos);
+    EXPECT_NE(out.find("s.0.g.0.work.flush.batch.latency.sum.ns.c"), std::string::npos);
+    EXPECT_NE(out.find("s.0.g.0.frontier.published.g"), std::string::npos);
     // max_name_len should be non-zero after init_metrics.
     EXPECT_GT(t.max_name_len(), 0U);
 }

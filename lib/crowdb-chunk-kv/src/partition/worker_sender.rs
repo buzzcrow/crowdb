@@ -47,6 +47,13 @@ impl WorkerSender {
         }
     }
 
+    pub(super) async fn reserve(&self) -> Result<mpsc::OwnedPermit<WorkerRequest>> {
+        self.upgrade()?
+            .reserve_owned()
+            .await
+            .map_err(|_| ChunkKvError::WriteStalled)
+    }
+
     pub(super) async fn send(&self, request: WorkerRequest) -> Result<()> {
         match self {
             Self::Owned(sender) => sender.send(request).await.map_err(|_| ChunkKvError::WriteStalled),

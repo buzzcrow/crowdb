@@ -210,7 +210,7 @@ impl WireClient {
                 sync: false,
                 write_create_time_ms: unix_time_ms(),
             },
-            Buffer::from_owned_bytes(data),
+            Buffer::try_from_owned_bytes(data).map_err(|error| WireError::Protocol(error.to_string()))?,
         )
     }
 
@@ -240,7 +240,7 @@ impl WireClient {
                 sync: target.sync,
                 write_create_time_ms: target.write_create_time_ms,
             },
-            Buffer::from_owned_bytes(data),
+            Buffer::try_from_owned_bytes(data).map_err(|error| WireError::Protocol(error.to_string()))?,
         )
     }
 
@@ -358,6 +358,8 @@ impl WireClient {
                 zone_offset,
                 size,
                 test_pattern_offset,
+                read_create_time_ms: 0,
+                fence_probe: false,
             },
         );
         fbb.finish(off, None);

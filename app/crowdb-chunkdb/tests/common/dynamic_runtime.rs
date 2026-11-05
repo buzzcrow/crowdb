@@ -6,7 +6,7 @@ use crowdb_chunkdb::{
     range_guard::RangeGuard,
     routing::{BindingCache, BindingTable},
 };
-use crowdb_kv_client::CrowdbKvClient;
+use crowdb_paxos_kv_client::PaxosKvClient;
 use crowdb_protocol::{
     chunk_domain::ChunkDomain,
     chunk_slot::{ChunkSlotAuthority, ChunkSlotBootstrap, ChunkSlotMap, ChunkStorageGroup},
@@ -22,7 +22,7 @@ pub struct TestDynamicRuntime {
     workers: Vec<tokio::task::JoinHandle<()>>,
 }
 impl TestDynamicRuntime {
-    pub async fn start(kv: Arc<CrowdbKvClient>, map: &ChunkSlotMap<ChunkSlotAuthority>, owner: u64) -> Self {
+    pub async fn start(kv: Arc<PaxosKvClient>, map: &ChunkSlotMap<ChunkSlotAuthority>, owner: u64) -> Self {
         let routes = BindingCache::new();
         routes
             .replace(BindingTable::new(

@@ -20,14 +20,15 @@ namespace crowdb::rpc
 
 bool RdmaTransport::listen(const std::string &addr, int port)
 {
-    if (addr.empty() || port <= 0 || port > 65535 || listen_id_ != nullptr) {
+    if (addr.empty() || port < 0 || port > 65535 || listen_id_ != nullptr) {
 
         CRB_LOG_WARN("rdma listen: transport unavailable pd={} addr={} port={} existing_listener={}",
                      static_cast<void *>(pd_), addr, port, listen_id_ != nullptr);
         return false;
     }
-    if (cm_channel_ == nullptr)
+    if (cm_channel_ == nullptr) {
         cm_channel_ = rdma_create_event_channel();
+    }
     if (cm_channel_ == nullptr || rdma_create_id(cm_channel_, &listen_id_, this, RDMA_PS_TCP) != 0) {
         CRB_LOG_WARN("rdma listen: create CM id failed addr={} port={} errno={}", addr, port, errno);
         return false;
@@ -49,19 +50,21 @@ bool RdmaTransport::listen(const std::string &addr, int port)
         return false;
     }
     local_capability_.cm_address = addr;
-    local_capability_.port       = static_cast<uint16_t>(port);
+    local_capability_.port       = ntohs(rdma_get_src_port(listen_id_));
     listen_active_.store(true, std::memory_order_release);
     return true;
 }
 
 std::shared_ptr<Connection> RdmaTransport::accept()
 {
-    if (cm_channel_ == nullptr)
+    if (cm_channel_ == nullptr) {
         return nullptr;
+    }
     rdma_cm_event *event = nullptr;
     while (rdma_get_cm_event(cm_channel_, &event) == 0) {
-        if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST && listen_id_ != nullptr)
+        if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST && listen_id_ != nullptr) {
             break;
+        }
         if (event != nullptr) {
             rdma_cm_id *event_id   = event->id;
             const int   event_type = event->event;
@@ -81,22 +84,27 @@ std::shared_ptr<Connection> RdmaTransport::accept()
                     }
                     cm_ids_.erase(std::remove(cm_ids_.begin(), cm_ids_.end(), event_id), cm_ids_.end());
                 }
-                if (closed_connection == nullptr)
+                if (closed_connection == nullptr) {
                     continue;
+                }
                 close_after_drain(closed_connection.get());
-                if (event_type == RDMA_CM_EVENT_DISCONNECTED || event_type == RDMA_CM_EVENT_CONNECT_ERROR)
+                if (event_type == RDMA_CM_EVENT_DISCONNECTED || event_type == RDMA_CM_EVENT_CONNECT_ERROR) {
                     stats_.cm_disconnects.fetch_add(1, std::memory_order_relaxed);
-                if (closed_connection != nullptr)
+                }
+                if (closed_connection != nullptr) {
                     destroy_connection_qp(closed_connection.get(), event_id);
-                else if (event_id->qp != nullptr)
+                }
+                else if (event_id->qp != nullptr) {
                     rdma_destroy_qp(event_id);
+                }
                 rdma_destroy_id(event_id);
             }
         }
         event = nullptr;
     }
-    if (event == nullptr)
+    if (event == nullptr) {
         return nullptr;
+    }
     rdma_cm_id *id = event->id;
     RdmaCmOffer peer_offer;
     const bool valid_peer = event->param.conn.private_data != nullptr &&
@@ -134,17 +142,19 @@ std::shared_ptr<Connection> RdmaTransport::accept()
         rdma_destroy_id(id);
         return nullptr;
     }
-    ibv_qp_init_attr qp_attr{};
-    qp_attr.send_cq             = reservation.queue->cq;
-    qp_attr.recv_cq             = reservation.queue->cq;
-    qp_attr.qp_type             = IBV_QPT_RC;
-    qp_attr.cap.max_send_wr     = config_.sq_depth;
-    qp_attr.cap.max_recv_wr     = config_.rq_depth;
-    qp_attr.cap.max_send_sge    = config_.qp_max_send_sge;
-    qp_attr.cap.max_recv_sge    = config_.qp_max_recv_sge;
-    qp_attr.cap.max_inline_data = 0;
-    qp_attr.sq_sig_all          = 0;
-    qp_attr.qp_context          = id;
+    ibv_qp_init_attr qp_attr{
+        .qp_context = id,
+        .send_cq    = reservation.queue->cq,
+        .recv_cq    = reservation.queue->cq,
+        .srq        = nullptr,
+        .cap        = {.max_send_wr     = config_.sq_depth,
+                       .max_recv_wr     = config_.rq_depth,
+                       .max_send_sge    = config_.qp_max_send_sge,
+                       .max_recv_sge    = config_.qp_max_recv_sge,
+                       .max_inline_data = 0},
+        .qp_type    = IBV_QPT_RC,
+        .sq_sig_all = 0
+    };
 
     if (rdma_create_qp(id, pd_, &qp_attr) != 0) {
         rdma_destroy_id(id);
@@ -198,16 +208,41 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     if (event_rc != 0 || event == nullptr || event->event != RDMA_CM_EVENT_ESTABLISHED) {
         CRB_LOG_WARN("rdma accept: ESTABLISHED missing event={} status={} errno={}",
                      event == nullptr ? -1 : event->event, event == nullptr ? 0 : event->status, errno);
-        if (event != nullptr)
+        if (event != nullptr) {
             rdma_ack_cm_event(event);
+        }
         destroy_connection_qp(connection.get(), id);
         rdma_destroy_id(id);
         return nullptr;
     }
     rdma_ack_cm_event(event);
 
-    ibv_qp_attr receive_attributes{};
-    receive_attributes.min_rnr_timer = config_.min_rnr_timer;
+    ibv_qp_attr receive_attributes{.qp_state            = IBV_QPS_RESET,
+                                   .cur_qp_state        = IBV_QPS_RESET,
+                                   .path_mtu            = IBV_MTU_256,
+                                   .path_mig_state      = IBV_MIG_MIGRATED,
+                                   .qkey                = 0,
+                                   .rq_psn              = 0,
+                                   .sq_psn              = 0,
+                                   .dest_qp_num         = 0,
+                                   .qp_access_flags     = 0,
+                                   .cap                 = {},
+                                   .ah_attr             = {},
+                                   .alt_ah_attr         = {},
+                                   .pkey_index          = 0,
+                                   .alt_pkey_index      = 0,
+                                   .en_sqd_async_notify = 0,
+                                   .sq_draining         = 0,
+                                   .max_rd_atomic       = 0,
+                                   .max_dest_rd_atomic  = 0,
+                                   .min_rnr_timer       = config_.min_rnr_timer,
+                                   .port_num            = 0,
+                                   .timeout             = 0,
+                                   .retry_cnt           = 0,
+                                   .rnr_retry           = 0,
+                                   .alt_port_num        = 0,
+                                   .alt_timeout         = 0,
+                                   .rate_limit          = 0};
     if (ibv_modify_qp(id->qp, &receive_attributes, IBV_QP_MIN_RNR_TIMER) != 0) {
         destroy_connection_qp(connection.get(), id);
         rdma_destroy_id(id);

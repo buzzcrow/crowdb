@@ -152,12 +152,18 @@ impl Launch {
     pub fn validate(&self) -> Result<()> {
         let owner =
             uuid::Uuid::parse_str(&self.owner).map_err(|_| invalid("invalid cluster ownership token"))?;
-        if !matches!(self.version, 1 | 2)
+        if !matches!(self.version, 1..=3)
             || !name_valid(&self.cluster)
             || owner.is_nil()
             || owner.to_string() != self.owner
             || !matches!(self.nodes, 1 | 3)
-            || !(1..=65512).contains(&self.port_base)
+            || !(1..=u16::MAX
+                - if self.version < 3 {
+                    23
+                } else {
+                    crowdb_protocol::ACCESS_SERVER_DATASET_HTTP_BASE - crowdb_protocol::WEB_BASE + 2
+                })
+                .contains(&self.port_base)
             || !self.cpus.is_finite()
             || self.cpus <= 0.0
             || self.cpus > f64::from(u32::MAX)
@@ -179,21 +185,27 @@ impl Launch {
     }
     pub fn origins(&self) -> Vec<String> {
         (0..self.nodes)
-            .map(|index| format!("http://127.0.0.1:{}", self.port_base + u16::from(index) * 10))
+            .map(|index| {
+                format!(
+                    "http://127.0.0.1:{}",
+                    self.port_base + u16::from(index) * if self.version < 3 { 10 } else { 1 }
+                )
+            })
             .collect()
     }
     pub fn container_ports(&self) -> [u16; 4] {
-        if self.version == 1 {
-            [9090, 9091, 9092, 9093]
-        } else {
-            [
-                9090,
+        match self.version {
+            1 => [9090, 9091, 9092, 9093],
+            2 => [9090, 16000, 17000, 18000],
+            _ => [
+                crowdb_protocol::WEB_BASE,
                 crowdb_protocol::ACCESS_SERVER_HTTP_BASE,
                 crowdb_protocol::ACCESS_SERVER_ICEBERG_HTTP_BASE,
                 crowdb_protocol::ACCESS_SERVER_DATASET_HTTP_BASE,
-            ]
+            ],
         }
     }
+
     pub fn resource_name(&self, kind: &str, index: u8) -> String {
         let base = format!("crowdb-{}", self.cluster);
         if kind == "network" {

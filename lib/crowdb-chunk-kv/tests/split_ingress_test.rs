@@ -37,7 +37,7 @@ async fn handoff_persistence_does_not_block_parent_reads_or_journal_appends() {
     let (parent, _) = storage
         .partition(parent_id, range.clone(), 1, parent_tree.clone())
         .await;
-    parent.mutate(1, request(10), put(b"b", b"base")).await.unwrap();
+    parent.mutate(1, request(10), put(b"n", b"base")).await.unwrap();
     let plan = SplitPlan {
         transition_id: TransitionId { high: 10, low: 2 },
         parent_id,
@@ -92,6 +92,11 @@ async fn handoff_persistence_does_not_block_parent_reads_or_journal_appends() {
     parent_tree.pause_split_publish();
     gate.release.notify_one();
     parent_tree.wait_for_split_publish().await;
+    assert_eq!(
+        parent.get(1, b"n", None).await.unwrap().unwrap().value,
+        b"during-handoff",
+        "the inherited update must be readable before publication finishes"
+    );
     verify_live_dispatch_during_publication(&parent).await;
     parent_tree.resume_split_publish();
     let prepared = preparing.await.unwrap().unwrap();

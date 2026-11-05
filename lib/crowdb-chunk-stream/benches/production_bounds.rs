@@ -18,7 +18,7 @@ use crowdb_chunk_client::{
 };
 use crowdb_chunk_stream::{ProductionStreamRuntime, StreamConfig};
 use crowdb_common::metrics;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 
 use config::BenchConfig;
 
@@ -62,7 +62,7 @@ async fn run(config: BenchConfig) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![config
+    let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(vec![config
         .management_seed
         .clone()])));
     let stream_runtime = match ProductionStreamRuntime::new(

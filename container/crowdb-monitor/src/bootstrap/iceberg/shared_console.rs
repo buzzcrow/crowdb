@@ -4,7 +4,7 @@
 //! One cluster-scoped Console catalog operation, without per-node races.
 
 use super::{console, IcebergBootstrapError};
-use crowdb_kv_client::{CrowdbKvClient, Error, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{Error, GetOutcome, PaxosKvClient, ReadMode};
 use serde::{Deserialize, Serialize};
 use std::{path::Path, time::Duration};
 use uuid::Uuid;
@@ -21,14 +21,14 @@ struct Operations {
 
 pub(super) async fn operations(
     root: &Path,
-    kv: &CrowdbKvClient,
+    kv: &PaxosKvClient,
 ) -> Result<(Uuid, Uuid), IcebergBootstrapError> {
     tokio::time::timeout(Duration::from_secs(3), reserve(root, kv))
         .await
         .map_err(|_| IcebergBootstrapError::Command("Console catalog authority reservation timed out"))?
 }
 
-async fn reserve(root: &Path, kv: &CrowdbKvClient) -> Result<(Uuid, Uuid), IcebergBootstrapError> {
+async fn reserve(root: &Path, kv: &PaxosKvClient) -> Result<(Uuid, Uuid), IcebergBootstrapError> {
     let local = console::load(&root.join("console-iceberg-bootstrap.json"))?;
     let candidate = Operations {
         version: 1,

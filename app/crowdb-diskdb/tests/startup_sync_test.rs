@@ -34,7 +34,7 @@ fn recovered_group_replaces_only_the_retained_owner_generation() {
 #[tokio::test]
 async fn startup_reconstruction_keeps_the_original_administrative_write_gate() {
     use crowdb_diskdb::{ddb_kv_client::DdbKvClient, model::disk::DdbDisk, recovery::ZoneLoader};
-    use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+    use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
     use crowdb_protocol::{
         common::{DiskId, HwStatus},
         diskdb::rpc::DiskValue,
@@ -51,7 +51,7 @@ async fn startup_reconstruction_keeps_the_original_administrative_write_gate() {
     let group = DdbDiskGroup::new(3, 2, 1);
     let disk = Arc::new(DdbDisk::new(id, 3, 2, 1, value.clone()));
     group.add_disk(disk.clone());
-    let scoped = DdbKvClient::new(CrowdbKvClient::new(ClientConfig::new(vec![]))).for_group(&group);
+    let scoped = DdbKvClient::new(PaxosKvClient::new(ClientConfig::new(vec![]))).for_group(&group);
     let loader = ZoneLoader::new(Arc::new(scoped), 1);
     // The loader captured an Up value before exclusion, but it must neither
     // manufacture an empty baseline nor publish a new writable incarnation.

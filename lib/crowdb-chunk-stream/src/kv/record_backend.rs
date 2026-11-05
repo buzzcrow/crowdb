@@ -4,11 +4,13 @@
 use crate::perf::{perf, PhaseTimer};
 use crate::records::RecordBackend;
 use async_trait::async_trait;
-use crowdb_kv_client::{BatchOp, CrowdbKvClient, GetOutcome, ReadMode, Result, ScanOutcome, WriteOutcome};
+use crowdb_paxos_kv_client::{
+    BatchOp, GetOutcome, PaxosKvClient, ReadMode, Result, ScanOutcome, WriteOutcome,
+};
 use std::sync::Arc;
 
 pub(super) struct KvRecordBackend {
-    pub(super) kv: Arc<CrowdbKvClient>,
+    pub(super) kv: Arc<PaxosKvClient>,
     pub(super) store: u64,
     pub(super) group: u64,
 }
@@ -76,7 +78,7 @@ impl KvRecordBackend {
                 .await
         }?;
         if outcome.timed_out || outcome.items.len() != outcome.commit_slots.len() {
-            return Err(crowdb_kv_client::Error::Server(
+            return Err(crowdb_paxos_kv_client::Error::Server(
                 "incomplete Stream chunk record scan".into(),
             ));
         }

@@ -2,10 +2,10 @@
 // Licensed under the Apache License, Version 2.0.
 
 //! Shared utilities for the `crow` storage-system components
-//! (`crowdb_kv`, `crowdb-tree`, future `crowdb-*` libs).
+//! (`crowdb_paxos_kv`, `crowdb-tree`, future `crowdb-*` libs).
 //!
 //! Re-exports the generic, project-agnostic primitives extracted out of
-//! `crowdb_kv` and `crowdb-tree` so each component depends on `crowdb-common`
+//! `crowdb_paxos_kv` and `crowdb-tree` so each component depends on `crowdb-common`
 //! instead of re-implementing or vendoring them:
 //!
 //! - [`metrics`] — lightweight atomic counters, gauges, bandwidth,

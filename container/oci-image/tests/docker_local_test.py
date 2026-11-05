@@ -15,15 +15,16 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from docker_local_cleanup import clean, image_garbage, selected
 from docker_local_launch import ensure, verify_container
+from ports import WEB_BASE, ACCESS_SERVER_HTTP_BASE, ACCESS_SERVER_ICEBERG_HTTP_BASE, ACCESS_SERVER_DATASET_HTTP_BASE
 from docker_local_state import CLUSTER, OWNER, Docker, load, seal
 
 
 class DockerLocalTest(unittest.TestCase):
     def setUp(self):
-        self.record = {"version": 2, "cluster": "first", "owner": str(uuid.uuid4()),
+        self.record = {"version": 3, "cluster": "first", "owner": str(uuid.uuid4()),
                        "runtime": {"daemon": "owned", "context": "default", "endpoint": "unix:///owned"},
                        "image_id": "sha256:retained", "image": "crowdb-node:dev", "nodes": 1,
-                       "port_base": 9090, "cpus": 1, "memory_mib": 1536}
+                       "port_base": WEB_BASE, "cpus": 1, "memory_mib": 1536}
         self.labels = {CLUSTER: "first", OWNER: self.record["owner"]}
         self.docker = MagicMock()
         self.docker.identity.return_value = self.record["runtime"]
@@ -120,35 +121,58 @@ class DockerLocalTest(unittest.TestCase):
         self.docker.call.assert_not_called()
 
     def test_changed_container_inputs_are_rejected_before_resume(self):
-        record = dict(self.record, nodes=1, port_base=9090, cpus=1, memory_mib=1536)
+        record = dict(self.record, nodes=1, port_base=WEB_BASE, cpus=1, memory_mib=1536)
         environment = ["CROWDB_CLUSTER=first", "CROWDB_INITIAL_VOTERS=1"]
-        for offset, name in enumerate(("S3", "ICEBERG", "DATASET"), start=1):
-            environment.append(f"CROWDB_{name}_PUBLIC_URI=http://127.0.0.1:{9090+offset}")
+        for port, name in ((ACCESS_SERVER_HTTP_BASE, "S3"), (ACCESS_SERVER_ICEBERG_HTTP_BASE, "ICEBERG"), (ACCESS_SERVER_DATASET_HTTP_BASE, "DATASET")):
+            environment.append(f"CROWDB_{name}_PUBLIC_URI=http://127.0.0.1:{port}")
         item = {"Name": "/crowdb-first-1", "Image": record["image_id"], "Config": {"Labels": self.labels, "Env": environment},
                 "HostConfig": {"NanoCpus": 1_000_000_000, "Memory": 1536 * 1024 * 1024,
                                "NetworkMode": "crowdb-first", "PortBindings": {
-                                   f"{port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(9090+offset)}]
-                                   for offset, port in enumerate((9090, 16000, 17000, 18000))}},
+                                   f"{port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(port)}]
+                                   for port in (WEB_BASE, ACCESS_SERVER_HTTP_BASE, ACCESS_SERVER_ICEBERG_HTTP_BASE, ACCESS_SERVER_DATASET_HTTP_BASE)}},
                 "Mounts": [{"Destination": "/opt/crowdb/data", "Name": "owned-volume", "Type": "volume", "RW": True}]}
         verify_container(item, record, 1, "owned-volume", "crowdb-first")
-        legacy = dict(item, HostConfig=dict(item["HostConfig"], PortBindings={
-            f"{port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(port)}]
-            for port in range(9090, 9094)}))
-        verify_container(legacy, dict(record, version=1), 1, "owned-volume", "crowdb-first")
-        with self.assertRaisesRegex(ValueError, "endpoints"):
-            verify_container(legacy, record, 1, "owned-volume", "crowdb-first")
         for field, value in (("Image", "foreign"), ("Mounts", []), ("HostConfig", {})):
             with self.subTest(field=field), self.assertRaises((ValueError, KeyError)):
                 verify_container(dict(item, **{field: value}), record, 1, "owned-volume", "crowdb-first")
+
+    def test_retained_versions_preserve_exact_ports_and_public_endpoints(self):
+        for version, internal in ((1, (9090, 9091, 9092, 9093)),
+                                  (2, (9090, 16000, 17000, 18000)),
+                                  (3, (WEB_BASE, ACCESS_SERVER_HTTP_BASE,
+                                       ACCESS_SERVER_ICEBERG_HTTP_BASE, ACCESS_SERVER_DATASET_HTTP_BASE))):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as temporary:
+                record = dict(self.record, version=version, nodes=3,
+                              port_base=65000 if version < 3 else WEB_BASE+37)
+                seal(record, Path(temporary))
+                self.assertEqual(load("first", Path(temporary)), record)
+                base = record["port_base"] + (20 if version < 3 else 2)
+                offsets = range(4) if version < 3 else [port-WEB_BASE for port in internal]
+                published = [base+offset for offset in offsets]
+                environment = ["CROWDB_CLUSTER=first", "CROWDB_INITIAL_VOTERS=3"]
+                for name, port in zip(("S3", "ICEBERG", "DATASET"), published[1:]):
+                    environment.append(f"CROWDB_{name}_PUBLIC_URI=http://127.0.0.1:{port}")
+                item = {"Name": "/crowdb-first-3", "Image": record["image_id"],
+                        "Config": {"Labels": self.labels, "Env": environment},
+                        "HostConfig": {"NanoCpus": 1_000_000_000, "Memory": 1536*1024*1024,
+                                       "NetworkMode": "crowdb-first", "PortBindings": {
+                                           f"{internal_port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(port)}]
+                                           for internal_port, port in zip(internal, published)}},
+                        "Mounts": [{"Destination": "/opt/crowdb/data", "Name": "owned-volume",
+                                    "Type": "volume", "RW": True}]}
+                verify_container(item, record, 3, "owned-volume", "crowdb-first")
+                item["Config"]["Env"][-1] = "CROWDB_DATASET_PUBLIC_URI=http://127.0.0.1:1"
+                with self.assertRaisesRegex(ValueError, "endpoints"):
+                    verify_container(item, record, 3, "owned-volume", "crowdb-first")
 
     def test_compose_examples_publish_the_standard_node_listeners(self):
         for filename in ("compose.yaml", "compose-three.yaml"):
             document = yaml.safe_load((Path(__file__).resolve().parents[1] / filename).read_text())
             for service in document["services"].values():
                 self.assertEqual([port.split("}:", 1)[1] for port in service["ports"]],
-                                 ["9090", "${CROWDB_S3_CONTAINER_PORT:-16000}",
-                                  "${CROWDB_ICEBERG_CONTAINER_PORT:-17000}",
-                                  "${CROWDB_DATASET_CONTAINER_PORT:-18000}"])
+                                 [str(WEB_BASE), f"${{CROWDB_S3_CONTAINER_PORT:-{ACCESS_SERVER_HTTP_BASE}}}",
+                                  f"${{CROWDB_ICEBERG_CONTAINER_PORT:-{ACCESS_SERVER_ICEBERG_HTTP_BASE}}}",
+                                  f"${{CROWDB_DATASET_CONTAINER_PORT:-{ACCESS_SERVER_DATASET_HTTP_BASE}}}"])
 
     def test_receipts_are_immutable_scoped_and_reject_symlinks(self):
         with tempfile.TemporaryDirectory() as temporary:

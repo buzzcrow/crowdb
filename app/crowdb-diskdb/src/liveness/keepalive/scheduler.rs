@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 use std::sync::{Arc, RwLock};
 
 use crowdb_common::metrics::Counter;
-use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::common::{DiskGroupUsageSummary, DiskId, HwStatus};
 use crowdb_protocol::diskdb::rpc::DiskValue;
 use crowdb_protocol::{DiskGroupId, NodeId, RackId};

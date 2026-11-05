@@ -53,11 +53,11 @@ pub async fn prepare(
 }
 
 async fn publish_storage(authority: &super::node_setup::TestAuthority) {
-    use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+    use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient};
     use crowdb_protocol::common::{NodeValue, RackValue};
     super::node_setup_groups::publish_group(authority, 1).await;
     let node = &authority.registry.nodes[0];
-    let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(
+    let hardware = HardwareClient::new(PaxosKvClient::new(ClientConfig::new(
         authority.binding.management_seeds.clone(),
     )));
     hardware

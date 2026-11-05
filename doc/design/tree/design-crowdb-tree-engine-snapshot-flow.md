@@ -1,149 +1,131 @@
-# Snapshot Flow Analysis
+<!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
+<!-- Licensed under the Apache License, Version 2.0. -->
 
-Snapshot makes the engine's materialized state durable on disk up to
-`last_applied_slot`. The `tree.snapshot.l` metric measures the full
-`Crowdbtree::snapshot()` call — CPU preparation plus synchronous I/O.
+# CROWDB - Design: Tree Checkpoint Flow
 
-## Call chain
+Depends on: [durable storage](design-crowdb-tree-storage.md), [Tree engine](design-crowdb-tree-engine.md)
+Satisfies: [Tree overview](design-crowdb-tree.md) §3.1
 
-1. **Maintenance loop** (`group_maintenance.rs:234-257`) — decides
-   whether to snapshot based on `slot_advance`, `time_elapsed`, or
-   `flush_count` thresholds.
-2. **Blocking wrapper** (`group_maintenance.rs:110-173`) —
-   `spawn_blocking(|| engine_arc.persist_snapshot())`.
-3. **Rust bridge** (`crowdb_tree_engine.rs:321-339`) — calls
-   `handle().snapshot()` via FFI, logs `snapshot_ms` at INFO.
-4. **C++ entry** (`persist.cpp:709-842`) — `Crowdbtree::snapshot()`.
+A checkpoint turns one captured immutable Tree view into a durable backend
+root. Reloadable writeback and logical handoff use related preparation but have
+different completion contracts.
 
-## What `snapshot()` does
+## Table of Contents
 
-### A. Serialization gate
+- [1. Capture and Plan](#1-capture-and-plan)
+- [2. Writeback and Root Commit](#2-writeback-and-root-commit)
+- [3. Rebase, Failure and Recovery](#3-rebase-failure-and-recovery)
+- [4. Observation](#4-observation)
 
-`acquire_snapshot_slot()` (`persist.cpp:697-701`) — atomic spin on
-`snapshot_inflight_`; only one snapshot at a time.
+## 1. Capture and Plan
 
-### B. `prepare_snapshot_locked()` (`persist.cpp:367-663`) — CPU phase
+A checkpoint establishes a finite applied prefix through flush, then captures
+an immutable published view. The operation retains its mapping, sources and
+backing capabilities while later writes continue. Checkpoint serialization
+uses the existing operation token; CPU and backend waits release their worker.
 
-Runs under `write_mutex_`. Measured by `tree.mem.snapshot.apply.l`.
+`CapturedFrameStream` chooses valid durable-frame reuse or bounded page
+materialization. Reuse requires matching logical content, route, retained
+floor and primary layout proof. New overlays or an incompatible retention
+floor invalidate the receipt. Advancing the floor remains compatible when an
+exact leaf summary proves that every encoded entry is a live key: encoding
+keeps one winner per key, and no tombstone remains to collect. Receipts with
+tombstones or unknown live counts still require the original floor. Overflow
+dependencies are retained through the
+captured primary capability, not resolved against a mutable current Tree.
 
-1. **Allocator rebuild** (`persist.cpp:389-395`): read the best A/B
-   anchor, collect live extents from the previous segment directory,
-   build a `SpaceAllocator` of reusable gaps + append cursor.
-2. **Pass 1 — fold deltas, queue dirty pages** (`persist.cpp:463-538`):
-   - Scan every dirty mapping-table segment (not a full tree walk).
-   - For each dirty leaf chain with `kBatchDelta`s: walk to the
-     `kLeafBase`, fold the whole chain into a fresh consolidated leaf
-     (`build_leaf_spilling_locked`), retire old delta/overflow pages.
-   - For each page: `persist_one` (`persist.cpp:406-431`) — if dirty
-     (`durable_addr == kNoAddr`), `encode_durable_page()` (compress +
-     CRC), allocate on-disk address, push to `page_writes`. If clean,
-     reuse existing address, increment `snapshot.page.write.cache.c`.
-3. **Pass 2 — segment images + directory** (`persist.cpp:541-635`):
-   - For each dirty segment: pack slot words, `encode_segment_image()`
-     (`mapping_persist.cpp:73-96`), allocate address, push to
-     `segment_writes`.
-   - `encode_segment_directory()` (`mapping_persist.cpp:145-166`).
-4. **Anchor encode** (`persist.cpp:638-655`): build `CommitAnchor` with
-   `last_applied_slot`, `root_page_id`, `snapshot_seq`. Select A or B
-   slot by parity.
+The layout plan counts primaries whose existing representation already uses
+the exact durable receipt. These pages need no replacement publication, so
+checkpoint admission excludes them from the rebase replacement budget.
+Relocation keeps the full allowance because it may change dependency owners.
 
-### C. Synchronous I/O (`persist.cpp:733-802`)
+If a captured page cannot fit the durable layout, checkpoint planning releases
+its current layout and phase reservations before admitting a bounded structural
+split. Each split must publish progress. Planning then restarts against that
+result while preserving the original generation and applied frontier; it does
+not perform another handoff or include later L0 writes. A competing L1
+publication invalidates the attempt instead of silently changing its input.
+The fence uses a per-generation L1 sequence covering the immutable mapping,
+root, PID authority, coverage, GC floor and handoff ownership. Publishing a
+successor L0 catalog changes the general commit sequence but leaves this fence
+unchanged, so later source writes cannot invalidate the fixed layout proof.
 
-1. `page_store->write_at()` for every dirty page blob (sequential).
-2. `page_store->write_at()` for every dirty segment image.
-3. `page_store->write_at()` for the segment directory.
-4. **`page_store->sync()`** — first fsync/fdatasync barrier.
-5. `page_store->write_at()` for the anchor (commit point).
-6. **`page_store->sync()`** — second fsync/fdatasync barrier.
+A native export returns real frames even when a checkpoint could reuse them
+without reading. Portable export instead yields the captured logical entries.
+Import validates the complete staged graph before publishing a replacement
+generation; failure leaves the old generation usable.
 
-### D. Commit bookkeeping (`persist.cpp:665-695`)
+## 2. Writeback and Root Commit
 
-Re-take `write_mutex_`. Update `durable_addr` / `durable_plen` /
-`generation` for each page/segment. Publish new `version_`, increment
-`snapshot_total_`.
+Primary-page and overflow encoding have explicit input, output, scratch and
+I/O bounds. Backend tickets retain their buffers and permits until the actual
+callback. Inline, delayed, duplicate and failing completions must produce one
+operation terminal.
 
-### E. Block compaction (`persist.cpp:810-830`)
+Each accepted Chunk write retains independent prepaid credit so it can finish
+after the enclosing reservation seals. Unused credit and later frees return
+to the enclosing window while it is open, allowing a long checkpoint to reuse
+the same transient capacity across frames; otherwise they return to the host.
 
-If `BlockPageStore`: delete blocks empty in two consecutive snapshots.
+Writeback stores selected page representations and returns reloadable backing.
+It may rebase a matching page while leaving checkpoint-pending membership and
+durable coverage unchanged. Host idle maintenance uses finite candidate windows
+and does not wait for new writes to trigger this work.
 
-## Metric observation points
+A checkpoint writes or reuses every captured dependency, completes the required
+backend barriers, then commits its root:
 
-| Metric | Start | End | What |
-|--------|-------|-----|------|
-| `tree.snapshot.l` | `persist.cpp:714` | `persist.cpp:836-839` | Full wall time |
-| `tree.mem.snapshot.apply.l` | `persist.cpp:719` | `persist.cpp:722-725` | `prepare_snapshot_locked` under `write_mutex_` |
-| `tree.mem.snapshot.page.write.io.l` | `persist.cpp:734` | `persist.cpp:736-739` | Each `write_at` per page |
-| `tree.mem.fsync.l` | `persist.cpp:764` / `781` | `767-769` / `784-786` | Two `sync()` calls |
-| `tree.mem.snapshot.page.write.bw` | `persist.cpp:741-742` | — | Bytes per page write |
-| `tree.mem.snapshot.meta.write.bw` | `persist.cpp:794-801` | — | Segment + directory + anchor bytes |
-| `tree.snapshot.pages.c` | `persist.cpp:536-537` | — | Dirty page count |
+- Local commits the directory and anchor through `LocalCheckpoint`.
+- Chunk publishes the fenced immutable root through the catalog generation CAS.
 
-Registration: `crowdb-tree.cpp:3686-3714`.
+**I1 — Durable coverage:** only a successful root commit establishes the replay
+point. Failed or ambiguous publication cannot be treated as successful merely
+because some pages were written; an ambiguous result must be resolved through
+the backend authority contract.
 
-## Bottleneck analysis (2026-09-01 bench)
+## 3. Rebase, Failure and Recovery
 
-Observed: `tree.snapshot.l` = 2027ms. Sub-phase breakdown from metrics:
+Representation rebase compares the captured page identity against the current
+mapping. It may replace a captured suffix while retaining newer overlays.
+Changed route/base/run identities defer the rebase instead of overwriting newer
+content. Deferral does not invalidate an already successful durable checkpoint.
 
-| Snapshot | `snapshot.apply.l` | `page.write.io.l` (avg/max) | `fsync.l` | pages |
-|----------|-------------------:|-----------------------------:|----------:|------:|
-| seq=1 (slot=9) | 532us | 67us / 67us | 0us | 1 |
-| seq=1 (slot=36263) | 733ms | 388us / 129ms | 0us | 1045 |
-| seq=2 (slot=159321) | 1309ms | 79us / 257us | 0us | 4167 |
-| seq=3 (slot=239344) | 1304ms | 146us / 432ms | 0us | 4145 |
-| seq=4 (slot=239349) | 1526us | 8us / 8us | 0us | 1 |
+An exact reused receipt needs no rebase: the captured representation already
+owns that backing. This leaves the current mapping untouched, including any
+later overlays, route changes or replacement pages.
 
-Rust log wall times: 0ms, 1141ms, 2029ms, 1914ms, 1ms.
+`SnapshotBaseline` retains committed primary receipts and their backing owners
+without retaining the source mapping or covered overlay payload. Publication
+checks its generation, capture token, coverage, GC floor and backend identity
+before installing it. Representation rebase uses the existing page identity
+and primary receipt; it does not install a separate durable range topology.
 
-### Primary bottleneck: `snapshot.apply.l` (CPU phase)
+Recovery validates root metadata, frame identities, ranges and dependencies
+before exposing a writable generation. Readers retain the original backing
+owner even if later checkpoints or collection replace the current backend root.
+Physical retirement waits for those owners and the backend's actual deletion.
 
-The `prepare_snapshot_locked` phase dominates: 733-1309ms for snapshots
-with 1045-4167 dirty pages. This is the delta-chain folding +
-`encode_durable_page` (LZ4 compression + CRC) for every dirty page,
-all under `write_mutex_`.
+Local cleanup holds an exclusive free-range lease from the extent ledger
+through physical deletion, preventing concurrent address reuse. Memory block
+storage releases only complete, unprotected 64 KiB backing pages; anchors,
+partly protected pages and partial tails remain allocated. Cleanup advances in
+bounded background windows through the same accepted operation lifetime. A
+memory cleanup continues across windows without issuing another checkpoint,
+preserving the logical device size and the bytes retained by live owners.
+Backing capacity released by the allocator is distinct from process RSS.
 
-The 2027ms total for seq=2 breaks down as:
-- ~1309ms `snapshot.apply.l` (CPU: fold + compress + encode)
-- ~432ms worst-case `page.write.io.l` (one slow pwrite, likely
-  read-modify-write bounce on O_DIRECT misalignment)
-- ~286ms remaining (other pwrites + segment/directory writes + overhead)
+**I2 — Reader safety:** old captured views remain readable after Tree close or a
+new root commit. **I3 — Failure isolation:** rejected import, failed write or
+stale rebase cannot partially replace the live generation. **I4 — WAL safety:**
+the host replays after the durable coverage and applies its own safe-retention
+policy before truncating consensus WAL.
 
-### Why `fsync.l` is 0ms
+## 4. Observation
 
-The bench uses `--mode mem` (in-memory page store). `sync()` is a no-op.
-On `--mode file` or `--mode block`, fsync would dominate instead.
+Checkpoint reports distinguish encoded/written work, durable coverage and
+terminal status. Backing gauges distinguish dirty logical pages, reloadable
+backing, checkpoint-pending membership and canonical physical capacity.
 
-### Secondary: sequential pwrite with O_DIRECT bounce
-
-`BlockPageStore` opens with `O_DIRECT` when `iu_size_ > 1`
-(`block_page_store.cpp:126-142`). Misaligned writes trigger a
-read-modify-write through a scratch buffer (`block_page_store.cpp:561-582`),
-explaining the 432ms outlier on a single page write.
-
-### `write_mutex_` blocking
-
-`prepare_snapshot_locked` holds `write_mutex_` for the entire CPU phase
-(733-1309ms). All `apply()` calls are blocked during this time,
-contributing to the frozen queue buildup (20,026 full errors).
-
-## Levers
-
-- **Reduce `snapshot.apply.l`**: the delta folding + compression is the
-  bottleneck. Options:
-  - Parallelize `encode_durable_page` across pages (CPU-bound, no
-    ordering constraint between independent pages).
-  - Skip compression for small pages or when the compression ratio is
-    poor (wastes CPU for no gain).
-  - Pre-consolidate during flush instead of deferring to snapshot. If
-    flush already folds delta chains, snapshot's Pass 1 has less work.
-- **Overlap I/O with CPU**: write pages to disk while still encoding
-  the next batch. The current design is fully sequential: encode all,
-  then write all, then sync.
-- **Reduce snapshot frequency**: increase `snapshot_slot_threshold` or
-  `snapshot_time_threshold_ms` so fewer snapshots occur. Each snapshot
-  with 4000+ pages is expensive; fewer snapshots = less total stall.
-- **Move `prepare_snapshot_locked` off `write_mutex_`**: the delta
-  folding and encoding don't need to block `apply()`. A copy-on-write
-  snapshot of the dirty set could be prepared outside the lock, with
-  only the final commit under the lock.
-- **Use async I/O** (`io_uring` backend): overlap pwrite + fsync with
-  the next maintenance tick instead of blocking the loop.
+A collector that outlives the Tree retains metrics only, so it does not keep
+page or backend resources alive. Capture retains the immutable mapping and
+its actual owners without enumerating allocations for statistics.

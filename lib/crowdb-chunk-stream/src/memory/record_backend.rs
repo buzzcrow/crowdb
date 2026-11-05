@@ -8,7 +8,7 @@ use std::sync::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, Error, GetOutcome, Result, ScanOutcome, WriteOutcome};
+use crowdb_paxos_kv_client::{BatchOp, Error, GetOutcome, Result, ScanOutcome, WriteOutcome};
 use crowdb_protocol::key::{BinaryKey, StreamChunkRecordKey, StreamChunkRecordOrder};
 use tokio::sync::{Mutex, Notify};
 
@@ -163,10 +163,12 @@ impl RecordBackend for MemoryRecordBackend {
         if current != revision {
             return Err(Error::CasFailed {
                 current_revision: current,
-                observation: Some(Box::new(crowdb_kv_client::KvCompareObservation::from_versioned(
-                    Bytes::copy_from_slice(key),
-                    observed.map(|record| (record.revision, record.value.clone())),
-                ))),
+                observation: Some(Box::new(
+                    crowdb_paxos_kv_client::KvCompareObservation::from_versioned(
+                        Bytes::copy_from_slice(key),
+                        observed.map(|record| (record.revision, record.value.clone())),
+                    ),
+                )),
             });
         }
         let next = state

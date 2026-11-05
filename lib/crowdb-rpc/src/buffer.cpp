@@ -87,9 +87,12 @@ void Buffer::release()
             // the data is owned by an external allocator (e.g. a Rust Vec).
             // free_cb drops the external owner; data itself is NOT freed
             // here (the external owner's destructor handles that).
-            free_cb(free_ctx);
-            delete ref;
-            delete this;
+            auto       callback  = free_cb;
+            auto      *context   = free_ctx;
+            const auto allocator = control_allocator;
+            allocator.destroy(ref);
+            allocator.destroy(this);
+            callback(context);
         }
         else if (pool != nullptr) {
             pool->recycle(this);
@@ -109,12 +112,20 @@ Buffer *Buffer::slice(uint32_t offset, uint32_t size)
 {
     if (offset > capacity || size > capacity - offset || data == nullptr || ref_clone() == nullptr)
         return nullptr;
-    auto *view     = new Buffer;
-    view->data     = payload_data() + offset;
-    view->len      = size;
-    view->capacity = size;
-    view->type     = type;
-    view->ref      = new std::atomic<int32_t>(1);
+    const auto allocator  = control_allocator;
+    auto      *view       = allocator.create<Buffer>();
+    auto      *references = view == nullptr ? nullptr : allocator.create<std::atomic<int32_t>>(1);
+    if (references == nullptr) {
+        allocator.destroy(view);
+        release();
+        return nullptr;
+    }
+    view->control_allocator = allocator;
+    view->data              = payload_data() + offset;
+    view->len               = size;
+    view->capacity          = size;
+    view->type              = type;
+    view->ref               = references;
     view->ownership.store(BufferOwnership::CallerOwned, std::memory_order_relaxed);
     view->capacity_class      = capacity_class;
     view->registration_id     = registration_id;

@@ -815,6 +815,10 @@ std::shared_ptr<Connection> SocketTransport::create_connection(int fd, const std
                                                                Connection::OnFrameCallback on_frame,
                                                                Connection::OnCloseCallback on_close)
 {
+#ifdef SO_NOSIGPIPE
+    int nosigpipe = 1;
+    ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+#endif
     int64_t id             = next_conn_id_.fetch_add(1, std::memory_order_relaxed);
     auto    conn           = std::make_shared<Connection>(id, name, pool_, 4 << 20, send_queue_capacity_);
     conn->transport_handle = static_cast<uint64_t>(fd);
@@ -833,7 +837,7 @@ std::shared_ptr<Connection> SocketTransport::create_connection(int fd, const std
     // Keep the identity registry until descriptor cleanup; a worker must
     // safely resolve an event even after an explicit caller-side close.
     conn->set_on_frame(std::move(on_frame));
-    conn->set_on_close([this, on_close = std::move(on_close)](Connection *c) {
+    conn->set_on_close([on_close = std::move(on_close)](Connection *c) {
         if (auto *worker = static_cast<Worker *>(c->io_worker); worker != nullptr) {
             worker->request_close(c->shared_from_this());
         }

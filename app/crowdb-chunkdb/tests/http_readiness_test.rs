@@ -8,7 +8,7 @@ mod http_readiness;
 mod slot_groups;
 
 use crowdb_chunkdb::{range_guard::RangeGuard, readiness::RangeReadiness};
-use crowdb_kv_client::ChunkSlotMapClient;
+use crowdb_paxos_kv_client::ChunkSlotMapClient;
 use http_readiness::TestReadiness;
 use std::{
     sync::{atomic::Ordering, Arc},

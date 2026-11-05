@@ -2,13 +2,14 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crate::common::management::{addresses, client, request};
+use crowdb_protocol::port::ports::WEB_BASE;
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
 
 pub(super) async fn setup(count: usize) -> (Client, String, Vec<String>) {
     let ips = addresses(count + 1);
     let http = client();
-    let base = format!("http://{}:9090", ips[count]);
+    let base = format!("http://{}:{WEB_BASE}", ips[count]);
     request(&http, &base, Method::POST, "/api/racks", json!({"id":1}), 201).await;
     for (index, ip) in ips[..count].iter().enumerate() {
         request(

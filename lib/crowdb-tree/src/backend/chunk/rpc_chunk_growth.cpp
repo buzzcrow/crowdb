@@ -11,52 +11,6 @@ namespace
 constexpr uint64_t kGrowthBytes = 4U * 1024U * 1024U;
 }
 
-Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint64_t owner_epoch, ChunkId *chunk_id,
-                                                PagePurpose purpose)
-{
-    if (!valid() || chunk_id == nullptr || logical_capacity == 0 || !valid_page_purpose(purpose) ||
-        logical_capacity > std::numeric_limits<uint32_t>::max()) {
-        return Status::invalid_argument("tree chunk RPC allocation arguments are invalid");
-    }
-    const uint64_t request_id       = impl_->next_request_id();
-    const uint64_t initial_capacity = std::min(logical_capacity, kGrowthBytes);
-    const auto     geometry =
-        rpc_chunk_allocation(initial_capacity, impl_->options.strip_capacity_bytes, impl_->options.mirror_copies);
-    flatbuffers::FlatBufferBuilder builder;
-    auto                           request = crowdb::chunkdb::proto::CreateFBAllocateChunkRequest(
-        builder, request_id, monotonic_nanos(), nullptr, geometry.granularity_kb, geometry.strip_count,
-        FBStripType_Mirror, 0, 0, impl_->options.mirror_copies == 0 ? 2 : impl_->options.mirror_copies,
-        static_cast<crowdb::chunkdb::proto::FBChunkType>(purpose), owner_epoch, impl_->options.writer_lease_ms);
-    builder.Finish(request);
-    std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
-    RpcResult            result;
-    Status               status = impl_->call_chunkdb<crowdb::chunkdb::proto::FBAllocateChunkResponse>(
-        {}, request_id, crowdb::rpc::proto::FBMsgType_EAllocateChunkRequest, control, &result);
-    if (!status.ok()) {
-        return status;
-    }
-    const auto *response = verified_response<crowdb::chunkdb::proto::FBAllocateChunkResponse>(result.control);
-    if (response == nullptr) {
-        return Status::corruption("ChunkDB allocation response is malformed");
-    }
-    status = chunkdb_status(response->ret_code(), response->error_msg());
-    if (!status.ok()) {
-        return status;
-    }
-    Impl::RemoteChunk remote;
-    status = crowdb::tree::detail::RpcChunkTransport::Impl::parse_chunk(response->chunk(), &remote);
-    if (!status.ok() || remote.layout.chunk_id.empty() || remote.owner_epoch != owner_epoch ||
-        remote.layout.logical_capacity < initial_capacity || chunk_purpose(remote.layout.chunk_id) != purpose) {
-        return status.ok() ? Status::corruption("ChunkDB allocation metadata mismatch") : status;
-    }
-    remote.valid_until_ms         = std::numeric_limits<uint64_t>::max();
-    remote.maximum_capacity       = logical_capacity;
-    remote.self_fence_deadline_ms = monotonic_millis() + kLivenessSelfFenceMs;
-    *chunk_id                     = remote.layout.chunk_id;
-    impl_->cache(std::move(remote));
-    return Status::Ok();
-}
-
 Status RpcChunkTransport::ensure_capacity(ChunkId chunk_id, uint64_t required_bytes)
 {
     // Only the ordered planner grows chunks. Mirror submissions never allocate,

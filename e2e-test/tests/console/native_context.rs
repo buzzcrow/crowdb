@@ -3,7 +3,8 @@
 
 //! Host clients of the normal three-node Console deployment surface.
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
+use crowdb_protocol::port::ports::{PAXOS_KV_SERVER_MGMT_BASE, PAXOS_KV_SERVER_RPC_BASE, WEB_BASE};
 use reqwest::{Client, Method};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
@@ -11,7 +12,7 @@ use std::{sync::Arc, time::Duration};
 pub(super) struct TestNativeContext {
     pub(super) http: Client,
     pub(super) base: String,
-    pub(super) kv: Arc<CrowdbKvClient>,
+    pub(super) kv: Arc<PaxosKvClient>,
     pub(super) addresses: Vec<String>,
 }
 
@@ -23,7 +24,7 @@ impl TestNativeContext {
             .timeout(Duration::from_secs(20))
             .build()
             .unwrap();
-        let base = format!("http://{}:9090", addresses[0]);
+        let base = format!("http://{}:{WEB_BASE}", addresses[0]);
         let group = crate::common::management::request(
             &http,
             &base,
@@ -43,13 +44,13 @@ impl TestNativeContext {
             .unwrap();
         let index = usize::try_from(leader.checked_sub(1).unwrap()).unwrap();
         assert!(index < addresses.len());
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
             addresses
                 .iter()
-                .map(|address| format!("http://{address}:10000"))
+                .map(|address| format!("http://{address}:{PAXOS_KV_SERVER_MGMT_BASE}"))
                 .collect(),
         )));
-        kv.seed_leader(0, 0, format!("{}:10100", addresses[index]));
+        kv.seed_leader(0, 0, format!("{}:{PAXOS_KV_SERVER_RPC_BASE}", addresses[index]));
         Self {
             http,
             base,

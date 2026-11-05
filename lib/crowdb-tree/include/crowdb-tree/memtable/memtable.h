@@ -32,18 +32,32 @@ class MemTable
     // `epoch` is the engine's EpochManager — used to retire unlinked nodes
     // and overwritten cell versions. Must outlive this MemTable (owned by
     // the Crowdbtree, which outlives all MemTables via shared_ptr).
-    explicit MemTable(uint64_t id = 0, EpochManager *epoch = nullptr) : list_(epoch), epoch_(&list_.epoch()), id_(id)
+    explicit MemTable(uint64_t id = 0, EpochManager *epoch = nullptr, std::shared_ptr<AllocationBudget> budget = {})
+        : list_(epoch, std::move(budget)),
+          epoch_(&list_.epoch()),
+          id_(id)
     {
     }
+
+    ~MemTable();
+
+    // Attach only before this table is exposed to writers. Detach only after
+    // closure and writer drain; an old reader may still retain the table.
+    void                            attach_source_stats(std::shared_ptr<SourceMemoryLedger> ledger) noexcept;
+    void                            detach_source_stats() noexcept;
+    [[nodiscard]] SourceMemoryStats source_stats() const noexcept;
 
     [[nodiscard]] VersionMemory memory() const
     {
         return list_.memory();
     }
 
-    [[nodiscard]] EpochManager::Guard read_guard() const
+    [[nodiscard]] EpochManager::Guard read_guard(std::shared_ptr<AllocationBudget> budget = {}) const
     {
-        return epoch_->enter();
+        if (list_.owned_epoch_ && closed() && writers() == 0) {
+            list_.owned_epoch_->seal_source();
+        }
+        return epoch_->enter(std::move(budget));
     }
 
     [[nodiscard]] uint64_t id() const
@@ -56,13 +70,23 @@ class MemTable
     // slot <= durable_floor (already in L1) unless allow_old_slots is set.
     bool upsert(Slice key, uint64_t slot, Slice cell_payload);
     bool upsert(Slice key, uint64_t slot, buffer &&cell_payload, uint64_t bound = UINT64_MAX,
-                MutationStats *stats = nullptr);
+                MutationStats *stats = nullptr, std::shared_ptr<AllocationBudget> budget = {});
 
     // Zero-copy apply path (R30): store a split cell — the value is borrowed
     // from a Rust `bytes::Bytes` via a kExternal buffer (no value memcpy), and
     // the 9-byte cell header is stored as `slot`/`flags` fields.
     bool upsert_external(Slice key, uint64_t slot, uint8_t flags, buffer &&value, uint64_t bound = UINT64_MAX,
-                         MutationStats *stats = nullptr);
+                         MutationStats *stats = nullptr, std::shared_ptr<AllocationBudget> budget = {});
+
+    using PreparedWrite = ConcurrentSkipList::PreparedWrite;
+    // Inputs are already owned and charged by source admission. Preparation
+    // stays on this thread until commit or destruction, with the table alive.
+    [[nodiscard]] PreparedWrite prepare_write(Slice key, buffer cell, uint8_t flags, AllocationLease payload,
+                                              uint64_t bound, size_t max_versions,
+                                              const std::shared_ptr<AllocationBudget> &budget);
+    [[nodiscard]] PreparedWrite prepare_reference(Slice key, std::shared_ptr<const CellVersion> cell, uint64_t bound,
+                                                  size_t max_versions, const std::shared_ptr<AllocationBudget> &budget);
+    bool                        commit_write(PreparedWrite write, uint64_t slot) noexcept;
 
     void set_durable_floor(uint64_t slot);
 
@@ -125,6 +149,12 @@ class MemTable
         return list_.prefix_cursor(frontier, floor);
     }
 
+    [[nodiscard]] ConcurrentSkipList::Cursor range_cursor(std::optional<Slice> lower, std::optional<Slice> upper,
+                                                          uint64_t frontier, uint64_t floor = 0) const
+    {
+        return list_.range_cursor(lower, upper, frontier, floor);
+    }
+
     void prune(Slice key, uint64_t bound, MutationStats *stats = nullptr)
     {
         list_.prune(key, bound, stats);
@@ -136,16 +166,72 @@ class MemTable
     }
 #endif
 
+    struct SealedAdmissionBound
+    {
+        size_t entries;
+        size_t key_bytes;
+    };
+
+    // Set once by SourceAdmission while ordinary admission is paused, before
+    // permanent closure. Includes every accepted writer and all gap capacity.
+    void set_sealed_admission_bound(size_t entries, size_t key_bytes) noexcept
+    {
+        sealed_admission_ = {.entries = entries, .key_bytes = key_bytes};
+        has_sealed_admission_.store(true, std::memory_order_release);
+    }
+
+    [[nodiscard]] std::optional<SealedAdmissionBound> sealed_admission_bound() const noexcept
+    {
+        return has_sealed_admission_.load(std::memory_order_acquire)
+                 ? std::optional<SealedAdmissionBound>{sealed_admission_}
+                 : std::nullopt;
+    }
+
     bool try_enter() noexcept;
     bool validate_open() noexcept;
     void leave() noexcept;
     void close() noexcept;
     void wait_frozen() const noexcept;
 
+    // Intrusive one-shot notification. The caller owns the node and retains
+    // this table until notification returns. A registered node must remain
+    // alive until its callback runs; cancellation does not unlink the node.
+    class FrozenWaiter
+    {
+      public:
+        using Complete = void (*)(void *) noexcept;
+
+        FrozenWaiter(Complete complete, void *context) : complete_(complete), context_(context)
+        {
+        }
+
+        FrozenWaiter(const FrozenWaiter &)            = delete;
+        FrozenWaiter &operator=(const FrozenWaiter &) = delete;
+
+      private:
+        friend class MemTable;
+        FrozenWaiter()               = default;
+        Complete         complete_   = nullptr;
+        void            *context_    = nullptr;
+        FrozenWaiter    *next_       = nullptr;
+        std::atomic_flag registered_ = ATOMIC_FLAG_INIT;
+    };
+
+    // Registration is followed by a readiness recheck. Notification may run
+    // inline, or on the last writer's thread; callbacks must not block.
+    [[nodiscard]] bool notify_when_frozen(FrozenWaiter &waiter) noexcept;
+
     [[nodiscard]] bool closed() const
     {
         return (writers_.load(std::memory_order_acquire) & kClosed) != 0;
     }
+
+#ifdef CROWDB_TREE_TEST_UTIL
+    [[nodiscard]] EpochManager &epoch_for_tests() const noexcept
+    {
+        return list_.epoch();
+    }
+#endif
 
     [[nodiscard]] uint64_t writers() const
     {
@@ -177,6 +263,16 @@ class MemTable
     }
 
   private:
+    friend struct detail::RetirementTraits<MemTable>;
+    static constexpr bool observe_retirement = true;
+
+    bool retire_step() noexcept
+    {
+        return list_.retire_step();
+    }
+
+    void notify_frozen() noexcept;
+
     void update_slot_range(uint64_t slot)
     {
         // Concurrent extrema are monotonic until the whole table is retired.
@@ -188,9 +284,15 @@ class MemTable
         }
     }
 
-    static constexpr uint64_t kClosed = uint64_t{1} << 63;
-    std::atomic<uint64_t>     writers_{0};
-    std::atomic<bool>         backlog_warned_{false};
+    SealedAdmissionBound        sealed_admission_{};
+    std::atomic<bool>           has_sealed_admission_{false};
+    static constexpr uint64_t   kClosed = uint64_t{1} << 63;
+    std::atomic<uint64_t>       writers_{0};
+    static FrozenWaiter         frozen_sentinel_;
+    std::atomic<FrozenWaiter *> frozen_waiters_{nullptr};
+    std::atomic<bool>           backlog_warned_{false};
+    std::atomic_flag            frozen_notified_ = ATOMIC_FLAG_INIT;
+    bool                        source_attached_ = false;
 
     ConcurrentSkipList    list_;
     EpochManager         *epoch_;
@@ -199,6 +301,8 @@ class MemTable
     std::atomic<bool>     allow_old_slots_{false};
     std::atomic<uint64_t> min_slot_{UINT64_MAX};
     std::atomic<uint64_t> max_slot_{0};
+
+  public:
 };
 
 } // namespace crowdb::tree

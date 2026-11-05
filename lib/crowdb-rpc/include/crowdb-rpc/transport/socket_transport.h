@@ -27,7 +27,7 @@ namespace crowdb::rpc
 // references Worker for the owner-worker back-pointer.
 class SocketTransport;
 class Worker;
-class Frame;
+struct Frame;
 
 // ── TransportStats: aggregation + latency counters ────────────────
 //

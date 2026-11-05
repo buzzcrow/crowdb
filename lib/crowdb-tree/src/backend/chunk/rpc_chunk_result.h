@@ -4,6 +4,7 @@
 #pragma once
 
 #include "crowdb-rpc/c_api.h"
+#include "host_completion.h"
 
 #include <atomic>
 #include <utility>
@@ -59,8 +60,8 @@ struct RpcResult
 
 struct RpcCallState
 {
-    std::atomic<bool> done{false};
-    RpcResult         result;
+    HostCompletion done;
+    RpcResult      result;
 };
 
 inline void rpc_complete(uint64_t /*unused*/, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
@@ -70,8 +71,7 @@ inline void rpc_complete(uint64_t /*unused*/, crowdb_rpc_buffer_t control, crowd
     state->result.status  = status;
     state->result.control = control;
     state->result.data    = data;
-    state->done.store(true, std::memory_order_release);
-    state->done.notify_one();
+    state->done.signal();
 }
 
 } // namespace crowdb::tree::detail

@@ -1,10 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#include "backend/chunk/chunk_page_store.h"
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/btree/range_rebuild.h"
 #include "crowdb-tree/c_api.h"
+#include "runtime_tree_access.h"
 
 #include <gtest/gtest.h>
 
@@ -62,6 +62,24 @@ NativeFrame make_inner_frame(uint64_t page_id, const std::vector<uint64_t> &chil
     return frame;
 }
 
+TEST(RangeRebuild, UnboundedVolatileSourceBuildsIntoAnotherSharedHost)
+{
+    Crowdbtree source;
+    ASSERT_TRUE(source.put("a", "one").ok());
+    ASSERT_TRUE(source.put("z", "two").ok());
+    std::shared_ptr<TreeRuntime> runtime;
+    ASSERT_TRUE(TreeRuntime::create({}, &runtime).ok());
+    MemPageStore store(1);
+    Config       config;
+    config.runtime    = runtime;
+    config.page_store = &store;
+    std::unique_ptr<Crowdbtree> destination;
+    const auto                  status = rebuild_range(source, KeyRange::unbounded(), config, &destination);
+    ASSERT_TRUE(status.ok()) << status.to_string();
+    EXPECT_EQ(live_entries(*destination), live_entries(source));
+    EXPECT_EQ(destination->durable_snapshot_last_applied_slot(), source.last_applied_slot());
+}
+
 TEST(RangeRebuild, AdjacentChildrenHaveExactUnionAndEmptyIntersection)
 {
     MemPageStore source_store(1);
@@ -104,10 +122,12 @@ TEST(RangeRebuild, AdjacentChildrenHaveExactUnionAndEmptyIntersection)
     EXPECT_EQ(left_entries, expected);
     EXPECT_EQ(left->get(Slice("k1050"), nullptr, nullptr), false);
     EXPECT_EQ(right->get(Slice("k1049"), nullptr, nullptr), false);
-    EXPECT_GT(left_stats.pages_reused, 0U);
+    EXPECT_EQ(left_stats.pages_reused, 0U);
     EXPECT_GT(left_stats.pages_rebuilt, 0U);
-    EXPECT_GT(left_stats.subtrees_skipped, 0U);
-    EXPECT_GT(right_stats.pages_reused, 0U);
+    EXPECT_GT(left_stats.subtrees_skipped, 0U)
+        << "source leaves=" << RuntimeTreeAccess_for_tests::capture(source)->stats.leaf_pages
+        << " rootlevel=" << RuntimeTreeAccess_for_tests::root(source)->level;
+    EXPECT_EQ(right_stats.pages_reused, 0U);
     EXPECT_GT(right_stats.pages_rebuilt, 0U);
     EXPECT_GT(right_stats.subtrees_skipped, 0U);
 }
@@ -139,7 +159,7 @@ TEST(RangeRebuild, OversizedSourceLeafSplitsIntoFixedDestinationFrames)
     MemPageStore source_store(1);
     Config       options;
     options.page_store       = &source_store;
-    options.frame_bytes      = 4096;
+    options.frame_bytes      = 65536;
     options.leaf_split_bytes = 65536;
     options.max_inline_value = 2048;
     Crowdbtree source(options);
@@ -155,7 +175,9 @@ TEST(RangeRebuild, OversizedSourceLeafSplitsIntoFixedDestinationFrames)
     }));
 
     MemPageStore destination_store(1);
-    options.page_store = &destination_store;
+    options.page_store       = &destination_store;
+    options.frame_bytes      = 4096;
+    options.leaf_split_bytes = 3000;
     std::unique_ptr<Crowdbtree> destination;
     ASSERT_TRUE(
         rebuild_range(source, KeyRange::bounded(std::string("k1012"), std::string("k1036")), options, &destination)
@@ -333,14 +355,14 @@ TEST(RangeRebuild, ConcurrentWorkersPublishIndependentTrees)
         std::async(std::launch::async, worker, &high_store, KeyRange::bounded(std::string("k20"), std::nullopt));
     auto low  = low_future.get();
     auto high = high_future.get();
-    ASSERT_TRUE(low.first.ok());
-    ASSERT_TRUE(high.first.ok());
+    ASSERT_TRUE(low.first.ok()) << low.first.to_string();
+    ASSERT_TRUE(high.first.ok()) << high.first.to_string();
     EXPECT_FALSE(live_entries(*low.second).empty());
     EXPECT_FALSE(live_entries(*high.second).empty());
     EXPECT_EQ(live_entries(source).size(), 20U);
 }
 
-TEST(RangeRebuild, WhollyContainedTreeReusesNativePageFrames)
+TEST(RangeRebuild, WhollyContainedTreeCopiesIntoIndependentPaidFrames)
 {
     MemPageStore source_store(1);
     Config       options;
@@ -361,253 +383,10 @@ TEST(RangeRebuild, WhollyContainedTreeReusesNativePageFrames)
     ASSERT_TRUE(rebuild_range(source, KeyRange::bounded(std::string("k100"), std::string("k999")), options,
                               &destination, &stats)
                     .ok());
-    EXPECT_GT(stats.pages_reused, 0U);
-    EXPECT_EQ(stats.pages_rebuilt, 0U);
+    EXPECT_EQ(stats.pages_reused, 0U);
+    EXPECT_GT(stats.pages_rebuilt, 0U);
     EXPECT_EQ(stats.entries_emitted, 40U);
     EXPECT_EQ(live_entries(*destination), live_entries(source));
-}
-
-TEST(RangeRebuild, ChunkChildPublishesIndependentManifestWithSharedPacks)
-{
-    auto                   catalog   = std::make_shared<detail::MemoryRootCatalog>(1);
-    auto                   transport = std::make_shared<detail::MemoryChunkTransport>();
-    detail::ChunkPageStore source_store(
-        {.tree_id = 60, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
-    Config source_options;
-    source_options.page_store       = &source_store;
-    source_options.frame_bytes      = 4096;
-    source_options.leaf_split_bytes = 256;
-    Crowdbtree source(source_options);
-    for (uint64_t index = 0; index < 80; ++index) {
-        ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice(std::string(128, 'v'))).ok());
-    }
-    ASSERT_TRUE(source.flush().ok());
-    ASSERT_TRUE(source.snapshot().ok());
-    auto source_manifest = catalog->load(60);
-    ASSERT_NE(source_manifest, nullptr);
-
-    detail::ChunkPageStore child_store(
-        {.tree_id = 61, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
-    Config child_options     = source_options;
-    child_options.page_store = &child_store;
-    std::unique_ptr<Crowdbtree> child;
-    ASSERT_TRUE(rebuild_range(source, KeyRange::unbounded(), child_options, &child).ok());
-    MappingSegment *source_segment = source.mapping().segment_at(0);
-    MappingSegment *child_segment  = child->mapping().segment_at(0);
-    ASSERT_NE(source_segment, nullptr);
-    ASSERT_NE(child_segment, nullptr);
-    EXPECT_EQ(child_segment->image_addr, source_segment->image_addr);
-    EXPECT_EQ(child_segment->image_crc, source_segment->image_crc);
-
-    auto child_manifest = catalog->load(61);
-    ASSERT_NE(child_manifest, nullptr);
-    EXPECT_NE(child_manifest, source_manifest);
-    EXPECT_GT(child_manifest->packs_reused, 0U);
-    EXPECT_GT(child_store.stats().pack_bytes_reused, 0U);
-    bool shares_pack = false;
-    for (const detail::ChunkPagePack &child_pack : child_manifest->packs) {
-        shares_pack = shares_pack || std::any_of(source_manifest->packs.begin(), source_manifest->packs.end(),
-                                                 [&](const detail::ChunkPagePack &source_pack) {
-                                                     return child_pack.ref.chunk_id == source_pack.ref.chunk_id &&
-                                                            child_pack.ref.offset == source_pack.ref.offset;
-                                                 });
-    }
-    EXPECT_TRUE(shares_pack);
-
-    ASSERT_TRUE(child->put(Slice("new-key"), Slice("child-only")).ok());
-    ASSERT_TRUE(child->flush().ok());
-    ASSERT_TRUE(child->snapshot().ok());
-    EXPECT_NE(child->mapping().segment_at(0)->image_addr, source_segment->image_addr);
-    EXPECT_EQ(live_entries(source).contains("new-key"), false);
-    EXPECT_EQ(live_entries(*child).at("new-key"), "child-only");
-    EXPECT_GT(child_store.stats().packs_reused, child_manifest->packs_reused);
-}
-
-TEST(RangeRebuild, RetryAtomicallyReplacesAnAlreadyPublishedChunkChild)
-{
-    auto                   catalog   = std::make_shared<detail::MemoryRootCatalog>(1);
-    auto                   transport = std::make_shared<detail::MemoryChunkTransport>();
-    detail::ChunkPageStore source_store(
-        {.tree_id = 62, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
-    Config source_options;
-    source_options.page_store  = &source_store;
-    source_options.frame_bytes = 4096;
-    Crowdbtree source(source_options);
-    ASSERT_TRUE(source.put(Slice("a"), Slice("first")).ok());
-    ASSERT_TRUE(source.flush().ok());
-    ASSERT_TRUE(source.snapshot().ok());
-
-    detail::ChunkPageStore first_child_store(
-        {.tree_id = 63, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
-    Config child_options     = source_options;
-    child_options.page_store = &first_child_store;
-    std::unique_ptr<Crowdbtree> child;
-    ASSERT_TRUE(rebuild_range(source, KeyRange::unbounded(), child_options, &child).ok());
-    const auto first_manifest = catalog->load(63);
-    ASSERT_NE(first_manifest, nullptr);
-    child.reset();
-
-    ASSERT_TRUE(source.put(Slice("b"), Slice("second")).ok());
-    ASSERT_TRUE(source.flush().ok());
-    ASSERT_TRUE(source.snapshot().ok());
-    detail::ChunkPageStore retry_child_store(
-        {.tree_id = 63, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
-    child_options.page_store = &retry_child_store;
-    ASSERT_TRUE(rebuild_range(source, KeyRange::unbounded(), child_options, &child).ok());
-    EXPECT_EQ(live_entries(*child), (std::map<std::string, std::string>{
-                                        {"a", "first" },
-                                        {"b", "second"}
-    }));
-    const auto retry_manifest = catalog->load(63);
-    ASSERT_NE(retry_manifest, nullptr);
-    EXPECT_GT(retry_manifest->generation, first_manifest->generation);
-}
-
-TEST(RangeRebuild, MappingMaterializationClearsInheritedUnreachableSlots)
-{
-    auto                   catalog   = std::make_shared<detail::MemoryRootCatalog>(1);
-    auto                   transport = std::make_shared<detail::MemoryChunkTransport>();
-    detail::ChunkPageStore source_store(
-        {.tree_id = 70, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
-    Config source_options;
-    source_options.page_store       = &source_store;
-    source_options.frame_bytes      = 4096;
-    source_options.leaf_split_bytes = 256;
-    Crowdbtree source(source_options);
-    for (uint64_t index = 0; index < 80; ++index) {
-        ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice(std::string(128, 'v'))).ok());
-    }
-    ASSERT_TRUE(source.flush().ok());
-    ASSERT_TRUE(source.snapshot().ok());
-
-    detail::ChunkPageStore child_store(
-        {.tree_id = 71, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
-    Config child_options              = source_options;
-    child_options.page_store          = &child_store;
-    const KeyRange              range = KeyRange::bounded(std::string("k1020"), std::string("k1060"));
-    std::unique_ptr<Crowdbtree> child;
-    ASSERT_TRUE(rebuild_range(source, range, child_options, &child).ok());
-    MappingSegment *segment = child->mapping().segment_at(0);
-    ASSERT_NE(segment, nullptr);
-    const uint32_t inherited_live_slots = segment->live_count.load();
-
-    bool complete = false;
-    for (uint32_t pass = 0; pass < 16 && !complete; ++pass) {
-        uint64_t bytes_written = 0;
-        ASSERT_TRUE(child->materialize_ownership(&bytes_written, &complete).ok());
-    }
-    ASSERT_TRUE(complete);
-    ASSERT_NE(child->mapping().segment_at(0), nullptr);
-    EXPECT_LT(child->mapping().segment_at(0)->live_count.load(), inherited_live_slots);
-    EXPECT_EQ(live_entries(*child).size(), 40U);
-    EXPECT_FALSE(live_entries(*child).contains("k1019"));
-    EXPECT_FALSE(live_entries(*child).contains("k1060"));
-
-    child.reset();
-    ASSERT_TRUE(Crowdbtree::open(child_options, &child).ok());
-    EXPECT_EQ(live_entries(*child).size(), 40U);
-    EXPECT_FALSE(live_entries(*child).contains("k1019"));
-    EXPECT_FALSE(live_entries(*child).contains("k1060"));
-    Batch after_repack;
-    after_repack.ops.push_back({.key = "k1030x", .kind = OpKind::kPut, .value = "after-repack"});
-    ASSERT_TRUE(child->apply(81, after_repack).ok());
-    ASSERT_TRUE(child->flush().ok());
-    ASSERT_TRUE(child->snapshot().ok());
-    child.reset();
-    ASSERT_TRUE(Crowdbtree::open(child_options, &child).ok());
-    EXPECT_EQ(live_entries(*child).at("k1030x"), "after-repack");
-}
-
-TEST(RangeRebuild, UnsnapshottedSourcePageIsCopiedInsteadOfInherited)
-{
-    auto                   catalog   = std::make_shared<detail::MemoryRootCatalog>(1);
-    auto                   transport = std::make_shared<detail::MemoryChunkTransport>();
-    detail::ChunkPageStore source_store(
-        {.tree_id = 72, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
-    Config source_options;
-    source_options.page_store  = &source_store;
-    source_options.frame_bytes = 4096;
-    Crowdbtree source(source_options);
-    ASSERT_TRUE(source.put(Slice("key"), Slice("old")).ok());
-    ASSERT_TRUE(source.flush().ok());
-    ASSERT_TRUE(source.snapshot().ok());
-    const uint64_t source_image = source.mapping().segment_at(0)->image_addr;
-
-    ASSERT_TRUE(source.put(Slice("key"), Slice("new")).ok());
-    ASSERT_TRUE(source.flush().ok());
-
-    detail::ChunkPageStore child_store(
-        {.tree_id = 73, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
-    Config child_options     = source_options;
-    child_options.page_store = &child_store;
-    std::unique_ptr<Crowdbtree> child;
-    ASSERT_TRUE(rebuild_range(source, KeyRange::unbounded(), child_options, &child).ok());
-    EXPECT_EQ(live_entries(*child).at("key"), "new");
-    EXPECT_NE(child->mapping().segment_at(0)->image_addr, source_image);
-
-    child.reset();
-    ASSERT_TRUE(Crowdbtree::open(child_options, &child).ok());
-    EXPECT_EQ(live_entries(*child).at("key"), "new");
-}
-
-TEST(RangeRebuild, MappingMaterializationRestartsAfterConcurrentFlush)
-{
-    auto                   catalog   = std::make_shared<detail::MemoryRootCatalog>(1);
-    auto                   transport = std::make_shared<detail::MemoryChunkTransport>();
-    detail::ChunkPageStore source_store(
-        {.tree_id = 74, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
-    Config source_options;
-    source_options.page_store       = &source_store;
-    source_options.frame_bytes      = 4096;
-    source_options.leaf_split_bytes = 256;
-    Crowdbtree source(source_options);
-    for (uint64_t index = 0; index < 80; ++index) {
-        ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice(std::string(128, 'v'))).ok());
-    }
-    ASSERT_TRUE(source.flush().ok());
-    ASSERT_TRUE(source.snapshot().ok());
-
-    detail::ChunkPageStore child_store(
-        {.tree_id = 75, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
-    Config child_options              = source_options;
-    child_options.page_store          = &child_store;
-    const KeyRange              range = KeyRange::bounded(std::string("k1020"), std::string("k1060"));
-    std::unique_ptr<Crowdbtree> child;
-    ASSERT_TRUE(rebuild_range(source, range, child_options, &child).ok());
-
-    catalog->block_next_publish_for_tests();
-    Status      first_status;
-    uint64_t    first_bytes    = 0;
-    bool        first_complete = true;
-    std::thread materializer([&] { first_status = child->materialize_ownership(&first_bytes, &first_complete); });
-    catalog->wait_for_blocked_publish_for_tests();
-    Status mutation_status;
-    for (uint64_t index = 20; index < 40; ++index) {
-        Batch batch;
-        batch.ops.push_back({.key = "k" + std::to_string(index + 1000), .kind = OpKind::kDelete, .value = {}});
-        mutation_status = child->apply(81 + index - 20, batch);
-        if (!mutation_status.ok()) {
-            break;
-        }
-    }
-    if (mutation_status.ok()) {
-        mutation_status = child->flush();
-    }
-    catalog->release_blocked_publish_for_tests();
-    materializer.join();
-    ASSERT_TRUE(mutation_status.ok());
-    ASSERT_TRUE(first_status.ok());
-    EXPECT_FALSE(first_complete);
-    EXPECT_EQ(first_bytes, 0U);
-    EXPECT_TRUE(child_store.has_shared_ownership());
-
-    bool complete = false;
-    for (uint32_t pass = 0; pass < 16 && !complete; ++pass) {
-        uint64_t bytes_written = 0;
-        ASSERT_TRUE(child->materialize_ownership(&bytes_written, &complete).ok());
-    }
-    ASSERT_TRUE(complete);
-    EXPECT_EQ(live_entries(*child).size(), 20U);
 }
 
 TEST(RangeRebuild, CopiesOnlyOverflowChainsReferencedByTheChildRange)
@@ -638,13 +417,13 @@ TEST(RangeRebuild, CopiesOnlyOverflowChainsReferencedByTheChildRange)
     const auto rebuilt = live_entries(*destination);
     ASSERT_EQ(rebuilt.size(), 1U);
     EXPECT_EQ(rebuilt.at("m"), kept_value);
-    EXPECT_EQ(stats.entries_examined, 3U);
+    EXPECT_EQ(stats.entries_examined, 1U);
     EXPECT_EQ(stats.entries_emitted, 1U);
-    EXPECT_EQ(stats.entries_filtered, 2U);
+    EXPECT_EQ(stats.entries_filtered, 0U);
     EXPECT_EQ(live_entries(source).size(), 3U);
 }
 
-TEST(RangeRebuild, RewrittenRootAllocatesAboveSourcePageIdHighWater)
+TEST(RangeRebuild, RewrittenRootHasAnIndependentValidPageIdNamespace)
 {
     MemPageStore source_store(1);
     Config       options;
@@ -673,7 +452,10 @@ TEST(RangeRebuild, RewrittenRootAllocatesAboveSourcePageIdHighWater)
     std::vector<NativeFrame> destination_frames;
     uint64_t                 destination_root = kInvalidPageId;
     ASSERT_TRUE(destination->collect_native_frames(&destination_frames, &destination_root, nullptr).ok());
-    EXPECT_GE(destination_root, source_highwater);
+    const auto destination_view = RuntimeTreeAccess_for_tests::capture(*destination);
+    EXPECT_LT(destination_root, destination_view->next_page_id);
+    EXPECT_EQ(live_entries(*destination).size(), 42U);
+    EXPECT_NE(RuntimeTreeAccess_for_tests::root(source), RuntimeTreeAccess_for_tests::root(*destination));
     EXPECT_EQ(source_root < source_highwater, true);
 }
 
@@ -934,7 +716,7 @@ TEST(RangeRebuild, NativeInstallUpgradesLegacyInnerFramesWithoutFences)
     EXPECT_EQ(live_entries(destination).size(), 2U);
 }
 
-TEST(RangeRebuild, RecoveredTreeValidatesBeforeEnablingSubtreePruning)
+TEST(RangeRebuild, RecoveredTreeValidatesBeforeFirstRangePruning)
 {
     MemPageStore store(1);
     Config       options;
@@ -960,7 +742,7 @@ TEST(RangeRebuild, RecoveredTreeValidatesBeforeEnablingSubtreePruning)
     std::unique_ptr<Crowdbtree> first;
     RangeRebuildStats           first_stats;
     ASSERT_TRUE(rebuild_range(*recovered, range, child_options, &first, &first_stats).ok());
-    EXPECT_EQ(first_stats.subtrees_skipped, 0U);
+    EXPECT_GT(first_stats.subtrees_skipped, 0U);
 
     MemPageStore second_store(1);
     child_options.page_store = &second_store;
@@ -1026,9 +808,9 @@ TEST(RangeRebuild, CApiBuildsAnIndependentTreeOnAnInjectedStore)
     ct_range_rebuild_stats stats        = {};
     ASSERT_EQ(ct_rebuild_range(source, &destination_options, &destination, &stats), 0);
     ct_page_store_free(store);
-    EXPECT_EQ(stats.entries_examined, 4U);
+    EXPECT_EQ(stats.entries_examined, 1U);
     EXPECT_EQ(stats.entries_emitted, 1U);
-    EXPECT_EQ(stats.entries_filtered, 3U);
+    EXPECT_EQ(stats.entries_filtered, 0U);
 
     int32_t  found = 0;
     uint64_t slot  = 0;

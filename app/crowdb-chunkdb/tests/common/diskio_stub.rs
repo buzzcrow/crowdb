@@ -4,10 +4,11 @@
 //! Volatile protocol stub for pinned placement/task proofs. Packaged Diskio
 //! discovery, bytes and durability are verified by the container acceptance.
 
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use crowdb_protocol::diskio_fb::{
-    FBDiskFsyncRequest, FBDiskFsyncResponse, FBDiskFsyncResponseArgs, FBDiskReadRequest, FBDiskReadResponse,
-    FBDiskReadResponseArgs, FBDiskWriteRequest, FBDiskWriteResponse, FBDiskWriteResponseArgs,
+    FBDiskFsyncRequest, FBDiskFsyncResponse, FBDiskFsyncResponseArgs, FBDiskIoRetCode, FBDiskReadRequest,
+    FBDiskReadResponse, FBDiskReadResponseArgs, FBDiskWriteRequest, FBDiskWriteResponse,
+    FBDiskWriteResponseArgs,
 };
 use crowdb_protocol::fb::{
     ConnectionPingRequest, ConnectionPingResponse, ConnectionPingResponseArgs, FBMsgType,
@@ -155,11 +156,34 @@ fn response(
     } else if kind == FBMsgType::EDiskReadRequest.0 as u16 {
         control.read_calls.fetch_add(1, Ordering::Relaxed);
         let request = flatbuffers::root::<FBDiskReadRequest>(ctrl).unwrap();
-        payload = read_blocks(blocks, &request);
+        let now_ms = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap();
+        let age = checked_read_age(
+            request.read_create_time_ms(),
+            request.fence_probe(),
+            request.size(),
+            now_ms,
+        );
+        let (ret_code, request_age_checked) = match age {
+            Ok(checked) => {
+                if !request.fence_probe() {
+                    payload = read_blocks(blocks, &request);
+                }
+                (FBDiskIoRetCode::Success, checked)
+            }
+            Err(error) => (error, false),
+        };
         let reply = FBDiskReadResponse::create(
             &mut builder,
             &FBDiskReadResponseArgs {
                 id: request.id(),
+                ret_code,
+                request_age_checked,
                 ..Default::default()
             },
         );
@@ -207,4 +231,27 @@ fn read_blocks(blocks: &Blocks, request: &FBDiskReadRequest<'_>) -> Vec<u8> {
         }
     }
     bytes
+}
+
+// Mirror the production DiskIO admission age ceiling for synchronous fixture reads.
+pub fn checked_read_age(
+    created_ms: u64,
+    probe: bool,
+    size: u32,
+    now_ms: u64,
+) -> Result<bool, FBDiskIoRetCode> {
+    use crowdb_protocol::timing::{MAX_WRITE_CLOCK_SKEW_MS, MAX_WRITE_REQUEST_AGE_MS};
+    if probe && (created_ms == 0 || size != 0) {
+        return Err(FBDiskIoRetCode::OldRequest);
+    }
+    if created_ms == 0 {
+        return Ok(false);
+    }
+    let deadline = created_ms.checked_add(MAX_WRITE_REQUEST_AGE_MS + MAX_WRITE_CLOCK_SKEW_MS);
+    if created_ms.saturating_sub(now_ms) > MAX_WRITE_CLOCK_SKEW_MS
+        || deadline.map_or(true, |deadline| deadline <= now_ms)
+    {
+        return Err(FBDiskIoRetCode::OldRequest);
+    }
+    Ok(true)
 }

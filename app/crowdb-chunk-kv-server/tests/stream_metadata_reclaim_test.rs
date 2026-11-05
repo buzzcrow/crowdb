@@ -8,14 +8,14 @@ use crowdb_chunk_stream::{
     memory::MemoryStreamStore, ChunkStream, KvStreamMetadataStore, StreamConfig, StreamMetadataStore,
     StreamName, StreamPurpose, StreamRecord, StreamRecordState,
 };
-use crowdb_kv_client::{CrowdbKvClient, ReadMode};
+use crowdb_paxos_kv_client::{PaxosKvClient, ReadMode};
 use crowdb_protocol::chunk_stream::decode_stream_chunk_record;
 use crowdb_protocol::key::{BinaryKey, StreamChunkRecordKey};
 
 #[path = "common/metadata.rs"]
 mod metadata;
 
-async fn pages(kv: &CrowdbKvClient, name: StreamName) -> Vec<StreamChunkRecordKey> {
+async fn pages(kv: &PaxosKvClient, name: StreamName) -> Vec<StreamChunkRecordKey> {
     kv.scan(
         0,
         1,

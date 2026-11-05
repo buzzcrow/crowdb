@@ -24,7 +24,7 @@ async-trait = "0.1"
 bytes = "1"
 crc32fast = "1"
 crowdb-common = { path = "../crowdb-common/rust" }
-crowdb-kv-client = { path = "../crowdb-kv-client" }
+crowdb-paxos-kv-client = { path = "../crowdb-paxos-kv-client" }
 crowdb-chunk-client = { path = "../crowdb-chunk-client" }
 crowdb-protocol = { path = "../crowdb-protocol" }
 crossbeam-skiplist = "0.1"
@@ -38,5 +38,5 @@ tracing = { workspace = true }
 [dev-dependencies]
 crowdb-chunk-stream = { path = ".", features = ["test-util"] }
 crowdb-test-harness = { path = "../crowdb-test-harness" }
-crowdb-kv = { path = "../crowdb-kv", features = ["test-util"] }
+crowdb-paxos-kv = { path = "../crowdb-paxos-kv", features = ["test-util"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }

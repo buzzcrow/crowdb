@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_rpc_ffi::{
     ConnectionPoolError, ConnectionPoolIndex, OwnedClientRoute, OwnedPayload, RpcError, RpcServer,
     SelectedConnection,

@@ -14,7 +14,7 @@ use crate::repair::{RepairCoordinator, RepairStripTaskHandler};
 use crate::task::{
     RelocateSegmentTaskHandler, TaskExecutor, TaskHandler, TaskManager, TaskScanner, TaskStore,
 };
-use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{HardwareClient, ServiceRegistryClient};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;

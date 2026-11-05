@@ -7,12 +7,12 @@ use std::sync::Arc;
 
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
 use crowdb_chunk_kv::{
-    Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionRange, PartitionTree, PreparedSplit,
+    Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionRange, PreparedSplit,
     PreparedSplitWriterArtifact, SplitArtifact, SplitChild, SplitPlan, SplitWriterTarget,
     StreamPartitionJournal, TransitionId,
 };
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName, StreamRegistry};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, PartitionArtifact, SplitChildAssignment, SplitTransition, TailOverlayArtifact,
     TransferTransition,
@@ -26,8 +26,14 @@ use thiserror::Error;
 use crate::{BootstrapPartitionConfig, ChunkKvServerConfig};
 
 mod bootstrap;
+pub mod legacy_retirement;
 mod root_catalog;
-use bootstrap::{initialize_bootstrap_root, recover_bootstrap_partition};
+#[cfg(feature = "test-util")]
+mod root_catalog_test;
+mod tree_owner;
+use bootstrap::{initialize_bootstrap_root, open_bootstrap_partition, recover_bootstrap_partition};
+#[cfg(feature = "test-util")]
+pub use root_catalog_test::{open_root_catalog_with_process_for_tests, TestOwnedRootCatalog};
 mod split_handoff;
 mod split_recovery;
 mod streams;
@@ -47,19 +53,42 @@ pub enum StorageRuntimeError {
 
 /// Process-wide production clients shared by every hosted partition stream.
 pub struct ChunkKvStorage {
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
     chunk_io: ChunkIoClient,
     streams: Arc<ProductionStreamRuntime>,
     tree_transport: Arc<ChunkTransport>,
+    tree_runtime: Arc<crowdb_tree_ffi::TreeRuntime>,
+    tree_options: crowdb_tree_ffi::Config,
+    partition_config: PartitionConfig,
+    pin_releases: crowdb_tree_ffi::chunk::pin_service::ChunkPinReleaseService,
     tree_mirror_copies: u32,
     tree_chunk_capacity_bytes: u64,
     metadata_store_id: u64,
+    owner_process: arc_swap::ArcSwapOption<crowdb_paxos_kv_client::StreamProcessAuthority>,
 }
 
-struct TreeStorageGeometry {
+struct TreeStorageOptions {
     mirror_copies: u32,
     chunk_capacity_bytes: u64,
     strip_capacity_bytes: u32,
+    pin_release_slots: usize,
+    runtime: crowdb_tree_ffi::TreeRuntimeOptions,
+    native: crowdb_tree_ffi::Config,
+    partition: PartitionConfig,
+}
+
+impl Default for TreeStorageOptions {
+    fn default() -> Self {
+        Self {
+            mirror_copies: 2,
+            chunk_capacity_bytes: 256 * 1024 * 1024,
+            strip_capacity_bytes: 0,
+            pin_release_slots: 1_048_576,
+            runtime: crowdb_tree_ffi::TreeRuntimeOptions::default(),
+            native: crowdb_tree_ffi::Config::default(),
+            partition: PartitionConfig::default(),
+        }
+    }
 }
 
 impl ChunkKvStorage {
@@ -70,7 +99,7 @@ impl ChunkKvStorage {
     ///
     /// Returns an endpoint discovery or storage configuration error.
     pub async fn connect(config: &ChunkKvServerConfig) -> Result<Self, StorageRuntimeError> {
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
             config.group0_mgmt_seeds.clone(),
         )));
         let chunk_io = ChunkIoClient::connect_with_kv(
@@ -84,15 +113,19 @@ impl ChunkKvStorage {
         )
         .await
         .map_err(|error| StorageRuntimeError::ChunkIo(error.to_string()))?;
-        Self::from_parts_with_geometry(
+        Self::from_parts_with_options(
             kv,
             chunk_io,
             config.storage.metadata_store_id,
             config.storage.stream_writer_lease_ms,
-            TreeStorageGeometry {
+            TreeStorageOptions {
                 mirror_copies: config.storage.stream_mirror_copies,
                 chunk_capacity_bytes: config.storage.tree_chunk_capacity_bytes,
                 strip_capacity_bytes: config.storage.tree_strip_capacity_bytes,
+                pin_release_slots: config.storage.tree_pin_release_slots,
+                runtime: config.tree_runtime.runtime_options(),
+                native: config.native_tree_options(),
+                partition: config.partition.clone(),
             },
             StreamConfig {
                 chunk_capacity_bytes: config.storage.stream_chunk_capacity_bytes,
@@ -106,12 +139,12 @@ impl ChunkKvStorage {
         .await
     }
 
-    async fn from_parts_with_geometry(
-        kv: Arc<CrowdbKvClient>,
+    async fn from_parts_with_options(
+        kv: Arc<PaxosKvClient>,
         chunk_io: ChunkIoClient,
         metadata_store_id: u64,
         writer_lease_ms: u64,
-        tree: TreeStorageGeometry,
+        tree: TreeStorageOptions,
         stream_config: StreamConfig,
         read_policy: ChunkReadPolicy,
     ) -> Result<Self, StorageRuntimeError> {
@@ -135,21 +168,22 @@ impl ChunkKvStorage {
     ///
     /// Returns an error for an invalid stream lease or read policy.
     pub async fn from_parts(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         chunk_io: ChunkIoClient,
         metadata_store_id: u64,
         writer_lease_ms: u64,
         stream_mirror_copies: u32,
     ) -> Result<Self, StorageRuntimeError> {
-        Self::from_parts_with_geometry(
+        Self::from_parts_with_options(
             kv,
             chunk_io,
             metadata_store_id,
             writer_lease_ms,
-            TreeStorageGeometry {
+            TreeStorageOptions {
                 mirror_copies: stream_mirror_copies,
                 chunk_capacity_bytes: 256 * 1024 * 1024,
                 strip_capacity_bytes: 0,
+                ..TreeStorageOptions::default()
             },
             StreamConfig::default(),
             ChunkReadPolicy::default(),
@@ -158,12 +192,12 @@ impl ChunkKvStorage {
     }
 
     async fn assemble(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         chunk_io: ChunkIoClient,
         streams: Arc<ProductionStreamRuntime>,
         metadata_store_id: u64,
         writer_lease_ms: u64,
-        tree: TreeStorageGeometry,
+        tree: TreeStorageOptions,
     ) -> Result<Self, StorageRuntimeError> {
         let (chunkdb, disks) = chunk_io
             .native_storage_routes(writer_lease_ms)
@@ -189,19 +223,53 @@ impl ChunkKvStorage {
             })
             .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?,
         );
+        let tree_runtime = Arc::new(
+            crowdb_tree_ffi::TreeRuntime::new(tree.runtime)
+                .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?,
+        );
+        let pin_releases = crowdb_tree_ffi::chunk::pin_service::ChunkPinReleaseService::new(
+            &tree_runtime,
+            tree.pin_release_slots,
+        )
+        .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?;
         Ok(Self {
             kv,
             chunk_io,
             streams,
             tree_transport,
+            tree_runtime,
+            tree_options: tree.native,
+            partition_config: tree.partition,
+            pin_releases,
             tree_mirror_copies: tree.mirror_copies,
             tree_chunk_capacity_bytes: tree.chunk_capacity_bytes,
             metadata_store_id,
+            owner_process: arc_swap::ArcSwapOption::empty(),
         })
     }
 
     #[must_use]
-    pub fn kv(&self) -> &Arc<CrowdbKvClient> {
+    pub fn tree_runtime(&self) -> &Arc<crowdb_tree_ffi::TreeRuntime> {
+        &self.tree_runtime
+    }
+
+    pub(crate) fn pin_release_resource_usage(
+        &self,
+    ) -> Result<crowdb_tree_ffi::runtime::ResourceUsage, crowdb_tree_ffi::CtError> {
+        self.pin_releases.resource_usage()
+    }
+
+    pub(crate) fn partition_config(&self) -> &PartitionConfig {
+        &self.partition_config
+    }
+
+    /// Await real final-pin metadata work before the host transport/runtime stop.
+    pub async fn drain_pin_releases(&self) {
+        self.pin_releases.shutdown().await;
+    }
+
+    #[must_use]
+    pub fn kv(&self) -> &Arc<PaxosKvClient> {
         &self.kv
     }
 
@@ -229,7 +297,34 @@ impl ChunkKvStorage {
     ) -> Result<Arc<PageStore>, StorageRuntimeError> {
         options.mirror_copies = self.tree_mirror_copies;
         options.max_chunk_bytes = self.tree_chunk_capacity_bytes;
-        PageStore::open_chunk(options, catalog, Some(&self.tree_transport))
+        if self.owner_process.load().is_none() {
+            return Err(StorageRuntimeError::Tree(
+                "tree process authority is not bound".into(),
+            ));
+        }
+        self.pin_releases
+            .bind(&catalog)
+            .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?;
+        let opened = PageStore::open_chunk_runtime(
+            &self.tree_runtime,
+            crowdb_tree_ffi::ChunkRuntimeOptions {
+                tree_id: options.tree_id,
+                owner_epoch: options.owner_epoch,
+                open_generation: options.open_generation,
+                iu_size: if options.iu_size != 0 {
+                    options.iu_size
+                } else if self.tree_options.iu_size != 0 {
+                    self.tree_options.iu_size
+                } else {
+                    64 * 1024
+                },
+                mirror_copies: options.mirror_copies,
+                max_chunk_bytes: options.max_chunk_bytes,
+            },
+            catalog,
+            &self.tree_transport,
+        );
+        opened
             .map(Arc::new)
             .map_err(|error| StorageRuntimeError::Tree(error.to_string()))
     }
@@ -245,21 +340,9 @@ impl ChunkKvStorage {
         options: ChunkPageStoreOptions,
         metadata_group_id: u64,
     ) -> Result<Arc<PageStore>, StorageRuntimeError> {
-        let catalog = KvRootCatalogStore::claim(
-            Arc::clone(&self.kv),
-            self.metadata_store_id,
-            metadata_group_id,
-            options.tree_id,
-            options.owner_epoch,
-        )
-        .await?;
-        self.open_tree_page_store(
-            options,
-            Arc::new(
-                ChunkRootCatalog::open_callback(Arc::new(catalog))
-                    .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?,
-            ),
-        )
+        self.open_durable_tree(options, metadata_group_id)
+            .await
+            .map(|opened| opened.0)
     }
 
     /// Initializes the stream selected by an Active catalog record.
@@ -331,36 +414,7 @@ impl ChunkKvStorage {
                 entry.owner_epoch
             ))
         })?;
-        let open_generation = entry
-            .artifact
-            .tail_overlay
-            .as_ref()
-            .map_or(0, |overlay| overlay.base_root_manifest_generation);
-        let options = ChunkPageStoreOptions {
-            tree_id: entry.artifact.tree_id,
-            owner_epoch: entry.owner_epoch,
-            open_generation,
-            pack_bytes: 0,
-            iu_size: 0,
-            max_concurrent_packs: 0,
-            materialization_bytes_per_pass: 0,
-            mirror_copies: 0,
-            max_chunk_bytes: 0,
-        };
-        let catalog = KvRootCatalogStore::for_assignment(
-            self.kv.clone(),
-            self.metadata_store_id,
-            record.metadata_group_id,
-            entry,
-        )
-        .await?;
-        let page_store = self.open_tree_page_store(
-            options,
-            Arc::new(
-                ChunkRootCatalog::open_callback(Arc::new(catalog))
-                    .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?,
-            ),
-        )?;
+        let (page_store, catalog) = self.open_assignment_tree(entry, record.metadata_group_id).await?;
         if let Some(overlay) = &entry.artifact.tail_overlay {
             let parent_stream = self
                 .streams
@@ -373,18 +427,20 @@ impl ChunkKvStorage {
                     ))
                 })?;
             let artifact = prepared_overlay_artifact(entry, overlay);
-            return Partition::recover_native_prepared_overlay(
+            let partition = Partition::recover_native_prepared_overlay(
                 artifact,
-                PartitionConfig::default(),
-                crowdb_tree_ffi::Config::default(),
-                page_store,
+                self.partition_config.clone(),
+                self.tree_config(),
+                page_store.clone(),
                 stream,
                 parent_stream,
             )
             .await
-            .map_err(|error| overlay_recovery_error(entry, overlay, &error));
+            .map_err(|error| overlay_recovery_error(entry, overlay, &error))?;
+            Self::complete_tree_recovery(&partition, &page_store, &catalog).await?;
+            return Ok(partition);
         }
-        Partition::recover_native_latest_prepared_assignment(
+        let partition = Partition::recover_native_latest_prepared_assignment(
             PartitionId {
                 high: entry.partition_id.high,
                 low: entry.partition_id.low,
@@ -395,13 +451,15 @@ impl ChunkKvStorage {
             },
             entry.owner_epoch,
             entry.artifact.tree_id,
-            PartitionConfig::default(),
-            crowdb_tree_ffi::Config::default(),
-            page_store,
+            self.partition_config.clone(),
+            self.tree_config(),
+            page_store.clone(),
             stream,
         )
         .await
-        .map_err(|error| assignment_recovery_error(entry, &error))
+        .map_err(|error| assignment_recovery_error(entry, &error))?;
+        Self::complete_tree_recovery(&partition, &page_store, &catalog).await?;
+        Ok(partition)
     }
 
     /// Advances one already-open transfer target from its preparation cursor
@@ -507,8 +565,8 @@ impl ChunkKvStorage {
             )
             .await
             .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?;
-        let page_store = self
-            .open_durable_tree_page_store(
+        let (page_store, catalog) = self
+            .open_durable_tree(
                 ChunkPageStoreOptions {
                     tree_id: config.tree_id,
                     owner_epoch: config.owner_epoch,
@@ -523,35 +581,28 @@ impl ChunkKvStorage {
                 config.metadata_group_id,
             )
             .await?;
-        let partition_id = PartitionId {
-            high: config.partition_id.high,
-            low: config.partition_id.low,
-        };
-        let range = PartitionRange {
-            start: Some(Vec::new()),
-            end: None,
-        };
         if !fresh {
-            return recover_bootstrap_partition(config, page_store, stream).await;
-        }
-        let owner_epoch = config.owner_epoch;
-        let tree_id = config.tree_id;
-        let partition = tokio::task::spawn_blocking(move || {
-            Partition::open_native(
-                partition_id,
-                range,
-                owner_epoch,
-                PartitionConfig::default(),
-                tree_id,
-                crowdb_tree_ffi::Config::default(),
-                page_store,
+            let partition = recover_bootstrap_partition(
+                config,
+                self.partition_config.clone(),
+                self.tree_config(),
+                page_store.clone(),
                 stream,
             )
-        })
-        .await
-        .map_err(|error| StorageRuntimeError::Partition(format!("bootstrap tree open: {error}")))?
-        .map_err(|error| StorageRuntimeError::Partition(format!("bootstrap tree open: {error}")))?;
+            .await?;
+            Self::complete_tree_recovery(&partition, &page_store, &catalog).await?;
+            return Ok(partition);
+        }
+        let partition = open_bootstrap_partition(
+            config,
+            self.partition_config.clone(),
+            self.tree_config(),
+            page_store.clone(),
+            stream,
+        )
+        .await?;
         initialize_bootstrap_root(&partition, config).await?;
+        Self::complete_tree_recovery(&partition, &page_store, &catalog).await?;
         Ok(partition)
     }
 
@@ -605,16 +656,14 @@ impl ChunkKvStorage {
                     "nonempty child WAL has no committed handoff proof",
                 ));
             }
-            let tree_id = child.tree_id;
-            let tree_config = child.tree_config.clone();
             let transition_id = split_plan(transition).transition_id;
-            tokio::task::spawn_blocking(move || {
-                crowdb_chunk_kv::CrowdbPartitionTree::open(tree_id, &tree_config)?
-                    .unpin_generation(transition_id)
-            })
-            .await
-            .map_err(|error| storage_plan_error(&error.to_string()))?
-            .map_err(|error| storage_plan_error(&error.to_string()))?;
+            child
+                .tree_config
+                .page_store
+                .as_ref()
+                .ok_or_else(|| storage_plan_error("split child page store is absent"))?
+                .unpin_chunk_generation(child.tree_id, transition_id.high, transition_id.low)
+                .map_err(|error| storage_plan_error(&error.to_string()))?;
             child
         };
         let handoff = Arc::new(split_handoff::SplitHandoffCommit {
@@ -735,7 +784,7 @@ impl ChunkKvStorage {
             tree_id: artifact.tree_id,
             tree_config: crowdb_tree_ffi::Config {
                 page_store: Some(page_store),
-                ..crowdb_tree_ffi::Config::default()
+                ..self.tree_config()
             },
             journal: Arc::new(
                 StreamPartitionJournal::new(stream, artifact.stream_name)
@@ -886,7 +935,7 @@ fn assignment_recovery_error(
 /// Returns a root identity, KV availability or stale authority error.
 #[cfg(feature = "test-util")]
 pub async fn open_root_catalog_for_tests(
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
     store_id: u64,
     group_id: u64,
     entry: &ChunkKvRangeCatalogEntry,

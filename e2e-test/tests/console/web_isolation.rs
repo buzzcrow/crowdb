@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_protocol::port::ports::WEB_BASE;
 use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -10,7 +11,7 @@ use std::time::Duration;
 async fn survives_peer_fixture_retirement() {
     let http = Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
     let addresses = crate::common::management::addresses(1);
-    let base = format!("http://{}:9090", addresses[0]);
+    let base = format!("http://{}:{WEB_BASE}", addresses[0]);
     let token = std::env::var("CROWDB_E2E_TOKEN").unwrap();
     let phase = std::env::var("CROWDB_E2E_PHASE").unwrap();
     if phase != "verify" {

@@ -32,6 +32,26 @@ impl Partition {
     /// # Errors
     /// Rejects a child that does not match the active split plan.
     pub async fn install_child_split_ingress(&self, plan: &SplitPlan, child: Partition) -> Result<()> {
+        let ingress = self.prepare_child_split_ingress(plan, child)?;
+        self.install_split_ingress(ingress.retained_parent, ingress.child)
+            .await
+    }
+
+    pub(super) fn prepare_child_split_ingress(
+        &self,
+        plan: &SplitPlan,
+        child: Partition,
+    ) -> Result<SplitIngress> {
+        let snapshot = child.snapshot();
+        if plan.parent_id != self.id
+            || snapshot.partition_id != plan.child.partition_id
+            || snapshot.ownership_epoch != plan.child.ownership_epoch
+            || snapshot.range != plan.child.range
+        {
+            return Err(crate::ChunkKvError::SplitRetry(
+                "split ingress does not match its prepared plan".into(),
+            ));
+        }
         let mut retained = self.clone();
         retained.range = Arc::new(ArcSwap::from_pointee(PartitionRange {
             start: plan.parent_range.start.clone(),
@@ -43,7 +63,11 @@ impl Partition {
         // The worker owns this ingress. A strong sender here would keep its
         // channel alive after every external partition handle was dropped.
         retained.sender = self.sender.borrowed();
-        self.install_split_ingress(retained, child).await
+        Ok(SplitIngress {
+            split_key: Arc::from(plan.split_key.clone()),
+            retained_parent: retained,
+            child,
+        })
     }
 }
 

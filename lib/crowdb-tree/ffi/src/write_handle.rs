@@ -14,9 +14,18 @@ use crate::tree::Crowdbtree;
 ///
 /// `!Send + !Sync`: the handle's internal pointers are not safe to
 /// share across threads.
-pub struct WriteHandle {
+/// The handle borrows its tree, which must remain alive through apply/cancel.
+///
+/// ```compile_fail
+/// use crowdb_tree_ffi::{Config, Crowdbtree};
+/// let tree = Crowdbtree::open(&Config::default()).unwrap();
+/// let handle = tree.alloc_put(1, 1).unwrap();
+/// drop(tree);
+/// handle.apply(1).unwrap();
+/// ```
+pub struct WriteHandle<'tree> {
     ptr: *mut sys::ct_write_handle,
-    tree: *mut sys::ct_tree,
+    tree: &'tree Crowdbtree,
     key_ptr: *mut u8,
     val_ptr: *mut u8,
     key_len: usize,
@@ -24,7 +33,7 @@ pub struct WriteHandle {
     consumed: bool,
 }
 
-impl std::fmt::Debug for WriteHandle {
+impl std::fmt::Debug for WriteHandle<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WriteHandle")
             .field("key_len", &self.key_len)
@@ -34,7 +43,7 @@ impl std::fmt::Debug for WriteHandle {
     }
 }
 
-impl WriteHandle {
+impl WriteHandle<'_> {
     /// Writable key slice `[0, key_len)`.
     pub fn key_mut(&mut self) -> &mut [u8] {
         if self.consumed || self.key_len == 0 || self.key_ptr.is_null() {
@@ -58,11 +67,11 @@ impl WriteHandle {
             return Err(CtError::InvalidArgument);
         }
         self.consumed = true;
-        check(unsafe { sys::ct_apply_put_owned(self.tree, slot, self.ptr) })
+        check(unsafe { sys::ct_apply_put_owned(self.tree.as_ptr(), slot, self.ptr) })
     }
 }
 
-impl Drop for WriteHandle {
+impl Drop for WriteHandle<'_> {
     fn drop(&mut self) {
         if !self.consumed {
             unsafe { sys::ct_free_handle(self.ptr) };
@@ -75,7 +84,7 @@ impl Crowdbtree {
     /// [`WriteHandle`] whose `key_mut`/`value_mut` slices the caller writes
     /// into directly, then [`WriteHandle::apply`] consumes with zero value
     /// memcpy.
-    pub fn alloc_put(&self, key_len: usize, val_len: usize) -> Result<WriteHandle, CtError> {
+    pub fn alloc_put(&self, key_len: usize, val_len: usize) -> Result<WriteHandle<'_>, CtError> {
         let mut handle: *mut sys::ct_write_handle = std::ptr::null_mut();
         let mut ptrs = sys::ct_write_ptrs {
             key: std::ptr::null_mut(),
@@ -84,7 +93,7 @@ impl Crowdbtree {
         check(unsafe { sys::ct_alloc(self.as_ptr(), key_len, val_len, &mut handle, &mut ptrs) })?;
         Ok(WriteHandle {
             ptr: handle,
-            tree: self.as_ptr(),
+            tree: self,
             key_ptr: ptrs.key,
             val_ptr: ptrs.val,
             key_len,

@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use super::fixture::TestKvCluster as KvCluster;
-use crowdb_kv_client::{Error, ServiceDiscoveryClient};
+use crowdb_paxos_kv_client::{Error, ServiceDiscoveryClient};
 use crowdb_protocol::chunk_kv::{HostedPartition, Id128};
 use crowdb_protocol::common::{
     ChunkKvExtra, DiskGroupUsageSummary, DiskdbExtra, InstanceValue, ServiceExtra,
@@ -70,7 +70,7 @@ async fn chunk_kv_raw_observation_preserves_load_and_partition_state() {
         }],
         partition_loads: Vec::new(),
     };
-    let lease_client = crowdb_kv_client::StreamProcessLeaseClient::new(svc.shared_kv());
+    let lease_client = crowdb_paxos_kv_client::StreamProcessLeaseClient::new(svc.shared_kv());
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

@@ -38,7 +38,7 @@ detail is in the sub-designs.
   the caller chooses how to serialize values (flatbuffers, bincode, raw).
 - **No TLS.** CROWDB runs on a trusted internal cluster network.
 - **No client-side retry or topology.** Retry, topology cache, and
-  `NotLeaderHint` handling live in `crowdb-kv-client`, not here.
+  `NotLeaderHint` handling live in `crowdb-paxos-kv-client`, not here.
 - **No streaming RPC.** v1 supports request-response and one-way
   messages only. Bidirectional streaming is a future addition.
 - **No HTTP/2.** The custom framing layer is simpler and faster for
@@ -322,6 +322,11 @@ server side and the Rust client side.
   deserialize the flatbuffer into a separate owned Rust struct or C++
   class that copies each field out of the buffer. The buffer is the
   object; accessors read from it in place.
+  C++ controls may start immediately after the 14-byte wire header, at an
+  unaligned address. After verification, use
+  `crowdb::protocol::flatbuffer_root<FBT>(ptr, size)` to load the root offset
+  with `memcpy`, then use the generated table accessors. This borrows the
+  original frame without copying its payload or allocating heap storage.
 - **Wrapper classes in `crowdb-protocol`, defined when required.** When
   a service needs a typed API over a flatbuffer buffer (to encapsulate
   parse + null-check + field access, to add domain logic, or to hide
@@ -331,7 +336,7 @@ server side and the Rust client side.
   — it reads through the flatbuffer root pointer on every accessor
   call. Wrappers are defined when a service needs them (not
   preemptively for every flatbuffer type), and they live in
-  `crowdb-protocol` so every project (crowdb-kv, crowdb-diskdb, crowdb-chunkdb,
+  `crowdb-protocol` so every project (crowdb-paxos-kv, crowdb-diskdb, crowdb-chunkdb,
   crowdb-diskio) shares one definition.
 - **Wrapper naming.** Wrapper types use the `FB` prefix + the domain
   type name, without a `View`/`Ref` suffix — the `FB` prefix already

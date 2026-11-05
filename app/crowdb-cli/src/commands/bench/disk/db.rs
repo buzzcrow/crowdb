@@ -10,14 +10,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crowdb_diskdb_client::{DiskdbClient, DiskdbClientError, DiskdbRpcTransport};
-use crowdb_kv_client::{ReadEndpointPolicy, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ReadEndpointPolicy, ServiceRegistryClient};
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::{AllocateBlocksRequest, CompactZoneRequest, FreeBlocksRequest, Segment};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
 use super::workload::select_free;
-use crate::commands::bench::kv::{build_kv_client, KvClientTunables};
+use crate::commands::bench::client::{build_kv_client, KvClientTunables};
 use crate::commands::bench::loader::BenchRecorder;
 use crate::commands::bench::metrics::BenchMetrics;
 use crate::commands::bench::verb::{DiskdbArgs, DiskdbBenchVerb};

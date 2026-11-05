@@ -4,7 +4,7 @@
 //! Immutable service-slot admission snapshots, independent of storage destinations.
 
 use arc_swap::ArcSwapOption;
-use crowdb_kv_client::{ChunkSlotMapClient, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, PaxosKvClient};
 use crowdb_protocol::chunk_slot::{
     ChunkSlot, ChunkSlotAuthority, ChunkSlotBitmap, ChunkSlotMap, CHUNK_SLOT_COUNT,
 };
@@ -98,7 +98,7 @@ impl RangeGuard {
         &self,
         map: &ChunkSlotMap<ChunkSlotAuthority>,
         instance_id: u64,
-    ) -> crowdb_kv_client::Result<()> {
+    ) -> crowdb_paxos_kv_client::Result<()> {
         let slots = ChunkSlot::all()
             .filter(|slot| map.owner(*slot).instance_id() == instance_id)
             .collect();
@@ -178,7 +178,7 @@ impl RangeGuard {
     /// # Errors
     /// Rejects unsupported changes to initialized authority. New instances
     /// start with no slots until an explicit ownership migration assigns work.
-    pub fn install(&self, map: &ChunkSlotMap<u64>, instance_id: u64) -> crowdb_kv_client::Result<()> {
+    pub fn install(&self, map: &ChunkSlotMap<u64>, instance_id: u64) -> crowdb_paxos_kv_client::Result<()> {
         let binding = map
             .bindings()
             .iter()
@@ -214,9 +214,9 @@ impl RangeGuard {
     /// Returns read, validation or unsupported ownership-change errors.
     pub async fn load_from_group0(
         &self,
-        kv: &Arc<CrowdbKvClient>,
+        kv: &Arc<PaxosKvClient>,
         instance_id: u64,
-    ) -> crowdb_kv_client::Result<()> {
+    ) -> crowdb_paxos_kv_client::Result<()> {
         let maps = ChunkSlotMapClient::new(Arc::clone(kv));
         if let Some(snapshot) = maps.read_dynamic_service_snapshot().await? {
             self.install_dynamic(snapshot.authority(), instance_id)
@@ -293,8 +293,8 @@ pub fn chunk_bucket(chunk_id: &ChunkId) -> u16 {
     ChunkSlot::for_chunk(chunk_id).value()
 }
 
-fn invalid(reason: &str) -> crowdb_kv_client::Error {
-    crowdb_kv_client::Error::SysdataDecode {
+fn invalid(reason: &str) -> crowdb_paxos_kv_client::Error {
+    crowdb_paxos_kv_client::Error::SysdataDecode {
         key: "/chunkdb/slot_service/".into(),
         reason: reason.into(),
     }

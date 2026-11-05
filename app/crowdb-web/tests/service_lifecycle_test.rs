@@ -290,7 +290,7 @@ async fn reset_removes_auxiliary_launches_before_nodes_and_racks() {
 #[tokio::test]
 async fn deployment_defaults_avoid_cross_service_and_live_listener_conflicts() {
     let mut config = config();
-    let occupied = std::net::TcpListener::bind("0.0.0.0:12010").ok();
+    let occupied = std::net::TcpListener::bind(("0.0.0.0", crowdb_protocol::CHUNKDB_HTTP_BASE)).ok();
     let mut access = ServerEntry::new("access-server-7", "http://127.0.0.1:9092");
     access.service_type = ServiceType::AccessServer;
     config.servers.push(access);
@@ -306,18 +306,14 @@ async fn deployment_defaults_avoid_cross_service_and_live_listener_conflicts() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["access-server"]["instance_id"], "8");
     let mut ports = std::collections::HashSet::new();
-    for (kind, values) in body.as_object().unwrap() {
+    for values in body.as_object().unwrap().values() {
         for name in ["http_port", "rpc_port", "s3_port", "health_port"] {
             if let Some(port) = values[name].as_u64() {
                 assert!(![9091, 9092, 19191].contains(&port));
                 if occupied.is_some() {
-                    assert_ne!(port, 12010);
+                    assert_ne!(port, u64::from(crowdb_protocol::CHUNKDB_HTTP_BASE));
                 }
                 assert!(ports.insert(port));
-                if kind == "diskdb" {
-                    assert!(ports.insert(port + 1));
-                    assert!(ports.insert(port + 2));
-                }
             }
         }
     }

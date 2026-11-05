@@ -16,7 +16,7 @@ use crowdb_chunk_client::{
 };
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_common::ec::{encode_parity_from_shards, EcScheme};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, Location, Strip};
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_protocol::frame::{
@@ -262,7 +262,7 @@ fn make_test_data(size: usize) -> Vec<u8> {
 }
 
 async fn real_parts(stack: &E2eStack) -> (Arc<ChunkdbClient>, Arc<RoutedDiskWriter>) {
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+    let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
         stack.cluster.mgmt_endpoints.clone(),
     )));
     let service = ServiceRegistryClient::from_shared(kv.clone());

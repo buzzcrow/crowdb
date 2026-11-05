@@ -11,45 +11,50 @@ using namespace crowdb::rpc;
 
 TEST(ControlCodecTest, BoundedFragmentPreservesCommonCorrelationAndAllStreamMetadata)
 {
-    const ControlFragment                      source{.request_id           = 43,
-                                                      .rpc_create_nano      = 11,
-                                                      .response_create_nano = 12,
-                                                      .stream_id            = 5,
-                                                      .generation           = 7,
-                                                      .sequence             = 2,
-                                                      .offset               = 131072,
-                                                      .total                = 131089,
-                                                      .capacity             = RDMA_METADATA_CAPACITY,
-                                                      .message_type         = 3701,
-                                                      .message_flags        = FLAG_ONE_WAY,
-                                                      .stream_flags         = CONTROL_STREAM_END};
-    std::array<uint8_t, RDMA_CONTROL_CAPACITY> prefix{};
-    ASSERT_TRUE(write_control_fragment(prefix, source, 17));
-    Header header;
-    ASSERT_TRUE(parse_rdma_direct_control(prefix, source.capacity, prefix.size() + 17, header));
-    EXPECT_EQ(header.msg_type, RPC_CONTROL_FRAGMENT_MSG_TYPE);
-    EXPECT_EQ(header.flags, FLAG_ONE_WAY);
-    ControlFragment decoded;
-    const auto      control = std::span(prefix).subspan(HEADER_SIZE);
-    ASSERT_TRUE(parse_control_fragment(control, decoded));
-    EXPECT_EQ(decoded.request_id, source.request_id);
-    EXPECT_EQ(decoded.rpc_create_nano, source.rpc_create_nano);
-    EXPECT_EQ(decoded.response_create_nano, source.response_create_nano);
-    EXPECT_EQ(decoded.stream_id, source.stream_id);
-    EXPECT_EQ(decoded.generation, source.generation);
-    EXPECT_EQ(decoded.sequence, source.sequence);
-    EXPECT_EQ(decoded.offset, source.offset);
-    EXPECT_EQ(decoded.total, source.total);
-    EXPECT_EQ(decoded.capacity, source.capacity);
-    EXPECT_EQ(decoded.message_type, source.message_type);
-    EXPECT_EQ(decoded.message_flags, source.message_flags);
-    EXPECT_EQ(decoded.stream_flags, source.stream_flags);
-    uint64_t id = 0, created = 0, response = 0;
-    extract_control_fields(control.data(), control.size(), id, created, response);
-    EXPECT_EQ(id, source.request_id);
-    EXPECT_EQ(created, source.rpc_create_nano);
-    EXPECT_EQ(response, source.response_create_nano);
-    EXPECT_FALSE(write_control_fragment(prefix, source, source.capacity + 1));
+    const ControlFragment                                     source{.request_id           = 43,
+                                                                     .rpc_create_nano      = 11,
+                                                                     .response_create_nano = 12,
+                                                                     .stream_id            = 5,
+                                                                     .generation           = 7,
+                                                                     .sequence             = 2,
+                                                                     .offset               = 131072,
+                                                                     .total                = 131089,
+                                                                     .capacity             = RDMA_METADATA_CAPACITY,
+                                                                     .message_type         = 3701,
+                                                                     .message_flags        = FLAG_ONE_WAY,
+                                                                     .stream_flags         = CONTROL_STREAM_END};
+    alignas(8) std::array<uint8_t, RDMA_CONTROL_CAPACITY + 8> storage{};
+    for (size_t shift = 0; shift < 8; ++shift) {
+        auto prefix = std::span(storage).subspan(shift, RDMA_CONTROL_CAPACITY);
+        ASSERT_TRUE(write_control_fragment(prefix, source, 17));
+        Header header;
+        ASSERT_TRUE(parse_rdma_direct_control(prefix, source.capacity, prefix.size() + 17, header));
+        EXPECT_EQ(header.msg_type, RPC_CONTROL_FRAGMENT_MSG_TYPE);
+        EXPECT_EQ(header.flags, FLAG_ONE_WAY);
+        ControlFragment decoded;
+        const auto      control = std::span(prefix).subspan(HEADER_SIZE);
+        ASSERT_TRUE(parse_control_fragment(control, decoded));
+        EXPECT_EQ(decoded.request_id, source.request_id);
+        EXPECT_EQ(decoded.rpc_create_nano, source.rpc_create_nano);
+        EXPECT_EQ(decoded.response_create_nano, source.response_create_nano);
+        EXPECT_EQ(decoded.stream_id, source.stream_id);
+        EXPECT_EQ(decoded.generation, source.generation);
+        EXPECT_EQ(decoded.sequence, source.sequence);
+        EXPECT_EQ(decoded.offset, source.offset);
+        EXPECT_EQ(decoded.total, source.total);
+        EXPECT_EQ(decoded.capacity, source.capacity);
+        EXPECT_EQ(decoded.message_type, source.message_type);
+        EXPECT_EQ(decoded.message_flags, source.message_flags);
+        EXPECT_EQ(decoded.stream_flags, source.stream_flags);
+        uint64_t id       = 0;
+        uint64_t created  = 0;
+        uint64_t response = 0;
+        extract_control_fields(control.data(), control.size(), id, created, response);
+        EXPECT_EQ(id, source.request_id);
+        EXPECT_EQ(created, source.rpc_create_nano);
+        EXPECT_EQ(response, source.response_create_nano);
+        EXPECT_FALSE(write_control_fragment(prefix, source, source.capacity + 1));
+    }
 }
 
 TEST(ControlCodecTest, MalformedMetadataAndMismatchedOriginalControlDoNotPassTheBoundary)

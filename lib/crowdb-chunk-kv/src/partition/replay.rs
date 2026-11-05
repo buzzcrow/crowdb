@@ -67,6 +67,7 @@ pub(super) async fn replay_suffix(
             frame_offset = frame_offset
                 .checked_add(consumed as u64)
                 .ok_or_else(|| ChunkKvError::JournalCorruption("journal frame offset overflows".into()))?;
+            replay.seed.applied_end = frame_offset;
         }
         if buffered.len() > crate::MAX_FRAME_BYTES {
             return Err(ChunkKvError::JournalCorruption(
@@ -86,6 +87,7 @@ impl ReplayState {
             seed: RecoverySeed {
                 applied_seq: checkpoint.applied_seq,
                 applied_position: checkpoint.replay_offset,
+                applied_end: checkpoint.replay_offset,
                 retry_replay_offset: checkpoint.replay_offset,
                 results: HashMap::new(),
                 result_order: std::collections::VecDeque::new(),

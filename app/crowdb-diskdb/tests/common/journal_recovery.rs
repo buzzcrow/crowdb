@@ -3,10 +3,10 @@
 
 use bytes::Bytes;
 use crowdb_diskdb::model::zone::DdbZone;
-use crowdb_kv::cluster::{PxLocalReplica, PxLocalReplicaRole};
-use crowdb_kv::kv::{Batch, BatchOp, CrowdbTreeConfig, CrowdbTreeEngine, KVEngine, Op};
-use crowdb_kv::paxos::roles::{PxBallot, PxLogEntry};
-use crowdb_kv::wal::{index::SegmentIndex, record::WALRecord, replay::ReplayResult};
+use crowdb_paxos_kv::cluster::{PxLocalReplica, PxLocalReplicaRole};
+use crowdb_paxos_kv::kv::{Batch, BatchOp, CrowdbTreeConfig, CrowdbTreeEngine, KVEngine, Op};
+use crowdb_paxos_kv::paxos::roles::{PxBallot, PxLogEntry};
+use crowdb_paxos_kv::wal::{index::SegmentIndex, record::WALRecord, replay::ReplayResult};
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::BusyBlockValue;
 use crowdb_protocol::key::{BinaryKey, BusyBlockKey, ZoneKey};

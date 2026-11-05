@@ -9,6 +9,7 @@ use super::{
     StartArgs,
 };
 use crowdb_console_shared::error::Result;
+use crowdb_protocol::WEB_BASE;
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -41,12 +42,12 @@ pub(super) async fn accepted(docker: &Docker, cluster: &str, args: &StartArgs) -
         return Err(invalid("local start requires the Linux amd64 CROWDB node image"));
     }
     let record = Launch {
-        version: 2,
+        version: 3,
         cluster: cluster.into(),
         owner: uuid::Uuid::new_v4().to_string(),
         runtime: docker.identity().await?,
         nodes: args.nodes.unwrap_or(1),
-        port_base: args.port_base.unwrap_or(9090),
+        port_base: args.port_base.unwrap_or(WEB_BASE),
         image: image.into(),
         image_id: metadata["Id"]
             .as_str()
@@ -110,11 +111,16 @@ fn arguments(record: &Launch, index: u8) -> Vec<String> {
         "--mount",
         &format!("type=volume,source={volume},target=/opt/crowdb/data"),
     ]));
-    let base = record.port_base + u16::from(index - 1) * 10;
+    let base = record.port_base + u16::from(index - 1) * if record.version < 3 { 10 } else { 1 };
     for ((offset, protocol), internal) in [(0_u16, ""), (1, "S3"), (2, "ICEBERG"), (3, "DATASET")]
         .into_iter()
         .zip(record.container_ports())
     {
+        let offset = if record.version < 3 {
+            offset
+        } else {
+            internal - WEB_BASE
+        };
         args.extend(strings(&[
             "-p",
             &format!("127.0.0.1:{}:{internal}", base + offset),
@@ -138,9 +144,14 @@ fn arguments(record: &Launch, index: u8) -> Vec<String> {
 
 pub(super) fn verify(item: &Value, record: &Launch, index: u8) -> Result<()> {
     require_owned(item, record, "container")?;
-    let base = record.port_base + u16::from(index - 1) * 10;
+    let base = record.port_base + u16::from(index - 1) * if record.version < 3 { 10 } else { 1 };
     let mut ports = serde_json::Map::new();
     for (offset, internal) in (0_u16..).zip(record.container_ports()) {
+        let offset = if record.version < 3 {
+            offset
+        } else {
+            internal - WEB_BASE
+        };
         ports.insert(
             format!("{internal}/tcp"),
             json!([{"HostIp":"127.0.0.1", "HostPort":(base+offset).to_string()}]),
@@ -176,7 +187,15 @@ pub(super) fn verify(item: &Value, record: &Launch, index: u8) -> Result<()> {
         format!("CROWDB_CLUSTER={}", record.cluster),
         format!("CROWDB_INITIAL_VOTERS={}", record.nodes),
     ];
-    for (offset, protocol) in [(1, "S3"), (2, "ICEBERG"), (3, "DATASET")] {
+    for ((offset, protocol), internal) in [(1_u16, "S3"), (2, "ICEBERG"), (3, "DATASET")]
+        .into_iter()
+        .zip(record.container_ports().into_iter().skip(1))
+    {
+        let offset = if record.version < 3 {
+            offset
+        } else {
+            internal - WEB_BASE
+        };
         expected.push(format!(
             "CROWDB_{protocol}_PUBLIC_URI=http://127.0.0.1:{}",
             base + offset

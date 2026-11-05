@@ -69,7 +69,6 @@ documents. Start with:
 
 - [Contributing](CONTRIBUTING.md) for the development environment and workflow.
 - [Documentation index](doc/doc_index.md) for subsystem designs.
-- [Backlog](doc/backlog/backlog.md) for current delivery scope.
 - [Single-node container](container/single-node-container/README.md) for image
   development and packaging.
 

@@ -46,7 +46,7 @@ def verify(cluster, data, all_engines):
     env = os.environ.copy()
     engine_env, trino = cluster.engine_environment() if all_engines else ({}, "")
     env.update(engine_env, ICEBERG_TOKEN=token,
-               CROWDB_PREVIEW_ICEBERG_URI=f"http://{cluster.addresses[0]}:9092",
+               CROWDB_PREVIEW_ICEBERG_URI=f"http://{cluster.addresses[0]}:8135",
                CROWDB_ECOSYSTEM_RESULTS=str(results), CROWDB_ECOSYSTEM_STATE=str(data / "state.json"))
     prefix = ["pixi", "run", "--as-is", "-e", "iceberg-ecosystem"]
     timings = {}

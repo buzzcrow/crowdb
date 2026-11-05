@@ -2,7 +2,7 @@
 
 //! CLI e2e for cluster observation: `cluster status` and `cluster
 //! topology` through a system-group endpoint against a real
-//! `crowdb-kv-server` with the system group initialized.
+//! `crowdb-paxos-kv-server` with the system group initialized.
 
 mod common;
 
@@ -68,7 +68,7 @@ fn retired_storage_process_commands_are_absent_and_measurements_remain() {
         assert_eq!(output.status.code(), Some(2), "{arguments:?}: {output:?}");
         assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
     }
-    for family in ["kv", "diskdb", "chunkdb", "chunkio", "s3"] {
+    for family in ["paxos-kv", "diskdb", "chunkdb", "chunkio", "s3"] {
         let output = Command::new(&cli)
             .args(["bench", family, "--help"])
             .output()

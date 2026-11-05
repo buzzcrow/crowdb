@@ -23,11 +23,13 @@ struct PendingReq
     bool              ok = false;
 };
 
-extern "C" void on_complete_cb(uint64_t /*request_id*/, crowdb_rpc_buffer_t /*control*/, crowdb_rpc_buffer_t /*data*/,
+extern "C" void on_complete_cb(uint64_t /*request_id*/, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
                                int status, void *user_data)
 {
     auto *pr = static_cast<PendingReq *>(user_data);
     pr->ok   = (status == CROWDB_RPC_OK);
+    crowdb_rpc_buffer_release(control);
+    crowdb_rpc_buffer_release(data);
     pr->got_response.store(true, std::memory_order_release);
     // Reclaim the PendingReq via the user_data pointer — the caller
     // allocates it with new and deletes it after checking the flag.

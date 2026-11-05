@@ -409,6 +409,8 @@ table FBDeleteChunkRequest {
     id:uint64;
     rpc_create_nano:uint64;
     chunk_id:crowdb.rpc.proto.FBInt128;
+    // A tombstone must precede retiring an unknown fixed-ID allocation.
+    fence_missing:bool = false;
 }
 
 table FBDeleteChunkResponse {

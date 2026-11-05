@@ -8,7 +8,7 @@ pub use record::{ChunkRangeRetirement, RetiredByteRange};
 
 use super::{chunk_key, decode_chunk, encode_chunk, ChunkStore, Result, StoreError};
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{BatchOp, GetOutcome, ReadMode};
 use crowdb_protocol::chunk_domain::ChunkDomain;
 use crowdb_protocol::chunkdb::rpc::{ChunkState, DeleteChunkRangeRequest, DeleteChunkRangeResponse};
 use crowdb_protocol::common::ChunkId;
@@ -106,7 +106,7 @@ impl ChunkStore {
             .await
         {
             Ok(_) => Ok(DeleteChunkRangeResponse { reclaimed: false }),
-            Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {
+            Err(crowdb_paxos_kv_client::Error::CasFailed { .. } | crowdb_paxos_kv_client::Error::CasBusy) => {
                 Err(StoreError::Conflict)
             }
             Err(error) => Err(StoreError::Kv(error.to_string())),

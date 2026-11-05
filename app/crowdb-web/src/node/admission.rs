@@ -343,7 +343,10 @@ pub(super) fn update_config(
         if config.server_for_node(record.node_id).is_none() {
             let (management_port, rpc_port) = setup
                 .and_then(crowdb_protocol::mgmt::node::setup::NodeSetupChoices::paxos_kv_ports)
-                .unwrap_or((10000, 10100));
+                .unwrap_or((
+                    crowdb_protocol::PAXOS_KV_SERVER_MGMT_BASE,
+                    crowdb_protocol::PAXOS_KV_SERVER_RPC_BASE,
+                ));
             let mut server = ServerEntry::new(
                 format!("kv-{}", record.node_id),
                 format!("http://{}:{management_port}", bracket_host(&record.host)),

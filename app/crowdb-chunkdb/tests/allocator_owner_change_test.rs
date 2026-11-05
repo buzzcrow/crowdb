@@ -7,7 +7,7 @@ mod slot_groups;
 
 use crowdb_chunkdb::allocator::DiskdbClientPool;
 use crowdb_diskdb_client::DiskdbClientError;
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use crowdb_protocol::{
     common::ChunkId,
     diskdb_fb::{FBAllocateResponse, FBAllocateResponseArgs, FBDiskdbRetCode},

@@ -189,15 +189,16 @@ pub(super) async fn chunk_kv_config(
         config["storage"]["stream_chunk_capacity_bytes"] = json!(bytes);
     }
     if let Some(group) = body.bootstrap_group_id {
-        let client =
-            crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(seeds.to_vec()));
+        let client = crowdb_paxos_kv_client::PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
+            seeds.to_vec(),
+        ));
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
             client.get(
                 store,
                 group,
                 b"console-deployment-probe",
-                crowdb_kv_client::ReadMode::Linearizable,
+                crowdb_paxos_kv_client::ReadMode::Linearizable,
                 None,
             ),
         )

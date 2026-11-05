@@ -33,7 +33,7 @@ fn config() -> ConsoleConfig {
         rest_port: Some(10000),
         rpc_port: Some(10100),
         auto_start: true,
-        binary: Some("/private/bin/crowdb-kv-server".into()),
+        binary: Some("/private/bin/crowdb-paxos-kv-server".into()),
         election_profile: None,
         pid: Some(42),
         service_type: ServiceType::PaxosKv,

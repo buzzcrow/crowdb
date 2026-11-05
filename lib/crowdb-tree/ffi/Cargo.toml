@@ -19,11 +19,12 @@ chunk-rpc = ["dep:crowdb-rpc-ffi"]
 test-util = []
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 bytes = "1"
 crowdb-rpc-ffi = { path = "../../crowdb-rpc/ffi", optional = true }
 # "net" is required for tokio::io::unix::AsyncFd, "sync" for tokio::sync::
 # Notify.
-tokio = { version = "1.40", features = ["rt", "rt-multi-thread", "macros", "net", "sync"] }
+tokio = { version = "1.40", features = ["rt", "rt-multi-thread", "macros", "net", "sync", "time"] }
 
 [build-dependencies]
 cc = "1"
@@ -33,3 +34,7 @@ crowdb-test-harness = { path = "../../crowdb-test-harness" }
 # Self dev-dependency: turns on `test-util` so integration tests auto-init
 # C++ logging to a temp dir on first Crowdbtree::open.
 crowdb-tree-ffi = { path = ".", features = ["test-util"] }
+
+[[test]]
+name = "runtime_wait_metrics_test"
+path = "tests/runtime_wait_metrics_test.rs"

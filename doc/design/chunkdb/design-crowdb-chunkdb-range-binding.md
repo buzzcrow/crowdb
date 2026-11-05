@@ -4,7 +4,7 @@
 # CROWDB - Design: ChunkDB Slot Routing
 
 Depends on: [ChunkDB architecture](design-crowdb-chunkdb.md),
-[KV group 0](../kv/design-crowdb-kv-group0.md).
+[KV group 0](../kv/design-crowdb-paxos-kv-group0.md).
 Satisfies: ChunkDB stateless execution and explicit nonzero persistence.
 
 ChunkDB uses independent service and storage maps over the same fixed hash
@@ -64,9 +64,21 @@ endpoints are registered separately and can refresh after same-instance restart.
 
 ## 3. Publication and startup
 
-`ChunkSlotMapClient` validates the full bootstrap and publishes each map's
-head and owner records in one head-conditional group-0 batch. A retry reads and
-reconciles the committed result; a conflicting initializer fails. Both maps
+`ChunkSlotMapClient` validates the full bootstrap. Up to 63 owner records and
+their head publish in one head-conditional group-0 batch. Larger maps first
+CAS the absent head to an initialization intent containing the complete layout,
+canonically ordered by owner key, and a durable progress offset. Each page
+writes at most 63 owners and advances that intent under its current head
+revision. The final page replaces the intent with the regular head; readers
+reject an intent and therefore never expose a partial map. Every proposal
+fits the 64-record replay window.
+
+A replacement initializer can resume the identical intent, including with a
+different input ordering. Conflicting layouts fail without writing owners.
+An uncertain page result is reconciled only when the head proves durable
+progress; otherwise the error remains visible. Stale pages cannot write after
+publication because the head revision has advanced. A retry reads and
+reconciles the committed result. Both maps
 must exist before ChunkDB accepts allocations, even though the maps have
 independent publication boundaries.
 

@@ -28,7 +28,7 @@ mod transport;
 
 pub use buffer::{
     Buffer, BufferAllocationMetadata, BufferChain, BufferChainError, BufferLeaseMetadata, BufferOwnership,
-    BufferPool,
+    BufferPool, OwnedBytesError,
 };
 pub use client::{noop_completion, CallFuture, ClientRequest, Response, RpcClient};
 pub use connection_pool::{ConnectionPoolError, ConnectionPoolIndex, SelectedConnection};

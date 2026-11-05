@@ -6,9 +6,20 @@ use crate::sys;
 use crate::tree::Crowdbtree;
 use crate::CtError;
 
-/// Result of a cadence-driven [`Crowdbtree::compact_sparse_blocks`] pass
-/// (R129). Snapshot folding drops eligible tombstones during every snapshot;
-/// this struct reports the block-level relocation and deletion outcome.
+mod backing;
+mod state;
+pub use backing::BackingStatsSnapshot;
+mod work;
+pub use state::{TreeLogicalStats, TreeProgressSnapshot, TreeResourceStats, TreeStatsSnapshot};
+pub use work::{
+    TreeFlushDispatchStats, TreeHistogramStats, TreeWaitSnapshot, TreeWaitStats, TreeWorkCollector,
+    TreeWorkCounters, TreeWorkHistograms, TreeWorkSnapshot, TreeWorkStage, TreeWorkStageAge,
+    TreeWorkStageStats, TREE_WAIT_CLASS_NAMES, TREE_WORK_CAUSE_NAMES, TREE_WORK_COUNTER_NAMES,
+    TREE_WORK_STAGE_NAMES,
+};
+
+/// Block relocation and deletion performed by one
+/// [`Crowdbtree::compact_sparse_blocks`] pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MergeGcStats {
     pub blocks_selected: u64,
@@ -42,9 +53,9 @@ pub struct TreeSummary {
     pub exact: bool,
 }
 
-/// Point-in-time diagnostics snapshot; see [`Crowdbtree::stats`]. Every field
-/// is O(1) on the C++ side (an already-tracked atomic counter or
-/// `BufferPool::stats`), so this is safe to poll periodically.
+/// Compatibility diagnostics snapshot; see [`Crowdbtree::stats`]. Cache fields
+/// retain their historical names. Use [`Crowdbtree::state_stats`] for the
+/// publication statistics and resource gauges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Stats {
     pub last_applied_slot: u64,
@@ -102,7 +113,7 @@ impl Crowdbtree {
         }
     }
 
-    /// Cadence-driven block compaction (R129). Selects sparse source blocks,
+    /// Selects sparse source blocks,
     /// relocates their live extents through a snapshot, and deletes blocks
     /// unreachable from any retained anchor. Non-block stores and disabled
     /// configurations return an empty stats result with no snapshot write.
@@ -117,8 +128,9 @@ impl Crowdbtree {
         })
     }
 
-    /// Batched diagnostics snapshot. O(1) -- safe to poll periodically for
-    /// metrics/console display.
+    /// Samples Core publication and cache counters without scanning pool frames.
+    /// Compatibility-only fields without a current counterpart remain zero;
+    /// use `state_stats` and work metrics for the full runtime statistics.
     pub fn stats(&self) -> Stats {
         let mut raw = sys::ct_stats::default();
         unsafe { sys::ct_get_stats(self.as_ptr(), &mut raw) };

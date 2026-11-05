@@ -1,104 +1,35 @@
 #!/usr/bin/env bash
-# --- CrowDB read regression benchmark (lifecycle) ---
-# Usage: bash tools/benchmark/bench-kv-read-regression.sh
-#
-# Regression sentinel for point-read (get) throughput and latency. Uses
-# the `bench deploy` / `bench prepare` / `bench run` / `bench teardown`
-# lifecycle: deploy once, prepare once, run N sub-tests, teardown once.
-# This amortizes deploy + pre-pop overhead across all sub-tests.
-#
-# Configurations (all --workload read, mem mode, 3-node cluster):
-#   Single-thread (1T:1C) — isolate per-read engine cost:
-#     - lin_1t:        linearizable (lease barrier + engine get)
-#     - minslot_1t:    minslot (no barrier, local serve)
-#   Multi-thread — max throughput + read-mode split:
-#     - lin_6t:        linearizable mid-concurrency
-#     - minslot_6t:    minslot (reads distributed across replicas)
-#     - lin_16t:       linearizable high concurrency
-#     - minslot_16t:   minslot high concurrency
-#     - lin_32t:       linearizable saturation
-#     - minslot_32t:   minslot saturation
-#   Correctness verification (--verify-bytes 8):
-#     - lin_16t_verify:   linearizable correctness
-#     - minslot_16t_verify: minslot correctness
-#
-# 10 runs × 20s ≈ 200s (no deploy/pre-pop overhead per sub-test).
-#
-# Reference platform: see doc/design/kv/kv-read-flow-analysis.md. After
-# a run, update the "Latest Benchmark Results" section there with the
-# results and CPU model — absolute read throughput is platform-dependent.
-#
-# Prerequisites:
-#   - pixi installed, project dependencies resolved
-#   - jq installed
-#   - release binary built (pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server)
+# Copyright 2026-present Gian <crow.db@outlook.com>
+# Licensed under the Apache License, Version 2.0.
+# Paxos-KV read: externally started 3-node host-network containers, mem-block.
+# Run with pixi run bash tools/benchmark/bench-kv-read-regression.sh.
+# Set KV_BENCH_DEPLOYMENT; optional KV_BENCH_CASES, DURATION, WARMUP, TAIL,
+# KEYSPACE, CLI and LOG_ROOT use the KV_BENCH_ prefix.
+# Defaults: 5s warmup / 20s measurement / 5s tail. <20s is a smoke run.
+# Keep every dated result, including failures. Old native process data below
+# remains a useful reference; compare code, resource and dataset conditions.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+source tools/benchmark/bench-kv-common.sh
 
-RUN_STAMP=$(date +%Y%m%d-%H%M%S)
-LOG_ROOT="${KV_READ_BENCH_LOG_ROOT:-${CROWDB_RUNTIME_ROOT:-$(pwd)/.crowdb-runtime}/artifacts/bench/kv-read-regression-$RUN_STAMP}"
-RESULTS_FILE="${KV_READ_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
-REGRESSION_LOG_ROOT="$LOG_ROOT"
-source tools/benchmark/bench-regression-common.sh
-export CROWDB_LOG_ROOT="$LOG_ROOT"
-regression_init
-DURATION="${KV_READ_BENCH_DURATION:-20}"
-KEYSPACE="${KV_READ_BENCH_KEYSPACE:-100000}"
-CASES="${KV_READ_BENCH_CASES:-}"
-DEPLOY_NAME="kv-read-regression-$$"
-
-run_subtest() {
-    local label="$1" read_mode="$2" min_slot="$3" threads="$4" connections="$5" verify_bytes="${6:-0}"
-    if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
-        return
-    fi
-    local read_endpoint
-    if [ "$read_mode" = "minslot" ]; then
-        read_endpoint="any-replica"
-    else
-        read_endpoint="leader"
-    fi
-    local display="$label (${threads}T:${connections}C)"
-    if [ "$verify_bytes" -gt 0 ]; then
-        display="$display verify"
-    fi
-    echo ">>> $display ..."
-    local output
-    if ! output=$(regression_client_for "$CONFIG_FILE" \
-        bench kv read --store 0 --group 1 --duration-secs "$DURATION" \
-        --loader-num "$threads" --connections "$connections" \
-        --read-mode "$read_mode" --min-slot "$min_slot" \
-        --read-endpoint-policy "$read_endpoint" \
-        --key-space "$KEYSPACE" \
-        --value-size 64 --verify-bytes "$verify_bytes" 2>&1); then
-        echo "$output" >&2
-        return 1
-    fi
-    local json; json=$(regression_report_for "$CONFIG_FILE")
-    if [ -z "$json" ]; then
-        echo "    ERROR: no JSON output"; echo "$output"
-        echo -e "$label\t$read_mode\t${threads}T${connections}C\t$verify_bytes\t0\t0\t0\t0\t0\t0\t1\t1" >> "$RESULTS_FILE"
-        return
-    fi
-    local ops_s avg_us p50_us p99_us p999_us errors corr_err
-    ops_s=$(echo "$json" | jq -r '.total_ops * 1000 / .duration_ms' | awk '{printf "%.0f", $1}')
-    avg_us=$(echo "$json" | jq -r '.by_op.read.latency_us.avg_us')
-    p50_us=$(echo "$json" | jq -r '.by_op.read.latency_us.p50_us')
-    p99_us=$(echo "$json" | jq -r '.by_op.read.latency_us.p99_us')
-    p999_us=$(echo "$json" | jq -r '.by_op.read.latency_us.p999_us // "unavailable"')
-    errors=$(echo "$json" | jq -r '.total_errors')
-    corr_err=$(echo "$json" | jq -r '.correctness_errors')
-    echo "    ops/s=$ops_s avg=${avg_us}us p50=${p50_us}us p99=${p99_us}us p999=${p999_us}us err=$errors corr=$corr_err"
-    echo -e "$label\t$read_mode\t${threads}T${connections}C\t$verify_bytes\t$ops_s\t$avg_us\t$p50_us\t$p99_us\t$p999_us\t$errors\t$corr_err" >> "$RESULTS_FILE"
+run_case() {
+    local label="$1" threads="$2" mode="$3" policy=leader
+    selected "$label" || return 0
+    [[ "$mode" != minslot ]] || policy=any-replica
+    prepare_dataset --value-size 64
+    invoke "$label" read --key-space "$KEYSPACE" --value-size 64 --loader-num "$threads" \
+        --connections "$threads" --read-mode "$mode" --read-endpoint-policy "$policy"
 }
+for threads in 1 6 16 32; do
+    run_case "lin_${threads}t" "$threads" linearizable
+    run_case "minslot_${threads}t" "$threads" minslot
+done
+# All cases now verify complete dataset bytes outside timing; keep these names.
+run_case lin_16t_verify 16 linearizable
+run_case minslot_16t_verify 16 minslot
+finish_cases
 
-# --- regression sentinel configs ---
-#
-# Regression policy: only update the reference table below when a new
-# run is strictly better (higher ops/s, lower latency, fewer errors).
-# If a run is worse, do NOT update — investigate and fix the regression
-# first, otherwise silent performance regressions slip in.
-#
+# ---- Native process history (no containers) ----
 # Reference results (2026-08-19, Apple M5 Pro, 18c, arm64, macOS 26.5):
 #   10s mem mode, 3-node cluster, 100k pre-populated keys, 64B values.
 #
@@ -156,45 +87,55 @@ run_subtest() {
 #   lin_16t_verify     linearizable 16:16 168670   90      85      175     0     corr=0
 #   minslot_16t_verify minslot      16:16 207835   73      70      129     0     corr=0
 
-echo -e "label\tread_mode\tT:C\tverify\tops_s\tavg_us\tp50_us\tp99_us\tp999_us\terrors\tcorrectness_errors" > "$RESULTS_FILE"
+# ---- Host-network container history ----
+# 2026-10-27: AMD Ryzen 9 5950X, 32 logical CPUs, ~62GiB host RAM.
+# 3 containers, 8GiB/4 CPU quota each, no cpuset; mem-block Tree + WAL;
+# server workers=2, inflight=32/coalesce=16, peer pool=4, event-write.
+# Release host CLI, 5/60/5s warmup/measurement/tail, 100k keys x 64B.
+# Image: crowdb-node:ci253-shared, sha256:89532eddadf085c527116a1986bb67149017eaeca381abbcae89b501d1c9abb1
+# Revision: ed0447797d137512f0bdf2fd3db1c46e22804bdc; source tree: ea1c3256e20ae90140bd95e727ab87c748b3a033.
+# Before port consolidation: mgmt/RPC 10000/10100, offsets 0/1000/2000.
+# Raw reports: .crowdb-runtime/artifacts/bench/kv-host-read/ (includes CLI SHA256).
+# label          ops/s       avg_us   p50_us   p99_us   p999_us  errors/incomplete
+# lin_1t         15673.817   63.700   60.159   109.567  135.167  0/0
+# minslot_1t     10799.117   92.483   89.599   150.527  187.391  0/0
+# lin_16t        108878.550  146.824  144.383  251.903  299.007  0/0
+# minslot_16t    180776.800  88.296   86.527   139.263  185.343  0/0
+# lin_16t is ~53% below the Sep-02 native reference. Conditions/code changed;
+# no cgroup CPU throttling observed. Cause remains open; do not blame host networking.
 
-# Phase 1: deploy the cluster once via the explicit test fixture.
-echo "=== Deploying 3-node KV cluster via the explicit test fixture ==="
-CONFIG_FILE="$REGRESSION_CONFIG"
-regression_fixture_for "$CONFIG_FILE" setup -- --nodes 3 --kind kv \
-    --kv-backend mem-block --wal-backend mem-block
+# 2026-10-27: 1M x 64B read baseline, 5/20/5s (new standard).
+# Same host, three 8GiB/4-CPU containers, no cpuset; workers=2, inflight/coalesce=32/16,
+# peer pool=4, event-write, mem-block Tree/WAL. Default ports + offsets 0/1/2.
+# Image: sha256:eb0dd67818e3f3ec2f81ba6969db8320f2dcd8a9c92c1bf727d1d1f7cce9d09d
+# Source tree: b984ab3e0838bee528d880e6bb83fc34c3c54663.
+# Raw reports + CLI checksum: .crowdb-runtime/artifacts/bench/kv-review-read/
+# All zero errors/incomplete. Dataset differs from preceding 100k-key read history.
+# 2026-10-27 lin_1t host-container ops/s=15305.9 latency_ns={"avg":65233.4343096453,"count":306118,"max":678089,"min":48201,"p50":64255,"p99":87039,"p999":105471} passed=true
+# 2026-10-27 minslot_1t host-container ops/s=12233.05 latency_ns={"avg":81621.3496348008,"count":244661,"max":1754642,"min":55010,"p50":80895,"p99":113663,"p999":151551} passed=true
+# 2026-10-27 lin_16t host-container ops/s=76390.9 latency_ns={"avg":209298.92435879144,"count":1527818,"max":18931996,"min":41271,"p50":167935,"p99":428031,"p999":15925247} passed=true
+# 2026-10-27 minslot_16t host-container ops/s=137165.5 latency_ns={"avg":116380.78411116498,"count":2743310,"max":14660221,"min":41411,"p50":99839,"p99":352255,"p999":1318911} passed=true
 
-# Create bench group 1 (group 0 sysdata preserved).
-echo "=== Creating bench group 0/1 (group 0 sysdata preserved) ==="
-regression_client_for "$CONFIG_FILE" \
-    kv group add -s 0 -g 1 -n 1,2,3 2>&1
+# 2026-10-27: no memory/CPU quota/cpuset, Tokio32/RPC2, 3-node host-network mem-block.
+# Image f576b3d9387c58c81df9c0e99bf1ca85659fac77ae05e285b539fb7840e7d9ff; 5/20/5s.
+# Dataset: 1000000 keys, value_size=64, mixed=False.
+# Raw: .crowdb-runtime/artifacts/bench/kv-review-unlimited/read/; full verification passed.
+# 2026-10-27 lin_16t host-container ops/s=103176.05 latency_ns={"avg":154955.89959830794,"count":2063521,"max":2919434,"min":45220,"p50":153599,"p99":247807,"p999":319487} passed=true
 
-# Phase 2: pre-populate keys once (prepare data before measuring).
-echo "=== Pre-populating $KEYSPACE keys ==="
-regression_client_for "$CONFIG_FILE" \
-    bench kv prepare --store 0 --group 1 --keys "$KEYSPACE" --value-size 64 2>&1
+# 2026-10-27: no memory/CPU quota/cpuset, Tokio32/RPC2, 3-node host-network mem-block.
+# Image f576b3d9387c58c81df9c0e99bf1ca85659fac77ae05e285b539fb7840e7d9ff; 5/20/5s.
+# Dataset: 1000000 keys, value_size=64, mixed=False.
+# Raw: .crowdb-runtime/artifacts/bench/kv-review-unlimited/read/; full verification passed.
+# 2026-10-27 lin_1t host-container ops/s=13340.1 latency_ns={"avg":74842.10373235583,"count":266802,"max":2234769,"min":48370,"p50":74751,"p99":106495,"p999":144383} passed=true
 
-# Phase 3: run all sub-tests against the same cluster.
-echo "=== Single-thread (1T:1C) — per-read engine cost ==="
-run_subtest "lin_1t"        linearizable auto 1 1
-run_subtest "minslot_1t"    minslot      zero 1 1
+# 2026-10-27: no memory/CPU quota/cpuset, Tokio32/RPC2, 3-node host-network mem-block.
+# Image f576b3d9387c58c81df9c0e99bf1ca85659fac77ae05e285b539fb7840e7d9ff; 5/20/5s.
+# Dataset: 1000000 keys, value_size=64, mixed=False.
+# Raw: .crowdb-runtime/artifacts/bench/kv-review-unlimited/read/; full verification passed.
+# 2026-10-27 minslot_16t host-container ops/s=134152.2 latency_ns={"avg":118881.20723253141,"count":2683044,"max":2860484,"min":46610,"p50":114175,"p99":223231,"p999":397311} passed=true
 
-echo "=== Multi-thread — max throughput + read-mode split ==="
-run_subtest "lin_6t"        linearizable auto 6 6
-run_subtest "minslot_6t"    minslot      zero 6 6
-run_subtest "lin_16t"       linearizable auto 16 16
-run_subtest "minslot_16t"   minslot      zero 16 16
-run_subtest "lin_32t"       linearizable auto 32 32
-run_subtest "minslot_32t"   minslot      zero 32 32
-
-echo "=== Correctness verification ==="
-run_subtest "lin_16t_verify"     linearizable auto 16 16 8
-run_subtest "minslot_16t_verify" minslot      zero 16 16 8
-
-# Phase 4: teardown via owned fixture shutdown.
-echo "=== Tearing down cluster ==="
-regression_fixture_for "$CONFIG_FILE" stop
-
-echo "=== DONE ==="
-echo "Results in $RESULTS_FILE"
-column -t -s$'\t' "$RESULTS_FILE"
+# 2026-10-27: no memory/CPU quota/cpuset, Tokio32/RPC2, 3-node host-network mem-block.
+# Image f576b3d9387c58c81df9c0e99bf1ca85659fac77ae05e285b539fb7840e7d9ff; 5/20/5s.
+# Dataset: 1000000 keys, value_size=64, mixed=False.
+# Raw: .crowdb-runtime/artifacts/bench/kv-review-unlimited/read/; full verification passed.
+# 2026-10-27 minslot_1t host-container ops/s=11314.6 latency_ns={"avg":88249.34428525975,"count":226292,"max":1078029,"min":51920,"p50":84479,"p99":154623,"p999":199679} passed=true

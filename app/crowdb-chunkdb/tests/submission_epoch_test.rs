@@ -158,7 +158,7 @@ async fn stale_execution_cannot_write_metadata_reservations_or_tasks_and_fresh_e
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn epoch_publication_does_not_drain_an_accepted_data_write_and_the_final_check_race_is_allowed() {
-    use crowdb_kv_client::{ChunkSlotMapClient, GetOutcome, ReadMode};
+    use crowdb_paxos_kv_client::{ChunkSlotMapClient, GetOutcome, ReadMode};
     use crowdb_protocol::chunk_slot::{ChunkSlotBootstrap, ChunkStorageGroup};
     use std::{sync::Arc, time::Duration};
     let test = slot_groups::TestGroups::start().await;

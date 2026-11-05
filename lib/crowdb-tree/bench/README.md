@@ -3,6 +3,48 @@
 
 # MemTable handoff benchmark
 
+## Parallel flush profile
+
+`parallel_flush_profile.cpp` is a standalone checked C ABI workload for comparing
+the engine before parallel flush with the current implementation. Build the
+identical driver against each engine in separate Release directories, with
+`CROWDB_TREE_BENCH=ON` and test hooks disabled:
+
+```sh
+pixi run cmake -S lib/crowdb-tree -B lib/crowdb-tree/build-perf \
+  -DCMAKE_BUILD_TYPE=Release -DCROWDB_TREE_BENCH=ON \
+  -DCROWDB_TREE_TEST_UTIL=OFF -DCROWDB_RPC_TEST_UTIL=OFF
+pixi run cmake --build lib/crowdb-tree/build-perf \
+  --target parallel_flush_profile --parallel 4
+pixi run env CROWDB_PROFILE_CACHE_BYTES=268435456 \
+  CROWDB_PROFILE_CACHE_PAGES=4096 \
+  lib/crowdb-tree/build-perf/parallel_flush_profile 4 4096 16384 16 random 0 1 0
+```
+
+- Arguments are workers, entries per Tree, value bytes, batch size, pattern,
+  cold flag, Tree count and histogram flag. Patterns are `sequential`, `random`,
+  `hot`, `delete` and `long-key`. Cold mode evicts clean leaf/inner pages before
+  point verification and before each scan repetition.
+- Each process checks two write/flush/checkpoint passes, verifies every point
+  result, and performs 32 full scans per pass. Compare apply + flush + snapshot
+  together; a shorter flush can defer work to the checkpoint. Multiple Trees
+  are exercised sequentially on a shared runtime, so this mode does not prove
+  concurrent fairness or sustainable server throughput.
+- `CROWDB_PROFILE_SOURCE_ENTRIES` defaults to 4096. Cache defaults are 64MiB
+  and 256 page slots. Byte capacity and page capacity both apply in the current
+  engine; the old engine only supports byte capacity. Set both explicitly when
+  comparing resident workloads. The JSON records the effective driver settings.
+- Current-engine limits per Tree are Handoff 256MiB, Routing 512MiB, Reclaim
+  256MiB and Writer 512MiB. The 8MiB lifecycle reserve includes fixed controls
+  for larger cache/queue profiles. Host byte limits scale with Tree count.
+  These are benchmark capacities, not production defaults or preallocated RSS.
+- Run repetitions without concurrent builds or test suites. Record exact
+  source/diff and binary hashes, compiler flags, CPU quota, memory limits and
+  histogram settings. Keep resource-limited runs separate from ample-resource
+  runs. A microbenchmark does not replace the three-node backlog/idle-drain case.
+
+## Earlier MemTable comparison
+
 Local comparison recorded on 2026-10-03 for implementation `139149b7`.
 The benchmark is `memtable_handoff_bench.cpp`; the current handoff contract is
 in [the engine design](../../../doc/design/tree/design-crowdb-tree-engine.md).

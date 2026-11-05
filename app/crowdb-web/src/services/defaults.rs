@@ -8,6 +8,7 @@ use crate::{
 };
 use axum::{extract::State, Json};
 use crowdb_console_shared::{config::ServiceType, ConsoleConfig};
+use crowdb_protocol::ServicePort;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
 
@@ -28,11 +29,6 @@ fn occupied(config: &ConsoleConfig) -> HashSet<u16> {
         ports.extend(server.rest_port);
         ports.extend(server.access_origins.values().filter_map(|origin| port(origin)));
         ports.extend(server.rpc_port);
-        if server.service_type == ServiceType::Diskdb {
-            if let Some(rpc) = server.rpc_url.as_deref().and_then(port) {
-                ports.extend([rpc.saturating_sub(2), rpc.saturating_sub(1)]);
-            }
-        }
     }
     for launch in config.local_launches.values() {
         for name in [
@@ -51,15 +47,16 @@ fn available(port: u16) -> bool {
     std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port)).is_ok()
 }
 
-fn next(used: &mut HashSet<u16>, start: u16, width: u16) -> Result<u16, Failure> {
-    for candidate in start..=32767 - width {
-        if (candidate..candidate + width).all(|port| !used.contains(&port) && available(port)) {
-            used.extend(candidate..candidate + width);
+fn next(used: &mut HashSet<u16>, service: ServicePort) -> Result<u16, Failure> {
+    for instance in 0..service.range_size() {
+        let candidate = service.port(instance);
+        if !used.contains(&candidate) && available(candidate) {
+            used.insert(candidate);
             return Ok(candidate);
         }
     }
     Err(err_409(
-        "No free listener range is available; release a port before deploying",
+        "No free port remains in the service's default range; specify a free listener explicitly",
     ))
 }
 
@@ -68,13 +65,45 @@ pub(super) async fn get(State(state): State<AppState>) -> Result<Json<Value>, Fa
     let mut used = occupied(&config);
     used.extend(super::plans::reserved_ports(&state)?);
     let mut result = BTreeMap::new();
-    for (kind, base) in [
-        ("paxos-kv", 19910),
-        ("diskdb", 29920),
-        ("chunkdb", 12010),
-        ("diskio", 13010),
-        ("chunk-kv", 15010),
-        ("access-server", 9091),
+    for (kind, listeners) in [
+        (
+            "paxos-kv",
+            vec![
+                ("http_port", ServicePort::PaxosKvServerMgmt),
+                ("rpc_port", ServicePort::PaxosKvServerRpc),
+            ],
+        ),
+        (
+            "diskdb",
+            vec![
+                ("http_port", ServicePort::DiskdbHttp),
+                ("rpc_port", ServicePort::DiskdbRpc),
+            ],
+        ),
+        (
+            "chunkdb",
+            vec![
+                ("http_port", ServicePort::ChunkdbHttp),
+                ("rpc_port", ServicePort::ChunkdbRpc),
+            ],
+        ),
+        ("diskio", vec![("rpc_port", ServicePort::DiskioRpc)]),
+        (
+            "chunk-kv",
+            vec![
+                ("http_port", ServicePort::ChunkKvHttp),
+                ("rpc_port", ServicePort::ChunkKvRpc),
+            ],
+        ),
+        (
+            "access-server",
+            vec![
+                ("s3_port", ServicePort::AccessServerHttp),
+                ("http_port", ServicePort::AccessServerIcebergHttp),
+                ("health_port", ServicePort::AccessServerHealthHttp),
+                ("dataset_port", ServicePort::AccessServerDatasetHttp),
+            ],
+        ),
     ] {
         let instance = config
             .servers
@@ -85,20 +114,9 @@ pub(super) async fn get(State(state): State<AppState>) -> Result<Json<Value>, Fa
             .checked_add(1)
             .filter(|id| i64::try_from(*id).is_ok())
             .ok_or_else(|| err_409("Service instance ID space exhausted"))?;
-        let first = next(&mut used, base, if kind == "diskdb" { 3 } else { 1 })?;
         let mut value = json!({"instance_id":instance.to_string()});
-        match kind {
-            "diskdb" | "diskio" => value["rpc_port"] = json!(first),
-            "access-server" => {
-                value["s3_port"] = json!(first);
-                value["http_port"] = json!(next(&mut used, base + 1, 1)?);
-                value["health_port"] = json!(next(&mut used, base + 2, 1)?);
-                value["dataset_port"] = json!(next(&mut used, base + 3, 1)?);
-            }
-            _ => {
-                value["http_port"] = json!(first);
-                value["rpc_port"] = json!(next(&mut used, base + 100, 1)?);
-            }
+        for (field, service) in listeners {
+            value[field] = json!(next(&mut used, service)?);
         }
         if kind == "chunkdb" {
             if let Some(server) = config

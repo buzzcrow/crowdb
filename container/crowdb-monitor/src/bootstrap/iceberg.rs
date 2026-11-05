@@ -40,7 +40,7 @@ pub enum IcebergBootstrapError {
     #[error("Iceberg bootstrap manifest failed: {0}")]
     Manifest(#[from] ManifestError),
     #[error("Iceberg bootstrap authority failed: {0}")]
-    Authority(#[from] crowdb_kv_client::Error),
+    Authority(#[from] crowdb_paxos_kv_client::Error),
     #[error("monitor lifecycle log failed: {0}")]
     MonitorLog(#[from] MonitorLogError),
 }
@@ -95,7 +95,7 @@ impl IcebergBootstrap {
         program: &std::path::Path,
         seeds: &str,
         credentials: &ServerCredentials,
-        kv: &crowdb_kv_client::CrowdbKvClient,
+        kv: &crowdb_paxos_kv_client::PaxosKvClient,
     ) -> Result<(), IcebergBootstrapError> {
         let operations = shared_console::operations(root, kv).await?;
         console::ensure_with_operations(
@@ -115,7 +115,7 @@ impl IcebergBootstrap {
     /// Propagates the production journal and Group-0 reservation errors.
     pub async fn shared_console_operations_for_tests(
         root: &std::path::Path,
-        kv: &crowdb_kv_client::CrowdbKvClient,
+        kv: &crowdb_paxos_kv_client::PaxosKvClient,
     ) -> Result<(Uuid, Uuid), IcebergBootstrapError> {
         shared_console::operations(root, kv).await
     }

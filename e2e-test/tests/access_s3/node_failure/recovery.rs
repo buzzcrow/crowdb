@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
-use crowdb_kv_client::{HardwareClient, RangeBindingClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{HardwareClient, RangeBindingClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{ChunkType, ListChunksRequest, QueryChunkRequest, Strip, StripType};
 use crowdb_protocol::common::{ChunkId, HwStatus};
 use std::collections::{HashMap, HashSet};
@@ -215,7 +215,7 @@ pub(super) async fn repaired(chunks: &[ChunkId]) {
 }
 
 pub(super) async fn ownership(
-    kv: Arc<crowdb_kv_client::CrowdbKvClient>,
+    kv: Arc<crowdb_paxos_kv_client::PaxosKvClient>,
     hardware: HardwareClient,
     failed_node: u64,
 ) {

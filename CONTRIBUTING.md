@@ -54,7 +54,7 @@ Playwright uses an installed system browser; do not install a repository-local
 browser. See [pixi.toml](pixi.toml) for focused component tasks and
 [tools/README.md](tools/README.md) for their scripts. Native Iceberg and official
 SDK suites use the `iceberg-e2e` environment; see
-[the test inventory](doc/working/test.md) for CI coverage and timing.
+[the repository tools guide](tools/README.md) for CI coverage and timing collection.
 
 Container acceptance is a separate Linux amd64 gate requiring Docker:
 
@@ -78,8 +78,8 @@ pixi run test-single-node-container
 
 Start documentation work at `doc/doc_index.md`. Permanent architecture and
 operational behavior belong under `doc/design/` or the relevant component
-README, future contracts in `doc/backlog/`, and temporary execution plans in
-`doc/working/`.
+README. Keep documentation independently readable with links to files in this
+repository or public sources.
 
 ## Code and tests
 

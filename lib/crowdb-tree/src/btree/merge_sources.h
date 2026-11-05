@@ -66,6 +66,11 @@ struct MergeSource
 class LoserTree
 {
   public:
+    explicit LoserTree(std::shared_ptr<AllocationBudget> budget = {})
+        : losers_(BudgetAllocator<int, AllocationBudget, AllocationKind::kScratch>(std::move(budget)))
+    {
+    }
+
     void init(MergeSource *sources, int k)
     {
         sources_ = sources;
@@ -119,9 +124,10 @@ class LoserTree
     }
 
   private:
-    MergeSource     *sources_ = nullptr;
-    int              k_       = 0;
-    std::vector<int> losers_; // [0] = winner, [1..k-1] = losers
+    MergeSource *sources_ = nullptr;
+    int          k_       = 0;
+    std::vector<int, BudgetAllocator<int, AllocationBudget, AllocationKind::kScratch>>
+        losers_; // [0] = winner, [1..k-1] = losers
 
     // a wins over b: lower key; tie → higher slot; tie → lower index.
     [[nodiscard]] bool less(int a, int b) const

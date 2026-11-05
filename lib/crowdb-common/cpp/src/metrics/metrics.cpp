@@ -291,21 +291,33 @@ void MetricsRegistry::flush_to(FILE *fp, double window_secs, const char * /*time
 
     // Gauges (always printed, even if 0). Regular gauges and callback
     // gauges are merged into one sorted list for a unified output section.
-    if (!gauges_.empty() || !callback_gauges_.empty()) {
+    if (!gauges_.empty() || !callback_gauges_.empty() || !inline_gauges_.empty()) {
         // Collect (name, value) pairs from both gauge types, then sort.
-        std::vector<std::pair<std::string, uint64_t>> all_gauges;
-        all_gauges.reserve(gauges_.size() + callback_gauges_.size());
+        struct GaugeValue
+        {
+            const char *name;
+            size_t      length;
+            uint64_t    value;
+        };
+
+        std::pmr::vector<GaugeValue> all_gauges(resource_);
+        all_gauges.reserve(gauges_.size() + callback_gauges_.size() + inline_gauges_.size());
         for (const auto &g : gauges_) {
-            all_gauges.emplace_back(g->name(), g->get());
+            all_gauges.push_back({.name = g->name().c_str(), .length = g->name().size(), .value = g->get()});
         }
         for (const auto &g : callback_gauges_) {
-            all_gauges.emplace_back(g->name(), g->get());
+            all_gauges.push_back({.name = g->name().c_str(), .length = g->name().size(), .value = g->get()});
         }
-        std::sort(all_gauges.begin(), all_gauges.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+        for (const auto &g : inline_gauges_) {
+            all_gauges.push_back({.name = g.name().c_str(), .length = g.name().size(), .value = g.get()});
+        }
+        std::sort(all_gauges.begin(), all_gauges.end(), [](const auto &a, const auto &b) {
+            return std::string_view(a.name, a.length) < std::string_view(b.name, b.length);
+        });
         std::fprintf(fp, "%-*s  value\n", static_cast<int>(name_w), "");
-        for (const auto &[name, value] : all_gauges) {
-            std::fprintf(fp, "%-*s  %5llu\n", static_cast<int>(name_w), name.c_str(),
-                         static_cast<unsigned long long>(value));
+        for (const auto &entry : all_gauges) {
+            std::fprintf(fp, "%-*s  %5llu\n", static_cast<int>(name_w), entry.name,
+                         static_cast<unsigned long long>(entry.value));
         }
     }
 
@@ -332,6 +344,9 @@ size_t MetricsRegistry::max_name_len() const
     }
     for (const auto &e : callback_gauges_) {
         max_len = std::max(max_len, e->name().size());
+    }
+    for (const auto &entry : inline_gauges_) {
+        max_len = std::max(max_len, entry.name().size());
     }
     return max_len;
 }

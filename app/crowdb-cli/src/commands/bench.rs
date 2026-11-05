@@ -9,13 +9,14 @@
 //! under `bench/`.
 
 pub mod chunk;
+mod client;
 pub mod disk;
 pub mod io;
-pub mod kv;
 pub mod loader;
 pub mod metrics;
-pub mod result;
+pub mod paxos_kv;
 pub mod s3;
 pub mod verb;
+pub mod workload;
 
 pub use verb::{run_bench_verb, BenchVerb};

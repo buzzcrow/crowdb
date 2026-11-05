@@ -4,7 +4,7 @@
 # CROWDB - Design: Console (Overview)
 
 The `crowdb-console` component provides a Web UI and a CLI that share one
-Rust core for managing `crowdb-kv-server` clusters. This overview covers
+Rust core for managing `crowdb-paxos-kv-server` clusters. This overview covers
 the backend, data model, CLI, and hosting concerns; the frontend SPA
 design is detailed in the sub-design `design-crowdb-console-ui.md`.
 
@@ -46,11 +46,11 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
 
 ### Goals
 - Single workspace project `crowdb-console` delivering a Web UI and a CLI that share one Rust core.
-- Operate against any number of `crowdb-kv-server` instances via their public surfaces (HTTP management API + crowdb-rpc KV / health).
+- Operate against any number of `crowdb-paxos-kv-server` instances via their public surfaces (HTTP management API + crowdb-rpc KV / health).
 - Model a **Rack → Node → Server Instance → Store → Group → Replica** hierarchy, including a "simulated hardware" mode that runs entirely on `127.0.0.1`.
 
 ### Non-Goals
-- Bypassing `crowdb-kv-server` to talk to Paxos / WAL / storage internals.
+- Bypassing `crowdb-paxos-kv-server` to talk to Paxos / WAL / storage internals.
 - Multi-tenancy and a general audit-log service.
 - Making a console-local file authoritative for cluster topology.
 
@@ -88,8 +88,8 @@ Targets:
 The web frontend (SPA backed by Axum) and the CLI follow the same
 path through the shared `ops` module:
 
-- **Web**: `user → crowdb-web (Axum) → shared (ops module) → group-0 sysdata + crowdb-kv-server`
-- **CLI**: `user → crowdb-cli → shared (ops module) → group-0 sysdata + crowdb-kv-server mgmt`
+- **Web**: `user → crowdb-web (Axum) → shared (ops module) → group-0 sysdata + crowdb-paxos-kv-server`
+- **CLI**: `user → crowdb-cli → shared (ops module) → group-0 sysdata + crowdb-paxos-kv-server mgmt`
 
 Both frontends build an `OpContext` with Group 0 discovery seeds. Attached CLI
 commands select `--cluster` or `--management-endpoint`, verify the confirmed
@@ -102,7 +102,7 @@ configured auxiliary Web process may retain a local launch registry; it is not
 required for node formation or endpoint-only attachment.
 
 The CLI talks directly to group-0 system metadata via
-`CrowdbSysmdClient` and to individual `crowdb-kv-server` management
+`CrowdbSysmdClient` and to individual `crowdb-paxos-kv-server` management
 APIs via `ServerClient` — no `crowdb-web` intermediary. The `ops`
 module in `shared` holds the operation logic that both frontends
 call.
@@ -126,7 +126,7 @@ call.
                   │              │              │
                   ▼              ▼              ▼
               ┌────────────────────────────────────┐
-              │           crowdb-kv-server            │     (one per node)
+              │           crowdb-paxos-kv-server            │     (one per node)
               └────────────────────────────────────┘
 ```
 
@@ -136,11 +136,11 @@ call.
   `ops::kv_server::deploy`, `ops::kv_data::put`, `ops::hardware::add_rack`).
 - `web` (Axum) and `cli` (clap) only parse input and render output.
 - The web SPA **does not** reimplement business logic; it calls
-  `shared` via the Axum backend, never `crowdb-kv-server` directly.
+  `shared` via the Axum backend, never `crowdb-paxos-kv-server` directly.
 - Both frontends build an `OpContext` and call `shared`'s `ops`
   module directly — the CLI from its verified application target,
   the web backend via `AppState::op_context()` (sharing the
-  cached `CrowdbKvClient` and Group 0 management seeds).
+  cached `PaxosKvClient` and Group 0 management seeds).
 - Shared hardware and logical operations provide the same authority and
   conditional publication rules to both frontends. Node count and runtime do not
   select UI permissions; required authority and resource ownership still apply.
@@ -158,7 +158,7 @@ direction from which the cluster is observed.
 Rooted at **Rack → Node → Server → PxStore → PxGroup → {LocalReplica,
 RemoteReplica…}**. Every entity below `Node` is described from that
 node's vantage point. A `PxGroup` has exactly one local replica plus
-N−1 remote-replica proxies. This mirrors the `crowdb-kv-server` internal
+N−1 remote-replica proxies. This mirrors the `crowdb-paxos-kv-server` internal
 data structure, which is why this view is also the "debugging view":
 the API surfaces the remote-list explicitly so an operator can spot
 bugs where a node failed to register all of its peers.
@@ -204,7 +204,7 @@ Identity is `(store_id[, group_id[, replica_id]])`.
   logical view collapses replicas into a unified list so cluster-level
   operations can ignore placement. The physical view keeps the split
   for debugging missing peer registrations.
-- `StoreView` / `GroupView` / `ReplicaView` reuse `crowdb_kv::cluster::info`
+- `StoreView` / `GroupView` / `ReplicaView` reuse `crowdb_paxos_kv::cluster::info`
   where possible; the console-side wrapper adds the `node_id`
   projection that the per-server protocol does not encode.
 
@@ -303,7 +303,7 @@ namespaces.
 ### 5.1 Two transports per node
 | Purpose | Transport |
 | --- | --- |
-| Deploy / start / stop `crowdb-kv-server` process; copy binary | SSH |
+| Deploy / start / stop `crowdb-paxos-kv-server` process; copy binary | SSH |
 | Runtime mgmt API (add store/group, list, health) | HTTP |
 | Runtime KV ops, paxos health | crowdb-rpc |
 
@@ -477,9 +477,9 @@ backend-facing contract here:
 - `tracing` everywhere; `--vv` switches CLI to debug.
 - Web backend exposes `/healthz`. **`/metrics` is deferred**. The Rust
   Prometheus story has multiple competing crates; we will pick one when
-  broader observability work for `crowdb-kv-server` begins.
+  broader observability work for `crowdb-paxos-kv-server` begins.
 - All console-issued operations attach a correlation id propagated as
-  `x-crowdb-kv-corr-id` to `crowdb-kv-server` request headers.
+  `x-crowdb-paxos-kv-corr-id` to `crowdb-paxos-kv-server` request headers.
 - Regression service metrics have a content contract: KV emits `rust`,
   `cpp-rpc`, `cpp-tree`, and `misc`; DiskDB and ChunkDB emit `rust`,
   `cpp-rpc`, and `misc`; DiskIO emits `cpp-rpc` and `misc`. A tracing or RPC

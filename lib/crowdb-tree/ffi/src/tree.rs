@@ -1,6 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+mod split_overlay;
+pub use split_overlay::{InstalledSplit, PreparedSplitOverlay, SplitOverlayLimits};
+
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::raw::c_int;
@@ -12,7 +15,7 @@ use tokio::io::unix::AsyncFd;
 
 use crate::config::{Config, KeyRange, PageStoreBackend};
 use crate::error::{check, take_buf, CtError};
-use crate::reactor::{drain_eventfd, EventfdPump, RawFdView};
+use crate::reactor::{drain_eventfd, duplicate_eventfd, EventfdPump};
 use crate::stats::RangeRebuildStats;
 use crate::sys;
 
@@ -20,6 +23,7 @@ use crate::sys;
 /// writes internally and keeps reads lock-free.
 pub struct Crowdbtree {
     ptr: NonNull<sys::ct_tree>,
+    backend_release: Option<crate::BackendReleaseService>,
     // Lazily-spawned eventfd pumps for this tree's DiskIOUring eventfds
     // (one per pipeline), shared by every concurrently-pending
     // drive_ct_future call. Empty once resolved means no DiskIOUring is
@@ -68,6 +72,21 @@ impl Crowdbtree {
 
     /// Open (recovering durable state when `path` is set, else fresh in-memory).
     pub fn open(opt: &Config) -> Result<Self, CtError> {
+        Self::open_impl(opt, None)
+    }
+
+    /// Converts a legacy Chunk root using its runtime backend and shared host.
+    /// Stop and drain every old-format writer in the catalog namespace first.
+    /// Retry an unknown commit with the same generation and a fresh catalog owner;
+    /// the durable migration receipt resolves it without copying the data twice.
+    pub fn migrate_legacy_chunk(opt: &Config, expected_generation: u64) -> Result<Self, CtError> {
+        if expected_generation == 0 || expected_generation == u64::MAX || opt.runtime.is_none() {
+            return Err(CtError::InvalidArgument);
+        }
+        Self::open_impl(opt, Some(expected_generation))
+    }
+
+    fn open_impl(opt: &Config, migration_generation: Option<u64>) -> Result<Self, CtError> {
         #[cfg(feature = "test-util")]
         ct_init_test_logging();
 
@@ -95,6 +114,7 @@ impl Crowdbtree {
             KeyRange::Unbounded => (0, None, None),
             KeyRange::Bounded { start, end } => (1, start.as_deref(), end.as_deref()),
         };
+        let tuning = opt.tuning.as_raw();
         let copt = sys::ct_options {
             page_store: opt
                 .page_store
@@ -125,13 +145,50 @@ impl Crowdbtree {
             log_file_prefix: clog_prefix.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
             log_max_file_mb: opt.log_max_file_mb,
             log_max_files: opt.log_max_files,
+            tuning: &tuning,
         };
         let mut out: *mut sys::ct_tree = std::ptr::null_mut();
-        check(unsafe { sys::ct_open(&copt, &mut out) })?;
-        Ok(Self {
+        let status = match (&opt.runtime, migration_generation) {
+            (Some(runtime), Some(generation)) => unsafe {
+                sys::ct_migrate_legacy_chunk_with_runtime(
+                    &copt,
+                    runtime.as_ptr(),
+                    &opt.runtime_binding.as_raw(),
+                    generation,
+                    &mut out,
+                )
+            },
+            (Some(runtime), None) => unsafe {
+                sys::ct_open_with_runtime(&copt, runtime.as_ptr(), &opt.runtime_binding.as_raw(), &mut out)
+            },
+            (None, None) => unsafe {
+                sys::ct_open_with_runtime(
+                    &copt,
+                    std::ptr::null_mut(),
+                    &opt.runtime_binding.as_raw(),
+                    &mut out,
+                )
+            },
+            (None, Some(_)) => return Err(CtError::InvalidArgument),
+        };
+        check(status)?;
+        Self::from_opened(out)
+    }
+
+    fn from_opened(out: *mut sys::ct_tree) -> Result<Self, CtError> {
+        let mut tree = Self {
             ptr: NonNull::new(out).ok_or(CtError::Internal)?,
+            backend_release: None,
             eventfd_pumps: std::sync::OnceLock::new(),
-        })
+        };
+        tree.backend_release = crate::BackendReleaseService::attach(tree.ptr)?;
+        Ok(tree)
+    }
+
+    /// Host release handle, present for filesystem Block backends opened from
+    /// a Tokio context. Retain it through host shutdown after all readers drop.
+    pub fn backend_release_service(&self) -> Option<crate::BackendReleaseService> {
+        self.backend_release.clone()
     }
 
     pub(crate) fn as_ptr(&self) -> *mut sys::ct_tree {
@@ -159,6 +216,7 @@ impl Crowdbtree {
             KeyRange::Unbounded => (0, None, None),
             KeyRange::Bounded { start, end } => (1, start.as_deref(), end.as_deref()),
         };
+        let tuning = opt.tuning.as_raw();
         let copt = sys::ct_options {
             page_store: store.as_ptr(),
             range_bounded,
@@ -182,14 +240,34 @@ impl Crowdbtree {
             log_file_prefix: std::ptr::null(),
             log_max_file_mb: 0,
             log_max_files: 0,
+            tuning: &tuning,
         };
         let mut out = std::ptr::null_mut();
         let mut raw = sys::ct_range_rebuild_stats::default();
-        check(unsafe { sys::ct_rebuild_range(self.as_ptr(), &copt, &mut out, &mut raw) })?;
-        let tree = Self {
-            ptr: NonNull::new(out).ok_or(CtError::Internal)?,
-            eventfd_pumps: std::sync::OnceLock::new(),
+        let status = match &opt.runtime {
+            Some(runtime) => unsafe {
+                sys::ct_rebuild_range_with_runtime(
+                    self.as_ptr(),
+                    &copt,
+                    runtime.as_ptr(),
+                    &opt.runtime_binding.as_raw(),
+                    &mut out,
+                    &mut raw,
+                )
+            },
+            None => unsafe {
+                sys::ct_rebuild_range_with_runtime(
+                    self.as_ptr(),
+                    &copt,
+                    std::ptr::null_mut(),
+                    &opt.runtime_binding.as_raw(),
+                    &mut out,
+                    &mut raw,
+                )
+            },
         };
+        check(status)?;
+        let tree = Self::from_opened(out)?;
         Ok((
             tree,
             RangeRebuildStats {
@@ -305,6 +383,12 @@ impl Crowdbtree {
         check(unsafe { sys::ct_release_split_memtable_view(self.as_ptr(), generation) })
     }
 
+    /// Exact checkpoint coverage. A flush only publishes memory and does not
+    /// advance this value. Volatile Trees remain at zero.
+    pub fn durable_coverage(&self) -> u64 {
+        unsafe { sys::ct_durable_coverage(self.as_ptr()) }
+    }
+
     pub fn last_applied_slot(&self) -> u64 {
         unsafe { sys::ct_last_applied_slot(self.as_ptr()) }
     }
@@ -410,7 +494,7 @@ impl Crowdbtree {
 
     /// The tree's DiskIOUring eventfds (one per pipeline), or empty if
     /// none is wired (an in-memory tree, or a build without liburing).
-    /// DiskIOUring-owned -- see `RawFdView`'s doc comment for why callers
+    /// DiskIOUring-owned -- callers
     /// must never close them.
     fn uring_eventfds(&self) -> Vec<RawFd> {
         // Query the count first, then fetch the fds.
@@ -435,8 +519,7 @@ impl Crowdbtree {
 
     /// Lazily spawns (once) and returns the `Notify` fanned out by this
     /// tree's eventfd pumps -- one pump per pipeline eventfd, all sharing
-    /// a single `Arc<Notify>`. See the module-level fan-out note above
-    /// `RawFdView` for why a single Notify (not a per-future registration)
+    /// a single `Arc<Notify>`. See the module-level fan-out note in the reactor module for why a single Notify (not a per-future registration)
     /// is required. `None` if there's no DiskIOUring wired, or all pumps
     /// failed to spawn. Must be called from within a Tokio runtime context;
     /// every call site is inside an async fn body driven by one, so this
@@ -450,7 +533,12 @@ impl Crowdbtree {
             let notify = Arc::new(tokio::sync::Notify::new());
             let mut pumps = Vec::with_capacity(fds.len());
             for fd in fds {
-                let async_fd = match AsyncFd::new(RawFdView(fd)) {
+                // SAFETY: self retains the native owner throughout duplication.
+                let owned_fd = match unsafe { duplicate_eventfd(fd) } {
+                    Ok(fd) => fd,
+                    Err(_) => continue,
+                };
+                let async_fd = match AsyncFd::new(owned_fd) {
                     Ok(af) => af,
                     Err(_) => continue, // skip this pump, try the rest
                 };
@@ -510,10 +598,9 @@ impl Crowdbtree {
 
 impl Drop for Crowdbtree {
     fn drop(&mut self) {
-        // Stop all eventfd pumps (if any) before ct_close tears down the
-        // DiskIOUring -- once that happens the eventfds are closed and the
-        // raw fd numbers may be reused elsewhere in the process, so the
-        // pumps must not still be waiting on them.
+        // Cancel pumps before native teardown. Their independently owned fds
+        // stay live until task cancellation has deregistered them from Tokio,
+        // so opening another Tree immediately cannot reuse an active fd.
         if let Some(pumps) = self.eventfd_pumps.get() {
             for pump in pumps {
                 pump.task.abort();

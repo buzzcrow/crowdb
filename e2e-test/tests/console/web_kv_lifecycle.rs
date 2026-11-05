@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_protocol::port::ports::WEB_BASE;
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -27,7 +28,7 @@ async fn deploy_restart_and_stop_retains_fixed_ports_and_workspace() {
         .build()
         .unwrap();
     let addresses = crate::common::management::addresses(1);
-    let base = format!("http://{}:9090", addresses[0]);
+    let base = format!("http://{}:{WEB_BASE}", addresses[0]);
     request(&http, &base, Method::POST, "/api/racks", json!({"id":1}), 201).await;
     request(
         &http,
@@ -60,7 +61,7 @@ async fn deploy_restart_and_stop_retains_fixed_ports_and_workspace() {
     }
     assert!(workspace.join("bin").read_dir().unwrap().next().is_some());
     assert!(workspace
-        .join(format!("log/crowdb-kv-server-{first}.out.log"))
+        .join(format!("log/crowdb-paxos-kv-server-{first}.out.log"))
         .is_file());
     let server = request(&http, &base, Method::GET, "/api/nodes/1/server", Value::Null, 200).await;
     assert_eq!(server["url"], "http://127.0.0.1:7000");

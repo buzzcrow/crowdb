@@ -1,25 +1,18 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// On-disk mapping-table formats: segment image + segment directory
-// (plan-tree #14c).
+// Durable segment image and directory codecs. Local checkpoints and explicit
+// legacy migration use these backend-neutral blobs. Anchor encoding and
+// validation are separate snapshot metadata operations.
 //
-// Both formats are backend-neutral byte blobs (no fixed file region) --
-// callers allocate/write/read them through PageStore like any other durable
-// blob. The commit anchor (§7.3) that ties a snapshot generation to a
-// segment-directory address is encoded/decoded in persist.cpp, reusing (and
-// extending) the existing superblock A/B machinery rather than duplicating
-// it here.
+// Segment images hold packed durable words (mapping_slot.h), never resident
+// pointers. Version 1 carries local byte descriptors; version 2 additionally
+// permits immutable-store page references for legacy migration. Recovery
+// validates the words before constructing typed backing descriptors.
 //
-// Segment image: a dirty MappingSegment's full packed-word array, verbatim
-// (crowdb::tree::slot_word encoding, mapping_slot.h) -- recovery installs the
-// words into slots[] with zero decode. Version 1 contains local byte
-// descriptors. Version 2 permits self-tagged immutable-store page references
-// alongside legacy descriptors for lazy migration.
-//
-// Segment directory: the list of every *live* segment's latest generation +
-// image location, rewritten in full whenever any segment's generation
-// changes. Small (O(live segments), not O(resident pages)).
+// A directory records each live segment's generation, image location and CRC.
+// The existing on-disk encoding is independent of the mutable mapping test
+// model.
 #pragma once
 
 #include "crowdb-tree/status.h"

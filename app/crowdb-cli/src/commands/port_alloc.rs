@@ -18,16 +18,12 @@ use crowdb_protocol::ServicePort;
 pub enum ServiceArg {
     #[value(name = "kv-mgmt")]
     KvMgmt,
-    #[value(name = "kv-listen")]
-    KvListen,
-    #[value(name = "diskdb-listen")]
-    DiskdbListen,
+    #[value(name = "kv-rpc")]
+    KvRpc,
     #[value(name = "diskdb-http")]
     DiskdbHttp,
     #[value(name = "diskdb-rpc")]
     DiskdbRpc,
-    #[value(name = "chunkdb-listen")]
-    ChunkdbListen,
     #[value(name = "chunkdb-http")]
     ChunkdbHttp,
     #[value(name = "chunkdb-rpc")]
@@ -49,12 +45,10 @@ pub enum ServiceArg {
 impl From<ServiceArg> for ServicePort {
     fn from(arg: ServiceArg) -> Self {
         match arg {
-            ServiceArg::KvMgmt => Self::KvServerMgmt,
-            ServiceArg::KvListen => Self::KvServerListen,
-            ServiceArg::DiskdbListen => Self::DiskdbListen,
+            ServiceArg::KvMgmt => Self::PaxosKvServerMgmt,
+            ServiceArg::KvRpc => Self::PaxosKvServerRpc,
             ServiceArg::DiskdbHttp => Self::DiskdbHttp,
             ServiceArg::DiskdbRpc => Self::DiskdbRpc,
-            ServiceArg::ChunkdbListen => Self::ChunkdbListen,
             ServiceArg::ChunkdbHttp => Self::ChunkdbHttp,
             ServiceArg::ChunkdbRpc => Self::ChunkdbRpc,
             ServiceArg::DiskioRpc => Self::DiskioRpc,
@@ -79,7 +73,7 @@ pub struct PortAllocArgs {
     #[arg(long, default_value_t = 0)]
     pub offset: u16,
 
-    /// Service type (e.g. "kv-mgmt", "kv-listen", "diskdb-rpc").
+    /// Service type (e.g. "kv-mgmt", "kv-rpc", "diskdb-rpc").
     #[arg(long)]
     pub service: Option<ServiceArg>,
 

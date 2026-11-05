@@ -102,14 +102,16 @@ fn omitted_choices_select_six_services_and_preallocated_standard_capacity() {
 }
 
 #[test]
-fn service_selection_and_reserved_diskdb_listener_range_cannot_be_ambiguous() {
+fn service_selection_and_active_diskdb_listeners_cannot_be_ambiguous() {
     let mut plan = request();
     plan.choices.services[1].listeners.rpc_port = Some(32000);
-    plan.choices.services[2].listeners.rpc_port = Some(32002);
+    plan.choices.services[2].listeners.rpc_port = Some(32000);
     assert!(plan.validate().is_err());
-    plan.choices.services[2].listeners.rpc_port = Some(32003);
+    plan.choices.services[2].listeners.rpc_port = Some(32001);
     plan.validate().unwrap();
-    plan.choices.services[1].listeners.rpc_port = Some(65534);
+    plan.choices.services[1].listeners.rpc_port = Some(65535);
+    plan.validate().unwrap();
+    plan.choices.services[1].listeners.http_port = Some(65535);
     assert!(plan.validate().is_err());
     let mut duplicated = request();
     duplicated.choices.services[1] = duplicated.choices.services[0].clone();

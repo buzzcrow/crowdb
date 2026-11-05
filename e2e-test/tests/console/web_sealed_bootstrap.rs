@@ -4,6 +4,7 @@
 use crowdb_console_shared::bootstrap_intent::BootstrapIntent;
 use crowdb_console_shared::config::{NodeEntry, RackEntry, ServerEntry};
 use crowdb_console_shared::ConsoleConfig;
+use crowdb_protocol::port::ports::WEB_BASE;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -37,7 +38,7 @@ async fn bare_metal_bootstrap_consumes_sealed_topology_without_local_topology() 
         .unwrap();
     let source = crate::common::control::node("upload-bootstrap-source", 1).await;
     let response = crate::common::management::client()
-        .post(format!("http://{}:9090/api/cluster/init", addresses[1]))
+        .post(format!("http://{}:{WEB_BASE}/api/cluster/init", addresses[1]))
         .bearer_auth("bare-metal-bootstrap-test-token-12345")
         .json(&json!({"nodes": [1], "bootstrap_file": source["path"]}))
         .send()

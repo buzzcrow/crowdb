@@ -112,8 +112,8 @@ impl SuppliedStorage {
                         eprintln!("supplied disk provisioning failed; explicit retry required: {error}");
                         if let Ok(mut state) = journal::status(&root, &id) {
                             state.phase = if matches!(
-                                error.downcast_ref::<crowdb_kv_client::Error>(),
-                                Some(crowdb_kv_client::Error::OutcomeUnknown)
+                                error.downcast_ref::<crowdb_paxos_kv_client::Error>(),
+                                Some(crowdb_paxos_kv_client::Error::OutcomeUnknown)
                             ) {
                                 SuppliedPreparationPhase::Unknown
                             } else {

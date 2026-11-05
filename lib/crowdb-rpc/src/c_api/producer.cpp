@@ -42,9 +42,7 @@ extern "C" crowdb_rpc_buffer_t crowdb_rpc_server_alloc_producer_buffer(crowdb_rp
             server->server->transport()->allocate_producer_buffer(capacity, require_registered != 0), release);
         if (buffer == nullptr)
             return nullptr;
-        auto *handle = new crowdb_rpc_buffer_s{buffer.get()};
-        (void)buffer.release();
-        return handle;
+        return crowdb::rpc::wrap_owned_buffer(buffer.release());
     }
     catch (...) {
         return nullptr;

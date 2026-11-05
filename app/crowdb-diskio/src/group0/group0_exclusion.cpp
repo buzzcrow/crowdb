@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-#include "crowdb-kv-client/c_api.h"
+#include "crowdb-paxos-kv-client/c_api.h"
 #include "group0/ffi_result.h"
 #include "group0/group0_sync.h"
 

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use crowdb_chunk_kv::{Partition, PartitionConfig, SplitArtifact};
+use crowdb_chunk_kv::{Partition, SplitArtifact};
 use crowdb_protocol::chunk_kv::{
     AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogPartitionState, PartitionArtifact,
     SplitPhase, SplitReadinessProof, SplitTransition, TailOverlayArtifact, TargetReadinessProof,
@@ -475,7 +475,7 @@ impl TransitionStorage for ChunkKvStorage {
         let artifact = prepared.artifact.clone();
         let child = prepared
             .child
-            .open_warmed(PartitionConfig::default())
+            .open_warmed(self.partition_config().clone())
             .map_err(|error| plan_error(&error.to_string()))?;
         let retained_parent = parent
             .split_ingress()

@@ -164,7 +164,7 @@ class Connection : public std::enable_shared_from_this<Connection>
     // Check if the connection has pending send data (queue or partials).
     [[nodiscard]] bool has_pending_send() const
     {
-        return send_queue_.has_pending() || overflow_.has_pending() || pending_count_ > 0;
+        return send_queue_.has_pending() || overflow_.has_pending() || has_partials_.load(std::memory_order_relaxed);
     }
 
     // Push a frame to the overflow queue (called when send_queue is full).
@@ -312,6 +312,9 @@ class Connection : public std::enable_shared_from_this<Connection>
     // try_send sends these first, then drains the queue for new frames.
     OutFrame *pending_frames_[BATCH_MAX];
     int       pending_count_{0};
+    // Readers outside in_send_ only need a hint; the sender publishes it
+    // before releasing ownership and arms writable events for partial sends.
+    std::atomic<bool> has_partials_{false};
 
     ConnectionCallback<OnFrameCallback>       on_frame_callback_;
     ConnectionCallback<std::function<void()>> on_frame_ready_;

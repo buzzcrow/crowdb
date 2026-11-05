@@ -101,17 +101,33 @@ TEST(RdmaBufferPoolTest, SlicesOneRegisteredRegion)
 
 TEST(RdmaBufferPoolTest, TransportCopiesSystemBufferIntoRegisteredPool)
 {
-    RdmaTransport    transport;
+    const auto *address = std::getenv("CROWDB_RDMA_E2E_LISTEN_ADDR");
+    if (std::getenv("CROWDB_RDMA_E2E") == nullptr || address == nullptr) {
+        GTEST_SKIP() << "set CROWDB_RDMA_E2E and local HCA address";
+    }
+    // Registered arenas use the device context selected by the CM connection.
+    RdmaTransport server;
+    RdmaTransport transport;
+    ASSERT_TRUE(server.listen(address, 19415));
+    std::shared_ptr<Connection> incoming;
+    std::thread                 acceptor([&] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (incoming == nullptr && std::chrono::steady_clock::now() < deadline) {
+            incoming = server.accept();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+    auto                        outgoing = transport.connect(address, 19415);
+    acceptor.join();
+    ASSERT_NE(incoming, nullptr);
+    ASSERT_NE(outgoing, nullptr);
     SystemBufferPool system_pool(1);
     Buffer          *source = system_pool.alloc(32);
     ASSERT_NE(source, nullptr);
     const uint8_t payload[] = {1, 2, 3, 4};
     source->write(payload, sizeof(payload));
     Buffer *registered = transport.register_buffer(source);
-    if (registered == nullptr) {
-        source->release();
-        GTEST_SKIP() << "RDMA device registration is unavailable";
-    }
+    ASSERT_NE(registered, nullptr);
     EXPECT_EQ(registered->type, crowdb::rpc::BufferType::Registered);
     EXPECT_EQ(registered->len, sizeof(payload));
     EXPECT_EQ(std::memcmp(registered->data, payload, sizeof(payload)), 0);
@@ -180,12 +196,12 @@ TEST(RdmaHardwareTest, CompleteCmQpSendReceiveFlow)
         return;
     }
     if (role != nullptr && std::strcmp(role, "client") == 0) {
-        std::fprintf(stderr, "R239 hardware client: device=%s source=%s target=%s port=%d\\n",
+        std::fprintf(stderr, "RDMA hardware client: device=%s source=%s target=%s port=%d\n",
                      std::getenv("CROWDB_RDMA_DEVICE") == nullptr ? "" : std::getenv("CROWDB_RDMA_DEVICE"),
                      std::getenv("CROWDB_RDMA_SOURCE_ADDR") == nullptr ? "" : std::getenv("CROWDB_RDMA_SOURCE_ADDR"),
                      connect_address, port);
         RdmaTransport client;
-        std::fprintf(stderr, "R239 client transport ready=%d\\n", client.ready() ? 1 : 0);
+        std::fprintf(stderr, "RDMA client transport ready=%d\n", client.ready() ? 1 : 0);
         client.start();
         auto outgoing = client.connect(connect_address, port);
         ASSERT_NE(outgoing, nullptr);
@@ -195,7 +211,8 @@ TEST(RdmaHardwareTest, CompleteCmQpSendReceiveFlow)
             Buffer *raw = system_pool.alloc(HEADER_SIZE);
             ASSERT_NE(raw, nullptr);
             Header header;
-            header.msg_type = static_cast<uint16_t>(1 + sequence);
+            // Keep application frames out of the reserved transport types.
+            header.msg_type = 1;
             serialize_header(raw->data, header);
             raw->len        = HEADER_SIZE;
             Buffer *control = client.register_buffer(raw);
@@ -203,7 +220,7 @@ TEST(RdmaHardwareTest, CompleteCmQpSendReceiveFlow)
             auto *frame    = new OutFrame;
             frame->header  = header;
             frame->control = control;
-            ASSERT_TRUE(client.submit(outgoing.get(), frame));
+            ASSERT_TRUE(client.submit(outgoing.get(), frame)) << "sequence " << sequence;
             raw->release();
         }
         for (int i = 0; i < 300; ++i) {

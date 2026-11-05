@@ -10,7 +10,7 @@ use super::{
     storage_error, StreamChunkRecordStore,
 };
 use crate::{Result, StreamChunkStore, StreamError};
-use crowdb_kv_client::{BatchOp, GetOutcome};
+use crowdb_paxos_kv_client::{BatchOp, GetOutcome};
 use crowdb_protocol::chunk_stream::{StreamChunkState, StreamName};
 use crowdb_protocol::key::{BinaryKey, StreamChunkRecordKey, StreamChunkRecordOrder};
 

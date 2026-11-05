@@ -84,7 +84,7 @@ mod service_dependency;
 
 #[tokio::test]
 async fn healthy_diskdb_listener_must_publish_the_registered_disks_ownership_before_consumers_start() {
-    use crowdb_kv_client::ServiceRegistryClient;
+    use crowdb_paxos_kv_client::ServiceRegistryClient;
     use crowdb_protocol::mgmt::node::setup::{NodeSetupChoices, NodeSetupRequest};
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("diskdb-route-gate");
     let request = NodeSetupRequest {
@@ -96,8 +96,8 @@ async fn healthy_diskdb_listener_must_publish_the_registered_disks_ownership_bef
     let authority = node_setup::TestAuthority::start(root.path(), &request).await;
     assert_eq!(authority.registry.nodes[0].node_id, 2);
     authority.kv.refresh_topology().await.unwrap();
-    let kv = std::sync::Arc::new(crowdb_kv_client::CrowdbKvClient::new(
-        crowdb_kv_client::ClientConfig::new(authority.binding.management_seeds.clone()),
+    let kv = std::sync::Arc::new(crowdb_paxos_kv_client::PaxosKvClient::new(
+        crowdb_paxos_kv_client::ClientConfig::new(authority.binding.management_seeds.clone()),
     ));
     service_dependency::publish_online_disk(kv.clone()).await;
     let (address, server) = service_dependency::ready_listener().await;
@@ -283,7 +283,7 @@ fn redirecting_rpc() -> (crowdb_rpc_ffi::RpcServer, Arc<AtomicUsize>) {
     (rpc, requests)
 }
 
-async fn publish_catalog(kv: &crowdb_kv_client::CrowdbKvClient, port: i32, second: Option<u16>) {
+async fn publish_catalog(kv: &crowdb_paxos_kv_client::PaxosKvClient, port: i32, second: Option<u16>) {
     let mut page = ChunkKvRangeCatalogPage {
         generation: 1,
         page_index: 0,

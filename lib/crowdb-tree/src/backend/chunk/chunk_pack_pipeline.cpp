@@ -160,7 +160,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
         : store(owner),
           expected_generation(generation),
           cancellation(cancel),
-          completion(on_complete)
+          completion(std::move(on_complete))
     {
     }
 

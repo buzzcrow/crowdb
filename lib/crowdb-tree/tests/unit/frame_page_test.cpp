@@ -65,6 +65,25 @@ TEST(FramePage, LeafBuildViewRoundTrip)
     EXPECT_EQ(frame_upper_fence(frame.data()).to_string(), "c");
 }
 
+TEST(FramePage, NullBackedEmptyKeysAndSeparatorsRemainValid)
+{
+    constexpr uint32_t   bytes = 4096;
+    std::vector<uint8_t> frame(bytes);
+    const auto           cell = make_cell(1, "");
+    LeafFrameBuilder     builder(frame.data(), bytes);
+    ASSERT_TRUE(builder.try_append_sorted(Slice{}, Slice(cell)));
+    builder.finish(1, kInvalidPageId);
+    ASSERT_TRUE(frame_validate(frame.data(), bytes));
+    const LeafFrameView leaf(frame.data(), bytes);
+    ASSERT_EQ(leaf.count(), 1U);
+    EXPECT_TRUE(leaf.key(0).empty());
+    EXPECT_TRUE(CellView{leaf.cell(0)}.value().empty());
+
+    ASSERT_TRUE(inner_frame_build(frame.data(), bytes, 3, {1, 2}, {Slice{}}));
+    ASSERT_TRUE(frame_validate(frame.data(), bytes));
+    EXPECT_TRUE(InnerFrameView(frame.data(), bytes).separator_at(0).empty());
+}
+
 TEST(FramePage, LeafFindAndLowerBound)
 {
     const uint32_t       pb = 4096;

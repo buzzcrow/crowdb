@@ -65,9 +65,9 @@ ct_status poll_until_done(ct_future *f, int32_t *out_found, uint64_t *out_slot, 
 
 } // namespace
 
-// Case 1: a resident L1 hit's future is already done on
-// the very first ct_future_poll call -- no reactor round trip needed.
-TEST(AsyncGet, FastPathHitCompletesSynchronously)
+// Resident values complete through the shared CPU runtime and retain their
+// owner until the caller releases the future.
+TEST(AsyncGet, ResidentHitCompletesWithAnOwnedValue)
 {
     ct_options opt = {};
     ct_tree   *t   = nullptr;
@@ -78,13 +78,11 @@ TEST(AsyncGet, FastPathHitCompletesSynchronously)
     ct_future  *f = ct_get_async(t, reinterpret_cast<const uint8_t *>(k.data()), k.size());
     ASSERT_NE(f, nullptr);
 
-    int32_t   done  = 0;
     int32_t   found = 0;
     uint64_t  slot  = 0;
     ct_buf    val   = {};
-    ct_status st    = ct_future_poll(f, &done, &found, &slot, &val);
+    ct_status st    = poll_until_done(f, &found, &slot, &val);
     ASSERT_EQ(st, 0);
-    EXPECT_EQ(done, 1) << "L1-resident hit must complete on the first poll";
     EXPECT_EQ(found, 1);
     EXPECT_EQ(std::string(reinterpret_cast<char *>(val.data), val.len), "hello");
     // zero-copy fast path: `val` may
@@ -100,8 +98,7 @@ TEST(AsyncGet, FastPathHitCompletesSynchronously)
 // Regression for the above: ct_future_poll on a resolved kGet future must
 // NOT free it (unlike flush_async/snapshot_async) -- polling it again
 // before the caller's own ct_future_free is safe and idempotent, since the
-// borrowed value's backing frame is kept alive by the future's own epoch
-// guard the whole time.
+// borrowed value's independent owner is kept alive by the future.
 TEST(AsyncGet, FastPathValueSurvivesRepeatedPollsUntilExplicitFree)
 {
     ct_options opt = {};
@@ -113,6 +110,7 @@ TEST(AsyncGet, FastPathValueSurvivesRepeatedPollsUntilExplicitFree)
     ct_future  *f = ct_get_async(t, reinterpret_cast<const uint8_t *>(k.data()), k.size());
     ASSERT_NE(f, nullptr);
 
+    ASSERT_EQ(poll_until_done(f, nullptr, nullptr, nullptr), 0);
     for (int i = 0; i < 3; ++i) {
         int32_t   done  = 0;
         int32_t   found = 0;
@@ -152,8 +150,16 @@ TEST(AsyncGet, MissAfterEvictionCompletesViaReactor)
     ASSERT_EQ(ct_snapshot(t, &durable), 0);
     EXPECT_EQ(durable, 20U);
 
+    const auto warm_key   = make_key(5);
+    int32_t    warm_found = 0;
+    ct_buf     warm_value{};
+    ASSERT_EQ(ct_get(t, reinterpret_cast<const uint8_t *>(warm_key.data()), warm_key.size(), &warm_found, nullptr,
+                     &warm_value),
+              0);
+    ASSERT_EQ(warm_found, 1);
+    ct_free_buf(&warm_value);
     uint64_t evicted = ct_evict_clean_leaves(t, 0);
-    EXPECT_GT(evicted, 0U) << "snapshot should have made every leaf clean and evictable";
+    EXPECT_GT(evicted, 0U) << "the explicitly loaded clean leaf must be evictable";
 
     std::string k = make_key(5);
     ct_future  *f = ct_get_async(t, reinterpret_cast<const uint8_t *>(k.data()), k.size());

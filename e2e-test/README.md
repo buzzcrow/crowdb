@@ -8,8 +8,8 @@ is `e2e-test`; server domains use separate test modules within this crate.
 The Python runner owns container lifecycle and scheduling. Browser and
 SDK clients with independent language dependencies live under `clients/<client>/`
 and consume the same fixture endpoints and ownership contract. They do not
-introduce separate server launchers. Domain selection and measured remaining issues are tracked in
-[the test record](../doc/working/test.md).
+introduce separate server launchers. The runner's domain registry defines
+domain selection; each run retains its results and logs.
 
 Test clients run on the host against inspected node-container IPs and fixed
 ports, with three node containers for a three-node cluster. Fresh one- through eight-node profiles exercise management, membership,
@@ -26,7 +26,7 @@ they are not test execution environments. Domain profiles configure that same
 server artifact rather than introducing separate test-server builds.
 
 This component owns real-server acceptance. The KV
-profile uses three packaged `crowdb-kv-server` processes with block tree storage,
+profile uses three packaged `crowdb-paxos-kv-server` processes with block tree storage,
 block-device WAL and the existing `e2e` election preset. It consumes the shared
 `crowdb-node` OCI runtime image; it never starts a host server substitute.
 
@@ -229,8 +229,8 @@ and crash data remain available for investigation.
   launchers and overlapping acceptance files are removed.
 - Component tests retain internal invariants, planning, protocol peers and
   injected hardware/storage behavior. They do not duplicate the full server flow.
-- Current complete-run results and remaining coverage gaps live only in
-  `doc/working/test.md`.
+- Complete-run results and failures are retained in each run's artifacts.
+  A successful selected-domain run certifies only that domain.
 
 The cluster flows also cover exact follower hints, nontrivial topology identities,
 dynamic group creation/removal with isolated same-key values, and a five-node
@@ -419,10 +419,9 @@ connection after the upstream commits; it never substitutes a service response.
   through label/PID/executable guards. Default anonymous-volume policy is an
   explicit exception to data bind mounts; logs/crash files are copied to host
   artifacts before its owned volume is removed.
-- Domain wall times are recorded in [test.md](../doc/working/test.md); individual
-  client/fixture times remain in each run's `results.json`.
-  Manual admission, native host and ecosystem
-  profiles and final Pixi/CI classification remain in the working plan.
+- Domain, client and fixture timings remain in each run's `results.json`.
+  Manual admission, native host and ecosystem profiles require explicit
+  selection; the checked Pixi/CI map defines automatic coverage.
 
 `bridge-admission` runs manual release nodes on an owned bridge, using inspected
 IPs and fixed Web/SSH listeners without host port publishing. Its five-node peak

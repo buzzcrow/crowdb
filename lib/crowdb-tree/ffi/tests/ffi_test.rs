@@ -11,6 +11,34 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
+// Independent test fixtures must not compete for the process-default host's
+// finite quotas. Trees inside one fixture retain the same explicitly configured
+// host; dedicated runtime tests exercise sharing and exhaustion.
+fn isolated_config(config: &Config) -> Config {
+    let mut config = config.clone();
+    if config.runtime.is_none() {
+        if config.path.is_none() && config.page_store.is_none() {
+            config.page_store = Some(Arc::new(PageStore::open_mem(1).unwrap()));
+        }
+        config.runtime = Some(Arc::new(
+            crowdb_tree_ffi::TreeRuntime::new(crowdb_tree_ffi::TreeRuntimeOptions {
+                workers: 1,
+                ..Default::default()
+            })
+            .unwrap(),
+        ));
+    }
+    config
+}
+
+fn open_tree(config: &Config) -> Result<Crowdbtree, CtError> {
+    Crowdbtree::open(&isolated_config(config))
+}
+
+fn open_async_tree(config: &Config) -> Result<AsyncCrowdbtree, CtError> {
+    AsyncCrowdbtree::open(&isolated_config(config))
+}
+
 struct FileRootCatalogStore {
     dir: PathBuf,
     generation: AtomicU64,
@@ -186,7 +214,7 @@ fn owned_chunk_rpc_transport_retains_route_handles() {
 
 #[test]
 fn mem_apply_get_scan() {
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+    let t = open_tree(&Config::default()).unwrap();
     for i in 0..40usize {
         let v = format!("v{i}").into_bytes();
         t.apply_put((i + 1) as u64, &key(i), &v).unwrap();
@@ -211,7 +239,7 @@ fn mem_apply_get_scan() {
 
 #[test]
 fn scan_from_honors_inclusive_and_exclusive_lower_bounds() {
-    let tree = Crowdbtree::open(&Config::default()).unwrap();
+    let tree = open_tree(&Config::default()).unwrap();
     for (slot, key) in [b"".as_slice(), b"b"].into_iter().enumerate() {
         tree.apply_put(slot as u64 + 1, key, b"value").unwrap();
     }
@@ -236,7 +264,7 @@ fn scan_from_honors_inclusive_and_exclusive_lower_bounds() {
 
 #[test]
 fn scan_start_after_pages_with_the_unified_scan_ffi() {
-    let tree = Crowdbtree::open(&Config::default()).unwrap();
+    let tree = open_tree(&Config::default()).unwrap();
     for index in 0..300_u64 {
         tree.apply_put(index + 1, format!("key-{index:04}").as_bytes(), b"value")
             .unwrap();
@@ -258,7 +286,7 @@ fn scan_start_after_pages_with_the_unified_scan_ffi() {
 
 #[test]
 fn reverse_seek_merges_l0_l1_and_tombstones() {
-    let tree = Crowdbtree::open(&Config::default()).unwrap();
+    let tree = open_tree(&Config::default()).unwrap();
     for (slot, key) in [b"".as_slice(), b"b", b"d"].into_iter().enumerate() {
         tree.apply_put(slot as u64 + 1, key, b"value").unwrap();
     }
@@ -293,7 +321,7 @@ fn reverse_seek_merges_l0_l1_and_tombstones() {
 
 #[test]
 fn reverse_scan_is_descending_bounded_and_tombstone_aware() {
-    let tree = Crowdbtree::open(&Config::default()).unwrap();
+    let tree = open_tree(&Config::default()).unwrap();
     for (slot, key) in [b"a", b"b", b"c", b"d"].into_iter().enumerate() {
         tree.apply_put(slot as u64 + 1, key, key).unwrap();
     }
@@ -325,7 +353,7 @@ fn reverse_scan_is_descending_bounded_and_tombstone_aware() {
 
 #[test]
 fn reverse_scan_crosses_leaf_boundaries() {
-    let tree = Crowdbtree::open(&Config {
+    let tree = open_tree(&Config {
         frame_bytes: 4096,
         ..Config::default()
     })
@@ -345,107 +373,59 @@ fn reverse_scan_crosses_leaf_boundaries() {
     assert_eq!(entries.last().unwrap().key.as_ref(), b"key-0000");
 }
 
-#[test]
-fn injected_chunk_store_round_trip_and_stats() {
-    let catalog = Arc::new(ChunkRootCatalog::open_memory(7).unwrap());
-    let store = Arc::new(
-        PageStore::open_chunk(
-            ChunkPageStoreOptions {
-                tree_id: 41,
-                owner_epoch: 7,
-                open_generation: 0,
-                pack_bytes: 4096,
-                iu_size: 1,
-                max_concurrent_packs: 2,
-                materialization_bytes_per_pass: 4096,
-                max_chunk_bytes: 0,
-                mirror_copies: 0,
-            },
-            Arc::clone(&catalog),
-            None,
-        )
-        .unwrap(),
-    );
-    let tree = Crowdbtree::open(&Config {
-        page_store: Some(Arc::clone(&store)),
-        ..Config::default()
+fn open_runtime_chunk(
+    backend: &crowdb_tree_ffi::chunk::test_util::TestChunkBackend,
+    generation: u64,
+) -> (Arc<PageStore>, Crowdbtree) {
+    let store = backend.page_store(generation).unwrap();
+    let tree = open_tree(&Config {
+        page_store: Some(store.clone()),
+        ..backend.config()
     })
     .unwrap();
+    (store, tree)
+}
+
+#[test]
+fn injected_chunk_runtime_round_trip_and_backing_stats() {
+    let backend = crowdb_tree_ffi::chunk::test_util::TestChunkBackend::new(41, 7).unwrap();
+    let (store, tree) = open_runtime_chunk(&backend, 0);
     tree.apply_put(1, b"chunk-key", b"chunk-value").unwrap();
     let published = tree.snapshot_info().unwrap();
     assert_eq!(published.0, 1);
-    assert_eq!(tree.snapshot_state().unwrap(), published);
     assert_eq!(tree.snapshot_state().unwrap(), published);
     assert_eq!(
         tree.get(b"chunk-key").unwrap(),
         Some((1, b"chunk-value".to_vec()))
     );
-    let stats = store.chunk_stats().unwrap();
-    assert_eq!(stats.generations_published, 1);
-    assert!(stats.packs_written > 0);
-    assert!(stats.pack_bytes_written > 0);
-    assert!(stats.diskio_operations > 0);
-    assert!(stats.rpc_operations > 0);
+    let stats = tree.backing_stats().unwrap();
+    assert!(stats.allocated_bytes > 0);
     assert_eq!(tree.materialize_ownership().unwrap(), (0, true));
+    assert_eq!(store.chunk_manifest_generation().unwrap(), 1);
+    assert_eq!(store.chunk_estimated_bytes(), Err(CtError::NotSupported));
+    assert!(matches!(store.chunk_stats(), Err(CtError::NotSupported)));
 }
 
 #[test]
-fn callback_root_catalog_reopens_published_manifest() {
-    let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-callback-root");
-    let backend = Arc::new(FileRootCatalogStore {
-        dir: dir.path().to_path_buf(),
-        generation: AtomicU64::new(0),
-        next_reference: AtomicU64::new(1),
-        hide_current: AtomicBool::new(false),
-    });
-    let catalog = Arc::new(ChunkRootCatalog::open_callback(backend.clone()).unwrap());
-    let options = ChunkPageStoreOptions {
-        tree_id: 42,
-        owner_epoch: 9,
-        open_generation: 0,
-        pack_bytes: 4096,
-        iu_size: 1,
-        max_concurrent_packs: 2,
-        materialization_bytes_per_pass: 4096,
-        max_chunk_bytes: 0,
-        mirror_copies: 0,
-    };
-    let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
-    assert_eq!(store.chunk_estimated_bytes().unwrap(), 0);
-    {
-        store.set_wal_replay_offset(4_096).unwrap();
-        assert_eq!(store.set_wal_replay_offset(4_095), Err(CtError::InvalidArgument));
-        let tree = Crowdbtree::open(&Config {
-            page_store: Some(Arc::clone(&store)),
-            ..Config::default()
-        })
-        .unwrap();
-        tree.apply_put(1, b"durable-root", b"chunk-value").unwrap();
-        tree.flush().unwrap();
-        assert_eq!(tree.snapshot_info().unwrap(), (1, 1));
-    }
-
-    let estimated = store.chunk_estimated_bytes().unwrap();
-    assert!(estimated > 0);
-    let reopened_store = Arc::new(PageStore::open_chunk(options, catalog, None).unwrap());
-    assert_eq!(reopened_store.chunk_stats().unwrap().pack_bytes_written, 0);
-    assert_eq!(reopened_store.wal_replay_offset().unwrap(), 4_096);
+fn runtime_root_catalog_reopens_published_manifest_and_wal() {
+    let mut backend = crowdb_tree_ffi::chunk::test_util::TestChunkBackend::new(42, 9).unwrap();
+    let (store, tree) = open_runtime_chunk(&backend, 0);
+    store.set_wal_replay_offset(4096).unwrap();
+    store.set_wal_replay_offset(4095).unwrap();
+    tree.apply_put(1, b"durable-root", b"chunk-value").unwrap();
+    assert_eq!(tree.snapshot_info().unwrap(), (1, 1));
+    let before = tree.backing_stats().unwrap();
+    assert_eq!(store.wal_replay_offset().unwrap(), 4096);
+    drop(tree);
+    drop(store);
+    backend.next_writer().unwrap();
+    let (store, reopened) = open_runtime_chunk(&backend, 0);
+    assert_eq!(store.wal_replay_offset().unwrap(), 4096);
+    assert_eq!(reopened.backing_stats().unwrap().scope_id, before.scope_id);
     assert_eq!(
-        reopened_store.set_wal_replay_offset(4_095),
-        Err(CtError::InvalidArgument)
+        reopened.backing_stats().unwrap().allocated_bytes,
+        before.allocated_bytes
     );
-    let reopened = Crowdbtree::open(&Config {
-        page_store: Some(Arc::clone(&reopened_store)),
-        ..Config::default()
-    })
-    .unwrap();
-    assert_eq!(reopened_store.chunk_estimated_bytes().unwrap(), estimated);
-    // Observation must keep working when the remote catalog becomes unavailable.
-    backend.hide_current.store(true, Ordering::Release);
-    assert_eq!(reopened_store.chunk_estimated_bytes().unwrap(), estimated);
-    reopened_store.reclaim_chunk_orphans();
-    assert_eq!(reopened_store.chunk_estimated_bytes().unwrap(), estimated);
-    backend.hide_current.store(false, Ordering::Release);
     assert_eq!(
         reopened.get(b"durable-root").unwrap(),
         Some((1, b"chunk-value".to_vec()))
@@ -457,94 +437,45 @@ fn callback_root_catalog_persists_transition_generation_pin() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-callback-root-pin");
     let backend = Arc::new(FileRootCatalogStore {
         dir: dir.path().to_path_buf(),
-        generation: AtomicU64::new(0),
+        generation: AtomicU64::new(1),
         next_reference: AtomicU64::new(1),
         hide_current: AtomicBool::new(false),
     });
-    let catalog = Arc::new(ChunkRootCatalog::open_callback(backend.clone()).unwrap());
-    let options = ChunkPageStoreOptions {
-        tree_id: 43,
-        owner_epoch: 9,
-        open_generation: 0,
-        pack_bytes: 4096,
-        iu_size: 1,
-        max_concurrent_packs: 2,
-        materialization_bytes_per_pass: 4096,
-        max_chunk_bytes: 0,
-        mirror_copies: 0,
-    };
-    let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
-    let tree = Crowdbtree::open(&Config {
-        page_store: Some(Arc::clone(&store)),
-        ..Config::default()
-    })
-    .unwrap();
-    tree.apply_put(1, b"key", b"value").unwrap();
-    tree.flush().unwrap();
-    tree.snapshot_info().unwrap();
-    let generation = store.chunk_manifest_generation().unwrap();
-    store.pin_chunk_generation(43, 7, 8, generation).unwrap();
-    drop(tree);
-    drop(store);
-    drop(catalog);
-
+    backend
+        .store(43, RootCatalogObject::Manifest(1), b"immutable retained object")
+        .unwrap();
+    {
+        let catalog = ChunkRootCatalog::open_callback(backend.clone()).unwrap();
+        catalog.pin_generation(43, 7, 8, 1).unwrap();
+    }
     let reopened = ChunkRootCatalog::open_callback(backend).unwrap();
-    reopened.pin_generation(43, 7, 8, generation).unwrap();
-    assert_eq!(
-        reopened.pin_generation(43, 7, 8, generation + 1),
-        Err(CtError::NotFound)
-    );
+    reopened.pin_generation(43, 7, 8, 1).unwrap();
+    assert_eq!(reopened.pin_generation(43, 7, 8, 2), Err(CtError::NotFound));
     reopened.unpin_generation(43, 7, 8).unwrap();
     reopened.unpin_generation(43, 7, 8).unwrap();
 }
 
 #[test]
-fn retained_pack_estimate_survives_old_generation_reclamation_and_reopen() {
-    let catalog = Arc::new(ChunkRootCatalog::open_memory(9).unwrap());
-    let options = ChunkPageStoreOptions {
-        tree_id: 46,
-        owner_epoch: 9,
-        open_generation: 0,
-        pack_bytes: 4096,
-        iu_size: 1,
-        max_concurrent_packs: 2,
-        materialization_bytes_per_pass: 4096,
-        max_chunk_bytes: 0,
-        mirror_copies: 0,
-    };
-    let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
-    let tree = Crowdbtree::open(&Config {
-        page_store: Some(Arc::clone(&store)),
-        ..Config::default()
-    })
-    .unwrap();
+fn checkpoint_backing_survives_history_reclamation_and_reopen() {
+    let mut backend = crowdb_tree_ffi::chunk::test_util::TestChunkBackend::new(46, 9).unwrap();
+    let (store, tree) = open_runtime_chunk(&backend, 0);
     for sequence in 1..=4 {
         tree.apply_put(sequence, b"retained-key", &vec![sequence as u8; 64 * 1024])
             .unwrap();
-        tree.flush().unwrap();
         tree.snapshot_info().unwrap();
     }
-    let estimate = store.chunk_estimated_bytes().unwrap();
-    let written = store.chunk_stats().unwrap().pack_bytes_written;
-    assert!(estimate >= 64 * 1024);
-    assert!(
-        written > estimate,
-        "estimate must describe current retained packs rather than cumulative writes"
-    );
     let generation = store.chunk_manifest_generation().unwrap();
-    assert!(catalog.reclaim_before(46, generation) > 0);
-    store.reclaim_chunk_orphans();
-    assert_eq!(store.chunk_estimated_bytes().unwrap(), estimate);
+    let before = tree.backing_stats().unwrap();
+    assert!(before.allocated_bytes >= 64 * 1024);
+    assert!(backend.catalog.reclaim_before(46, generation) > 0);
     assert_eq!(tree.get(b"retained-key").unwrap(), Some((4, vec![4; 64 * 1024])));
     drop(tree);
     drop(store);
-    let reopened = Arc::new(PageStore::open_chunk(options, catalog, None).unwrap());
-    let recovered = Crowdbtree::open(&Config {
-        page_store: Some(Arc::clone(&reopened)),
-        ..Config::default()
-    })
-    .unwrap();
-    assert_eq!(reopened.chunk_estimated_bytes().unwrap(), estimate);
+    backend.next_writer().unwrap();
+    let (_, recovered) = open_runtime_chunk(&backend, 0);
+    let after = recovered.backing_stats().unwrap();
+    assert_eq!(after.scope_id, before.scope_id);
+    assert!(after.allocated_bytes >= 64 * 1024);
     assert_eq!(
         recovered.get(b"retained-key").unwrap(),
         Some((4, vec![4; 64 * 1024]))
@@ -552,198 +483,128 @@ fn retained_pack_estimate_survives_old_generation_reclamation_and_reopen() {
 }
 
 #[test]
-fn memory_root_catalog_pin_blocks_generation_reclaim_until_unpin() {
-    let catalog = Arc::new(ChunkRootCatalog::open_memory(9).unwrap());
-    let options = ChunkPageStoreOptions {
-        tree_id: 45,
-        owner_epoch: 9,
-        open_generation: 0,
-        pack_bytes: 4096,
-        iu_size: 1,
-        max_concurrent_packs: 2,
-        materialization_bytes_per_pass: 4096,
-        max_chunk_bytes: 0,
-        mirror_copies: 0,
-    };
-    let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
-    let tree = Crowdbtree::open(&Config {
-        page_store: Some(Arc::clone(&store)),
-        ..Config::default()
-    })
-    .unwrap();
+fn runtime_catalog_pin_blocks_generation_reclaim_until_unpin() {
+    let mut backend = crowdb_tree_ffi::chunk::test_util::TestChunkBackend::new(45, 9).unwrap();
+    let (store, tree) = open_runtime_chunk(&backend, 0);
     for sequence in 1..=3 {
         tree.apply_put(sequence, b"key", &[sequence as u8]).unwrap();
-        tree.flush().unwrap();
         tree.snapshot_info().unwrap();
         if sequence == 1 {
             store.pin_chunk_generation(45, 9, 10, 1).unwrap();
         }
     }
-    assert_eq!(catalog.reclaim_before(45, 4), 0);
-    PageStore::open_chunk(
-        ChunkPageStoreOptions {
-            open_generation: 1,
-            ..options
-        },
-        Arc::clone(&catalog),
-        None,
-    )
-    .unwrap();
-
+    assert_eq!(backend.catalog.reclaim_before(45, 4), 0);
+    drop(tree);
+    drop(store);
+    backend.next_writer().unwrap();
+    let (store, exact) = open_runtime_chunk(&backend, 1);
+    assert_eq!(exact.get(b"key").unwrap(), Some((1, vec![1])));
     store.unpin_chunk_generation(45, 9, 10).unwrap();
-    assert!(catalog.reclaim_before(45, 4) > 0);
-    assert_eq!(
-        PageStore::open_chunk(
-            ChunkPageStoreOptions {
-                open_generation: 1,
-                ..options
-            },
-            catalog,
-            None,
-        )
-        .unwrap_err(),
-        CtError::NotFound
-    );
+    assert!(backend.catalog.reclaim_before(45, 4) > 0);
+    drop(exact);
+    drop(store);
+    backend.next_writer().unwrap();
+    let store = backend.page_store(1).unwrap();
+    assert!(matches!(
+        open_tree(&Config {
+            page_store: Some(store),
+            ..backend.config()
+        }),
+        Err(CtError::NotFound)
+    ));
 }
 
 #[test]
-fn callback_root_catalog_opens_exact_manifest_without_latest_fallback() {
-    let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-callback-exact-root");
-    let backend = Arc::new(FileRootCatalogStore {
-        dir: dir.path().to_path_buf(),
-        generation: AtomicU64::new(0),
-        next_reference: AtomicU64::new(1),
-        hide_current: AtomicBool::new(false),
-    });
-    let catalog_backend: Arc<dyn RootCatalogStore> = backend.clone();
-    let catalog = Arc::new(ChunkRootCatalog::open_callback(catalog_backend).unwrap());
-    let latest_options = ChunkPageStoreOptions {
-        tree_id: 44,
-        owner_epoch: 11,
-        open_generation: 0,
-        pack_bytes: 4096,
-        iu_size: 1,
-        max_concurrent_packs: 2,
-        materialization_bytes_per_pass: 4096,
-        max_chunk_bytes: 0,
-        mirror_copies: 0,
-    };
-    let latest_store = Arc::new(PageStore::open_chunk(latest_options, Arc::clone(&catalog), None).unwrap());
-    let latest = Crowdbtree::open(&Config {
-        page_store: Some(Arc::clone(&latest_store)),
-        ..Config::default()
-    })
-    .unwrap();
+fn runtime_root_catalog_opens_exact_manifest_without_latest_fallback() {
+    let mut backend = crowdb_tree_ffi::chunk::test_util::TestChunkBackend::new(44, 11).unwrap();
+    let (store, latest) = open_runtime_chunk(&backend, 0);
     latest.apply_put(1, b"key", b"generation-one").unwrap();
-    latest.flush().unwrap();
     assert_eq!(latest.snapshot_info().unwrap(), (1, 1));
     latest.apply_put(2, b"key", b"generation-two").unwrap();
-    latest.flush().unwrap();
     assert_eq!(latest.snapshot_info().unwrap(), (2, 2));
-    assert_eq!(latest_store.chunk_manifest_generation().unwrap(), 2);
     drop(latest);
-    drop(latest_store);
-
-    let exact_options = ChunkPageStoreOptions {
-        open_generation: 1,
-        ..latest_options
-    };
-    let exact_store = Arc::new(PageStore::open_chunk(exact_options, Arc::clone(&catalog), None).unwrap());
-    let exact = Crowdbtree::open(&Config {
-        page_store: Some(Arc::clone(&exact_store)),
-        ..Config::default()
-    })
-    .unwrap();
-    assert_eq!(exact_store.chunk_manifest_generation().unwrap(), 1);
+    drop(store);
+    backend.next_writer().unwrap();
+    let (store, exact) = open_runtime_chunk(&backend, 1);
+    assert_eq!(store.chunk_manifest_generation().unwrap(), 1);
     assert_eq!(exact.snapshot_state().unwrap(), (1, 1));
     assert_eq!(exact.get(b"key").unwrap(), Some((1, b"generation-one".to_vec())));
     exact.apply_put(2, b"key", b"stale-branch").unwrap();
-    exact.flush().unwrap();
     assert_eq!(exact.snapshot_info(), Err(CtError::Unavailable));
-
-    let missing_options = ChunkPageStoreOptions {
-        open_generation: 3,
-        ..latest_options
-    };
-    assert_eq!(
-        PageStore::open_chunk(missing_options, catalog, None).unwrap_err(),
-        CtError::NotFound
-    );
+    drop(exact);
+    drop(store);
+    backend.next_writer().unwrap();
+    let store = backend.page_store(3).unwrap();
+    assert!(matches!(
+        open_tree(&Config {
+            page_store: Some(store),
+            ..backend.config()
+        }),
+        Err(CtError::NotFound)
+    ));
 }
 
 #[test]
 fn exact_manifest_tracks_durable_snapshot_after_range_rebuild() {
-    let catalog = Arc::new(ChunkRootCatalog::open_memory(12).unwrap());
-    let source = Crowdbtree::open(&Config::default()).unwrap();
+    let source = open_tree(&Config {
+        frame_bytes: 4096,
+        ..Config::default()
+    })
+    .unwrap();
     source.apply_put(1, b"b", b"base").unwrap();
     source.flush().unwrap();
-
-    let options = ChunkPageStoreOptions {
-        tree_id: 46,
-        owner_epoch: 12,
-        open_generation: 0,
-        pack_bytes: 4096,
-        iu_size: 1,
-        max_concurrent_packs: 2,
-        materialization_bytes_per_pass: 4096,
-        max_chunk_bytes: 0,
-        mirror_copies: 0,
-    };
-    let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
-    let config = Config {
-        page_store: Some(Arc::clone(&store)),
-        ..Config::default()
-    };
-    let (rebuilt, _) = source.rebuild_range(&config).unwrap();
+    let mut backend = crowdb_tree_ffi::chunk::test_util::TestChunkBackend::new(46, 12).unwrap();
+    let store = backend.page_store(0).unwrap();
+    let (rebuilt, _) = source
+        .rebuild_range(&Config {
+            page_store: Some(store.clone()),
+            ..backend.config()
+        })
+        .unwrap();
     assert_eq!(rebuilt.snapshot_state().unwrap(), (1, 1));
-
     rebuilt.apply_put(2, b"c", b"tail").unwrap();
-    rebuilt.flush().unwrap();
     let checkpoint = rebuilt.snapshot_info().unwrap();
     let generation = store.chunk_manifest_generation().unwrap();
     assert_eq!(rebuilt.snapshot_state().unwrap(), checkpoint);
     drop(rebuilt);
     drop(store);
-
-    let exact_store = Arc::new(
-        PageStore::open_chunk(
-            ChunkPageStoreOptions {
-                open_generation: generation,
-                ..options
-            },
-            Arc::clone(&catalog),
-            None,
-        )
-        .unwrap(),
-    );
-    let exact = Crowdbtree::open(&Config {
-        page_store: Some(exact_store),
-        ..Config::default()
-    })
-    .unwrap();
+    backend.next_writer().unwrap();
+    let (_, exact) = open_runtime_chunk(&backend, generation);
     assert_eq!(exact.snapshot_state().unwrap(), checkpoint);
     assert_eq!(exact.get(b"c").unwrap(), Some((2, b"tail".to_vec())));
 }
 
 #[test]
-fn published_manifest_is_visible_through_the_same_page_store() {
-    let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-callback-read-own-write");
-    let backend = Arc::new(FileRootCatalogStore {
-        dir: dir.path().to_path_buf(),
-        generation: AtomicU64::new(0),
-        next_reference: AtomicU64::new(1),
-        hide_current: AtomicBool::new(false),
-    });
-    let catalog_backend: Arc<dyn RootCatalogStore> = backend.clone();
-    let catalog = Arc::new(ChunkRootCatalog::open_callback(catalog_backend).unwrap());
+fn runtime_root_publication_is_visible_and_reusing_a_writer_is_rejected() {
+    let backend = crowdb_tree_ffi::chunk::test_util::TestChunkBackend::new(43, 10).unwrap();
+    let (store, tree) = open_runtime_chunk(&backend, 0);
+    tree.apply_put(1, b"durable-root", b"chunk-value").unwrap();
+    let published = tree.snapshot_info().unwrap();
+    assert_eq!(tree.snapshot_state().unwrap(), published);
+    assert_eq!(
+        tree.get(b"durable-root").unwrap(),
+        Some((1, b"chunk-value".to_vec()))
+    );
+    assert!(matches!(
+        open_tree(&Config {
+            page_store: Some(store),
+            ..backend.config()
+        }),
+        Err(CtError::Unavailable)
+    ));
+}
+
+#[test]
+fn legacy_chunk_store_is_explicitly_rejected_by_ordinary_tree_open() {
+    let catalog = Arc::new(ChunkRootCatalog::open_memory(7).unwrap());
     let store = Arc::new(
         PageStore::open_chunk(
             ChunkPageStoreOptions {
-                tree_id: 43,
-                owner_epoch: 10,
+                tree_id: 47,
+                owner_epoch: 7,
                 open_generation: 0,
                 pack_bytes: 4096,
-                iu_size: 65_536,
+                iu_size: 1,
                 max_concurrent_packs: 2,
                 materialization_bytes_per_pass: 4096,
                 max_chunk_bytes: 0,
@@ -754,27 +615,18 @@ fn published_manifest_is_visible_through_the_same_page_store() {
         )
         .unwrap(),
     );
-    let config = Config {
-        page_store: Some(Arc::clone(&store)),
-        ..Config::default()
-    };
-    let tree = Crowdbtree::open(&config).unwrap();
-    tree.apply_put(1, b"durable-root", b"chunk-value").unwrap();
-    tree.flush().unwrap();
-    let published = tree.snapshot_info().unwrap();
-    backend.hide_current.store(true, Ordering::Release);
-
-    let reopened = Crowdbtree::open(&config).unwrap();
-    assert_eq!(reopened.snapshot_state().unwrap(), published);
-    assert_eq!(
-        reopened.get(b"durable-root").unwrap(),
-        Some((1, b"chunk-value".to_vec()))
-    );
+    assert!(matches!(
+        open_tree(&Config {
+            page_store: Some(store),
+            ..Config::default()
+        }),
+        Err(CtError::NotSupported)
+    ));
 }
 
 #[test]
 fn range_rebuild_returns_independent_bounded_tree() {
-    let source = Crowdbtree::open(&Config::default()).unwrap();
+    let source = open_tree(&Config::default()).unwrap();
     for (slot, key) in [b"a", b"b", b"m", b"z"].into_iter().enumerate() {
         source.apply_put(slot as u64 + 1, key, b"v").unwrap();
     }
@@ -791,9 +643,9 @@ fn range_rebuild_returns_independent_bounded_tree() {
             ..Default::default()
         })
         .unwrap();
-    assert_eq!(stats.entries_examined, 4);
+    assert_eq!(stats.entries_examined, 1);
     assert_eq!(stats.entries_emitted, 1);
-    assert_eq!(stats.entries_filtered, 3);
+    assert_eq!(stats.entries_filtered, 0);
     assert_eq!(rebuilt.get(b"b").unwrap(), Some((2, b"v".to_vec())));
     assert_eq!(rebuilt.get(b"a"), Err(CtError::InvalidArgument));
 }
@@ -801,7 +653,7 @@ fn range_rebuild_returns_independent_bounded_tree() {
 #[test]
 fn injected_mem_store_survives_caller_handle_drop() {
     let store = std::sync::Arc::new(PageStore::open_mem(1).unwrap());
-    let t = Crowdbtree::open(&Config {
+    let t = open_tree(&Config {
         page_store: Some(store.clone()),
         frame_bytes: 4096,
         ..Default::default()
@@ -816,7 +668,7 @@ fn injected_mem_store_survives_caller_handle_drop() {
 
 #[test]
 fn bounded_tree_rejects_foreign_keys_and_filters_scans() {
-    let t = Crowdbtree::open(&Config {
+    let t = open_tree(&Config {
         key_range: KeyRange::Bounded {
             start: Some(b"b".to_vec()),
             end: Some(b"d".to_vec()),
@@ -838,7 +690,7 @@ fn bounded_tree_rejects_foreign_keys_and_filters_scans() {
 
 #[test]
 fn mem_gc_watermark_and_snapshot_folding() {
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+    let t = open_tree(&Config::default()).unwrap();
     t.apply_put(1, b"a", b"A").unwrap();
     t.apply_delete(2, b"a").unwrap();
     t.flush().unwrap();
@@ -868,7 +720,7 @@ fn mem_gc_watermark_and_snapshot_folding() {
 
 #[test]
 fn mem_compact_sparse_blocks_noop_on_mem_store() {
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+    let t = open_tree(&Config::default()).unwrap();
     t.apply_put(1, b"a", b"A").unwrap();
     t.flush().unwrap();
     t.snapshot().unwrap();
@@ -880,7 +732,7 @@ fn mem_compact_sparse_blocks_noop_on_mem_store() {
 
 #[test]
 fn mem_apply_batch_multi_key_and_dup_last_wins() {
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+    let t = open_tree(&Config::default()).unwrap();
     t.apply_batch(
         1,
         &[
@@ -934,7 +786,7 @@ fn file_snapshot_reopen_smoke() {
     };
 
     {
-        let t = Crowdbtree::open(&opt).unwrap();
+        let t = open_tree(&opt).unwrap();
         for i in 0..50usize {
             let v = format!("value{i}").into_bytes();
             t.apply_put((i + 1) as u64, &key(i), &v).unwrap();
@@ -944,7 +796,7 @@ fn file_snapshot_reopen_smoke() {
         assert_eq!(durable, 50);
     }
     // Reopen the same file and verify recovery.
-    let t = Crowdbtree::open(&opt).unwrap();
+    let t = open_tree(&opt).unwrap();
     assert_eq!(t.last_applied_slot(), 50);
     for i in 0..50usize {
         assert_eq!(
@@ -970,7 +822,7 @@ fn block_device_snapshot_reopen_smoke() {
     };
 
     {
-        let t = Crowdbtree::open(&opt).unwrap();
+        let t = open_tree(&opt).unwrap();
         for i in 0..50usize {
             let v = format!("value{i}").into_bytes();
             t.apply_put((i + 1) as u64, &key(i), &v).unwrap();
@@ -980,7 +832,7 @@ fn block_device_snapshot_reopen_smoke() {
         assert_eq!(durable, 50);
     }
     // Reopen the same file and verify recovery.
-    let t = Crowdbtree::open(&opt).unwrap();
+    let t = open_tree(&opt).unwrap();
     assert_eq!(t.last_applied_slot(), 50);
     for i in 0..50usize {
         assert_eq!(
@@ -992,7 +844,7 @@ fn block_device_snapshot_reopen_smoke() {
 
 #[test]
 fn snapshot_sessions_stream_with_metadata_and_abort_without_installing() {
-    let source = Arc::new(Crowdbtree::open(&Config::default()).unwrap());
+    let source = Arc::new(open_tree(&Config::default()).unwrap());
     for i in 0..30usize {
         source
             .apply_put((i + 1) as u64, &key(i), format!("v{i}").as_bytes())
@@ -1008,7 +860,7 @@ fn snapshot_sessions_stream_with_metadata_and_abort_without_installing() {
     assert_ne!(metadata.final_crc32c, 0);
     assert_eq!(export.read(1), Err(CtError::InvalidArgument));
 
-    let target = Arc::new(Crowdbtree::open(&Config::default()).unwrap());
+    let target = Arc::new(open_tree(&Config::default()).unwrap());
     let mut import = target.snapshot_import_begin().unwrap();
     let mut offset = 0;
     loop {
@@ -1025,7 +877,7 @@ fn snapshot_sessions_stream_with_metadata_and_abort_without_installing() {
     assert_eq!(import.finish().unwrap(), metadata.at_slot);
     assert_eq!(target.snapshot_view().unwrap(), source.snapshot_view().unwrap());
 
-    let empty_target = Arc::new(Crowdbtree::open(&Config::default()).unwrap());
+    let empty_target = Arc::new(open_tree(&Config::default()).unwrap());
     let mut abandoned = empty_target.snapshot_import_begin().unwrap();
     let mut second_export = source.snapshot_export_begin(19).unwrap();
     abandoned.feed(&second_export.read(0).unwrap().bytes).unwrap();
@@ -1035,7 +887,7 @@ fn snapshot_sessions_stream_with_metadata_and_abort_without_installing() {
 
 #[test]
 fn io_failed_clean_on_healthy_engine() {
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+    let t = open_tree(&Config::default()).unwrap();
     for i in 0..10usize {
         t.apply_put((i + 1) as u64, &key(i), b"v").unwrap();
         t.flush().unwrap();
@@ -1054,7 +906,7 @@ fn open_rejects_path_with_nul() {
         path: Some("bad\0path".to_string()),
         ..Default::default()
     };
-    assert_eq!(Crowdbtree::open(&opt).unwrap_err(), CtError::InvalidArgument);
+    assert_eq!(open_tree(&opt).unwrap_err(), CtError::InvalidArgument);
 }
 
 #[tokio::test]
@@ -1066,7 +918,7 @@ async fn async_bridge_apply_get_snapshot() {
         frame_bytes: 4096,
         ..Default::default()
     };
-    let t = AsyncCrowdbtree::open(&opt).unwrap();
+    let t = open_async_tree(&opt).unwrap();
     for i in 0..20usize {
         t.handle()
             .apply_put((i + 1) as u64, &key(i), format!("a{i}").as_bytes())
@@ -1087,10 +939,7 @@ async fn async_bridge_apply_get_snapshot() {
 // without ever registering on the reactor's eventfd (unlike a timing-based
 // assertion, this is deterministic).
 #[tokio::test]
-async fn async_get_fast_path_completes_on_first_poll() {
-    use std::future::Future;
-    use std::task::{Context, Poll, Waker};
-
+async fn async_get_resident_value_completes_on_shared_runtime() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
     let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
@@ -1098,19 +947,11 @@ async fn async_get_fast_path_completes_on_first_poll() {
         frame_bytes: 4096,
         ..Default::default()
     };
-    let t = AsyncCrowdbtree::open(&opt).unwrap();
+    let t = open_async_tree(&opt).unwrap();
     t.handle().apply_put(1, &key(0), b"v0").unwrap();
     t.flush().await.unwrap();
 
-    // Resident (never evicted): get_async's fast path (try_get_view_no_load,
-    // design #5 B3) must resolve this on the very first poll.
-    let mut fut = Box::pin(t.get(key(0)));
-    let waker = Waker::noop();
-    let mut cx = Context::from_waker(waker);
-    assert_eq!(
-        fut.as_mut().poll(&mut cx),
-        Poll::Ready(Ok(Some((1u64, b"v0".to_vec()))))
-    );
+    assert_eq!(t.get(key(0)).await.unwrap(), Some((1u64, b"v0".to_vec())));
 }
 
 #[tokio::test]
@@ -1122,7 +963,7 @@ async fn async_get_slow_path_completes_after_eviction() {
         frame_bytes: 4096,
         ..Default::default()
     };
-    let t = AsyncCrowdbtree::open(&opt).unwrap();
+    let t = open_async_tree(&opt).unwrap();
     t.handle().apply_put(1, &key(0), b"v0").unwrap();
     t.flush().await.unwrap();
     t.snapshot().await.unwrap();
@@ -1143,7 +984,7 @@ async fn concurrent_async_gets_all_resolve_correctly() {
         frame_bytes: 4096,
         ..Default::default()
     };
-    let t = AsyncCrowdbtree::open(&opt).unwrap();
+    let t = open_async_tree(&opt).unwrap();
     const N: usize = 16;
     for i in 0..N {
         t.handle()
@@ -1172,10 +1013,7 @@ async fn concurrent_async_gets_all_resolve_correctly() {
 // path_completes_on_first_poll's regression shape for scan, which also
 // has a resident-hit fast path (try_scan_no_load).
 #[tokio::test]
-async fn async_scan_fast_path_completes_on_first_poll() {
-    use std::future::Future;
-    use std::task::{Context, Poll, Waker};
-
+async fn async_scan_resident_values_complete_on_shared_runtime() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
     let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
@@ -1183,7 +1021,7 @@ async fn async_scan_fast_path_completes_on_first_poll() {
         frame_bytes: 4096,
         ..Default::default()
     };
-    let t = AsyncCrowdbtree::open(&opt).unwrap();
+    let t = open_async_tree(&opt).unwrap();
     for i in 0..10usize {
         t.handle()
             .apply_put((i + 1) as u64, &key(i), &format!("v{i}").into_bytes())
@@ -1191,16 +1029,12 @@ async fn async_scan_fast_path_completes_on_first_poll() {
     }
     t.flush().await.unwrap();
 
-    let mut fut = Box::pin(t.scan(Vec::new(), Vec::new(), Vec::new(), 0, 0, false, 0));
-    let waker = Waker::noop();
-    let mut cx = Context::from_waker(waker);
-    match fut.as_mut().poll(&mut cx) {
-        Poll::Ready(Ok((entries, truncated))) => {
-            assert_eq!(entries.len(), 10);
-            assert!(!truncated);
-        }
-        other => panic!("expected an immediately-ready resolved scan, got {other:?}"),
-    }
+    let (entries, truncated) = t
+        .scan(Vec::new(), Vec::new(), Vec::new(), 0, 0, false, 0)
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 10);
+    assert!(!truncated);
 }
 
 // Mirrors async_get_slow_path_completes_after_eviction for scan: forcing
@@ -1216,7 +1050,7 @@ async fn async_scan_slow_path_completes_after_eviction() {
         frame_bytes: 4096,
         ..Default::default()
     };
-    let t = AsyncCrowdbtree::open(&opt).unwrap();
+    let t = open_async_tree(&opt).unwrap();
     for i in 0..20usize {
         t.handle()
             .apply_put((i + 1) as u64, &key(i), &format!("v{i}").into_bytes())
@@ -1251,7 +1085,7 @@ async fn async_reverse_scan_crosses_evicted_leaves_and_respects_cursor() {
         frame_bytes: 4096,
         ..Default::default()
     };
-    let t = AsyncCrowdbtree::open(&opt).unwrap();
+    let t = open_async_tree(&opt).unwrap();
     for i in 0..80usize {
         t.handle()
             .apply_put((i + 1) as u64, &key(i), &[b'v'; 128])
@@ -1291,7 +1125,7 @@ async fn async_scan_respects_limit_and_truncated_flag() {
         frame_bytes: 4096,
         ..Default::default()
     };
-    let t = AsyncCrowdbtree::open(&opt).unwrap();
+    let t = open_async_tree(&opt).unwrap();
     for i in 0..15usize {
         t.handle()
             .apply_put((i + 1) as u64, &key(i), &format!("v{i}").into_bytes())
@@ -1319,7 +1153,7 @@ async fn async_scan_keys_only_skips_values() {
         frame_bytes: 4096,
         ..Default::default()
     };
-    let t = AsyncCrowdbtree::open(&opt).unwrap();
+    let t = open_async_tree(&opt).unwrap();
     for i in 0..10usize {
         t.handle()
             .apply_put((i + 1) as u64, &key(i), &format!("v{i}").into_bytes())
@@ -1352,7 +1186,7 @@ async fn async_scan_keys_only_skips_values() {
 }
 
 #[tokio::test]
-async fn try_get_pinned_fast_path_returns_borrowed_value() {
+async fn try_get_pinned_resident_value_completes_with_owned_bytes() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
     let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
@@ -1360,7 +1194,7 @@ async fn try_get_pinned_fast_path_returns_borrowed_value() {
         frame_bytes: 4096,
         ..Default::default()
     };
-    let t = AsyncCrowdbtree::open(&opt).unwrap();
+    let t = open_async_tree(&opt).unwrap();
     t.handle().apply_put(1, &key(0), b"v0").unwrap();
     t.flush().await.unwrap();
 
@@ -1369,13 +1203,17 @@ async fn try_get_pinned_fast_path_returns_borrowed_value() {
             assert_eq!(slot, 1);
             assert_eq!(pinned.as_bytes(), b"v0");
         }
-        _ => panic!("expected Ready(Ok(Some)) on resident hit"),
+        PinnedGetOutcome::Pending(future) => {
+            assert_eq!(future.await.unwrap(), Some((1, b"v0".to_vec())));
+        }
+        _ => panic!("resident value must complete successfully"),
     }
 
-    // Not-found case: should return Ready(Ok(None)).
+    // Absence may also complete after the shared worker runs.
     match t.try_get_pinned(&key(99)) {
         PinnedGetOutcome::Ready(Ok(None)) => {}
-        _ => panic!("expected Ready(Ok(None)) for missing key"),
+        PinnedGetOutcome::Pending(future) => assert_eq!(future.await.unwrap(), None),
+        _ => panic!("missing key must complete without a value"),
     }
 }
 
@@ -1388,7 +1226,7 @@ async fn try_get_pinned_slow_path_resolves_after_eviction() {
         frame_bytes: 4096,
         ..Default::default()
     };
-    let t = AsyncCrowdbtree::open(&opt).unwrap();
+    let t = open_async_tree(&opt).unwrap();
     t.handle().apply_put(1, &key(0), b"v0").unwrap();
     t.flush().await.unwrap();
     t.snapshot().await.unwrap();
@@ -1411,7 +1249,7 @@ async fn try_get_pinned_slow_path_resolves_after_eviction() {
 }
 
 #[tokio::test]
-async fn try_get_pinned_fast_path_with_large_value() {
+async fn try_get_pinned_resident_large_value_completes() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
     let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
@@ -1419,7 +1257,7 @@ async fn try_get_pinned_fast_path_with_large_value() {
         frame_bytes: 4096,
         ..Default::default()
     };
-    let t = AsyncCrowdbtree::open(&opt).unwrap();
+    let t = open_async_tree(&opt).unwrap();
     let large: Vec<u8> = (0..4096u32).map(|i| u8::try_from(i % 256).unwrap()).collect();
     t.handle().apply_put(1, &key(0), &large).unwrap();
     t.flush().await.unwrap();
@@ -1429,13 +1267,16 @@ async fn try_get_pinned_fast_path_with_large_value() {
             assert_eq!(slot, 1);
             assert_eq!(pinned.as_bytes(), large.as_slice());
         }
-        _ => panic!("expected Ready(Ok(Some)) on resident hit"),
+        PinnedGetOutcome::Pending(future) => {
+            assert_eq!(future.await.unwrap(), Some((1, large)));
+        }
+        _ => panic!("resident large value must complete successfully"),
     }
 }
 
 #[test]
 fn zero_copy_alloc_apply_round_trip() {
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+    let t = open_tree(&Config::default()).unwrap();
     let mut h = t.alloc_put(3, 5).unwrap();
     h.key_mut().copy_from_slice(b"abc");
     h.value_mut().copy_from_slice(b"hello");
@@ -1447,7 +1288,7 @@ fn zero_copy_alloc_apply_round_trip() {
 
 #[test]
 fn zero_copy_large_value_round_trip() {
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+    let t = open_tree(&Config::default()).unwrap();
     let big: Vec<u8> = (0..8192u32).map(|i| u8::try_from(i % 256).unwrap()).collect();
     let mut h = t.alloc_put(4, big.len()).unwrap();
     h.key_mut().copy_from_slice(b"bigk");
@@ -1460,7 +1301,7 @@ fn zero_copy_large_value_round_trip() {
 
 #[test]
 fn zero_copy_empty_value_round_trip() {
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+    let t = open_tree(&Config::default()).unwrap();
     let mut h = t.alloc_put(2, 0).unwrap();
     h.key_mut().copy_from_slice(b"ev");
     assert!(h.value_mut().is_empty());
@@ -1472,7 +1313,7 @@ fn zero_copy_empty_value_round_trip() {
 
 #[test]
 fn zero_copy_handle_drop_without_apply_no_leak() {
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+    let t = open_tree(&Config::default()).unwrap();
     let mut h = t.alloc_put(10, 4096).unwrap();
     h.key_mut().fill(0xAB);
     h.value_mut().fill(0xCD);
@@ -1485,16 +1326,16 @@ fn zero_copy_oversized_key_rejected() {
         frame_bytes: 4096,
         ..Default::default()
     };
-    let t = Crowdbtree::open(&opt).unwrap();
+    let t = open_tree(&opt).unwrap();
     let result = t.alloc_put(3000, 4);
     assert_eq!(result.err(), Some(CtError::InvalidArgument));
 }
 
-// ── R30: zero-copy apply_batch_external ───────────────────────────
+// ── External Bytes batch input ───────────────────────────────────
 
 #[test]
 fn apply_batch_external_round_trip_before_flush() {
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+    let t = open_tree(&Config::default()).unwrap();
     let big = bytes::Bytes::from(vec![0xF0; 4096]);
     let ops = vec![
         ExtOp::Put {
@@ -1513,7 +1354,7 @@ fn apply_batch_external_round_trip_before_flush() {
 
 #[test]
 fn apply_batch_external_round_trip_after_flush() {
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+    let t = open_tree(&Config::default()).unwrap();
     let big = bytes::Bytes::from(vec![0xE1; 8192]);
     let ops = vec![ExtOp::Put {
         key: bytes::Bytes::from_static(b"k2"),
@@ -1526,7 +1367,7 @@ fn apply_batch_external_round_trip_after_flush() {
 
 #[test]
 fn apply_batch_external_multi_key_atomicity() {
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+    let t = open_tree(&Config::default()).unwrap();
     let ops = vec![
         ExtOp::Put {
             key: bytes::Bytes::from_static(b"a"),
@@ -1549,7 +1390,7 @@ fn apply_batch_external_multi_key_atomicity() {
 
 #[test]
 fn apply_batch_external_intra_batch_last_key_wins() {
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+    let t = open_tree(&Config::default()).unwrap();
     let ops = vec![
         ExtOp::Put {
             key: bytes::Bytes::from_static(b"k"),
@@ -1566,7 +1407,7 @@ fn apply_batch_external_intra_batch_last_key_wins() {
 
 #[test]
 fn apply_batch_external_large_value_round_trip() {
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+    let t = open_tree(&Config::default()).unwrap();
     // 64 KiB values — the workload R30 targets (eliminate the apply-path copy).
     let v1 = bytes::Bytes::from(vec![0x11; 65536]);
     let v2 = bytes::Bytes::from(vec![0x22; 65536]);
@@ -1593,20 +1434,17 @@ fn apply_batch_external_large_value_round_trip() {
 }
 
 #[test]
-fn apply_batch_external_bytes_kept_alive_until_drain() {
-    // The payload Bytes is kept alive by the external buffers' Arc clones;
-    // it must not be freed until the MemTable drains (flush). This test
-    // verifies the ref handle lifecycle: the Bytes stays valid through apply
-    // and flush, and the drop callback fires at drain (not before).
-    let t = Crowdbtree::open(&Config::default()).unwrap();
+fn apply_batch_external_preserves_caller_clone_through_flush() {
+    // Unknown Bytes backing capacity takes a controlled copy. The caller's
+    // clone remains valid independently of the engine's owned cell.
+    let t = open_tree(&Config::default()).unwrap();
     let payload = bytes::Bytes::from(vec![0xAB; 1024]);
     let ops = vec![ExtOp::Put {
         key: bytes::Bytes::from_static(b"k"),
         value: payload.clone(),
     }];
     t.apply_batch_external(1, ops).unwrap();
-    // payload is still alive here (we hold a clone); the engine's clone is
-    // pinned by the memtable entry. After flush, the engine's clone is freed.
+    // The bridge released its clone during apply; the caller still owns one.
     assert_eq!(t.get(b"k").unwrap(), Some((1, payload.to_vec())));
     t.flush().unwrap();
     assert_eq!(t.get(b"k").unwrap(), Some((1, payload.to_vec())));

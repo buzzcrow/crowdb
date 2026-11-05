@@ -20,7 +20,7 @@ use crowdb_chunkdb::service::ChunkdbRpcService;
 use crowdb_chunkdb::storage::ChunkStore;
 use crowdb_chunkdb::topology::TopologyCache;
 use crowdb_common::metrics::MetricsRegistry;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient, ServiceRegistryClient};
 use crowdb_protocol::common::{ChunkId, HwStatus};
 use crowdb_protocol::diskdb::rpc::DiskGroupValue;
 use crowdb_protocol::sysdata::DiskGroupEntry;
@@ -49,7 +49,7 @@ fn build_test_topology() -> TopologyCache {
 /// Build a fully wired LifecycleHandler with a dummy KV client
 /// (calls will fail, but construction verifies all wiring).
 fn build_handler() -> LifecycleHandler {
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![
+    let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(vec![
         "http://127.0.0.1:1".into()
     ])));
     let svc = ServiceRegistryClient::from_shared(Arc::clone(&kv));

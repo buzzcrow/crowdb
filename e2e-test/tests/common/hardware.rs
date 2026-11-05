@@ -3,7 +3,7 @@
 
 //! Hardware metadata seeding for E2E tests.
 
-use crowdb_kv_client::HardwareClient;
+use crowdb_paxos_kv_client::HardwareClient;
 use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
 
@@ -113,10 +113,10 @@ pub fn standard_disk_ids_4() -> Vec<DiskId> {
     ids
 }
 
-pub(crate) fn kv_client() -> crowdb_kv_client::CrowdbKvClient {
+pub(crate) fn kv_client() -> crowdb_paxos_kv_client::PaxosKvClient {
     super::logging::init();
     let addresses: Vec<String> = serde_json::from_str(&std::env::var("CROWDB_E2E_RPC").unwrap()).unwrap();
-    crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(vec![format!(
+    crowdb_paxos_kv_client::PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(vec![format!(
         "http://{}:7000",
         addresses[0]
     )]))

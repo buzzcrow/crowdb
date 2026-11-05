@@ -3,6 +3,7 @@
 
 // plan-tree #3: MemTable double buffering (active_ + frozen_). See the
 // active_/frozen_ member comment in crowdb-tree.h for the full design.
+#include "btree/tree_core_access.h"
 #include "crowdb-tree/crowdb-tree.h"
 
 #include <gtest/gtest.h>
@@ -51,7 +52,8 @@ std::string make_key(int i)
 TEST(DoubleBuffer, ThresholdSwapKeepsAllEntriesReadable)
 {
     Config opt;
-    opt.memtable_flush_entries = 2; // force a freeze every couple of applies
+    opt.memtable_flush_entries = 2;  // force a freeze every couple of applies
+    opt.max_memtable_count     = 32; // isolate rotation from count-triggered handoff
     Crowdbtree t(opt);
 
     const int K = 20;
@@ -139,7 +141,7 @@ TEST(DoubleBuffer, SupportsMoreThanTwoBuffersAndFlushesAllOfThemCorrectly)
     // these applies stays non-contiguous and none of the freezes it triggers
     // get drained until the very last flush() below.
     for (int i = 0; i < K; ++i) {
-        auto s = static_cast<uint64_t>((i + 1) * 10);
+        auto s = static_cast<uint64_t>(i + 1) * 10;
         ASSERT_TRUE(t.apply(s, put_one(make_key(i), "v" + std::to_string(i))).ok());
     }
     EXPECT_EQ(t.last_applied_slot(), 0U);
@@ -148,7 +150,7 @@ TEST(DoubleBuffer, SupportsMoreThanTwoBuffersAndFlushesAllOfThemCorrectly)
         EXPECT_EQ(get_or(t, make_key(i), "?"), "v" + std::to_string(i));
     }
 
-    t.force_advance_slot(static_cast<uint64_t>(K * 10));
+    t.force_advance_slot(static_cast<uint64_t>(K) * 10);
     ASSERT_TRUE(t.flush().ok());
     EXPECT_EQ(t.memtable_count(), 0U);
     for (int i = 0; i < K; ++i) {
@@ -198,9 +200,16 @@ TEST(DoubleBuffer, GetAndScanResolveHighestSlotAcrossOutOfOrderFreezeBoundary)
 // TSan/ASan to catch races/UAF in the active_/frozen_ swap + drain path.
 TEST(DoubleBuffer, ConcurrentReadersDuringFrequentFreezeAndDrainNoCorruption)
 {
-    Config opt;
-    opt.memtable_flush_entries = 4; // freeze/drain every few applies
-    opt.max_memtable_count     = 3;
+    Config             opt;
+    TreeRuntimeOptions host;
+    host.limits.routing_bytes = 1536ULL * 1024 * 1024;
+    ASSERT_TRUE(TreeRuntime::create(host, &opt.runtime).ok());
+    // Four concurrent scans each reserve oversized-first output and bounded
+    // decoder/overflow state. Give this four-reader stress fixture explicit
+    // aggregate capacity without changing the production defaults.
+    opt.runtime_binding.limits.routing_bytes = 1024ULL * 1024 * 1024;
+    opt.memtable_flush_entries               = 4; // freeze/drain every few applies
+    opt.max_memtable_count                   = 3;
     Crowdbtree t(opt);
 
     const int         K = 200;
@@ -215,10 +224,11 @@ TEST(DoubleBuffer, ConcurrentReadersDuringFrequentFreezeAndDrainNoCorruption)
     for (int r = 0; r < 4; ++r) {
         readers.emplace_back([&, r] {
             std::mt19937 rng(9000 + r);
-            std::string  v;
-            uint64_t     s;
             while (!stop.load(std::memory_order_relaxed) && !bad.load(std::memory_order_relaxed)) {
-                if (!t.get(Slice("zz-sentinel"), &s, &v) || v != "always-visible") {
+                GetView    sentinel;
+                const auto status = TreeCoreAccess::get(t)->get(Slice("zz-sentinel"), &sentinel);
+                EXPECT_TRUE(status.ok()) << status.to_string();
+                if (!status.ok() || !sentinel.found() || sentinel.value().to_string() != "always-visible") {
                     bad.store(true);
                     return;
                 }
@@ -226,11 +236,19 @@ TEST(DoubleBuffer, ConcurrentReadersDuringFrequentFreezeAndDrainNoCorruption)
                     // Random keys have no stable value oracle because the writer
                     // mutates them concurrently. The sentinel above separately
                     // proves an immutable key never disappears during a drain.
-                    (void)t.get(Slice(make_key(static_cast<int>(rng() % K))), &s, &v);
+                    GetView    value;
+                    const auto read = TreeCoreAccess::get(t)->get(Slice(make_key(static_cast<int>(rng() % K))), &value);
+                    EXPECT_TRUE(read.ok()) << read.to_string();
+                    if (!read.ok()) {
+                        bad.store(true);
+                        return;
+                    }
                 }
                 std::vector<scan_entry> out;
                 bool                    trunc = false;
-                if (!t.scan(Slice("key"), Slice(), Slice(), 16, 0, false, 0, &out, &trunc).ok()) {
+                const auto              scan  = t.scan(Slice("key"), Slice(), Slice(), 16, 0, false, 0, &out, &trunc);
+                EXPECT_TRUE(scan.ok()) << scan.to_string();
+                if (!scan.ok()) {
                     bad.store(true);
                     return;
                 }
@@ -354,7 +372,7 @@ TEST(DoubleBuffer, ScanMergeLoserTreeDistinctKeysAcrossFrozenMemtables)
     for (int gen = 0; gen < 3; ++gen) {
         for (int i = 0; i < 3; ++i) {
             int  key_idx = gen + (i * 3);
-            auto s       = static_cast<uint64_t>((key_idx + 1) * 10);
+            auto s       = static_cast<uint64_t>(key_idx + 1) * 10;
             ASSERT_TRUE(t.apply(s, put_one(make_key(key_idx), "v" + std::to_string(s))).ok());
         }
     }
@@ -492,11 +510,8 @@ TEST(DoubleBuffer, SortAwareDescentAcrossLeafBoundariesWithSplits)
     }
 }
 
-// Frozen queue full: when max_memtable_count is small and we write fast
-// without flushing, the frozen queue fills up and maybe_freeze_active
-// returns false — active_ keeps growing past the threshold. All entries
-// must stay readable (they're in active_). This verifies the backpressure
-// behavior documented in the maybe_freeze_active error log path.
+// A full soft source queue requests finite handoff. Every committed entry
+// remains readable while source ownership moves into the published mapping.
 TEST(DoubleBuffer, FrozenQueueFullActiveKeepsGrowingEntriesReadable)
 {
     Config opt;
@@ -506,16 +521,14 @@ TEST(DoubleBuffer, FrozenQueueFullActiveKeepsGrowingEntriesReadable)
 
     // Write enough to fill the frozen queue (1 slot) and overflow active_.
     // After 3 entries: active_ freezes → frozen_ has 1, active_ is fresh.
-    // After 6 entries: active_ tries to freeze but frozen_ is full →
-    // maybe_freeze_active returns false, active_ keeps growing.
+    // After 6 entries the full queue requests a finite handoff.
     const int N = 20;
     for (int i = 0; i < N; ++i) {
         ASSERT_TRUE(t.apply(static_cast<uint64_t>(i + 1), put_one(make_key(i), "v" + std::to_string(i))).ok());
     }
 
-    // Without flush(), all entries must still be readable from L0
-    // (active_ + frozen_). The frozen queue full condition does NOT
-    // lose data — it just delays the freeze.
+    // Automatic handoff may have moved entries into L1; every key remains
+    // readable across the source and mapping boundary.
     for (int i = 0; i < N; ++i) {
         EXPECT_EQ(get_or(t, make_key(i), "?"), "v" + std::to_string(i));
     }
@@ -641,9 +654,8 @@ TEST(DoubleBuffer, FlushDrainsAllFrozenMemtablesInOneCall)
     }
 }
 
-// Iteration cap: when more memtables freeze than max_memtable_count, flush()
-// exits at the cap and remaining tables stay in frozen_ for the next flush().
-// No data loss — the next flush() drains the rest.
+// Count-triggered handoffs remain finite. Explicit maintenance after the
+// writer stops drains the final source set, and the next write can proceed.
 TEST(DoubleBuffer, FlushIterationCapExitsCleanly)
 {
     Config opt;
@@ -651,12 +663,7 @@ TEST(DoubleBuffer, FlushIterationCapExitsCleanly)
     opt.max_memtable_count     = 2; // 1 active + 1 frozen slot; cap = 2
     Crowdbtree t(opt);
 
-    // Write a lot without flushing. With max_memtable_count=2, the frozen
-    // queue fills at 1 slot; further freezes are skipped (active_ grows).
-    // So frozen_ has at most 1 entry — the cap is not exercised by writes
-    // alone. Instead, verify the cap path is correct: flush() drains what's
-    // frozen and leaves frozen_ empty (the cap is a safety net, not the
-    // common path here).
+    // Repeated batches fill and drain the bounded source queue.
     const int N = 30;
     for (int i = 0; i < N; ++i) {
         ASSERT_TRUE(t.apply(static_cast<uint64_t>(i + 1), put_one(make_key(i), "v" + std::to_string(i))).ok());

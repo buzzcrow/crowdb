@@ -3,17 +3,17 @@
 
 // Pages.
 //
-// The core in-memory engine represents pages as C++ objects (not the byte-packed
-// on-disk offset-array layout; that lives in the persistence plan). Semantics
-// match the design: leaves hold sorted (key, cell) entries with a right-sibling
-// link; inner pages hold separator keys + child PIDs. Delta records (CT8) link
-// in front of a LeafBase via the chain fields in PageBase.
+// The core in-memory engine represents pages as C++ objects (not the
+// byte-packed on-disk offset-array layout; that lives in the persistence plan).
+// Semantics match the design: leaves hold sorted (key, cell) entries with a
+// right-sibling link; inner pages hold separator keys + child PIDs. Delta
+// records (CT8) link in front of a LeafBase via the chain fields in PageBase.
 #pragma once
 
 #include "crowdb-tree/btree/cell.h"
-#include "crowdb-tree/maptable/buffer_pool.h"
 #include "crowdb-tree/maptable/frame_page.h"
 #include "crowdb-tree/maptable/page_types.h"
+#include "crowdb-tree/memory_budget.h"
 #include "crowdb-tree/slice.h"
 
 #include <cstdint>
@@ -25,44 +25,27 @@
 namespace crowdb::tree
 {
 
-// Backing bytes for a base page. Either a buffer-pool frame (the
-// page co-owns the pool via shared_ptr so the frame is valid even when the page
-// is freed late by the env-level epoch manager) or a heap buffer (used by
-// standalone/unit construction, recovery, oversized pages, or pool exhaustion).
+// Owned backing bytes for a decoded or constructed base page. Reference
+// identity follows the allocation; shared cache residency is managed
+// separately.
 struct FrameStore
 {
-    std::shared_ptr<BufferPool> pool; // non-null => pool-backed
-    uint32_t                    frame_idx = 0;
-    std::vector<uint8_t>        owned; // used iff pool == nullptr
-    uint8_t                    *ptr        = nullptr;
-    uint32_t                    page_bytes = 0;
 
-    FrameStore()                              = default;
+    std::vector<uint8_t, BudgetAllocator<uint8_t, AllocationBudget, AllocationKind::kFrame>> owned;
+    uint8_t                                                                                 *ptr        = nullptr;
+    uint32_t                                                                                 page_bytes = 0;
+
+    explicit FrameStore(std::shared_ptr<AllocationBudget> budget = {})
+        : owned(BudgetAllocator<uint8_t, AllocationBudget, AllocationKind::kFrame>(std::move(budget)))
+    {
+    }
+
     FrameStore(const FrameStore &)            = delete;
     FrameStore &operator=(const FrameStore &) = delete;
 
-    ~FrameStore()
+    // Allocate an owned, aligned logical frame for construction.
+    uint8_t *alloc(size_t need)
     {
-        if (pool) {
-            pool->release_frame(frame_idx);
-        }
-    }
-
-    // Allocate writable backing for a `need`-byte page. Uses a fixed pool frame
-    // when one is available and large enough; otherwise a tight heap buffer.
-    uint8_t *alloc(size_t need, const std::shared_ptr<BufferPool> &p, uint32_t frame_bytes)
-    {
-        if (p && need <= frame_bytes) {
-            uint32_t idx   = 0;
-            uint8_t *bytes = nullptr;
-            if (p->acquire_frame(&idx, &bytes).ok()) {
-                pool       = p;
-                frame_idx  = idx;
-                ptr        = bytes;
-                page_bytes = frame_bytes;
-                return ptr;
-            }
-        }
         auto pb = static_cast<uint32_t>((need < 128 ? 128 : need + 7) & ~static_cast<size_t>(7));
         owned.assign(pb, 0);
         ptr        = owned.data();
@@ -70,25 +53,9 @@ struct FrameStore
         return ptr;
     }
 
-    // Wrap a copy of an existing `n`-byte frame image (demand load / recovery).
-    // Copies into a pool frame when one fits and is available, else a heap buffer.
-    // page_bytes stays `n` (the durable logical length); a pool frame may be
-    // larger (the tail past `n` is zero from acquire_frame and unused).
-    uint8_t *adopt_copy(const uint8_t *buf, uint32_t n, const std::shared_ptr<BufferPool> &p = nullptr,
-                        uint32_t frame_bytes = 0)
+    // Copy an existing frame while preserving its durable logical length.
+    uint8_t *adopt_copy(const uint8_t *buf, uint32_t n)
     {
-        if (p && n <= frame_bytes) {
-            uint32_t idx   = 0;
-            uint8_t *bytes = nullptr;
-            if (p->acquire_frame(&idx, &bytes).ok()) {
-                pool       = p;
-                frame_idx  = idx;
-                ptr        = bytes;
-                page_bytes = n;
-                std::memcpy(bytes, buf, n);
-                return ptr;
-            }
-        }
         owned.assign(buf, buf + n);
         ptr        = owned.data();
         page_bytes = n;
@@ -102,30 +69,32 @@ struct FrameStore
 class LeafBase : public PageBase
 {
   public:
-    LeafBase() : PageBase(page_type::kLeafBase)
+    explicit LeafBase(std::shared_ptr<AllocationBudget> budget = {})
+        : PageBase(page_type::kLeafBase),
+          fs_(std::move(budget))
     {
     }
 
     // build from already key-sorted, deduplicated entries. Entries are only READ
-    // (their bytes are copied into the frame — that copy is page construction), so
-    // take them by const ref: this both avoids requiring a move at every call site
-    // and works with the move-only `buffer` cell (leaf_entry is non-copyable).
-    static LeafBase *build(const std::vector<leaf_entry> &sorted_entries, uint64_t right_sibling = kInvalidPageId,
-                           const std::shared_ptr<BufferPool> &pool = nullptr, uint32_t frame_bytes = 0)
+    // (their bytes are copied into the frame — that copy is page construction),
+    // so take them by const ref: this both avoids requiring a move at every call
+    // site and works with the move-only `buffer` cell (leaf_entry is
+    // non-copyable).
+    static LeafBase *build(const std::vector<leaf_entry> &sorted_entries, uint64_t right_sibling = kInvalidPageId)
     {
         auto  *p    = new LeafBase();
         size_t need = kFrameHeaderSize + kFrameTrailerSize + (sorted_entries.size() * kLeafSlotSize);
         for (const auto &e : sorted_entries) {
             need += e.key.size() + e.cell.size();
         }
-        uint8_t         *dst = p->fs_.alloc(need, pool, frame_bytes);
+        uint8_t         *dst = p->fs_.alloc(need);
         LeafFrameBuilder b(dst, p->fs_.page_bytes);
         for (const auto &e : sorted_entries) {
             b.try_append_sorted(Slice(e.key), Slice(e.cell));
         }
         b.finish(p->page_id, right_sibling);
         PageSummary summary;
-        summary.reachable_leaf_pages = 1;
+        summary.reachable_leaf_pages          = 1;
         summary.reachable_page_capacity_bytes = p->fs_.page_bytes;
         for (const auto &e : sorted_entries) {
             CellView cell{Slice(e.cell)};
@@ -148,12 +117,19 @@ class LeafBase : public PageBase
     }
 
     // Wrap a copy of an existing frame image (e.g. read from durable storage).
-    static LeafBase *from_frame_copy(const uint8_t *buf, uint32_t page_bytes,
-                                     const std::shared_ptr<BufferPool> &pool = nullptr, uint32_t frame_bytes = 0)
+    static LeafBase *from_frame_copy(const uint8_t *buf, uint32_t page_bytes)
     {
-        auto *p = new LeafBase();
-        p->fs_.adopt_copy(buf, page_bytes, pool, frame_bytes);
-        return p;
+        auto p = std::make_unique<LeafBase>();
+        p->fs_.adopt_copy(buf, page_bytes);
+        return p.release();
+    }
+
+    static std::shared_ptr<const LeafBase> from_frame_copy_shared(const uint8_t *buf, uint32_t page_bytes,
+                                                                  const std::shared_ptr<AllocationBudget> &budget)
+    {
+        auto page = std::allocate_shared<LeafBase>(MetadataAllocator<LeafBase>(budget), budget);
+        page->fs_.adopt_copy(buf, page_bytes);
+        return page;
     }
 
     [[nodiscard]] LeafFrameView view() const
@@ -280,8 +256,7 @@ class InnerBase : public PageBase
     {
     }
 
-    static InnerBase *build(const std::vector<std::string> &separators, const std::vector<uint64_t> &children,
-                            const std::shared_ptr<BufferPool> &pool = nullptr, uint32_t frame_bytes = 0)
+    static InnerBase *build(const std::vector<std::string> &separators, const std::vector<uint64_t> &children)
     {
         auto  *p    = new InnerBase();
         size_t need = kFrameHeaderSize + kFrameTrailerSize + (children.size() * sizeof(uint64_t)) +
@@ -289,7 +264,7 @@ class InnerBase : public PageBase
         for (const auto &s : separators) {
             need += s.size();
         }
-        uint8_t           *dst = p->fs_.alloc(need, pool, frame_bytes);
+        uint8_t           *dst = p->fs_.alloc(need);
         std::vector<Slice> sep_slices;
         sep_slices.reserve(separators.size());
         for (const auto &s : separators) {
@@ -300,11 +275,10 @@ class InnerBase : public PageBase
     }
 
     // Wrap a copy of an existing frame image (e.g. read from durable storage).
-    static InnerBase *from_frame_copy(const uint8_t *buf, uint32_t page_bytes,
-                                      const std::shared_ptr<BufferPool> &pool = nullptr, uint32_t frame_bytes = 0)
+    static InnerBase *from_frame_copy(const uint8_t *buf, uint32_t page_bytes)
     {
         auto *p = new InnerBase();
-        p->fs_.adopt_copy(buf, page_bytes, pool, frame_bytes);
+        p->fs_.adopt_copy(buf, page_bytes);
         return p;
     }
 
@@ -391,8 +365,8 @@ class InnerBase : public PageBase
 };
 
 // One frame of a large value spilled out of a leaf (PT11). Referenced by an
-// overflow pointer cell, not by a child PID; chained via next_page_id. resident as
-// an ordinary mapping-table page so it demand-loads + evicts like any base.
+// overflow pointer cell, not by a child PID; chained via next_page_id. resident
+// as an ordinary mapping-table page so it demand-loads + evicts like any base.
 class OverflowBase : public PageBase
 {
   public:
@@ -401,21 +375,19 @@ class OverflowBase : public PageBase
     }
 
     // build a frame carrying `chunk_len` payload bytes (<= overflow_chunk_cap).
-    static OverflowBase *build(uint64_t next_page_id, const uint8_t *payload, uint32_t chunk_len,
-                               const std::shared_ptr<BufferPool> &pool = nullptr, uint32_t frame_bytes = 0)
+    static OverflowBase *build(uint64_t next_page_id, const uint8_t *payload, uint32_t chunk_len)
     {
         auto    *p    = new OverflowBase();
         size_t   need = kFrameHeaderSize + kFrameTrailerSize + chunk_len;
-        uint8_t *dst  = p->fs_.alloc(need, pool, frame_bytes);
+        uint8_t *dst  = p->fs_.alloc(need);
         overflow_frame_build(dst, p->fs_.page_bytes, p->page_id, next_page_id, payload, chunk_len);
         return p;
     }
 
-    static OverflowBase *from_frame_copy(const uint8_t *buf, uint32_t page_bytes,
-                                         const std::shared_ptr<BufferPool> &pool = nullptr, uint32_t frame_bytes = 0)
+    static OverflowBase *from_frame_copy(const uint8_t *buf, uint32_t page_bytes)
     {
         auto *p = new OverflowBase();
-        p->fs_.adopt_copy(buf, page_bytes, pool, frame_bytes);
+        p->fs_.adopt_copy(buf, page_bytes);
         return p;
     }
 

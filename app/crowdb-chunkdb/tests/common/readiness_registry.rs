@@ -2,14 +2,14 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_chunkdb_client::ChunkdbClient;
-use crowdb_kv_client::CrowdbKvClient;
+use crowdb_paxos_kv_client::PaxosKvClient;
 use crowdb_rpc_ffi::RpcServer;
 use std::time::Duration;
 
 pub async fn assert_warm_registry_independence(
     client: &ChunkdbClient,
-    control: &CrowdbKvClient,
-    data: &CrowdbKvClient,
+    control: &PaxosKvClient,
+    data: &PaxosKvClient,
     server: &RpcServer,
     endpoint: String,
 ) {

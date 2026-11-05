@@ -22,8 +22,14 @@ impl ChunkKvService {
         self.begin_drain();
         self.load_sampling.drain().await;
         let partitions = self.partitions.load_full();
+        let prepared = self.prepared_transfer_targets.load_full();
+        let splits = self.local_split_sessions.load_full();
         let mut first_error = None;
-        for partition in partitions.values() {
+        for partition in partitions
+            .values()
+            .chain(prepared.values())
+            .chain(splits.values().map(|entry| &entry.dispatcher))
+        {
             if let Err(error) = partition
                 .suspend_for_shutdown(partition.snapshot().ownership_epoch)
                 .await
@@ -32,5 +38,19 @@ impl ChunkKvService {
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    /// Release hosted Tree owners after background tasks and RPC handlers end.
+    /// Independent snapshots keep their exact backend owners until their own drop.
+    /// # Errors
+    /// Reports a failure of the host blocking task that closes native Trees.
+    pub async fn release_hosted_trees(&self) -> Result<(), ChunkKvError> {
+        self.begin_drain();
+        let partitions = self.partitions.swap(std::sync::Arc::default());
+        let prepared = self.prepared_transfer_targets.swap(std::sync::Arc::default());
+        let splits = self.local_split_sessions.swap(std::sync::Arc::default());
+        tokio::task::spawn_blocking(move || drop((partitions, prepared, splits)))
+            .await
+            .map_err(|error| ChunkKvError::MaintenanceDegraded(error.to_string()))
     }
 }

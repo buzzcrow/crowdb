@@ -14,7 +14,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use crowdb_kv_client::{CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_protocol::chunk_kv::{ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage};
 use crowdb_protocol::key::{ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, TextKey};
 use serde::{de::DeserializeOwned, Deserialize};
@@ -48,7 +48,7 @@ pub(crate) async fn catalog(
         .map_err(|_| err_502("Chunk-KV catalog observation timed out"))?
 }
 
-async fn read<T: DeserializeOwned>(kv: &CrowdbKvClient, key: &str, max_bytes: usize) -> Result<T, Failure> {
+async fn read<T: DeserializeOwned>(kv: &PaxosKvClient, key: &str, max_bytes: usize) -> Result<T, Failure> {
     let value = match kv
         .get(0, 0, key.as_bytes(), ReadMode::Linearizable, None)
         .await

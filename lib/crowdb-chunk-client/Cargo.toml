@@ -17,7 +17,7 @@ test-util = []
 [dependencies]
 crowdb-chunkdb-client = { path = "../crowdb-chunkdb-client" }
 crowdb-diskio-client = { path = "../crowdb-diskio-client" }
-crowdb-kv-client = { path = "../crowdb-kv-client" }
+crowdb-paxos-kv-client = { path = "../crowdb-paxos-kv-client" }
 crowdb-common = { path = "../crowdb-common/rust" }
 crowdb-protocol = { path = "../crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi" }

@@ -5,6 +5,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+import default_ports
+
 from fixture import LABEL
 import oci_reference_runtime as runtime
 from scenarios import case_nodes, case_resources, select_cases
@@ -127,8 +129,11 @@ class OciReferenceOwnershipTest(unittest.TestCase):
         self.assertEqual(create[create.index('--network') + 1], 'owned-recovered')
         self.assertNotIn('owned-node1-cold-data', create)
         published = [create[index+1] for index, arg in enumerate(create) if arg == '--publish']
-        self.assertEqual(published, ['127.0.0.1:20000:9090', '127.0.0.1:20001:16000',
-                                    '127.0.0.1:20002:17000', '127.0.0.1:20003:18000'])
+        self.assertEqual(published, [
+            f'127.0.0.1:20000:{default_ports.WEB_BASE}',
+            f'127.0.0.1:20001:{default_ports.ACCESS_SERVER_HTTP_BASE}',
+            f'127.0.0.1:20002:{default_ports.ACCESS_SERVER_ICEBERG_HTTP_BASE}',
+            f'127.0.0.1:20003:{default_ports.ACCESS_SERVER_DATASET_HTTP_BASE}'])
 
     def test_cold_network_scope_still_rejects_foreign_names_and_attachments(self):
         cluster = self.cluster()

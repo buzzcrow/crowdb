@@ -4,9 +4,11 @@
 // R129: tombstone folding is part of snapshot preparation; the standalone
 // resident-tree GC sweep is removed. These tests verify the watermark
 // contract and that snapshot folding drops eligible tombstones.
+#include "backend/local/local_backend_state.h"
 #include "crowdb-tree/backend/block_page_store.h"
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
+#include "runtime_tree_access.h"
 #include "test_tmp.h"
 
 #include <gtest/gtest.h>
@@ -28,9 +30,9 @@ Batch del_one(const std::string &k)
     return Batch{{{.key = k, .kind = OpKind::kDelete, .value = ""}}};
 }
 
-page_type head_type(Crowdbtree &t)
+bool has_overlay(Crowdbtree &tree)
 {
-    return t.mapping().get_resident(t.root_page_id())->type;
+    return RuntimeTreeAccess_for_tests::root(tree)->metrics.overlay_runs != 0;
 }
 } // namespace
 
@@ -72,10 +74,10 @@ TEST(Gc, SnapshotFoldingBelowWatermarkPreservesTombstone)
     // Now raise the watermark past the tombstone's slot and snapshot again.
     // This second snapshot must fold the tombstone (it's now eligible).
     t.set_gc_watermark(2, 2);
-    PageBase *before = t.mapping().get_resident(t.root_page_id());
+    auto before = RuntimeTreeAccess_for_tests::root(t);
     ASSERT_TRUE(t.snapshot().ok());
     // The leaf was rebuilt (eligible tombstone folded).
-    EXPECT_NE(t.mapping().get_resident(t.root_page_id()), before);
+    EXPECT_NE(RuntimeTreeAccess_for_tests::root(t), before);
     EXPECT_FALSE(t.get(Slice("a"), &slot, &v));
 }
 
@@ -99,15 +101,16 @@ TEST(Gc, SnapshotFoldsEligibleTombstoneInCleanLeaf)
     // clean LeafBase with no BatchDelta chain on top.
     ASSERT_TRUE(t.apply(5, del_one("k1")).ok());
     ASSERT_TRUE(t.flush().ok());
-    ASSERT_EQ(head_type(t), page_type::kLeafBase);
+    ASSERT_TRUE(t.snapshot().ok());
+    ASSERT_FALSE(has_overlay(t));
 
     // Advance the watermark past the delete's slot, then snapshot to fold.
     t.set_gc_watermark(5, 5);
-    PageBase *before = t.mapping().get_resident(t.root_page_id());
+    auto before = RuntimeTreeAccess_for_tests::root(t);
     ASSERT_TRUE(t.snapshot().ok());
     // The leaf was rebuilt (eligible tombstone folded).
-    EXPECT_NE(t.mapping().get_resident(t.root_page_id()), before);
-    ASSERT_EQ(head_type(t), page_type::kLeafBase);
+    EXPECT_NE(RuntimeTreeAccess_for_tests::root(t), before);
+    ASSERT_FALSE(has_overlay(t));
 
     // Delete still honored (not resurrected); other keys unaffected.
     std::string v;
@@ -135,14 +138,14 @@ TEST(Gc, SnapshotFoldingReclaimsTombstoneAfterOpen)
     }
     ASSERT_TRUE(t->apply(5, del_one("k1")).ok());
     ASSERT_TRUE(t->flush().ok());
-    ASSERT_EQ(head_type(*t), page_type::kLeafBase);
-    PageBase *before = t->mapping().get_resident(t->root_page_id());
+    ASSERT_TRUE(t->snapshot().ok());
+    ASSERT_FALSE(has_overlay(*t));
+    auto before = RuntimeTreeAccess_for_tests::root(*t);
 
     t->set_gc_watermark(5, 5);
     ASSERT_TRUE(t->snapshot().ok());
 
-    EXPECT_NE(t->mapping().get_resident(t->root_page_id()), before)
-        << "snapshot folding never swept the stale tombstone";
+    EXPECT_NE(RuntimeTreeAccess_for_tests::root(*t), before) << "snapshot folding never swept the stale tombstone";
 
     std::string v;
     uint64_t    slot;
@@ -162,7 +165,8 @@ TEST(Gc, CompactSparseBlocksNoOpOnMemStore)
     ASSERT_TRUE(t.snapshot().ok());
 
     MergeGcStats stats;
-    ASSERT_TRUE(t.compact_sparse_blocks(&stats).ok());
+    const auto   status = t.compact_sparse_blocks(&stats);
+    ASSERT_TRUE(status.ok()) << status.to_string();
     EXPECT_EQ(stats.blocks_selected, 0U);
     EXPECT_EQ(stats.pages_relocated, 0U);
     EXPECT_EQ(stats.bytes_relocated, 0U);
@@ -207,6 +211,9 @@ TEST(Gc, CompactSparseBlocksProtectsAnchorBlock)
     opt.merge_gc_block_free_threshold = 0.01;
     {
         Crowdbtree t(opt);
+        // This fixture drives relocation explicitly instead of racing checkpoint cleanup.
+        auto local = RuntimeTreeAccess_for_tests::core(t).local_backend();
+        local->gc_active.store(true);
         for (int i = 0; i < 50; ++i) {
             ASSERT_TRUE(t.apply(i + 1, put_one("k" + std::to_string(i), "v")).ok());
         }
@@ -222,7 +229,9 @@ TEST(Gc, CompactSparseBlocksProtectsAnchorBlock)
         ASSERT_TRUE(t.snapshot().ok());
         // Run compaction — must not touch block 0 (anchor).
         MergeGcStats stats;
-        ASSERT_TRUE(t.compact_sparse_blocks(&stats).ok());
+        local->gc_active.store(false);
+        const auto status = t.compact_sparse_blocks(&stats);
+        ASSERT_TRUE(status.ok()) << status.to_string();
         EXPECT_GE(stats.blocks_selected, 0U);
         // Surviving keys readable.
         for (int i = 0; i < 50; i += 10) {
@@ -266,6 +275,9 @@ TEST(Gc, CompactSparseBlocksRespectsByteBudget)
     // Very small budget: only the first block should be selected.
     opt.merge_gc_max_relocation_bytes = blk / 4;
     Crowdbtree t(opt);
+    // This fixture drives relocation explicitly instead of racing checkpoint cleanup.
+    auto local = RuntimeTreeAccess_for_tests::core(t).local_backend();
+    local->gc_active.store(true);
 
     // Write enough data to span multiple blocks.
     uint64_t slot = 0;
@@ -273,8 +285,10 @@ TEST(Gc, CompactSparseBlocksRespectsByteBudget)
         ++slot;
         ASSERT_TRUE(t.apply(slot, put_one("k" + std::to_string(i), std::string(128, 'x'))).ok());
     }
-    ASSERT_TRUE(t.flush().ok());
-    ASSERT_TRUE(t.snapshot().ok());
+    const auto flush_1 = t.flush();
+    ASSERT_TRUE(flush_1.ok()) << flush_1.to_string();
+    const auto snapshot_1 = t.snapshot();
+    ASSERT_TRUE(snapshot_1.ok()) << snapshot_1.to_string();
 
     // Delete most keys to make blocks sparse.
     for (int i = 0; i < 200; ++i) {
@@ -283,11 +297,19 @@ TEST(Gc, CompactSparseBlocksRespectsByteBudget)
             ASSERT_TRUE(t.apply(slot, del_one("k" + std::to_string(i))).ok());
         }
     }
-    ASSERT_TRUE(t.flush().ok());
-    ASSERT_TRUE(t.snapshot().ok());
+    const auto flush_2 = t.flush();
+    ASSERT_TRUE(flush_2.ok()) << flush_2.to_string();
+    const auto snapshot_2 = t.snapshot();
+    ASSERT_TRUE(snapshot_2.ok()) << snapshot_2.to_string();
+    // Both recovery anchors must describe the deleted-key view before the
+    // superseded checkpoint's extents can become sparse GC candidates.
+    const auto retired_anchor = t.snapshot();
+    ASSERT_TRUE(retired_anchor.ok()) << retired_anchor.to_string();
 
     MergeGcStats stats;
-    ASSERT_TRUE(t.compact_sparse_blocks(&stats).ok());
+    local->gc_active.store(false);
+    const auto status = t.compact_sparse_blocks(&stats);
+    ASSERT_TRUE(status.ok()) << status.to_string();
     // At least one block selected (the first eligible is always allowed).
     EXPECT_GE(stats.blocks_selected, 1U);
     // Surviving keys are still readable.
@@ -319,14 +341,19 @@ TEST(Gc, CompactSparseBlocksMaintainsDataIntegrity)
     opt.merge_gc_block_free_threshold = 0.30;
     opt.merge_gc_max_relocation_bytes = 8 * 1024 * 1024;
     Crowdbtree t(opt);
+    // This fixture drives relocation explicitly instead of racing checkpoint cleanup.
+    auto local = RuntimeTreeAccess_for_tests::core(t).local_backend();
+    local->gc_active.store(true);
 
     uint64_t slot = 0;
     for (int i = 0; i < 200; ++i) {
         ++slot;
         ASSERT_TRUE(t.apply(slot, put_one("k" + std::to_string(i), std::string(128, 'x'))).ok());
     }
-    ASSERT_TRUE(t.flush().ok());
-    ASSERT_TRUE(t.snapshot().ok());
+    const auto flush_1 = t.flush();
+    ASSERT_TRUE(flush_1.ok()) << flush_1.to_string();
+    const auto snapshot_1 = t.snapshot();
+    ASSERT_TRUE(snapshot_1.ok()) << snapshot_1.to_string();
 
     // Delete most keys to create sparse blocks.
     for (int i = 0; i < 200; ++i) {
@@ -335,19 +362,30 @@ TEST(Gc, CompactSparseBlocksMaintainsDataIntegrity)
             ASSERT_TRUE(t.apply(slot, del_one("k" + std::to_string(i))).ok());
         }
     }
-    ASSERT_TRUE(t.flush().ok());
-    ASSERT_TRUE(t.snapshot().ok());
+    const auto flush_2 = t.flush();
+    ASSERT_TRUE(flush_2.ok()) << flush_2.to_string();
+    const auto snapshot_2 = t.snapshot();
+    ASSERT_TRUE(snapshot_2.ok()) << snapshot_2.to_string();
+    // Both recovery anchors must describe the deleted-key view before the
+    // superseded checkpoint's extents can become sparse GC candidates.
+    const auto retired_anchor = t.snapshot();
+    ASSERT_TRUE(retired_anchor.ok()) << retired_anchor.to_string();
 
     // Run compaction.
     MergeGcStats stats;
-    ASSERT_TRUE(t.compact_sparse_blocks(&stats).ok());
+    local->gc_active.store(false);
+    const auto status = t.compact_sparse_blocks(&stats);
+    ASSERT_TRUE(status.ok()) << status.to_string();
     // Some blocks should be selected and relocated.
     EXPECT_GE(stats.blocks_selected, 1U);
 
+    local->gc_active.store(true);
     ++slot;
     ASSERT_TRUE(t.apply(slot, put_one("after-compaction", "still-writable")).ok());
-    ASSERT_TRUE(t.flush().ok());
-    ASSERT_TRUE(t.snapshot().ok());
+    const auto flush_3 = t.flush();
+    ASSERT_TRUE(flush_3.ok()) << flush_3.to_string();
+    const auto snapshot_3 = t.snapshot();
+    ASSERT_TRUE(snapshot_3.ok()) << snapshot_3.to_string();
 
     // All surviving keys must be readable after compaction.
     for (int i = 0; i < 200; i += 20) {
@@ -364,7 +402,9 @@ TEST(Gc, CompactSparseBlocksMaintainsDataIntegrity)
     // A second compaction pass should be idempotent (no more sparse blocks
     // or at least no data loss).
     MergeGcStats stats2;
-    ASSERT_TRUE(t.compact_sparse_blocks(&stats2).ok());
+    local->gc_active.store(false);
+    const auto repeated_compaction = t.compact_sparse_blocks(&stats2);
+    ASSERT_TRUE(repeated_compaction.ok()) << repeated_compaction.to_string();
     (void)stats2;
     for (int i = 0; i < 200; i += 20) {
         std::string v;

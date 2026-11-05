@@ -21,11 +21,13 @@ from uuid import uuid4
 
 REPO = Path(__file__).resolve().parents[1]
 ARTIFACTS = REPO / ".crowdb-runtime/artifacts/tpc-loader"
+sys.path.insert(0, str(REPO / "tools/ports"))
+from default_ports import WEB_BASE
 
 
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--console-url", default="http://127.0.0.1:9090")
+    parser.add_argument("--console-url", default=f"http://127.0.0.1:{WEB_BASE}")
     parser.add_argument("--sf", default="1", help="TPC-H scale factor (default: 1)")
     parser.add_argument("--namespace", help="new Iceberg namespace; default is a unique tpch_sf1_* name")
     parser.add_argument("--bucket", help="S3 bucket; default is the namespace with underscores replaced by hyphens")

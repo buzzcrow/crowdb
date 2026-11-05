@@ -9,6 +9,7 @@ use crowdb_monitor::{
     s3_step_names, show_client_credentials, BootstrapSession, DeploymentProfile, MonitorLog, S3Bootstrap,
     ServerCredentials,
 };
+use crowdb_protocol::port::ports::{ACCESS_SERVER_HTTP_BASE, ACCESS_SERVER_ICEBERG_HTTP_BASE};
 use uuid::Uuid;
 
 struct TestRoot(PathBuf);
@@ -69,8 +70,12 @@ async fn s3_bootstrap_reuses_user_and_validates_ready_without_creation() {
         .unwrap();
     assert_eq!(session.manifest().step_complete("s3-user"), Some(true));
     let client = show_client_credentials(&data_root).unwrap();
-    assert!(client.contains("AWS_ENDPOINT_URL=http://localhost:9091\n"));
-    assert!(client.contains("ICEBERG_URI=http://localhost:9092\n"));
+    assert!(client.contains(&format!(
+        "AWS_ENDPOINT_URL=http://localhost:{ACCESS_SERVER_HTTP_BASE}\n"
+    )));
+    assert!(client.contains(&format!(
+        "ICEBERG_URI=http://localhost:{ACCESS_SERVER_ICEBERG_HTTP_BASE}\n"
+    )));
     session.mark_ready().unwrap();
 
     let mut restarted = BootstrapSession::open(&data_root, b"profile", b"config", &s3_step_names()).unwrap();

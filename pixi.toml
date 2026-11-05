@@ -1,5 +1,5 @@
 [workspace]
-name = "crowdb-kv"
+name = "crowdb-paxos-kv"
 version = "0.3.0"
 description = "CROWDB — distributed key-value store with multi-paxos groups"
 channels = ["conda-forge"]
@@ -38,7 +38,7 @@ isa-l = "*"
 # crowdb-protocol's .fbs codegen. Provides `flatc` and flatbuffers/cpp headers.
 flatbuffers = "*"
 tomlplusplus = ">=3.3.0,<4"
-# Rust toolchain (crowdb-kv)
+# Rust toolchain (crowdb-paxos-kv)
 rust = ">=1.96"
 openssl = "*"
 pkg-config = "*"

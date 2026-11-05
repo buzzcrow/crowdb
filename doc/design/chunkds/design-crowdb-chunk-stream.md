@@ -13,7 +13,7 @@ Depends on: [chunk IO](../chunkio/design-crowdb-chunkio.md),
 [chunk reader](../chunkio/design-crowdb-chunkio-reader.md),
 [DiskIO](../diskio/design-crowdb-diskio.md),
 [chunkdb](../chunkdb/design-crowdb-chunkdb.md), and
-[group-0 sysdata](../kv/design-crowdb-kv-group0.md).
+[group-0 sysdata](../kv/design-crowdb-paxos-kv-group0.md).
 
 ## Contents
 

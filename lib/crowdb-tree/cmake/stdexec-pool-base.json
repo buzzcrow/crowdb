@@ -1,0 +1,4 @@
+{
+  "exec/static_thread_pool.hpp": "672ecff626603ec62bfbfbf7c2ea7f424620543b66256d1fe2faeef005f13214",
+  "exec/detail/bwos_lifo_queue.hpp": "7aaafd413e97f9b4d8fa804f1fb18f9c1814ecba8e734ff667e63a1d3e6e49a2"
+}

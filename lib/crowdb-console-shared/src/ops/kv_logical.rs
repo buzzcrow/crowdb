@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 
-use crowdb_kv_client::GroupMembershipSnapshot;
+use crowdb_paxos_kv_client::GroupMembershipSnapshot;
 use crowdb_protocol::key::{KvGroupKey, KvReplicaKey, KvStoreKey};
 use crowdb_protocol::kv_membership::{canonical_members, GroupMember, GroupMembershipState};
 use crowdb_protocol::mgmt::{
@@ -49,9 +49,9 @@ pub async fn create_local_group_for_tests(
 /// Returns conflicts for other members or epochs and propagates storage errors.
 #[cfg(feature = "test-util")]
 pub async fn initial_membership_for_tests(
-    authority: &crowdb_kv_client::GroupMembershipClient,
+    authority: &crowdb_paxos_kv_client::GroupMembershipClient,
     members: Vec<GroupMember>,
-) -> Result<crowdb_kv_client::GroupMembershipSnapshot> {
+) -> Result<crowdb_paxos_kv_client::GroupMembershipSnapshot> {
     publication::initial_membership(authority, 0, 1, members).await
 }
 
@@ -61,8 +61,8 @@ pub async fn initial_membership_for_tests(
 /// Returns conflicts for superseded membership and propagates storage errors.
 #[cfg(feature = "test-util")]
 pub async fn complete_initial_membership_for_tests(
-    authority: &crowdb_kv_client::GroupMembershipClient,
-    snapshot: &crowdb_kv_client::GroupMembershipSnapshot,
+    authority: &crowdb_paxos_kv_client::GroupMembershipClient,
+    snapshot: &crowdb_paxos_kv_client::GroupMembershipSnapshot,
 ) -> Result<()> {
     publication::complete_initial(authority, snapshot).await
 }

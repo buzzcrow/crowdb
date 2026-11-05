@@ -354,12 +354,12 @@ impl CrowdbClusterDeployer {
     ) -> Result<Vec<NodeInfo>> {
         let n = u16::try_from(nodes.len()).unwrap_or(u16::MAX);
         let rest_ports =
-            assign_process_ports(ServicePort::KvServerMgmt, 0, n).map_err(|e| Error::Validation {
+            assign_process_ports(ServicePort::PaxosKvServerMgmt, 0, n).map_err(|e| Error::Validation {
                 field: "port_alloc".into(),
                 message: e.to_string(),
             })?;
         let rpc_ports =
-            assign_process_ports(ServicePort::KvServerListen, 0, n).map_err(|e| Error::Validation {
+            assign_process_ports(ServicePort::PaxosKvServerRpc, 0, n).map_err(|e| Error::Validation {
                 field: "port_alloc".into(),
                 message: e.to_string(),
             })?;
@@ -464,11 +464,6 @@ impl CrowdbClusterDeployer {
         let mut diskdb_instances = Vec::new();
         if topo.deploy_diskdb {
             let n = u16::try_from(nodes.len()).unwrap_or(u16::MAX);
-            let listen_ports =
-                assign_process_ports(ServicePort::DiskdbListen, 0, n).map_err(|e| Error::Validation {
-                    field: "port_alloc".into(),
-                    message: e.to_string(),
-                })?;
             let http_ports =
                 assign_process_ports(ServicePort::DiskdbHttp, 0, n).map_err(|e| Error::Validation {
                     field: "port_alloc".into(),
@@ -481,7 +476,6 @@ impl CrowdbClusterDeployer {
                 })?;
             for (i, &node_id) in nodes.iter().enumerate() {
                 let rpc_port = rpc_ports[i];
-                let listen_port = listen_ports[i];
                 let http_port = http_ports[i];
                 let result = self
                     .client
@@ -489,7 +483,6 @@ impl CrowdbClusterDeployer {
                         node_id,
                         &DeployDiskdbBody {
                             rpc_port,
-                            listen_port: Some(listen_port),
                             http_port: Some(http_port),
                         },
                     )

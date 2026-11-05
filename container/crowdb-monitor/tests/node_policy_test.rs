@@ -44,13 +44,9 @@ fn host_network_policy_shifts_every_diskdb_listener_once_and_keeps_instances_dis
             crowdb_monitor::accept_node_policy_with_port_offset(root.path(), &omitted, &omitted, offset)
                 .unwrap();
         let diskdb = &policy.setup.services[1].listeners;
-        assert_eq!(diskdb.listen_port, Some(11000 + offset));
-        assert_eq!(diskdb.http_port, Some(11100 + offset));
-        assert_eq!(diskdb.rpc_port, Some(11200 + offset));
-        for port in [diskdb.listen_port, diskdb.http_port, diskdb.rpc_port]
-            .into_iter()
-            .flatten()
-        {
+        assert_eq!(diskdb.http_port, Some(crowdb_protocol::DISKDB_HTTP_BASE + offset));
+        assert_eq!(diskdb.rpc_port, Some(crowdb_protocol::DISKDB_RPC_BASE + offset));
+        for port in [diskdb.http_port, diskdb.rpc_port].into_iter().flatten() {
             assert!(listeners.insert(port));
         }
         assert_eq!(

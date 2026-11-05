@@ -1,13 +1,13 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// R6: cross-thread page refcount tests. Verifies the three scenarios:
-// (1) get_async slow path returns a borrowed Slice (no copy),
-// (2) PinnedSnapshot stays consistent across install_snapshot,
-// (3) stale-root pages are freed when the last pin drops (refcount GC).
+// Independent immutable read owners survive asynchronous delivery and
+// generation replacement; their final release retires the old publication.
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
 #include "crowdb-tree/snapshot/snapshot.h"
+#include "runtime_tree_access.h"
+#include "snapshot/published_snapshot_view.h"
 
 #include <gtest/gtest.h>
 
@@ -32,12 +32,8 @@ std::string make_key(int i)
 }
 } // namespace
 
-// R6 scenario 1: get_async on an evicted (demand-loaded) page returns a
-// borrowed Slice pointing into the resident frame, not an owned copy.
-// frame_base() != nullptr proves the value is borrowed. On macOS (no
-// liburing) the demand-load is synchronous and the borrow is via the epoch
-// guard; on Linux (liburing) the Reactor thread resolves the miss and the
-// borrow is via the R6 per-page refcount pin. Either way, no copy.
+// A cold asynchronous read hands an independent immutable value owner to the
+// callback, without carrying a caller-thread epoch guard.
 TEST(R6, GetAsyncSlowPathReturnsBorrowedSlice)
 {
     MemPageStore store(1);
@@ -52,6 +48,11 @@ TEST(R6, GetAsyncSlowPathReturnsBorrowedSlice)
     }
     ASSERT_TRUE(t.flush().ok());
     ASSERT_TRUE(t.snapshot(nullptr).ok()); // clean + evictable
+
+    GetView warm;
+    ASSERT_TRUE(RuntimeTreeAccess_for_tests::core(t).get(Slice(make_key(0)), &warm).ok());
+    ASSERT_TRUE(warm.found());
+    warm = {};
 
     // Evict all evictable leaves so the next get_async demand-loads (slow path).
     size_t evicted = t.evict_clean_leaves(0);
@@ -80,14 +81,13 @@ TEST(R6, GetAsyncSlowPathReturnsBorrowedSlice)
     EXPECT_TRUE(borrowed.load()) << "slow path must return a borrowed Slice (frame_base != nullptr), not an owned copy";
 }
 
-// R6 scenario 2: snapshot_view returns a PinnedSnapshot that stays
-// consistent across a concurrent install_snapshot. The pinned view's
-// entries must not be truncated or mixed by the slot clears.
-TEST(R6, PinnedSnapshotStaysConsistentAcrossInstallSnapshot)
+// An immutable snapshot keeps its fixed mapping through generation install.
+TEST(R6, PublishedSnapshotStaysConsistentAcrossInstallSnapshot)
 {
-    MemPageStore store(1);
-    Config       opt;
-    opt.page_store       = &store;
+    auto   store = std::make_shared<MemPageStore>(1);
+    Config opt;
+    opt.page_store       = store.get();
+    opt.backend_owner    = store;
     opt.leaf_split_bytes = 160;
     opt.frame_bytes      = 4096;
     Crowdbtree t(opt);
@@ -98,20 +98,17 @@ TEST(R6, PinnedSnapshotStaysConsistentAcrossInstallSnapshot)
     ASSERT_TRUE(t.flush().ok());
     ASSERT_TRUE(t.snapshot(nullptr).ok());
 
-    // Take a pinned snapshot of the 200-key tree.
-    auto snap = t.snapshot_view();
-    // R6: snapshot_view() now returns a PinnedSnapshot (zero-copy, page
-    // refcount pins keep frames alive). Verify it's actually a PinnedSnapshot.
-    EXPECT_NE(dynamic_cast<PinnedSnapshot *>(snap.get()), nullptr);
+    std::weak_ptr<const PublishedPage> old_root = RuntimeTreeAccess_for_tests::root(t);
+    auto                               snap     = t.snapshot_view();
+    ASSERT_NE(dynamic_cast<PublishedSnapshotView *>(snap.get()), nullptr);
     ASSERT_EQ(snap->size(), 200U);
 
-    // Wipe the tree via install_snapshot. The old pages are retired, but
-    // the PinnedSnapshot's refcount pins keep them alive.
+    // The old mapping remains owned by the independent snapshot.
     ASSERT_TRUE(t.install_snapshot({}, 0).ok());
 
     // The pinned snapshot must still see all 200 keys (leaf chain not
     // truncated/mixed by the slot clears in install_snapshot).
-    EXPECT_EQ(snap->size(), 200U) << "PinnedSnapshot must stay consistent across install_snapshot";
+    EXPECT_EQ(snap->size(), 200U) << "Published snapshot must stay consistent across install_snapshot";
     for (int i = 0; i < 200; ++i) {
         uint64_t    s;
         std::string v;
@@ -119,17 +116,11 @@ TEST(R6, PinnedSnapshotStaysConsistentAcrossInstallSnapshot)
         EXPECT_EQ(v, "val" + std::to_string(i));
     }
 
-    // Drop the snapshot. The old pages' refcounts drop to zero and are freed
-    // (the retire_with_pins deleter deferred them). Verify the buffer pool
-    // reclaims them.
-    uint32_t used_before = t.buffer_pool()->stats().used;
+    RuntimeTreeAccess_for_tests::reclaim(t);
+    EXPECT_FALSE(old_root.expired());
     snap.reset();
-    // After the shared_ptr drops, the PinnedSnapshot dtor unpins. The pages
-    // were already retired by install_snapshot, so the last unpin frees them.
-    // Force a reclamation sweep (the retire deleter runs via epoch_.try_reclaim).
-    // The used count should drop (old tree's pages freed).
-    EXPECT_LE(t.buffer_pool()->stats().used, used_before)
-        << "dropping the PinnedSnapshot should free the old tree's pages";
+    RuntimeTreeAccess_for_tests::reclaim(t);
+    EXPECT_TRUE(old_root.expired());
 }
 
 // R6 scenario 3: concurrent readers + install_snapshot churn, no UAF.
@@ -143,6 +134,12 @@ TEST(R6, ConcurrentReadersAndInstallSnapshotNoUAF)
     opt.page_store       = &store;
     opt.leaf_split_bytes = 160;
     opt.frame_bytes      = 4096;
+    // Raw-backend snapshots materialize independently. Four concurrent
+    // cursors must each fund a full supported value and its output owner.
+    TreeRuntimeOptions runtime;
+    runtime.limits.routing_bytes             = 1024ULL * 1024 * 1024;
+    opt.runtime_binding.limits.routing_bytes = 768ULL * 1024 * 1024;
+    ASSERT_TRUE(TreeRuntime::create(runtime, &opt.runtime).ok());
     Crowdbtree t(opt);
 
     for (int i = 0; i < 100; ++i) {
@@ -151,8 +148,9 @@ TEST(R6, ConcurrentReadersAndInstallSnapshotNoUAF)
     ASSERT_TRUE(t.flush().ok());
     ASSERT_TRUE(t.snapshot(nullptr).ok());
 
-    std::atomic<bool> stop{false};
-    std::atomic<bool> bad{false};
+    std::atomic<bool>   stop{false};
+    std::atomic<bool>   bad{false};
+    std::atomic<size_t> ready{0};
 
     // Reader threads: snapshot_view in a loop. Each snapshot is a
     // materialized copy (today) or a PinnedSnapshot (after T8-T11). The
@@ -162,8 +160,24 @@ TEST(R6, ConcurrentReadersAndInstallSnapshotNoUAF)
     readers.reserve(4);
     for (int r = 0; r < 4; ++r) {
         readers.emplace_back([&] {
+            bool reported_ready = false;
             while (!stop.load(std::memory_order_relaxed) && !bad.load(std::memory_order_relaxed)) {
-                auto snap = t.snapshot_view();
+                std::shared_ptr<Snapshot> snap;
+                const auto status = create_published_snapshot(TreeCoreAccess::get(t)->shared_from_this(), &snap);
+                if (status.code() == Code::kUnavailable) {
+                    // Replacement closes new admission while draining the
+                    // preceding generation; already accepted owners remain valid.
+                    continue;
+                }
+                if (!status.ok()) {
+                    ADD_FAILURE() << status.to_string();
+                    bad.store(true, std::memory_order_relaxed);
+                    return;
+                }
+                if (!reported_ready) {
+                    reported_ready = true;
+                    ready.fetch_add(1, std::memory_order_release);
+                }
                 if (snap == nullptr || snap->size() == 0) {
                     continue;
                 }
@@ -184,6 +198,14 @@ TEST(R6, ConcurrentReadersAndInstallSnapshotNoUAF)
         });
     }
 
+    for (size_t attempt = 0; attempt < 2000 && ready.load(std::memory_order_acquire) < 4 && !bad.load(); ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(ready.load(), 4U);
+    if (ready.load() != 4) {
+        bad.store(true);
+    }
+
     // Writer thread: repeatedly install_snapshot to churn the tree.
     std::thread writer([&] {
         for (int i = 0; i < 50 && !bad.load(std::memory_order_relaxed); ++i) {
@@ -193,7 +215,9 @@ TEST(R6, ConcurrentReadersAndInstallSnapshotNoUAF)
                 std::string v = "v" + std::to_string(i) + "_" + std::to_string(j);
                 entries.push_back({.key = k, .cell = encode_cell_buf((i * 100) + j, OpKind::kPut, Slice(v))});
             }
-            if (!t.install_snapshot(std::move(entries), (i * 100) + 20).ok()) {
+            const auto installed = t.install_snapshot(std::move(entries), (i * 100) + 20);
+            if (!installed.ok()) {
+                ADD_FAILURE() << "install iteration " << i << ": " << installed.to_string();
                 bad.store(true, std::memory_order_relaxed);
             }
         }

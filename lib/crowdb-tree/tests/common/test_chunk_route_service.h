@@ -31,6 +31,10 @@ struct TestChunkRouteService
     TestSealReply         seal_reply = TestSealReply::Exact;
     std::atomic<uint64_t> acknowledged{0};
     bool                  drop_allocation = false;
+    std::atomic<uint64_t> requested_low{0};
+    std::atomic<uint32_t> deletes{0};
+    std::atomic<bool>     fence_missing{false};
+    bool                  unfinished_delete = false;
 
     static void handle(uint64_t request_id, uint64_t /*unused*/, uint16_t message, const uint8_t *control,
                        uint32_t length, const uint8_t * /*unused*/, uint32_t /*unused*/, void *connection, void *frame,
@@ -51,6 +55,11 @@ struct TestChunkRouteService
             if (!verifier.VerifyBuffer<FBAllocateChunkRequest>(nullptr)) {
                 return;
             }
+            const auto *allocation = flatbuffers::GetRoot<FBAllocateChunkRequest>(control);
+            if (allocation->chunk_id() != nullptr) {
+                low = allocation->chunk_id()->low();
+                requested_low.store(low);
+            }
             allocations.fetch_add(1);
             if (drop_allocation) {
                 return;
@@ -70,6 +79,15 @@ struct TestChunkRouteService
             low = flatbuffers::GetRoot<FBAdvanceChunkWriteRequest>(control)->chunk_id()->low();
             acknowledged.store(flatbuffers::GetRoot<FBAdvanceChunkWriteRequest>(control)->acknowledged_cursor());
             advances.fetch_add(1);
+        }
+        else if (message == FBMsgType_EDeleteChunkRequest) {
+            if (!verifier.VerifyBuffer<FBDeleteChunkRequest>(nullptr)) {
+                return;
+            }
+            const auto *request = flatbuffers::GetRoot<FBDeleteChunkRequest>(control);
+            low                 = request->chunk_id()->low();
+            fence_missing.store(request->fence_missing());
+            deletes.fetch_add(1);
         }
         else {
             if (!verifier.VerifyBuffer<FBSealChunkRequest>(nullptr)) {
@@ -99,6 +117,14 @@ struct TestChunkRouteService
         else if (message == FBMsgType_EAdvanceChunkWriteRequest) {
             builder.Finish(CreateFBAdvanceChunkWriteResponse(builder, request_id, 0, code, 0, 0, 0, chunk));
             response_type = FBMsgType_EAdvanceChunkWriteResponse;
+        }
+        else if (message == FBMsgType_EDeleteChunkRequest) {
+            const FBInt128 id(0x0200'0000'0000'0042ULL, low);
+            const auto deleted = unfinished_delete ? chunk
+                                                   : CreateFBChunk(builder, &id, 5, FBChunkState_Deleted, 1, 2, 0, 0, 0,
+                                                                   FBChunkType_BtreePage, 17, 0);
+            builder.Finish(CreateFBDeleteChunkResponse(builder, request_id, 0, code, 0, 0, 0, deleted));
+            response_type = FBMsgType_EDeleteChunkResponse;
         }
         else {
             builder.Finish(CreateFBSealChunkResponse(builder, request_id, 0, code, 0, 0, 0, chunk));
@@ -150,8 +176,9 @@ struct TestChunkRouteFixture
             service.parity = index;
             service.server = crowdb_rpc_server_create(nullptr);
             static_cast<void>(crowdb_rpc_server_listen(service.server, "127.0.0.1", 0));
-            for (auto message : {FBMsgType_EAllocateChunkRequest, FBMsgType_EQueryChunkRequest,
-                                 FBMsgType_EAdvanceChunkWriteRequest, FBMsgType_ESealChunkRequest}) {
+            for (auto message :
+                 {FBMsgType_EAllocateChunkRequest, FBMsgType_EQueryChunkRequest, FBMsgType_EAdvanceChunkWriteRequest,
+                  FBMsgType_ESealChunkRequest, FBMsgType_EDeleteChunkRequest}) {
                 crowdb_rpc_server_register_handler(service.server, message, TestChunkRouteService::handle, &service,
                                                    nullptr);
             }

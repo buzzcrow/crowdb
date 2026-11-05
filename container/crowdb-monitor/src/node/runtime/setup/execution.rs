@@ -9,7 +9,7 @@ use super::{
 };
 use crate::DeploymentProfile;
 use crowdb_console_shared::deployment::registry;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::mgmt::node::{setup::NodeSetupPhase, NodeBinding};
 use std::time::Duration;
 
@@ -55,7 +55,7 @@ async fn advance(profile: &DeploymentProfile, state: &mut AcceptedSetup) -> Resu
         return Err("node setup admission was retired or rebound".into());
     }
     tokio::time::timeout(Duration::from_secs(3), super::super::verify_binding(&binding)).await??;
-    let kv = std::sync::Arc::new(CrowdbKvClient::new(ClientConfig::new(
+    let kv = std::sync::Arc::new(PaxosKvClient::new(ClientConfig::new(
         binding.management_seeds.clone(),
     )));
     let (registry, _) = tokio::time::timeout(Duration::from_secs(3), registry::read(&kv))

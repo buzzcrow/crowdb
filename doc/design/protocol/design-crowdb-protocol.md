@@ -5,7 +5,7 @@
 
 The **protocol** area covers the shared cross-component types hosted in
 the `crowdb-protocol` crate: the key encoding that every component uses
-to store and scan rows in crowdb-kv, the wire types that cross crate
+to store and scan rows in crowdb-paxos-kv, the wire types that cross crate
 boundaries (HTTP management API DTOs, group-0 sysdata entry types), and
 the identifier aliases (`RackId`, `NodeId`, `DiskId`, …) that give every
 crate one named, numeric definition of each ID. `crowdb-protocol` is the
@@ -43,7 +43,7 @@ that keeps one source of truth across crates.
 - **No flatbuffer service definitions.** `.fbs` files and generated
   code live in `crowdb-protocol` for shared access, but their design is
   driven by each component's crowdb-rpc service doc, not here.
-- **No server-local types.** Types used only inside `crowdb-kv-server`
+- **No server-local types.** Types used only inside `crowdb-paxos-kv-server`
   stay in the server; they are not cross-component.
 - **No compression.** Keys are small and fixed-width; compression
   would break lexicographic order.
@@ -57,7 +57,7 @@ that keeps one source of truth across crates.
   No other crate defines its own copy of a type that crosses a
   boundary. The crate is lightweight (no tokio runtime, no engine
   code) so any crate can depend on it.
-- **Keys are self-sorting, prefix-stable bytes.** crowdb-kv's
+- **Keys are self-sorting, prefix-stable bytes.** crowdb-paxos-kv's
   `KVEngine` treats keys as raw `&[u8]` and scans by lexicographic
   byte order. The key encoding produces deterministic, self-sorting,
   prefix-stable bytes — flatbuffer `*Key` messages are never used as KV

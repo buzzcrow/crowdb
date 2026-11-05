@@ -93,6 +93,7 @@ def main():
     parser.add_argument("--address", default="10.200.1.1")
     parser.add_argument("--device", default="rocep35s0f0")
     parser.add_argument("--image", default="crowdb-node:dev")
+    parser.add_argument("--binary", type=Path, help="Reuse an already built Chunk-KV fixture executable")
     add_posting_arguments(parser)
     args = parser.parse_args()
     posting = posting_settings(args)
@@ -102,7 +103,9 @@ def main():
     output = (Path(os.environ.get("CROWDB_RUNTIME_ROOT", ROOT / ".crowdb-runtime"))
               / "artifacts/rdma-chunk-kv" / uuid.uuid4().hex).resolve()
     output.mkdir(parents=True)
-    binary = build(pixi, output)
+    binary = args.binary.resolve() if args.binary is not None else build(pixi, output)
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise RuntimeError(f"Chunk-KV fixture is not executable: {binary}")
     if args.topology == "containers":
         args.image = subprocess.check_output([pixi, "run", "--", "docker", "image", "inspect",
                                               args.image, "--format", "{{.Id}}"], text=True).strip()

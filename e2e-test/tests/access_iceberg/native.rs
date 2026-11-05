@@ -31,7 +31,9 @@ impl TestNativeStorage {
     pub async fn store(&self) -> Arc<RoutedCatalogStore> {
         let config = ClientConfig::default();
         let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::new(
-            crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(self.seeds.clone())),
+            crowdb_paxos_kv_client::PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
+                self.seeds.clone(),
+            )),
         )));
         let transport = Arc::new(ChunkKvRpcTransport::new(config.max_owner_connections, 1, 2));
         let client = Arc::new(ChunkKvClient::new(config, source, transport).unwrap());

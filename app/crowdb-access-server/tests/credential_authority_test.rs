@@ -5,7 +5,7 @@
 mod credentials;
 use credentials::TestCredentials;
 use crowdb_access_server::credentials::CredentialAuthorityError;
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 
 const USER: &[u8] = b"console-root";
 const PREPARED: &[u8] = b"crowdb/s3/user-bootstrap/";

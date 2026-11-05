@@ -33,7 +33,7 @@ class TypedWebCluster(StandaloneWebCluster):
                      "--mount", f"type=bind,source={data},target=/opt/crowdb/data",
                      self.image, "-R", "crowdb:crowdb", "/opt/crowdb/data/persistent/console/default")
         address = start_node(self, 3, data,
-            ("server", "web", "--skip-startup-restore", "--bind", "0.0.0.0", "--port", "9090",
+            ("server", "web", "--skip-startup-restore", "--bind", "0.0.0.0", "--port", "6135",
              "--ui-root", "/opt/crowdb/ui", "--log-dir", "/opt/crowdb/data/log/web"),
             environment=("CROWDB_RUNTIME_ROOT=/opt/crowdb/data",))
         self.addresses.append(address)
@@ -43,5 +43,5 @@ class TypedWebCluster(StandaloneWebCluster):
     def ready(self):
         if len(self.servers) < 4:
             return Cluster.ready(self)
-        wait(lambda: HTTP.open(f"http://{self.addresses[3]}:9090/healthz", timeout=5).read(),
+        wait(lambda: HTTP.open(f"http://{self.addresses[3]}:6135/healthz", timeout=5).read(),
              lambda body: body == b"ok", "typed release Web listener", seconds=20)

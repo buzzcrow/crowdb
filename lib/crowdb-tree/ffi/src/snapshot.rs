@@ -10,6 +10,9 @@ use crate::scan::ViewEntry;
 use crate::sys;
 use crate::tree::Crowdbtree;
 
+mod owner;
+pub use owner::OwnedSnapshotChunk;
+
 /// Immutable metadata captured when a portable snapshot export begins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SnapshotMetadata {
@@ -47,6 +50,12 @@ impl SnapshotExportSession {
     #[must_use]
     pub fn offset(&self) -> u64 {
         unsafe { sys::ct_snapshot_export_offset(self.ptr.as_ptr()) }
+    }
+
+    /// Retains the native chunk allocation through every returned Bytes clone
+    /// and slice, even after this session and its Tree are closed.
+    pub fn read_owned(&mut self, offset: u64) -> Result<OwnedSnapshotChunk, CtError> {
+        owner::read(self.ptr.as_ptr(), offset)
     }
 
     /// Read the next sequential chunk. A source registry may cache this result

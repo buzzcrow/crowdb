@@ -6,7 +6,7 @@
 use crate::range_guard::RangeGuard;
 use arc_swap::ArcSwapOption;
 use axum::{http::StatusCode, routing::get, Router};
-use crowdb_kv_client::CrowdbKvClient;
+use crowdb_paxos_kv_client::PaxosKvClient;
 use std::{future::Future, sync::Arc, time::Duration};
 use tokio::{
     sync::watch,
@@ -71,7 +71,7 @@ impl RangeReadiness {
     /// Own one bounded refresh at a time; callers never initiate extra reads.
     pub fn start(
         self: Arc<Self>,
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         instance_id: u64,
         stop: watch::Receiver<bool>,
     ) -> JoinHandle<()> {

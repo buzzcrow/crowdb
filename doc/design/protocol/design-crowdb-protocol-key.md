@@ -9,7 +9,7 @@ Satisfies: [`design-crowdb-protocol.md`](design-crowdb-protocol.md) key encoding
 This is the sub-design for **key encoding** within the protocol area.
 Architecture decisions and the area envelope live in the root
 [`design-crowdb-protocol.md`](design-crowdb-protocol.md); this doc covers
-the detailed design: how every CROWDB key that is stored in crowdb-kv is
+the detailed design: how every CROWDB key that is stored in crowdb-paxos-kv is
 serialized to and parsed from bytes, via two encoding traits:
 `BinaryKey` (binary, for data groups) and `TextKey` (text-path, for
 group 0). It is shared across all components (diskdb first; future
@@ -22,7 +22,7 @@ rules, frozen layouts, and evolution policy. **Which keys are
 persisted where, their value types, who writes them, and their scan
 patterns** are persistence concerns, defined in:
 
-- `doc/design/kv/design-crowdb-kv-group0.md` §3 — group-0 sysdata schema
+- `doc/design/kv/design-crowdb-paxos-kv-group0.md` §3 — group-0 sysdata schema
   (text keys + JSON values).
 - `doc/design/diskdb/design-crowdb-diskdb.md` §5 and §7 — data-group
   zone records (binary keys + flatbuffer values).
@@ -44,7 +44,7 @@ patterns** are persistence concerns, defined in:
 
 ## 1. Problem
 
-crowdb-kv's `KVEngine` treats keys as raw `&[u8]` and runs prefix/range
+crowdb-paxos-kv's `KVEngine` treats keys as raw `&[u8]` and runs prefix/range
 scans by **lexicographic byte order** (`get(&[u8])`,
 `scan(prefix, start_after, end_key, …)`). A key encoding must
 therefore satisfy two rules:
@@ -84,7 +84,7 @@ bytes.** CROWDB controls its own binary key format.
   the sole producers/consumers of KV key bytes. No second encoder in
   any component.
 - **Cross-component** — diskdb, and any future component stored in
-  crowdb-kv, share the same magic, trait, and field-encoding rules.
+  crowdb-paxos-kv, share the same magic, trait, and field-encoding rules.
 
 ## 3. Key Design Decisions
 
@@ -249,7 +249,7 @@ to bytes:
 **This doc defines the encoding protocol**: the rules, the frozen
 layouts, and the evolution policy. **Which keys are persisted where,
 their value types, and their scan patterns are defined in the
-persistence docs**: `doc/design/kv/design-crowdb-kv-group0.md` §3
+persistence docs**: `doc/design/kv/design-crowdb-paxos-kv-group0.md` §3
 (group-0 sysdata schema) and `doc/design/diskdb/design-crowdb-diskdb.md`
 §5/§7 (data-group zone records).
 
@@ -359,7 +359,7 @@ Text magic namespaces: `/hw` (hardware), `/srv` (service registry),
 `/kv` (KV-cluster topology).
 
 Frozen text key path shapes (the encoding spec; value types and scan
-patterns are in `design-crowdb-kv-group0.md` §3):
+patterns are in `design-crowdb-paxos-kv-group0.md` §3):
 
 - **RackKey** — `/hw/rack/<rack_id>`.
 - **NodeKey** — `/hw/node/<rack_id>/<node_id>`.
@@ -398,7 +398,7 @@ KV keys and RPC messages are separate concerns:
 
 - **KV key bytes** — produced and consumed only by the Rust
   `BinaryKey` types in `crowdb-protocol`. These bytes go to
-  `crowdb-kv-client`'s `put` / `get` / `scan` and never appear on the
+  `crowdb-paxos-kv-client`'s `put` / `get` / `scan` and never appear on the
   crowdb-rpc wire as a serialized key message.
 - **RPC responses/requests** — use flatbuffer `**Info` messages that
   **flatten key fields and value fields into one message**
@@ -478,7 +478,7 @@ string-field kinds; not needed while all keys are fixed-width.)
 
 ## 10. References
 
-- crowdb-kv `KVEngine` trait (key bytes, prefix scan).
+- crowdb-paxos-kv `KVEngine` trait (key bytes, prefix scan).
 - diskdb key kinds and their hierarchy:
   `doc/design/diskdb/design-crowdb-diskdb.md` §5 (group-0 sysdata) and
   §7 (zone records).

@@ -7,8 +7,10 @@ use crowdb_console_shared::{
     ops::OpContext,
     ConsoleConfig,
 };
-use crowdb_kv::cluster::{group::PxGroup, KvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv::cluster::{
+    group::PxGroup, PaxosKvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
+};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use std::sync::Arc;
 
 pub struct TestPreparationAuthority {
@@ -53,7 +55,7 @@ impl TestPreparationAuthority {
         let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("default-preparation");
         let bootstrap =
             PreparedBootstrap::open(&root.path().join("prepared.json"), &config, members).unwrap();
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![endpoint.clone()])));
+        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(vec![endpoint.clone()])));
         kv.seed_leader(0, 0, endpoint);
         kv.put(0, 0, CLUSTER_KEY, &serde_json::to_vec(&bootstrap).unwrap(), None)
             .await

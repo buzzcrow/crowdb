@@ -12,6 +12,7 @@
 // frame (no uring, no I/O) needs no dedicated type.
 #pragma once
 
+#include "crowdb-tree/btree/work_cause.h"
 #include "crowdb-tree/maptable/page_types.h" // PageAddr
 #include "crowdb-tree/status.h"
 
@@ -20,6 +21,7 @@
 #endif
 
 #include "crowdb-tree/backend/page_purpose.h"
+#include "crowdb-tree/memory_budget.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -35,6 +37,11 @@ struct AsyncCompletion
 {
     void           *context     = nullptr;
     AsyncCompleteFn complete_fn = nullptr;
+    // Optional context/buffer lifetime, copied with the callback through a
+    // transport. This also keeps uncertain submissions safe until drain.
+    std::shared_ptr<const void>       owner       = nullptr;
+    std::shared_ptr<AllocationBudget> allocations = nullptr;
+    TreeWorkCause                     cause       = TreeWorkCause::Other;
 
     void complete(Status status) const
     {
@@ -54,13 +61,22 @@ class AsyncPageStore
   public:
     virtual ~AsyncPageStore() = default;
 
+    // A successful write can be read by its supplied address without a later
+    // checkpoint/seal. Address reclamation additionally requires an extent
+    // protection owner supplied by the allocator. Staging-only stores keep
+    // the default until their pack-reference read path is available.
+    [[nodiscard]] virtual bool write_completion_is_reloadable() const noexcept
+    {
+        return false;
+    }
+
     // Submit an async read/write of `len` bytes at durable offset `addr`
     // (the same PageAddr/byte-offset domain as PageStore::read_at/write_at).
     // `on_complete` fires exactly once with the outcome. Immediate results
     // and rejected submissions may complete inline; accepted I/O completes
-    // from the backend's worker. Returns an opaque nonzero operation id when the backend
-    // supports per-operation cancellation; 0 means no cancellable operation
-    // was accepted.
+    // from the backend's worker. Returns an opaque nonzero operation id when the
+    // backend supports per-operation cancellation; 0 means no cancellable
+    // operation was accepted.
     virtual uint64_t submit_read(PageAddr addr, void *buf, size_t len, AsyncCompletion on_complete)        = 0;
     virtual uint64_t submit_write(PageAddr addr, const void *buf, size_t len, AsyncCompletion on_complete) = 0;
 
@@ -96,6 +112,11 @@ class BlockAsyncPageStore : public AsyncPageStore
     // `store` and `uring` are both non-owning; caller must keep them alive
     // for at least as long as this object.
     BlockAsyncPageStore(BlockPageStore *store, ::crowdb::common::DiskIOUring *uring);
+
+    [[nodiscard]] bool write_completion_is_reloadable() const noexcept override
+    {
+        return true;
+    }
 
     uint64_t submit_read(PageAddr addr, void *buf, size_t len, AsyncCompletion on_complete) override;
     uint64_t submit_write(PageAddr addr, const void *buf, size_t len, AsyncCompletion on_complete) override;

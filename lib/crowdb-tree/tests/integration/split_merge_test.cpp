@@ -4,6 +4,7 @@
 // CT12: page split & merge integration tests.
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
+#include "runtime_tree_access.h"
 
 #include <gtest/gtest.h>
 
@@ -79,15 +80,16 @@ TEST(SplitMerge, SimilarKeysKeepSplittingOneHotRange)
     opt.leaf_merge_bytes = 64;
     Crowdbtree t(opt);
 
-    // Keep every new key in one narrow lexical interval. Each flush has to
-    // route through the repeatedly splitting hot range instead of distributing
-    // the writes across the tree.
+    // Append every round to the same narrow hot tail. Four records exceed one
+    // target leaf, so every flush must split that range even if the prior leaf
+    // has spare capacity. Interleaving four separated key bands would not
+    // guarantee growth on every round.
     std::map<std::string, std::string> oracle;
     uint64_t                           slot          = 0;
     size_t                             leaves_before = t.leaf_count();
     for (uint64_t round = 0; round < 40; ++round) {
         for (uint64_t offset = 0; offset < 4; ++offset) {
-            const uint64_t       sequence = (offset * 40) + round;
+            const uint64_t       sequence = (round * 4) + offset;
             std::array<char, 32> key{};
             snprintf(key.data(), key.size(), "hot/500/%020llu", static_cast<unsigned long long>(sequence));
             const std::string value =
@@ -169,7 +171,8 @@ TEST(SplitMerge, SnapshotSucceedsAfterHeavyMergeAndRootCollapse)
     opt.leaf_split_bytes = 200;
     opt.leaf_merge_bytes = 60;
     opt.inner_max_keys   = 4; // force inner splits/merges too, not just leaves
-    Crowdbtree t(opt);
+    auto  tree           = std::make_unique<Crowdbtree>(opt);
+    auto &t              = *tree;
 
     const int N    = 200;
     uint64_t  slot = 0;
@@ -190,8 +193,10 @@ TEST(SplitMerge, SnapshotSucceedsAfterHeavyMergeAndRootCollapse)
 
     ASSERT_TRUE(t.snapshot().ok());
 
+    tree.reset(); // The writer domain must close before reopening the same store.
     std::unique_ptr<Crowdbtree> t2;
-    ASSERT_TRUE(Crowdbtree::open(opt, &t2).ok());
+    const auto                  status = Crowdbtree::open(opt, &t2);
+    ASSERT_TRUE(status.ok()) << status.to_string();
     std::string v;
     uint64_t    s;
     EXPECT_TRUE(t2->get(Slice(make_key(0)), &s, &v));
@@ -368,27 +373,21 @@ TEST(SplitMerge, ConsolidationSplitsIterativelyToThreshold)
 }
 
 // Count the inner pages reachable from the root (test helper).
-static size_t inner_count_walk(Crowdbtree &t)
+static size_t inner_count_walk(Crowdbtree &tree)
 {
-    std::function<size_t(uint64_t)> rec = [&](uint64_t page_id) -> size_t {
-        PageBase *head = t.mapping().get_resident(page_id);
-        if (head == nullptr) {
+    auto                            view = RuntimeTreeAccess_for_tests::capture(tree);
+    std::function<size_t(uint64_t)> walk = [&](uint64_t id) -> size_t {
+        auto page = view->mapping.get(id);
+        if (!page || !page->inner) {
             return 0;
         }
-        PageBase *base = head;
-        while (base != nullptr && base->type == page_type::kBatchDelta) {
-            base = base->next;
+        size_t result = 1;
+        for (auto child : page->inner->children) {
+            result += walk(child);
         }
-        if (base == nullptr || base->type == page_type::kLeafBase) {
-            return 0;
-        }
-        size_t n = 1;
-        for (uint64_t c : static_cast<InnerBase *>(base)->children()) {
-            n += rec(c);
-        }
-        return n;
+        return result;
     };
-    return rec(t.root_page_id());
+    return walk(view->root_page_id);
 }
 
 // O(1) atomic leaf/inner counters must match the tree walk after splits.
@@ -563,6 +562,28 @@ TEST(SplitMerge, SplitOverlayServesBeforeSourceMemtableSeal)
     EXPECT_EQ(value, "right-after");
 }
 
+namespace
+{
+struct SplitWorkers
+{
+    std::atomic<bool> &stop;
+    std::thread       &writer;
+    std::thread       &reader;
+    std::thread       &flusher;
+
+    ~SplitWorkers()
+    {
+        stop.store(true, std::memory_order_release);
+        for (auto *thread : {&writer, &reader, &flusher}) {
+            if (thread->joinable()) {
+                thread->join();
+            }
+        }
+    }
+};
+
+} // namespace
+
 TEST(SplitMerge, RepeatedSharedViewsKeepBothReplayFrontiersContinuous)
 {
     constexpr uint64_t kRounds   = 32;
@@ -573,12 +594,21 @@ TEST(SplitMerge, RepeatedSharedViewsKeepBothReplayFrontiersContinuous)
     source_opt.memtable_flush_bytes   = 1ULL << 10;
     source_opt.memtable_flush_entries = 32;
     source_opt.max_memtable_count     = 1'024;
+    // This fixture admits a complete maintenance window while prior versions
+    // and writer histories retire while two split children retain mappings. Keep that peak
+    // finite and explicit; quota-pressure behavior has separate regressions.
+    TreeRuntimeOptions runtime_options;
+    runtime_options.limits.reclaim_bytes = 384ULL * 1024 * 1024;
+    ASSERT_TRUE(TreeRuntime::create(runtime_options, &source_opt.runtime).ok());
+    source_opt.runtime_binding.limits.reclaim_bytes = 256ULL * 1024 * 1024;
+    source_opt.runtime_binding.limits.writer_bytes  = 256ULL * 1024 * 1024;
     Crowdbtree source(source_opt);
     source.init_metrics("split-mixed", "");
     for (uint64_t slot = 1; slot <= kSeedKeys; ++slot) {
         ASSERT_TRUE(source.apply(slot, put_one("seed-" + std::to_string(slot), "tree-resident")).ok());
     }
     ASSERT_TRUE(source.flush().ok());
+    std::atomic<bool>     stop{false};
     std::atomic<bool>     writer_failed{false};
     std::atomic<bool>     reader_failed{false};
     std::atomic<bool>     writer_done{false};
@@ -590,12 +620,14 @@ TEST(SplitMerge, RepeatedSharedViewsKeepBothReplayFrontiersContinuous)
     write_latencies_us.reserve(kWrites);
     read_latencies_us.reserve(kReads);
     std::thread writer([&] {
-        for (uint64_t write = 1; write <= kWrites; ++write) {
+        for (uint64_t write = 1; write <= kWrites && !stop.load(std::memory_order_acquire); ++write) {
             const uint64_t    slot   = kSeedKeys + write;
             const std::string prefix = write % 2 == 0 ? "left-" : "right-";
             written.store(slot, std::memory_order_release);
             const auto started = std::chrono::steady_clock::now();
-            if (!source.apply(slot, put_one(prefix + std::to_string(slot), "injected")).ok()) {
+            const auto status  = source.apply(slot, put_one(prefix + std::to_string(slot), "injected"));
+            if (!status.ok()) {
+                ADD_FAILURE() << "writer slot=" << slot << " " << status.to_string();
                 writer_failed.store(true);
                 writer_done.store(true, std::memory_order_release);
                 return;
@@ -606,12 +638,15 @@ TEST(SplitMerge, RepeatedSharedViewsKeepBothReplayFrontiersContinuous)
         writer_done.store(true, std::memory_order_release);
     });
     std::thread reader([&] {
-        for (uint64_t read = 0; read < kReads || completed_splits.load(std::memory_order_acquire) < kRounds; ++read) {
+        for (uint64_t read = 0; !stop.load(std::memory_order_acquire) &&
+                                (read < kReads || completed_splits.load(std::memory_order_acquire) < kRounds);
+             ++read) {
             uint64_t          revision = 0;
             std::string       value;
-            const std::string key     = "seed-" + std::to_string(read % kSeedKeys + 1);
+            const std::string key     = "seed-" + std::to_string((read % kSeedKeys) + 1);
             const auto        started = std::chrono::steady_clock::now();
             if (!source.get(Slice(key), &revision, &value) || value != "tree-resident") {
+                ADD_FAILURE() << "reader key=" << key << " revision=" << revision << " value=" << value;
                 reader_failed.store(true);
                 return;
             }
@@ -621,14 +656,18 @@ TEST(SplitMerge, RepeatedSharedViewsKeepBothReplayFrontiersContinuous)
         }
     });
     std::thread flusher([&] {
-        while (!writer_done.load(std::memory_order_acquire)) {
-            if (!source.flush().ok()) {
+        while (!stop.load(std::memory_order_acquire) && !writer_done.load(std::memory_order_acquire)) {
+            const auto status = source.flush();
+            if (!status.ok()) {
+                ADD_FAILURE() << "flusher written=" << written.load() << " " << status.to_string();
                 flush_failed.store(true);
                 return;
             }
             std::this_thread::yield();
         }
     });
+
+    SplitWorkers join_workers{.stop = stop, .writer = writer, .reader = reader, .flusher = flusher};
 
     while (written.load(std::memory_order_acquire) == 0) {
         std::this_thread::yield();
@@ -637,25 +676,33 @@ TEST(SplitMerge, RepeatedSharedViewsKeepBothReplayFrontiersContinuous)
     for (uint64_t round = 0; round < kRounds; ++round) {
         uint64_t generation       = 0;
         uint64_t journal_frontier = 0;
-        ASSERT_TRUE(source.begin_split_memtable_view(&generation, &journal_frontier).ok());
+        auto     status           = source.begin_split_memtable_view(&generation, &journal_frontier);
+        ASSERT_TRUE(status.ok()) << "begin round=" << round << " " << status.to_string();
         EXPECT_GE(journal_frontier, previous_frontier);
         EXPECT_LE(journal_frontier, written.load(std::memory_order_acquire));
 
         Config left_opt;
+        left_opt.runtime   = source_opt.runtime;
         left_opt.key_range = KeyRange::bounded(std::nullopt, std::string("m"));
         Config right_opt;
+        right_opt.runtime   = source_opt.runtime;
         right_opt.key_range = KeyRange::bounded(std::string("m"), std::nullopt);
         Crowdbtree left(left_opt);
         Crowdbtree right(right_opt);
-        ASSERT_TRUE(source.publish_split_memtable_view(generation, journal_frontier, left, left_opt.key_range).ok());
-        ASSERT_TRUE(source.publish_split_memtable_view(generation, journal_frontier, right, right_opt.key_range).ok());
+        status = source.publish_split_memtable_view(generation, journal_frontier, left, left_opt.key_range);
+        ASSERT_TRUE(status.ok()) << "left publish round=" << round << " " << status.to_string();
+        status = source.publish_split_memtable_view(generation, journal_frontier, right, right_opt.key_range);
+        ASSERT_TRUE(status.ok()) << "right publish round=" << round << " " << status.to_string();
 
         const uint64_t replay_slot = journal_frontier + 1;
-        ASSERT_TRUE(left.apply(replay_slot, put_one("left-replay-" + std::to_string(round), "replayed")).ok());
-        ASSERT_TRUE(right.apply(replay_slot, put_one("right-replay-" + std::to_string(round), "replayed")).ok());
+        status = left.apply(replay_slot, put_one("left-replay-" + std::to_string(round), "replayed"));
+        ASSERT_TRUE(status.ok()) << "left replay round=" << round << " " << status.to_string();
+        status = right.apply(replay_slot, put_one("right-replay-" + std::to_string(round), "replayed"));
+        ASSERT_TRUE(status.ok()) << "right replay round=" << round << " " << status.to_string();
         EXPECT_EQ(left.contiguous_slot(), replay_slot);
         EXPECT_EQ(right.contiguous_slot(), replay_slot);
-        ASSERT_TRUE(source.release_split_memtable_view(generation).ok());
+        status = source.release_split_memtable_view(generation);
+        ASSERT_TRUE(status.ok()) << "release round=" << round << " " << status.to_string();
         previous_frontier = journal_frontier;
         completed_splits.store(round + 1, std::memory_order_release);
     }
@@ -677,5 +724,9 @@ TEST(SplitMerge, RepeatedSharedViewsKeepBothReplayFrontiersContinuous)
     EXPECT_LT(read_latencies_us[read_p99_index], 10'000U);
     EXPECT_LT(read_latencies_us.back(), 100'000U);
     const std::string metrics = source.flush_metrics_str(1.0, "test");
-    EXPECT_NE(metrics.find("split-mixed.l1.get.c"), std::string::npos);
+    EXPECT_FALSE(metrics.empty());
+    EXPECT_NE(metrics.find("split-mixed.read.inflight.bytes.g"), std::string::npos);
+    EXPECT_EQ(source.tree_state_stats().resources.read_inflight_bytes, 0U);
+    const auto work = RuntimeTreeAccess_for_tests::core(source).publisher().work_metrics()->totals();
+    EXPECT_GT(work[static_cast<size_t>(TreeStage::FlushBatch)].count, 0U);
 }

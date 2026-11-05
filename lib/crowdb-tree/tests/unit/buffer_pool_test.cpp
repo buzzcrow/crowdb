@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 // PT6b: buffer pool manager tests.
+#include "buffer_pool_test_support.h"
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/btree/cell.h"
-#include "crowdb-tree/maptable/buffer_pool.h"
 #include "crowdb-tree/maptable/frame_page.h"
 
 #include <gtest/gtest.h>
@@ -32,7 +32,7 @@ std::string key(int i)
 }
 
 // build a one-entry leaf into a frame and mark it dirty.
-void build_leaf(BufferPool *pool, FrameRef *ref, uint64_t page_id, int k)
+void build_leaf(TestBufferPool *pool, TestPoolFrameRef *ref, uint64_t page_id, int k)
 {
     LeafFrameBuilder b(ref->bytes(), kPb);
     std::string      cell = encode_cell(static_cast<uint64_t>(k), OpKind::kPut, Slice("v"));
@@ -110,21 +110,22 @@ class BlockingReadStore final : public PageStore
 
 TEST(BufferPool, MissLoadsFromStoreAfterEviction)
 {
-    MemPageStore store(1);
-    BufferPool   pool(static_cast<size_t>(2) * kPb, kPb, &store); // 2 frames
+    MemPageStore   store(1);
+    TestBufferPool pool(static_cast<size_t>(2) * kPb, kPb, &store); // 2 frames
 
     // Write 4 pages through the pool; with 2 frames, evictions write dirty pages
     // back to the store.
     for (int i = 0; i < 4; ++i) {
-        FrameRef r;
+        TestPoolFrameRef r;
         ASSERT_TRUE(pool.pin_new(i, addr(i), &r).ok());
         build_leaf(&pool, &r, i, i);
         r.release();
     }
     ASSERT_TRUE(pool.flush_dirty().ok());
 
-    // pin page_id 0 again: it was evicted, so this is a miss that reloads from store.
-    FrameRef r;
+    // pin page_id 0 again: it was evicted, so this is a miss that reloads from
+    // store.
+    TestPoolFrameRef r;
     ASSERT_TRUE(pool.pin(0, addr(0), &r).ok());
     LeafFrameView v(r.bytes(), kPb);
     ASSERT_EQ(v.count(), 1U);
@@ -139,15 +140,15 @@ TEST(BufferPool, MissLoadsFromStoreAfterEviction)
 
 TEST(BufferPool, HitDoesNotMiss)
 {
-    MemPageStore store(1);
-    BufferPool   pool(static_cast<size_t>(4) * kPb, kPb, &store);
+    MemPageStore   store(1);
+    TestBufferPool pool(static_cast<size_t>(4) * kPb, kPb, &store);
     {
-        FrameRef r;
+        TestPoolFrameRef r;
         ASSERT_TRUE(pool.pin_new(5, addr(5), &r).ok());
         build_leaf(&pool, &r, 5, 5);
     } // released
-    auto     before = pool.stats();
-    FrameRef r;
+    auto             before = pool.stats();
+    TestPoolFrameRef r;
     ASSERT_TRUE(pool.pin(5, addr(5), &r).ok()); // still resident -> hit
     auto after = pool.stats();
     EXPECT_EQ(after.misses, before.misses);
@@ -157,9 +158,9 @@ TEST(BufferPool, HitDoesNotMiss)
 TEST(BufferPool, UnrelatedHitContinuesWhileMissReadIsBlocked)
 {
     BlockingReadStore store;
-    BufferPool        pool(static_cast<size_t>(2) * kPb, kPb, &store);
+    TestBufferPool    pool(static_cast<size_t>(2) * kPb, kPb, &store);
     {
-        FrameRef resident;
+        TestPoolFrameRef resident;
         ASSERT_TRUE(pool.pin_new(1, addr(1), &resident).ok());
         build_leaf(&pool, &resident, 1, 1);
     }
@@ -173,13 +174,13 @@ TEST(BufferPool, UnrelatedHitContinuesWhileMissReadIsBlocked)
 
     store.block(addr(2));
     auto miss = std::async(std::launch::async, [&] {
-        FrameRef loaded;
+        TestPoolFrameRef loaded;
         return pool.pin(2, addr(2), &loaded);
     });
     store.wait_until_blocked();
 
     auto hit = std::async(std::launch::async, [&] {
-        FrameRef resident;
+        TestPoolFrameRef resident;
         return pool.pin(1, addr(1), &resident);
     });
     EXPECT_EQ(hit.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
@@ -191,14 +192,14 @@ TEST(BufferPool, UnrelatedHitContinuesWhileMissReadIsBlocked)
 
 TEST(BufferPool, PinnedFramesAreNotEvicted)
 {
-    MemPageStore store(1);
-    BufferPool   pool(static_cast<size_t>(2) * kPb, kPb, &store); // 2 frames
-    FrameRef     a;
+    MemPageStore     store(1);
+    TestBufferPool   pool(static_cast<size_t>(2) * kPb, kPb, &store); // 2 frames
+    TestPoolFrameRef a;
     ASSERT_TRUE(pool.pin_new(0, addr(0), &a).ok());
-    FrameRef b;
+    TestPoolFrameRef b;
     ASSERT_TRUE(pool.pin_new(1, addr(1), &b).ok());
-    FrameRef c;
-    Status   s = pool.pin_new(2, addr(2), &c);
+    TestPoolFrameRef c;
+    Status           s = pool.pin_new(2, addr(2), &c);
     EXPECT_FALSE(s.ok());
     EXPECT_FALSE(c.valid());
     // release one; now it succeeds.
@@ -208,10 +209,10 @@ TEST(BufferPool, PinnedFramesAreNotEvicted)
 
 TEST(BufferPool, DirtyFlushWritesBack)
 {
-    MemPageStore store(1);
-    BufferPool   pool(static_cast<size_t>(4) * kPb, kPb, &store);
+    MemPageStore   store(1);
+    TestBufferPool pool(static_cast<size_t>(4) * kPb, kPb, &store);
     {
-        FrameRef r;
+        TestPoolFrameRef r;
         ASSERT_TRUE(pool.pin_new(9, addr(9), &r).ok());
         build_leaf(&pool, &r, 9, 9);
     }
@@ -224,10 +225,10 @@ TEST(BufferPool, DirtyFlushWritesBack)
 
 TEST(BufferPool, CorruptPageRejectedOnLoad)
 {
-    MemPageStore store(1);
-    BufferPool   pool(static_cast<size_t>(2) * kPb, kPb, &store);
+    MemPageStore   store(1);
+    TestBufferPool pool(static_cast<size_t>(2) * kPb, kPb, &store);
     for (int i = 0; i < 4; ++i) {
-        FrameRef r;
+        TestPoolFrameRef r;
         ASSERT_TRUE(pool.pin_new(i, addr(i), &r).ok());
         build_leaf(&pool, &r, i, i);
         r.release();
@@ -236,15 +237,16 @@ TEST(BufferPool, CorruptPageRejectedOnLoad)
     // Corrupt page_id 0's durable image, then force a reload.
     std::vector<uint8_t> garbage(kPb, 0x5a);
     ASSERT_TRUE(store.write_at(addr(0), garbage.data(), garbage.size()).ok());
-    FrameRef r;
+    TestPoolFrameRef r;
     EXPECT_EQ(pool.pin(0, addr(0), &r).code(), Code::kCorruption);
 }
 
 TEST(BufferPool, AcquireFrameIsAnonymousDirtyAndResident)
 {
-    BufferPool pool(static_cast<size_t>(4) * kPb, kPb, nullptr); // no store: anon frames only
-    uint32_t   idx   = 0;
-    uint8_t   *bytes = nullptr;
+    TestBufferPool pool(static_cast<size_t>(4) * kPb, kPb,
+                        nullptr); // no store: anon frames only
+    uint32_t       idx   = 0;
+    uint8_t       *bytes = nullptr;
     ASSERT_TRUE(pool.acquire_frame(&idx, &bytes).ok());
     ASSERT_NE(bytes, nullptr);
     // build a leaf directly into the acquired frame and read it back zero-copy.
@@ -264,11 +266,11 @@ TEST(BufferPool, AcquireFrameIsAnonymousDirtyAndResident)
 
 TEST(BufferPool, AcquireFrameFailsWhenFull)
 {
-    BufferPool pool(static_cast<size_t>(2) * kPb, kPb, nullptr); // 2 frames
-    uint32_t   i1 = 0;
-    uint32_t   i2 = 0;
-    uint32_t   i3 = 0;
-    uint8_t   *b  = nullptr;
+    TestBufferPool pool(static_cast<size_t>(2) * kPb, kPb, nullptr); // 2 frames
+    uint32_t       i1 = 0;
+    uint32_t       i2 = 0;
+    uint32_t       i3 = 0;
+    uint8_t       *b  = nullptr;
     ASSERT_TRUE(pool.acquire_frame(&i1, &b).ok());
     ASSERT_TRUE(pool.acquire_frame(&i2, &b).ok());
     // Both frames pinned-resident: a third acquire must fail (caller falls back
@@ -280,11 +282,12 @@ TEST(BufferPool, AcquireFrameFailsWhenFull)
 
 TEST(BufferPool, ManyPagesThroughSmallPool)
 {
-    MemPageStore store(1);
-    BufferPool   pool(static_cast<size_t>(3) * kPb, kPb, &store); // 3 frames, many pages
-    const int    N = 200;
+    MemPageStore   store(1);
+    TestBufferPool pool(static_cast<size_t>(3) * kPb, kPb,
+                        &store); // 3 frames, many pages
+    const int      N = 200;
     for (int i = 0; i < N; ++i) {
-        FrameRef r;
+        TestPoolFrameRef r;
         ASSERT_TRUE(pool.pin_new(i, addr(i), &r).ok());
         build_leaf(&pool, &r, i, i);
         r.release();
@@ -292,7 +295,7 @@ TEST(BufferPool, ManyPagesThroughSmallPool)
     ASSERT_TRUE(pool.flush_dirty().ok());
     // Every page reloads correctly through the small pool (page table churn).
     for (int i = 0; i < N; ++i) {
-        FrameRef r;
+        TestPoolFrameRef r;
         ASSERT_TRUE(pool.pin(i, addr(i), &r).ok());
         EXPECT_EQ(LeafFrameView(r.bytes(), kPb).key(0).to_string(), key(i));
     }

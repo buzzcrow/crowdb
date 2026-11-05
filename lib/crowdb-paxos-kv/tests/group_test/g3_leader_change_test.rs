@@ -1,0 +1,282 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+//! Two-replica even-quorum behaviour and leader change simulation.
+//!
+//! - `two_replica_even_quorum_no_progress_with_one_down`: a 2-node
+//!   cluster cannot make progress when one node is missing (quorum = 2).
+//! - `leader_change_simulation`: write keys, force step-down, wait for
+//!   new leader, write more keys, force another step-down, verify all
+//!   keys readable through final leader.
+
+use std::time::{Duration, Instant};
+
+use bytes::Bytes;
+use crowdb_paxos_kv::cluster::group_election::LeaderElection;
+use crowdb_paxos_kv::cluster::replica::StepDownRequestPayload;
+use crowdb_paxos_kv::rpc::{KvGetRequest, KvSetRequest};
+
+use crate::common::cluster::{start_cluster_no_leader_relaxed as start_cluster_no_leader, TestCluster};
+
+async fn wait_for_leader(cluster: &TestCluster, timeout: Duration) -> Option<u64> {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if let Some(node) = cluster.elected_leader() {
+            let group = node.get_group(1).expect("group");
+            let replica = group.local_replica();
+            if group.proposing_term() == replica.current_term_snapshot()
+                && replica.lease_read_valid(Instant::now())
+            {
+                return Some(replica.id);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    None
+}
+
+async fn read_via_leader(cluster: &TestCluster, key: &[u8]) -> Option<Vec<u8>> {
+    let leader = cluster.elected_leader()?;
+    let client = cluster.kv_client(leader).await;
+    let resp = client
+        .get(KvGetRequest {
+            version: 1,
+            key: Bytes::copy_from_slice(key),
+            request_id: 9001,
+            request_create_ms: 9001,
+            group_id: 1,
+            read_mode: 0,
+            min_slot: 0,
+        })
+        .await
+        .ok()?
+        .into_inner();
+    if resp.ok && !resp.not_found {
+        Some(resp.value.to_vec())
+    } else {
+        None
+    }
+}
+
+/// A 2-node cluster has quorum = 2. With both nodes up, a leader is
+/// elected and writes succeed. This test verifies the basic 2-node
+/// write path works (quorum = 2, both must participate).
+#[tokio::test]
+async fn two_replica_even_quorum_writes_succeed_with_both_up() {
+    let cluster = start_cluster_no_leader(&[1, 2]).await;
+
+    let _leader_id = wait_for_leader(&cluster, Duration::from_secs(3))
+        .await
+        .expect("leader elected in 2-node cluster");
+
+    let leader = cluster.elected_leader().expect("leader present");
+    let client = cluster.kv_client(leader).await;
+    let resp = client
+        .put(KvSetRequest {
+            version: 1,
+            key: Bytes::from_static(b"q2"),
+            value: Bytes::from_static(b"both_up"),
+            ttl_ms: 0,
+            request_id: 1,
+            request_create_ms: 1,
+            client_id: 0,
+            seq: 0,
+            group_id: 1,
+        })
+        .await
+        .expect("put rpc")
+        .into_inner();
+    assert!(resp.ok, "write should commit with both nodes up");
+
+    assert_eq!(
+        read_via_leader(&cluster, b"q2").await.as_deref(),
+        Some(b"both_up".as_slice()),
+    );
+
+    cluster.shutdown().await;
+}
+
+async fn put_via_leader(cluster: &TestCluster, key: &[u8], val: &[u8], req_id: u64) -> bool {
+    let leader = cluster.elected_leader().expect("leader present");
+    let client = cluster.kv_client(leader).await;
+    let resp = client
+        .put(KvSetRequest {
+            version: 1,
+            key: Bytes::copy_from_slice(key),
+            value: Bytes::copy_from_slice(val),
+            ttl_ms: 0,
+            request_id: req_id,
+            request_create_ms: req_id,
+            client_id: 0,
+            seq: 0,
+            group_id: 1,
+        })
+        .await
+        .expect("put rpc")
+        .into_inner();
+    assert!(resp.ok, "write {key:?} failed: {resp:?}");
+    resp.ok
+}
+
+fn force_step_down(cluster: &TestCluster, leader_id: u64, reason: &str) -> bool {
+    let node = cluster.elected_leader().expect("leader present");
+    let term = node
+        .get_group(1)
+        .expect("group")
+        .local_replica()
+        .current_term_snapshot();
+    let reply = node
+        .get_group(1)
+        .expect("group")
+        .local_replica()
+        .handle_step_down(&StepDownRequestPayload {
+            term,
+            target_leader_id: leader_id,
+            reason: reason.into(),
+        });
+    reply.accepted
+}
+
+async fn poll_for_value(cluster: &TestCluster, key: &[u8], expected: &[u8], timeout: Duration) {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if let Some(v) = read_via_leader(cluster, key).await {
+            assert_eq!(v.as_slice(), expected, "key {key:?} mismatch");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("key {key:?} not readable within {timeout:?}");
+}
+
+/// Leader change simulation: write keys, force step-down, wait for
+/// new leader, write more keys, force another step-down, verify all
+/// keys readable through final leader.
+#[tokio::test]
+async fn leader_change_simulation() {
+    let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
+
+    // Phase 1: initial leader, write k1.
+    let leader1 = wait_for_leader(&cluster, Duration::from_secs(3))
+        .await
+        .expect("initial leader elected");
+    assert!(
+        put_via_leader(&cluster, b"lc1", b"first", 1).await,
+        "first write should commit"
+    );
+
+    // Phase 2: force step-down of the first leader.
+    assert!(
+        force_step_down(&cluster, leader1, "first step-down"),
+        "first StepDown should be accepted"
+    );
+    let second_id = wait_for_leader(&cluster, Duration::from_secs(3))
+        .await
+        .expect("second leader elected");
+    assert!(
+        put_via_leader(&cluster, b"lc2", b"second", 2).await,
+        "second write should commit through new leader"
+    );
+
+    // Phase 3: force step-down of the second leader.
+    assert!(
+        force_step_down(&cluster, second_id, "second step-down"),
+        "second StepDown should be accepted"
+    );
+    wait_for_leader(&cluster, Duration::from_secs(3))
+        .await
+        .expect("third leader elected");
+
+    // Verify both keys survive.
+    poll_for_value(&cluster, b"lc1", b"first", Duration::from_secs(3)).await;
+    poll_for_value(&cluster, b"lc2", b"second", Duration::from_secs(3)).await;
+
+    cluster.shutdown().await;
+}
+
+#[tokio::test]
+async fn leader_wait_does_not_accept_role_before_a_current_quorum_lease() {
+    let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
+    wait_for_leader(&cluster, Duration::from_secs(3))
+        .await
+        .expect("initial leader");
+    let node = cluster.elected_leader().expect("leader role");
+    let group = node.get_group(1).expect("group");
+    group.local_replica().reset_lease_to(Instant::now());
+    assert!(group.local_replica().is_leader());
+    {
+        let waiting = wait_for_leader(&cluster, Duration::from_secs(3));
+        tokio::pin!(waiting);
+        assert!(
+            futures::poll!(&mut waiting).is_pending(),
+            "leader role alone cannot authorize the next one-shot write"
+        );
+        waiting
+            .await
+            .expect("quorum-backed leader within the original bound");
+    }
+    assert!(put_via_leader(&cluster, b"ready-leader", b"once", 3).await);
+    cluster.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn prior_tenure_admin_wakeup_cannot_step_down_a_newly_elected_leader() {
+    use crowdb_paxos_kv::cluster::group::PxGroup;
+    use crowdb_paxos_kv::cluster::group_election::spawn;
+    use crowdb_paxos_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
+    use crowdb_paxos_kv::common::config::PxElectionConfig;
+    use std::sync::Arc;
+
+    let config = PxElectionConfig::for_tests();
+    let mut group = PxGroup::new(731, PxLocalReplica::new(19, PxLocalReplicaRole::Leader));
+    group.set_election_config(config);
+    let group = Arc::new(group);
+    let replica = group.local_replica();
+    let previous_term = replica.current_term_snapshot();
+    // The admin request arrives before the previous leader loop consumes its
+    // wakeup. Its immediate role fence is real; the Notify permit is retained.
+    assert!(
+        replica
+            .handle_step_down(&StepDownRequestPayload {
+                term: previous_term,
+                target_leader_id: replica.id,
+                reason: "step down before the leader loop starts".into(),
+            })
+            .accepted
+    );
+    assert_eq!(replica.role(), PxLocalReplicaRole::Follower);
+
+    let cancel = group.tenure_cancel();
+    let driver = spawn(Arc::downgrade(&group), config, cancel.clone());
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(Duration::from_millis(config.election_max_ms + 1)).await;
+    // Keep this task runnable so paused time cannot auto-advance to another
+    // election and conceal a stale-wakeup step-down of this exact tenure.
+    for _ in 0..30 {
+        tokio::task::yield_now().await;
+    }
+    let elected_term = replica.current_term_snapshot();
+    let role = replica.role();
+    let fresh_step_down = (role == PxLocalReplicaRole::Leader).then(|| {
+        replica.handle_step_down(&StepDownRequestPayload {
+            term: elected_term,
+            target_leader_id: replica.id,
+            reason: "a new request still fences the current tenure".into(),
+        })
+    });
+    cancel.cancel();
+    driver.await.unwrap();
+    assert!(
+        elected_term > previous_term,
+        "the real driver must complete a new election"
+    );
+    assert_eq!(
+        role,
+        PxLocalReplicaRole::Leader,
+        "a prior-tenure admin wakeup stepped down the new leader"
+    );
+    assert!(fresh_step_down.unwrap().accepted);
+    assert_eq!(replica.role(), PxLocalReplicaRole::Follower);
+}

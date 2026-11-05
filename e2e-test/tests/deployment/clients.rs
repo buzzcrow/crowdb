@@ -3,6 +3,9 @@
 
 use crowdb_chunkdb_client::ChunkdbRpcTransport;
 use crowdb_protocol::chunkdb::rpc::{ChunkType, ListChunksRequest, Strip, StripType};
+use crowdb_protocol::port::ports::{
+    ACCESS_SERVER_DATASET_HTTP_BASE, ACCESS_SERVER_HTTP_BASE, ACCESS_SERVER_ICEBERG_HTTP_BASE, WEB_BASE,
+};
 use std::path::PathBuf;
 
 #[tokio::test]
@@ -36,8 +39,14 @@ async fn official_clients_and_protocol_layout_survive_restart() {
                 let (key, value) = line.split_once('=').expect("client environment assignment");
                 command.env(key, value);
             }
-            command.env("CROWDB_PREVIEW_S3_ENDPOINT", format!("http://{address}:9091"));
-            command.env("CROWDB_PREVIEW_ICEBERG_URI", format!("http://{address}:9092"));
+            command.env(
+                "CROWDB_PREVIEW_S3_ENDPOINT",
+                format!("http://{address}:{ACCESS_SERVER_HTTP_BASE}"),
+            );
+            command.env(
+                "CROWDB_PREVIEW_ICEBERG_URI",
+                format!("http://{address}:{ACCESS_SERVER_ICEBERG_HTTP_BASE}"),
+            );
             command.env(
                 "CROWDB_E2E_SOURCE_ROOT",
                 env!("CARGO_MANIFEST_DIR").trim_end_matches("/e2e-test"),
@@ -56,7 +65,7 @@ async fn official_clients_and_protocol_layout_survive_restart() {
 
 async fn verify_public_services(address: &str) {
     let client = crate::common::management::client();
-    let web = format!("http://{address}:9090");
+    let web = format!("http://{address}:{WEB_BASE}");
     let report: serde_json::Value = client
         .get(format!("{web}/api/cluster/status"))
         .send()
@@ -132,7 +141,9 @@ async fn verify_public_services(address: &str) {
     }
     assert_eq!(
         client
-            .get(format!("http://{address}:9093/v1/dataset/open"))
+            .get(format!(
+                "http://{address}:{ACCESS_SERVER_DATASET_HTTP_BASE}/v1/dataset/open"
+            ))
             .send()
             .await
             .unwrap()

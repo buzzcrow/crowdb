@@ -5,7 +5,7 @@
 
 use crate::error::{Error, Result};
 use crate::ops::OpContext;
-use crowdb_kv_client::{Error as KvError, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{Error as KvError, GetOutcome, ReadMode};
 use crowdb_protocol::common::{GroupValue, HwStatus, NodeValue, RackValue, ReplicaValue, StoreValue};
 use crowdb_protocol::key::{KvGroupKey, KvReplicaKey, KvStoreKey, NodeKey, RackKey, TextKey};
 

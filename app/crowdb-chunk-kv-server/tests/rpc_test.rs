@@ -97,3 +97,22 @@ async fn point_request_crosses_real_rpc_boundary_with_typed_response() {
 
     server.stop();
 }
+
+#[tokio::test]
+async fn shutdown_drains_owned_rpc_tail_and_permanently_closes_admission() {
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(7), 8).unwrap());
+    let rpc = Arc::new(ChunkKvRpcService::new(service, tokio::runtime::Handle::current()));
+    let held = rpc.hold_request_for_tests().unwrap();
+    let shutdown = rpc.close_and_drain();
+    tokio::pin!(shutdown);
+    std::future::poll_fn(|context| {
+        assert!(std::future::Future::poll(shutdown.as_mut(), context).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    assert!(rpc.hold_request_for_tests().is_none());
+    drop(held);
+    shutdown.await;
+    assert!(rpc.hold_request_for_tests().is_none());
+    rpc.close_and_drain().await;
+}

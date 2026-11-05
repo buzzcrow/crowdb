@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use crowdb_chunkdb::allocator::DiskdbClientPool;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient, ServiceRegistryClient};
 
 fn pool() -> DiskdbClientPool {
-    let service = ServiceRegistryClient::new(CrowdbKvClient::new(ClientConfig::new(Vec::new())));
+    let service = ServiceRegistryClient::new(PaxosKvClient::new(ClientConfig::new(Vec::new())));
     DiskdbClientPool::new(service)
 }
 

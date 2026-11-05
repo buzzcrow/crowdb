@@ -28,13 +28,12 @@ and transport exposed through FFI.
 - Preserve existing work. Never hard-reset, revert, or restore files from an
   older commit without explicit approval. Use stash or a temporary branch.
 - Ordinary interactive work is committed only when asked, as one coherent
-  commit. Requirement work follows `/implement-requirement`.
+  commit.
 - Commit messages are single-line subjects without bodies, trailers, doc
   references, or requirement numbers. Code comments also omit those references.
 - Before committing, run the relevant gate through pixi:
   Rust fmt and clippy, changed C++ format/tree-lint, and affected tests. Fix
   ordinary failures up to three times; report confirmed pre-existing failures.
-  Requirement work uses `/implement-requirement` retry and blocking rules.
 - Playwright uses an installed system browser. Do not install one locally.
 - Use 60-second shell timeouts by default. Start hang-prone commands in the
   background and poll. Show complete output; do not hide errors with filters.
@@ -51,17 +50,8 @@ and transport exposed through FFI.
   unilaterally change the spec or introduce UI behavior that is absent from
   the agreed spec. Each visible UI change needs focused test or E2E coverage.
 
-## Skill dispatch
+## Documentation
 
-- Repository skills live only under `.agents/skills/`; do not create legacy
-  aliases or compatibility symlinks such as `.devin`.
-- Code changes: `/coding`; add `/console-ui-e2e` only for visible UI or
-  Playwright work.
-- Test execution and CI progression: `/debug-test`; use `/console-ui-e2e` for
-  browser/UI diagnosis.
-- Docs: one matched `/doc-*` guide; `/doc` only for general or unclear targets.
-- Requirements: `/implement-requirement`; open the detail directly and consult
-  the backlog index only for selection, ordering, or status.
-- Pre-push or explicitly requested code review: `/review`.
-- Design questions: one section selected through `doc/doc_index.md`.
-- Operations/user behavior: the relevant `doc/design/` or component README.
+- Use `doc/doc_index.md` to locate the relevant permanent design.
+- Keep architecture and operational contracts under `doc/design/` or the
+  owning component README. Documentation must be usable from this repository.

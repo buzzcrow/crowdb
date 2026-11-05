@@ -10,7 +10,7 @@ listed document or section needed by the task.
 
 | Doc                                                       | When to read                                               |
 | --------------------------------------------------------- | ---------------------------------------------------------- |
-| `doc/design/kv/design-crowdb-kv.md`                       | KV architecture and sub-design map.                        |
+| `doc/design/kv/design-crowdb-paxos-kv.md`                 | KV architecture and sub-design map.                        |
 | `doc/design/protocol/design-crowdb-protocol.md`           | Protocol and key encoding architecture.                    |
 | `doc/design/diskdb/design-crowdb-diskdb.md`               | Diskdb lifecycle, placement, and concurrency.              |
 | `doc/design/diskio/design-crowdb-diskio.md`               | Disk I/O engine, fallbacks, cancellation, and RPC.         |
@@ -20,30 +20,20 @@ listed document or section needed by the task.
 | `doc/design/rpc/design-crowdb-rpc.md`                     | RPC engine, wire format, FFI, and transport.               |
 | `doc/design/console/design-crowdb-console.md`             | Console architecture and service lifecycle.                |
 | `doc/design/config/design-crowdb-config.md`               | Configuration ownership, precedence, validation, reload.   |
-| `doc/design/deploy/design-crowdb-deploy.md`               | Node discovery, Group-0 bootstrap, multi-node deployment.   |
+| `doc/design/deploy/design-crowdb-deploy.md`               | Node discovery, Group-0 bootstrap, multi-node deployment.  |
 | `doc/design/access-server/design-crowdb-access-server.md` | S3, Iceberg, Dataset and shared native storage access.     |
 
-## Backlog (`doc/backlog/`)
+## Flow-Analysis Docs
 
-| Doc                                      | When to read                                                 |
-| ---------------------------------------- | ------------------------------------------------------------ |
-| `doc/backlog/backlog.md`                 | Requirement index, priority, and status.                     |
-| `doc/backlog/R**-<component>-<topic>.md` | One requirement's high-level design and acceptance contract. |
-
-## Working & Flow-Analysis Docs
-
-Temporary plans live under `doc/working/`; flow analyses live under
-`doc/design/{access-server,kv,chunkio,rpc}/`.
-
-| Doc                                                                      | When to read                                            |
-| ------------------------------------------------------------------------ | ------------------------------------------------------- |
-| `doc/design/kv/kv-read-flow-analysis.md`                                 | KV point-read flow and benchmarks.                      |
-| `doc/design/kv/kv-scan-flow-analysis.md`                                 | KV scan flow and benchmarks.                            |
-| `doc/design/kv/kv-write-flow-analysis.md`                                | KV write flow and optimization evidence.                |
-| `doc/design/chunkio/chunkio-write-flow-analysis.md`                      | Chunk I/O large-write flow and benchmarks.              |
-| `doc/design/chunkio/chunkio-small-io-flow-analysis.md`                   | Chunk I/O small-I/O flow and benchmarks.                |
+| Doc                                                                      | When to read                                             |
+| ------------------------------------------------------------------------ | -------------------------------------------------------- |
+| `doc/design/kv/kv-read-flow-analysis.md`                                 | KV point-read flow and benchmarks.                       |
+| `doc/design/kv/kv-scan-flow-analysis.md`                                 | KV scan flow and benchmarks.                             |
+| `doc/design/kv/kv-write-flow-analysis.md`                                | KV write flow and optimization evidence.                 |
+| `doc/design/chunkio/chunkio-write-flow-analysis.md`                      | Chunk I/O large-write flow and benchmarks.               |
+| `doc/design/chunkio/chunkio-small-io-flow-analysis.md`                   | Chunk I/O small-I/O flow and benchmarks.                 |
 | `doc/design/access-server/iceberge/design-crowdb-iceberg-upload-flow.md` | Native injection, SDK upload and container measurements. |
-| `doc/design/rpc/rpc-flow-analysis.md`                                    | RPC flow, benchmarks, and performance history.          |
+| `doc/design/rpc/rpc-flow-analysis.md`                                    | RPC flow, benchmarks, and performance history.           |
 
 ## Dev Environment (`doc/dev/`)
 
@@ -70,7 +60,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 
 | File                 | When to read                                |
 | -------------------- | ------------------------------------------- |
-| `AGENTS.md`          | Always-on project rules and skill dispatch. |
+| `AGENTS.md`          | Always-on project and validation rules.     |
 | `VERSION`            | Canonical project development version.      |
 | `CONTRIBUTING.md`    | PR setup, conventions, and process.         |
 | `CHANGELOG.md`       | Release history.                            |
@@ -79,59 +69,59 @@ Temporary plans live under `doc/working/`; flow analyses live under
 
 ## Sub-Designs (`doc/design/{access-server,kv,tree,console,protocol,diskdb,diskio,chunkdb,chunkio,chunkds,rpc}/`)
 
-| Doc                                                                           | Read when working on                                    |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------- |
-| `doc/design/deploy/design-crowdb-oci-image.md`                                  | Pixi OCI build, Docker/containerd, CI and macOS slot.     |
-| `doc/design/kv/design-crowdb-kv-leader-election.md`                           | Election, lease, ReadIndex, step-down.                  |
-| `doc/design/kv/design-crowdb-kv-slot.md`                                      | Slot pipelining, catch-up, coalescing, safe retention. |
-| `doc/design/kv/design-crowdb-kv-rpc.md`                                       | Paxos RPC transport, schema, and errors.                |
-| `doc/design/kv/design-crowdb-kv-rpc-client.md`                                | Client KV RPC, watch push, rollout, topology cache.     |
-| `doc/design/kv/design-crowdb-kv-reconfiguration.md`                           | Membership change, leader transfer, epoch fence.        |
-| `doc/design/kv/design-crowdb-kv-group0.md`                                    | Group-0 schema, registry, topology, cleanup.            |
-| `doc/design/kv/design-crowdb-kv-state-machine.md`                             | Apply semantics, per-key slots, snapshot, compaction.   |
-| `doc/design/kv/design-crowdb-kv-wal.md`                                       | WAL flush, replay, recovery, index, GC.                 |
-| `doc/design/kv/design-crowdb-kv-watch-notify.md`                              | Watch registry, apply trigger, client, fallback.        |
-| `doc/design/kv/design-crowdb-kv-server.md`                                    | KV server startup, API, lifecycle, cleanup.             |
-| `doc/design/kv/design-crowdb-kv-test.md`                                      | KV test strategy and coverage.                          |
-| `doc/design/kv/design-crowdb-kv-observability.md`                             | Metrics, collectors, instrumentation, logs.             |
-| `doc/design/chunkds/design-crowdb-chunk-kv.md`                                | Chunk-backed range KV, recovery, transfer, split.       |
-| `doc/design/chunkds/design-crowdb-chunk-kv-server.md`                         | Range catalog, fencing, balance, lifecycle.             |
-| `doc/design/chunkds/design-crowdb-chunk-kv-client.md`                         | Routed client, cache, composition, scans.               |
-| `doc/design/tree/design-crowdb-tree-engine.md`                                | In-memory engine, versioned root, reclamation, I/O.     |
-| `doc/design/tree/design-crowdb-tree-storage.md`                               | Durable pages, buffer pool, snapshot, mapping, GC.      |
-| `doc/design/tree/design-crowdb-tree-chunk-storage.md`                         | Mirrored page packs, manifests, rebuild, reclaim.       |
-| `doc/design/tree/design-crowdb-tree-engine-flush-flow.md`                     | L0→L1 flush path and bottlenecks.                       |
-| `lib/crowdb-tree/bench/README.md`                                            | MemTable handoff benchmark results and reproduction.    |
-| `doc/design/tree/design-crowdb-tree-engine-snapshot-flow.md`                  | Snapshot persist path and bottlenecks.                  |
-| `doc/design/console/design-crowdb-console-ui.md`                              | UI contracts, resource menus, layout and inspection.     |
-| `doc/design/protocol/design-crowdb-protocol-key.md`                           | Binary/text key encoding and evolution.                 |
-| `doc/design/protocol/design-crowdb-protocol-types.md`                         | Wire types, ID aliases, schemas, re-exports.            |
-| `doc/design/chunkdb/design-crowdb-chunkdb-mirror-to-ec.md`                    | Mirror-to-EC tasks, leases, publication, recovery.      |
-| `doc/design/chunkdb/design-crowdb-chunkdb-range-binding.md`                   | Slot maps, dynamic ownership epochs, task authority.   |
-| `doc/design/chunkdb/design-crowdb-chunkdb-rpc.md`                             | Chunkdb RPC schema, service, transport, errors.         |
-| `doc/design/chunkdb/chunkdb-allocate-flow-analysis.md`                        | EC allocation benchmark and bottlenecks.                |
-| `doc/design/chunkio/design-crowdb-chunkio-small-object-writer.md`             | Shared-chunk admission, routing, recovery, elasticity.  |
-| `doc/design/chunkio/design-crowdb-chunkio-reader.md`                          | Mirror/EC reads, recovery, fencing, repair.             |
-| `doc/design/chunkds/design-crowdb-chunk-stream.md`                            | Frame groups, mirrored append, ordered chunk records.  |
-| `doc/design/diskdb/design-crowdb-diskdb-zone-management.md`                   | Zone allocation, free, compaction, recovery.            |
-| `doc/design/diskdb/design-crowdb-diskdb-space-metrics.md`                     | Capacity counters, reporting, aggregation.              |
-| `doc/design/diskdb/diskdb-allocate-flow-analysis.md`                          | Durable allocation flow and benchmarks.                 |
-| `doc/design/rpc/design-crowdb-rpc-tcp.md`                                     | TCP engines, worker loop, zero-copy I/O, scaling.       |
-| `doc/design/rpc/design-crowdb-rpc-rdma.md`                                    | RDMA setup, CQ polling, registered buffers.             |
-| `doc/design/rpc/design-crowdb-rpc-diskdb-migration.md`                        | Diskdb RPC migration, rollout, connection lifetime.     |
-| `doc/design/access-server/s3/design-crowdb-access-s3.md`                      | S3 namespace, publication, integrity, list, delete.     |
-| `doc/design/access-server/s3/design-crowdb-access-s3-rdma.md`                 | Optional RDMA and direct-to-GPU data planes.            |
-| `doc/design/access-server/iceberge/design-crowdb-iceberg.md`                  | Iceberg ID paths, direct files and metadata scale.     |
-| `doc/design/access-server/iceberge/iceberg-table-spec-1.11.0.md`              | Backed-up normative Iceberg table format specification. |
-| `doc/design/access-server/iceberge/iceberg-rest-catalog-open-api-1.11.0.yaml` | Backed-up normative Iceberg REST Catalog OpenAPI.       |
-| `doc/design/access-server/dataset/design-crowdb-access-dataset.md`            | Dataset authority, payload lifecycle, REST and SDK.     |
-| `doc/design/access-server/dataset/design-dataset-control.md`                 | Composition, Split revisions, bounded reads and cleanup. |
-| `doc/design/access-server/dataset/spec-crowdb-dataset.md`                     | Normative Dataset behavior and compatibility.           |
-| `doc/design/access-server/dataset/openapi-crowdb-dataset-v1.yaml`             | Dataset REST v1 schemas, framing, bounds and retries.   |
-| `doc/design/access-server/dataset/openapi-crowdb-dataset-v2.yaml`             | Dataset REST v2 capability-gated control operations.    |
-| `doc/design/access-server/design-crowdb-native-sdk.md`                        | Trusted runtime, topology, S3 and host-lease ownership. |
-| `lib/crowdb-sdk-native/README.md`                                             | Native S3/Dataset configuration, streaming and HCA.     |
-| `sdk/README.md`                                                               | Rust/Python SDK installation and resource ownership.    |
+| Doc                                                                           | Read when working on                                      |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `doc/design/deploy/design-crowdb-oci-image.md`                                | Pixi OCI build, Docker/containerd, CI and macOS slot.     |
+| `doc/design/kv/design-crowdb-paxos-kv-leader-election.md`                     | Election, lease, ReadIndex, step-down.                    |
+| `doc/design/kv/design-crowdb-paxos-kv-slot.md`                                | Slot pipelining, catch-up, coalescing, safe retention.    |
+| `doc/design/kv/design-crowdb-paxos-kv-rpc.md`                                 | Paxos RPC transport, schema, and errors.                  |
+| `doc/design/kv/design-crowdb-paxos-kv-rpc-client.md`                          | Client KV RPC, watch push, rollout, topology cache.       |
+| `doc/design/kv/design-crowdb-paxos-kv-reconfiguration.md`                     | Membership change, leader transfer, epoch fence.          |
+| `doc/design/kv/design-crowdb-paxos-kv-group0.md`                              | Group-0 schema, registry, topology, cleanup.              |
+| `doc/design/kv/design-crowdb-paxos-kv-state-machine.md`                       | Apply semantics, per-key slots, snapshot, compaction.     |
+| `doc/design/kv/design-crowdb-paxos-kv-wal.md`                                 | WAL flush, replay, recovery, index, GC.                   |
+| `doc/design/kv/design-crowdb-paxos-kv-watch-notify.md`                        | Watch registry, apply trigger, client, fallback.          |
+| `doc/design/kv/design-crowdb-paxos-kv-server.md`                              | KV server startup, API, lifecycle, cleanup.               |
+| `doc/design/kv/design-crowdb-paxos-kv-test.md`                                | KV test strategy and coverage.                            |
+| `doc/design/kv/design-crowdb-paxos-kv-observability.md`                       | Metrics, collectors, instrumentation, logs.               |
+| `doc/design/chunkds/design-crowdb-chunk-kv.md`                                | Chunk-backed range KV, recovery, transfer, split.         |
+| `doc/design/chunkds/design-crowdb-chunk-kv-server.md`                         | Range catalog, fencing, balance, lifecycle.               |
+| `doc/design/chunkds/design-crowdb-chunk-kv-client.md`                         | Routed client, cache, composition, scans.                 |
+| `doc/design/tree/design-crowdb-tree-engine.md`                                | Sources, publication, owned reads, runtime and memory.    |
+| `doc/design/tree/design-crowdb-tree-storage.md`                               | Durable frames, shared cache, checkpoint and recovery.    |
+| `doc/design/tree/design-crowdb-tree-chunk-storage.md`                         | Mirrored page packs, manifests, rebuild, reclaim.         |
+| `doc/design/tree/design-crowdb-tree-engine-flush-flow.md`                     | Finite capture, parallel handoff and bounded maintenance. |
+| `lib/crowdb-tree/bench/README.md`                                             | MemTable handoff benchmark results and reproduction.      |
+| `doc/design/tree/design-crowdb-tree-engine-snapshot-flow.md`                  | Captured encoding, root commit and representation rebase. |
+| `doc/design/console/design-crowdb-console-ui.md`                              | UI domains, operator flow, Chunk and Chunk-KV inspection. |
+| `doc/design/protocol/design-crowdb-protocol-key.md`                           | Binary/text key encoding and evolution.                   |
+| `doc/design/protocol/design-crowdb-protocol-types.md`                         | Wire types, ID aliases, schemas, re-exports.              |
+| `doc/design/chunkdb/design-crowdb-chunkdb-mirror-to-ec.md`                    | Mirror-to-EC tasks, leases, publication, recovery.        |
+| `doc/design/chunkdb/design-crowdb-chunkdb-range-binding.md`                   | Slot maps, dynamic ownership epochs, task authority.      |
+| `doc/design/chunkdb/design-crowdb-chunkdb-rpc.md`                             | Chunkdb RPC schema, service, transport, errors.           |
+| `doc/design/chunkdb/chunkdb-allocate-flow-analysis.md`                        | EC allocation benchmark and bottlenecks.                  |
+| `doc/design/chunkio/design-crowdb-chunkio-small-object-writer.md`             | Shared-chunk admission, routing, recovery, elasticity.    |
+| `doc/design/chunkio/design-crowdb-chunkio-reader.md`                          | Mirror/EC reads, recovery, fencing, repair.               |
+| `doc/design/chunkds/design-crowdb-chunk-stream.md`                            | Frame groups, mirrored append, ordered chunk records.     |
+| `doc/design/diskdb/design-crowdb-diskdb-zone-management.md`                   | Zone allocation, free, compaction, recovery.              |
+| `doc/design/diskdb/design-crowdb-diskdb-space-metrics.md`                     | Capacity counters, reporting, aggregation.                |
+| `doc/design/diskdb/diskdb-allocate-flow-analysis.md`                          | Durable allocation flow and benchmarks.                   |
+| `doc/design/rpc/design-crowdb-rpc-tcp.md`                                     | TCP engines, worker loop, zero-copy I/O, scaling.         |
+| `doc/design/rpc/design-crowdb-rpc-rdma.md`                                    | RDMA setup, CQ polling, registered buffers.               |
+| `doc/design/rpc/design-crowdb-rpc-diskdb-migration.md`                        | Diskdb RPC migration, rollout, connection lifetime.       |
+| `doc/design/access-server/s3/design-crowdb-access-s3.md`                      | S3 namespace, publication, integrity, list, delete.       |
+| `doc/design/access-server/s3/design-crowdb-access-s3-rdma.md`                 | Optional RDMA and direct-to-GPU data planes.              |
+| `doc/design/access-server/iceberge/design-crowdb-iceberg.md`                  | Iceberg ID paths, direct files and metadata scale.        |
+| `doc/design/access-server/iceberge/iceberg-table-spec-1.11.0.md`              | Backed-up normative Iceberg table format specification.   |
+| `doc/design/access-server/iceberge/iceberg-rest-catalog-open-api-1.11.0.yaml` | Backed-up normative Iceberg REST Catalog OpenAPI.         |
+| `doc/design/access-server/dataset/design-crowdb-access-dataset.md`            | Dataset authority, payload lifecycle, REST and SDK.       |
+| `doc/design/access-server/dataset/design-dataset-control.md`                  | Composition, Split revisions, bounded reads and cleanup.  |
+| `doc/design/access-server/dataset/spec-crowdb-dataset.md`                     | Normative Dataset behavior and compatibility.             |
+| `doc/design/access-server/dataset/openapi-crowdb-dataset-v1.yaml`             | Dataset REST v1 schemas, framing, bounds and retries.     |
+| `doc/design/access-server/dataset/openapi-crowdb-dataset-v2.yaml`             | Dataset REST v2 capability-gated control operations.      |
+| `doc/design/access-server/design-crowdb-native-sdk.md`                        | Trusted runtime, topology, S3 and host-lease ownership.   |
+| `lib/crowdb-sdk-native/README.md`                                             | Native S3/Dataset configuration, streaming and HCA.       |
+| `sdk/README.md`                                                               | Rust/Python SDK installation and resource ownership.      |
 
 Prefer the most specific match. Open a root design only for cross-topic work;
 update its row when a permanent document is renamed or materially rescoped.
