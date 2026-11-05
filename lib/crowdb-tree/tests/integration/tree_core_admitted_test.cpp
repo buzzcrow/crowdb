@@ -43,11 +43,13 @@ class TreeCoreAdmitted : public testing::Test
         TreeRuntimeOptions host;
         host.workers = 2;
         ASSERT_TRUE(TreeRuntime::create(host, &config.runtime).ok());
-        config.frame_bytes       = 4096;
-        config.leaf_split_bytes  = 3000;
-        config.buffer_pool_bytes = 4 * 1024 * 1024;
-        tree                     = std::make_unique<Crowdbtree>(config);
-        core                     = TreeCoreAccess::get(*tree);
+        config.frame_bytes                        = 4096;
+        config.leaf_split_bytes                   = 3000;
+        config.buffer_pool_bytes                  = 4 * 1024 * 1024;
+        config.execution.source_max_gap_entries   = 64;
+        config.execution.source_max_gap_key_bytes = 128 * 1024;
+        tree                                      = std::make_unique<Crowdbtree>(config);
+        core                                      = TreeCoreAccess::get(*tree);
     }
 
     Status prepare(Slice key, Slice value, std::shared_ptr<TreeApplyOperation> *out)

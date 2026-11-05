@@ -11,8 +11,8 @@ struct TreeExecutionOptions
 {
     size_t source_max_entries       = 4096;
     size_t source_max_key_bytes     = 1024 * 1024;
-    size_t source_max_gap_entries   = 64;
-    size_t source_max_gap_key_bytes = 128 * 1024;
+    size_t source_max_gap_entries   = 1024;
+    size_t source_max_gap_key_bytes = 1024 * 1024;
     // Zero derives min(CPU workers, per-tree I/O permits).
     size_t flush_parallelism           = 0;
     size_t run_max_entries             = 128;

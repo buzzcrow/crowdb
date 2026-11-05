@@ -52,8 +52,13 @@ impl SplitHandoffStore for TestCommittedHandoff {
 }
 
 fn native_config(runtime: &Arc<crowdb_tree_ffi::TreeRuntime>) -> crowdb_tree_ffi::Config {
+    // The 32 MiB fixture retains original pages through the split while the
+    // checkpoint also holds its publication and page encoding workspace.
+    let mut runtime_binding = crowdb_tree_ffi::TreeBindingOptions::default();
+    runtime_binding.limits.reclaim_bytes = 128 * 1024 * 1024;
     crowdb_tree_ffi::Config {
         runtime: Some(runtime.clone()),
+        runtime_binding,
         page_store: Some(Arc::new(crowdb_tree_ffi::PageStore::open_mem(65_536).unwrap())),
         ..crowdb_tree_ffi::Config::default()
     }

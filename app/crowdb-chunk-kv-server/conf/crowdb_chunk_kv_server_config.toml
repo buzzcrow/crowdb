@@ -217,7 +217,7 @@ routing_bytes = 268_435_456
 # 64 MiB is an adjustable default, not a fixed checkpoint memory target.
 reclaim_bytes = 67_108_864
 writer_bytes = 134_217_728
-gap_repair_bytes = 16_777_216
+gap_repair_bytes = 67_108_864
 io_operations = 16
 
 [tree]
@@ -254,8 +254,8 @@ source_max_entries = 4_096
 source_max_key_bytes = 1_048_576
 # Additional accepted/replay allowance. Size it for accepted apply bursts.
 # Only the next contiguous slot may use gap source capacity; higher holes use ordinary capacity or wait.
-source_max_gap_entries = 64
-source_max_gap_key_bytes = 131_072
+source_max_gap_entries = 1_024
+source_max_gap_key_bytes = 1_048_576
 # 0 = min(host workers, Tree io_operations). Explicit values must fit both limits.
 flush_parallelism = 0
 # Per-handoff-run entry/key/work-byte limits. Value owners are retained independently.

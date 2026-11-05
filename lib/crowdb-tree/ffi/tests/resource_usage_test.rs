@@ -124,7 +124,7 @@ fn native_host_and_tree_resource_samples_keep_distinct_limits_and_scopes() {
     assert_eq!(first.resources[14].limit, first.resources[6].limit);
     assert_eq!(first.resources[15].limit, first.resources[6].limit + 2);
     assert_eq!(first.resources[16].limit, 4096);
-    assert_eq!(first.resources[18].limit, 64);
+    assert_eq!(first.resources[18].limit, 1024);
     assert_eq!(first.scope_id, second.scope_id);
     assert_ne!(first.scope_id, 0);
     assert!(first.resources[1].used > 0);

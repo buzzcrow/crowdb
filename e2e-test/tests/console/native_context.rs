@@ -4,7 +4,7 @@
 //! Host clients of the normal three-node Console deployment surface.
 
 use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
-use crowdb_protocol::port::ports::{PAXOS_KV_SERVER_MGMT_BASE, PAXOS_KV_SERVER_RPC_BASE, WEB_BASE};
+use crowdb_protocol::port::ports::WEB_BASE;
 use reqwest::{Client, Method};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
@@ -14,6 +14,7 @@ pub(super) struct TestNativeContext {
     pub(super) base: String,
     pub(super) kv: Arc<PaxosKvClient>,
     pub(super) addresses: Vec<String>,
+    pub(super) management_seeds: Vec<String>,
 }
 
 impl TestNativeContext {
@@ -44,18 +45,46 @@ impl TestNativeContext {
             .unwrap();
         let index = usize::try_from(leader.checked_sub(1).unwrap()).unwrap();
         assert!(index < addresses.len());
-        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
-            addresses
-                .iter()
-                .map(|address| format!("http://{address}:{PAXOS_KV_SERVER_MGMT_BASE}"))
-                .collect(),
-        )));
-        kv.seed_leader(0, 0, format!("{}:{PAXOS_KV_SERVER_RPC_BASE}", addresses[index]));
+        let mut management_seeds = Vec::with_capacity(addresses.len());
+        for node in 1..=addresses.len() {
+            let server = crate::common::management::request(
+                &http,
+                &base,
+                Method::GET,
+                &format!("/api/nodes/{node}/server"),
+                Value::Null,
+                200,
+            )
+            .await;
+            management_seeds.push(
+                server["url"]
+                    .as_str()
+                    .expect("deployed KV management URL")
+                    .to_owned(),
+            );
+        }
+        let store = crate::common::management::request(
+            &http,
+            &base,
+            Method::GET,
+            &format!("/api/nodes/{leader}/stores/0"),
+            Value::Null,
+            200,
+        )
+        .await;
+        let listener = store["listen_addr"]
+            .as_str()
+            .expect("live Group 0 listener")
+            .parse::<std::net::SocketAddr>()
+            .unwrap();
+        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(management_seeds.clone())));
+        kv.seed_leader(0, 0, format!("{}:{}", addresses[index], listener.port()));
         Self {
             http,
             base,
             kv,
             addresses,
+            management_seeds,
         }
     }
 

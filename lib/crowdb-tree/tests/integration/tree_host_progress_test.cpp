@@ -172,7 +172,8 @@ TEST(TreeHostProgress, OneCpuPreservesOtherTreeProgressDuringSlowPersistentFlush
     operations = {};
     EXPECT_EQ(slow.contiguous_slot(), 4U);
     EXPECT_EQ(fast.contiguous_slot(), 2U);
-    EXPECT_EQ(slow.durable_coverage(), 2U);
+    // Later replay pressure can persist another contiguous prefix as well.
+    EXPECT_GE(slow.durable_coverage(), 2U);
     EXPECT_EQ(fast.durable_coverage(), 0U);
     GetView result;
     ASSERT_TRUE(fast.get("second", &result).ok());

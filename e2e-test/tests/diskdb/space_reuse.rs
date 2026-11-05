@@ -139,7 +139,7 @@ async fn free_segments(client: &crowdb_diskdb_client::DiskdbClient, segments: &[
             })
             .await
             .expect("free deterministic subset");
-        assert_eq!(response.freed_count as usize, chunk.len());
+        assert_eq!(response.freed_count as usize, chunk.len(), "{response:?}");
     }
 }
 

@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <latch>
 #include <thread>
 #include <vector>
 
@@ -85,18 +86,27 @@ TEST(MappingTable, ConcurrentReadersSingleWriter)
 
     std::atomic<bool>        stop{false};
     std::atomic<long>        reads{0};
+    std::latch               started{4};
     std::vector<std::thread> readers;
     readers.reserve(4);
     for (int i = 0; i < 4; ++i) {
         readers.emplace_back([&] {
-            while (!stop.load(std::memory_order_relaxed)) {
+            const auto read = [&] {
                 PageBase *got = mt.get_resident(page_id);
+                EXPECT_NE(got, nullptr);
                 if (got != nullptr) {
+                    EXPECT_EQ(got->page_id, page_id);
                     reads.fetch_add(1, std::memory_order_relaxed);
                 }
+            };
+            read();
+            started.count_down();
+            while (!stop.load(std::memory_order_relaxed)) {
+                read();
             }
         });
     }
+    started.wait();
     // Single writer swaps the slot repeatedly.
     std::vector<PageBase *> garbage;
     for (int i = 0; i < 1000; ++i) {

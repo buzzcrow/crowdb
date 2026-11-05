@@ -20,7 +20,7 @@ class DiscoveryBrowserCluster(ShellBrowserCluster):
     def start(self):
         subnet = create_network(self)
         provider = str(subnet.network_address + 2)
-        monitor = "http://127.0.0.1:26135"
+        monitor = "http://127.0.0.1:9095"
         host = json.loads(self.command("info", "--format", "{{json .}}"))["ID"]
         self.addresses.append(start_node(self, 0, node_data(self, 0),
             ("server", "web", "--bind", "0.0.0.0", "--port", "7135",

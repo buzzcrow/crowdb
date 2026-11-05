@@ -82,6 +82,67 @@ async fn concurrent_owner_writes_do_not_advance_or_contend_on_the_fence(key: &[u
     );
 }
 
+async fn owner_write_can_mix_a_snapshot_with_deletions(key: &[u8]) {
+    let (group, fence) = owner_group(key).await;
+    let mut original = 100_u16.to_le_bytes().to_vec();
+    for index in 0..100 {
+        let key = Bytes::from(format!("old-record-{index}"));
+        original.extend_from_slice(&encode(&key, b"before")[2..]);
+    }
+    let inserted = group
+        .propose_owner_write_for_tests(original, fence.clone(), Bytes::from_static(b"old"), None, 3, 1)
+        .await;
+    assert!(matches!(inserted, ProposeResult::Chosen { .. }), "{inserted:?}");
+    let mut payload = encode(&Bytes::from_static(b"snapshot"), b"bitmap");
+    payload[..2].copy_from_slice(&101_u16.to_le_bytes());
+    for index in 0..100 {
+        let key = format!("old-record-{index}");
+        payload.push(1);
+        payload.extend_from_slice(&u32::try_from(key.len()).unwrap().to_le_bytes());
+        payload.extend_from_slice(key.as_bytes());
+        payload.extend_from_slice(&0_u32.to_le_bytes());
+    }
+    let result = group
+        .propose_owner_write_for_tests(payload, fence.clone(), Bytes::from_static(b"old"), None, 3, 2)
+        .await;
+    assert!(matches!(result, ProposeResult::Chosen { .. }), "{result:?}");
+    for index in 0..100 {
+        let key = format!("old-record-{index}");
+        assert_eq!(
+            group
+                .local_replica()
+                .learner
+                .engine()
+                .get_versioned(key.as_bytes())
+                .await
+                .unwrap(),
+            None
+        );
+    }
+    assert_eq!(
+        group
+            .local_replica()
+            .learner
+            .engine()
+            .get_versioned(b"snapshot")
+            .await
+            .unwrap()
+            .unwrap()
+            .1,
+        Bytes::from_static(b"bitmap")
+    );
+    assert_eq!(
+        group
+            .local_replica()
+            .learner
+            .engine()
+            .get_versioned(&fence)
+            .await
+            .unwrap(),
+        Some((1, Bytes::from_static(b"old")))
+    );
+}
+
 async fn handover_drains_old_writes_even_when_the_claim_caller_is_cancelled(key: &[u8]) {
     let (group, fence) = owner_group(key).await;
     let admitted = group.hold_owner_write_for_tests(fence.clone());
@@ -345,6 +406,7 @@ macro_rules! owner_fence_tests {
 owner_fence_tests!(
     diskdb,
     b"/diskdb/ownership-fence/1/1/1",
+    owner_write_can_mix_a_snapshot_with_deletions,
     concurrent_owner_writes_do_not_advance_or_contend_on_the_fence,
     handover_drains_old_writes_even_when_the_claim_caller_is_cancelled,
     owner_admission_preserves_business_record_cas,
@@ -356,6 +418,7 @@ owner_fence_tests!(
 owner_fence_tests!(
     chunkdb,
     b"/chunkdb/ownership-fence/0",
+    owner_write_can_mix_a_snapshot_with_deletions,
     concurrent_owner_writes_do_not_advance_or_contend_on_the_fence,
     handover_drains_old_writes_even_when_the_claim_caller_is_cancelled,
     owner_admission_preserves_business_record_cas,

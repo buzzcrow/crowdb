@@ -112,6 +112,7 @@ bool TreeApplyOperation::State::prepare_replay_batch()
     }
     if (completed > sources->catalog()->floor && replay_flushed != completed) {
         replay_flushed = completed;
+        sources->pause_capacity();
         start_flush();
         return false;
     }

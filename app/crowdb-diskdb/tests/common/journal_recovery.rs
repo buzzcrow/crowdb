@@ -11,6 +11,8 @@ use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::BusyBlockValue;
 use crowdb_protocol::key::{BinaryKey, BusyBlockKey, ZoneKey};
 use crowdb_protocol::ZoneValueExt;
+use crowdb_tree_ffi::PageStore;
+use std::sync::Arc;
 
 pub struct TestReclaimedJournal;
 
@@ -38,7 +40,11 @@ impl TestReclaimedJournal {
             allocation_ts: 100,
             ..Default::default()
         };
-        let engine = CrowdbTreeEngine::open(&CrowdbTreeConfig::default()).unwrap();
+        let config = CrowdbTreeConfig {
+            page_store: Some(Arc::new(PageStore::open_mem(4096).unwrap())),
+            ..Default::default()
+        };
+        let engine = CrowdbTreeEngine::open(&config).unwrap();
         for (slot, key, value) in [
             (1, zone_key, baseline.to_zone_value().to_bytes()),
             (2, busy_key, bincode::serialize(&busy).unwrap()),
@@ -58,6 +64,13 @@ impl TestReclaimedJournal {
         }
         engine.noop(3);
         engine.handle().flush().unwrap();
+        assert_eq!(engine.resume_from_slot(), 0);
+        let checkpoint = engine.persist_snapshot_async().unwrap().await.unwrap();
+        assert!(checkpoint.status.is_ok(), "{:?}", checkpoint.status);
+        assert!(checkpoint.durable_committed);
+        assert_eq!(engine.resume_from_slot(), 3);
+        drop(engine);
+        let engine = CrowdbTreeEngine::open(&config).unwrap();
         assert_eq!(engine.resume_from_slot(), 3);
         let replay = ReplayResult {
             records: vec![WALRecord::from_accepted(

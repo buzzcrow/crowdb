@@ -79,7 +79,7 @@ fn incompatible_or_unknown_work_windows_are_rejected_on_load() {
             "cache_max_pages",
         ),
         (
-            CANONICAL.replace("source_max_gap_entries = 64", "source_max_gap_entries = 16"),
+            CANONICAL.replace("source_max_gap_entries = 1_024", "source_max_gap_entries = 16"),
             "coalesce_max_keys",
         ),
         (

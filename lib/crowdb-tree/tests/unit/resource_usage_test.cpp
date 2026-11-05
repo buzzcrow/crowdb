@@ -72,8 +72,8 @@ TEST(ResourceUsage, VersionedHostAndTreeSnapshotsAreNonDraining)
     EXPECT_EQ(local.resources[15].limit, local.resources[6].limit + 2);
     EXPECT_EQ(local.resources[16].limit, 4096U);
     EXPECT_EQ(local.resources[17].limit, 1024U * 1024U);
-    EXPECT_EQ(local.resources[18].limit, 64U);
-    EXPECT_EQ(local.resources[19].limit, 128U * 1024U);
+    EXPECT_EQ(local.resources[18].limit, 1024U);
+    EXPECT_EQ(local.resources[19].limit, 1024U * 1024U);
     const auto saved = local;
     ASSERT_EQ(ct_tree_resource_usage(tree.get(), &local), 0);
     EXPECT_EQ(local.resources[0].denied_host, saved.resources[0].denied_host);

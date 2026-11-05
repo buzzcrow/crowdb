@@ -16,8 +16,9 @@ class TreeApplyGrant : public testing::Test
     void SetUp() override
     {
         ASSERT_TRUE(TreeRuntime::create({}, &config.runtime).ok());
-        tree = std::make_unique<Crowdbtree>(config);
-        core = TreeCoreAccess::get(*tree);
+        config.runtime_binding.limits.gap_repair_bytes = 16ULL * 1024 * 1024;
+        tree                                           = std::make_unique<Crowdbtree>(config);
+        core                                           = TreeCoreAccess::get(*tree);
     }
 
     Config                      config;

@@ -43,7 +43,7 @@ struct TreeBindingOptions
                               .routing_bytes    = 256ULL * 1024 * 1024,
                               .reclaim_bytes    = 64ULL * 1024 * 1024,
                               .writer_bytes     = 128ULL * 1024 * 1024,
-                              .gap_repair_bytes = 16ULL * 1024 * 1024,
+                              .gap_repair_bytes = 64ULL * 1024 * 1024,
                               .io_operations    = 16};
 };
 
