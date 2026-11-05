@@ -20,10 +20,14 @@ fn encode(key: &Bytes, value: &[u8]) -> Vec<u8> {
 async fn owner_group(key: &[u8]) -> (Arc<PxGroup>, Bytes) {
     // Each concurrency test owns its quota; unrelated tests must not consume
     // the reservations whose availability this fixture assumes.
+    // All 32 owner checks can retain a read permit before a worker runs.
+    let mut runtime_binding = crowdb_tree_ffi::TreeBindingOptions::default();
+    runtime_binding.limits.io_operations = 32;
     let engine = crowdb_paxos_kv::kv::CrowdbTreeEngine::open(&crowdb_paxos_kv::kv::CrowdbTreeConfig {
         runtime: Some(Arc::new(
             crowdb_tree_ffi::TreeRuntime::new(crowdb_tree_ffi::TreeRuntimeOptions::default()).unwrap(),
         )),
+        runtime_binding,
         ..Default::default()
     })
     .unwrap();
