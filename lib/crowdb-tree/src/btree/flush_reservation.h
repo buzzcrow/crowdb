@@ -13,9 +13,8 @@ class SharedPageCache;
 
 struct FlushPreparationOptions
 {
-    bool                                  persistent       = false;
-    std::shared_ptr<FlushPersistence>     persistence      = nullptr;
-    uint64_t                              checkpoint_token = 0;
+    bool                                  persistent  = false;
+    std::shared_ptr<FlushPersistence>     persistence = nullptr;
     std::shared_ptr<detail::FlushRuntime> runtime;
     std::shared_ptr<AsyncPageStore>       store;
     PageLoadLimits                        loads;

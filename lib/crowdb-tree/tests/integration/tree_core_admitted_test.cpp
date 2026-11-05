@@ -67,7 +67,7 @@ class TreeCoreAdmitted : public testing::Test
             }
             return batch;
         };
-        for (uint64_t slot = 1; slot < 64; ++slot) {
+        for (uint64_t slot = 1; slot < 128; ++slot) {
             const auto status = tree->apply(slot, batch_for(slot));
             if (!status.ok()) {
                 return Status::internal_error("fill slot " + std::to_string(slot) + ": " + status.to_string());
@@ -77,12 +77,12 @@ class TreeCoreAdmitted : public testing::Test
             // The final CPU callback below must not join its own retirement work.
             core->binding()->account()->drain_retirements();
         }
-        // The final batch commits from a CPU callback. Reaching the hard source
+        // The final batch fills the second source from a CPU callback. Reaching the hard source
         // cap starts asynchronous soft maintenance, while this callback cannot
         // wait for the Handoff credit intentionally retained by the test.
         TestApplyCompletion completion;
         tree->get_async("k64", [&](Status read, GetView) {
-            auto status = read.ok() ? tree->apply(64, batch_for(64)) : read;
+            auto status = read.ok() ? tree->apply(128, batch_for(128)) : read;
             TestApplyCompletion::complete(&completion, detail::CallbackSignal::kValue, std::move(status));
         });
         completion.wait();
@@ -196,7 +196,7 @@ TEST_F(TreeCoreAdmitted, FullSourceAwaitsCompleteFlushCreditThenConsumesThePrepa
     config.memtable_flush_bytes   = SIZE_MAX;
     tree                          = std::make_unique<Crowdbtree>(config);
     core                          = TreeCoreAccess::get(*tree);
-    // Fill one complete hard source window with Handoff credit held. The
+    // Fill both configured source windows with Handoff credit held. The
     // final callback write starts soft backpressure without blocking itself.
     auto pressure = detail::ResourceBudget::try_reserve(core->binding()->account(), detail::BudgetClass::kHandoff,
                                                         config.runtime_binding.limits.handoff_bytes);
@@ -210,7 +210,7 @@ TEST_F(TreeCoreAdmitted, FullSourceAwaitsCompleteFlushCreditThenConsumesThePrepa
     ASSERT_TRUE(filled.ok()) << filled.to_string();
     ASSERT_EQ(core->capture()->sources->tables.back()->count(), 4096U);
     TestApplyCompletion completed;
-    operation->start(65, &TestApplyCompletion::complete, &completed);
+    operation->start(129, &TestApplyCompletion::complete, &completed);
     operation.reset();
     core->binding()->lane()->drain();
     EXPECT_FALSE(completed.done.load(std::memory_order_acquire))
@@ -223,7 +223,7 @@ TEST_F(TreeCoreAdmitted, FullSourceAwaitsCompleteFlushCreditThenConsumesThePrepa
     completed.wait();
     ASSERT_TRUE(completed.status.ok()) << completed.status.to_string();
     EXPECT_EQ(tree->get_view("last").value().to_string(), "owned");
-    EXPECT_EQ(core->contiguous_slot(), 65U);
+    EXPECT_EQ(core->contiguous_slot(), 129U);
     const auto terminal = core->publisher().work_metrics()->totals();
     EXPECT_EQ(terminal[static_cast<size_t>(TreeStage::FlushAdmissionWait)].count, 1U);
     EXPECT_EQ(terminal[static_cast<size_t>(TreeStage::BudgetWait)].count, 4U);
@@ -285,10 +285,10 @@ TEST_F(TreeCoreAdmitted, FullOrdinaryCpuQueueCannotRejectAcceptedHandoff)
         runtime->try_submit(core->binding()->lane(), [](void *) noexcept {}, nullptr).code(), Code::kResourceExhausted);
     pressure.reset();
     TestApplyCompletion completed;
-    operation->start(65, &TestApplyCompletion::complete, &completed);
+    operation->start(129, &TestApplyCompletion::complete, &completed);
     completed.wait();
     ASSERT_TRUE(completed.status.ok()) << completed.status.to_string();
-    EXPECT_EQ(core->contiguous_slot(), 65U);
+    EXPECT_EQ(core->contiguous_slot(), 129U);
     occupied.clear();
     EXPECT_EQ(tree->get_view("accepted").value().to_string(), "paid");
 }

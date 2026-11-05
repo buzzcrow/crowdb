@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 #include "apply_progress.h"
+#include "crowdb-common/log.h"
 #include "flush_operation_internal.h"
 #include "source_pause.h"
 
@@ -330,6 +331,10 @@ void FlushOperation::State::fail_terminal(Status status) noexcept
 
 void FlushOperation::State::finish() noexcept
 {
+    if ((!report.handoff_status.ok() || !report.maintenance_status.ok()) && !report.admission_stale) {
+        CRB_LOG_ERROR("flush failed: batch={} frontier={} handoff={} maintenance={}", report.batch_id, report.frontier,
+                      report.handoff_status.to_string(), report.maintenance_status.to_string());
+    }
     if (options.persistent && report.phase == FlushPhase::kRepairRequired && reservations.io) {
         // All accepted children have joined. An idle repair must not monopolize
         // the only I/O grant needed by an old reader between attempts.
@@ -354,6 +359,7 @@ void FlushOperation::State::finish() noexcept
         options.consolidation_loader.reset();
         reservations.seal();
         if (report.handoff_status.ok() && report.maintenance_status.ok()) {
+            expected_catalog.reset();
             options.persistence.reset();
             maintenance = {};
         }

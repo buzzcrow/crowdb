@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 #pragma once
-
+#include "btree/apply_dispatcher.h"
 #include "crowdb-tree/maptable/mapping_geometry.h"
 #include "snapshot/local_checkpoint.h"
 #include "snapshot/metadata_codec.h"
@@ -10,6 +10,7 @@ namespace crowdb::tree
 {
 struct LocalCheckpointOperation::State : std::enable_shared_from_this<State>
 {
+    ApplyDispatcher::Node cpu_node{&State::run, this};
     enum class Stage : uint8_t {
         Begin,
         Segment,

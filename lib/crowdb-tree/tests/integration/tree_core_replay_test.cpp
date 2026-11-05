@@ -90,7 +90,7 @@ class TreeCoreReplay : public testing::Test
     std::shared_ptr<TreeCore>       core;
 };
 
-TEST_F(TreeCoreReplay, DefaultInlineGeometryReleasesChosenPayloadWithoutSnapshot)
+TEST_F(TreeCoreReplay, DefaultInlineGeometryPersistsUnderChosenPayloadPressure)
 {
     core.reset();
     auto   store = std::make_shared<MemPageStore>(1);
@@ -107,7 +107,7 @@ TEST_F(TreeCoreReplay, DefaultInlineGeometryReleasesChosenPayloadWithoutSnapshot
         ASSERT_TRUE(status.ok()) << slot << ": " << status.to_string();
     }
     EXPECT_EQ(core->contiguous_slot(), 4096U);
-    EXPECT_EQ(core->durable_coverage(), 0U);
+    EXPECT_GT(core->durable_coverage(), 0U);
     for (const auto slot : {1, 1764, 4096}) {
         GetView found;
         status = core->get("key" + std::to_string(10000 + slot), &found);
@@ -117,7 +117,7 @@ TEST_F(TreeCoreReplay, DefaultInlineGeometryReleasesChosenPayloadWithoutSnapshot
     }
 }
 
-TEST_F(TreeCoreReplay, CoalescedInlineReplaySplitsLogicalLeavesUnderGapPressure)
+TEST_F(TreeCoreReplay, CoalescedInlineReplaySplitsAndPersistsUnderGapPressure)
 {
     core.reset();
     auto   store = std::make_shared<MemPageStore>(1);
@@ -150,8 +150,9 @@ TEST_F(TreeCoreReplay, CoalescedInlineReplaySplitsLogicalLeavesUnderGapPressure)
         ASSERT_TRUE(completed.status.ok()) << slot << ": " << completed.status.to_string();
     }
     EXPECT_EQ(core->contiguous_slot(), 1024U);
-    EXPECT_EQ(core->durable_coverage(), 0U);
-    EXPECT_GT(core->publisher().work_metrics()->totals()[static_cast<size_t>(TreeStage::PageWritebackPipeline)].count,
+    EXPECT_GT(core->durable_coverage(), 0U);
+    EXPECT_GT(core->publisher().work_metrics()->counters.snapshot()[static_cast<size_t>(
+                  TreeWorkCause::CachePressure)][static_cast<size_t>(TreeWorkCounter::WriteOperations)],
               0U);
     for (const auto index : {10002, 11025, 12049}) {
         GetView found;
@@ -204,7 +205,7 @@ TEST_F(TreeCoreReplay, WholeGapGrantWaitsForActualQuotaRelease)
     EXPECT_EQ(core->contiguous_slot(), 1U);
 }
 
-TEST_F(TreeCoreReplay, BoundedWritebackReleasesGapPayloadUnderFullOrdinaryCpuAndSingleIo)
+TEST_F(TreeCoreReplay, PersistentFlushReleasesGapPayloadUnderFullOrdinaryCpuAndSingleIo)
 {
     // Fill every spare registration after the replay and source rotation paths.
     // Chosen pressure must use its startup-reserved path even when all classes are full.
@@ -235,8 +236,9 @@ TEST_F(TreeCoreReplay, BoundedWritebackReleasesGapPayloadUnderFullOrdinaryCpuAnd
     ASSERT_FALSE(occupied.empty());
     ASSERT_TRUE(apply(3, "c", value).ok());
     EXPECT_EQ(core->contiguous_slot(), 3U);
-    EXPECT_EQ(core->local_backend()->checkpoints->durable_coverage(), 0U);
-    EXPECT_GT(core->publisher().work_metrics()->totals()[static_cast<size_t>(TreeStage::PageWritebackPipeline)].count,
+    EXPECT_EQ(core->local_backend()->checkpoints->durable_coverage(), 2U);
+    EXPECT_GT(core->publisher().work_metrics()->counters.snapshot()[static_cast<size_t>(
+                  TreeWorkCause::CachePressure)][static_cast<size_t>(TreeWorkCounter::WriteOperations)],
               0U);
     occupied.clear();
     for (const auto *key : {"a", "b", "c"}) {

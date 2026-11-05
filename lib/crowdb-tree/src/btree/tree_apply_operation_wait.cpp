@@ -6,9 +6,7 @@ namespace crowdb::tree
 {
 void TreeApplyOperation::State::Receiver::set_value() const noexcept
 {
-    if ((owner->waiting == Wait::kCredit || owner->waiting == Wait::kApplyCredit ||
-         owner->waiting == Wait::kPressureCredit) &&
-        owner->credit_attempt) {
+    if ((owner->waiting == Wait::kCredit || owner->waiting == Wait::kApplyCredit) && owner->credit_attempt) {
         (void)owner->credit_attempt->metrics.finish(TreeOutcome::Success, tree_metrics_now_ns());
     }
     owner->wake(Status::Ok());
@@ -16,14 +14,12 @@ void TreeApplyOperation::State::Receiver::set_value() const noexcept
 
 void TreeApplyOperation::State::Receiver::set_value(FlushResult result) const noexcept
 {
-    owner->wake(std::move(result.handoff_status));
+    owner->wake(result.handoff_status.ok() ? std::move(result.maintenance_status) : std::move(result.handoff_status));
 }
 
 void TreeApplyOperation::State::Receiver::set_error(Status status) const noexcept
 {
-    if ((owner->waiting == Wait::kCredit || owner->waiting == Wait::kApplyCredit ||
-         owner->waiting == Wait::kPressureCredit) &&
-        owner->credit_attempt) {
+    if ((owner->waiting == Wait::kCredit || owner->waiting == Wait::kApplyCredit) && owner->credit_attempt) {
         (void)owner->credit_attempt->metrics.finish(TreeOutcome::Error, tree_metrics_now_ns());
     }
     else if (owner->waiting == Wait::kFlush) {
@@ -34,9 +30,7 @@ void TreeApplyOperation::State::Receiver::set_error(Status status) const noexcep
 
 void TreeApplyOperation::State::Receiver::set_stopped() const noexcept
 {
-    if ((owner->waiting == Wait::kCredit || owner->waiting == Wait::kApplyCredit ||
-         owner->waiting == Wait::kPressureCredit) &&
-        owner->credit_attempt) {
+    if ((owner->waiting == Wait::kCredit || owner->waiting == Wait::kApplyCredit) && owner->credit_attempt) {
         (void)owner->credit_attempt->metrics.finish(TreeOutcome::Cancelled, tree_metrics_now_ns());
     }
     owner->wake(Status::unavailable("accepted apply progress stopped"));

@@ -1,5 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+#include "crowdb-common/log.h"
 #include "source_rotation.h"
 
 namespace crowdb::tree
@@ -21,6 +22,7 @@ void SourceRotation::plan_flush()
     if (!preparation_.store) {
         auto status = prepare_options_(&preparation_);
         if (!status.ok()) {
+            CRB_LOG_ERROR("automatic flush preparation failed; ordinary writes remain paused: {}", status.to_string());
             finish();
             return;
         }
@@ -89,6 +91,7 @@ void SourceRotation::credit_ready()
         if (status.code() == Code::kUnavailable) {
             // The captured immutable plan changed. Replan once through the
             // dispatcher; no source was closed by a rejected binding.
+            preparation_ = {};
             phase_.store(Phase::FlushPlanning, std::memory_order_release);
             schedule();
         }

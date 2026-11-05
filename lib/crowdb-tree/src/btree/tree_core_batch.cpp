@@ -197,10 +197,18 @@ Status write_inputs(SourceAdmission &sources, ApplyFrontier &frontier, uint64_t 
         if (status.ok()) {
             break;
         }
+        if (rotation != nullptr && rotation->stopping()) {
+            return Status::unavailable("source admission is draining");
+        }
         if (!paused && rotation != nullptr && category == detail::BudgetClass::kAdmittedWriter &&
             status.code() == Code::kUnavailable && !detail::FlushRuntime::on_worker_thread()) {
-            const auto source = sources.catalog()->active->id();
-            rotation->wait(rotation->request());
+            const auto source    = sources.catalog()->active->id();
+            const auto requested = rotation->request();
+            if (requested == 0) {
+                (void)rotation->request_pressure();
+                return status;
+            }
+            rotation->wait(requested);
             if (sources.catalog()->active->id() != source) {
                 continue;
             }
@@ -273,6 +281,9 @@ Status apply_source_batch(const Config &config, SourceAdmission &sources, ApplyF
     const auto category  = fills_gap ? detail::BudgetClass::kGapRepair : detail::BudgetClass::kAdmittedWriter;
     auto       reserved  = detail::ResourceBudget::try_reserve(options.account, category, bytes);
     if (!reserved) {
+        if (rotation != nullptr) {
+            (void)rotation->request_pressure();
+        }
         return Status::unavailable("batch ingress credit unavailable");
     }
     const auto                                     credit = detail::AllocationReservation::create(std::move(*reserved));

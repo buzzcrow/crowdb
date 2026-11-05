@@ -124,6 +124,34 @@ TEST(SourceAdmission, NoProgressOrMissingCreditLeavesActiveOpen)
     EXPECT_EQ(writer.table(), initial->active);
 }
 
+TEST(SourceAdmission, CapacityPauseSurvivesSuccessorPublicationAndKeepsGapAdmission)
+{
+    Credits                credits;
+    SourceWriteOptions     options{.account = credits.account, .max_entries = 8};
+    SourceAdmission        admission(0, 1, options);
+    SourceWriteReservation prepaid;
+    ASSERT_TRUE(
+        SourceWriteReservation::create(options, {.entries = 1}, detail::BudgetClass::kAdmittedWriter, &prepaid).ok());
+    admission.pause_capacity();
+    SourceAdmission::Writer writer;
+    EXPECT_EQ(admission.try_admit(0, &writer).code(), Code::kUnavailable);
+    EXPECT_EQ(admission.try_admit_reserved(0, &prepaid, &writer).code(), Code::kUnavailable);
+    EXPECT_TRUE(prepaid.valid());
+    std::atomic<uint64_t>          contiguous{1};
+    std::shared_ptr<SourceCapture> capture;
+    ASSERT_TRUE(admission.try_capture(contiguous, credits.reserve(), &capture).ok());
+    ASSERT_TRUE(admission.activate_successor(capture, capture->batch_id()).ok());
+    ASSERT_TRUE(stdexec::sync_wait(capture->drain_sender()).has_value());
+    EXPECT_EQ(admission.try_admit(1, &writer).code(), Code::kUnavailable);
+    ASSERT_TRUE(admission.try_admit(1, WriteFootprint{.entries = 1}, &writer, detail::BudgetClass::kGapRepair).ok());
+    writer.release();
+    ASSERT_TRUE(admission.finish_covered(capture, capture->batch_id(), 1).ok());
+    EXPECT_EQ(admission.try_admit(1, &writer).code(), Code::kUnavailable);
+    admission.resume_capacity();
+    EXPECT_TRUE(admission.try_admit_reserved(1, &prepaid, &writer).ok());
+    EXPECT_FALSE(prepaid.valid());
+}
+
 TEST(SourceAdmission, MetadataFailurePrecedesClosure)
 {
     SourceAdmission                admission;

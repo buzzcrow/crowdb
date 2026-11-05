@@ -129,6 +129,11 @@ const std::shared_ptr<TreeRuntimeBinding> &TreeCore::binding() const noexcept
     return state_->binding;
 }
 
+const std::shared_ptr<ApplyDispatcher> &TreeCore::cpu_progress() const noexcept
+{
+    return state_->apply_dispatcher;
+}
+
 const std::shared_ptr<SharedPageCache> &TreeCore::cache() const noexcept
 {
     return state_->cache;

@@ -76,7 +76,7 @@ pub(super) async fn verify(client: Arc<PaxosKvClient>, args: Arc<PaxosKvArgs>) -
                         None,
                     )
                     .await
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| format!("verification read {} failed: {e}", key(id)))?
                 {
                     GetOutcome::Found { value, .. } => verify_value(&args, id, &value),
                     GetOutcome::NotFound => Err(format!("missing key {}", key(id))),

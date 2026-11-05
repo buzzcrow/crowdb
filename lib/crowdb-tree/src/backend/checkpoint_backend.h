@@ -55,6 +55,7 @@ class CheckpointBackend
     [[nodiscard]] virtual uint64_t              backend_identity() const noexcept                        = 0;
     [[nodiscard]] virtual uint64_t              incarnation() const noexcept                             = 0;
     [[nodiscard]] virtual uint64_t              requested_wal_offset() const noexcept                    = 0;
+    [[nodiscard]] virtual uint64_t              durable_wal_offset() const noexcept                      = 0;
     [[nodiscard]] virtual std::optional<size_t> checkpoint_allocation_bound(size_t frames,
                                                                             size_t heads) const noexcept = 0;
     [[nodiscard]] virtual size_t                reservation_allocation_bound() const noexcept            = 0;

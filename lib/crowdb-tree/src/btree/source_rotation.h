@@ -34,11 +34,19 @@ class SourceRotation : public std::enable_shared_from_this<SourceRotation>
     // Zero means no threshold was crossed. Success of the write is independent
     // of this best-effort soft maintenance admission.
     [[nodiscard]] uint64_t request() noexcept;
+    [[nodiscard]] uint64_t request_pressure() noexcept;
+    void                   resume_capacity() noexcept;
     void                   wait(uint64_t sequence) noexcept;
     void                   drain() noexcept;
     // Fence only unaccepted soft maintenance; accepted flushes still finish.
     void stop() noexcept;
     void restart() noexcept;
+
+    [[nodiscard]] bool stopping() const noexcept
+    {
+        return stopping_.load(std::memory_order_acquire);
+    }
+
     // Host-only, after old generation ingress, operations and this controller drain.
     void rebind(SourceAdmission &sources, FlushController &controller) noexcept;
 

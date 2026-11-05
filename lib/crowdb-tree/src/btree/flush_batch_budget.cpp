@@ -10,7 +10,8 @@ namespace crowdb::tree
 {
 std::optional<size_t> FlushBatch::metadata_reserve_bound(const MappingView &mapping, size_t sources, size_t entries,
                                                          size_t key_bytes, size_t workers,
-                                                         const FlushBatchOptions &options, bool track_residency)
+                                                         const FlushBatchOptions &options, bool track_residency,
+                                                         size_t max_inner_children)
 {
     if (sources == 0 || sources > options.max_sources || workers == 0 || options.parallelism == 0 ||
         options.run_limits.max_entries == 0 || options.run_limits.max_key_bytes == 0 ||
@@ -42,8 +43,17 @@ std::optional<size_t> FlushBatch::metadata_reserve_bound(const MappingView &mapp
     bytes.add(PublicationCoordinator::complete_view_reserve_bytes());
     bytes.add(PublishedRouteCursor::allocation_bound(options.max_route_depth));
     const auto paths = AllocationBound(ranges).add_product(ranges, mapping_bounds.max_level).add(1).value();
-    const auto slots =
-        AllocationBound().add_product(ranges, (mapping_bounds.max_inner_bytes / sizeof(uint64_t)) + 1).value();
+    // A cold index has no resident child arrays in the captured mapping.
+    // Loading it still creates the same fork and ordered-join storage.
+    const auto decoded_inner =
+        AllocationBound(shared_allocation_bound<PublishedPage>() + InnerPageState::allocation_bound())
+            .add_product(max_inner_children, 3 * (sizeof(uint64_t) + sizeof(OwnedKey)))
+            .value();
+    if (!decoded_inner) {
+        return {};
+    }
+    const auto inner_bytes = std::max(mapping_bounds.max_inner_bytes, *decoded_inner);
+    const auto slots       = AllocationBound().add_product(ranges, (inner_bytes / sizeof(uint64_t)) + 1).value();
     if (!paths || !slots) {
         return {};
     }
@@ -52,7 +62,8 @@ std::optional<size_t> FlushBatch::metadata_reserve_bound(const MappingView &mapp
     const auto child_slots =
         AllocationBound()
             .add_product(std::min(mapping_bounds.leaf_pages, *slots),
-                         sizeof(std::shared_ptr<State::Subtree>) + sizeof(uint64_t) + sizeof(OwnedKey) +
+                         sizeof(std::shared_ptr<State::Subtree>) + (3 * sizeof(State::Subtree::Child)) +
+                             (3 * (sizeof(uint64_t) + sizeof(OwnedKey))) + (3 * sizeof(PageReplacement)) +
                              (options.persistent ? 3 * sizeof(State::Subtree::FinalPage) : 0))
             .value();
     if (!child_slots) {

@@ -84,6 +84,9 @@ Status SourceWriteReservation::create(const SourceWriteOptions &options, WriteFo
     if (!bytes) {
         return Status::resource_exhausted("writer allocation bound overflow");
     }
+    if (*bytes > detail::ResourceBudget::capacity(options.account, category)) {
+        return Status::resource_exhausted("writer allocation exceeds its budget partition");
+    }
     auto credit = detail::ResourceBudget::try_reserve(options.account, category, *bytes);
     if (!credit) {
         return Status::unavailable("writer apply credit unavailable");

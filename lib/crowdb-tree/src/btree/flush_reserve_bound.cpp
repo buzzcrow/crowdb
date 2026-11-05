@@ -83,7 +83,8 @@ Status flush_reserve_bounds(PublicationCoordinator &publisher, const PublishedTr
     selected_batch.persistent_pages = preparation.persistent ? view.snapshot_changes.size() : 0;
     auto handoff = AllocationBound(control_bytes)
                        .add(FlushBatch::metadata_reserve_bound(view.mapping, source_count, *entries, *keys, workers,
-                                                               selected_batch, publisher.tracks_cache_residency()))
+                                                               selected_batch, publisher.tracks_cache_residency(),
+                                                               preparation.loads.max_inner_children))
                        .add(SourceAdmission::capture_allocation_bound(source_count))
                        .add_product(2, PublishedSources::allocation_bound())
                        .add_product(source_count, 2 * sizeof(std::shared_ptr<MemTable>))

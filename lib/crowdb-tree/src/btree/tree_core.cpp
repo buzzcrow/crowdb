@@ -333,6 +333,9 @@ TreeCore::TreeCore(detail::ReservedUnique<State> state) : state_(std::move(state
         }
         *out       = state_->preparation;
         out->store = ticket->backend(async_backend());
+        if (state_->sources->capacity_paused() && (local_backend() || chunk_backend())) {
+            return prepare_capacity_flush(out, std::move(ticket));
+        }
         return Status::Ok();
     });
 }

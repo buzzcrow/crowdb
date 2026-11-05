@@ -13,6 +13,11 @@ namespace crowdb::tree
 {
 struct BackingStatsSampler;
 
+namespace checkpoint_detail
+{
+struct Preparation;
+}
+
 namespace detail
 {
 class ChunkRuntimePageStore;
@@ -126,6 +131,7 @@ class TreeCore : public std::enable_shared_from_this<TreeCore>
     Status prepare_flush(std::shared_ptr<FlushOperation> *out);
     Status prepare_flush(std::shared_ptr<FlushOperation> *out, std::shared_ptr<TreeOperationLifetime::Ticket> accepted);
     void   flush_async(std::function<void(Status)> complete);
+    void   resume_capacity() noexcept;
     Status flush();
     Status prepare_checkpoint(const CheckpointOptions &options, std::shared_ptr<CheckpointOperation> *out);
     Status prepare_checkpoint(const CheckpointOptions &options, std::shared_ptr<CheckpointOperation> *out,
@@ -150,6 +156,7 @@ class TreeCore : public std::enable_shared_from_this<TreeCore>
     [[nodiscard]] bool                                       closed() const noexcept;
     [[nodiscard]] const Config                              &config() const noexcept;
     [[nodiscard]] const std::shared_ptr<TreeRuntimeBinding> &binding() const noexcept;
+    [[nodiscard]] const std::shared_ptr<ApplyDispatcher>    &cpu_progress() const noexcept;
     [[nodiscard]] const std::shared_ptr<SharedPageCache>    &cache() const noexcept;
     [[nodiscard]] const std::shared_ptr<LocalBackendState>  &local_backend() const noexcept;
     [[nodiscard]] const std::shared_ptr<CheckpointBackend>  &chunk_backend() const noexcept;
@@ -173,8 +180,13 @@ class TreeCore : public std::enable_shared_from_this<TreeCore>
     Status                                                   enable_work_histogram(uint32_t stage);
 
   private:
-    void get_impl(Slice key, std::function<void(Status, GetView)> complete, bool dispatch);
-    void scan_impl(CoreScanOptions options, std::function<void(Status, ScanPackedBuf, bool)> complete, bool dispatch);
+    Status prepare_checkpoint_state(const CheckpointOptions                         &options,
+                                    std::shared_ptr<TreeOperationLifetime::Ticket>   accepted,
+                                    std::shared_ptr<checkpoint_detail::Preparation> *out);
+    Status prepare_capacity_flush(FlushPreparationOptions                       *out,
+                                  std::shared_ptr<TreeOperationLifetime::Ticket> accepted);
+    void   get_impl(Slice key, std::function<void(Status, GetView)> complete, bool dispatch);
+    void   scan_impl(CoreScanOptions options, std::function<void(Status, ScanPackedBuf, bool)> complete, bool dispatch);
     friend class detail::ChunkRuntimePageStore;
     static Status open_chunk(const Config &config, std::shared_ptr<TreeCore> *out);
     static Status open_chunk_migration(const Config                                        &config,

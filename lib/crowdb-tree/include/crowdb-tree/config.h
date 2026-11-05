@@ -84,15 +84,12 @@ struct Config
     size_t   memtable_flush_bytes   = 16ULL * 1024 * 1024;
     uint32_t memtable_flush_entries = 100000;
 
-    // Total soft source count, including one writable source (minimum two).
-    // Runtime maintenance can trigger earlier to keep inherited tables, a
-    // capture successor and a child writer within fixed read/flush windows.
-    // At this limit another threshold crossing requests the existing finite
-    // handoff, so sustained writes make bounded progress without growing the
-    // source queue. A gap or unavailable whole-batch credit leaves accepted
-    // data readable; explicit maintenance and the accepted/gap apply channels
-    // retain their own progress admission. A failed soft maintenance attempt
-    // never changes the already committed write result.
+    // Total MemTable capacity, including one writable source (minimum two).
+    // Once the last source reaches a rotation target, ordinary binds wait for
+    // the finite flush and its persistent output on reloadable backends.
+    // Accepted/gap repair keeps independent progress credit. Retained values
+    // remain charged to their actual allocation owners after source detach;
+    // failed persistence preserves the old durable root and replay frontier.
     uint32_t max_memtable_count = 10;
 
     // Deprecated compatibility field. Immutable MappingView radix geometry

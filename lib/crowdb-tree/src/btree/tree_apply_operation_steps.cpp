@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 #include "crowdb-common/log.h"
 #include "tree_apply_operation_internal.h"
+#include "tree_core.h"
 
 #include <cassert>
 
@@ -50,14 +51,6 @@ void TreeApplyOperation::State::wake(Status status) noexcept
 
 void TreeApplyOperation::State::step()
 {
-    if (waiting == Wait::kPressureCredit) {
-        pressure_credit_ready();
-        return;
-    }
-    if (waiting == Wait::kWriteback) {
-        writeback_ready();
-        return;
-    }
     if (waiting == Wait::kApplyCredit) {
         apply_credit_ready();
         return;
@@ -76,6 +69,9 @@ void TreeApplyOperation::State::step()
         if (!resumed.ok()) {
             finish(std::move(resumed));
             return;
+        }
+        if (auto core = weak_core.lock()) {
+            core->resume_capacity();
         }
     }
     else if (waiting == Wait::kProgress) {
@@ -118,6 +114,18 @@ void TreeApplyOperation::State::step()
 
 void TreeApplyOperation::State::start_flush()
 {
+    preparation.persistent = false;
+    preparation.persistence.reset();
+    if (sources->capacity_paused()) {
+        auto core = weak_core.lock();
+        if (core && (core->local_backend() || core->chunk_backend())) {
+            auto status = core->prepare_capacity_flush(&preparation, backend_ticket);
+            if (!status.ok()) {
+                finish(std::move(status));
+                return;
+            }
+        }
+    }
     plan = {};
     std::shared_ptr<FlushOperation> operation;
     auto                            status = flush->prepare_or_plan(preparation, &operation, &plan);
@@ -162,7 +170,6 @@ void TreeApplyOperation::State::finish(Status status) noexcept
     progress_attempt.reset();
     credit_attempt.reset();
     flush_attempt.reset();
-    writeback_attempt.reset();
     credits = {};
     plan    = {};
     batch.reset();
@@ -173,7 +180,7 @@ void TreeApplyOperation::State::finish(Status status) noexcept
         progress->advance();
     }
     waiters.reset();
-    preparation.store.reset();
+    preparation = {};
     backend_ticket.reset();
     apply_ticket.reset();
     try {

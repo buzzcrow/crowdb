@@ -130,7 +130,7 @@ void SharedPageCache::State::start(Entry *entry, Request *request)
         }
     }
     catch (const std::bad_alloc &) {
-        complete(entry, identity, Status::resource_exhausted(), {}, {});
+        complete(entry, identity, Status::resource_exhausted("cache load allocation failed"), {}, {});
     }
     catch (...) {
         complete(entry, identity, Status::io_error(), {}, {});
@@ -226,7 +226,7 @@ void SharedPageCache::State::deliver(Request *request, const Status &status, std
         outcome = status;
     }
     catch (const std::bad_alloc &) {
-        outcome = Status::resource_exhausted();
+        outcome = Status::resource_exhausted("cache completion status allocation failed");
     }
     if (outcome.ok() && request->key.kind == Kind::Leaf && request->base.max_slot &&
         max_slot > *request->base.max_slot) {
@@ -243,7 +243,7 @@ void SharedPageCache::State::deliver(Request *request, const Status &status, std
             }
         }
         catch (const std::bad_alloc &) {
-            outcome = Status::resource_exhausted();
+            outcome = Status::resource_exhausted("cache pin allocation failed");
         }
     }
     if (!outcome.ok()) {

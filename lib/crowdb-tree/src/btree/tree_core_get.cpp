@@ -3,6 +3,7 @@
 #include "btree/allocation_bound.h"
 #include "btree/tree_core_internal.h"
 #include "btree/tree_core_read_internal.h"
+#include "crowdb-common/log.h"
 #include "host_completion.h"
 
 namespace crowdb::tree
@@ -38,11 +39,16 @@ struct CoreGet : std::enable_shared_from_this<CoreGet>
     std::function<void(Status, GetView)> complete;
     std::shared_ptr<Operation>           operation;
     std::shared_ptr<CoreGet>             owner;
+    ApplyDispatcher::Node                cpu_node{&CoreGet::start, this};
 
     void finish(Status status) noexcept
     {
         auto    self = std::move(owner);
         GetView result;
+        if (status.code() == Code::kResourceExhausted) {
+            CRB_LOG_ERROR("point read exhausted: coverage={} remaining={} status={}", prepared.view->coverage,
+                          prepared.credit->available(), status.to_string());
+        }
         if (status.ok() && read->result().found) {
             const auto &cell = read->result().cell;
             result           = GetView::from_owner(cell.slot, cell.value, cell.owner);
@@ -112,6 +118,9 @@ void TreeCore::get_impl(Slice key, std::function<void(Status, GetView)> complete
         status = Status::resource_exhausted("read allocation failed");
     }
     if (!status.ok() || outside_range) {
+        if (status.code() == Code::kResourceExhausted) {
+            CRB_LOG_ERROR("point read admission exhausted: {}", status.to_string());
+        }
         complete(std::move(status), {});
         return;
     }
@@ -126,7 +135,10 @@ void TreeCore::get_impl(Slice key, std::function<void(Status, GetView)> complete
     }
     status = operation->prepared.binding->cpu()->try_submit(operation->prepared.binding->lane(), &CoreGet::start,
                                                             operation.get());
-    if (!status.ok()) {
+    if (status.code() == Code::kResourceExhausted) {
+        state_->apply_dispatcher->request(operation->cpu_node, operation);
+    }
+    else if (!status.ok()) {
         operation->finish(std::move(status));
     }
 }

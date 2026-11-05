@@ -99,13 +99,6 @@ class AsyncWork : public std::enable_shared_from_this<AsyncWork>
     void                          *context_  = nullptr;
 };
 
-[[nodiscard]] std::optional<size_t> pressure_control_bound() noexcept;
-Status prepare_pressure(TreeCore &core, std::shared_ptr<TreeOperationLifetime::Ticket> ticket, uint64_t leaf,
-                        detail::ResourceBudget::Credit credit, std::shared_ptr<ApplyDispatcher> cpu_progress,
-                        std::shared_ptr<PublicationLane> publication, std::shared_ptr<ApplyProgress> progress,
-                        std::shared_ptr<ApplyWaiters> waiters, PageMaintenanceOperationOptions structure_options,
-                        std::shared_ptr<CheckpointOperation> *out);
-
 CheckpointOptions defaults(const TreeCore &core);
 void              reclaim_free_blocks(TreeCore &core, std::shared_ptr<detail::AllocationReservation> metadata = {},
                                       std::shared_ptr<AllocationBudget> backend = {}) noexcept;

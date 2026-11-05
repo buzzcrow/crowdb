@@ -71,7 +71,7 @@ void SharedPageCache::State::drain() noexcept
                     process(request);
                 }
                 catch (const std::bad_alloc &) {
-                    deliver(request, Status::resource_exhausted());
+                    deliver(request, Status::resource_exhausted("cache request allocation failed"));
                 }
                 catch (...) {
                     deliver(request, Status::internal_error());

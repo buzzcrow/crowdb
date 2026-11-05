@@ -14,14 +14,6 @@ void FlushBatch::State::Subtree::join()
 {
     prepare_builder();
 
-    struct Child
-    {
-        Subtree                *task;
-        uint64_t                pid;
-        std::optional<OwnedKey> lower;
-        bool                    touched;
-    };
-
     detail::ReservedVector<Child> ordered{detail::ReservationAllocator<Child>(owner.metadata)};
     for (size_t i = 0; i < children.size(); ++i) {
         auto lower = i != 0 ? std::optional(inner->separators[i - 1]) : bounds.lower;
@@ -294,6 +286,26 @@ Status FlushBatch::State::collect_subtree(PublicationTransaction &transaction)
     }
     std::sort(transaction.pages.begin(), transaction.pages.end(),
               [](const auto &a, const auto &b) { return a.page_id < b.page_id; });
+    // The root publishes the complete fork/join result. The idle maintenance
+    // window only prepaid a bounded subset, so size this final publication
+    // from its actual replacement set before entering the publication lane.
+    const auto bytes =
+        detail::AllocationBound(detail::shared_allocation_bound<detail::AllocationReservation>())
+            .add_product(transaction.pages.size(), PublicationCoordinator::snapshot_change_reserve_bytes())
+            .value();
+    if (!bytes) {
+        return Status::resource_exhausted("flush publication metadata bound overflow");
+    }
+    if (metadata && (!snapshot_metadata || snapshot_metadata->available() < *bytes)) {
+        if (snapshot_metadata) {
+            snapshot_metadata->seal();
+        }
+        auto credit = detail::ResourceBudget::try_reserve(metadata->account(), detail::BudgetClass::kRouting, *bytes);
+        if (!credit) {
+            return Status::resource_exhausted("flush publication metadata credit unavailable");
+        }
+        transaction.snapshot_metadata = detail::AllocationReservation::create(std::move(*credit));
+    }
     return Status::Ok();
 }
 

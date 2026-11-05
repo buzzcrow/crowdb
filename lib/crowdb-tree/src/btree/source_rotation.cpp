@@ -2,6 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 #include "source_rotation.h"
 
+#include "crowdb-common/log.h"
+#include "snapshot/flush_persistence.h"
+
 #include <algorithm>
 #include <cassert>
 
@@ -64,8 +67,13 @@ bool SourceRotation::eligible(const SourceCatalog &catalog) const noexcept
 
 uint64_t SourceRotation::request() noexcept
 try {
-    if (!eligible(*sources_->catalog())) {
+    const auto catalog = sources_->catalog();
+    const auto full    = eligible(*catalog);
+    if (!full && !sources_->capacity_paused()) {
         return 0;
+    }
+    if (full && catalog->tables.size() >= std::max<size_t>(2, options_.tables)) {
+        sources_->pause_capacity();
     }
     const auto sequence = requested_.fetch_add(1, std::memory_order_acq_rel) + 1;
     schedule();
@@ -73,6 +81,22 @@ try {
 }
 catch (...) {
     return 0;
+}
+
+uint64_t SourceRotation::request_pressure() noexcept
+{
+    sources_->pause_capacity();
+    return request();
+}
+
+void SourceRotation::resume_capacity() noexcept
+{
+    const auto catalog = sources_->catalog();
+    if (sources_->capacity_paused() && !eligible(*catalog) &&
+        catalog->tables.size() <= std::max<size_t>(2, options_.tables)) {
+        sources_->resume_capacity();
+        progress_->advance();
+    }
 }
 
 void SourceRotation::wait(uint64_t sequence) noexcept
@@ -90,6 +114,7 @@ void SourceRotation::wait(uint64_t sequence) noexcept
 void SourceRotation::stop() noexcept
 {
     stopping_.store(true, std::memory_order_release);
+    progress_->advance();
     schedule();
 }
 
@@ -169,6 +194,17 @@ void SourceRotation::step()
     if (phase == Phase::FlushReady) {
         connected_.reset();
         flush_.reset();
+        if (resumed_.ok() && preparation_.persistence && !preparation_.persistence->result()) {
+            // Joining an older ordinary flush does not persist this request.
+            preparation_ = {};
+            phase_.store(Phase::FlushPlanning, std::memory_order_release);
+            schedule();
+            return;
+        }
+        if (resumed_.ok()) {
+            publisher_.reclaim();
+            resume_capacity();
+        }
         if (flush_retry_ != FlushRetry::None && flush_controller_ != nullptr &&
             !stopping_.load(std::memory_order_acquire)) {
             if (flush_retry_ == FlushRetry::Replan) {
@@ -211,13 +247,13 @@ void SourceRotation::step()
     // child with its own active table. Keep both slots before rotating.
     const auto source_limit = options_.source_window > 2 ? options_.source_window - 2 : 0;
     const bool window_full  = view->sources && view->sources->tables.size() >= source_limit;
-    if (!eligible(*catalog) || (view->sources && view->sources->inheritance)) {
+    if ((!eligible(*catalog) && !sources_->capacity_paused()) || (view->sources && view->sources->inheritance)) {
         // Inherited catalogs have their own fixed-frontier handoff. They must
         // publish coverage before ordinary source maintenance can run.
         finish();
     }
-    else if (window_full || catalog->tables.size() >= std::max<size_t>(2, options_.tables) ||
-             (catalog->active_budget && catalog->active_budget->full())) {
+    else if (sources_->capacity_paused() || window_full ||
+             catalog->tables.size() >= std::max<size_t>(2, options_.tables)) {
         flush();
     }
     else if (catalog->active_budget && check_rotation_) {
@@ -237,6 +273,7 @@ void SourceRotation::step()
 
 void SourceRotation::flush()
 {
+    sources_->pause_capacity();
     if (flush_controller_ != nullptr) {
         plan_flush();
         return;
@@ -262,6 +299,9 @@ void SourceRotation::Receiver::set_value(FlushResult report) const noexcept
 {
     owner->resumed_ =
         report.handoff_status.ok() ? std::move(report.maintenance_status) : std::move(report.handoff_status);
+    if (!owner->resumed_.ok() && !report.admission_stale) {
+        CRB_LOG_ERROR("automatic flush failed; ordinary writes remain paused: {}", owner->resumed_.to_string());
+    }
     // Repair and maintenance failures retain their controller-owned batch for
     // a later request. Its own terminal progress notification is not a retry.
     owner->flush_retry_ = report.admission_stale ? FlushRetry::Replan : FlushRetry::None;

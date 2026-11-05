@@ -203,7 +203,7 @@ void FlushBatch::State::joined(Status status) noexcept
         cover();
     }
     catch (const std::bad_alloc &) {
-        report.handoff_status = Status::resource_exhausted();
+        report.handoff_status = Status::resource_exhausted("flush root publication allocation failed");
         report.phase          = FlushPhase::kRepairRequired;
         finish();
     }
@@ -240,6 +240,9 @@ void FlushBatch::State::finish() noexcept
         options.persistence.reset();
         maintenance = {};
         checkpoint_view.reset();
+        // A retained completion report needs the committed identity, but no
+        // longer needs the pre-persistence pages owned by its install record.
+        coverage_record->checkpoint_view.reset();
     }
     lifecycle.fetch_and(static_cast<uint8_t>(~kRunning), std::memory_order_release);
     callback(argument, detail::CallbackSignal::kValue, Status::Ok());

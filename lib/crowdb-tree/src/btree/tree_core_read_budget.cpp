@@ -104,6 +104,7 @@ Status prepare(TreeCore &core, std::shared_ptr<const PublishedTreeState> view, P
                                                                        .io           = ready.io,
                                                                        .work_metrics = core.publisher().work_metrics(),
                                                                        .backend      = ready.backend,
+                                                                       .cpu_progress = core.cpu_progress(),
                                                                        .cause        = TreeWorkCause::Read});
     status      = core.cache()->bind_reserved(std::move(loader), ready.credit, &ready.loader);
     if (status.ok()) {

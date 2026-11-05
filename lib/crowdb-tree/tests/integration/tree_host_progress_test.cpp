@@ -89,7 +89,7 @@ Status apply(TreeCore &core, uint64_t slot, std::string key, std::string value)
     return completed.future.get();
 }
 
-TEST(TreeHostProgress, OneCpuPreservesOtherTreeProgressDuringSlowChosenWritebackAndGapRepair)
+TEST(TreeHostProgress, OneCpuPreservesOtherTreeProgressDuringSlowPersistentFlushAndGapRepair)
 {
     tree_test::TempDir directory("shared_host_pressure_");
     TreeRuntimeOptions options;
@@ -133,7 +133,7 @@ TEST(TreeHostProgress, OneCpuPreservesOtherTreeProgressDuringSlowChosenWriteback
     std::array<std::shared_ptr<TreeApplyOperation>, 4> operations;
     std::array<TestHostCompletion, 4>                  completed;
     // A durable later chosen value waits for its preceding gap without taking
-    // the gap payload reserve. The missing predecessor drives bounded writeback.
+    // the gap payload reserve. The missing predecessor drives persistent flush.
     ASSERT_TRUE(prepare(slow, 4, "d", value, operations.data()).ok());
     operations[0]->start(4, &TestHostCompletion::complete, completed.data());
     ASSERT_TRUE(prepare(slow, 3, "c", value, &operations[1]).ok());
@@ -172,12 +172,13 @@ TEST(TreeHostProgress, OneCpuPreservesOtherTreeProgressDuringSlowChosenWriteback
     operations = {};
     EXPECT_EQ(slow.contiguous_slot(), 4U);
     EXPECT_EQ(fast.contiguous_slot(), 2U);
-    EXPECT_EQ(slow.durable_coverage(), 0U);
+    EXPECT_EQ(slow.durable_coverage(), 2U);
     EXPECT_EQ(fast.durable_coverage(), 0U);
     GetView result;
     ASSERT_TRUE(fast.get("second", &result).ok());
     EXPECT_EQ(result.value().to_string(), "two");
-    EXPECT_GT(slow.publisher().work_metrics()->totals()[static_cast<size_t>(TreeStage::PageWritebackPipeline)].count,
+    EXPECT_GT(slow.publisher().work_metrics()->counters.snapshot()[static_cast<size_t>(
+                  TreeWorkCause::CachePressure)][static_cast<size_t>(TreeWorkCounter::WriteOperations)],
               0U);
 }
 } // namespace

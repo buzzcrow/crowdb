@@ -49,6 +49,11 @@ struct ChunkBackendState final : CheckpointBackend
         return facade->requested_wal_offset();
     }
 
+    [[nodiscard]] uint64_t durable_wal_offset() const noexcept override
+    {
+        return facade->durable_wal_offset();
+    }
+
     [[nodiscard]] std::optional<size_t> checkpoint_allocation_bound(size_t frames,
                                                                     size_t heads) const noexcept override;
     [[nodiscard]] size_t                reservation_allocation_bound() const noexcept override;

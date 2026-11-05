@@ -94,7 +94,8 @@ class FlushBatch
     [[nodiscard]] static std::optional<size_t> metadata_reserve_bound(const MappingView &mapping, size_t sources,
                                                                       size_t entries, size_t key_bytes, size_t workers,
                                                                       const FlushBatchOptions &options,
-                                                                      bool                     track_residency = false);
+                                                                      bool                     track_residency = false,
+                                                                      size_t                   max_inner_children = 0);
     static Status prepare(PublicationCoordinator &publisher, detail::FlushRuntime &runtime,
                           std::shared_ptr<detail::FlushRuntime::Lane> lane, uint64_t batch_id, uint64_t frontier,
                           FlushBatchOptions options, Maintenance maintenance, std::shared_ptr<FlushBatch> *out,

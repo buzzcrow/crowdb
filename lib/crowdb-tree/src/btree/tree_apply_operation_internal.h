@@ -7,7 +7,6 @@
 #include "apply_waiters.h"
 #include "flush_operation.h"
 #include "replay_controls.h"
-#include "snapshot/checkpoint_operation.h"
 #include "source_rotation.h"
 #include "tree_apply_operation.h"
 
@@ -16,7 +15,7 @@ namespace crowdb::tree
 struct TreeApplyOperation::State : std::enable_shared_from_this<State>
 {
     enum class Phase : uint8_t { kPrepared, kArming, kArmed, kStarted, kDone };
-    enum class Wait : uint8_t { kNone, kProgress, kCredit, kApplyCredit, kPressureCredit, kWriteback, kFlush };
+    enum class Wait : uint8_t { kNone, kProgress, kCredit, kApplyCredit, kFlush };
 
     struct Receiver
     {
@@ -80,18 +79,6 @@ struct TreeApplyOperation::State : std::enable_shared_from_this<State>
         AdmittedBatch::Plan         bound;
     };
 
-    struct WritebackAttempt
-    {
-        WritebackAttempt(State *state, std::shared_ptr<CheckpointOperation> value)
-            : operation(std::move(value)),
-              connected(stdexec::connect(operation->sender(), Receiver{state}))
-        {
-        }
-
-        std::shared_ptr<CheckpointOperation> operation;
-        Connected                            connected;
-    };
-
     State(std::weak_ptr<TreeCore> core, uint64_t generation, std::shared_ptr<AdmittedBatch> batch,
           std::shared_ptr<detail::AllocationReservation> metadata);
     Status      arm();
@@ -105,8 +92,6 @@ struct TreeApplyOperation::State : std::enable_shared_from_this<State>
     bool        prepare_replay_batch();
     void        apply_credit_ready();
     void        start_pressure();
-    void        pressure_credit_ready();
-    void        writeback_ready();
     void        bind_replay_batch(detail::ResourceBudget::Credit grant);
     void        connect_flush(std::shared_ptr<FlushOperation> operation);
     void        wake(Status status) noexcept;
@@ -117,7 +102,6 @@ struct TreeApplyOperation::State : std::enable_shared_from_this<State>
     ReplayControls::Lease                          replay_control;
     std::optional<ReplayInput>                     replay_input;
     uint64_t                                       replay_slot    = 0;
-    uint64_t                                       pressure_pid   = kInvalidPageId;
     uint64_t                                       replay_flushed = UINT64_MAX;
     std::weak_ptr<TreeCore>                        weak_core;
     const uint64_t                                 generation;
@@ -149,7 +133,6 @@ struct TreeApplyOperation::State : std::enable_shared_from_this<State>
     std::optional<TreeMetricsOperation>            admission_metrics;
     std::optional<ProgressAttempt>                 progress_attempt;
     std::optional<CreditAttempt>                   credit_attempt;
-    std::optional<WritebackAttempt>                writeback_attempt;
     std::optional<FlushAttempt>                    flush_attempt;
 };
 } // namespace crowdb::tree

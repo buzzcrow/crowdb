@@ -15,10 +15,10 @@ class FlushPersistence : public std::enable_shared_from_this<FlushPersistence>
     struct Commit;
 
   public:
-    explicit FlushPersistence(std::shared_ptr<checkpoint_detail::Preparation> preparation);
+    explicit FlushPersistence(std::shared_ptr<checkpoint_detail::Preparation> preparation, uint64_t wal_offset = 0);
     [[nodiscard]] static size_t control_allocation_bound(size_t workers) noexcept;
     [[nodiscard]] static size_t commit_control_allocation_bound() noexcept;
-    void                        configure(FlushPreparationOptions &options);
+    void                        configure(FlushBatchOptions &options);
 
     void bind_io(std::shared_ptr<detail::AllocationReservation> io)
     {

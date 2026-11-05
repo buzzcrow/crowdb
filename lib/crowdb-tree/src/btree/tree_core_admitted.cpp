@@ -37,6 +37,7 @@ try {
     }
     auto grant = detail::ResourceBudget::try_reserve(binding()->account(), category, *complete);
     if (!grant) {
+        (void)state_->source_rotation->request_pressure();
         return Status::unavailable("complete apply grant is currently occupied");
     }
     auto staging = grant->split(plan.staging_bytes);

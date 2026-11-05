@@ -103,10 +103,12 @@ struct FlushPersistence::Page : std::enable_shared_from_this<Page>
             finish(std::move(result));
             return;
         }
-        limits.frames.encode.metadata = work.budget.bytes;
-        limits.frames.cpu_progress    = work.budget.cpu_progress;
-        limits.frames.plan_only       = true;
-        planner                       = detail::reserved_unique<CapturedLayoutPlanner>(
+        limits.frames.encode.metadata     = work.budget.bytes;
+        limits.frames.encode.work_metrics = work.budget.work_metrics;
+        limits.frames.encode.cause        = work.budget.cause;
+        limits.frames.cpu_progress        = work.budget.cpu_progress;
+        limits.frames.plan_only           = true;
+        planner                           = detail::reserved_unique<CapturedLayoutPlanner>(
             work.budget.bytes, input.next_page_id, limits.frames.reuse_backend_id, limits,
             preparation.options.metadata.max_segments, owner->inherited_, work.budget.bytes);
         result = CapturedFrameStream::create(input, work.loader, preparation.core->binding()->cpu(),

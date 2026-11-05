@@ -104,7 +104,7 @@ void FlushBatch::State::execute_range(Range &range, RangeComplete done, bool inl
         install(range, done, inline_probe);
     }
     catch (const std::bad_alloc &) {
-        finish_range(range, done, Status::resource_exhausted());
+        finish_range(range, done, Status::resource_exhausted("flush range allocation failed"));
     }
     catch (const std::exception &) {
         finish_range(range, done, Status::internal_error());
@@ -199,7 +199,7 @@ void FlushBatch::State::install(Range &range, RangeComplete done, bool inline_pr
             self->start_range(range, done);
         }
         catch (const std::bad_alloc &) {
-            self->finish_range(range, done, Status::resource_exhausted());
+            self->finish_range(range, done, Status::resource_exhausted("flush handoff continuation allocation failed"));
         }
         catch (const std::exception &) {
             self->finish_range(range, done, Status::internal_error());
@@ -269,7 +269,10 @@ void FlushBatch::State::cover()
         }
     }
     auto self        = shared_from_this();
-    request->on_done = [self, detached](PublicationResult result) {
+    request->on_done = [self, detached, snapshot_metadata = transaction.snapshot_metadata](PublicationResult result) {
+        if (snapshot_metadata) {
+            snapshot_metadata->seal();
+        }
         self->report.handoff_status = std::move(result.status);
         if (!self->report.handoff_status.ok()) {
             self->report.phase = FlushPhase::kRepairRequired;

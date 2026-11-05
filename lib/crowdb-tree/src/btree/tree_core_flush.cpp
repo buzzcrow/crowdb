@@ -1,81 +1,27 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+#include "backend/checkpoint_backend.h"
 #include "btree/allocation_bound.h"
 #include "crowdb-common/log.h"
 #include "tree_core_internal.h"
 
 namespace crowdb::tree
 {
-namespace
-{
-struct FlushCall;
-
-struct FlushReceiver
-{
-    using receiver_concept = stdexec::receiver_tag;
-    FlushCall *owner;
-    void       set_value(FlushResult result) const noexcept;
-    void       set_error(Status status) const noexcept;
-    void       set_stopped() const noexcept;
-};
-
-struct FlushCall : std::enable_shared_from_this<FlushCall>
-{
-    using Connected = stdexec::connect_result_t<FlushReportSender, FlushReceiver>;
-
-    FlushCall(std::shared_ptr<TreeOperationLifetime::Ticket> lifetime, std::shared_ptr<FlushOperation> operation)
-        : ticket(std::move(lifetime)),
-          operation(std::move(operation)),
-          connected(stdexec::connect(this->operation->report_sender(), FlushReceiver{this}))
-    {
-    }
-
-    void finish(Status status) noexcept
-    {
-        auto retained = std::move(self);
-        try {
-            callback(std::move(status));
-        }
-        catch (...) {
-            CRB_LOG_ERROR("Tree flush receiver threw after terminal");
-        }
-    }
-
-    void start()
-    {
-        self = shared_from_this();
-        stdexec::start(connected);
-    }
-
-    std::shared_ptr<TreeOperationLifetime::Ticket> ticket;
-    std::shared_ptr<FlushOperation>                operation;
-    std::function<void(Status)>                    callback;
-    Connected                                      connected;
-    std::shared_ptr<FlushCall>                     self;
-};
-
-void FlushReceiver::set_value(FlushResult result) const noexcept
-{
-    owner->finish(result.handoff_status.ok() ? result.maintenance_status : result.handoff_status);
-}
-
-void FlushReceiver::set_error(Status status) const noexcept
-{
-    owner->finish(std::move(status));
-}
-
-void FlushReceiver::set_stopped() const noexcept
-{
-    owner->finish(Status::unavailable("Tree flush stopped"));
-}
-} // namespace
-
 #ifdef CROWDB_TREE_TEST_UTIL
 void TreeCore::set_flush_handoff_wait_for_tests(std::function<bool(uint64_t, std::function<void()>)> callback)
 {
     state_->flush->set_handoff_wait_for_tests(std::move(callback));
 }
 #endif
+
+void TreeCore::resume_capacity() noexcept
+{
+    if ((!local_backend() && !chunk_backend()) ||
+        (durable_coverage() >= publisher().capture()->coverage &&
+         (!chunk_backend() || !chunk_backend()->needs_recovery.load(std::memory_order_acquire)))) {
+        state_->source_rotation->resume_capacity();
+    }
+}
 
 Status TreeCore::prepare_flush(std::shared_ptr<FlushOperation> *out)
 {
@@ -102,50 +48,6 @@ try {
 }
 catch (const std::bad_alloc &) {
     return Status::resource_exhausted("Tree flush preparation allocation failed");
-}
-
-void TreeCore::flush_async(std::function<void(Status)> complete)
-{
-    if (!complete) {
-        return;
-    }
-    std::shared_ptr<FlushCall> call;
-    Status                     status;
-    try {
-        State::Ingress admission(*state_);
-        constexpr auto bytes = detail::shared_allocation_bound<FlushCall>() +
-                               detail::shared_allocation_bound<detail::AllocationReservation>();
-        auto reserved = detail::ResourceBudget::try_reserve(binding()->account(), detail::BudgetClass::kHandoff,
-                                                            bytes + TreeOperationLifetime::ticket_allocation_bound());
-        if (admission.owner == nullptr) {
-            status = Status::unavailable("Tree ingress closed");
-        }
-        else if (!reserved) {
-            status = Status::unavailable("Tree flush callback credit unavailable");
-        }
-        else {
-            auto credit = detail::AllocationReservation::create(std::move(*reserved));
-            std::shared_ptr<TreeOperationLifetime::Ticket> ticket;
-            status = state_->lifetime->acquire(credit, &ticket);
-            std::shared_ptr<FlushOperation> operation;
-            if (status.ok()) {
-                status = prepare_flush(&operation);
-            }
-            if (status.ok()) {
-                call = detail::reserved_shared<FlushCall>(credit, std::move(ticket), std::move(operation));
-                call->callback.swap(complete);
-                credit->seal();
-            }
-        }
-    }
-    catch (const std::bad_alloc &) {
-        status = Status::resource_exhausted("Tree flush callback allocation failed");
-    }
-    if (call) {
-        call->start();
-        return;
-    }
-    complete(std::move(status));
 }
 
 Status TreeCore::flush()
@@ -177,6 +79,9 @@ try {
             }
             if (status.ok() && operation->result().published_coverage < requested) {
                 continue;
+            }
+            if (status.ok()) {
+                resume_capacity();
             }
             return status;
         }

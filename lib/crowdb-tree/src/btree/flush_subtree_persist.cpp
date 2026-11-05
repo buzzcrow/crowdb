@@ -92,6 +92,15 @@ std::shared_ptr<const PublishedPage> FlushBatch::State::Subtree::find_page(uint6
             return page;
         }
     }
+    auto captured = owner.captured->mapping.get(page_id);
+    // Descendants cannot replace an existing peer/ancestor PID. An existing
+    // leaf also keeps its original task owner through sibling merge/split.
+    // Prune unrelated branches instead of searching every leaf for each
+    // index child's summary and fence.
+    if (captured && expected &&
+        (captured->level >= expected->level || (captured->leaf && !bounds.overlaps(captured->leaf->range)))) {
+        return captured;
+    }
     for (const auto &child : children) {
         if (child) {
             auto page = child->find_page(page_id);
@@ -100,7 +109,7 @@ std::shared_ptr<const PublishedPage> FlushBatch::State::Subtree::find_page(uint6
             }
         }
     }
-    return owner.captured->mapping.get(page_id);
+    return captured;
 }
 
 FinalPageSummary FlushBatch::State::Subtree::child_summary(uint64_t page_id) const

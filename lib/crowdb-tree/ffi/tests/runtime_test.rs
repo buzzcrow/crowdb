@@ -92,7 +92,7 @@ fn standalone_custom_writer_limit_rejects_before_accepting() {
     let tree = Crowdbtree::open(&config).unwrap();
     assert_eq!(
         tree.apply_put(1, b"key", &vec![0; 2 * 1024 * 1024]),
-        Err(CtError::Unavailable)
+        Err(CtError::ResourceExhausted)
     );
     assert_eq!(tree.stats().contiguous_slot, 0);
 }

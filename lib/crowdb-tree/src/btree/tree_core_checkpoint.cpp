@@ -1,5 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+#include "backend/checkpoint_backend.h"
 #include "btree/allocation_bound.h"
 #include "btree/tree_core_checkpoint_internal.h"
 #include "btree/tree_core_internal.h"
@@ -25,6 +26,65 @@ try {
     if (out == nullptr || *out) {
         return Status::invalid_argument();
     }
+    std::shared_ptr<checkpoint_detail::Preparation> preparation;
+    auto status = prepare_checkpoint_state(options, std::move(accepted), &preparation);
+    if (!status.ok()) {
+        return status;
+    }
+    const auto &credit = preparation->control;
+    using namespace detail;
+    std::shared_ptr<FlushPersistence> persistence;
+    if (options.mode == CheckpointMode::Durable) {
+        persistence = reserved_shared<FlushPersistence>(credit, preparation,
+                                                        chunk_backend() ? chunk_backend()->requested_wal_offset() : 0);
+    }
+    return CheckpointOperation::create(
+        preparation, publisher(), local_backend(), preparation->ticket->backend(async_backend()), binding()->cpu(),
+        binding()->lane(), preparation->options, {.bytes = credit, .io = {}, .cpu_progress = state_->apply_dispatcher},
+        preparation->finish, {},
+        [preparation, persistence, controller = state_->flush.get(),
+         initial_options = &state_->preparation](std::shared_ptr<FlushOperation> *handoff) {
+            if (persistence) {
+                auto flush_options        = *initial_options;
+                flush_options.store       = preparation->ticket->backend(preparation->core->async_backend());
+                flush_options.persistent  = true;
+                flush_options.persistence = persistence;
+                return controller->prepare(flush_options, handoff, &preparation->handoff_blocked);
+            }
+            return preparation->core->prepare_flush(handoff, preparation->ticket);
+        },
+        [preparation](const PublishedTreeState &view, const CapturedWritePlan *plan, CheckpointWork *work) {
+            return preparation->work(view, plan, work);
+        },
+        out, persistence ? CheckpointOperation::PrepareCleanup{} : CheckpointOperation::PrepareCleanup{[preparation] {
+            checkpoint_detail::schedule_free_blocks(*preparation->core, preparation->ticket);
+        }},
+        {},
+        [preparation, persistence, progress = state_->apply_progress] {
+            if (persistence) {
+                const auto result = persistence->result();
+                if (result && result->status.ok() && result->durable_committed) {
+                    preparation->core->resume_capacity();
+                }
+            }
+            progress->advance();
+        },
+        {}, chunk_backend(),
+        [preparation](std::shared_ptr<const PublishedTreeState> view, uint64_t pid,
+                      std::shared_ptr<PageSplitOperation> *operation) {
+            return preparation->structure(std::move(view), pid, operation);
+        },
+        persistence ? CheckpointOperation::AfterFlush{[persistence] { return persistence->result(); }}
+                    : CheckpointOperation::AfterFlush{});
+}
+catch (const std::bad_alloc &) {
+    return Status::resource_exhausted();
+}
+
+Status TreeCore::prepare_checkpoint_state(const CheckpointOptions                         &options,
+                                          std::shared_ptr<TreeOperationLifetime::Ticket>   accepted,
+                                          std::shared_ptr<checkpoint_detail::Preparation> *out)
+{
     using namespace detail;
     const auto bound = AllocationBound(CheckpointOperation::control_allocation_bound())
                            .add(shared_allocation_bound<checkpoint_detail::Preparation>())
@@ -66,38 +126,26 @@ try {
             return status;
         }
     }
-    std::shared_ptr<FlushPersistence> persistence;
-    if (options.mode == CheckpointMode::Durable) {
-        persistence = reserved_shared<FlushPersistence>(credit, preparation);
-    }
-    return CheckpointOperation::create(
-        preparation, publisher(), local_backend(), preparation->ticket->backend(async_backend()), binding()->cpu(),
-        binding()->lane(), preparation->options, {.bytes = credit, .io = {}, .cpu_progress = state_->apply_dispatcher},
-        preparation->finish, {},
-        [preparation, persistence, controller = state_->flush.get(),
-         initial_options = &state_->preparation](std::shared_ptr<FlushOperation> *handoff) {
-            if (persistence) {
-                auto flush_options  = *initial_options;
-                flush_options.store = preparation->ticket->backend(preparation->core->async_backend());
-                persistence->configure(flush_options);
-                return controller->prepare(flush_options, handoff, &preparation->handoff_blocked);
-            }
-            return preparation->core->prepare_flush(handoff, preparation->ticket);
-        },
-        [preparation](const PublishedTreeState &view, const CapturedWritePlan *plan, CheckpointWork *work) {
-            return preparation->work(view, plan, work);
-        },
-        out, [preparation] { checkpoint_detail::schedule_free_blocks(*preparation->core, preparation->ticket); }, {},
-        [progress = state_->apply_progress] { progress->advance(); }, {}, chunk_backend(),
-        [preparation](std::shared_ptr<const PublishedTreeState> view, uint64_t pid,
-                      std::shared_ptr<PageSplitOperation> *operation) {
-            return preparation->structure(std::move(view), pid, operation);
-        },
-        persistence ? CheckpointOperation::AfterFlush{[persistence] { return persistence->result(); }}
-                    : CheckpointOperation::AfterFlush{});
+    *out = std::move(preparation);
+    return Status::Ok();
 }
-catch (const std::bad_alloc &) {
-    return Status::resource_exhausted();
+
+Status TreeCore::prepare_capacity_flush(FlushPreparationOptions                       *out,
+                                        std::shared_ptr<TreeOperationLifetime::Ticket> accepted)
+{
+    auto options  = checkpoint_detail::defaults(*this);
+    options.cause = TreeWorkCause::CachePressure;
+    std::shared_ptr<checkpoint_detail::Preparation> preparation;
+    auto status = prepare_checkpoint_state(options, std::move(accepted), &preparation);
+    if (!status.ok()) {
+        return status;
+    }
+    // Only the host's paired checkpoint request advances the WAL replay point.
+    auto persistence = detail::reserved_shared<FlushPersistence>(
+        preparation->control, preparation, chunk_backend() ? chunk_backend()->durable_wal_offset() : 0);
+    out->persistent  = true;
+    out->persistence = std::move(persistence);
+    return Status::Ok();
 }
 
 Status TreeCore::prepare_writeback(std::shared_ptr<CheckpointOperation> *out)

@@ -113,6 +113,7 @@ struct SourceAdmission::State
     mutable EpochManager           epoch;
     std::atomic<Root *>            root{nullptr};
     std::atomic<bool>              closed{false};
+    std::atomic<bool>              capacity_paused{false};
     std::atomic_flag               admin      = ATOMIC_FLAG_INIT;
     uint64_t                       next_table = 2;
     uint64_t                       next_batch = 1;
@@ -415,6 +416,21 @@ std::shared_ptr<const SourceCatalog> SourceAdmission::catalog() const
     return state_->root.load(std::memory_order_acquire)->catalog;
 }
 
+void SourceAdmission::pause_capacity() noexcept
+{
+    state_->capacity_paused.store(true, std::memory_order_release);
+}
+
+void SourceAdmission::resume_capacity() noexcept
+{
+    state_->capacity_paused.store(false, std::memory_order_release);
+}
+
+bool SourceAdmission::capacity_paused() const noexcept
+{
+    return state_->capacity_paused.load(std::memory_order_acquire);
+}
+
 Status SourceAdmission::try_admit(uint64_t bound, Writer *out)
 try {
     if (out == nullptr || out->table()) {
@@ -422,6 +438,9 @@ try {
     }
     if (state_->closed.load(std::memory_order_acquire)) {
         return Status::unavailable("source admission closed");
+    }
+    if (capacity_paused()) {
+        return Status::unavailable("MemTable capacity is waiting for flush completion");
     }
     auto observation = state_->tail_domain->observe();
     auto view        = catalog();
@@ -455,6 +474,12 @@ try {
     }
     if (state_->closed.load(std::memory_order_acquire)) {
         return Status::unavailable("source admission closed");
+    }
+    if (category == detail::BudgetClass::kAdmittedWriter && capacity_paused()) {
+        if (paused != nullptr) {
+            *paused = true;
+        }
+        return Status::unavailable("MemTable capacity is waiting for flush completion");
     }
     auto observation = state_->tail_domain->observe();
     auto view        = catalog();
@@ -494,6 +519,10 @@ try {
     }
     if (state_->closed.load(std::memory_order_acquire)) {
         return Status::unavailable("source admission closed");
+    }
+    if (source_category.value_or(reservation->category()) == detail::BudgetClass::kAdmittedWriter &&
+        capacity_paused()) {
+        return Status::unavailable("MemTable capacity is waiting for flush completion");
     }
     auto observation = state_->tail_domain->observe();
     auto view        = catalog();

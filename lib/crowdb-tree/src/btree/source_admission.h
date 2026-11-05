@@ -221,6 +221,10 @@ class SourceAdmission
     // and generation fencing remain host responsibilities. An unavailable
     // result needs async admission/retry, never a worker spin loop.
     [[nodiscard]] Status try_admit(uint64_t bound, Writer *out);
+    // Capacity covers the writable successor too; gap repair remains admitted.
+    void               pause_capacity() noexcept;
+    void               resume_capacity() noexcept;
+    [[nodiscard]] bool capacity_paused() const noexcept;
     // A client can become a gap by the time consensus chooses it. Select the
     // current source counters independently of its prepaid memory partition;
     // moving the permit never reserves or charges its allocation bytes again.

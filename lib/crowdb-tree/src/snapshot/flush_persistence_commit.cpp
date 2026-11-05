@@ -278,6 +278,9 @@ struct FlushPersistence::Commit : std::enable_shared_from_this<Commit>
         owner->pages_.reset();
         owner->inherited_.reset();
         owner->initial_.reset();
+        if (result.ok() && owner->report_.durable_committed) {
+            checkpoint_detail::schedule_free_blocks(*owner->preparation_->core, owner->preparation_->ticket);
+        }
         try {
             done(std::move(result), 0);
         }

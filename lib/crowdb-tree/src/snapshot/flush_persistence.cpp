@@ -10,15 +10,13 @@
 
 namespace crowdb::tree
 {
-FlushPersistence::FlushPersistence(std::shared_ptr<checkpoint_detail::Preparation> preparation)
-    : preparation_(std::move(preparation))
+FlushPersistence::FlushPersistence(std::shared_ptr<checkpoint_detail::Preparation> preparation, uint64_t wal_offset)
+    : preparation_(std::move(preparation)),
+      wal_offset_(wal_offset)
 {
-    if (auto backend = preparation_->core->chunk_backend()) {
-        wal_offset_ = backend->requested_wal_offset();
-    }
 }
 
-void FlushPersistence::configure(FlushPreparationOptions &options)
+void FlushPersistence::configure(FlushBatchOptions &options)
 {
     initial_   = preparation_->core->publisher().capture();
     inherited_ = initial_->snapshot_baseline ? initial_->snapshot_baseline->pages : nullptr;

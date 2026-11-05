@@ -109,8 +109,8 @@ TEST_F(SourceRotationWait, CloseReleasesAHostWriterWaitingForTheSoftPause)
     EXPECT_FALSE(written_done.load(std::memory_order_acquire));
     core->close_and_drain();
     writer.join();
-    EXPECT_TRUE(status.ok()) << status.to_string();
-    EXPECT_EQ(tree->contiguous_slot(), 3U);
+    EXPECT_EQ(status.code(), Code::kUnavailable) << status.to_string();
+    EXPECT_EQ(tree->contiguous_slot(), 2U);
     blocker.reset();
 }
 

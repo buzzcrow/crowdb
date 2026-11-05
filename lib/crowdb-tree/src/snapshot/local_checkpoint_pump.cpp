@@ -16,6 +16,10 @@ void LocalCheckpointOperation::State::wake() noexcept
     assert(self);
     for (;;) {
         queued_owner = self;
+        if (budget.cpu_progress) {
+            budget.cpu_progress->request(cpu_node, self);
+            return;
+        }
         Status status;
         try {
             status = runtime->try_submit(lane, &State::run, this);

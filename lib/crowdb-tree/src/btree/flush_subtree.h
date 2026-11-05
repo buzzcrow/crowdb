@@ -13,6 +13,15 @@ namespace crowdb::tree
 struct FlushBatch::State::Subtree
 {
     struct Children;
+
+    struct Child
+    {
+        Subtree                *task;
+        uint64_t                pid;
+        std::optional<OwnedKey> lower;
+        bool                    touched;
+    };
+
     Subtree(State &state, uint64_t page_id, PageKeyRange range, bool selected);
     ~Subtree();
     detail::CallbackSender                             sender() noexcept;

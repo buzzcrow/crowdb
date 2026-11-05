@@ -10,6 +10,8 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <future>
 #include <map>
 #include <numeric>
 #include <random>
@@ -118,16 +120,9 @@ TEST(DoubleBuffer, NonContiguousLeftoverSurvivesAcrossFreezeGenerations)
     EXPECT_EQ(get_or(t, "a", "?"), "A5");
 }
 
-// max_memtable_count bounds the frozen_ queue depth (active_ + up to
-// max_memtable_count-1 queued frozen buffers). Exercise more than the
-// default 2 buffers: force a freeze on every apply with a set of keys whose
-// slots never become contiguous, so freezes pile up in frozen_ without an
-// intervening flush() drain. Once the cap is hit, further threshold trips
-// are skipped (active_ keeps growing) rather than stalling the writer or
-// growing frozen_ without bound -- but no data is ever lost regardless of
-// how many buffer generations a key's write passed through, which is what
-// this test actually asserts (the cap is an internal bookkeeping optimization
-// with no user-visible behavior difference besides that).
+// Missing slots retain their data within the configured source capacity.
+// Advancing the contiguous prefix lets flush release that capacity before
+// the waiting writer can create further sources.
 TEST(DoubleBuffer, SupportsMoreThanTwoBuffersAndFlushesAllOfThemCorrectly)
 {
     Config opt;
@@ -137,19 +132,33 @@ TEST(DoubleBuffer, SupportsMoreThanTwoBuffersAndFlushesAllOfThemCorrectly)
 
     const int K = 8;
     // Widely-spaced, strictly increasing slots: contiguous_slot_ never
-    // advances past 0 until force_advance_slot at the end, so every one of
-    // these applies stays non-contiguous and none of the freezes it triggers
-    // get drained until the very last flush() below.
-    for (int i = 0; i < K; ++i) {
+    // advances past 0 until the first explicit frontier advance below.
+    // Filling the source capacity therefore blocks further ordinary writes.
+    for (int i = 0; i < 4; ++i) {
         auto s = static_cast<uint64_t>(i + 1) * 10;
         ASSERT_TRUE(t.apply(s, put_one(make_key(i), "v" + std::to_string(i))).ok());
     }
     EXPECT_EQ(t.last_applied_slot(), 0U);
-    EXPECT_EQ(t.memtable_count(), static_cast<size_t>(K));
-    for (int i = 0; i < K; ++i) {
+    EXPECT_EQ(t.memtable_count(), 4U);
+    auto waiting = std::async(std::launch::async, [&] {
+        for (int i = 4; i < K; ++i) {
+            auto status = t.apply(static_cast<uint64_t>(i + 1) * 10, put_one(make_key(i), "v" + std::to_string(i)));
+            if (!status.ok()) {
+                return status;
+            }
+        }
+        return Status::Ok();
+    });
+    EXPECT_EQ(waiting.wait_for(std::chrono::milliseconds(20)), std::future_status::timeout);
+    EXPECT_EQ(t.memtable_count(), 4U);
+    for (int i = 0; i < 4; ++i) {
         EXPECT_EQ(get_or(t, make_key(i), "?"), "v" + std::to_string(i));
     }
 
+    t.force_advance_slot(40);
+    ASSERT_TRUE(t.flush().ok());
+    const auto resumed = waiting.get();
+    ASSERT_TRUE(resumed.ok()) << resumed.to_string();
     t.force_advance_slot(static_cast<uint64_t>(K) * 10);
     ASSERT_TRUE(t.flush().ok());
     EXPECT_EQ(t.memtable_count(), 0U);
@@ -312,8 +321,8 @@ TEST(DoubleBuffer, ConcurrentReadersDuringFrequentFreezeAndDrainNoCorruption)
 TEST(DoubleBuffer, ScanMergeLoserTreeWithMultipleFrozenMemtables)
 {
     Config opt;
-    opt.max_memtable_count     = 6; // active_ + up to 5 queued frozen_ buffers
-    opt.memtable_flush_entries = 1; // freeze after every single apply
+    opt.max_memtable_count     = 16; // retain the finite scan fixture without hitting capacity
+    opt.memtable_flush_entries = 1;  // freeze after every single apply
     Crowdbtree t(opt);
 
     // Write the same 3 keys into 4 separate frozen generations, each with a
@@ -329,9 +338,7 @@ TEST(DoubleBuffer, ScanMergeLoserTreeWithMultipleFrozenMemtables)
             slot += 10;
         }
     }
-    // 12 applies, 12 frozen memtables (but capped at 5 by max_memtable_count).
-    // The exact frozen count depends on the cap; the scan must be correct
-    // regardless. Every key appears in multiple sources with different slots.
+    // Every key appears in multiple sources with different slots.
 
     std::vector<scan_entry> out;
     bool                    trunc = false;
@@ -362,7 +369,7 @@ TEST(DoubleBuffer, ScanMergeLoserTreeWithMultipleFrozenMemtables)
 TEST(DoubleBuffer, ScanMergeLoserTreeDistinctKeysAcrossFrozenMemtables)
 {
     Config opt;
-    opt.max_memtable_count     = 6;
+    opt.max_memtable_count     = 16;
     opt.memtable_flush_entries = 1;
     Crowdbtree t(opt);
 
@@ -396,7 +403,7 @@ TEST(DoubleBuffer, ScanMergeLoserTreeDistinctKeysAcrossFrozenMemtables)
 TEST(DoubleBuffer, MergedDrainDedupAcrossFrozenMemtables)
 {
     Config opt;
-    opt.max_memtable_count     = 6;
+    opt.max_memtable_count     = 16;
     opt.memtable_flush_entries = 1; // freeze after every single apply
     Crowdbtree t(opt);
 
@@ -412,8 +419,9 @@ TEST(DoubleBuffer, MergedDrainDedupAcrossFrozenMemtables)
             slot += 10;
         }
     }
-    // All slots are contiguous (10, 20, 30, ... 150), so flush drains all.
+    t.force_advance_slot(150);
     ASSERT_TRUE(t.flush().ok());
+    EXPECT_EQ(t.memtable_count(), 0U);
 
     // After flush, L0 is empty and L1 has the highest-slot value per key.
     // Slots: a@130, b@140, c@150, d@160(→wait, recalc).
@@ -512,7 +520,7 @@ TEST(DoubleBuffer, SortAwareDescentAcrossLeafBoundariesWithSplits)
 
 // A full soft source queue requests finite handoff. Every committed entry
 // remains readable while source ownership moves into the published mapping.
-TEST(DoubleBuffer, FrozenQueueFullActiveKeepsGrowingEntriesReadable)
+TEST(DoubleBuffer, FullSourceCapacityFlushesBeforeFurtherWritesRemainReadable)
 {
     Config opt;
     opt.max_memtable_count     = 2; // 1 active + 1 frozen slot
@@ -656,7 +664,7 @@ TEST(DoubleBuffer, FlushDrainsAllFrozenMemtablesInOneCall)
 
 // Count-triggered handoffs remain finite. Explicit maintenance after the
 // writer stops drains the final source set, and the next write can proceed.
-TEST(DoubleBuffer, FlushIterationCapExitsCleanly)
+TEST(DoubleBuffer, RepeatedCapacityFlushesDrainEveryAcceptedPrefix)
 {
     Config opt;
     opt.memtable_flush_entries = 3; // tiny threshold → many freezes

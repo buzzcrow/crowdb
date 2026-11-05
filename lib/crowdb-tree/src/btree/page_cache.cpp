@@ -206,7 +206,7 @@ Status SharedPageCache::bind_reserved(std::shared_ptr<PageLoader>               
         if (!reservation) {
             slot->occupied.store(false, std::memory_order_release);
         }
-        return Status::resource_exhausted();
+        return Status::resource_exhausted("cache binding allocation failed");
     }
     return Status::Ok();
 }

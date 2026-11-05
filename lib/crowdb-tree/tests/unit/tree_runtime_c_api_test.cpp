@@ -34,7 +34,7 @@ TEST(TreeRuntimeCAbi, NullRuntimeUsesTheProcessHostAndEnforcesWriterCredit)
     EXPECT_EQ(core->binding()->options().limits.writer_bytes, 1024U * 1024U);
     const std::vector<uint8_t> value(2 * 1024 * 1024);
     EXPECT_EQ(ct_apply_put(tree, 1, reinterpret_cast<const uint8_t *>("key"), 3, value.data(), value.size()),
-              static_cast<int32_t>(Code::kUnavailable));
+              static_cast<int32_t>(Code::kResourceExhausted));
     EXPECT_EQ(core->contiguous_slot(), 0U);
     ct_close(tree);
 }

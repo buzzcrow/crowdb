@@ -85,16 +85,19 @@ Status bind_flush_reservations(PublicationCoordinator &publisher, const FlushPre
     if (!backend_status.ok()) {
         return backend_status;
     }
-    batch->cpu_progress     = preparation.cpu_progress;
-    batch->publication      = preparation.publication;
-    batch->persistent       = preparation.persistent;
-    batch->persistence      = preparation.persistence;
-    batch->checkpoint_token = preparation.checkpoint_token;
+    batch->cpu_progress = preparation.cpu_progress;
+    batch->publication  = preparation.publication;
+    batch->persistent   = preparation.persistent;
+    batch->persistence  = preparation.persistence;
     if (preparation.persistent) {
         auto persistence = preparation.persistence;
         if (!persistence) {
             return Status::invalid_argument("persistent flush needs its durable sink");
         }
+        // Binding runs under the existing flush preparation admission. A
+        // request that waited or joined an older round must use this round's
+        // current checkpoint token and durable baseline.
+        persistence->configure(*batch);
         persistence->bind_io(reserved.io);
         *maintenance = [persistence](auto view, auto done) { persistence->commit(std::move(view), std::move(done)); };
     }
