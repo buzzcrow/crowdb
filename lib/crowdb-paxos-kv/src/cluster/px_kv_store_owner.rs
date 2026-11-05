@@ -61,15 +61,18 @@ pub(super) fn write_response(
             )
         }
         Err(
-            KvGroupOperationError::OutcomeUnknown
+            error @ (KvGroupOperationError::OutcomeUnknown
             | KvGroupOperationError::Unavailable(_)
-            | KvGroupOperationError::Internal(_),
-        ) => crate::rpc::KvResponse::cas_error(
-            crate::rpc::KvErrorCode::KvErrorOutcomeUnknown,
-            0,
-            "compare-and-set outcome is unknown",
-            request_id,
-            request_create_ms,
-        ),
+            | KvGroupOperationError::Internal(_)),
+        ) => {
+            tracing::warn!(request_id, error = %error, "owner write did not produce a definite result");
+            crate::rpc::KvResponse::cas_error(
+                crate::rpc::KvErrorCode::KvErrorOutcomeUnknown,
+                0,
+                "compare-and-set outcome is unknown",
+                request_id,
+                request_create_ms,
+            )
+        }
     }
 }

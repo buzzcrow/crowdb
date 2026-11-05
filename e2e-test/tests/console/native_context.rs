@@ -20,9 +20,10 @@ pub(super) struct TestNativeContext {
 impl TestNativeContext {
     pub(super) async fn connect() -> Self {
         let addresses = crate::common::management::addresses(3);
+        // A restart includes the supervisor's stop grace and startup probe.
         let http = Client::builder()
             .no_proxy()
-            .timeout(Duration::from_secs(20))
+            .timeout(Duration::from_secs(60))
             .build()
             .unwrap();
         let base = format!("http://{}:{WEB_BASE}", addresses[0]);

@@ -47,13 +47,15 @@ class ChunkRuntimePageStore final : public PageStore
         return transport_;
     }
 
-    [[nodiscard]] RuntimeFactory runtime_factory() const noexcept override;
-    [[nodiscard]] bool           supported() const noexcept;
-    Status                       make_domain(uint64_t identity, const std::shared_ptr<AllocationBudget> &budget,
-                                             std::shared_ptr<const ChunkBackingDomain> *out) const;
-    Status                       write_at(uint64_t offset, const uint8_t *data, size_t length) override;
-    Status                       read_at(uint64_t offset, uint8_t *data, size_t length) const override;
-    Status                       sync() override;
+    [[nodiscard]] RuntimeFactory   runtime_factory() const noexcept override;
+    [[nodiscard]] bool             supported() const noexcept;
+    Status                         make_domain(uint64_t identity, const std::shared_ptr<AllocationBudget> &budget,
+                                               std::shared_ptr<const ChunkBackingDomain> *out) const;
+    Status                         prepare_writer(const std::shared_ptr<AllocationBudget> &budget);
+    std::shared_ptr<ChunkPinOwner> take_writer() noexcept;
+    Status                         write_at(uint64_t offset, const uint8_t *data, size_t length) override;
+    Status                         read_at(uint64_t offset, uint8_t *data, size_t length) const override;
+    Status                         sync() override;
 
     [[nodiscard]] uint64_t size() const override
     {
@@ -95,6 +97,7 @@ class ChunkRuntimePageStore final : public PageStore
     ChunkRuntimeOptions                            options_;
     std::shared_ptr<RootCatalog>                   catalog_;
     std::shared_ptr<ChunkTransport>                transport_;
+    std::shared_ptr<ChunkPinOwner>                 writer_session_;
     mutable std::shared_ptr<ChunkPhysicalRegistry> physical_registry_;
     std::atomic<uint64_t>                          wal_requested_{0};
     std::atomic<uint64_t>                          wal_committed_{0};

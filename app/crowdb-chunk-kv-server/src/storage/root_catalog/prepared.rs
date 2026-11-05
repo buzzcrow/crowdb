@@ -47,7 +47,9 @@ impl KvRootCatalogStore {
         };
         if !allowed
             || identity.instance_id != current.owner.instance_id
-            || (authority_epoch != transition.source_epoch && authority_epoch != self.owner_epoch)
+            // A retained split keeps its Tree writer as partition epochs advance.
+            || (authority_epoch != self.owner_epoch
+                && (authority_epoch == 0 || authority_epoch > transition.source_epoch))
             || current.partition_id != prepared.partition_id
             || current.range != prepared.range
             || current.owner != prepared.owner
@@ -56,6 +58,10 @@ impl KvRootCatalogStore {
             || current.artifact.stream_name != prepared.artifact.stream_name
             || !same_recovery_base(&current, prepared)
         {
+            tracing::warn!(tree_id = self.tree_id, phase = ?transition.phase, authority_epoch,
+                owner_epoch = self.owner_epoch, process_owner = identity.instance_id,
+                target_owner = current.owner.instance_id, same_base = same_recovery_base(&current, prepared),
+                "prepared tree staging no longer matches its transfer intent");
             return Err(CtError::Unavailable);
         }
         Ok(())

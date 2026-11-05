@@ -154,3 +154,59 @@ async fn preparation_requires_exact_recovery_base_and_fixed_target_process() {
     );
     source.store().publish(42, 0, 1, 1, b"still-source").unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retained_split_tree_can_prepare_transfer_at_a_newer_partition_epoch() {
+    let metadata = metadata::TestMetadata::start().await;
+    let source_process = root_process::process(&metadata.client, 1).await;
+    let source = open_root_catalog_with_process_for_tests(
+        metadata.client.clone(),
+        0,
+        1,
+        &root_process::entry(1),
+        source_process,
+    )
+    .await
+    .unwrap();
+    source.store().publish(42, 0, 1, 1, b"retained-source").unwrap();
+    // A retained split changes partition ownership epoch, keeping its Tree writer.
+    let (mut transition, mut entry) = preparation();
+    transition.source_epoch = 2;
+    transition.target_epoch = 3;
+    entry.owner_epoch = 3;
+    entry.artifact.tail_overlay.as_mut().unwrap().source_epoch = 2;
+    transition.target_artifact = entry.artifact.clone();
+    let control = Group0ControlStore::from_client(metadata.client.clone());
+    control.persist_transfer_transition(&transition, 0).await.unwrap();
+    let target_process = root_process::process(&metadata.client, 2).await;
+    let target =
+        open_root_catalog_with_process_for_tests(metadata.client.clone(), 0, 1, &entry, target_process)
+            .await
+            .unwrap();
+    let mut stage = root_process::stage();
+    stage.id.owner_epoch = 3;
+    target.store().compare_stage(42, 3, None, Some(&stage)).unwrap();
+    source
+        .store()
+        .publish(42, 1, 1, 2, b"source-still-writes")
+        .unwrap();
+    assert_eq!(
+        target.store().publish(42, 2, 3, 3, b"premature-target"),
+        Err(CtError::Unavailable)
+    );
+    let successor_process = root_process::process(&metadata.client, 4).await;
+    let _successor = open_root_catalog_with_process_for_tests(
+        metadata.client.clone(),
+        0,
+        1,
+        &root_process::entry(4),
+        successor_process,
+    )
+    .await
+    .unwrap();
+    let writing = root_process::next(&stage, StageState::Writing);
+    assert_eq!(
+        target.store().compare_stage(42, 3, Some(&stage), Some(&writing)),
+        Err(CtError::Unavailable)
+    );
+}

@@ -5,6 +5,7 @@
 #include "btree/tree_core.h"
 #include "chunk_frame.h"
 #include "chunk_physical_registry.h"
+#include "chunk_pin_release.h"
 
 #include <bit>
 
@@ -76,6 +77,30 @@ try {
 }
 catch (const std::bad_alloc &) {
     return Status::resource_exhausted();
+}
+
+Status ChunkRuntimePageStore::prepare_writer(const std::shared_ptr<AllocationBudget> &budget)
+{
+    if (writer_session_) {
+        return Status::Ok();
+    }
+    std::shared_ptr<ChunkPinOwner> session;
+    auto                           status =
+        catalog_->pin_release_queue()->prepare_writer(budget, catalog_, options_.tree, options_.owner_epoch, &session);
+    if (!status.ok()) {
+        return status;
+    }
+    if (!catalog_->claim_runtime_writer()) {
+        return Status::unavailable();
+    }
+    session->arm();
+    writer_session_ = std::move(session);
+    return Status::Ok();
+}
+
+std::shared_ptr<ChunkPinOwner> ChunkRuntimePageStore::take_writer() noexcept
+{
+    return std::move(writer_session_);
 }
 
 Status ChunkRuntimePageStore::write_at(uint64_t /*offset*/, const uint8_t * /*data*/, size_t /*length*/)

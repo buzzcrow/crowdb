@@ -223,6 +223,10 @@ impl KvRootCatalogStore {
         self.kv
             .get(self.store_id, self.group_id, key, ReadMode::Linearizable, None)
             .await
+            .map_err(|error| {
+                tracing::warn!(tree_id = self.tree_id, error = %error, "tree root catalog read failed");
+                error
+            })
             .map(|outcome| match outcome {
                 GetOutcome::Found { value, revision } => Some((value, revision)),
                 GetOutcome::NotFound => None,

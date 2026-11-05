@@ -43,10 +43,10 @@ impl KvRootCatalogStore {
 
     pub(in super::super) fn check_process_owner(&self) -> Result<(), CtError> {
         let process = self.process.as_ref().ok_or(CtError::NotSupported)?;
-        process
-            .capture(Instant::now())
-            .map(|_| ())
-            .map_err(|_| CtError::Unavailable)
+        process.capture(Instant::now()).map(|_| ()).map_err(|error| {
+            tracing::warn!(tree_id = self.tree_id, error = %error, "tree process authority is unavailable");
+            CtError::Unavailable
+        })
     }
 
     /// Called only after the real root and complete WAL replay have succeeded.

@@ -17,7 +17,7 @@ struct TreeResourceLimits
     size_t routing_bytes    = 512ULL * 1024 * 1024;
     size_t reclaim_bytes    = 128ULL * 1024 * 1024;
     size_t writer_bytes     = 512ULL * 1024 * 1024;
-    size_t gap_repair_bytes = 64ULL * 1024 * 1024;
+    size_t gap_repair_bytes = 256ULL * 1024 * 1024;
     size_t io_operations    = 128;
 };
 
@@ -41,10 +41,10 @@ struct TreeBindingOptions
     size_t             lifecycle_bytes = 1024ULL * 1024;
     TreeResourceLimits limits{.handoff_bytes    = 64ULL * 1024 * 1024,
                               .routing_bytes    = 256ULL * 1024 * 1024,
-                              .reclaim_bytes    = 64ULL * 1024 * 1024,
-                              .writer_bytes     = 128ULL * 1024 * 1024,
-                              .gap_repair_bytes = 64ULL * 1024 * 1024,
-                              .io_operations    = 16};
+                              .reclaim_bytes    = 128ULL * 1024 * 1024,
+                              .writer_bytes     = 256ULL * 1024 * 1024,
+                              .gap_repair_bytes = 256ULL * 1024 * 1024,
+                              .io_operations    = 64};
 };
 
 struct TreeExecutorSnapshot

@@ -80,8 +80,11 @@ Status prepare(TreeCore &core, std::shared_ptr<const PublishedTreeState> view, P
     }
     auto bytes = ResourceBudget::try_reserve(ready.binding->account(), BudgetClass::kRouting, *bound);
     auto io    = ResourceBudget::try_reserve(ready.binding->account(), BudgetClass::kIo, 1);
-    if (!bytes || !io) {
-        return Status::resource_exhausted("read progress reserve unavailable");
+    if (!bytes) {
+        return Status::resource_exhausted("read Routing reserve unavailable: requested=" + std::to_string(*bound));
+    }
+    if (!io) {
+        return Status::resource_exhausted("read I/O reserve unavailable");
     }
     ready.credit          = AllocationReservation::create(std::move(*bytes));
     ready.io              = reserved_shared<AllocationReservation>(ready.credit, std::move(*io));

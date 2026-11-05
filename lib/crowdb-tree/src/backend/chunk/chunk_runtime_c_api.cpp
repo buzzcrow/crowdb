@@ -39,6 +39,10 @@ try {
     if (!store->supported()) {
         return static_cast<ct_status>(Code::kNotSupported);
     }
+    const auto writer = store->prepare_writer(budget);
+    if (!writer.ok()) {
+        return static_cast<ct_status>(writer.code());
+    }
     handle->bundle->store         = std::move(store);
     handle->bundle->backend_label = "chunk-runtime";
     *out                          = handle.release();

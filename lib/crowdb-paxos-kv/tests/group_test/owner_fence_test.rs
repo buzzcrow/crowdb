@@ -84,8 +84,8 @@ async fn concurrent_owner_writes_do_not_advance_or_contend_on_the_fence(key: &[u
 
 async fn owner_write_can_mix_a_snapshot_with_deletions(key: &[u8]) {
     let (group, fence) = owner_group(key).await;
-    let mut original = 100_u16.to_le_bytes().to_vec();
-    for index in 0..100 {
+    let mut original = 512_u16.to_le_bytes().to_vec();
+    for index in 0..512 {
         let key = Bytes::from(format!("old-record-{index}"));
         original.extend_from_slice(&encode(&key, b"before")[2..]);
     }
@@ -94,8 +94,8 @@ async fn owner_write_can_mix_a_snapshot_with_deletions(key: &[u8]) {
         .await;
     assert!(matches!(inserted, ProposeResult::Chosen { .. }), "{inserted:?}");
     let mut payload = encode(&Bytes::from_static(b"snapshot"), b"bitmap");
-    payload[..2].copy_from_slice(&101_u16.to_le_bytes());
-    for index in 0..100 {
+    payload[..2].copy_from_slice(&513_u16.to_le_bytes());
+    for index in 0..512 {
         let key = format!("old-record-{index}");
         payload.push(1);
         payload.extend_from_slice(&u32::try_from(key.len()).unwrap().to_le_bytes());
@@ -106,7 +106,7 @@ async fn owner_write_can_mix_a_snapshot_with_deletions(key: &[u8]) {
         .propose_owner_write_for_tests(payload, fence.clone(), Bytes::from_static(b"old"), None, 3, 2)
         .await;
     assert!(matches!(result, ProposeResult::Chosen { .. }), "{result:?}");
-    for index in 0..100 {
+    for index in 0..512 {
         let key = format!("old-record-{index}");
         assert_eq!(
             group

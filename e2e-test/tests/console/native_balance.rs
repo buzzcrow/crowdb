@@ -10,6 +10,7 @@ use crowdb_chunk_kv_client::{
 };
 use crowdb_paxos_kv_client::ServiceRegistryClient;
 use crowdb_protocol::{
+    chunk_kv::balance::{BalanceObservation, OBSERVATION_KEY},
     chunk_kv::{ChunkKvRangeCatalogPartitionState, OperationResult, PointOperation},
     common::ChunkKvExtra,
 };
@@ -134,6 +135,7 @@ async fn wait_balanced(
         let catalog = load(source).await;
         let counts = counts(&catalog);
         let observations = observe(registry).await;
+        let placement = placement_observation(kv).await;
         let moved = previous.as_ref().is_some_and(|old| {
             old.entries().iter().any(|entry| {
                 catalog.entries().iter().any(|current| {
@@ -148,6 +150,13 @@ async fn wait_balanced(
                 && entry.state == ChunkKvRangeCatalogPartitionState::Serving
                 && entry.transition_id.is_none()
                 && entry.artifact.tail_overlay.is_none()
+                && !placement.as_ref().is_some_and(|observation| {
+                    observation_current(observation, catalog.generation())
+                        && observation.partitions.iter().any(|partition| {
+                            partition.partition_id == entry.partition_id
+                                && matches!(partition.reason.as_str(), "cooldown" | "active transition")
+                        })
+                })
                 && observations[&entry.owner.instance_id]
                     .partition_loads
                     .iter()
@@ -159,7 +168,7 @@ async fn wait_balanced(
             let since = stalled.get_or_insert_with(Instant::now);
             assert!(
                 since.elapsed() < Duration::from_secs(40),
-                "healthy idle owner made no actual placement progress for forty seconds: {counts:?}"
+                "healthy idle owner made no actual placement progress for forty seconds: {counts:?}, placement={placement:?}"
             );
         }
         if report.elapsed() >= Duration::from_secs(30) {
@@ -193,7 +202,18 @@ async fn wait_balanced(
 }
 
 async fn placement_ready(kv: &crowdb_paxos_kv_client::PaxosKvClient, generation: u64) -> bool {
-    use crowdb_protocol::chunk_kv::balance::{BalanceObservation, OBSERVATION_KEY};
+    let Some(observation) = placement_observation(kv).await else {
+        return false;
+    };
+    observation_current(&observation, generation)
+        && (observation.reason == "within tolerance"
+            || observation.reason == "no useful safe move"
+                && observation.partitions.iter().all(|partition| {
+                    partition.reason == "no improving target" || partition.reason == "insufficient benefit"
+                }))
+}
+
+async fn placement_observation(kv: &crowdb_paxos_kv_client::PaxosKvClient) -> Option<BalanceObservation> {
     let value = kv
         .get(
             0,
@@ -205,9 +225,12 @@ async fn placement_ready(kv: &crowdb_paxos_kv_client::PaxosKvClient, generation:
         .await
         .unwrap();
     let crowdb_paxos_kv_client::GetOutcome::Found { value, .. } = value else {
-        return false;
+        return None;
     };
-    let observation: BalanceObservation = serde_json::from_slice(&value).unwrap();
+    Some(serde_json::from_slice(&value).unwrap())
+}
+
+fn observation_current(observation: &BalanceObservation, generation: u64) -> bool {
     let now = u64::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -217,11 +240,6 @@ async fn placement_ready(kv: &crowdb_paxos_kv_client::PaxosKvClient, generation:
     .unwrap();
     observation.catalog_generation == generation
         && now.saturating_sub(observation.observed_at_ms) <= observation.valid_for_ms
-        && (observation.reason == "within tolerance"
-            || observation.reason == "no useful safe move"
-                && observation.partitions.iter().all(|partition| {
-                    partition.reason == "no improving target" || partition.reason == "insufficient benefit"
-                }))
 }
 
 async fn load(source: &Group0ChunkKvRangeCatalogSource) -> ChunkKvRangeCatalogMap {

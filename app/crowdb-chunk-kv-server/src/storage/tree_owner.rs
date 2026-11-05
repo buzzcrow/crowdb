@@ -69,10 +69,6 @@ impl ChunkKvStorage {
         )
         .await?;
         let catalog = self.bind_catalog(catalog)?;
-        catalog
-            .register_writer()
-            .await
-            .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?;
         let store = self.open_tree_page_store(
             options,
             Arc::new(
@@ -80,6 +76,10 @@ impl ChunkKvStorage {
                     .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?,
             ),
         )?;
+        catalog
+            .register_writer()
+            .await
+            .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?;
         Ok((store, catalog))
     }
 
@@ -110,19 +110,29 @@ impl ChunkKvStorage {
             metadata_group_id,
             entry,
         )
-        .await?;
+        .await
+        .map_err(|error| {
+            tracing::warn!(tree_id = entry.artifact.tree_id, error = %error, "assignment root claim failed");
+            error
+        })?;
         let catalog = self.bind_catalog(catalog)?;
-        catalog
-            .register_writer()
-            .await
-            .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?;
         let page_store = self.open_tree_page_store(
             options,
             Arc::new(
                 ChunkRootCatalog::open_callback(catalog.clone())
                     .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?,
             ),
-        )?;
+        ).map_err(|error| {
+            tracing::warn!(tree_id = entry.artifact.tree_id, error = %error, "assignment PageStore open failed");
+            error
+        })?;
+        catalog
+            .register_writer()
+            .await
+            .map_err(|error| {
+                tracing::warn!(tree_id = entry.artifact.tree_id, error = %error, "assignment writer registration failed");
+                StorageRuntimeError::Tree(error.to_string())
+            })?;
         Ok((page_store, catalog))
     }
 

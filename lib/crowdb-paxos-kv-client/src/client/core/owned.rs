@@ -70,7 +70,10 @@ impl PaxosKvClient {
                     group_id,
                 )
                 .await
-                .map_err(|_| Error::OutcomeUnknown)?;
+                .map_err(|error| {
+                    tracing::warn!(store_id, group_id, error = %error, "owner write RPC outcome is unknown");
+                    Error::OutcomeUnknown
+                })?;
             if response.ok {
                 self.record_write(store_id, group_id, response.revision);
                 return Ok(WriteOutcome {

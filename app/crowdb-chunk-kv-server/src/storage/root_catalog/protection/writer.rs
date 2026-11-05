@@ -146,12 +146,23 @@ impl KvRootCatalogStore {
             if self.writer_quiesced.load(Ordering::Acquire) {
                 return Err(CtError::Unavailable.into());
             }
-            let authority = self.protection_authority(false).await?;
+            let authority = self.protection_authority(false).await.map_err(|error| {
+                tracing::warn!(tree_id = self.tree_id, owner_epoch = self.owner_epoch, error = %error,
+                    "writer registration could not load root authority");
+                error
+            })?;
             if authority.epoch != self.owner_epoch {
                 if authority.epoch > self.owner_epoch {
+                    tracing::warn!(tree_id = self.tree_id, authority_epoch = authority.epoch, owner_epoch = self.owner_epoch,
+                        "writer registration has a stale owner epoch");
                     return Err(CtError::Unavailable.into());
                 }
-                self.check_prepared_staging(authority.epoch).await?;
+                self.check_prepared_staging(authority.epoch).await.map_err(|error| {
+                    tracing::warn!(tree_id = self.tree_id, authority_epoch = authority.epoch, owner_epoch = self.owner_epoch,
+                        prepared = self.prepared_assignment.is_some(), error = %error,
+                        "writer registration does not match prepared staging");
+                    error
+                })?;
             }
             let key = catalog_key(self.tree_id, b"writer-owner", self.owner_epoch);
             if let Some((bytes, _)) = self.get(&key).await.map_err(|_| CtError::Unavailable)? {
@@ -165,6 +176,11 @@ impl KvRootCatalogStore {
                 if !self.writer_was_closed(self.owner_epoch, previous).await?
                     && !self.process_is_excluded(previous.process).await?
                 {
+                    tracing::warn!(
+                        tree_id = self.tree_id,
+                        previous_incarnation = previous.incarnation,
+                        "tree writer replacement waits for the previous writer to close"
+                    );
                     return Err(CtError::Unavailable.into());
                 }
             }

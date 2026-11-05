@@ -32,7 +32,10 @@ Status FlushController::prepare_or_plan(const FlushPreparationOptions   &prepara
     }
     const auto sources = state_->sources.catalog();
     const auto view    = state_->publisher.capture();
-    auto       status  = state_->prepare_covered(preparation, view, sources, existing);
+    if (view->flush_admission_owner != 0 || view->pending_handoff || view->checkpoint_inflight) {
+        return Status::unavailable("flush waits for the current publication owner");
+    }
+    auto status = state_->prepare_covered(preparation, view, sources, existing);
     if (!status.ok() || *existing) {
         return status;
     }

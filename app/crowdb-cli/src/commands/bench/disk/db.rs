@@ -136,7 +136,14 @@ pub async fn run(cli: &Cli, verb: DiskdbBenchVerb) -> ExitCode {
     let elapsed = started.elapsed();
     metrics.stop().await;
     let live: Vec<_> = receiver.try_iter().collect();
-    if mixed && !compact_for_verification(&client, &groups).await {
+    if mixed
+        && !compact_for_verification(
+            &client,
+            &groups,
+            baseline + live_bytes(&live, args.unit_size_bytes),
+        )
+        .await
+    {
         total.errors += 1;
     }
     let final_busy = busy_bytes(&client, &groups).await.unwrap_or(u64::MAX);
@@ -181,14 +188,28 @@ fn valid_args(args: &DiskdbArgs) -> bool {
     valid
 }
 
-async fn compact_for_verification(client: &Arc<DiskdbClient>, groups: &[u64]) -> bool {
-    for _ in 0..3 {
+async fn compact_for_verification(client: &Arc<DiskdbClient>, groups: &[u64], expected_busy: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
         if let Err(error) = compact_all(client, groups).await {
             eprintln!("diskdb compaction failed: {error}");
             return false;
         }
+        match busy_bytes(client, groups).await {
+            Ok(actual) if actual == expected_busy => return true,
+            Ok(actual) if Instant::now() >= deadline => {
+                eprintln!(
+                    "diskdb compaction did not drain pending frees: busy={actual} expected={expected_busy}"
+                );
+                return false;
+            }
+            Ok(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+            Err(error) => {
+                eprintln!("diskdb compaction capacity query failed: {error}");
+                return false;
+            }
+        }
     }
-    true
 }
 
 fn report(total: &mut TaskResult, input: &ReportInput<'_>) -> ExitCode {

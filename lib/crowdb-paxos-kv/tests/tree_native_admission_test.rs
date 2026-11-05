@@ -8,7 +8,7 @@ use crowdb_paxos_kv::kv::{ApplyAdmissionError, Batch, CrowdbTreeConfig, CrowdbTr
 use crowdb_tree_ffi::{TreeRuntime, TreeRuntimeOptions};
 
 fn engine() -> CrowdbTreeEngine {
-    CrowdbTreeEngine::open(&CrowdbTreeConfig {
+    let mut config = CrowdbTreeConfig {
         runtime: Some(Arc::new(
             TreeRuntime::new(TreeRuntimeOptions {
                 workers: 1,
@@ -17,8 +17,9 @@ fn engine() -> CrowdbTreeEngine {
             .unwrap(),
         )),
         ..Default::default()
-    })
-    .unwrap()
+    };
+    config.runtime_binding.limits.gap_repair_bytes = 16 * 1024 * 1024;
+    CrowdbTreeEngine::open(&config).unwrap()
 }
 
 fn put(value: &[u8]) -> Bytes {

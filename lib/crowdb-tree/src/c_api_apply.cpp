@@ -6,6 +6,7 @@
 #include "btree/tree_core_batch.h"
 #include "c_api_future_internal.h"
 #include "c_api_internal.h"
+#include "crowdb-common/log.h"
 #include "crowdb-tree/apply_c_api.h"
 
 using namespace crowdb::tree;
@@ -108,6 +109,9 @@ try {
         },
         gap_repair != 0 ? detail::BudgetClass::kGapRepair : detail::BudgetClass::kAdmittedWriter, retained, &operation);
     if (!status.ok()) {
+        if (status.code() == Code::kInvalidArgument) {
+            CRB_LOG_WARN("apply admission rejected {} operations: {}", count, status.to_string());
+        }
         return static_cast<int32_t>(status.code());
     }
     auto metadata = operation->allocation_budget();
@@ -207,6 +211,9 @@ try {
         },
         *retained, &operation);
     if (!status.ok()) {
+        if (status.code() == Code::kInvalidArgument) {
+            CRB_LOG_WARN("apply admission rejected {} operations: {}", count, status.to_string());
+        }
         return static_cast<int32_t>(status.code());
     }
     auto metadata = operation->allocation_budget();

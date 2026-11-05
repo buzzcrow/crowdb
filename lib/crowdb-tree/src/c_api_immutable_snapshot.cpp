@@ -6,6 +6,7 @@
 #include "c_api_immutable_snapshot_internal.h"
 #include "c_api_internal.h"
 #include "c_api_owned_budget.h"
+#include "crowdb-common/log.h"
 
 using namespace crowdb::tree;
 
@@ -87,11 +88,14 @@ try {
         return static_cast<ct_status>(Code::kNotSupported);
     }
     RuntimeRangeImport staging;
+    const char        *phase  = "range copy";
     auto               status = copy_snapshot_range(snapshot->context, *core, core->config().key_range, staging);
     if (status.ok()) {
+        phase  = "range installation";
         status = core->install_readable(std::move(staging.catalog), staging.credit);
     }
     if (status.ok()) {
+        phase  = "persistent flush";
         status = tree->snapshot();
     }
     if (status.ok() && stats != nullptr) {
@@ -103,11 +107,19 @@ try {
                              .pages_rebuilt    = value.pages_rebuilt,
                              .subtrees_skipped = value.subtrees_skipped};
     }
+    if (!status.ok()) {
+        CRB_LOG_WARN("immutable snapshot {} failed: {}", phase, status.to_string());
+    }
     return static_cast<ct_status>(status.code());
 }
 catch (const std::bad_alloc &) {
     return static_cast<ct_status>(Code::kResourceExhausted);
 }
+catch (const std::exception &error) {
+    CRB_LOG_ERROR("immutable snapshot range rebuild threw: {}", error.what());
+    return static_cast<ct_status>(Code::kInternal);
+}
 catch (...) {
+    CRB_LOG_ERROR("immutable snapshot range rebuild threw an unknown exception");
     return static_cast<ct_status>(Code::kInternal);
 }

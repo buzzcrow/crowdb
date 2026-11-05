@@ -248,6 +248,8 @@ TEST_F(TreeCoreSplit, MultiWindowBaselineCopiesEveryRecordAtTheFixedCoverage)
 
 TEST_F(TreeCoreSplit, BaselineQuotaFailureLeavesTheDestinationUnchangedAndCanRetry)
 {
+    // Leave host headroom for the retained parent while filling the child quota.
+    config.runtime_binding.limits.reclaim_bytes = 64 * 1024 * 1024;
     ASSERT_TRUE(put(*parent, 1, "x", "base").ok());
     ASSERT_TRUE(parent->flush().ok());
     ASSERT_TRUE(put(*parent, 2, "y", "captured").ok());

@@ -271,16 +271,11 @@ Status TreeCore::open_chunk_migration(const Config &config, const std::shared_pt
     if (!status.ok()) {
         return status;
     }
-    status = chunk->domain->catalog->pin_release_queue()->prepare_writer(binding->lifecycle_budget(),
-                                                                         chunk->domain->catalog, chunk->domain->tree,
-                                                                         chunk->domain->epoch, &chunk->writer_session);
+    status = facade->prepare_writer(binding->lifecycle_budget());
     if (!status.ok()) {
         return status;
     }
-    if (!chunk->domain->catalog->claim_runtime_writer()) {
-        return Status::unavailable();
-    }
-    chunk->writer_session->arm();
+    chunk->writer_session = facade->take_writer();
     status = detail::ChunkRuntimeIds::create(chunk->domain->epoch, binding->lifecycle_budget(), &chunk->ids);
     if (!status.ok()) {
         return status;

@@ -171,6 +171,12 @@ Status FlushController::prepare_impl(std::shared_ptr<detail::AllocationReservati
             }
         }
         const auto current = state_->publisher.capture();
+        if (current->flush_admission_owner != 0 || current->pending_handoff || current->checkpoint_inflight) {
+            if (blocked != nullptr) {
+                *blocked = true;
+            }
+            return Status::unavailable("flush waits for the current publication owner");
+        }
         if (plan != nullptr && (credits == nullptr || !plan->view || !plan->sources || plan->view != current ||
                                 plan->sources != source_view)) {
             return Status::unavailable("flush reserve plan changed before binding");

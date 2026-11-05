@@ -89,7 +89,7 @@ TEST(TreeCoreChunkWriteback, ColdUncommittedPacksStayReadableButReopenUsesTheDur
     EXPECT_EQ(test.store->durable_wal_offset(), 4096U);
 }
 
-TEST(TreeCoreChunkWriteback, PendingAllocationRejectsAnotherCheckpointAndCancellationKeepsNewerApply)
+TEST(TreeCoreChunkWriteback, PendingAllocationSerializesCheckpointsAndCancellationKeepsNewerApply)
 {
     test_chunk::TestCoreChunk test;
     ASSERT_TRUE(test.open().ok());
@@ -116,12 +116,7 @@ TEST(TreeCoreChunkWriteback, PendingAllocationRejectsAnotherCheckpointAndCancell
     auto second        = std::make_shared<std::promise<Status>>();
     auto second_result = second->get_future();
     test.tree->snapshot_async([second](Status status, uint64_t) { second->set_value(std::move(status)); });
-    const auto rejected = second_result.wait_for(std::chrono::seconds(2));
-    if (rejected != std::future_status::ready) {
-        gate->resume();
-    }
-    ASSERT_EQ(rejected, std::future_status::ready);
-    EXPECT_EQ(second_result.get().code(), Code::kUnavailable);
+    EXPECT_EQ(second_result.wait_for(std::chrono::milliseconds(20)), std::future_status::timeout);
     ASSERT_TRUE(test.put(3, "newer").ok());
     writeback->request_stop();
     EXPECT_FALSE(completion.done.completed_for_tests());
@@ -129,9 +124,12 @@ TEST(TreeCoreChunkWriteback, PendingAllocationRejectsAnotherCheckpointAndCancell
     gate->resume();
     completion.done.wait();
     EXPECT_EQ(completion.status.code(), Code::kUnavailable);
+    ASSERT_EQ(second_result.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    EXPECT_TRUE(second_result.get().ok());
     EXPECT_FALSE(core->capture()->checkpoint_inflight);
     EXPECT_EQ(test.tree->get_view("key").value().to_string(), "newer");
-    EXPECT_EQ(test.backend.catalog->commit_calls, 1U);
+    EXPECT_EQ(test.backend.catalog->commit_calls, 2U);
+    EXPECT_EQ(test.tree->durable_snapshot_last_applied_slot(), 3U);
     writeback.reset();
     test.backend.transport->before_allocate = {};
     const auto committed                    = test.tree->snapshot();

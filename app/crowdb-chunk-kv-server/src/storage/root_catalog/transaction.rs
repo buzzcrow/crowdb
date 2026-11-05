@@ -25,7 +25,10 @@ impl MutationError {
             Error::CasFailed { .. } | Error::CasBusy => Self::Conflict,
             // An unknown reply requires the caller's durable operation lookup.
             // Do not treat transport or ownership failures as revision conflicts.
-            _ => Self::Status(CtError::Unavailable),
+            _ => {
+                tracing::warn!(error = %error, "tree authority conditional write failed");
+                Self::Status(CtError::Unavailable)
+            }
         }
     }
 }
@@ -38,14 +41,13 @@ impl KvRootCatalogStore {
         // Pins, root publication and GC deliberately share one revision. A
         // definite conflict discards all derived counters and proofs; each
         // attempt rereads authority, revalidates ownership and rebuilds ops.
-        // A finite bound preserves availability under sustained contention.
-        for _ in 0..16 {
+        // Definite conflicts require a fresh derivation, not a storage failure.
+        loop {
             match prepare().await {
                 Ok(value) => return Ok(value),
                 Err(MutationError::Status(status)) => return Err(status),
                 Err(MutationError::Conflict) => tokio::task::yield_now().await,
             }
         }
-        Err(CtError::Unavailable)
     }
 }

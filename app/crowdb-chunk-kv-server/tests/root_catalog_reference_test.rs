@@ -425,8 +425,8 @@ async fn concurrent_pin_mutations_rebuild_guard_counts_before_gc() {
     let stage = ready(store.as_ref(), 1);
     let retired = next(&stage, StageState::Retired);
     for turn in 0..4 {
-        let pins = [id(100 + 2 * turn), id(101 + 2 * turn)];
-        let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let pins: [_; 32] = std::array::from_fn(|index| id(100 + 32 * turn + u64::try_from(index).unwrap()));
+        let start = std::sync::Arc::new(std::sync::Barrier::new(pins.len()));
         let jobs = pins.map(|pin| {
             let catalog = store.clone();
             let start = start.clone();
@@ -439,11 +439,13 @@ async fn concurrent_pin_mutations_rebuild_guard_counts_before_gc() {
         for job in jobs {
             job.await.unwrap().unwrap();
         }
-        store
-            .stage_protection()
-            .unwrap()
-            .unpin_stage(42, stage.id, pins[0])
-            .unwrap();
+        for pin in &pins[..pins.len() - 1] {
+            store
+                .stage_protection()
+                .unwrap()
+                .unpin_stage(42, stage.id, *pin)
+                .unwrap();
+        }
         assert_eq!(
             store.compare_stage(42, 1, Some(&stage), Some(&retired)),
             Err(CtError::Unavailable),
@@ -452,7 +454,7 @@ async fn concurrent_pin_mutations_rebuild_guard_counts_before_gc() {
         store
             .stage_protection()
             .unwrap()
-            .unpin_stage(42, stage.id, pins[1])
+            .unpin_stage(42, stage.id, *pins.last().unwrap())
             .unwrap();
     }
     store.compare_stage(42, 1, Some(&stage), Some(&retired)).unwrap();

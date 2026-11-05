@@ -99,7 +99,9 @@ TEST_F(TreeCoreReplay, DefaultInlineGeometryPersistsUnderChosenPayloadPressure)
     large.page_store    = store.get();
     large.backend_owner = store;
     large.frame_bytes   = 65536;
-    auto status         = TreeCore::open(large, &core);
+    // Keep the pressure workload fixed as the configurable defaults evolve.
+    large.runtime_binding.limits.gap_repair_bytes = 64ULL * 1024 * 1024;
+    auto status                                   = TreeCore::open(large, &core);
     ASSERT_TRUE(status.ok()) << status.to_string();
     const std::string value(16384, 'v');
     for (uint64_t slot = 1; slot <= 4096; ++slot) {

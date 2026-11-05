@@ -107,6 +107,46 @@ TEST(SourceRotationReport, CancelledAdmissionDoesNotRestartItself)
     EXPECT_FALSE(tree.sources.catalog()->active->closed());
 }
 
+TEST(SourceRotationReport, InflightCheckpointWaitsAndResumesWithoutAnotherWrite)
+{
+    TestSoftFlush tree;
+    tree.configure();
+    tree.write("a", 1);
+    const auto checkpoint = [&](CheckpointAction action, uint64_t sequence) {
+        auto request                    = std::make_shared<PublicationRequest>();
+        request->transaction.record     = std::make_shared<InstallRecord>(InstallToken{
+            .generation = tree.publisher.capture()->generation, .batch = 998, .range = 0, .sequence = sequence});
+        request->transaction.checkpoint = CheckpointPublication{.action = action, .token = 1};
+        if (action == CheckpointAction::Capture) {
+            request->transaction.expected_coverage = 0;
+        }
+        request->on_done = [](PublicationResult result) { EXPECT_TRUE(result.status.ok()); };
+        EXPECT_TRUE(tree.publisher.try_submit(request));
+    };
+    checkpoint(CheckpointAction::Capture, 0);
+    ASSERT_TRUE(tree.publisher.capture()->checkpoint_inflight);
+    std::shared_ptr<FlushOperation> operation;
+    bool                            blocked = false;
+    EXPECT_EQ(tree.controller->prepare(tree.preparation, &operation, &blocked).code(), Code::kUnavailable);
+    EXPECT_TRUE(blocked);
+    EXPECT_FALSE(operation);
+    FlushReservePlan plan;
+    EXPECT_EQ(tree.controller->prepare_or_plan(tree.preparation, &operation, &plan).code(), Code::kUnavailable);
+    EXPECT_FALSE(operation);
+    EXPECT_FALSE(plan.view);
+    const auto sequence = tree.rotation->request();
+    ASSERT_NE(sequence, 0U);
+    tree.runtime->drain();
+    EXPECT_EQ(tree.publisher.capture()->coverage, 0U);
+    EXPECT_FALSE(tree.sources.catalog()->active->closed());
+    checkpoint(CheckpointAction::Abort, 1);
+    tree.progress->advance();
+    tree.runtime->drain();
+    tree.rotation->wait(sequence);
+    EXPECT_EQ(tree.publisher.capture()->coverage, 1U);
+    EXPECT_EQ(tree.publisher.capture()->mapping.get(0)->leaf->lookup("a").cell.value.to_string(), "v");
+}
+
 TEST(SourceRotationReport, ReadFailureRetainsRepairWithoutRetryingItsOwnProgress)
 {
     for (const auto code : {Code::kUnavailable, Code::kIoError}) {

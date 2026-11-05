@@ -44,7 +44,11 @@ TEST(ChunkRuntimeCAbi, VersionedFactoryChargesAndReleasesItsActualOwners)
     ++options.struct_bytes;
     ASSERT_EQ(ct_chunk_runtime_page_store_open(runtime.get(), &options, &catalog, &transport, &raw_store), 0);
     EXPECT_GT(config.runtime->snapshot().allocated.routing_bytes, baseline);
+    EXPECT_EQ(backend.catalog->writer_releases, 0U);
     ct_page_store_free(raw_store);
+    EXPECT_EQ(backend.catalog->writer_releases, 0U);
+    EXPECT_EQ(backend.catalog->queue->pump(64).completed, 1U);
+    EXPECT_EQ(backend.catalog->writer_releases, 1U);
     EXPECT_EQ(config.runtime->snapshot().allocated.routing_bytes, baseline);
 }
 
