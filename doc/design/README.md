@@ -52,7 +52,6 @@ Start with the product design, then use Scope to choose an architecture or compo
 | ---------------------------------------------- | ---------------------------------------------------------- |
 | [README.md](../../README.md)                   | Product introduction and deployment options.               |
 | [CONTRIBUTING.md](../../CONTRIBUTING.md)       | Environment, development workflow, and contribution rules. |
-| [AGENTS.md](../../AGENTS.md)                   | Repository rules for coding and documentation work.        |
 | [VERSION](../../VERSION)                       | Canonical development version.                             |
 | [CHANGELOG.md](../../CHANGELOG.md)             | Release history.                                           |
 | [SECURITY.md](../../SECURITY.md)               | Vulnerability reporting.                                   |
