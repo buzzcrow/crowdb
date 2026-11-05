@@ -9,8 +9,6 @@
 //! instance registers under `/srv/<service>/<instance_id>` and
 //! heartbeats periodically. Readers filter expired entries by
 //! `last_heartbeat_ms` against a configurable TTL.
-//!
-//! See `doc/design/kv/design-crowdb-paxos-kv-group0.md` §4.
 
 mod diskio;
 mod session;

@@ -90,8 +90,6 @@ finish_cases
 # accept-round latency. Inflight window NEVER full (enq=0 at all configs).
 # Inter-replica: r2≈r3 (symmetric). Zero errors across all configs
 # (except 256T:8C on 2026-09-02 — pre-existing consensus instability).
-# See doc/design/kv/kv-write-flow-analysis.md for full analysis.
-#
 # Intel i9-7960X (2026-09-10, 16c/32t, Linux 6.11, x86_64):
 #   Same build/config as AMD 2026-09-02. mem-block backend, 20s, 512B
 #   values, 1M keyspace, 3-node cluster, event-write + peer-pool=4.

@@ -14,9 +14,8 @@
 //! ([`HardwareClient`], [`PaxosKvClusterMetaClient`],
 //! [`ServiceRegistryClient`]), each wrapping the same
 //! [`PaxosKvClient`] pinned to group 0. `CrowdbSysmdClient` brings
-//! the `sysmd` concept — defined in
-//! `doc/design/kv/design-crowdb-paxos-kv-group0.md` — into the client layer
-//! as a single facade with domain methods (`add_rack`, `list_nodes`,
+//! system metadata into the client layer as a single facade with
+//! domain methods (`add_rack`, `list_nodes`,
 //! `add_store`, …). New code should use this type; the three
 //! sub-clients remain public for existing callers until they migrate.
 

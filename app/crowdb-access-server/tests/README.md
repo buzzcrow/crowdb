@@ -3,7 +3,9 @@
 
 # Access server acceptance
 
-Protocol authority: [native Iceberg design](../../../doc/design/access-server/iceberge/design-crowdb-iceberg.md).
+Architecture: [native Iceberg storage](../../../doc/design/design-crowdb-access-iceberg.md).
+Protocol implementation: [Iceberg wire types](../../../lib/crowdb-access-iceberg/src/wire.rs)
+and [request handlers](../../../lib/crowdb-access-iceberg/src).
 Client recipes: [container development](../../../container/single-node-container/README.md).
 
 - REST/official-SDK conformance, native durability and ecosystem compatibility

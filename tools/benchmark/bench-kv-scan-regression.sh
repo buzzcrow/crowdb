@@ -88,8 +88,6 @@ finish_cases
 #   lin_32t          1000    32:32 24215    1289    5000     0
 #   minslot_32t      1000    32:32 24253    1285    5000     0    +0.2% throughput
 #
-# Analysis: doc/design/kv/kv-scan-flow-analysis.md § Latest Benchmark Results.
-#
 # Intel i9-7960X (2026-09-10, 16c/32t, Linux 6.11, x86_64):
 #   Same build/config as AMD 2026-09-02. mem-block backend, 20s, 100k
 #   pre-populated keys (group 1), 64B values unless noted, 3-node cluster.

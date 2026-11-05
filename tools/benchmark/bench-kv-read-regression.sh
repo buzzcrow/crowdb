@@ -63,8 +63,6 @@ finish_cases
 #   lin_16t_verify     linearizable 16:16 234234   64      100     500     0     corr=0
 #   minslot_16t_verify minslot      16:16 228800   66      100     500     0     corr=0
 #
-# Analysis: doc/design/kv/kv-read-flow-analysis.md § Latest Benchmark Results.
-#
 # Intel i9-7960X (2026-09-10, 16c/32t, Linux 6.11, x86_64):
 #   Same build/config as AMD 2026-09-02. mem-block backend, 10s, 100k
 #   pre-populated keys (group 1), 64B values, 3-node cluster. Zero errors

@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1280" viewBox="0 0 1280 1280" role="img" aria-labelledby="title desc">
+<!-- Copyright 2026-present Gian; Licensed under the Apache License, Version 2.0. -->
+<title id="title">CROWDB architecture</title>
+<desc id="desc">Iceberg, Dataset, and S3 form one access layer. Range metadata sits above the shared Chunk client; access libraries also reach the Chunk client directly. Paxos-KV forms the metadata foundation with Group 0, the system group, and Groups 1 through X.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#6d8493"/></marker><marker id="blue-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#2463a5"/></marker><marker id="teal-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#007f78"/></marker><marker id="purple-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7461a8"/></marker></defs>
+<rect width="1280" height="1280" rx="20" fill="#fbfcfd"/>
+<g font-family="Arial, Helvetica, sans-serif">
+<text x="42" y="49" font-size="26" font-weight="700" fill="#132b3c">CROWDB architecture</text>
+<text x="42" y="78" font-size="15" fill="#526879">Access models, shared storage, and the replicated metadata foundation.</text>
+<rect x="50" y="330" width="1180" height="132" rx="18" fill="#f1f5f7" stroke="#6d8493" stroke-opacity=".45"/>
+<text x="72" y="361" font-size="17" fill="#6d8493" text-anchor="start" font-weight="600">Access libraries</text>
+<rect x="50" y="510" width="780" height="220" rx="18" fill="#eaf1fb" stroke="#2463a5" stroke-opacity=".45"/>
+<text x="72" y="541" font-size="17" fill="#2463a5" text-anchor="start" font-weight="600">Range metadata</text>
+<rect x="50" y="1080" width="1180" height="150" rx="18" fill="#f0edf9" stroke="#7461a8" stroke-opacity=".45"/>
+<text x="72" y="1111" font-size="17" fill="#7461a8" text-anchor="start" font-weight="600">crowdb-paxos-kv</text>
+<polyline points="310,174 310,215" fill="none" stroke="#6d8493" stroke-width="2.3" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="970,174 970,215" fill="none" stroke="#6d8493" stroke-width="2.3" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="310,281 310,330" fill="none" stroke="#6d8493" stroke-width="2.3" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="970,281 970,330" fill="none" stroke="#6d8493" stroke-width="2.3" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="440,462 440,555" fill="none" stroke="#2463a5" stroke-width="2.3" stroke-linejoin="round" marker-end="url(#blue-arrow)"/>
+<polyline points="245,619 245,650" fill="none" stroke="#2463a5" stroke-width="2.3" stroke-linejoin="round" marker-end="url(#blue-arrow)"/>
+<polyline points="635,619 635,650" fill="none" stroke="#2463a5" stroke-width="2.3" stroke-linejoin="round" marker-end="url(#blue-arrow)"/>
+<polyline points="245,710 245,800" fill="none" stroke="#007f78" stroke-width="2.3" stroke-linejoin="round" marker-end="url(#teal-arrow)"/>
+<polyline points="635,710 635,800" fill="none" stroke="#007f78" stroke-width="2.3" stroke-linejoin="round" marker-end="url(#teal-arrow)"/>
+<polyline points="1230,410 1260,410 1260,838 1230,838" fill="none" stroke="#007f78" stroke-width="2.3" stroke-linejoin="round" marker-end="url(#teal-arrow)"/>
+<polyline points="230,875 230,930" fill="none" stroke="#2463a5" stroke-width="2.3" stroke-linejoin="round" marker-end="url(#blue-arrow)"/>
+<polyline points="1050,875 1050,930" fill="none" stroke="#007f78" stroke-width="2.3" stroke-linejoin="round" marker-end="url(#teal-arrow)"/>
+<polyline points="410,967 460,967" fill="none" stroke="#2463a5" stroke-width="2.3" stroke-linejoin="round" marker-end="url(#blue-arrow)"/>
+<polyline points="230,1004 230,1043 640,1043" fill="none" stroke="#7461a8" stroke-width="2.3" stroke-linejoin="round" stroke-dasharray="6 5"/>
+<polyline points="640,1004 640,1080" fill="none" stroke="#7461a8" stroke-width="2.3" stroke-linejoin="round" marker-end="url(#purple-arrow)" stroke-dasharray="6 5"/>
+<rect x="50" y="110" width="520" height="64" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.4"/>
+<text x="310.0" y="137.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">HTTP applications</text>
+<text x="310.0" y="161.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Iceberg, Dataset, and S3 clients</text>
+<rect x="710" y="110" width="520" height="64" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.4"/>
+<text x="970.0" y="137.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Trusted applications</text>
+<text x="970.0" y="161.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Dataset / S3 native clients</text>
+<rect x="50" y="215" width="520" height="66" rx="12" fill="#e4f5f1" stroke="#007f78" stroke-width="1.4"/>
+<text x="310.0" y="243.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">crowdb-access-server</text>
+<text x="310.0" y="267.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Listeners, authentication, and runtime</text>
+<rect x="710" y="215" width="520" height="66" rx="12" fill="#e4f5f1" stroke="#007f78" stroke-width="1.4"/>
+<text x="970.0" y="243.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">crowdb-sdk-native</text>
+<text x="970.0" y="267.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Shared topology, budgets, and buffer leases</text>
+<rect x="75" y="378" width="360" height="62" rx="12" fill="#132b3c" stroke="#132b3c" stroke-width="1.4"/>
+<text x="255.0" y="404.0" font-size="18" fill="#ffffff" text-anchor="middle" font-weight="600">Iceberg</text>
+<text x="255.0" y="428.0" font-size="14" fill="#c7dce4" text-anchor="middle" font-weight="400">crowdb-access-iceberg</text>
+<rect x="460" y="378" width="360" height="62" rx="12" fill="#132b3c" stroke="#132b3c" stroke-width="1.4"/>
+<text x="640.0" y="404.0" font-size="18" fill="#ffffff" text-anchor="middle" font-weight="600">Dataset</text>
+<text x="640.0" y="428.0" font-size="14" fill="#c7dce4" text-anchor="middle" font-weight="400">crowdb-access-dataset</text>
+<rect x="845" y="378" width="360" height="62" rx="12" fill="#132b3c" stroke="#132b3c" stroke-width="1.4"/>
+<text x="1025.0" y="404.0" font-size="18" fill="#ffffff" text-anchor="middle" font-weight="600">S3</text>
+<text x="1025.0" y="428.0" font-size="14" fill="#c7dce4" text-anchor="middle" font-weight="400">crowdb-access-s3</text>
+<rect x="75" y="555" width="730" height="64" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.4"/>
+<text x="440.0" y="582.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">crowdb-chunk-kv</text>
+<text x="440.0" y="606.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Partition state, catalog, and serving authority</text>
+<rect x="75" y="650" width="340" height="60" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.4"/>
+<text x="245.0" y="675.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">crowdb-tree</text>
+<text x="245.0" y="699.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Ordered page state</text>
+<rect x="465" y="650" width="340" height="60" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.4"/>
+<text x="635.0" y="675.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">crowdb-chunk-stream</text>
+<text x="635.0" y="699.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Ordered journal bytes</text>
+<text x="462" y="491" font-size="14" fill="#2463a5" text-anchor="start" font-weight="400">metadata</text>
+<text x="880" y="509" font-size="17" fill="#526879" text-anchor="start" font-weight="600">Shared services</text>
+<rect x="880" y="535" width="350" height="76" rx="12" fill="#f1f5f7" stroke="#6d8493" stroke-width="1.4"/>
+<text x="1055.0" y="568.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">crowdb-rpc</text>
+<text x="1055.0" y="592.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Internal transport: TCP / RDMA</text>
+<rect x="880" y="650" width="350" height="76" rx="12" fill="#f1f5f7" stroke="#6d8493" stroke-width="1.4"/>
+<text x="1055.0" y="683.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">crowdb-monitor</text>
+<text x="1055.0" y="707.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Discovery and process supervision</text>
+<rect x="50" y="800" width="1180" height="75" rx="12" fill="#e4f5f1" stroke="#007f78" stroke-width="1.4"/>
+<text x="640.0" y="832.5" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">crowdb-chunk-client</text>
+<text x="640.0" y="856.5" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Payload pipelines for access libraries, pages, and journals</text>
+<text x="266" y="770" font-size="14" fill="#007f78" text-anchor="start" font-weight="400">page I/O</text>
+<text x="656" y="770" font-size="14" fill="#007f78" text-anchor="start" font-weight="400">journal I/O</text>
+<text x="1218" y="770" font-size="15" fill="#007f78" text-anchor="end" font-weight="400">Direct payload I/O</text>
+<rect x="50" y="930" width="360" height="74" rx="12" fill="#e4f5f1" stroke="#007f78" stroke-width="1.4"/>
+<text x="230.0" y="962.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">crowdb-chunkdb</text>
+<text x="230.0" y="986.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Layouts and protection</text>
+<rect x="460" y="930" width="360" height="74" rx="12" fill="#e4f5f1" stroke="#007f78" stroke-width="1.4"/>
+<text x="640.0" y="962.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">crowdb-diskdb</text>
+<text x="640.0" y="986.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Physical allocation</text>
+<rect x="870" y="930" width="360" height="74" rx="12" fill="#e4f5f1" stroke="#007f78" stroke-width="1.4"/>
+<text x="1050.0" y="962.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">crowdb-diskio</text>
+<text x="1050.0" y="986.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Physical byte I/O</text>
+<text x="250" y="907" font-size="14" fill="#2463a5" text-anchor="start" font-weight="400">placement</text>
+<text x="1070" y="907" font-size="14" fill="#007f78" text-anchor="start" font-weight="400">byte I/O</text>
+<text x="1205" y="1111" font-size="15" fill="#7461a8" text-anchor="end" font-weight="400">Replicated metadata</text>
+<rect x="75" y="1137" width="365" height="67" rx="12" fill="#f0edf9" stroke="#7461a8" stroke-width="1.4"/>
+<text x="257.5" y="1165.5" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Group 0 (system group)</text>
+<text x="257.5" y="1189.5" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">System metadata and service registry</text>
+<rect x="465" y="1137" width="230" height="67" rx="12" fill="#f0edf9" stroke="#7461a8" stroke-width="1.4"/>
+<text x="580.0" y="1165.5" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Group 1</text>
+<text x="580.0" y="1189.5" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Replicated KV state</text>
+<text x="800" y="1177" font-size="28" fill="#7461a8" text-anchor="middle" font-weight="600">...</text>
+<rect x="905" y="1137" width="300" height="67" rx="12" fill="#f0edf9" stroke="#7461a8" stroke-width="1.4"/>
+<text x="1055.0" y="1165.5" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Group X</text>
+<text x="1055.0" y="1189.5" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Replicated KV state</text>
+<text x="662" y="1051" font-size="14" fill="#7461a8" text-anchor="start" font-weight="400">metadata</text><text x="1240" y="1258" text-anchor="end" font-size="12" letter-spacing="2" fill="#526879">CROWDB</text></g></svg>

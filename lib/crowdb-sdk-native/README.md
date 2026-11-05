@@ -9,8 +9,8 @@ stack. Supply management seeds, a tenant and per-operation context. The
 embedding process has the same internal-service trust as Access Server; this
 API performs no SigV4 verification or user-secret lookup.
 
-The [native runtime design](../../doc/design/access-server/design-crowdb-native-sdk.md)
-defines ownership and routing. The separately packaged
+The [native runtime overview](../../doc/design/design-crowdb-sdk-native.md)
+explains the architecture and buffer model. The separately packaged
 [Dataset HTTP SDK](../../sdk/README.md) is the portable Rust/Python distribution.
 
 ## Connect and read
@@ -54,9 +54,7 @@ async fn read_object(seeds: Vec<String>) -> Result<(), Box<dyn std::error::Error
 - Only `next() == Ok(None)` establishes verified completion. A valid prefix
   does not establish full-read success. Terminal errors remain sticky on
   subsequent polls; dropping a body early cancels it.
-- `GetOptions` supports conditions and a logical half-open `ByteRange`.
-  `resolve_object` captures one published generation; `get_resolved` reads
-  that selection after an overwrite without looking the mutable key up again.
+- `GetOptions` supports conditions and a logical half-open `ByteRange`. `resolve_object` captures the current object metadata and payload reference; `get_resolved` reads that selection after an overwrite without looking the mutable key up again. This does not expose S3 object versioning.
 - The S3 facade supports bucket operations, HEAD/GET, PUT, paged listing,
   ordered batch deletion, copy and multipart begin/parts/list/complete/abort.
   Typed S3 failures and `NotModified` do not require HTTP/XML parsing.

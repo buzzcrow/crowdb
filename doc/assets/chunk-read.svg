@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1360" height="900" viewBox="0 0 1360 900" role="img" aria-labelledby="title desc">
+<!-- Copyright 2026-present Gian; Licensed under the Apache License, Version 2.0. -->
+<title id="title">Chunk read flow</title><desc id="desc">Stored locations resolve to the current layout; reads follow mirror or EC geometry.</desc>
+<defs>
+<marker id="ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#132b3c"/></marker>
+<marker id="muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#526879"/></marker>
+<marker id="blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#2463a5"/></marker>
+<marker id="teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#007f78"/></marker>
+<marker id="purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#7461a8"/></marker>
+<marker id="gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#6d8493"/></marker>
+</defs>
+<rect width="1360" height="900" rx="20" fill="#fbfcfd"/>
+<g font-family="Arial, Helvetica, sans-serif">
+<text x="42" y="49" font-size="27" fill="#132b3c" text-anchor="start" font-weight="700">Chunk read flow</text>
+<text x="42" y="80" font-size="16" fill="#526879" text-anchor="start" font-weight="400">Stored locations resolve to the current layout; reads follow mirror or EC geometry.</text>
+<rect x="40" y="125" width="330" height="78" rx="12" fill="#132b3c" stroke="#132b3c" stroke-width="1.3"/>
+<text x="205.0" y="159.0" font-size="18" fill="#fff" text-anchor="middle" font-weight="600">Object locations + range</text>
+<text x="205.0" y="182.0" font-size="14" fill="#c7dce4" text-anchor="middle" font-weight="400">Logical offset and length</text>
+<rect x="465" y="125" width="410" height="78" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.3"/>
+<text x="670.0" y="159.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Resolve ChunkDB metadata</text>
+<text x="670.0" y="182.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Current strips, segments, and valid bytes</text>
+<rect x="970" y="125" width="350" height="78" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.3"/>
+<text x="1145.0" y="159.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Map requested intervals</text>
+<text x="1145.0" y="182.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Preserve logical byte order</text>
+<polyline points="370,164 465,164" fill="none" stroke="#2463a5" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#blue)"/>
+<polyline points="875,164 970,164" fill="none" stroke="#2463a5" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="40" y="282" width="600" height="286" rx="17" fill="#e4f5f1" stroke="#007f78" stroke-width="1.3"/>
+<text x="60" y="315" font-size="20" fill="#007f78" text-anchor="start" font-weight="600">Mirror layout</text>
+<rect x="690" y="282" width="630" height="286" rx="17" fill="#f0edf9" stroke="#7461a8" stroke-width="1.3"/>
+<text x="710" y="315" font-size="20" fill="#7461a8" text-anchor="start" font-weight="600">EC layout</text>
+<polyline points="1145,203 1145,248 340,248 340,350" fill="none" stroke="#007f78" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#teal)"/>
+<polyline points="1145,203 1145,248 1005,248 1005,350" fill="none" stroke="#7461a8" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#purple)"/>
+<rect x="65" y="350" width="470" height="74" rx="12" fill="#e4f5f1" stroke="#007f78" stroke-width="1.3"/>
+<text x="300.0" y="382.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Read a usable replica</text>
+<text x="300.0" y="405.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Fetch only the requested interval</text>
+<rect x="65" y="465" width="470" height="72" rx="12" fill="#e4f5f1" stroke="#007f78" stroke-width="1.3"/>
+<text x="300.0" y="496.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Try another replica</text>
+<text x="300.0" y="519.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Keep the same logical range</text>
+<polyline points="340,424 340,465" fill="none" stroke="#007f78" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#teal)"/>
+<text x="360" y="451" font-size="13" fill="#526879" text-anchor="start" font-weight="400">on read failure</text>
+<polyline points="535,387 600,387 600,600 680,600 680,630" fill="none" stroke="#007f78" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#teal)"/>
+<text x="590" y="589" font-size="13" fill="#007f78" text-anchor="end" font-weight="400">success</text>
+<rect x="715" y="350" width="500" height="74" rx="12" fill="#f0edf9" stroke="#7461a8" stroke-width="1.3"/>
+<text x="965.0" y="382.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Read the needed data shards</text>
+<text x="965.0" y="405.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Healthy data needs no parity decode</text>
+<rect x="715" y="465" width="500" height="72" rx="12" fill="#f0edf9" stroke="#7461a8" stroke-width="1.3"/>
+<text x="965.0" y="496.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Recover a missing interval</text>
+<text x="965.0" y="519.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Read enough surviving shards → bounded decode</text>
+<polyline points="1005,424 1005,465" fill="none" stroke="#7461a8" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#purple)"/>
+<text x="1025" y="451" font-size="13" fill="#526879" text-anchor="start" font-weight="400">if required data is unavailable</text>
+<polyline points="1215,387 1280,387 1280,600 680,600 680,630" fill="none" stroke="#7461a8" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#purple)"/>
+<text x="1270" y="589" font-size="13" fill="#7461a8" text-anchor="end" font-weight="400">success</text>
+<rect x="275" y="630" width="810" height="78" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.3"/>
+<text x="680.0" y="664.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Verify frames → assemble the requested logical range</text>
+<text x="680.0" y="687.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Checksums, exact lengths, and current-layout validity</text>
+<polyline points="340,537 340,600 680,600 680,630" fill="none" stroke="#6d8493" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#gray)"/>
+<polyline points="1005,537 1005,600 680,600 680,630" fill="none" stroke="#6d8493" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#gray)"/>
+<rect x="390" y="760" width="580" height="72" rx="12" fill="#132b3c" stroke="#132b3c" stroke-width="1.3"/>
+<text x="680.0" y="791.0" font-size="18" fill="#fff" text-anchor="middle" font-weight="600">Deliver bounded buffers</text>
+<text x="680.0" y="814.0" font-size="14" fill="#c7dce4" text-anchor="middle" font-weight="400">Consumer backpressure and cancellation</text>
+<polyline points="680,708 680,760" fill="none" stroke="#007f78" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#teal)"/>
+<text x="680" y="852" font-size="15" fill="#526879" text-anchor="middle" font-weight="400">Repair is a separate ChunkDB-owned operation; reading a replacement does not publish a new layout.</text>
+<text x="1318" y="878" font-size="12" fill="#526879" text-anchor="end" font-weight="400">CROWDB</text>
+</g></svg>

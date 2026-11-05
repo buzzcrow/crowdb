@@ -10,8 +10,6 @@
 //! to find living service instances by service name without hardcoding
 //! addresses. The cache is poll-on-demand: the first call queries
 //! group-0, subsequent calls within the TTL return the cached result.
-//!
-//! See `doc/design/kv/design-crowdb-paxos-kv-group0.md` §4.4.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};

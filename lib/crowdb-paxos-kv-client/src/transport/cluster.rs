@@ -11,8 +11,6 @@
 //! management: each lifecycle method calls the kv-server HTTP endpoint
 //! AND writes the `/kv/...` record; query methods delegate to the
 //! kv-server HTTP mgmt API.
-//!
-//! See `doc/design/kv/design-crowdb-paxos-kv-group0.md` §2.1, §2.2, §3.
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

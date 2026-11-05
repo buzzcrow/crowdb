@@ -76,10 +76,12 @@ pixi run test-single-node-container
 - Add dependencies through the owning package manager and avoid newly published
   versions until they have had time for ecosystem review.
 
-Start documentation work at `doc/doc_index.md`. Permanent architecture and
-operational behavior belong under `doc/design/` or the relevant component
-README. Keep documentation independently readable with links to files in this
-repository or public sources.
+Start public documentation work at `doc/design/README.md`. The English documents
+under `doc/design/` introduce architecture, capabilities, and design advantages
+to users and AI readers. Refresh them only as explicitly requested documentation
+work; they do not replace detailed behavior specs. Keep component usage and
+operational instructions in the relevant README. Public documentation must be
+independently readable with links to repository files or public sources.
 
 ## Code and tests
 
@@ -115,7 +117,8 @@ security boundaries to make a test pass.
 1. Create a focused branch from `main`.
 2. Keep the change aligned with one requirement or one coherent maintenance
    purpose.
-3. Add or update tests and documentation with the implementation.
+3. Add or update tests and affected behavior specs or usage instructions with the
+   implementation. Public architecture overviews are a separate documentation task.
 4. Run the relevant Pixi gates; run the full suite for cross-component changes.
 5. Review generated files and the complete diff for secrets and unrelated edits.
 6. Open a pull request explaining the problem, design choice, verification, and

@@ -7,8 +7,7 @@
 #
 # Detects AMD vs Intel and configures the right PMU. Each step prints
 # a checkmark/cross with the expected value; exits non-zero on the first
-# failure. Safe to re-run. See doc/dev/env_setup.md for what each step
-# does and why.
+# failure. Safe to re-run.
 
 set -euo pipefail
 

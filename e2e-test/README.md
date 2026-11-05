@@ -193,8 +193,7 @@ fails if two slots are unavailable, so the required isolation check cannot skip.
   per-case client, start/restart/collect/stop and complete wall durations, sorts
   the slowest flows, and preserves failure status after cleanup errors.
 
-Listener implementations follow the
-[TCP restart/ownership contract](../doc/design/rpc/design-crowdb-rpc-tcp.md#7-listener-ownership-and-restart):
+Listener acceptance checks require
 `SO_REUSEADDR` before bind, stable four-digit endpoints and one live owner;
 no default `SO_REUSEPORT` or conflict-driven port hopping.
 

@@ -17,9 +17,12 @@ integrity, worker partition and explicit progress replay.
   waiting. Create clients inside workers; inherited live handles are rejected.
 - The server uses real Dataset chunks (`Dataset = 7`) through Chunk-KV and normal
   chunk placement/durability. SDK packages have no server/storage-FFI dependency.
-- Public [OpenAPI](../doc/design/access-server/dataset/openapi-crowdb-dataset-v1.yaml)
-  defines JSON and binary framing. Legacy bincode routes remain internal
-  compatibility interfaces. S3/Iceberg standard access uses ecosystem SDKs.
+- The [SDK models](crates/crowdb-sdk-dataset/src/models.rs),
+  [binary decoder](crates/crowdb-sdk-dataset/src/wire.rs), and
+  [contract fixtures](contract-fixtures/dataset-v1/README.md) provide the
+  public source references for JSON and binary framing. Legacy bincode routes
+  remain internal compatibility interfaces. S3/Iceberg standard access uses
+  ecosystem SDKs.
 
 Trusted internal S3 embedding uses the main-workspace
 [native SDK](../lib/crowdb-sdk-native/README.md), with shared topology and host

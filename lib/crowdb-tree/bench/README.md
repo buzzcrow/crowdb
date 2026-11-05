@@ -46,8 +46,9 @@ pixi run env CROWDB_PROFILE_CACHE_BYTES=268435456 \
 ## Earlier MemTable comparison
 
 Local comparison recorded on 2026-10-03 for implementation `139149b7`.
-The benchmark is `memtable_handoff_bench.cpp`; the current handoff contract is
-in [the engine design](../../../doc/design/tree/design-crowdb-tree-engine.md).
+The benchmark is `memtable_handoff_bench.cpp`; the
+[engine overview](../../../doc/design/design-crowdb-tree.md)
+explains its storage model.
 Correctness and independent writer progress are acceptance requirements;
 performance has no percentage gate.
 

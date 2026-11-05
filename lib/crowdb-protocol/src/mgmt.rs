@@ -9,10 +9,6 @@
 //! types) so that `crowdb-paxos-kv-client`'s `PaxosKvClusterAdmin`,
 //! `crowdb-console-shared`, `crowdb-web`, and `crowdb-cli` all import from
 //! one place.
-//!
-//! See `doc/design/kv/design-crowdb-paxos-kv-server.md` §2.4 for the endpoint
-//! list and `doc/design/kv/design-crowdb-paxos-kv-group0.md` §2.2 for the
-//! "internal API" decision.
 
 #![allow(clippy::struct_field_names)]
 

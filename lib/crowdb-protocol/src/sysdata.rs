@@ -7,8 +7,6 @@
 //! produced by `HardwareClient` / `PaxosKvClusterMetaClient` reads. The key
 //! fields (parsed from the path) are included alongside the value so
 //! callers do not need to re-parse the path.
-//!
-//! See `doc/design/kv/design-crowdb-paxos-kv-group0.md` §3.3.
 
 use crate::common_type::{DiskGroupId, NodeId, RackId};
 use crate::diskdb::rpc::DiskGroupValue;

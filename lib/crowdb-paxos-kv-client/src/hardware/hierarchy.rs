@@ -11,8 +11,6 @@
 //!
 //! Most hierarchy writes are blind puts; values are small (< 1 KB).
 //! Disk status updates use revision CAS and never create missing disks.
-//!
-//! See `doc/design/kv/design-crowdb-paxos-kv-group0.md` §2.1, §3.
 
 mod disk_exclusion;
 mod disk_identity;

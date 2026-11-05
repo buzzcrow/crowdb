@@ -115,7 +115,6 @@ impl RpcClient {
     /// `Ok(())` transfers callback ownership, including when disconnect
     /// completes a call before transport rejection returns. `Err` guarantees
     /// the callback was not invoked; the caller retains `user_data`.
-    /// Flow: doc/design/rpc/rpc-flow-analysis.md § "Flow".
     ///
     /// # Safety
     ///
