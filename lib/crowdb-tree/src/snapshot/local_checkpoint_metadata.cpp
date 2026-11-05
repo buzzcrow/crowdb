@@ -48,6 +48,24 @@ void LocalCheckpointOperation::State::segment()
         return;
     }
     words.fill(0);
+    if (previous && image->pages->frames.same_segment(previous->pages->frames, index)) {
+        const auto &segments = previous->metadata->segments;
+        const auto  found =
+            std::lower_bound(segments.begin(), segments.end(), index,
+                             [](const auto &segment, uint64_t number) { return segment.first.seg_idx < number; });
+        if (found != segments.end() && found->first.seg_idx == index &&
+            !limits.exclusion.overlaps(found->second.address, found->second.length)) {
+            const auto [leaves, inners] = image->pages->frames.primary_counts(index);
+            image->anchor.leaf_count += leaves;
+            image->anchor.inner_count += inners;
+            directory.push_back(found->first);
+            image->metadata->segments.push_back(*found);
+            position = image->pages->frames.lower_bound((index + 1) * kMappingSegmentSize);
+            stage    = Stage::Segment;
+            wake();
+            return;
+        }
+    }
     auto     old  = previous ? previous->pages->frames.lower_bound(index * kMappingSegmentSize)
                              : CapturedDurablePages::Frames::const_iterator{};
     bool     same = previous != nullptr;

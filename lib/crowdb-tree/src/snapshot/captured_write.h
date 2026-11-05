@@ -15,6 +15,14 @@ namespace crowdb::tree
 struct CapturedDurablePages : ReadablePageCatalog
 {
     using ReadablePageCatalog::ReadablePageCatalog;
+    bool     overflow_counts_known  = false;
+    uint64_t stored_reference_count = 0;
+    Status   initialize_overflow_counts();
+    Status   replace_primary(const CapturedDurablePages &page);
+    Status   erase_primary(uint64_t pid);
+
+  private:
+    Status reference(uint64_t pid, bool add);
 };
 
 struct CapturedWriteLimits

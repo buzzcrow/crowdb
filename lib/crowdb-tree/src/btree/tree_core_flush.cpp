@@ -155,15 +155,23 @@ try {
     if (!status.ok()) {
         return status;
     }
-    auto preparation  = state_->preparation;
-    preparation.store = ticket->backend(async_backend());
+    auto preparation     = state_->preparation;
+    preparation.store    = ticket->backend(async_backend());
+    const auto requested = state_->frontier->contiguous().load(std::memory_order_acquire);
     for (;;) {
         const auto                      observed = state_->apply_progress->sequence();
         bool                            blocked  = false;
         std::shared_ptr<FlushOperation> operation;
         status = state_->flush->prepare(preparation, &operation, &blocked);
         if (status.ok()) {
-            return operation->wait();
+            status = operation->wait();
+            if (!status.ok() && operation->result().admission_stale) {
+                continue;
+            }
+            if (status.ok() && operation->result().published_coverage < requested) {
+                continue;
+            }
+            return status;
         }
         if (!blocked) {
             return status;

@@ -4,6 +4,7 @@
 
 #include "backend/checkpoint_backend.h"
 #include "btree/apply_dispatcher.h"
+#include "btree/apply_progress.h"
 #include "snapshot/captured_rebase.h"
 #include "snapshot/checkpoint_operation.h"
 #include "snapshot/snapshot_baseline.h"
@@ -70,6 +71,7 @@ struct CheckpointOperation::State : std::enable_shared_from_this<State>
     void                   pump();
     void                   begin_child(detail::CallbackSender sender, Stage next);
     void                   begin_handoff();
+    void                   wait_handoff();
     void                   child_done(Status status) noexcept;
     void                   cancel_child();
     void                   preflight();
@@ -118,7 +120,11 @@ struct CheckpointOperation::State : std::enable_shared_from_this<State>
     PageLoadBudget                                  budget;
     std::shared_ptr<detail::AllocationReservation>  finish_metadata;
     std::shared_ptr<PageLoader>                     loader;
+    std::optional<ApplyProgress::Request>           handoff_wait;
+    uint64_t                                        handoff_observed = 0;
+    bool                                            handoff_rejected = false;
     PrepareHandoff                                  prepare_handoff;
+    CheckpointOperation::AfterFlush                 flush_result;
     PrepareStructure                                prepare_structure;
     std::shared_ptr<PageSplitOperation>             structure;
     std::optional<uint64_t>                         fixed_coverage;

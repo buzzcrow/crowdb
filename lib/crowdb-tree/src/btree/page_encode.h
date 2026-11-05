@@ -41,18 +41,6 @@ struct CapturedEncodeContext
     std::shared_ptr<const void> overflow_dependencies = nullptr;
 };
 
-// The page owner supplies the final page and its completed child fences.
-// Encoding borrows this exact output; it does not build another mapping.
-struct PageEncodeInput
-{
-    std::shared_ptr<const PublishedPage> page;
-    uint64_t                             page_id;
-    uint64_t                             coverage;
-    uint64_t                             gc_floor;
-    uint64_t                             next_page_id;
-    CapturedEncodeContext                context;
-};
-
 struct ReservedOverflowIds
 {
     uint64_t first = kInvalidPageId;
@@ -74,15 +62,29 @@ struct FinalPageSummary
 {
     // Inner subtree totals require the caller's captured child summaries.
     // Their zero-initialized live fields are unknown, not an empty subtree.
-    std::optional<InnerEncodeFences> inner_fences        = std::nullopt;
-    bool                             live_counts_known   = false;
-    uint64_t                         encoded_entries     = 0;
-    uint64_t                         live_keys           = 0;
-    uint64_t                         live_key_bytes      = 0;
-    uint64_t                         live_value_bytes    = 0;
-    uint64_t                         dropped_tombstones  = 0;
-    uint64_t                         primary_used_bytes  = 0;
-    uint64_t                         new_overflow_frames = 0;
+    std::optional<InnerEncodeFences> inner_fences          = std::nullopt;
+    bool                             live_counts_known     = false;
+    uint64_t                         oldest_tombstone_slot = UINT64_MAX;
+    uint64_t                         encoded_entries       = 0;
+    uint64_t                         live_keys             = 0;
+    uint64_t                         live_key_bytes        = 0;
+    uint64_t                         live_value_bytes      = 0;
+    uint64_t                         dropped_tombstones    = 0;
+    uint64_t                         primary_used_bytes    = 0;
+    uint64_t                         new_overflow_frames   = 0;
+};
+
+// The page owner supplies the final page and its completed child fences.
+// Encoding borrows this exact output; it does not build another mapping.
+struct PageEncodeInput
+{
+    std::shared_ptr<const PublishedPage> page;
+    uint64_t                             page_id;
+    uint64_t                             coverage;
+    uint64_t                             gc_floor;
+    uint64_t                             next_page_id;
+    CapturedEncodeContext                context;
+    std::optional<FinalPageSummary>      children_summary = std::nullopt;
 };
 
 struct PageEncodeCounters

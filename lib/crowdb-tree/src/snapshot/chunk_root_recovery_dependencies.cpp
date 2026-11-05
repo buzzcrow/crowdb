@@ -8,7 +8,8 @@ Status ChunkRootRecovery::dependencies()
 {
     for (size_t work = 0; work < 64; ++work) {
         if (leaf_ == pages_->frames.end()) {
-            return finish(steps_ == root_.dependency_entries ? Status::Ok() : Status::corruption());
+            return finish(steps_ == root_.dependency_entries ? pages_->initialize_overflow_counts()
+                                                             : Status::corruption());
         }
         auto &leaf = leaf_->second;
         if (leaf.type != page_type::kLeafBase || reference_ == leaf.stored_overflow->size()) {

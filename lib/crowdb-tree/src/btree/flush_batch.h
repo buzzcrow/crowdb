@@ -5,11 +5,13 @@
 #include "flush_runtime.h"
 #include "logical_page.h"
 #include "maintenance_publication.h"
+#include "page_encode.h"
 #include "published_state.h"
 
 namespace crowdb::tree
 {
 class PageLoader;
+class FlushPersistence;
 class ApplyDispatcher;
 class PublicationLane;
 enum class FlushPhase : uint8_t { kCaptured, kHandoff, kRepairRequired, kCovered, kMaintenance, kComplete };
@@ -33,6 +35,14 @@ struct FlushResult
 
 struct FlushBatchOptions
 {
+    using PersistComplete = detail::InlineFunction<void(Status, std::shared_ptr<const PublishedPage>)>;
+    using ReserveOverflow = detail::InlineFunction<Status(uint64_t, ReservedOverflowIds *)>;
+    // Fixed for this flush. The parent submits only pages that survive its
+    // sibling decisions; the ordinary memory flow has no persistence sink.
+    bool                                         persistent       = false;
+    size_t                                       persistent_pages = 0;
+    std::shared_ptr<FlushPersistence>            persistence      = nullptr;
+    uint64_t                                     checkpoint_token = 0;
     RunLimits                                    run_limits;
     std::optional<MaintenancePublicationOptions> consolidation;
     size_t                                       max_sources            = 64;

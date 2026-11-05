@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 #include "snapshot/recovered_state_internal.h"
+#include "snapshot/snapshot_baseline.h"
 
 #include <cassert>
 
@@ -30,6 +31,7 @@ std::optional<size_t> RecoveredStateOperation::allocation_bound(size_t frames, s
     return detail::AllocationBound(shared_allocation_bound<State>() +
                                    shared_allocation_bound<RecoveredStateOperation>() +
                                    shared_allocation_bound<PublishedTreeState>() + PublishedSources::allocation_bound())
+        .add(shared_allocation_bound<SnapshotBaseline>())
         .add(detail::FlushRuntime::progress_allocation_bound())
         .add_product(frames, shared_allocation_bound<State::Load>())
         .add_product(RecoveredStateLimits{}.max_depth, sizeof(State::Path))
@@ -45,10 +47,16 @@ Status RecoveredStateOperation::create(std::shared_ptr<const CapturedDurablePage
                                        std::shared_ptr<detail::AllocationReservation> metadata,
                                        std::shared_ptr<RecoveredStateOperation>      *out)
 {
-    auto status = create_readable(std::move(captured), std::move(loader), std::move(runtime), std::move(lane), limits,
+    auto status = create_readable(captured, std::move(loader), std::move(runtime), std::move(lane), limits,
                                   std::move(metadata), out);
     if (status.ok()) {
         (*out)->state_->require_durable = true;
+        auto baseline                   = detail::reserved_shared<SnapshotBaseline>((*out)->state_->metadata);
+        baseline->pages                 = std::move(captured);
+        baseline->coverage              = baseline->pages->coverage;
+        baseline->generation            = (*out)->state_->building->generation;
+        baseline->backend_id            = baseline->pages->backend_id;
+        (*out)->state_->building->snapshot_baseline = std::move(baseline);
     }
     return status;
 }

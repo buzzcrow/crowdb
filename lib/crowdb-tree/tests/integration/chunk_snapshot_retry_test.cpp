@@ -74,7 +74,7 @@ void check_snapshot_retry(bool asynchronous, bool write_while_unavailable = fals
     EXPECT_EQ(value, "old");
     if (write_while_unavailable) {
         ASSERT_TRUE(test.put(3, "newest").ok());
-        ASSERT_TRUE(test.tree->flush().ok());
+        EXPECT_EQ(test.tree->flush().code(), Code::kUnavailable);
     }
     const auto still_unavailable = snapshot(*test.tree, asynchronous);
     ASSERT_EQ(still_unavailable.code(), Code::kUnavailable) << still_unavailable.to_string();

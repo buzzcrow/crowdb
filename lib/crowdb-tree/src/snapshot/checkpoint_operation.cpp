@@ -16,7 +16,8 @@ Status CheckpointOperation::create(
     std::shared_ptr<detail::AllocationReservation> finish_metadata, std::shared_ptr<PageLoader> loader,
     PrepareHandoff prepare_handoff, PrepareWork prepare_work, std::shared_ptr<CheckpointOperation> *out,
     PrepareCleanup prepare_cleanup, PrepareWorkAsync prepare_work_async, PrepareCleanup on_terminal,
-    PrepareCleanup cancel_work, std::shared_ptr<CheckpointBackend> chunk, PrepareStructure prepare_structure)
+    PrepareCleanup cancel_work, std::shared_ptr<CheckpointBackend> chunk, PrepareStructure prepare_structure,
+    CheckpointOperation::AfterFlush flush_result)
 {
     const bool local_valid = backend && backend->ledger && backend->checkpoints;
     const bool chunk_valid = chunk && chunk->supported();
@@ -62,6 +63,7 @@ Status CheckpointOperation::create(
         state->finish_metadata    = std::move(finish_metadata);
         state->loader             = std::move(loader);
         state->prepare_handoff    = std::move(prepare_handoff);
+        state->flush_result       = std::move(flush_result);
         state->prepare_structure  = std::move(prepare_structure);
         state->prepare_work       = std::move(prepare_work);
         state->prepare_cleanup    = std::move(prepare_cleanup);
@@ -229,6 +231,7 @@ void CheckpointOperation::State::finish(Status status) noexcept
     work_owner.reset();
     store.reset();
     prepare_handoff    = {};
+    flush_result       = {};
     prepare_structure  = {};
     prepare_work       = {};
     prepare_work_async = {};

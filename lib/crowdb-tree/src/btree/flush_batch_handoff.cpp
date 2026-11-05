@@ -232,6 +232,9 @@ void FlushBatch::State::cover()
     transaction.flush_admission_owner = admission_owner;
     transaction.expected_coverage     = report.floor;
     transaction.coverage              = report.frontier;
+    if (options.persistent) {
+        transaction.checkpoint = {.action = CheckpointAction::Capture, .token = options.checkpoint_token};
+    }
     if (report.frontier > report.floor) {
         transaction.handoff = {.batch = report.batch_id, .frontier = report.frontier};
     }
@@ -276,6 +279,7 @@ void FlushBatch::State::cover()
         record_work(self->publisher.work_metrics(), TreeWorkCounter::SourceDetached, detached, TreeWorkCause::Flush);
         self->report.published_coverage = self->report.frontier;
         self->report.phase              = FlushPhase::kCovered;
+        self->checkpoint_view           = std::move(result.checkpoint_view);
         (void)self->handoff_metrics->finish(TreeOutcome::Success, tree_metrics_now_ns());
         self->captured.reset();
         self->inputs.reset();
@@ -334,7 +338,7 @@ void FlushBatch::State::do_maintain()
         self->finish();
     };
     try {
-        maintenance(publisher.capture(), done);
+        maintenance(checkpoint_view ? checkpoint_view : publisher.capture(), done);
     }
     catch (const std::bad_alloc &) {
         done(Status::resource_exhausted(), publisher.capture()->stats.dirty_pages);

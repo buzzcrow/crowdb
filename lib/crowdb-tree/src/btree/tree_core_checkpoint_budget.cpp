@@ -22,7 +22,7 @@ Credits::~Credits()
     if (budget.bytes) {
         budget.bytes->seal();
     }
-    if (budget.io) {
+    if (owns_io && budget.io) {
         budget.io->seal();
     }
 }
@@ -162,19 +162,22 @@ Status Preparation::plan_work(const PublishedTreeState &view, const CapturedWrit
 
 Status Preparation::bind_work(const WorkPlan &plan, detail::ResourceBudget::Credit bytes,
                               detail::ResourceBudget::Credit backend, detail::ResourceBudget::Credit io,
-                              CheckpointWork *out)
+                              CheckpointWork *out, std::shared_ptr<detail::AllocationReservation> shared_io)
 {
     using namespace detail;
     const auto account = core->binding()->account();
     if (out == nullptr || bytes.amount() != plan.bytes || bytes.allocated() ||
         !bytes.belongs_to(account, BudgetClass::kReclaim) || backend.amount() != plan.backend_bytes ||
-        backend.allocated() || !backend.belongs_to(account, BudgetClass::kRouting) || io.amount() != 1 ||
-        io.allocated() || !io.belongs_to(account, BudgetClass::kIo)) {
+        backend.allocated() || !backend.belongs_to(account, BudgetClass::kRouting) ||
+        (shared_io ? shared_io->account() != account || shared_io->category() != BudgetClass::kIo
+                   : io.amount() != 1 || io.allocated() || !io.belongs_to(account, BudgetClass::kIo))) {
         return Status::invalid_argument("checkpoint needs its complete prepaid partitions");
     }
-    auto phase                 = reserved_shared<Credits>(control);
-    phase->budget.bytes        = AllocationReservation::create(std::move(bytes));
-    phase->budget.io           = reserved_shared<AllocationReservation>(phase->budget.bytes, std::move(io));
+    auto phase          = reserved_shared<Credits>(control);
+    phase->budget.bytes = AllocationReservation::create(std::move(bytes));
+    phase->owns_io      = !shared_io;
+    phase->budget.io =
+        shared_io ? std::move(shared_io) : reserved_shared<AllocationReservation>(phase->budget.bytes, std::move(io));
     phase->budget.work_metrics = core->publisher().work_metrics();
     phase->budget.cause        = options.cause;
     phase->budget.cpu_progress = cpu_progress;
@@ -191,7 +194,8 @@ Status Preparation::bind_work(const WorkPlan &plan, detail::ResourceBudget::Cred
     return Status::Ok();
 }
 
-Status Preparation::work(const PublishedTreeState &view, const CapturedWritePlan *plan, CheckpointWork *out)
+Status Preparation::work(const PublishedTreeState &view, const CapturedWritePlan *plan, CheckpointWork *out,
+                         size_t extra_bytes, std::shared_ptr<detail::AllocationReservation> shared_io)
 {
     using namespace detail;
     WorkPlan bound;
@@ -199,14 +203,20 @@ Status Preparation::work(const PublishedTreeState &view, const CapturedWritePlan
     if (!status.ok()) {
         return status;
     }
+    const auto complete_bytes = AllocationBound(bound.bytes).add(extra_bytes).value();
+    if (!complete_bytes) {
+        return Status::resource_exhausted("checkpoint extra bound overflow");
+    }
+    bound.bytes = *complete_bytes;
     // Match handoff's routing -> reclaim -> I/O acquisition order. Backend
     // allocations keep their stable Routing category through final ownership.
     auto backend = ResourceBudget::try_reserve(core->binding()->account(), BudgetClass::kRouting, bound.backend_bytes);
     auto bytes   = ResourceBudget::try_reserve(core->binding()->account(), BudgetClass::kReclaim, bound.bytes);
-    auto io      = ResourceBudget::try_reserve(core->binding()->account(), BudgetClass::kIo, 1);
+    auto io      = shared_io ? std::optional<ResourceBudget::Credit>(ResourceBudget::Credit{})
+                             : ResourceBudget::try_reserve(core->binding()->account(), BudgetClass::kIo, 1);
     if (!backend || !bytes || !io) {
         return Status::resource_exhausted("checkpoint window credit unavailable");
     }
-    return bind_work(bound, std::move(*bytes), std::move(*backend), std::move(*io), out);
+    return bind_work(bound, std::move(*bytes), std::move(*backend), std::move(*io), out, std::move(shared_io));
 }
 } // namespace crowdb::tree::checkpoint_detail

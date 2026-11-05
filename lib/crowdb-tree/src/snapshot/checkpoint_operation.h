@@ -19,9 +19,13 @@ struct CheckpointDiagnostics
     std::atomic<uint64_t> total_written_frames{0};
 };
 
+class ApplyProgress;
+
 struct CheckpointOptions
 {
-    CheckpointMode mode = CheckpointMode::Durable;
+    std::shared_ptr<ApplyProgress> handoff_progress = nullptr;
+    const bool                    *handoff_blocked  = nullptr;
+    CheckpointMode                 mode             = CheckpointMode::Durable;
     // Core's accepted ticket retains this state through terminal. Only durable
     // commits update it, while their publication capture token is still held.
     CheckpointDiagnostics *diagnostics = nullptr;
@@ -81,6 +85,7 @@ class CheckpointOperation
     using PrepareWorkAsync = detail::InlineFunction<detail::CallbackSender(
         const PublishedTreeState &, const CapturedWritePlan *, CheckpointWork *)>;
     using PrepareCleanup   = detail::InlineFunction<void()>;
+    using AfterFlush       = detail::InlineFunction<std::optional<CheckpointResult>()>;
     using PrepareStructure = detail::InlineFunction<Status(std::shared_ptr<const PublishedTreeState>, uint64_t,
                                                            std::shared_ptr<PageSplitOperation> *)>;
 
@@ -93,7 +98,7 @@ class CheckpointOperation
                          std::shared_ptr<CheckpointOperation> *out, PrepareCleanup prepare_cleanup = {},
                          PrepareWorkAsync prepare_work_async = {}, PrepareCleanup on_terminal = {},
                          PrepareCleanup cancel_work = {}, std::shared_ptr<CheckpointBackend> chunk = {},
-                         PrepareStructure prepare_structure = {});
+                         PrepareStructure prepare_structure = {}, AfterFlush flush_result = {});
     [[nodiscard]] static size_t           control_allocation_bound() noexcept;
     [[nodiscard]] static size_t           finish_allocation_bound() noexcept;
     [[nodiscard]] detail::CallbackSender  sender() noexcept;

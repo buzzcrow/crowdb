@@ -77,10 +77,13 @@ Status flush_reserve_bounds(PublicationCoordinator &publisher, const PublishedTr
     if (!entries || !keys) {
         return Status::resource_exhausted("captured source bound overflow");
     }
-    const auto workers = preparation.runtime->worker_count();
+    const auto workers              = preparation.runtime->worker_count();
+    auto       selected_batch       = batch;
+    selected_batch.persistent       = preparation.persistent;
+    selected_batch.persistent_pages = preparation.persistent ? view.snapshot_changes.size() : 0;
     auto handoff = AllocationBound(control_bytes)
                        .add(FlushBatch::metadata_reserve_bound(view.mapping, source_count, *entries, *keys, workers,
-                                                               batch, publisher.tracks_cache_residency()))
+                                                               selected_batch, publisher.tracks_cache_residency()))
                        .add(SourceAdmission::capture_allocation_bound(source_count))
                        .add_product(2, PublishedSources::allocation_bound())
                        .add_product(source_count, 2 * sizeof(std::shared_ptr<MemTable>))

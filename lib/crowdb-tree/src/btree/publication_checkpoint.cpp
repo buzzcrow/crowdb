@@ -12,15 +12,20 @@ Status validate_checkpoint(const PublicationTransaction &transaction, const Publ
     if (!transaction.checkpoint) {
         return Status::Ok();
     }
-    if (!transaction.pages.empty() || transaction.root_page_id || transaction.sources || transaction.coverage ||
-        transaction.handoff || transaction.merge_pair) {
+    const bool flush_capture =
+        transaction.checkpoint->action == CheckpointAction::Capture && transaction.flush_admission_owner != 0 &&
+        transaction.flush_admission_owner == current.flush_admission_owner && transaction.coverage &&
+        transaction.sources && transaction.sources->floor == *transaction.coverage;
+    if (!flush_capture && (!transaction.pages.empty() || transaction.root_page_id || transaction.sources ||
+                           transaction.coverage || transaction.handoff || transaction.merge_pair)) {
         return Status::invalid_argument("checkpoint action cannot include logical mutations");
     }
     const auto &checkpoint = *transaction.checkpoint;
     const auto  action     = checkpoint.action;
     const auto  token      = checkpoint.token;
     if (action == CheckpointAction::Capture) {
-        if (current.pending_handoff || current.flush_admission_owner != 0 || current.sources->inheritance) {
+        if ((!flush_capture && (current.pending_handoff || current.flush_admission_owner != 0)) ||
+            current.sources->inheritance) {
             return Status::unavailable("checkpoint capture waits for complete handoff coverage");
         }
         if (!transaction.expected_coverage) {

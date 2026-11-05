@@ -24,6 +24,13 @@ struct FlushBatch::State::Subtree
     void                                               leaf();
     Status                                             coalesce_leaf(const PageMaintenanceLimits &limits);
     void                                               join();
+    void                                               finish_pages();
+    void                                               persist_next();
+    Status                                             prepare_root();
+    [[nodiscard]] InnerEncodeFences                    fences(uint64_t page_id) const;
+    [[nodiscard]] FinalPageSummary                     child_summary(uint64_t page_id) const;
+    [[nodiscard]] std::shared_ptr<const PublishedPage> find_page(uint64_t page_id) const;
+    [[nodiscard]] Subtree                             *page_owner(uint64_t page_id);
     void                                               complete(Status result) noexcept;
     void                                               prepare_builder();
     static size_t                                      fork_bytes() noexcept;
@@ -37,13 +44,25 @@ struct FlushBatch::State::Subtree
     Status                                             collect(PublicationTransaction &transaction);
     [[nodiscard]] std::shared_ptr<const PublishedPage> lookup(uint64_t page_id) const;
 
-    State                                             &owner;
-    uint64_t                                           pid;
-    PageKeyRange                                       bounds;
-    bool                                               active;
-    bool                                               finished       = false;
-    bool                                               handed_off     = false;
-    bool                                               children_ready = false;
+    State       &owner;
+    uint64_t     pid;
+    PageKeyRange bounds;
+    bool         active;
+    bool         finished       = false;
+    bool         handed_off     = false;
+    bool         children_ready = false;
+    bool         joined         = false;
+    bool         writing        = false;
+    size_t       persist_at     = 0;
+    uint64_t     final_root     = kInvalidPageId;
+
+    struct FinalPage
+    {
+        Subtree *task;
+        uint64_t pid;
+    };
+
+    detail::ReservedVector<FinalPage>                  final_pages;
     std::optional<TreeMetricsOperation>                layout_metrics;
     Status                                             status;
     std::shared_ptr<const PublishedPage>               expected;

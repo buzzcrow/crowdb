@@ -195,7 +195,7 @@ Status MaintenanceBuilder::finish(MaintenancePublicationResult *result)
     transaction.pages.reserve(changes_.size());
     for (auto &[pid, replacement] : changes_) {
         (void)pid;
-        transaction.pages.push_back(std::move(replacement));
+        transaction.pages.push_back(replacement);
     }
     result->transaction        = std::move(transaction);
     result->merged_inner_pairs = inner_merges_;

@@ -56,6 +56,10 @@ std::shared_ptr<const PublishedTreeState> initial_state(const PublicationBootstr
         throw std::invalid_argument("initial publication source floor differs from coverage");
     }
     initialize_snapshot_changes(*state, bootstrap.metadata);
+    if (bootstrap.initial && bootstrap.initial->snapshot_baseline) {
+        state->snapshot_baseline = bootstrap.initial->snapshot_baseline;
+        state->snapshot_changes  = {};
+    }
     return state;
 }
 } // namespace

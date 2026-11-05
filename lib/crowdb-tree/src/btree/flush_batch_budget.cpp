@@ -23,7 +23,8 @@ std::optional<size_t> FlushBatch::metadata_reserve_bound(const MappingView &mapp
     // A finite source prefix can span any number of existing leaves. Its
     // entry allowance bounds the complete range metadata; parallelism and
     // routing steps bound active work independently of the Tree's size.
-    const auto ranges = std::min(entries, mapping_bounds.leaf_pages);
+    const auto ranges = std::min(options.persistent ? std::max(size_t{1}, entries + options.persistent_pages) : entries,
+                                 mapping_bounds.leaf_pages);
     if (mapping_bounds.leaf_pages == 0) {
         return {};
     }
@@ -51,7 +52,8 @@ std::optional<size_t> FlushBatch::metadata_reserve_bound(const MappingView &mapp
     const auto child_slots =
         AllocationBound()
             .add_product(std::min(mapping_bounds.leaf_pages, *slots),
-                         sizeof(std::shared_ptr<State::Subtree>) + sizeof(uint64_t) + sizeof(OwnedKey))
+                         sizeof(std::shared_ptr<State::Subtree>) + sizeof(uint64_t) + sizeof(OwnedKey) +
+                             (options.persistent ? 3 * sizeof(State::Subtree::FinalPage) : 0))
             .value();
     if (!child_slots) {
         return {};

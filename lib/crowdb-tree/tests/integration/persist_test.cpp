@@ -19,6 +19,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -554,8 +555,8 @@ TEST(Persist, BlockDeviceBackendRoundTrip)
     }
 }
 
-// Park checkpoint I/O and verify that concurrent apply/flush can publish a
-// newer prefix while the captured checkpoint retains its original coverage.
+// Park persistence I/O: apply stays available while the next flush waits
+// for this finite persistent flush to finish.
 TEST(Persist, WriteMutexNotHeldDuringSnapshotIo)
 {
     MemPageStore      mem(1);
@@ -576,8 +577,8 @@ TEST(Persist, WriteMutexNotHeldDuringSnapshotIo)
     // Keep failure diagnostics nonfatal until the parked thread is released.
     const auto applied = t.apply(2, put_one("b", "2"));
     EXPECT_TRUE(applied.ok()) << applied.to_string();
-    const auto flushed = t.flush();
-    EXPECT_TRUE(flushed.ok()) << flushed.to_string();
+    auto following = std::async(std::launch::async, [&] { return t.flush(); });
+    EXPECT_EQ(following.wait_for(std::chrono::milliseconds(20)), std::future_status::timeout);
     std::string v;
     uint64_t    s;
     EXPECT_TRUE(t.get(Slice("b"), &s, &v));
@@ -585,6 +586,8 @@ TEST(Persist, WriteMutexNotHeldDuringSnapshotIo)
 
     store.release();
     snap_thread.join();
+    const auto flushed = following.get();
+    EXPECT_TRUE(flushed.ok()) << flushed.to_string();
     EXPECT_EQ(t.last_applied_slot(), 2U) << "snapshot completion must not regress concurrent flush coverage";
     EXPECT_EQ(t.durable_snapshot_last_applied_slot(), 1U)
         << "durable snapshot frontier remains the prepared snapshot frontier";

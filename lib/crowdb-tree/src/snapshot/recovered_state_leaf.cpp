@@ -41,6 +41,9 @@ void RecoveredStateOperation::State::leaf_step()
             return;
         }
         top.metrics.page_size_bytes += primary_bytes;
+        if (cell.is_tombstone()) {
+            top.summary.oldest_tombstone_slot = std::min(top.summary.oldest_tombstone_slot, cell.slot());
+        }
         if (!cell.is_tombstone()) {
             const uint64_t value_bytes = cell.is_overflow() ? cell.overflow_len() : cell.value().size();
             if (key.size() > UINT64_MAX - value_bytes || key.size() + value_bytes > UINT64_MAX - top.metrics.kv_bytes) {

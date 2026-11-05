@@ -15,6 +15,7 @@ struct Credits
 {
     PageLoadBudget                                 budget;
     std::shared_ptr<detail::AllocationReservation> snapshot;
+    bool                                           owns_io = true;
     ~Credits();
 };
 
@@ -28,7 +29,8 @@ struct WorkPlan
 
 struct Preparation
 {
-    TreeCore                                      *core = nullptr;
+    bool                                           handoff_blocked = false;
+    TreeCore                                      *core            = nullptr;
     std::shared_ptr<TreeOperationLifetime::Ticket> ticket;
     std::shared_ptr<detail::AllocationReservation> control;
     std::shared_ptr<detail::AllocationReservation> finish;
@@ -41,8 +43,10 @@ struct Preparation
     ~Preparation();
     Status plan_work(const PublishedTreeState &view, const CapturedWritePlan *plan, WorkPlan *out) const;
     Status bind_work(const WorkPlan &plan, detail::ResourceBudget::Credit bytes, detail::ResourceBudget::Credit backend,
-                     detail::ResourceBudget::Credit io, CheckpointWork *out);
-    Status work(const PublishedTreeState &view, const CapturedWritePlan *plan, CheckpointWork *out);
+                     detail::ResourceBudget::Credit io, CheckpointWork *out,
+                     std::shared_ptr<detail::AllocationReservation> shared_io = {});
+    Status work(const PublishedTreeState &view, const CapturedWritePlan *plan, CheckpointWork *out,
+                size_t extra_bytes = 0, std::shared_ptr<detail::AllocationReservation> shared_io = {});
 };
 
 // One phase at a time; the checkpoint owns its captured input and retains this

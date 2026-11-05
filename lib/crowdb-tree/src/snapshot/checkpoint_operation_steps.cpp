@@ -15,13 +15,18 @@ void CheckpointOperation::State::Receiver::set_value(FlushResult report) noexcep
 {
     auto self            = std::move(owner);
     self->fixed_coverage = report.frontier;
+    if (self->flush_result && report.admission_stale) {
+        self->child_done(Status::Ok());
+        return;
+    }
     self->child_done(report.handoff_status.ok() ? std::move(report.maintenance_status)
                                                 : std::move(report.handoff_status));
 }
 
 void CheckpointOperation::State::Receiver::set_error(Status status) noexcept
 {
-    auto self = std::move(owner);
+    auto self              = std::move(owner);
+    self->handoff_rejected = self->stage == Stage::Handoff && status.code() == Code::kUnavailable;
     self->child_done(std::move(status));
 }
 
@@ -56,9 +61,19 @@ void CheckpointOperation::State::begin_handoff()
     stdexec::start(handoff_attempt->connected);
 }
 
+void CheckpointOperation::State::wait_handoff()
+{
+    handoff.reset();
+    handoff_wait.emplace(*options.handoff_progress, handoff_observed);
+    begin_child(handoff_wait->sender(), Stage::Begin);
+}
+
 void CheckpointOperation::State::cancel_child()
 {
-    if ((stage == Stage::PrepareLayout || stage == Stage::PrepareWrite) && cancel_work) {
+    if (stage == Stage::Begin && handoff_wait) {
+        handoff_wait->request_stop();
+    }
+    else if ((stage == Stage::PrepareLayout || stage == Stage::PrepareWrite) && cancel_work) {
         cancel_work();
     }
     else if (stage == Stage::Structure && structure) {
@@ -100,6 +115,12 @@ void CheckpointOperation::State::pump()
         waiting = false;
         attempt.reset();
         handoff_attempt.reset();
+        handoff_wait.reset();
+        if (std::exchange(handoff_rejected, false) && flush_result && options.handoff_progress &&
+            !stopped.load(std::memory_order_acquire)) {
+            wait_handoff();
+            return;
+        }
         if (!child_status.ok() && stage == Stage::Rebase) {
             finish_rebase(child_status.without_message());
             return;
@@ -122,9 +143,16 @@ void CheckpointOperation::State::pump()
     switch (stage) {
     case Stage::Begin:
         if (prepare_handoff) {
-            auto status = prepare_handoff(&handoff);
+            handoff_observed = options.handoff_progress ? options.handoff_progress->sequence() : 0;
+            auto status      = prepare_handoff(&handoff);
             if (!status.ok()) {
-                finish(std::move(status));
+                if (status.code() == Code::kUnavailable && options.handoff_progress &&
+                    options.handoff_blocked != nullptr && *options.handoff_blocked) {
+                    wait_handoff();
+                }
+                else {
+                    finish(std::move(status));
+                }
                 return;
             }
             if (!handoff) {
@@ -139,6 +167,17 @@ void CheckpointOperation::State::pump()
         break;
     case Stage::Handoff:
         handoff.reset();
+        if (flush_result) {
+            if (auto completed = flush_result()) {
+                report = std::move(*completed);
+                finish(report.status);
+            }
+            else {
+                stage = Stage::Begin;
+                wake();
+            }
+            break;
+        }
         preflight();
         break;
     case Stage::PrepareLayout:

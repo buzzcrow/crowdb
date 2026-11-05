@@ -79,6 +79,7 @@ TEST(TreeCoreNativeCheckpoint, SharedResidentChainIsWrittenOnceWithoutPinningThe
     config.backend_owner    = backend;
     config.frame_bytes      = 4096;
     config.max_inline_value = 64;
+    config.leaf_merge_bytes = 0;
     std::unique_ptr<Crowdbtree> tree;
     auto                        status = Crowdbtree::open(config, &tree);
     ASSERT_TRUE(status.ok()) << status.to_string();

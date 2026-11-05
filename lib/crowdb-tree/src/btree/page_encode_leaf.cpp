@@ -59,6 +59,9 @@ Status append_leaf_entry(FinalPageEncodeState &state, Slice key, LogicalCell cel
         }
         state.summary.new_overflow_frames += entry.overflow_frames;
     }
+    if (entry.cell.tombstone()) {
+        state.summary.oldest_tombstone_slot = std::min(state.summary.oldest_tombstone_slot, entry.cell.slot);
+    }
     if (!entry.cell.tombstone()) {
         if (value_bytes > UINT64_MAX - state.summary.live_value_bytes ||
             key.size() > UINT64_MAX - state.summary.live_key_bytes) {

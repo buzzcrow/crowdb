@@ -236,6 +236,11 @@ void FlushBatch::State::finish() noexcept
     if (maintenance_metrics) {
         (void)maintenance_metrics->finish(report.maintenance_status.ok() ? TreeOutcome::Success : outcome, now);
     }
+    if (report.phase == FlushPhase::kComplete && report.handoff_status.ok() && report.maintenance_status.ok()) {
+        options.persistence.reset();
+        maintenance = {};
+        checkpoint_view.reset();
+    }
     lifecycle.fetch_and(static_cast<uint8_t>(~kRunning), std::memory_order_release);
     callback(argument, detail::CallbackSignal::kValue, Status::Ok());
 }

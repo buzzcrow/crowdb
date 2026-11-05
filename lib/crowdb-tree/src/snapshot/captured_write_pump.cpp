@@ -169,10 +169,12 @@ Status CapturedWriteOperation::State::insert(DurableCapturedFrame value, bool re
     if (pages->frames.size() == limits.max_frames) {
         return Status::resource_exhausted();
     }
-    pages->backend_id       = value.backing->backend_id;
-    pages->next_page_id     = std::max(pages->next_page_id, value.page_id + 1);
-    const auto reused_bytes = reused ? value.backing->length : 0;
-    pages->frames.emplace(value.page_id, std::move(value));
+    pages->backend_id         = value.backing->backend_id;
+    pages->next_page_id       = std::max(pages->next_page_id, value.page_id + 1);
+    const auto reused_bytes   = reused ? value.backing->length : 0;
+    value.incoming_references = 0;
+    const auto pid            = value.page_id;
+    pages->frames.emplace(pid, std::move(value));
     record_work(budget.work_metrics, TreeWorkCounter::ReusedFrames, static_cast<uint64_t>(reused), budget.cause);
     record_work(budget.work_metrics, TreeWorkCounter::ReusedBackingBytes, reused_bytes, budget.cause);
     report.reused_frames += static_cast<uint64_t>(reused);
@@ -236,6 +238,12 @@ void CapturedWriteOperation::State::reuse_step()
     if (old.backing && old.backing->storage == BackingStorage::kResidentFrame) {
         use_resident_dependency(std::move(old));
         return;
+    }
+    if (inherited) {
+        const auto staged = inherited->frames.find(old.page_id);
+        if (staged != inherited->frames.end() && staged->second.resident_source.lock() == old.backing) {
+            old = staged->second;
+        }
     }
     if (limits.frames.exclusion.overlaps(*old.backing)) {
         use_relocated_dependency(std::move(old));

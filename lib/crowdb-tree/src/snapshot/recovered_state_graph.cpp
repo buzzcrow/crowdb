@@ -22,9 +22,10 @@ void RecoveredStateOperation::State::push(uint64_t pid, PageKeyRange range)
         return;
     }
     Path next;
-    next.pid        = pid;
-    next.descriptor = &found->second;
-    next.range      = std::move(range);
+    next.summary.live_counts_known = true;
+    next.pid                       = pid;
+    next.descriptor                = &found->second;
+    next.range                     = std::move(range);
     path.push_back(std::move(next));
     ++report.pages;
     wake();
@@ -135,6 +136,13 @@ void RecoveredStateOperation::State::complete_page()
             parent.upper_leaf = top.bounds.upper_leaf;
         }
     }
+    if (path.size() > 1) {
+        auto &parent                 = path[path.size() - 2].summary;
+        parent.oldest_tombstone_slot = std::min(parent.oldest_tombstone_slot, top.summary.oldest_tombstone_slot);
+        parent.live_keys += top.summary.live_keys;
+        parent.live_key_bytes += top.summary.live_key_bytes;
+        parent.live_value_bytes += top.summary.live_value_bytes;
+    }
     path.pop_back();
     wake();
 }
@@ -150,6 +158,7 @@ bool RecoveredStateOperation::State::install_page(uint32_t level)
         page->inner_backing = top.descriptor->backing;
         auto descriptor     = *top.descriptor;
         descriptor.summary.emplace();
+        descriptor.summary                     = top.summary;
         descriptor.summary->encoded_entries    = top.inner->separators.size();
         descriptor.summary->primary_used_bytes = top.metrics.page_size_bytes;
         descriptor.summary->inner_fences = {.lower_leaf = top.bounds.lower_leaf, .upper_leaf = top.bounds.upper_leaf};

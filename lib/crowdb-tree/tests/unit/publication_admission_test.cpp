@@ -218,12 +218,13 @@ TEST(PublicationAdmission, OldCheckpointMayFinishButNewCaptureWaits)
                             .expected_coverage = 0, .checkpoint = CheckpointPublication{CheckpointAction::Capture, 1}
     })
                     .status.ok());
-    ASSERT_TRUE(acquire(publisher, publisher.capture()->commit_seq).status.ok());
+    EXPECT_EQ(acquire(publisher, publisher.capture()->commit_seq).status.code(), Code::kUnavailable);
     ASSERT_TRUE(publish(publisher,
                         {
                             .checkpoint = CheckpointPublication{CheckpointAction::Commit, 1}
     })
                     .status.ok());
+    ASSERT_TRUE(acquire(publisher, publisher.capture()->commit_seq).status.ok());
     EXPECT_EQ(publish(publisher,
                       {
                           .expected_coverage     = 0,

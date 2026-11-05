@@ -17,7 +17,7 @@ Status validate_flush_admission(const PublishedTreeState &current, const Publica
             if (!transaction.expected_commit_seq) {
                 return Status::invalid_argument("flush reserve must name its captured publication sequence");
             }
-            if (current.flush_admission_owner != 0 || current.pending_handoff) {
+            if (current.flush_admission_owner != 0 || current.pending_handoff || current.checkpoint_inflight) {
                 return Status::unavailable("another flush owns publication admission");
             }
         }
@@ -32,7 +32,11 @@ Status validate_flush_admission(const PublishedTreeState &current, const Publica
         return Status::Ok();
     }
     if (current.flush_admission_owner != 0) {
-        if (transaction.coverage && (!transaction.handoff || *transaction.coverage <= current.coverage)) {
+        const bool persistent_covered = transaction.coverage && transaction.checkpoint &&
+                                        transaction.checkpoint->action == CheckpointAction::Capture &&
+                                      *transaction.coverage == current.coverage && !current.pending_handoff;
+        if (transaction.coverage && !persistent_covered &&
+            (!transaction.handoff || *transaction.coverage <= current.coverage)) {
             return Status::invalid_argument("admitted coverage must complete its forward handoff");
         }
         const bool checkpoint_completion =

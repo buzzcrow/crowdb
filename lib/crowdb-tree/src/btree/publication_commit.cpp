@@ -124,10 +124,14 @@ Status validate_transaction(const PublishedTreeState &current, const Publication
     if (!transaction.record || transaction.record->token.generation != current.generation) {
         return Status::unavailable("publication belongs to a different tree generation");
     }
+    const bool checkpoint_summary =
+        transaction.checkpoint && transaction.checkpoint->action == CheckpointAction::Commit &&
+        current.checkpoint_inflight && transaction.expected_l1_seq && *transaction.expected_l1_seq == current.l1_seq;
     if (transaction.summary &&
-        (!transaction.expected_commit_seq || !transaction.pages.empty() || transaction.root_page_id ||
-         transaction.sources || transaction.coverage || transaction.checkpoint || transaction.handoff ||
-         transaction.merge_pair || transaction.flush_admission || transaction.next_page_id ||
+        ((!transaction.expected_commit_seq && !checkpoint_summary) || !transaction.pages.empty() ||
+         transaction.root_page_id || transaction.sources || transaction.coverage ||
+         (transaction.checkpoint && !checkpoint_summary) || transaction.handoff || transaction.merge_pair ||
+         transaction.flush_admission || transaction.next_page_id ||
          transaction.summary->covered_slot != current.coverage || !transaction.summary->exact)) {
         return Status::invalid_argument("summary installation requires a fixed unmodified graph");
     }
@@ -316,7 +320,8 @@ PublicationResult PublicationCoordinator::commit(const PublicationTransaction &t
                                         ? transaction.flush_admission->owner
                                         : 0;
     }
-    else if (transaction.coverage) {
+    else if ((transaction.coverage && !transaction.checkpoint) ||
+             (transaction.checkpoint && transaction.checkpoint->action != CheckpointAction::Capture)) {
         next->flush_admission_owner = 0;
     }
     if (transaction.handoff) {

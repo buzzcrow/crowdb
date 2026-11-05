@@ -3,6 +3,7 @@
 #include "flush_subtree.h"
 
 #include "page_load.h"
+#include "snapshot/flush_persistence.h"
 
 #include <algorithm>
 #include <limits>
@@ -110,6 +111,7 @@ FlushBatch::State::Subtree::Subtree(State &state, uint64_t page_id, PageKeyRange
       pid(page_id),
       bounds(std::move(range)),
       active(selected),
+      final_pages(detail::ReservationAllocator<FinalPage>(state.metadata)),
       expected(state.captured->mapping.get(page_id)),
       output(state.metadata),
       children(detail::ReservationAllocator<std::shared_ptr<Subtree>>(state.metadata))
@@ -269,6 +271,10 @@ void FlushBatch::State::Subtree::step()
         complete(Status::Ok());
         return;
     }
+    if (joined) {
+        persist_next();
+        return;
+    }
     if (expected->level == 0) {
         leaf();
         return;
@@ -308,7 +314,9 @@ void FlushBatch::State::Subtree::fork()
                 selected.upper = inner->separators[i];
             }
             auto       first   = owner.first_input(selected.lower_slice());
-            const bool touched = first && selected.contains(Slice(*first));
+            const bool touched = (first && selected.contains(Slice(*first))) ||
+                                 (owner.options.persistent && owner.options.persistence &&
+                                  owner.options.persistence->selected(inner->children[i], selected));
             if (!touched) {
                 children.push_back(nullptr);
                 continue;
@@ -340,6 +348,9 @@ void FlushBatch::State::Subtree::reset_work()
     finished       = false;
     status         = Status::Ok();
     children_ready = false;
+    joined         = false;
+    persist_at     = 0;
+    final_pages.clear();
     child_join.reset();
     layout.reset();
     layout_metrics.reset();

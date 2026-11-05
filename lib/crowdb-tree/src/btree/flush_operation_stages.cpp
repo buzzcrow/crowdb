@@ -76,10 +76,13 @@ void FlushOperation::State::start_batch()
         return;
     }
     if (!batch) {
-        auto inputs    = detail::reserved_shared<PublishedSources>(metadata, metadata);
-        inputs->floor  = capture->floor();
-        inputs->memory = capture->expected_catalog()->memory;
-        inputs->tables.assign(capture->expected_catalog()->tables.begin(), capture->expected_catalog()->tables.end());
+        auto inputs   = detail::reserved_shared<PublishedSources>(metadata, metadata);
+        inputs->floor = report.floor;
+        if (capture) {
+            inputs->memory = capture->expected_catalog()->memory;
+            inputs->tables.assign(capture->expected_catalog()->tables.begin(),
+                                  capture->expected_catalog()->tables.end());
+        }
         auto weak             = weak_from_this();
         auto maintenance_step = [weak](auto view, auto done) {
             if (auto self = weak.lock()) {
@@ -91,7 +94,7 @@ void FlushOperation::State::start_batch()
         };
         options.measure_batch = false;
         auto status =
-            FlushBatch::prepare(publisher, runtime, lane, capture->batch_id(), capture->frontier(), options,
+            FlushBatch::prepare(publisher, runtime, lane, report.batch_id, report.frontier, options,
                                 std::move(maintenance_step), &batch, std::move(inputs), metadata, admission_owner);
         if (!status.ok()) {
             fail(std::move(status));
@@ -176,6 +179,11 @@ Status FlushOperation::State::acknowledge(const PublishedTreeState &view)
     if (source_acknowledged) {
         return Status::Ok();
     }
+    if (!capture && options.persistent && view.coverage == report.frontier && view.sources->floor == report.frontier) {
+        source_acknowledged = true;
+        admitted            = false;
+        return Status::Ok();
+    }
     if (!capture || view.coverage != capture->frontier() || view.sources->floor != capture->frontier()) {
         return Status::unavailable("published coverage does not match source capture");
     }
@@ -216,6 +224,25 @@ Status FlushOperation::State::acknowledge(const PublishedTreeState &view)
 void FlushOperation::State::maintain(std::shared_ptr<const PublishedTreeState> view,
                                      FlushBatch::MaintenanceComplete           done)
 {
+    if (options.persistent && maintenance) {
+        auto self       = shared_from_this();
+        persistent_done = std::move(done);
+        maintenance(std::move(view), [self](Status result, uint64_t deferred) mutable {
+            const auto current = self->publisher.capture();
+            if (!current->checkpoint_inflight && current->flush_admission_owner == 0) {
+                auto acknowledged = self->acknowledge(*current);
+                if (acknowledged.ok() && !result.ok()) {
+                    self->replaceable.store(true, std::memory_order_release);
+                }
+                if (result.ok()) {
+                    result = std::move(acknowledged);
+                }
+            }
+            auto completed = std::move(self->persistent_done);
+            completed(std::move(result), deferred);
+        });
+        return;
+    }
     auto status = acknowledge(*view);
     if (!status.ok()) {
         done(std::move(status), view->stats.dirty_pages);

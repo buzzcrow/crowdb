@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 #include "flush_subtree.h"
 #include "page_load.h"
+#include "snapshot/flush_persistence.h"
 
 #include <algorithm>
 #include <limits>
@@ -125,6 +126,9 @@ void FlushBatch::State::Subtree::join()
     }
     InnerPageState combined(builder->options.metadata);
     for (size_t i = 0; i < ordered.size(); ++i) {
+        if (owner.options.persistent && ordered[i].touched) {
+            final_pages.push_back({.task = ordered[i].task, .pid = ordered[i].pid});
+        }
         combined.children.push_back(ordered[i].pid);
         if (i != 0) {
             combined.separators.push_back(ordered[i].lower.value());
@@ -147,7 +151,7 @@ void FlushBatch::State::Subtree::join()
         owner.options.after_page_for_tests(pid, expected->level);
     }
 #endif
-    complete(Status::Ok());
+    finish_pages();
 }
 
 std::shared_ptr<const PublishedPage> FlushBatch::State::Subtree::lookup(uint64_t page_id) const
@@ -187,8 +191,11 @@ void FlushBatch::State::start_subtree()
     if (!subtree) {
         next_pid.store(captured->next_page_id, std::memory_order_relaxed);
         const auto first = first_input({});
-        subtree          = detail::reserved_shared<Subtree>(metadata, *this, captured->root_page_id, options.selection,
-                                                            first.has_value());
+        const bool selected =
+            first.has_value() || (options.persistent && options.persistence &&
+                                  options.persistence->selected(captured->root_page_id, options.selection));
+        subtree =
+            detail::reserved_shared<Subtree>(metadata, *this, captured->root_page_id, options.selection, selected);
     }
     else {
         subtree->reset_work();
@@ -198,21 +205,17 @@ void FlushBatch::State::start_subtree()
     stdexec::start(operation->connected);
 }
 
-Status FlushBatch::State::collect_subtree(PublicationTransaction &transaction)
+Status FlushBatch::State::Subtree::prepare_root()
 {
-    if (!options.consolidation) {
-        return Status::internal_error("flush consolidation options are absent");
-    }
-    const auto snapshot_metadata = options.consolidation->snapshot_metadata;
-    subtree->prepare_builder();
-    auto    &outputs = subtree->output;
+    prepare_builder();
+    auto    &outputs = output;
     uint64_t root    = outputs.pids.front();
     if (outputs.pids.size() > 1) {
-        const auto status = subtree->builder->grow_root(std::move(outputs), subtree->expected->level);
+        const auto status = builder->grow_root(std::move(outputs), expected->level);
         if (!status.ok()) {
             return status;
         }
-        root = subtree->builder->root_page_id();
+        root = builder->root_page_id();
     }
     // Only the root may contract its level. Descendant joins retain their
     // level until their parent has made its own sibling decision.
@@ -228,14 +231,14 @@ Status FlushBatch::State::collect_subtree(PublicationTransaction &transaction)
                 continue;
             }
             auto page = self(self, *child, pid);
-            if (page != captured->mapping.get(pid)) {
+            if (page != owner.captured->mapping.get(pid)) {
                 return page;
             }
         }
-        return captured->mapping.get(pid);
+        return owner.captured->mapping.get(pid);
     };
-    for (size_t depth = 0; subtree->active && depth < options.max_route_depth; ++depth) {
-        const auto page = find(find, *subtree, root);
+    for (size_t depth = 0; active && depth < owner.options.max_route_depth; ++depth) {
+        const auto page = find(find, *this, root);
         if (!page || !page->inner || page->inner->children.size() != 1) {
             break;
         }
@@ -257,12 +260,29 @@ Status FlushBatch::State::collect_subtree(PublicationTransaction &transaction)
             }
             return Status::Ok();
         };
-        auto removed = remove(remove, *subtree);
+        auto removed = remove(remove, *this);
         if (!removed.ok()) {
             return removed;
         }
         root = child;
     }
+    final_root = root;
+    return Status::Ok();
+}
+
+Status FlushBatch::State::collect_subtree(PublicationTransaction &transaction)
+{
+    if (!options.consolidation) {
+        return Status::internal_error("flush consolidation options are absent");
+    }
+    if (subtree->final_root == kInvalidPageId) {
+        auto prepared = subtree->prepare_root();
+        if (!prepared.ok()) {
+            return prepared;
+        }
+    }
+    const auto root                   = subtree->final_root;
+    const auto snapshot_metadata      = options.consolidation->snapshot_metadata;
     transaction.root_page_id          = root;
     transaction.expected_root_page_id = captured->root_page_id;
     transaction.expected_next_page_id = captured->next_page_id;

@@ -225,6 +225,9 @@ void CapturedWriteOperation::State::finish(Status status) noexcept
     const bool cancelled = stopped.load(std::memory_order_acquire);
     report.status        = cancelled ? Status::unavailable() : std::move(status);
     if (report.status.ok()) {
+        report.status = pages->initialize_overflow_counts();
+    }
+    if (report.status.ok()) {
         report.pages = std::move(pages);
     }
     pages.reset();

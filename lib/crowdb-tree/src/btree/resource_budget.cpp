@@ -419,6 +419,15 @@ const void *AllocationReservation::domain() const noexcept
     return account_->state_.get();
 }
 
+bool AllocationReservation::return_reserved(ResourceBudget::Credit credit) noexcept
+{
+    if (!credit.belongs_to(account_, category()) || credit.allocated() || !restore_reserved(credit.amount_)) {
+        return false;
+    }
+    credit.amount_ = 0;
+    return true;
+}
+
 ResourceBudget::Credit::Credit(std::shared_ptr<Account> account, size_t category, size_t amount, bool allocated)
     : account_(std::move(account)),
       category_(category),

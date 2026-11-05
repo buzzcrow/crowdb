@@ -2,6 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 #include "flush_subtree.h"
 #include "page_load.h"
+#include "snapshot/flush_persistence.h"
+#include "snapshot/primary_backing.h"
 
 #include <algorithm>
 #include <limits>
@@ -35,7 +37,25 @@ void FlushBatch::State::Subtree::prepare_builder()
 
 void FlushBatch::State::Subtree::leaf()
 {
-    if (!range) {
+    if (!owner.options.consolidation) {
+        complete(Status::invalid_argument("flush consolidation options are absent"));
+        return;
+    }
+    const auto first = owner.first_input(bounds.lower_slice());
+    if (!handed_off && (!first || !bounds.contains(Slice(*first)))) {
+        handed_off = true;
+    }
+    const auto oldest            = expected->primary && expected->primary->frame.summary
+                                     ? expected->primary->frame.summary->oldest_tombstone_slot
+                                     : UINT64_MAX;
+    const bool collect_tombstone = oldest != UINT64_MAX && oldest <= owner.options.consolidation->pages.gc_floor;
+    if (!collect_tombstone && !range && handed_off && !expected->metrics.dirty &&
+        !expected->metrics.consolidate_candidate && !expected->metrics.split_candidate) {
+        output.pids.push_back(pid);
+        finish_pages();
+        return;
+    }
+    if (!range && !handed_off) {
 #ifdef CROWDB_TREE_TEST_UTIL
         if (owner.options.before_handoff_for_tests) {
             owner.options.before_handoff_for_tests(pid);
@@ -73,8 +93,8 @@ void FlushBatch::State::Subtree::leaf()
     }
     prepare_builder();
     if (!loaded_leaf) {
-        loaded_leaf = detail::reserved_shared<PageState>(builder->options.metadata, *range->expected->leaf,
-                                                         builder->options.metadata);
+        loaded_leaf = detail::reserved_shared<PageState>(
+            builder->options.metadata, *(range ? range->expected : expected)->leaf, builder->options.metadata);
     }
     while (next_base < loaded_leaf->bases.size()) {
         auto &base = loaded_leaf->bases[next_base];
@@ -114,7 +134,8 @@ void FlushBatch::State::Subtree::leaf()
     }
     output.pids.clear();
     output.separators.clear();
-    result = detail::build_flush_leaf_outputs(*builder, pid, range->expected, layout->layout(), &output);
+    result =
+        detail::build_flush_leaf_outputs(*builder, pid, range ? range->expected : expected, layout->layout(), &output);
     if (split_metrics) {
         (void)split_metrics->finish(result.ok() ? TreeOutcome::Success : TreeOutcome::Error, tree_metrics_now_ns());
         if (result.ok()) {
@@ -139,7 +160,7 @@ void FlushBatch::State::Subtree::leaf()
         owner.options.after_page_for_tests(pid, 0);
     }
 #endif
-    complete(Status::Ok());
+    finish_pages();
 }
 
 void FlushBatch::State::Subtree::request_load()
@@ -178,6 +199,57 @@ void FlushBatch::State::Subtree::load() noexcept
             status         = Status::unavailable("flush stopped before cold load");
             load_completed = true;
             schedule();
+            return;
+        }
+        if (writing) {
+            if (!owner.options.consolidation) {
+                status         = Status::invalid_argument("flush consolidation options are absent");
+                load_completed = true;
+                schedule();
+                return;
+            }
+            auto target = final_pages[persist_at];
+            auto page   = target.task->lookup(target.pid);
+            owner.options.persistence->write(
+                {
+                    .page         = page,
+                    .page_id      = target.pid,
+                    .coverage     = owner.report.frontier,
+                    .gc_floor     = owner.options.consolidation->pages.gc_floor,
+                    .next_page_id = owner.next_pid.load(std::memory_order_relaxed),
+                    .context = {.range        = page->leaf ? page->leaf->range : bounds,
+                                .inner_fences = page->level != 0 ? std::optional(fences(target.pid)) : std::nullopt},
+                    .children_summary = page->level != 0 ? std::optional(child_summary(target.pid)) : std::nullopt
+            },
+                [this, lease = owner.metadata](uint64_t count, ReservedOverflowIds *out) {
+                    auto next = owner.next_pid.load(std::memory_order_relaxed);
+                    do {
+                        if (count > MappingView::kPageLimit - next) {
+                            return Status::resource_exhausted("flush overflow PID space exhausted");
+                        }
+                    } while (!owner.next_pid.compare_exchange_weak(next, next + count, std::memory_order_relaxed));
+                    *out = {.first = next, .count = count, .owner = lease};
+                    return Status::Ok();
+                },
+                [this, target, keep = owner.weak_from_this().lock()](Status result, auto replacement) noexcept {
+                    try {
+                        if (result.ok() && replacement) {
+                            target.task->prepare_builder();
+                            result = target.task->builder->replace(target.pid, std::move(replacement));
+                        }
+                    }
+                    catch (const std::bad_alloc &) {
+                        result = Status::resource_exhausted();
+                    }
+                    catch (const std::exception &) {
+                        result = Status::internal_error("flush receipt installation failed");
+                    }
+                    status = std::move(result);
+                    ++persist_at;
+                    writing        = false;
+                    load_completed = true;
+                    schedule();
+                });
             return;
         }
         if (expected->level != 0) {

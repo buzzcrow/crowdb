@@ -5,6 +5,7 @@
 #include "backend/local/scheduled_page_store.h"
 #include "btree/allocation_bound.h"
 #include "runtime/tree_tuning_c_api.h"
+#include "snapshot/snapshot_baseline.h"
 #include "tree_apply_operation.h"
 #include "tree_core_geometry.h"
 #include "tree_core_internal.h"
@@ -160,6 +161,15 @@ Status TreeCore::State::initialize(TreeCoreBootstrap bootstrap)
     }
     local = std::move(bootstrap.local);
     chunk = std::move(bootstrap.chunk);
+    if (initial->snapshot_baseline && (local || chunk)) {
+        auto restored = detail::reserved_shared<PublishedTreeState>(credit, *initial);
+        auto baseline = detail::reserved_shared<SnapshotBaseline>(credit, *initial->snapshot_baseline);
+        baseline->snapshot_sequence =
+            local ? local->checkpoints->snapshot_sequence() : chunk->snapshot_sequence.load(std::memory_order_acquire);
+        baseline->wal_offset        = chunk ? chunk->requested_wal_offset() : 0;
+        restored->snapshot_baseline = std::move(baseline);
+        initial                     = std::move(restored);
+    }
     if (local) {
         backend = local->store;
     }

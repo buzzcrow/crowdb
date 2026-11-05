@@ -21,17 +21,18 @@ struct FlushBatch::State : std::enable_shared_from_this<State>
     };
 
     struct Subtree;
-    void                     start_subtree();
-    Status                   collect_subtree(PublicationTransaction &transaction);
-    void                     start_load() noexcept;
-    void                     start_leaves() noexcept;
-    std::atomic<Subtree *>   leaf_waiters{nullptr};
-    std::atomic<size_t>      active_leaves{0};
-    std::atomic<Subtree *>   load_waiters{nullptr};
-    std::atomic<bool>        load_active{false};
-    std::shared_ptr<Subtree> subtree;
-    std::atomic<uint64_t>    next_pid{0};
-    std::atomic<size_t>      next_range{0};
+    void                                      start_subtree();
+    Status                                    collect_subtree(PublicationTransaction &transaction);
+    void                                      start_load() noexcept;
+    void                                      start_leaves() noexcept;
+    std::atomic<Subtree *>                    leaf_waiters{nullptr};
+    std::atomic<size_t>                       active_leaves{0};
+    std::atomic<Subtree *>                    load_waiters{nullptr};
+    std::atomic<bool>                         load_active{false};
+    std::shared_ptr<Subtree>                  subtree;
+    std::shared_ptr<const PublishedTreeState> checkpoint_view;
+    std::atomic<uint64_t>                     next_pid{0};
+    std::atomic<size_t>                       next_range{0};
 
     struct Range
     {

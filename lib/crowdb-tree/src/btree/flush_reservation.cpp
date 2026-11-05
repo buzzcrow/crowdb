@@ -4,6 +4,7 @@
 #include "flush_reservation_internal.h"
 #include "page_cache.h"
 #include "publication_lane.h"
+#include "snapshot/flush_persistence.h"
 
 namespace crowdb::tree::detail
 {
@@ -84,18 +85,29 @@ Status bind_flush_reservations(PublicationCoordinator &publisher, const FlushPre
     if (!backend_status.ok()) {
         return backend_status;
     }
-    batch->cpu_progress = preparation.cpu_progress;
-    batch->publication  = preparation.publication;
-    auto loads          = preparation.loads;
-    loads.max_inflight  = 1;
-    batch->loader = reserved_shared<AsyncStorePageLoader>(reserved.routing, preparation.store, preparation.runtime,
-                                                          lane, loads, OverflowBackingResolver{},
-                                                          PageLoadBudget{.bytes        = reserved.routing,
-                                                                         .io           = reserved.io,
-                                                                         .work_metrics = publisher.work_metrics(),
-                                                                         .backend      = reserved.backend,
-                                                                         .cpu_progress = preparation.cpu_progress,
-                                                                         .cause        = TreeWorkCause::Flush});
+    batch->cpu_progress     = preparation.cpu_progress;
+    batch->publication      = preparation.publication;
+    batch->persistent       = preparation.persistent;
+    batch->persistence      = preparation.persistence;
+    batch->checkpoint_token = preparation.checkpoint_token;
+    if (preparation.persistent) {
+        auto persistence = preparation.persistence;
+        if (!persistence) {
+            return Status::invalid_argument("persistent flush needs its durable sink");
+        }
+        persistence->bind_io(reserved.io);
+        *maintenance = [persistence](auto view, auto done) { persistence->commit(std::move(view), std::move(done)); };
+    }
+    auto loads         = preparation.loads;
+    loads.max_inflight = 1;
+    batch->loader      = reserved_shared<AsyncStorePageLoader>(reserved.routing, preparation.store, preparation.runtime,
+                                                               lane, loads, OverflowBackingResolver{},
+                                                               PageLoadBudget{.bytes        = reserved.routing,
+                                                                              .io           = reserved.io,
+                                                                              .work_metrics = publisher.work_metrics(),
+                                                                              .backend      = reserved.backend,
+                                                                              .cpu_progress = preparation.cpu_progress,
+                                                                              .cause        = TreeWorkCause::Flush});
     batch->consolidation_loader = batch->loader;
     if (preparation.cache) {
         std::shared_ptr<PageLoader> binding;

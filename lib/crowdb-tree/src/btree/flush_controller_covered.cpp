@@ -13,11 +13,11 @@ Status FlushController::State::prepare_covered(const FlushPreparationOptions    
                                                const std::shared_ptr<const SourceCatalog>      &catalog,
                                                std::shared_ptr<FlushOperation>                 *out)
 try {
-    if (!preparation.store || !catalog->active_budget || options.loader || preparation.maintenance.prepaid ||
-        preparation.maintenance.acquire || preparation.maintenance.publication.metadata || !view->sources ||
-        view->sources->inheritance || view->pending_handoff || view->flush_admission_owner != 0 ||
-        catalog->floor != view->coverage || view->sources->floor != catalog->floor ||
-        view->sources->tables.size() != catalog->tables.size() ||
+    if (preparation.persistent || !preparation.store || !catalog->active_budget || options.loader ||
+        preparation.maintenance.prepaid || preparation.maintenance.acquire ||
+        preparation.maintenance.publication.metadata || !view->sources || view->sources->inheritance ||
+        view->pending_handoff || view->flush_admission_owner != 0 || catalog->floor != view->coverage ||
+        view->sources->floor != catalog->floor || view->sources->tables.size() != catalog->tables.size() ||
         !std::equal(view->sources->tables.begin(), view->sources->tables.end(), catalog->tables.begin()) ||
         contiguous.load(std::memory_order_acquire) > catalog->floor) {
         return Status::Ok();

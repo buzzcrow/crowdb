@@ -73,6 +73,7 @@ struct FlushOperation::State : std::enable_shared_from_this<State>
     std::shared_ptr<ApplyProgress>                 progress;
     FlushBatchOptions                              options;
     FlushBatch::Maintenance                        maintenance;
+    FlushBatch::MaintenanceComplete                persistent_done;
     std::shared_ptr<detail::AllocationReservation> metadata;
     detail::FlushReservations                      reservations;
     std::shared_ptr<const SourceCatalog>           expected_catalog;

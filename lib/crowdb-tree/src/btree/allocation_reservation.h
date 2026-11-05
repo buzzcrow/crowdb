@@ -39,6 +39,7 @@ class AllocationReservation : public AllocationBudget
     [[nodiscard]] size_t available() const noexcept;
     // Carve out independent progress credit without changing physical usage.
     [[nodiscard]] std::optional<ResourceBudget::Credit> take_reserved(size_t bytes) noexcept;
+    [[nodiscard]] bool                                  return_reserved(ResourceBudget::Credit credit) noexcept;
     [[nodiscard]] const void                           *domain() const noexcept override;
 
     [[nodiscard]] const std::shared_ptr<ResourceBudget::Account> &account() const noexcept

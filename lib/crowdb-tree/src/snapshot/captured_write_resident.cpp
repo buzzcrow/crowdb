@@ -28,6 +28,29 @@ void CapturedWriteOperation::State::use_resident_dependency(DurableCapturedFrame
 {
     const auto written = pages->frames.find(value.page_id);
     if (written == pages->frames.end()) {
+        if (inherited) {
+            const auto staged = inherited->frames.find(value.page_id);
+            if (staged != inherited->frames.end()) {
+                const auto source = staged->second.resident_source.lock();
+                if (!source || !value.backing || source->owner.owner_before(value.backing->owner) ||
+                    value.backing->owner.owner_before(source->owner) ||
+                    source->resident_frame.data() != value.backing->resident_frame.data() ||
+                    source->resident_frame.size() != value.backing->resident_frame.size() ||
+                    staged->second.type != value.type || staged->second.next_overflow != value.next_overflow ||
+                    staged->second.overflow_bytes != value.overflow_bytes ||
+                    staged->second.frame_bytes != value.frame_bytes) {
+                    finish(Status::corruption("resident overflow conflicts with the flush's staged PID"));
+                    return;
+                }
+                auto status = insert(staged->second, true);
+                if (!status.ok()) {
+                    finish(std::move(status));
+                    return;
+                }
+                attach_dependency(staged->second, true);
+                return;
+            }
+        }
         begin_resident_write(std::move(value));
         return;
     }
@@ -83,10 +106,11 @@ void CapturedWriteOperation::State::begin_resident_write(DurableCapturedFrame va
 
 void CapturedWriteOperation::State::received_resident_write()
 {
-    const auto &result                = write->result();
-    resident_dependency.backing       = result.backing;
-    resident_dependency.logical_bytes = result.logical_bytes;
-    auto status                       = insert(resident_dependency, false);
+    const auto &result                  = write->result();
+    resident_dependency.resident_source = resident_dependency.backing;
+    resident_dependency.backing         = result.backing;
+    resident_dependency.logical_bytes   = result.logical_bytes;
+    auto status                         = insert(resident_dependency, false);
     if (!status.ok()) {
         finish(std::move(status));
         return;

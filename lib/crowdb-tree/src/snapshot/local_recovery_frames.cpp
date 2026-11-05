@@ -134,6 +134,11 @@ void LocalRecoveryOperation::State::frame_read()
 void LocalRecoveryOperation::State::dependencies()
 {
     if (reference_index == references.size()) {
+        auto status = pages->initialize_overflow_counts();
+        if (!status.ok()) {
+            finish(std::move(status));
+            return;
+        }
         image_complete();
         return;
     }

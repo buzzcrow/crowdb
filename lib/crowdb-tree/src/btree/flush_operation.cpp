@@ -157,6 +157,14 @@ void FlushOperation::State::run_cpu(void *context) noexcept
 
 void FlushOperation::State::begin()
 {
+    if (options.persistent && report.phase == FlushPhase::kRepairRequired && reservations.io &&
+        reservations.io->available() == 0) {
+        auto credit = detail::ResourceBudget::try_reserve(reservations.io->account(), detail::BudgetClass::kIo, 1);
+        if (!credit || !reservations.io->return_reserved(std::move(*credit))) {
+            fail(Status::unavailable("persistent flush awaits its next I/O window"));
+            return;
+        }
+    }
     if (capture_only && !frozen.base && covered_at_start) {
         // A normal connection already handed off this source set. Pair the
         // newly requested capture with that complete source-free L1, not its
@@ -228,7 +236,7 @@ void FlushOperation::State::begin()
         report.floor              = source_view->floor;
         report.frontier           = source_view->floor;
         report.published_coverage = source_view->floor;
-        if (!admitted && contiguous.load(std::memory_order_acquire) <= source_view->floor) {
+        if (!admitted && !options.persistent && contiguous.load(std::memory_order_acquire) <= source_view->floor) {
             if (capture_only) {
                 frozen.base     = tree_view;
                 frozen.frontier = source_view->floor;
@@ -245,6 +253,12 @@ void FlushOperation::State::begin()
         }
         if (!admitted) {
             acquire_admission();
+            return;
+        }
+        if (options.persistent && contiguous.load(std::memory_order_acquire) <= source_view->floor) {
+            source_pause.reset();
+            report.batch_id = admission_owner;
+            dispatch(CpuStage::kBatch);
             return;
         }
 #ifdef CROWDB_TREE_TEST_UTIL
@@ -316,6 +330,11 @@ void FlushOperation::State::fail_terminal(Status status) noexcept
 
 void FlushOperation::State::finish() noexcept
 {
+    if (options.persistent && report.phase == FlushPhase::kRepairRequired && reservations.io) {
+        // All accepted children have joined. An idle repair must not monopolize
+        // the only I/O grant needed by an old reader between attempts.
+        auto unused = reservations.io->take_reserved(reservations.io->available());
+    }
     auto  self            = weak_from_this().lock();
     auto  callback        = complete;
     auto *argument        = context;
@@ -334,6 +353,10 @@ void FlushOperation::State::finish() noexcept
         options.loader.reset();
         options.consolidation_loader.reset();
         reservations.seal();
+        if (report.handoff_status.ok() && report.maintenance_status.ok()) {
+            options.persistence.reset();
+            maintenance = {};
+        }
     }
     auto outcome = report.handoff_status.ok() ? TreeOutcome::Success : TreeOutcome::Error;
     if (stopped()) {

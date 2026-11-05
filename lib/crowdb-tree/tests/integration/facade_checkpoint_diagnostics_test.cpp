@@ -69,18 +69,22 @@ TEST(FacadeCheckpointDiagnostics, FailedAndStagedWritesPreserveLastDurableObserv
     test.store.fail_at = test.store.events.size() + 1;
     EXPECT_FALSE(test.tree->snapshot().ok());
     EXPECT_EQ(test.tree->last_snapshot_pages_written(), first);
-    test.store.fail_at                        = 0;
+    test.store.fail_at = 0;
+    ASSERT_TRUE(test.tree->snapshot().ok());
+    EXPECT_EQ(test.tree->durable_snapshot_last_applied_slot(), 2U);
+    const auto repaired = test.tree->last_snapshot_pages_written();
+    ASSERT_TRUE(test.tree->put("a", "three").ok());
     auto                                *core = TreeCoreAccess::get(*test.tree);
     std::shared_ptr<CheckpointOperation> writeback;
     ASSERT_TRUE(core->prepare_writeback(&writeback).ok());
     const auto status = detail::wait_snapshot_operation(writeback);
     ASSERT_TRUE(status.ok()) << status.to_string();
     ASSERT_TRUE(writeback->result().writeback_completed);
-    EXPECT_EQ(test.tree->last_snapshot_pages_written(), first);
-    EXPECT_EQ(test.tree->durable_snapshot_last_applied_slot(), 1U);
+    EXPECT_EQ(test.tree->last_snapshot_pages_written(), repaired);
+    EXPECT_EQ(test.tree->durable_snapshot_last_applied_slot(), 2U);
     writeback.reset();
     ASSERT_TRUE(test.tree->snapshot().ok());
-    EXPECT_EQ(test.tree->durable_snapshot_last_applied_slot(), 2U);
+    EXPECT_EQ(test.tree->durable_snapshot_last_applied_slot(), 3U);
     EXPECT_EQ(test.tree->last_snapshot_pages_written(), 0U);
 }
 
