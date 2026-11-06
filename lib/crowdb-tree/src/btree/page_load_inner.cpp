@@ -16,8 +16,7 @@ void PageLoader::load_inner(std::shared_ptr<const BackingRef> /*backing*/, Inner
 namespace
 {
 Status read_inner_proof(const uint8_t *frame, uint32_t bytes, const PageLoadLimits &limits,
-                        const std::shared_ptr<detail::AllocationReservation> &metadata, size_t key_bytes,
-                        InnerFrameProof *proof)
+                        const std::shared_ptr<AllocationBudget> &metadata, size_t key_bytes, InnerFrameProof *proof)
 {
     proof->self_page_id   = frame_u64(frame, fh::kSelfpage_id);
     proof->frame_bytes    = bytes;
@@ -41,8 +40,7 @@ Status read_inner_proof(const uint8_t *frame, uint32_t bytes, const PageLoadLimi
 }
 
 Status decode_inner(const AlignedLoadBytes &blob, const BackingRef &backing, const PageLoadLimits &limits,
-                    const std::shared_ptr<detail::AllocationReservation> &metadata,
-                    std::shared_ptr<const InnerPageState>                *out)
+                    const std::shared_ptr<AllocationBudget> &metadata, std::shared_ptr<const InnerPageState> *out)
 {
     LoadBytes  frame{LoadBytes::allocator_type(metadata)};
     auto       status = decode_backing_frame({blob.data(), blob.size()}, backing, limits, metadata, &frame);
@@ -96,16 +94,16 @@ struct InnerLoad : PageLoadProgress, std::enable_shared_from_this<InnerLoad>
     {
     }
 
-    std::shared_ptr<detail::AllocationReservation> metadata;
-    std::shared_ptr<AsyncPageStore>                store;
-    std::shared_ptr<detail::FlushRuntime>          runtime;
-    std::shared_ptr<detail::FlushRuntime::Lane>    lane;
-    PageLoadLimits                                 limits;
-    std::shared_ptr<const BackingRef>              backing;
-    AlignedLoadBytes                               blob;
-    PageLoader::InnerComplete                      complete;
-    std::shared_ptr<InnerLoad>                     queued_owner;
-    std::atomic<bool>                              terminal{false};
+    std::shared_ptr<AllocationBudget>           metadata;
+    std::shared_ptr<AsyncPageStore>             store;
+    std::shared_ptr<detail::FlushRuntime>       runtime;
+    std::shared_ptr<detail::FlushRuntime::Lane> lane;
+    PageLoadLimits                              limits;
+    std::shared_ptr<const BackingRef>           backing;
+    AlignedLoadBytes                            blob;
+    PageLoader::InnerComplete                   complete;
+    std::shared_ptr<InnerLoad>                  queued_owner;
+    std::atomic<bool>                           terminal{false};
 
     void finish(Status status) noexcept
     {

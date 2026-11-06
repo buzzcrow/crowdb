@@ -145,7 +145,7 @@ Status flush_reserve_bounds(PublicationCoordinator &publisher, const PublishedTr
         return Status::resource_exhausted("flush reserve bounds exceed the configured work limits");
     }
     *out = {
-        .amounts                  = {*handoff, *total_routing, *reclaim, size_t{1}},
+        .amounts                  = {*handoff, *total_routing, *reclaim},
         .backend_bytes            = *backend,
         .snapshot_bytes           = *snapshot,
         .maintenance_output_pages = maintenance.publication.pages.max_output_pages

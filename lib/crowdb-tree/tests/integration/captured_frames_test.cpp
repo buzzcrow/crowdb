@@ -161,7 +161,7 @@ TEST(CapturedFrames, MaterializationBytesFollowTheLastOutputOwnerAfterStreamDest
     ASSERT_TRUE(test.create(snapshot_leaf(page({
                                 {.key = "a", .value = "captured"}
     })),
-                            {}, {.encode = {.frame_bytes = 4096, .metadata = credits.credits.bytes}})
+                            {}, {.encode = {.frame_bytes = 4096, .metadata = credits.credits.reservation()}})
                     .ok());
     Completion done;
     test.next(&done);
@@ -366,7 +366,7 @@ TEST(CapturedFrames, CancelledColdLeafRetainsCallbackOwnershipAndDoesNotProduceL
     TestStream test;
     ASSERT_TRUE(test.create(snapshot_leaf(leaf), loader,
                             {
-                                .encode = {.frame_bytes = 512, .metadata = credits.credits.bytes}
+                                .encode = {.frame_bytes = 512, .metadata = credits.credits.reservation()}
     })
                     .ok());
     Completion done;
@@ -392,11 +392,12 @@ TEST(CapturedFrames, OutputMemoryIsBoundedAcrossManyPagesUnderExhaustedHostBudge
 {
     LoadCredits credits;
     TestStream  test;
-    ASSERT_TRUE(test.create(snapshot_tree(80),
-                            {
+    ASSERT_TRUE(
+        test.create(snapshot_tree(80),
+                    {
     },
-                            {.encode = {.frame_bytes = 4096, .max_entries = 128, .metadata = credits.credits.bytes}})
-                    .ok());
+                    {.encode = {.frame_bytes = 4096, .max_entries = 128, .metadata = credits.credits.reservation()}})
+            .ok());
     size_t peak    = 0;
     size_t outputs = 0;
     for (size_t i = 0; i < 81; ++i) {

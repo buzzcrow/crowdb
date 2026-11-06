@@ -89,6 +89,9 @@ Status SourceWriteReservation::create(const SourceWriteOptions &options, WriteFo
     }
     auto credit = detail::ResourceBudget::try_reserve(options.account, category, *bytes);
     if (!credit) {
+        if (!gap && detail::ResourceBudget::memory_exhausted(options.account)) {
+            return Status::resource_exhausted("actual Tree memory exceeds 150% of the configured maximum");
+        }
         return Status::unavailable("writer apply credit unavailable");
     }
     try {

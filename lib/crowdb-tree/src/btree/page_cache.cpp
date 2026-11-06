@@ -13,8 +13,8 @@ class SharedPageCache::Binding final : public PageLoader
 {
   public:
     Binding(std::shared_ptr<State> state, std::shared_ptr<PageLoader> upstream,
-            std::shared_ptr<detail::AllocationReservation> metadata,
-            std::shared_ptr<State::Reservation> reservation = {}, PageLoadPriority priority = PageLoadPriority::Read)
+            std::shared_ptr<AllocationBudget> metadata, std::shared_ptr<State::Reservation> reservation = {},
+            PageLoadPriority priority = PageLoadPriority::Read)
         : state_(std::move(state)),
           upstream_(std::move(upstream)),
           metadata_(std::move(metadata)),
@@ -35,6 +35,10 @@ class SharedPageCache::Binding final : public PageLoader
         }
         auto *request = claim();
         if (request == nullptr) {
+            if (priority_ == PageLoadPriority::Maintenance) {
+                upstream_->load_leaf(std::move(base), std::move(complete));
+                return;
+            }
             complete_page_load(complete, Status::unavailable(), std::shared_ptr<const LeafBase>{});
             return;
         }
@@ -55,6 +59,10 @@ class SharedPageCache::Binding final : public PageLoader
         }
         auto *request = claim();
         if (request == nullptr) {
+            if (priority_ == PageLoadPriority::Maintenance) {
+                upstream_->load_inner(std::move(backing), std::move(complete));
+                return;
+            }
             complete_page_load(complete, Status::unavailable(), std::shared_ptr<const InnerPageState>{});
             return;
         }
@@ -107,14 +115,14 @@ class SharedPageCache::Binding final : public PageLoader
         return request;
     }
 
-    std::shared_ptr<State>                         state_;
-    std::shared_ptr<PageLoader>                    upstream_;
-    std::shared_ptr<detail::AllocationReservation> metadata_;
-    std::shared_ptr<State::Reservation>            reservation_;
-    PageLoadPriority                               priority_;
+    std::shared_ptr<State>              state_;
+    std::shared_ptr<PageLoader>         upstream_;
+    std::shared_ptr<AllocationBudget>   metadata_;
+    std::shared_ptr<State::Reservation> reservation_;
+    PageLoadPriority                    priority_;
 };
 
-SharedPageCache::SharedPageCache(PageCacheLimits limits, std::shared_ptr<detail::AllocationReservation> metadata,
+SharedPageCache::SharedPageCache(PageCacheLimits limits, std::shared_ptr<AllocationBudget> metadata,
                                  std::shared_ptr<TreeResourceMetrics> resources, detail::FlushRuntime *runtime,
                                  std::shared_ptr<detail::FlushRuntime::Lane> lane)
 {
@@ -143,9 +151,9 @@ std::optional<size_t> SharedPageCache::allocation_bound(PageCacheLimits limits) 
         .value();
 }
 
-std::shared_ptr<PageLoader> SharedPageCache::bind(std::shared_ptr<PageLoader>                    upstream,
-                                                  std::shared_ptr<detail::AllocationReservation> metadata,
-                                                  PageLoadPriority                               priority) const
+std::shared_ptr<PageLoader> SharedPageCache::bind(std::shared_ptr<PageLoader>       upstream,
+                                                  std::shared_ptr<AllocationBudget> metadata,
+                                                  PageLoadPriority                  priority) const
 {
     if (!upstream) {
         throw std::invalid_argument("page cache binding requires an upstream loader");
@@ -186,8 +194,8 @@ size_t SharedPageCache::retained_page_limit() const noexcept
     return state_->limits.max_pages;
 }
 
-Status SharedPageCache::bind_reserved(std::shared_ptr<PageLoader>                           upstream,
-                                      const std::shared_ptr<detail::AllocationReservation> &metadata,
+Status SharedPageCache::bind_reserved(std::shared_ptr<PageLoader>              upstream,
+                                      const std::shared_ptr<AllocationBudget> &metadata,
                                       std::shared_ptr<PageLoader> *out, PageLoadPriority priority) const
 {
     if (!upstream || out == nullptr) {
@@ -258,7 +266,7 @@ void SharedPageCache::close_and_drain() noexcept
     }
 }
 
-SharedPageCache::State::State(PageCacheLimits bounds, const std::shared_ptr<detail::AllocationReservation> &metadata,
+SharedPageCache::State::State(PageCacheLimits bounds, const std::shared_ptr<AllocationBudget> &metadata,
                               std::shared_ptr<TreeResourceMetrics> resources, detail::FlushRuntime *runtime,
                               std::shared_ptr<detail::FlushRuntime::Lane> lane)
     : limits(bounds),

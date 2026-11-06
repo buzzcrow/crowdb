@@ -26,8 +26,8 @@ struct OpenCredits
     ~OpenCredits()
     {
         detail::seal_backend_budget(budget.backend);
-        if (budget.bytes) {
-            budget.bytes->seal();
+        if (budget.reservation()) {
+            budget.reservation()->seal();
         }
         if (budget.io) {
             budget.io->seal();
@@ -71,6 +71,8 @@ Status reserve_open(const std::shared_ptr<TreeRuntimeBinding> &binding, const de
         }
         available -= retained;
     }
+    available =
+        std::min(available, detail::ResourceBudget::available(binding->account(), detail::BudgetClass::kRouting));
     if (recovery_bound) {
         if (*recovery_bound > available) {
             return Status::resource_exhausted("empty recovery exceeds Tree routing limit");
@@ -83,7 +85,8 @@ Status reserve_open(const std::shared_ptr<TreeRuntimeBinding> &binding, const de
         return Status::resource_exhausted("recovery routing or IO credit unavailable");
     }
     credits->budget.bytes = detail::AllocationReservation::create(std::move(*bytes));
-    credits->budget.io = detail::reserved_shared<detail::AllocationReservation>(credits->budget.bytes, std::move(*io));
+    credits->budget.io =
+        detail::reserved_shared<detail::AllocationReservation>(credits->budget.reservation(), std::move(*io));
     return Status::Ok();
 }
 
@@ -127,11 +130,12 @@ Status recover_open(const Config &config, const std::shared_ptr<TreeRuntimeBindi
     PageLoadLimits loads;
     loads.max_blob_bytes  = limits.max_blob_bytes;
     loads.max_frame_bytes = limits.max_frame_bytes;
-    auto loader           = detail::reserved_shared<AsyncStorePageLoader>(
-        budget.bytes, lifetime.store, binding->cpu(), binding->lane(), loads, OverflowBackingResolver{}, budget);
+    auto loader =
+        detail::reserved_shared<AsyncStorePageLoader>(budget.reservation(), lifetime.store, binding->cpu(),
+                                                      binding->lane(), loads, OverflowBackingResolver{}, budget);
     std::shared_ptr<RecoveredStateOperation> recovered;
     status = RecoveredStateOperation::create(local->inherited, loader, binding->cpu(), binding->lane(), {},
-                                             budget.bytes, &recovered);
+                                             budget.reservation(), &recovered);
     if (!status.ok()) {
         return status;
     }
@@ -226,7 +230,7 @@ try {
     if (!status.ok()) {
         return status;
     }
-    credits.budget.bytes->seal();
+    credits.budget.reservation()->seal();
     credits.budget.io->seal();
     return create(config, binding, {.initial = std::move(initial), .local = std::move(local)}, out);
 }

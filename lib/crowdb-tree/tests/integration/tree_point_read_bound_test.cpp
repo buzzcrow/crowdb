@@ -24,7 +24,7 @@ TEST(TreePointReadBound, SixteenTreesRetainPointWindowsOnOneDefaultHost)
         trees[index] = std::make_unique<Crowdbtree>(config);
         ASSERT_TRUE(trees[index]->put("key", "value").ok());
         auto *core   = TreeCoreAccess::get(*trees[index]);
-        auto  status = core_read_detail::prepare(*core, false, 256, 0, &reads[index]);
+        auto  status = core_read_detail::prepare(*core, &reads[index]);
         ASSERT_TRUE(status.ok()) << index << ": " << status.to_string();
     }
     for (const auto &tree : trees) {
@@ -53,7 +53,7 @@ TEST(TreePointReadBound, MaximumL0ValueBorrowsPayloadWithSmallRoutingAllowance)
     EXPECT_EQ(value.value().data()[0], 'v');
 }
 
-TEST(TreePointReadBound, ColdKnownValueBoundsReadWhileUnknownSummaryRemainsConservative)
+TEST(TreePointReadBound, ColdKnownAndUnknownSummariesBothUseActualAllocation)
 {
     auto   store = std::make_shared<MemPageStore>(4096);
     Config config;
@@ -82,8 +82,9 @@ TEST(TreePointReadBound, ColdKnownValueBoundsReadWhileUnknownSummaryRemainsConse
     unknown->stats.kv_unknown_pages = 1;
     unknown->stats.kv_known_bytes   = 0;
     core_read_detail::ReadPreparation prepared;
-    status = core_read_detail::prepare(*core, std::move(unknown), core->read_limits(), false, 256, 0, &prepared);
-    EXPECT_EQ(status.code(), Code::kResourceExhausted);
+    status = core_read_detail::prepare(*core, std::move(unknown), core->read_limits(), &prepared);
+    EXPECT_TRUE(status.ok()) << status.to_string();
+    EXPECT_EQ(prepared.credit, core->read_limits().metadata);
 }
 } // namespace
 } // namespace crowdb::tree

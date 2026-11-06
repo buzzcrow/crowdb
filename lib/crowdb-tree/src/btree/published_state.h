@@ -65,13 +65,13 @@ struct InnerPageState
         return detail::shared_allocation_bound<InnerPageState>();
     }
 
-    explicit InnerPageState(const std::shared_ptr<detail::AllocationReservation> &metadata = {})
+    explicit InnerPageState(const std::shared_ptr<AllocationBudget> &metadata = {})
         : separators(KeyAllocator(metadata)),
           children(ChildAllocator(metadata))
     {
     }
 
-    InnerPageState(const InnerPageState &source, const std::shared_ptr<detail::AllocationReservation> &metadata = {})
+    InnerPageState(const InnerPageState &source, const std::shared_ptr<AllocationBudget> &metadata = {})
         : separators(source.separators.begin(), source.separators.end(), KeyAllocator(metadata)),
           children(source.children.begin(), source.children.end(), ChildAllocator(metadata))
     {
@@ -182,7 +182,7 @@ class MappingView
 
     // Input must be strictly increasing by PID and within kPageLimit.
     [[nodiscard]] MappingView replace(std::span<const PageReplacement> replacements, CopyStats &copied,
-                                      const std::shared_ptr<detail::AllocationReservation> &metadata = {}) const;
+                                      const std::shared_ptr<AllocationBudget> &metadata = {}) const;
 
   private:
     struct Segment
@@ -217,7 +217,7 @@ class MappingView
     static std::shared_ptr<const Directory>
     replace_directory(const std::shared_ptr<const Directory> &old, unsigned shift,
                       std::span<const PageReplacement> replacements, CopyStats &copied,
-                      const std::shared_ptr<detail::AllocationReservation> &metadata, uint64_t now_ns);
+                      const std::shared_ptr<AllocationBudget> &metadata, uint64_t now_ns);
     std::shared_ptr<const Directory> root_ = nullptr;
 };
 

@@ -171,10 +171,6 @@ void FlushBatch::State::Subtree::schedule() noexcept
         owner.options.cpu_progress->request(cpu_node, owner.weak_from_this().lock());
     }
     else {
-        if (std::exchange(load_completed, false)) {
-            owner.load_active.store(false, std::memory_order_release);
-            owner.start_load();
-        }
         complete(result);
     }
 }
@@ -247,11 +243,6 @@ void FlushBatch::State::start_leaves() noexcept
 
 void FlushBatch::State::Subtree::step()
 {
-    if (load_completed) {
-        load_completed = false;
-        owner.load_active.store(false, std::memory_order_release);
-        owner.start_load();
-    }
     if (!status.ok()) {
         complete(status);
         return;

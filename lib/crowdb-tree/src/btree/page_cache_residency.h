@@ -22,25 +22,24 @@ class PageCacheResidency
   public:
     class Update;
     class Ready;
-    explicit PageCacheResidency(std::shared_ptr<TreeResourceMetrics>                  resources,
-                                const std::shared_ptr<detail::AllocationReservation> &metadata = {},
-                                detail::FlushRuntime                                 *runtime  = nullptr,
-                                std::shared_ptr<detail::FlushRuntime::Lane>           lane     = {});
+    explicit PageCacheResidency(std::shared_ptr<TreeResourceMetrics>        resources,
+                                const std::shared_ptr<AllocationBudget>    &metadata = {},
+                                detail::FlushRuntime                       *runtime  = nullptr,
+                                std::shared_ptr<detail::FlushRuntime::Lane> lane     = {});
     ~PageCacheResidency();
-    [[nodiscard]] std::shared_ptr<Update> prepare(std::span<const PageReplacement>                      pages,
-                                                  const std::shared_ptr<detail::AllocationReservation> &metadata) const;
-    [[nodiscard]] std::shared_ptr<Update>
-    prepare_initial(const MappingView &mapping, const std::shared_ptr<detail::AllocationReservation> &metadata) const;
-    [[nodiscard]] std::shared_ptr<Update>
-    prepare_replacement(const MappingView                                    &mapping,
-                        const std::shared_ptr<detail::AllocationReservation> &metadata) const;
-    [[nodiscard]] static size_t initial_allocation_bound(const MappingView &mapping) noexcept;
-    static void                 publish(std::shared_ptr<Update> update) noexcept;
-    [[nodiscard]] std::shared_ptr<Ready>
-    prepare_ready(const PageCacheKey &key, const std::shared_ptr<detail::AllocationReservation> &metadata) const;
-    static void ready(const std::shared_ptr<Ready> &ready) noexcept;
-    static void evict(const std::shared_ptr<Ready> &ready) noexcept;
-    void        clear() noexcept;
+    [[nodiscard]] std::shared_ptr<Update> prepare(std::span<const PageReplacement>         pages,
+                                                  const std::shared_ptr<AllocationBudget> &metadata) const;
+    [[nodiscard]] std::shared_ptr<Update> prepare_initial(const MappingView                       &mapping,
+                                                          const std::shared_ptr<AllocationBudget> &metadata) const;
+    [[nodiscard]] std::shared_ptr<Update> prepare_replacement(const MappingView                       &mapping,
+                                                              const std::shared_ptr<AllocationBudget> &metadata) const;
+    [[nodiscard]] static size_t           initial_allocation_bound(const MappingView &mapping) noexcept;
+    static void                           publish(std::shared_ptr<Update> update) noexcept;
+    [[nodiscard]] std::shared_ptr<Ready>  prepare_ready(const PageCacheKey                      &key,
+                                                        const std::shared_ptr<AllocationBudget> &metadata) const;
+    static void                           ready(const std::shared_ptr<Ready> &ready) noexcept;
+    static void                           evict(const std::shared_ptr<Ready> &ready) noexcept;
+    void                                  clear() noexcept;
     // Host-thread boundary: stop index producers, drain only this progress
     // registration and detach from the runtime. Late pin releases are safe.
     void                                                      close_and_drain() noexcept;

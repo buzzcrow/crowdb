@@ -174,7 +174,7 @@ async fn failed_cas_read_does_not_poison_the_leader_or_consume_a_slot() {
     let result = group
         .propose_cas(payload(RECORD, b"value"), key.clone(), 0, 1, 1)
         .await;
-    assert!(matches!(result, ProposeResult::Rejected(_)), "{result:?}");
+    assert!(matches!(result, ProposeResult::CasBusy), "{result:?}");
     readable(&group, 0).await;
     failures.read.store(false, Ordering::Release);
     assert!(matches!(
@@ -222,7 +222,7 @@ async fn nested_owner_cas_read_rejection_preserves_the_owner_and_leader() {
             2,
         )
         .await;
-    assert!(matches!(result, ProposeResult::Rejected(_)), "{result:?}");
+    assert!(matches!(result, ProposeResult::CasBusy), "{result:?}");
     readable(&group, 1).await;
     failures.read.store(false, Ordering::Release);
     let result = group

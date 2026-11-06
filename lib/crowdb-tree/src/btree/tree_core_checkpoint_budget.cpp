@@ -19,8 +19,8 @@ Credits::~Credits()
         snapshot->seal();
     }
     detail::seal_backend_budget(budget.backend);
-    if (budget.bytes) {
-        budget.bytes->seal();
+    if (budget.reservation()) {
+        budget.reservation()->seal();
     }
     if (owns_io && budget.io) {
         budget.io->seal();
@@ -173,11 +173,11 @@ Status Preparation::bind_work(const WorkPlan &plan, detail::ResourceBudget::Cred
                    : io.amount() != 1 || io.allocated() || !io.belongs_to(account, BudgetClass::kIo))) {
         return Status::invalid_argument("checkpoint needs its complete prepaid partitions");
     }
-    auto phase          = reserved_shared<Credits>(control);
+    auto phase          = reserved_shared<Credits>(core->read_limits().metadata);
     phase->budget.bytes = AllocationReservation::create(std::move(bytes));
     phase->owns_io      = !shared_io;
-    phase->budget.io =
-        shared_io ? std::move(shared_io) : reserved_shared<AllocationReservation>(phase->budget.bytes, std::move(io));
+    phase->budget.io = shared_io ? std::move(shared_io)
+                                 : reserved_shared<AllocationReservation>(phase->budget.reservation(), std::move(io));
     phase->budget.work_metrics = core->publisher().work_metrics();
     phase->budget.cause        = options.cause;
     phase->budget.cpu_progress = cpu_progress;
@@ -187,10 +187,10 @@ Status Preparation::bind_work(const WorkPlan &plan, detail::ResourceBudget::Cred
         return status;
     }
     out->budget = phase->budget;
-    out->loader = reserved_shared<AsyncStorePageLoader>(phase->budget.bytes, ticket->backend(core->async_backend()),
-                                                        core->binding()->cpu(), core->binding()->lane(), plan.loads,
-                                                        OverflowBackingResolver{}, phase->budget);
-    out->owner  = std::move(phase);
+    out->loader = reserved_shared<AsyncStorePageLoader>(
+        phase->budget.reservation(), ticket->backend(core->async_backend()), core->binding()->cpu(),
+        core->binding()->lane(), plan.loads, OverflowBackingResolver{}, phase->budget);
+    out->owner = std::move(phase);
     return Status::Ok();
 }
 

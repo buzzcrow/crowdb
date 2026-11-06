@@ -103,7 +103,7 @@ class TestLegacyCatalog final : public TestRootCatalog
 struct TestLegacyChunk
 {
     test_read::LoadCredits             credits;
-    std::shared_ptr<TestLegacyCatalog> catalog   = std::make_shared<TestLegacyCatalog>(credits.credits.bytes);
+    std::shared_ptr<TestLegacyCatalog> catalog   = std::make_shared<TestLegacyCatalog>(credits.credits.reservation());
     std::shared_ptr<TestRootTransport> transport = std::make_shared<TestRootTransport>(catalog);
     std::vector<uint8_t>               fixture;
     std::map<std::array<uint64_t, 2>, std::vector<uint8_t>> physical;
@@ -171,7 +171,8 @@ struct TestLegacyChunk
 
     [[nodiscard]] std::shared_ptr<detail::LegacyChunkReadStore> reader() const
     {
-        return std::make_shared<detail::LegacyChunkReadStore>(catalog, transport, credits.credits.bytes, 42, 7, 1, 2);
+        return std::make_shared<detail::LegacyChunkReadStore>(catalog, transport, credits.credits.reservation(), 42, 7,
+                                                              1, 2);
     }
 };
 } // namespace crowdb::tree::test_chunk

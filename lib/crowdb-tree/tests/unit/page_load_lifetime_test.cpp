@@ -99,7 +99,8 @@ struct Reads
         credits.credits.work_metrics = metrics;
         if (prepaid) {
             EXPECT_TRUE(
-                ApplyDispatcher::create(runtime, lane, 1, credits.credits.bytes, &credits.credits.cpu_progress).ok());
+                ApplyDispatcher::create(runtime, lane, 1, credits.credits.reservation(), &credits.credits.cpu_progress)
+                    .ok());
         }
         if (kind == Kind::kLeaf) {
             auto leaf = base({
@@ -221,9 +222,9 @@ TEST(PageLoadLifetime, TreeShutdownWaitsForUnknownTransportOwnershipAfterLogical
 {
     for (const bool callback : {true, false}) {
         Reads                                          test(Kind::kLeaf);
-        TreeOperationLifetime                          lifetime(1, test.credits.credits.bytes);
+        TreeOperationLifetime                          lifetime(1, test.credits.credits.reservation());
         std::shared_ptr<TreeOperationLifetime::Ticket> ticket;
-        ASSERT_TRUE(lifetime.acquire(test.credits.credits.bytes, &ticket).ok());
+        ASSERT_TRUE(lifetime.acquire(test.credits.credits.reservation(), &ticket).ok());
         test.loader = std::make_shared<AsyncStorePageLoader>(ticket->backend(test.store.get()), test.runtime, test.lane,
                                                              PageLoadLimits{.max_inflight = 1},
                                                              OverflowBackingResolver{}, test.credits.credits);

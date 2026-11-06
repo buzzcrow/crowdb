@@ -49,7 +49,8 @@ TEST(LocalRecovery, ReopenedBlockFilesRebuildProtectedPrimaryAndOverflowOwners)
                 next += count;
                 return Status::Ok();
             },
-            extent_write_reservation(test.source.ledger, test.source.credits.credits.bytes), {}, &test.source.operation)
+            extent_write_reservation(test.source.ledger, test.source.credits.credits.reservation()), {},
+            &test.source.operation)
             .ok());
     auto status = await_status(test.source.operation->sender());
     ASSERT_TRUE(status.ok()) << "captured write: " << status.to_string();

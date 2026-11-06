@@ -46,16 +46,12 @@ struct CoreGet : std::enable_shared_from_this<CoreGet>
         auto    self = std::move(owner);
         GetView result;
         if (status.code() == Code::kResourceExhausted) {
-            CRB_LOG_ERROR("point read exhausted: coverage={} remaining={} status={}", prepared.view->coverage,
-                          prepared.credit->available(), status.to_string());
+            CRB_LOG_ERROR("point read exhausted: coverage={} status={}", prepared.view->coverage, status.to_string());
         }
         if (status.ok() && read->result().found) {
             const auto &cell = read->result().cell;
             result           = GetView::from_owner(cell.slot, cell.value, cell.owner);
         }
-        detail::seal_backend_budget(prepared.backend);
-        prepared.io->seal();
-        prepared.credit->seal();
         try {
             complete(std::move(status), std::move(result));
         }
@@ -95,10 +91,7 @@ void TreeCore::get_impl(Slice key, std::function<void(Status, GetView)> complete
             status = Status::unavailable("Tree closed");
         }
         else if (!outside_range) {
-            status = core_read_detail::prepare(*this, false,
-                                               detail::shared_allocation_bound<CoreGet>() +
-                                                   detail::shared_allocation_bound<CoreGet::Operation>(),
-                                               0, &prepared);
+            status = core_read_detail::prepare(*this, &prepared);
         }
         if (status.ok() && !outside_range) {
             operation           = detail::reserved_shared<CoreGet>(prepared.credit);

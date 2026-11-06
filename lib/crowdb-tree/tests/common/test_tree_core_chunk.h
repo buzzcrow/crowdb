@@ -47,7 +47,7 @@ struct TestCoreChunk
                                         .iu_size         = 4096,
                                         .mirrors         = 2,
                                         .max_chunk_bytes = 256 * 1024 * 1024},
-            backend.catalog, backend.transport, backend.credits.credits.bytes);
+            backend.catalog, backend.transport, backend.credits.credits.reservation());
         config.page_store    = store.get();
         config.backend_owner = store;
     }

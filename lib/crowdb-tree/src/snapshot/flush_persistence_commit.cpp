@@ -54,10 +54,13 @@ struct FlushPersistence::Commit : std::enable_shared_from_this<Commit>
     std::shared_ptr<BackendCheckpoint>          chunk;
     std::optional<Attempt>                      attempt;
     Status                                      status;
+    std::optional<TreeMetricsOperation>         metrics;
     ApplyDispatcher::Node                       node{&Commit::run, this};
 
     void start()
     {
+        metrics.emplace(owner->preparation_->core->publisher().work_metrics(), TreeStage::SnapshotCommit,
+                        tree_metrics_now_ns());
         auto &p      = *owner->preparation_;
         auto  source = owner->pages_ ? std::shared_ptr<const CapturedDurablePages>(owner->pages_) : owner->inherited_;
         CapturedWritePlan plan;
@@ -75,7 +78,7 @@ struct FlushPersistence::Commit : std::enable_shared_from_this<Commit>
             finish(Status::resource_exhausted("flush metadata bound overflow"));
             return;
         }
-        auto result = p.work(*view, &plan, &work, *bound, owner->io_);
+        auto result = p.work(*view, &plan, &work, *bound);
         if (!result.ok()) {
             reconcile(std::move(result));
             return;
@@ -83,7 +86,8 @@ struct FlushPersistence::Commit : std::enable_shared_from_this<Commit>
         if (!source || source->coverage != view->coverage || source->generation != view->generation ||
             source->root_page_id != view->root_page_id || source->next_page_id != view->next_page_id || owner->pages_) {
             if (!owner->pages_) {
-                owner->pages_ = detail::reserved_shared<CapturedDurablePages>(work.budget.bytes, work.budget.bytes);
+                owner->pages_ =
+                    detail::reserved_shared<CapturedDurablePages>(work.budget.reservation(), work.budget.reservation());
                 if (source) {
                     owner->pages_->frames.inherit(source->frames);
                     owner->pages_->overflow_counts_known  = source->overflow_counts_known;
@@ -91,7 +95,7 @@ struct FlushPersistence::Commit : std::enable_shared_from_this<Commit>
                 }
             }
             auto &catalog = *owner->pages_;
-            catalog.frames.budget(work.budget.bytes);
+            catalog.frames.budget(work.budget.reservation());
             result = catalog.initialize_overflow_counts();
             if (!result.ok()) {
                 reconcile(std::move(result));
@@ -273,6 +277,9 @@ struct FlushPersistence::Commit : std::enable_shared_from_this<Commit>
 
     void finish(Status result) noexcept
     {
+        if (metrics) {
+            (void)metrics->finish(result.ok() ? TreeOutcome::Success : TreeOutcome::Error, tree_metrics_now_ns());
+        }
         owner->report_.status = result;
         owner->finished_      = true;
         owner->pages_.reset();

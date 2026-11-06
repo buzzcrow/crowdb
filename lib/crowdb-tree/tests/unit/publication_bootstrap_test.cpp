@@ -20,16 +20,17 @@ TEST(PublicationBootstrap, LifecycleChargesSourceControllerEpochAndInitialPublic
     auto                                      lane = std::make_shared<detail::FlushRuntime::Lane>(8);
     std::shared_ptr<const PublishedTreeState> retained;
     {
-        auto sources = detail::reserved_unique<SourceAdmission>(
-            credits.credits.bytes, 0, 1, SourceWriteOptions{.account = credits.account}, credits.credits.bytes);
+        auto       sources = detail::reserved_unique<SourceAdmission>(credits.credits.reservation(), 0, 1,
+                                                                      SourceWriteOptions{.account = credits.account},
+                                                                      credits.credits.reservation());
         const auto source_bytes = credits.budget.snapshot().allocated[LoadCredits::kBytes];
         EXPECT_GT(source_bytes, sizeof(SourceAdmission));
         EXPECT_LE(source_bytes, SourceAdmission::allocation_bound().value_or(0));
         auto publisher = detail::reserved_unique<PublicationCoordinator>(
-            credits.credits.bytes, 8, 1, std::shared_ptr<TreeWorkMetrics>{}, std::pmr::get_default_resource(),
+            credits.credits.reservation(), 8, 1, std::shared_ptr<TreeWorkMetrics>{}, std::pmr::get_default_resource(),
             std::shared_ptr<SharedPageCache>{},
             PublicationBootstrap{
-                .metadata = credits.credits.bytes, .initial = {}, .source_catalog = sources->catalog()});
+                .metadata = credits.credits.reservation(), .initial = {}, .source_catalog = sources->catalog()});
         retained = publisher->capture();
         EXPECT_TRUE(std::ranges::equal(retained->sources->tables, sources->catalog()->tables));
         const auto publication_bytes = credits.budget.snapshot().allocated[LoadCredits::kBytes] - source_bytes;
@@ -38,8 +39,8 @@ TEST(PublicationBootstrap, LifecycleChargesSourceControllerEpochAndInitialPublic
         std::atomic<uint64_t> frontier{0};
         {
             auto controller = detail::reserved_unique<FlushController>(
-                credits.credits.bytes, *publisher, runtime, *sources, frontier, lane, FlushBatchOptions{},
-                FlushBatch::Maintenance{}, credits.credits.bytes);
+                credits.credits.reservation(), *publisher, runtime, *sources, frontier, lane, FlushBatchOptions{},
+                FlushBatch::Maintenance{}, credits.credits.reservation());
             const auto controller_bytes =
                 credits.budget.snapshot().allocated[LoadCredits::kBytes] - source_bytes - publication_bytes;
             EXPECT_GT(controller_bytes, sizeof(FlushController));
@@ -59,8 +60,9 @@ TEST(PublicationBootstrap, SparseRecoveredMappingInstallsExactSourcesAndAllColdR
     detail::FlushRuntime runtime(1, 8);
     auto                 lane      = std::make_shared<detail::FlushRuntime::Lane>(8);
     auto                 resources = std::make_shared<TreeResourceMetrics>();
-    auto cache = std::make_shared<SharedPageCache>(PageCacheLimits{}, credits.credits.bytes, resources, &runtime, lane);
-    SourceAdmission sources(42, 9, {}, credits.credits.bytes);
+    auto                 cache =
+        std::make_shared<SharedPageCache>(PageCacheLimits{}, credits.credits.reservation(), resources, &runtime, lane);
+    SourceAdmission sources(42, 9, {}, credits.credits.reservation());
     auto            initial            = std::make_shared<PublishedTreeState>(nullptr, 42);
     initial->generation                = 9;
     initial->coverage                  = 42;
@@ -83,7 +85,7 @@ TEST(PublicationBootstrap, SparseRecoveredMappingInstallsExactSourcesAndAllColdR
     {
         PublicationCoordinator publisher(
             8, 9, {}, std::pmr::get_default_resource(), cache,
-            {.metadata = credits.credits.bytes, .initial = initial, .source_catalog = sources.catalog()});
+            {.metadata = credits.credits.reservation(), .initial = initial, .source_catalog = sources.catalog()});
         runtime.drain();
         auto view = publisher.capture();
         EXPECT_EQ(view->coverage, 42U);
@@ -99,7 +101,7 @@ TEST(PublicationBootstrap, SparseRecoveredMappingInstallsExactSourcesAndAllColdR
         upstream->frames[1] = base({
             {.key = "a", .value = "value"}
         });
-        auto loader         = cache->bind(upstream, credits.credits.bytes);
+        auto loader         = cache->bind(upstream, credits.credits.reservation());
         loader->load_leaf(input, [](Status status, auto frame) {
             EXPECT_TRUE(status.ok());
             EXPECT_TRUE(frame);
@@ -124,16 +126,17 @@ TEST(PublicationBootstrap, FailedInitialPublicationDoesNotClaimCacheOrLeaveAlloc
     auto            cache = std::make_shared<SharedPageCache>(PageCacheLimits{}, nullptr, resources, &runtime, lane);
     SourceAdmission wrong(7, 1);
     const auto      initial = std::make_shared<PublishedTreeState>();
-    EXPECT_THROW((PublicationCoordinator(
-                     8, 1, {}, std::pmr::get_default_resource(), cache,
-                     {.metadata = credits.credits.bytes, .initial = initial, .source_catalog = wrong.catalog()})),
-                 std::invalid_argument);
+    EXPECT_THROW(
+        (PublicationCoordinator(
+            8, 1, {}, std::pmr::get_default_resource(), cache,
+            {.metadata = credits.credits.reservation(), .initial = initial, .source_catalog = wrong.catalog()})),
+        std::invalid_argument);
     EXPECT_EQ(credits.budget.snapshot().allocated[LoadCredits::kBytes], 0U);
     SourceAdmission matching;
     {
         PublicationCoordinator publisher(
             8, 1, {}, std::pmr::get_default_resource(), cache,
-            {.metadata = credits.credits.bytes, .initial = initial, .source_catalog = matching.catalog()});
+            {.metadata = credits.credits.reservation(), .initial = initial, .source_catalog = matching.catalog()});
         EXPECT_TRUE(std::ranges::equal(publisher.capture()->sources->tables, matching.catalog()->tables));
     }
     runtime.drain();
@@ -143,7 +146,7 @@ TEST(PublicationBootstrap, FailedInitialPublicationDoesNotClaimCacheOrLeaveAlloc
 TEST(PublicationBootstrap, ExhaustedLifecycleRejectsNewThreadBeforeWriterAdmission)
 {
     LoadCredits     credits;
-    SourceAdmission sources(0, 1, {}, credits.credits.bytes);
+    SourceAdmission sources(0, 1, {}, credits.credits.reservation());
     const auto      catalog = sources.catalog();
     credits.seal();
     Status       status;
@@ -160,7 +163,7 @@ TEST(PublicationBootstrap, ExhaustedLifecycleRejectsNewThreadBeforeWriterAdmissi
 TEST(PublicationBootstrap, RejectedControlAllocationsReturnAllPartialCharges)
 {
     LoadCredits credits;
-    auto        token = credits.credits.bytes->take_reserved(16);
+    auto        token = credits.credits.reservation()->take_reserved(16);
     if (!token) {
         FAIL() << "tiny control reservation unavailable";
     }

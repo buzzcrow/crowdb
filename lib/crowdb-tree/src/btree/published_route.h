@@ -14,7 +14,7 @@ class PublishedRouteCursor
 {
   public:
     PublishedRouteCursor(uint64_t root_page_id, MappingView mapping, size_t max_depth, bool reverse,
-                         std::shared_ptr<detail::AllocationReservation> metadata = {}, PageKeyRange selection = {})
+                         std::shared_ptr<AllocationBudget> metadata = {}, PageKeyRange selection = {})
         : root_(root_page_id),
           mapping_(std::move(mapping)),
           max_depth_(max_depth),

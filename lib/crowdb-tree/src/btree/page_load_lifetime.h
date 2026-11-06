@@ -10,10 +10,22 @@
 
 namespace crowdb::tree
 {
+inline std::shared_ptr<detail::AllocationReservation> page_load_io_credit(const PageLoadBudget &budget)
+{
+    if (budget.io || !budget.account) {
+        return budget.io;
+    }
+    auto io = detail::ResourceBudget::try_reserve(budget.account, detail::BudgetClass::kIo, 1);
+    if (!io) {
+        throw std::bad_alloc();
+    }
+    return detail::reserved_shared<detail::AllocationReservation>(budget.bytes, std::move(*io));
+}
+
 struct PageLoadProgress
 {
     PageLoadProgress(const PageLoadBudget &budget, uint64_t started_at_ns)
-        : io_credit(budget.io, 1),
+        : io_credit(page_load_io_credit(budget), 1),
           metrics(budget.work_metrics, TreeStage::PageLoadPipeline, started_at_ns),
           backend_budget(budget.backend),
           cpu_progress(budget.cpu_progress),
@@ -81,7 +93,7 @@ inline void record_page_load_terminal(const PageLoadBudget &budget, uint64_t sta
 struct PageReadTicket
 {
     PageReadTicket(std::shared_ptr<const void> lifetime, void *operation, AsyncCompleteFn callback,
-                   const std::shared_ptr<detail::AllocationReservation> &metadata, size_t bytes)
+                   const std::shared_ptr<AllocationBudget> &metadata, size_t bytes)
         : resources(metadata, TreeResourceMetric::ReadInflightBytes, bytes),
           owner(std::move(lifetime)),
           context(operation),

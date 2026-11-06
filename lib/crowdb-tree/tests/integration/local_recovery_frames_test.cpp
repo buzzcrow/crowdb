@@ -230,7 +230,7 @@ TEST(LocalRecoveryFrames, RecoveredOverflowCanBeReusedAndDoesNotRetainItsOldPrim
             captured, {}, test.store, test.original.source.runtime, test.original.source.lane,
             {.frames = {.encode = {.frame_bytes = 4096, .inline_value_bytes = 16}}, .write = {.max_frame_bytes = 4096}},
             test.credits.credits, [](uint64_t, ReservedOverflowIds *) { return Status::not_supported(); },
-            extent_write_reservation(ledger, test.credits.credits.bytes), inherited, &writer)
+            extent_write_reservation(ledger, test.credits.credits.reservation()), inherited, &writer)
             .ok());
     Completion written;
     auto       connected = stdexec::connect(writer->sender(), Receiver{.done = &written});

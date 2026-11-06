@@ -50,7 +50,7 @@ struct TestHandoffCheckpoint
 
     std::shared_ptr<detail::AllocationReservation> partition(size_t bytes)
     {
-        auto credit = local.source.credits.credits.bytes->take_reserved(bytes);
+        auto credit = local.source.credits.credits.reservation()->take_reserved(bytes);
         if (!credit) {
             ADD_FAILURE() << "test credit unavailable";
             return {};

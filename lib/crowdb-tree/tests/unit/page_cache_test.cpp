@@ -225,15 +225,15 @@ TEST(SharedPageCache, FixedCapacityRejectsBeforeIoAndCallbacksCanReenter)
 TEST(SharedPageCache, ReservedWaiterSurvivesOrdinaryPressureAndWaitsForInFlightPageCapacity)
 {
     LoadCredits     credits;
-    SharedPageCache cache({.max_pages = 1, .max_waiters = 2}, credits.credits.bytes);
+    SharedPageCache cache({.max_pages = 1, .max_waiters = 2}, credits.credits.reservation());
     auto            upstream = std::make_shared<TestLoader>();
     upstream->deferred       = true;
     upstream->frames[1] = upstream->frames[2] = base({
         {.key = "a", .value = "value"}
     });
-    auto                        ordinary      = cache.bind(upstream, credits.credits.bytes);
+    auto                        ordinary      = cache.bind(upstream, credits.credits.reservation());
     std::shared_ptr<PageLoader> reserved;
-    ASSERT_TRUE(cache.bind_reserved(upstream, credits.credits.bytes, &reserved).ok());
+    ASSERT_TRUE(cache.bind_reserved(upstream, credits.credits.reservation(), &reserved).ok());
     EXPECT_EQ(cache.snapshot().reserved_waiters, 1U);
     credits.seal();
     size_t ordinary_done = 0;
@@ -282,8 +282,8 @@ TEST(SharedPageCache, EvictionReturnsCacheReferenceButPinnedFrameRemainsCharged)
     auto upstream   = std::make_shared<AsyncStorePageLoader>(store, runtime, lane, PageLoadLimits{},
                                                              OverflowBackingResolver{}, credits.credits);
     {
-        SharedPageCache                 cache({.max_pages = 2, .max_waiters = 8}, credits.credits.bytes);
-        auto                            loader         = cache.bind(upstream, credits.credits.bytes);
+        SharedPageCache                 cache({.max_pages = 2, .max_waiters = 8}, credits.credits.reservation());
+        auto                            loader         = cache.bind(upstream, credits.credits.reservation());
         const auto                      infrastructure = credits.budget.snapshot().allocated[LoadCredits::kBytes];
         std::shared_ptr<const LeafBase> pinned;
         loader->load_leaf({.identity = 1, .backing = backing}, [&](Status status, auto leaf) {
@@ -322,7 +322,7 @@ TEST(SharedPageCache, FailedBindingAllocationReturnsReservedSlot)
     });
     credits.seal();
     std::shared_ptr<PageLoader> binding;
-    EXPECT_EQ(cache.bind_reserved(upstream, credits.credits.bytes, &binding).code(), Code::kResourceExhausted);
+    EXPECT_EQ(cache.bind_reserved(upstream, credits.credits.reservation(), &binding).code(), Code::kResourceExhausted);
     EXPECT_FALSE(binding);
     EXPECT_EQ(cache.snapshot().reserved_waiters, 0U);
     ASSERT_TRUE(cache.bind_reserved(upstream, {}, &binding).ok());

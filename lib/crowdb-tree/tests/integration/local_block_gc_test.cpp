@@ -38,8 +38,8 @@ TEST(LocalBlockGc, BoundedPassRetainsAnchorsAndReadersThenReusesDeletedHoles)
     auto reader = anchor.extent.owner;
     ASSERT_TRUE(test.ledger.activate().status.ok());
     const LocalBlockGcLimits limits{.max_blocks = 2, .max_deleted_bytes = 4096};
-    auto                     first =
-        collect_free_local_blocks(*test.store, *test.ledger.ledger, 0, limits, test.ledger.credits.credits.bytes);
+    auto                     first = collect_free_local_blocks(*test.store, *test.ledger.ledger, 0, limits,
+                                                               test.ledger.credits.credits.reservation());
     ASSERT_TRUE(first.status.ok());
     EXPECT_EQ(first.deleted_blocks, 1U);
     EXPECT_EQ(first.next_block, 3U);
@@ -50,15 +50,15 @@ TEST(LocalBlockGc, BoundedPassRetainsAnchorsAndReadersThenReusesDeletedHoles)
     EXPECT_FALSE(test.store->file_for_offset(8192, &offset));
     anchor      = {};
     auto second = collect_free_local_blocks(*test.store, *test.ledger.ledger, first.next_block, limits,
-                                            test.ledger.credits.credits.bytes);
+                                            test.ledger.credits.credits.reservation());
     ASSERT_TRUE(second.status.ok());
     EXPECT_EQ(second.protected_blocks, 1U);
     EXPECT_EQ(second.deleted_blocks, 1U);
     EXPECT_EQ(second.next_block, 5U);
     EXPECT_TRUE(test.store->file_for_offset(12288, &offset));
     reader.reset();
-    auto third =
-        collect_free_local_blocks(*test.store, *test.ledger.ledger, 3, limits, test.ledger.credits.credits.bytes);
+    auto third = collect_free_local_blocks(*test.store, *test.ledger.ledger, 3, limits,
+                                           test.ledger.credits.credits.reservation());
     ASSERT_TRUE(third.status.ok());
     EXPECT_EQ(third.deleted_blocks, 1U);
     EXPECT_FALSE(test.store->file_for_offset(12288, &offset));
@@ -78,7 +78,7 @@ TEST(LocalBlockGc, MetadataFailureAndPartialTailCannotDeleteUnleasedStorage)
     ASSERT_TRUE(test.ledger.activate().status.ok());
     test.ledger.credits.seal();
     auto rejected =
-        collect_free_local_blocks(*test.store, *test.ledger.ledger, 0, {}, test.ledger.credits.credits.bytes);
+        collect_free_local_blocks(*test.store, *test.ledger.ledger, 0, {}, test.ledger.credits.credits.reservation());
     EXPECT_EQ(rejected.status.code(), Code::kResourceExhausted);
     EXPECT_EQ(rejected.next_block, 1U);
     EXPECT_EQ(test.store->num_extents(), 3U);

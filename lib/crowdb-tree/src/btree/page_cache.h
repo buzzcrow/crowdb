@@ -61,7 +61,7 @@ class SharedPageCache
   public:
     // Residency metrics require a host-owned runtime which outlives cache
     // owners and is drained after their release. No runtime ownership is held.
-    explicit SharedPageCache(PageCacheLimits limits = {}, std::shared_ptr<detail::AllocationReservation> metadata = {},
+    explicit SharedPageCache(PageCacheLimits limits = {}, std::shared_ptr<AllocationBudget> metadata = {},
                              std::shared_ptr<TreeResourceMetrics>        resources = {},
                              detail::FlushRuntime                       *runtime   = nullptr,
                              std::shared_ptr<detail::FlushRuntime::Lane> lane      = {});
@@ -71,14 +71,14 @@ class SharedPageCache
 
     // The miss uses the first caller's upstream, including its held load/I/O
     // credit. Joined callers never acquire a second I/O permit for that base.
-    [[nodiscard]] std::shared_ptr<PageLoader> bind(std::shared_ptr<PageLoader>                    upstream,
-                                                   std::shared_ptr<detail::AllocationReservation> metadata = {},
+    [[nodiscard]] std::shared_ptr<PageLoader> bind(std::shared_ptr<PageLoader>       upstream,
+                                                   std::shared_ptr<AllocationBudget> metadata = {},
                                                    PageLoadPriority priority = PageLoadPriority::Read) const;
     // Reserve one request slot before closing flush sources. This binding has
     // one serial outstanding load and reuses its slot across routing steps.
-    [[nodiscard]] Status        bind_reserved(std::shared_ptr<PageLoader>                           upstream,
-                                              const std::shared_ptr<detail::AllocationReservation> &metadata,
-                                              std::shared_ptr<PageLoader>                          *out,
+    [[nodiscard]] Status        bind_reserved(std::shared_ptr<PageLoader>              upstream,
+                                              const std::shared_ptr<AllocationBudget> &metadata,
+                                              std::shared_ptr<PageLoader>             *out,
                                               PageLoadPriority priority = PageLoadPriority::Read) const;
     [[nodiscard]] static size_t binding_allocation_bound() noexcept;
     // Additional per-load progress credit when residency metrics are enabled.

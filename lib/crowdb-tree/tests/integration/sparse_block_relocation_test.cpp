@@ -25,7 +25,7 @@ TEST(SparseBlockRelocation, SelectionSkipsDenseEmptyAndMissingBlocksAndKeepsItsF
     auto                     sparse = test.recover(4 * block, 4096);
     ASSERT_TRUE(dense.status.ok() && sparse.status.ok());
     ASSERT_TRUE(test.activate().status.ok());
-    auto selected = select_sparse_local_block(*device, *test.ledger, 0, test.credits.credits.bytes);
+    auto selected = select_sparse_local_block(*device, *test.ledger, 0, test.credits.credits.reservation());
     ASSERT_TRUE(selected.status.ok()) << selected.status.to_string();
     EXPECT_EQ(selected.exclusion.address, 4 * block);
     EXPECT_EQ(selected.exclusion.length, block);

@@ -202,9 +202,8 @@ TEST(PageLoad, RejectsMixedAccountsAndByteIoUnitsBeforeAllocatingLoaderState)
     auto        lane    = std::make_shared<detail::FlushRuntime::Lane>(8);
     auto        store   = std::make_shared<TestAsyncStore>();
     for (const auto &invalid : {
-             PageLoadBudget{.bytes = first.credits.bytes, .io = second.credits.io},
-             PageLoadBudget{.bytes = first.credits.io,    .io = first.credits.io },
-             PageLoadBudget{.bytes = first.credits.bytes, .io = {}               }
+             PageLoadBudget{.bytes = first.credits.reservation(), .io = second.credits.io},
+             PageLoadBudget{.bytes = first.credits.io,            .io = first.credits.io }
     }) {
         EXPECT_THROW((void)AsyncStorePageLoader(store, runtime, lane, {}, {}, invalid), std::invalid_argument);
     }

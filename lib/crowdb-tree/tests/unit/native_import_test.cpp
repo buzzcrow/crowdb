@@ -16,7 +16,7 @@ class NativeImport : public testing::Test
   protected:
     Status catalog(const std::vector<NativeFrame> &frames, std::shared_ptr<ReadablePageCatalog> *out) const
     {
-        return build_native_catalog(frames, test_import::info(frames), {}, {}, {}, credits.credits.bytes, out);
+        return build_native_catalog(frames, test_import::info(frames), {}, {}, {}, credits.credits.reservation(), out);
     }
 
     test_read::LoadCredits                      credits;
@@ -83,19 +83,21 @@ TEST_F(NativeImport, ReadableGraphLoadsResidentIndexButDurableGraphRejectsIt)
     auto                                 status = catalog(frames, &pages);
     ASSERT_TRUE(status.ok()) << status.to_string();
     std::shared_ptr<RecoveredStateOperation> operation;
-    ASSERT_TRUE(
-        RecoveredStateOperation::create_readable(pages, loader, runtime, lane, {}, credits.credits.bytes, &operation)
-            .ok());
+    ASSERT_TRUE(RecoveredStateOperation::create_readable(pages, loader, runtime, lane, {},
+                                                         credits.credits.reservation(), &operation)
+                    .ok());
     status = detail::wait_snapshot_operation(operation);
     ASSERT_TRUE(status.ok()) << status.to_string();
     EXPECT_EQ(operation->result().state->stats.height, 2U);
     EXPECT_EQ(operation->result().state->stats.kv_known_count, 2U);
     EXPECT_EQ(store->reads.load(), 0U);
-    auto durable = detail::reserved_shared<CapturedDurablePages>(credits.credits.bytes, credits.credits.bytes);
+    auto durable =
+        detail::reserved_shared<CapturedDurablePages>(credits.credits.reservation(), credits.credits.reservation());
     static_cast<ReadablePageCatalog &>(*durable) = *pages;
     operation.reset();
     ASSERT_TRUE(
-        RecoveredStateOperation::create(durable, loader, runtime, lane, {}, credits.credits.bytes, &operation).ok());
+        RecoveredStateOperation::create(durable, loader, runtime, lane, {}, credits.credits.reservation(), &operation)
+            .ok());
     EXPECT_EQ(detail::wait_snapshot_operation(operation).code(), Code::kCorruption);
 }
 
@@ -136,9 +138,9 @@ TEST_F(NativeImport, OverwrittenOverflowCellStillRetainsItsPhysicalDependency)
     ASSERT_TRUE(status.ok()) << status.to_string();
     ASSERT_EQ(pages->frames.at(0).stored_overflow->size(), 1U);
     std::shared_ptr<RecoveredStateOperation> operation;
-    ASSERT_TRUE(
-        RecoveredStateOperation::create_readable(pages, loader, runtime, lane, {}, credits.credits.bytes, &operation)
-            .ok());
+    ASSERT_TRUE(RecoveredStateOperation::create_readable(pages, loader, runtime, lane, {},
+                                                         credits.credits.reservation(), &operation)
+                    .ok());
     status = detail::wait_snapshot_operation(operation);
     ASSERT_TRUE(status.ok()) << status.to_string();
     const auto leaf = operation->result().state->mapping.get(0)->leaf;

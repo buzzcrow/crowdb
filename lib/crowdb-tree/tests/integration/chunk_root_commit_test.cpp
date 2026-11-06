@@ -33,7 +33,7 @@ TEST(ChunkRootCommit, LostMutationRepliesResolveTheSameCandidateWithoutRepeating
     EXPECT_EQ(test.catalog->prepare_calls, 2U);
     EXPECT_EQ(test.catalog->commit_calls, 1U);
     EXPECT_EQ(test.catalog->abort_calls, 0U);
-    ChunkRootManifest root(test.credits.credits.bytes);
+    ChunkRootManifest root(test.credits.credits.reservation());
     ASSERT_TRUE(decode_chunk_root(test.catalog->manifest, 19, 7, &root).ok());
     EXPECT_EQ(root.frame_count, 65U);
     EXPECT_EQ(root.indexes.size(), 2U);
@@ -45,9 +45,10 @@ TEST(ChunkRootCommit, LostMutationRepliesResolveTheSameCandidateWithoutRepeating
     detail::ChunkId      unused;
     ASSERT_TRUE(test.ids->next(PagePurpose::kPageIndex, &pin, &unused).ok());
     std::shared_ptr<const ChunkPackBacking> index;
-    ASSERT_TRUE(pin_chunk_backing(test.domain, root.indexes[0].pack, pin, test.credits.credits.bytes, &index).ok());
+    ASSERT_TRUE(
+        pin_chunk_backing(test.domain, root.indexes[0].pack, pin, test.credits.credits.reservation(), &index).ok());
     std::vector<uint8_t> bytes(index->pack.length);
-    ASSERT_TRUE(read_chunk_backing(*index, bytes, test.credits.credits.bytes).ok());
+    ASSERT_TRUE(read_chunk_backing(*index, bytes, test.credits.credits.reservation()).ok());
     uint64_t count  = 0;
     size_t   offset = 0;
     ASSERT_TRUE(decode_chunk_index_header(bytes, root.identity, 0, &count, &offset).ok());

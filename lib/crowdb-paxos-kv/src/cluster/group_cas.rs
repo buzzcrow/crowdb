@@ -13,6 +13,11 @@ use crate::cluster::local_replica::PxLocalReplicaRole;
 use crate::paxos::roles::RequestIdentity;
 
 impl PxGroup {
+    pub(crate) fn cas_read_unavailable(error: &impl std::fmt::Display) -> ProposeResult {
+        tracing::warn!(%error, "conditional read unavailable before proposal admission");
+        ProposeResult::CasBusy
+    }
+
     pub async fn propose_cas(
         self: &Arc<Self>,
         payload: Vec<u8>,
@@ -131,7 +136,7 @@ impl PxGroup {
             .engine_get_versioned(&precondition_key)
             .await;
         let result = match observed {
-            Err(error) => ProposeResult::Rejected(error),
+            Err(error) => Self::cas_read_unavailable(&error),
             Ok(value) => {
                 let current_revision = value.as_ref().map_or(0, |(revision, _)| *revision);
                 if current_revision != expected_revision {

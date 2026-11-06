@@ -87,13 +87,13 @@ class AllocationReservation : public AllocationBudget
 };
 
 template <class T, AllocationKind Kind = AllocationKind::kMetadata>
-using ReservationAllocator = BudgetAllocator<T, AllocationReservation, Kind>;
+using ReservationAllocator = BudgetAllocator<T, AllocationBudget, Kind>;
 template <class T, AllocationKind Kind = AllocationKind::kMetadata>
 using ReservedVector = std::vector<T, ReservationAllocator<T, Kind>>;
 
 template <class T> struct ReservationDeleter
 {
-    std::shared_ptr<AllocationReservation> owner;
+    std::shared_ptr<AllocationBudget> owner;
 
     void operator()(T *value) const noexcept
     {
@@ -108,7 +108,7 @@ template <class T> struct ReservationDeleter
 template <class T> using ReservedUnique = std::unique_ptr<T, ReservationDeleter<T>>;
 
 template <class T, class... Args>
-ReservedUnique<T> reserved_unique(const std::shared_ptr<AllocationReservation> &owner, Args &&...args)
+ReservedUnique<T> reserved_unique(const std::shared_ptr<AllocationBudget> &owner, Args &&...args)
 {
     ReservationAllocator<T> allocator(owner);
     auto                   *value = allocator.allocate(1);
@@ -123,7 +123,7 @@ ReservedUnique<T> reserved_unique(const std::shared_ptr<AllocationReservation> &
 }
 
 template <class T, class... Args>
-std::shared_ptr<T> reserved_shared(const std::shared_ptr<AllocationReservation> &owner, Args &&...args)
+std::shared_ptr<T> reserved_shared(const std::shared_ptr<AllocationBudget> &owner, Args &&...args)
 {
     if constexpr (RetirementTraits<T>::enabled) {
         if (owner) {
@@ -138,7 +138,7 @@ std::shared_ptr<T> reserved_shared(const std::shared_ptr<AllocationReservation> 
 // Allows a class factory to construct a private operation handle while both
 // its object and shared control block remain charged to the same reservation.
 template <class T, class Construct>
-std::shared_ptr<T> reserved_construct(const std::shared_ptr<AllocationReservation> &owner, Construct &&construct)
+std::shared_ptr<T> reserved_construct(const std::shared_ptr<AllocationBudget> &owner, Construct &&construct)
 {
     ReservationAllocator<T> allocator(owner);
     auto                   *value = allocator.allocate(1);

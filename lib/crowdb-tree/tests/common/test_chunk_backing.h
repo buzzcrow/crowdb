@@ -104,10 +104,10 @@ struct TestChunkBackend
 
     TestChunkBackend()
     {
-        EXPECT_TRUE(
-            detail::ChunkPinReleaseQueue::create(
-                credits.credits.bytes, 16, std::make_shared<int>(1), [](void *) noexcept {}, nullptr, &catalog->queue)
-                .ok());
+        EXPECT_TRUE(detail::ChunkPinReleaseQueue::create(
+                        credits.credits.reservation(), 16, std::make_shared<int>(1), [](void *) noexcept {}, nullptr,
+                        &catalog->queue)
+                        .ok());
         domain->backend_id = 17;
         domain->tree       = 19;
         domain->epoch      = 1;
@@ -137,8 +137,8 @@ struct TestChunkBackend
     Status prepare(uint32_t bytes, std::shared_ptr<ChunkPackBacking> *out) const
     {
         return prepare_chunk_backing(domain, {.owner_epoch = 1, .operation_high = 4, .operation_low = 5},
-                                     {uint64_t{2} << 56U, 1}, bytes, PagePurpose::kBtreePage, credits.credits.bytes,
-                                     out);
+                                     {uint64_t{2} << 56U, 1}, bytes, PagePurpose::kBtreePage,
+                                     credits.credits.reservation(), out);
     }
 };
 } // namespace crowdb::tree::test_chunk

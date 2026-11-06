@@ -74,6 +74,35 @@ TEST(TreeCapacityBackpressure, OrdinaryWritesWaitForPersistentCompletionOnOneWor
     }
 }
 
+TEST(TreeCapacityBackpressure, WriterBytesPauseBeforeTheMemTableRotationThreshold)
+{
+    TestCapacityTree test(1000);
+    test.core.reset();
+    test.config.runtime_binding.limits.writer_bytes = 1024 * 1024;
+    ASSERT_TRUE(TreeCore::open(test.config, &test.core).ok());
+    test.store->defer_at = test.store->events.size() + 1;
+    auto writer          = std::async(std::launch::async, [&] {
+        for (uint64_t slot = 1; slot <= 128; ++slot) {
+            auto status = test.put(slot);
+            if (!status.ok()) {
+                return status;
+            }
+        }
+        return Status::Ok();
+    });
+    test.store->wait_deferred();
+    EXPECT_EQ(writer.wait_for(std::chrono::milliseconds(20)), std::future_status::timeout);
+    EXPECT_LT(test.core->contiguous_slot(), 128U);
+    test.store->finish();
+    const auto status = writer.get();
+    ASSERT_TRUE(status.ok()) << status.to_string();
+    EXPECT_EQ(test.core->contiguous_slot(), 128U);
+    EXPECT_GT(test.core->durable_coverage(), 0U);
+    GetView value;
+    ASSERT_TRUE(test.core->get("128", &value).ok());
+    EXPECT_EQ(value.value().to_string(), std::string(20000, static_cast<char>('a' + 128)));
+}
+
 TEST(TreeCapacityBackpressure, FailedPersistentFlushKeepsCoverageAndExplicitRepairReopensAdmission)
 {
     TestCapacityTree test;
@@ -245,10 +274,8 @@ TEST(TreeCapacityBackpressure, PersistentFlushPublishesAllChangesFromEarlierOrdi
                                      .reclaim_bytes    = 512ULL << 20,
                                      .writer_bytes     = 2048ULL << 20,
                                      .gap_repair_bytes = 256ULL << 20};
-    auto store                    = std::make_shared<test_write::TestCheckpointStore>();
-    store->device                 = std::make_shared<MemPageStore>(4096);
-    config.page_store             = store->device.get();
-    config.async_page_store       = store.get();
+    auto store                    = std::make_shared<MemPageStore>(4096);
+    config.page_store             = store.get();
     config.backend_owner          = store;
     config.frame_bytes            = 4096;
     config.leaf_split_bytes       = 3000;

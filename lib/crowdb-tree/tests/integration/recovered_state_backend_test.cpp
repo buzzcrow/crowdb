@@ -88,7 +88,7 @@ TEST(RecoveredStateBackend, CheckpointRecoveryPreservesBoundaryEmptyChildrenForR
                                                           OverflowBackingResolver{}, test.credits.credits);
     std::shared_ptr<RecoveredStateOperation> operation;
     ASSERT_TRUE(RecoveredStateOperation::create(test.operation->result().latest, loader, runtime, lane,
-                                                {.max_step_entries = 1}, test.credits.credits.bytes, &operation)
+                                                {.max_step_entries = 1}, test.credits.credits.reservation(), &operation)
                     .ok());
     complete_with(runtime, operation->sender());
     const auto state = operation->result().state;
@@ -119,13 +119,13 @@ TEST(RecoveredStateBackend, CheckpointRecoveryPreservesBoundaryEmptyChildrenForR
         EXPECT_EQ(keys, reverse ? (std::vector<std::string>{"z", "a"}) : (std::vector<std::string>{"a", "z"}));
     }
     std::shared_ptr<CapturedFrameStream> stream;
-    ASSERT_TRUE(
-        CapturedFrameStream::create(state, loader, runtime, lane,
-                                    {
-                                        .encode = {.frame_bytes = 4096, .metadata = test.credits.credits.bytes}
+    ASSERT_TRUE(CapturedFrameStream::create(
+                    state, loader, runtime, lane,
+                    {
+                        .encode = {.frame_bytes = 4096, .metadata = test.credits.credits.reservation()}
     },
-                                    {}, &stream)
-            .ok());
+                    {}, &stream)
+                    .ok());
     for (size_t i = 0; i < 7; ++i) {
         complete_with(runtime, stream->sender());
         ASSERT_TRUE(stream->result().frame);
@@ -170,7 +170,7 @@ TEST(RecoveredStateBackend, OverflowReadAndRecaptureNeedOnlyPrimaryDependencies)
                                                           OverflowBackingResolver{}, test.credits.credits);
     std::shared_ptr<RecoveredStateOperation> operation;
     ASSERT_TRUE(RecoveredStateOperation::create(test.operation->result().latest, loader, runtime, lane, {},
-                                                test.credits.credits.bytes, &operation)
+                                                test.credits.credits.reservation(), &operation)
                     .ok());
     complete_with(runtime, operation->sender());
     auto state = operation->result().state;
@@ -189,7 +189,8 @@ TEST(RecoveredStateBackend, OverflowReadAndRecaptureNeedOnlyPrimaryDependencies)
     ASSERT_TRUE(CapturedWriteOperation::create(
                     state, loader, test.store, runtime, lane,
                     {.frames = {.encode = {.frame_bytes = 4096}}, .write = {.max_frame_bytes = 4096}},
-                    test.credits.credits, {}, extent_write_reservation(ledger, test.credits.credits.bytes), {}, &write)
+                    test.credits.credits, {}, extent_write_reservation(ledger, test.credits.credits.reservation()), {},
+                    &write)
                     .ok());
     complete_with(runtime, write->sender());
     ASSERT_TRUE(write->result().pages);

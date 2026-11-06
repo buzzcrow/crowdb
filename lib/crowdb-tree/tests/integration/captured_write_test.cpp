@@ -9,27 +9,28 @@ using namespace test_write;
 
 TEST(CapturedWrite, FinalPageStreamWritesAndReadsWithoutASnapshotMapping)
 {
-    TestCapturedWrite   test;
-    auto                output = published(page({
+    TestCapturedWrite                    test;
+    auto                                 output = published(page({
         {.key = "a", .value = "final"}
     }));
-    CapturedWriteLimits limits{
-        .frames = {.encode = {.frame_bytes = 512, .inline_value_bytes = 16, .metadata = test.credits.credits.bytes}},
-        .write  = {.max_frame_bytes = 512}};
+    CapturedWriteLimits                  limits{.frames = {.encode = {.frame_bytes        = 512,
+                                                                      .inline_value_bytes = 16,
+                                                                      .metadata = test.credits.credits.reservation()}},
+                                                .write  = {.max_frame_bytes = 512}};
     std::shared_ptr<CapturedFrameStream> stream;
     ASSERT_TRUE(CapturedFrameStream::create(
                     {.page = output, .page_id = 17, .coverage = 10, .gc_floor = 0, .next_page_id = 24, .context = {}},
                     {}, test.runtime, test.lane, limits.frames, {}, &stream)
                     .ok());
-    auto pages          = std::make_shared<CapturedDurablePages>(test.credits.credits.bytes);
+    auto pages          = std::make_shared<CapturedDurablePages>(test.credits.credits.reservation());
     pages->root_page_id = 17;
     pages->next_page_id = 24;
     pages->coverage     = 10;
     pages->generation   = 1;
-    ASSERT_TRUE(CapturedWriteOperation::create(std::move(stream), std::move(pages), test.store, test.runtime, test.lane,
-                                               limits, test.credits.credits,
-                                               extent_write_reservation(test.ledger, test.credits.credits.bytes), {},
-                                               &test.operation)
+    ASSERT_TRUE(CapturedWriteOperation::create(
+                    std::move(stream), std::move(pages), test.store, test.runtime, test.lane, limits,
+                    test.credits.credits, extent_write_reservation(test.ledger, test.credits.credits.reservation()), {},
+                    &test.operation)
                     .ok());
     output.reset();
     Completion done;
@@ -335,7 +336,7 @@ TEST(CapturedWrite, MetadataExhaustionAfterAcceptedIoReleasesThePartialImage)
     stdexec::start(connected);
     test.runtime->drain();
     ASSERT_TRUE(test.store->pending);
-    test.credits.credits.bytes->seal();
+    test.credits.credits.reservation()->seal();
     test.store->finish();
     test.runtime->drain();
     EXPECT_EQ(done.errors.load(), 1U);

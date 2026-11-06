@@ -33,19 +33,41 @@ Status ChunkFixedPackStore::write(ChunkStageId operation, ChunkId fixed, PagePur
                                   std::span<const uint8_t> input, const std::shared_ptr<AllocationBudget> &budget,
                                   ChunkFixedPackRef *out, std::shared_ptr<ChunkPhysicalPack> *physical,
                                   const std::shared_ptr<AllocationBudget> &physical_budget)
+{
+    const Write item{.input = input, .out = out};
+    return write_many(operation, fixed, purpose, std::span(&item, 1), budget, physical, physical_budget);
+}
+
+Status ChunkFixedPackStore::write_many(ChunkStageId operation, ChunkId fixed, PagePurpose purpose,
+                                       std::span<const Write> inputs, const std::shared_ptr<AllocationBudget> &budget,
+                                       std::shared_ptr<ChunkPhysicalPack>      *physical,
+                                       const std::shared_ptr<AllocationBudget> &physical_budget)
 try {
     const auto context = ChunkIoContext::capture();
     if (!supported()) {
         return Status::not_supported("fixed staged chunk writes are unavailable");
     }
-    if (!budget || out == nullptr || operation.owner_epoch != epoch_ || !write_allocation_bound(input.size())) {
+    if (!budget || inputs.empty() || inputs.size() > kMaxStagePacks || operation.owner_epoch != epoch_) {
         return Status::invalid_argument();
     }
+    size_t bytes = 0;
+    for (const auto &item : inputs) {
+        const auto framed = chunk_framed_length(item.input.size());
+        if (item.out == nullptr || !write_allocation_bound(item.input.size()) || framed > kMaxChunkPackBytes - bytes) {
+            return Status::invalid_argument("aggregate exceeds Chunk pack geometry");
+        }
+        bytes += framed;
+    }
     auto framed = std::allocate_shared<ChunkPackWindow>(MetadataAllocator<ChunkPackWindow>(budget), budget);
-    framed->bytes.resize(chunk_framed_length(input.size()));
-    auto status = encode_fixed_pack(fixed, purpose, input, framed->bytes);
-    if (!status.ok()) {
-        return status;
+    framed->bytes.resize(bytes);
+    size_t offset = 0;
+    for (const auto &item : inputs) {
+        const auto length = chunk_framed_length(item.input.size());
+        auto status = encode_fixed_pack(fixed, purpose, item.input, std::span(framed->bytes).subspan(offset, length));
+        if (!status.ok()) {
+            return status;
+        }
+        offset += length;
     }
     ChunkStageRecord reserved{.tree_id             = tree_,
                               .id                  = operation,
@@ -57,7 +79,7 @@ try {
                               .purpose             = static_cast<uint32_t>(purpose),
                               .state               = ChunkStageState::Reserved,
                               .packs = decltype(ChunkStageRecord::packs)(MetadataAllocator<ChunkStagePack>(budget))};
-    status = validate_stage_record(reserved);
+    auto             status = validate_stage_record(reserved);
     if (!status.ok()) {
         return status;
     }
@@ -101,9 +123,13 @@ try {
     auto writing = reserved;
     writing.revision++;
     writing.state = ChunkStageState::Writing;
-    writing.packs.push_back({.offset   = 0,
-                             .length   = static_cast<uint32_t>(input.size()),
-                             .checksum = crowdb::common::crc32c(input.data(), input.size())});
+    offset        = 0;
+    for (const auto &item : inputs) {
+        writing.packs.push_back({.offset   = offset,
+                                 .length   = static_cast<uint32_t>(item.input.size()),
+                                 .checksum = crowdb::common::crc32c(item.input.data(), item.input.size())});
+        offset += chunk_framed_length(item.input.size());
+    }
     status = catalog_->compare_stage(tree_, epoch_, reserved, writing);
     if (!status.ok()) {
         return status;
@@ -129,12 +155,15 @@ try {
     if (!status.ok()) {
         return status;
     }
-    *out = {.stage    = operation,
-            .chunk    = fixed,
-            .offset   = 0,
-            .length   = writing.packs.front().length,
-            .checksum = writing.packs.front().checksum,
-            .purpose  = purpose};
+    for (size_t index = 0; index < inputs.size(); ++index) {
+        const auto &pack   = writing.packs[index];
+        *inputs[index].out = {.stage    = operation,
+                              .chunk    = fixed,
+                              .offset   = pack.offset,
+                              .length   = pack.length,
+                              .checksum = pack.checksum,
+                              .purpose  = purpose};
+    }
     return Status::Ok();
 }
 catch (const std::bad_alloc &) {

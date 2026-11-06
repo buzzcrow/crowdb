@@ -23,9 +23,9 @@ LocalRecoveryOperation::State::Window::Window(size_t blob_bytes, size_t frame_by
 
 LocalRecoveryOperation::State::State(PageLoadBudget credits)
     : budget(std::move(credits)),
-      directory(detail::ReservationAllocator<DirEntry>(budget.bytes)),
-      references(detail::ReservationAllocator<LeafReference>(budget.bytes)),
-      report(detail::reserved_shared<LocalRecoveryResult>(budget.bytes))
+      directory(detail::ReservationAllocator<DirEntry>(budget.reservation())),
+      references(detail::ReservationAllocator<LeafReference>(budget.reservation())),
+      report(detail::reserved_shared<LocalRecoveryResult>(budget.reservation()))
 {
 }
 
@@ -60,15 +60,15 @@ Status LocalRecoveryOperation::create(std::shared_ptr<AsyncPageStore>           
         limits.max_blob_bytes < kDurableBlobHeader || limits.max_blob_bytes > UINT32_MAX ||
         limits.max_frame_bytes < kFrameHeaderSize + kFrameTrailerSize || limits.max_frame_bytes > UINT32_MAX ||
         limits.max_overflow_references == 0 || limits.max_dependency_steps == 0 ||
-        static_cast<bool>(budget.bytes) != static_cast<bool>(budget.io) ||
-        (budget.bytes &&
-         ((budget.bytes->category() != detail::BudgetClass::kRouting &&
-           budget.bytes->category() != detail::BudgetClass::kReclaim) ||
-          budget.io->category() != detail::BudgetClass::kIo || budget.bytes->account() != budget.io->account()))) {
+        static_cast<bool>(budget.reservation()) != static_cast<bool>(budget.io) ||
+        (budget.reservation() && ((budget.reservation()->category() != detail::BudgetClass::kRouting &&
+                                   budget.reservation()->category() != detail::BudgetClass::kReclaim) ||
+                                  budget.io->category() != detail::BudgetClass::kIo ||
+                                  budget.reservation()->account() != budget.io->account()))) {
         return Status::invalid_argument();
     }
     try {
-        auto state            = detail::reserved_shared<State>(budget.bytes, budget);
+        auto state            = detail::reserved_shared<State>(budget.reservation(), budget);
         state->readable_bytes = domain.file_size;
         domain.file_size      = std::max(domain.file_size, domain.region_begin);
         state->domain         = domain;
@@ -76,15 +76,15 @@ Status LocalRecoveryOperation::create(std::shared_ptr<AsyncPageStore>           
         state->store          = std::move(store);
         state->runtime        = std::move(runtime);
         state->lane           = std::move(lane);
-        auto status           = ExtentLedger::create(domain, budget.bytes, &state->ledger);
+        auto status           = ExtentLedger::create(domain, budget.reservation(), &state->ledger);
         if (!status.ok()) {
             return status;
         }
         state->metadata_window = round_up_to_iu(segment_image_encoded_size(kMappingSegmentSize), domain.iu_size);
         state->window          = detail::reserved_shared<State::Window>(
-            budget.bytes, std::max(limits.max_blob_bytes, state->metadata_window), limits.max_frame_bytes,
-            std::bit_ceil(std::max<size_t>(4096, domain.iu_size)), budget.bytes);
-        *out = detail::reserved_construct<LocalRecoveryOperation>(budget.bytes, [&](auto *storage) {
+            budget.reservation(), std::max(limits.max_blob_bytes, state->metadata_window), limits.max_frame_bytes,
+            std::bit_ceil(std::max<size_t>(4096, domain.iu_size)), budget.reservation());
+        *out = detail::reserved_construct<LocalRecoveryOperation>(budget.reservation(), [&](auto *storage) {
             ::new (static_cast<void *>(storage)) LocalRecoveryOperation(std::move(state));
         });
     }

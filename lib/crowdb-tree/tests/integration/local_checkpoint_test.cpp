@@ -109,7 +109,7 @@ TEST(LocalCheckpoint, ExcludedMetadataSegmentIsRelocatedDespiteUnchangedPageSlot
     const auto &segment  = original->metadata->segments.front().second;
     auto        fence    = await_ledger([&](auto done) {
         return test.source.ledger->exclude_allocations(segment.address, segment.length,
-                                                       test.source.credits.credits.bytes, std::move(done));
+                                                       test.source.credits.credits.reservation(), std::move(done));
     });
     ASSERT_TRUE(fence.status.ok());
     const BackingExclusion exclusion{.address = segment.address, .length = segment.length};
@@ -209,8 +209,8 @@ TEST(LocalCheckpoint, CoverageMayResetOnlyWhenTheLogicalGenerationAdvances)
     Completion first;
     test.run(&first);
     ASSERT_EQ(first.values.load(), 1U) << first.status.to_string();
-    auto empty        = detail::reserved_shared<CapturedDurablePages>(test.source.credits.credits.bytes,
-                                                                      test.source.credits.credits.bytes);
+    auto empty        = detail::reserved_shared<CapturedDurablePages>(test.source.credits.credits.reservation(),
+                                                                      test.source.credits.credits.reservation());
     empty->generation = first_pages->generation;
     ASSERT_TRUE(test.prepare(empty).ok());
     const auto before = test.store->events.size();
@@ -236,7 +236,7 @@ TEST(LocalCheckpoint, CoverageMayResetOnlyWhenTheLogicalGenerationAdvances)
 TEST(LocalCheckpoint, EmptyCapturedViewCommitsAnEmptyDirectory)
 {
     TestCheckpoint test;
-    auto           pages = std::make_shared<CapturedDurablePages>(test.source.credits.credits.bytes);
+    auto           pages = std::make_shared<CapturedDurablePages>(test.source.credits.credits.reservation());
     pages->coverage      = 12;
     ASSERT_TRUE(test.prepare(pages).ok());
     Completion done;

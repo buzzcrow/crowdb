@@ -28,9 +28,9 @@ struct TestCapturedWrite
 
     TestCapturedWrite()
     {
-        EXPECT_TRUE(ExtentLedger::create({.backend_id = 9}, credits.credits.bytes, &ledger).ok());
+        EXPECT_TRUE(ExtentLedger::create({.backend_id = 9}, credits.credits.reservation(), &ledger).ok());
         EXPECT_TRUE(await_ledger([&](auto done) {
-                        return ledger->activate(credits.credits.bytes, std::move(done));
+                        return ledger->activate(credits.credits.reservation(), std::move(done));
                     }).status.ok());
     }
 
@@ -47,7 +47,7 @@ struct TestCapturedWrite
                 next_overflow += count;
                 return Status::Ok();
             },
-            extent_write_reservation(ledger, credits.credits.bytes), std::move(inherited), &operation);
+            extent_write_reservation(ledger, credits.credits.reservation()), std::move(inherited), &operation);
     }
 
     std::vector<uint8_t> read(const DurableCapturedFrame &frame)

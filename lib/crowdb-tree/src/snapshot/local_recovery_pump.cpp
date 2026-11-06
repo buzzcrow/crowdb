@@ -123,7 +123,7 @@ void LocalRecoveryOperation::State::pump()
         dependencies();
         break;
     case Stage::Activated:
-        finish(LocalCheckpointRegistry::create(ledger, budget.bytes, anchors, &report->registry));
+        finish(LocalCheckpointRegistry::create(ledger, budget.reservation(), anchors, &report->registry));
         break;
     }
 }

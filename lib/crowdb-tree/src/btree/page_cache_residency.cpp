@@ -12,7 +12,7 @@ namespace crowdb::tree
 {
 namespace
 {
-thread_local std::shared_ptr<detail::AllocationReservation> node_budget;
+thread_local std::shared_ptr<AllocationBudget> node_budget;
 
 struct NodeHeader
 {
@@ -25,7 +25,7 @@ size_t header_bytes(size_t alignment)
 }
 } // namespace
 
-PageCacheNodeResource::Scope::Scope(std::shared_ptr<detail::AllocationReservation> budget)
+PageCacheNodeResource::Scope::Scope(std::shared_ptr<AllocationBudget> budget)
     : previous_(std::exchange(node_budget, std::move(budget)))
 {
 }
@@ -68,9 +68,9 @@ PageCacheResidency::State::State(std::shared_ptr<TreeResourceMetrics> resources)
 {
 }
 
-PageCacheResidency::PageCacheResidency(std::shared_ptr<TreeResourceMetrics>                  resources,
-                                       const std::shared_ptr<detail::AllocationReservation> &metadata,
-                                       detail::FlushRuntime *runtime, std::shared_ptr<detail::FlushRuntime::Lane> lane)
+PageCacheResidency::PageCacheResidency(std::shared_ptr<TreeResourceMetrics>     resources,
+                                       const std::shared_ptr<AllocationBudget> &metadata, detail::FlushRuntime *runtime,
+                                       std::shared_ptr<detail::FlushRuntime::Lane> lane)
     : state_(detail::reserved_shared<State>(metadata, std::move(resources)))
 {
     if (runtime == nullptr || !lane) {
@@ -89,8 +89,8 @@ PageCacheResidency::~PageCacheResidency()
 }
 
 std::shared_ptr<PageCacheResidency::Update>
-PageCacheResidency::prepare(std::span<const PageReplacement>                      pages,
-                            const std::shared_ptr<detail::AllocationReservation> &metadata) const
+PageCacheResidency::prepare(std::span<const PageReplacement>         pages,
+                            const std::shared_ptr<AllocationBudget> &metadata) const
 {
     auto                         update = detail::reserved_shared<Update>(metadata, state_);
     PageCacheNodeResource::Scope scope(metadata);
@@ -116,8 +116,7 @@ void PageCacheResidency::publish(std::shared_ptr<Update> update) noexcept
 }
 
 std::shared_ptr<PageCacheResidency::Ready>
-PageCacheResidency::prepare_ready(const PageCacheKey                                   &key,
-                                  const std::shared_ptr<detail::AllocationReservation> &metadata) const
+PageCacheResidency::prepare_ready(const PageCacheKey &key, const std::shared_ptr<AllocationBudget> &metadata) const
 {
     auto                         result = detail::reserved_shared<Ready>(metadata, state_);
     PageCacheNodeResource::Scope scope(metadata);

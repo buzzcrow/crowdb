@@ -139,7 +139,7 @@ class TreeCore : public std::enable_shared_from_this<TreeCore>
     // Runs on the shared runtime; staged completion never advances WAL coverage.
     Status prepare_writeback(std::shared_ptr<CheckpointOperation> *out);
     Status capture_snapshot(std::shared_ptr<PublishedSnapshotContext> *out);
-    Status acquire_snapshot_window(const std::shared_ptr<detail::AllocationReservation> &metadata,
+    Status acquire_snapshot_window(const std::shared_ptr<AllocationBudget>        &metadata,
                                    std::shared_ptr<TreeOperationLifetime::Ticket> *ticket, AsyncPageStore **backend);
     Status reserve_snapshot_ids(const PublishedTreeState &expected, uint64_t count,
                                 const std::shared_ptr<detail::AllocationReservation> &metadata);

@@ -42,16 +42,6 @@ struct Inspection
     core_read_detail::ReadPreparation         prepared;
     std::shared_ptr<const PublishedTreeState> view;
 
-    ~Inspection()
-    {
-        if (prepared.credit) {
-            prepared.credit->seal();
-        }
-        if (prepared.io) {
-            prepared.io->seal();
-        }
-    }
-
     Status load(uint64_t pid, std::optional<size_t> base = {})
     {
         const auto old = view->mapping.get(pid);
@@ -141,7 +131,7 @@ struct Inspection
 
 struct CopiedFrame
 {
-    CopiedFrame(const std::shared_ptr<detail::AllocationReservation> &credit, size_t capacity)
+    CopiedFrame(const std::shared_ptr<AllocationBudget> &credit, size_t capacity)
         : bytes(credit, capacity, AllocationKind::kFrame)
     {
     }
@@ -166,20 +156,8 @@ try {
     const auto input                 = core.capture();
     const auto shape                 = input->mapping.copy_bounds();
     frames.page_metadata_bytes       = shape.max_leaf_bytes;
-    const auto copies                = (3 * frames.max_depth) + frames.encode.max_sources;
-    const auto bound =
-        detail::AllocationBound(CapturedFrameStream::allocation_bound(frames).value_or(SIZE_MAX))
-            .add_product(copies, MappingView::path_copy_bound() + detail::shared_allocation_bound<PublishedPage>() +
-                                     detail::shared_allocation_bound<PublishedTreeState>())
-            .add_product(core.binding()->cpu()->worker_count() + 1, detail::shared_allocation_bound<Loaded>())
-            .add(detail::shared_allocation_bound<CopiedFrame>())
-            .value();
-    if (!bound) {
-        return Status::resource_exhausted();
-    }
     Inspection inspection;
-    auto       status = core_read_detail::prepare(core, input, core.read_limits(), false, *bound, kInspectionBytes,
-                                                  &inspection.prepared);
+    auto       status = core_read_detail::prepare(core, input, core.read_limits(), &inspection.prepared);
     if (!status.ok()) {
         return status;
     }

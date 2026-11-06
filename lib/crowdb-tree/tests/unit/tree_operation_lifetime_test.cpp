@@ -15,15 +15,15 @@ using test_read::LoadCredits;
 TEST(TreeOperationLifetime, CloseRejectsIngressAndWaitsForEveryAcceptedOwner)
 {
     LoadCredits                                    credits;
-    TreeOperationLifetime                          lifetime(2, credits.credits.bytes);
+    TreeOperationLifetime                          lifetime(2, credits.credits.reservation());
     std::shared_ptr<TreeOperationLifetime::Ticket> first;
     std::shared_ptr<TreeOperationLifetime::Ticket> second;
     std::shared_ptr<TreeOperationLifetime::Ticket> rejected;
-    ASSERT_TRUE(lifetime.acquire(credits.credits.bytes, &first).ok());
-    ASSERT_TRUE(lifetime.acquire(credits.credits.bytes, &second).ok());
-    EXPECT_EQ(lifetime.acquire(credits.credits.bytes, &rejected).code(), Code::kResourceExhausted);
+    ASSERT_TRUE(lifetime.acquire(credits.credits.reservation(), &first).ok());
+    ASSERT_TRUE(lifetime.acquire(credits.credits.reservation(), &second).ok());
+    EXPECT_EQ(lifetime.acquire(credits.credits.reservation(), &rejected).code(), Code::kResourceExhausted);
     lifetime.close();
-    EXPECT_EQ(lifetime.acquire(credits.credits.bytes, &rejected).code(), Code::kUnavailable);
+    EXPECT_EQ(lifetime.acquire(credits.credits.reservation(), &rejected).code(), Code::kUnavailable);
     std::atomic<bool>  drained{false};
     std::promise<void> started;
     auto               ready = started.get_future();
@@ -53,10 +53,10 @@ TEST(TreeOperationLifetime, ObjectAndControlBlockAllocationFailuresReturnCapacit
     size_t     rejected = 0;
     size_t     admitted = 0;
     for (size_t available = 0; available <= bound; ++available) {
-        AllocationLease pressure(credits.credits.bytes, credits.credits.bytes->available() - available);
+        AllocationLease pressure(credits.credits.reservation(), credits.credits.reservation()->available() - available);
         const auto      baseline = credits.budget.snapshot().allocated[LoadCredits::kBytes];
         std::shared_ptr<TreeOperationLifetime::Ticket> ticket;
-        const auto                                     status = lifetime.acquire(credits.credits.bytes, &ticket);
+        const auto status = lifetime.acquire(credits.credits.reservation(), &ticket);
         if (status.ok()) {
             ++admitted;
             EXPECT_EQ(lifetime.outstanding(), 1U);
@@ -102,8 +102,8 @@ TEST(TreeOperationLifetime, TicketRetainsChargedStateAndHostAfterIngressOwnerIsD
     const std::weak_ptr<int>                       weak = host;
     std::shared_ptr<TreeOperationLifetime::Ticket> ticket;
     {
-        TreeOperationLifetime lifetime(1, credits.credits.bytes, host);
-        ASSERT_TRUE(lifetime.acquire(credits.credits.bytes, &ticket).ok());
+        TreeOperationLifetime lifetime(1, credits.credits.reservation(), host);
+        ASSERT_TRUE(lifetime.acquire(credits.credits.reservation(), &ticket).ok());
         host.reset();
         EXPECT_FALSE(weak.expired());
     }

@@ -11,7 +11,7 @@ namespace
 ExtentLedgerResult exclude(LedgerFixture &test, uint64_t address, uint64_t length)
 {
     return await_ledger([&](auto done) {
-        return test.ledger->exclude_allocations(address, length, test.credits.credits.bytes, std::move(done));
+        return test.ledger->exclude_allocations(address, length, test.credits.credits.reservation(), std::move(done));
     });
 }
 
@@ -25,8 +25,9 @@ TEST(ExtentExclusion, ExistingReadersRemainProtectedAndNewWritesAvoidTheWholeInt
     ASSERT_TRUE(frozen.status.ok());
     EXPECT_EQ(frozen.occupied_bytes, 4096U);
     EXPECT_EQ(test.ledger->stats().protected_bytes, 4096U);
-    auto retained = await_ledger(
-        [&](auto done) { return test.ledger->retain(16384, 4096, test.credits.credits.bytes, std::move(done)); });
+    auto retained = await_ledger([&](auto done) {
+        return test.ledger->retain(16384, 4096, test.credits.credits.reservation(), std::move(done));
+    });
     ASSERT_TRUE(retained.status.ok());
     EXPECT_EQ(retained.extent.owner, data.extent.owner);
     EXPECT_EQ(exclude(test, 32768, 8192).status.code(), Code::kUnavailable);
@@ -52,8 +53,9 @@ TEST(ExtentExclusion, FreeDeletionLeaseIsAllowedWhileFutureAllocationStaysFenced
     ASSERT_TRUE(frozen.status.ok());
     EXPECT_EQ(frozen.occupied_bytes, 0U);
     EXPECT_EQ(test.reserve(4096).status.code(), Code::kResourceExhausted);
-    auto deletion = await_ledger(
-        [&](auto done) { return test.ledger->claim_free(8192, 24576, test.credits.credits.bytes, std::move(done)); });
+    auto deletion = await_ledger([&](auto done) {
+        return test.ledger->claim_free(8192, 24576, test.credits.credits.reservation(), std::move(done));
+    });
     ASSERT_TRUE(deletion.status.ok());
     deletion = {};
     EXPECT_EQ(test.reserve(4096).status.code(), Code::kResourceExhausted);

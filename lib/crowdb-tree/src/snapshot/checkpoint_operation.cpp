@@ -25,9 +25,10 @@ Status CheckpointOperation::create(
         local_valid == chunk_valid || !operation_store || !runtime || !lane ||
         (!loader && !prepare_work && !prepare_work_async) || out == nullptr ||
         (!chunk_valid && !operation_store->write_completion_is_reloadable()) ||
-        static_cast<bool>(budget.bytes) != static_cast<bool>(finish_metadata) ||
-        (finish_metadata && (finish_metadata == budget.bytes || finish_metadata->account() != budget.bytes->account() ||
-                             finish_metadata->category() == detail::BudgetClass::kIo))) {
+        static_cast<bool>(budget.reservation()) != static_cast<bool>(finish_metadata) ||
+        (finish_metadata &&
+         (finish_metadata == budget.reservation() || finish_metadata->account() != budget.reservation()->account() ||
+          finish_metadata->category() == detail::BudgetClass::kIo))) {
         return Status::invalid_argument();
     }
     if ((options.mode == CheckpointMode::Durable &&
@@ -49,7 +50,7 @@ Status CheckpointOperation::create(
         if (finish_metadata && finish_metadata->available() < finish_allocation_bound()) {
             return Status::resource_exhausted();
         }
-        auto state                = detail::reserved_shared<State>(budget.bytes, publisher);
+        auto state                = detail::reserved_shared<State>(budget.reservation(), publisher);
         state->owner              = std::move(owner);
         state->backend            = std::move(backend);
         state->chunk              = std::move(chunk);
@@ -71,12 +72,13 @@ Status CheckpointOperation::create(
         state->on_terminal        = std::move(on_terminal);
         state->cancel_work        = std::move(cancel_work);
         state->cpu_progress       = state->budget.cpu_progress;
-        state->control_metadata   = state->budget.bytes;
-        state->capture_request = detail::reserved_shared<PublicationRequest>(state->budget.bytes, state->budget.bytes);
+        state->control_metadata   = state->budget.reservation();
+        state->capture_request =
+            detail::reserved_shared<PublicationRequest>(state->budget.reservation(), state->budget.reservation());
         state->finish_request =
             detail::reserved_shared<PublicationRequest>(state->finish_metadata, state->finish_metadata);
         if (state->options.mode == CheckpointMode::Durable) {
-            state->baseline = detail::reserved_shared<SnapshotBaseline>(state->budget.bytes);
+            state->baseline = detail::reserved_shared<SnapshotBaseline>(state->budget.reservation());
         }
         if (!state->cpu_progress) {
             auto status = state->runtime->reserve_progress(state->lane, &State::run, state.get(),
@@ -85,7 +87,7 @@ Status CheckpointOperation::create(
                 return status;
             }
         }
-        *out = detail::reserved_construct<CheckpointOperation>(state->budget.bytes, [&](auto *storage) {
+        *out = detail::reserved_construct<CheckpointOperation>(state->budget.reservation(), [&](auto *storage) {
             ::new (static_cast<void *>(storage)) CheckpointOperation(std::move(state));
         });
     }

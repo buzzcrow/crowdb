@@ -42,6 +42,12 @@ struct ChunkPackWindow
 class ChunkFixedPackStore
 {
   public:
+    struct Write
+    {
+        std::span<const uint8_t> input;
+        ChunkFixedPackRef       *out;
+    };
+
     ChunkFixedPackStore(uint64_t tree, uint64_t epoch, uint32_t mirrors, std::shared_ptr<RootCatalog> catalog,
                         std::shared_ptr<ChunkTransport>        transport,
                         std::shared_ptr<ChunkPhysicalRegistry> registry = {});
@@ -53,6 +59,10 @@ class ChunkFixedPackStore
                  const std::shared_ptr<AllocationBudget> &budget, ChunkFixedPackRef *out,
                  std::shared_ptr<ChunkPhysicalPack>      *physical        = nullptr,
                  const std::shared_ptr<AllocationBudget> &physical_budget = {});
+    Status write_many(ChunkStageId operation, ChunkId fixed, PagePurpose purpose, std::span<const Write> inputs,
+                      const std::shared_ptr<AllocationBudget> &budget,
+                      std::shared_ptr<ChunkPhysicalPack>      *physical        = nullptr,
+                      const std::shared_ptr<AllocationBudget> &physical_budget = {});
     Status read(const ChunkFixedPackRef &ref, const std::shared_ptr<AllocationBudget> &budget,
                 std::shared_ptr<const ChunkPackWindow> *out) const;
     [[nodiscard]] Status read_into(const ChunkFixedPackRef &ref, const std::shared_ptr<AllocationBudget> &budget,

@@ -41,7 +41,7 @@ TEST(ApplyDispatcher, ConcurrentProducersRetainAndExecuteEachQueuedOwnerOnce)
     auto                             runtime = std::make_shared<detail::FlushRuntime>(2, 4);
     auto                             lane    = std::make_shared<detail::FlushRuntime::Lane>(1);
     std::shared_ptr<ApplyDispatcher> dispatcher;
-    ASSERT_TRUE(ApplyDispatcher::create(runtime, lane, 3, credits.credits.bytes, &dispatcher).ok());
+    ASSERT_TRUE(ApplyDispatcher::create(runtime, lane, 3, credits.credits.reservation(), &dispatcher).ok());
     credits.seal();
     std::atomic<size_t>         completed{0};
     std::atomic<size_t>         destroyed{0};
@@ -71,7 +71,7 @@ TEST(ApplyDispatcher, ReentrantContinuationKeepsFifoOrderAcrossBoundedTurns)
     auto                             runtime = std::make_shared<detail::FlushRuntime>(1, 2);
     auto                             lane    = std::make_shared<detail::FlushRuntime::Lane>(1);
     std::shared_ptr<ApplyDispatcher> dispatcher;
-    ASSERT_TRUE(ApplyDispatcher::create(runtime, lane, 1, credits.credits.bytes, &dispatcher).ok());
+    ASSERT_TRUE(ApplyDispatcher::create(runtime, lane, 1, credits.credits.reservation(), &dispatcher).ok());
 
     struct Context : std::enable_shared_from_this<Context>
     {
@@ -119,7 +119,7 @@ TEST(ApplyDispatcher, DuplicateWakeupsCoalesceAndPrepaidProgressSurvivesRuntimeC
     auto                             runtime = std::make_shared<detail::FlushRuntime>(1, 2);
     auto                             lane    = std::make_shared<detail::FlushRuntime::Lane>(1);
     std::shared_ptr<ApplyDispatcher> dispatcher;
-    ASSERT_TRUE(ApplyDispatcher::create(runtime, lane, 1, credits.credits.bytes, &dispatcher).ok());
+    ASSERT_TRUE(ApplyDispatcher::create(runtime, lane, 1, credits.credits.reservation(), &dispatcher).ok());
 
     struct Gate
     {

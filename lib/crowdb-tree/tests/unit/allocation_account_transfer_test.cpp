@@ -79,7 +79,7 @@ TEST(AllocationAccountTransfer, FailedTransferAppliesConcurrentFreesToOriginalAc
     TestAccounts test;
     ASSERT_TRUE(test.budget->claim(43));
     test.budget->record_allocation(AllocationKind::kFrame, 43, true);
-    auto       small = test.host.make_account(limits(test.base - 1));
+    auto       small = test.host.make_account(limits(test.base / 2));
     const auto status =
         AllocationAccountTestAccess::rebind_for_tests(*test.budget, small, [&](Step step, size_t) noexcept {
             if (step == Step::kClosed) {

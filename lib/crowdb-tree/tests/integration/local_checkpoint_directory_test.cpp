@@ -62,7 +62,7 @@ DurableCapturedFrame rewrite_leaf(TestCheckpoint &test, const PublishedTreeState
         old->range));
     leaf->right_sibling = old->right_sibling;
     CapturedWriteLimits limits{
-        .frames = {.encode = {.frame_bytes = 4096, .metadata = test.source.credits.credits.bytes}},
+        .frames = {.encode = {.frame_bytes = 4096, .metadata = test.source.credits.credits.reservation()}},
         .write  = {.max_frame_bytes = 4096}};
     std::shared_ptr<CapturedFrameStream> stream;
     EXPECT_TRUE(CapturedFrameStream::create({.page         = published(std::move(leaf)),
@@ -73,17 +73,17 @@ DurableCapturedFrame rewrite_leaf(TestCheckpoint &test, const PublishedTreeState
                                              .context      = {.range = old->range}},
                                             {}, test.source.runtime, test.source.lane, limits.frames, {}, &stream)
                     .ok());
-    auto pages          = std::make_shared<CapturedDurablePages>(test.source.credits.credits.bytes);
+    auto pages          = std::make_shared<CapturedDurablePages>(test.source.credits.credits.reservation());
     pages->root_page_id = pid;
     pages->next_page_id = tree.next_page_id;
     pages->coverage     = 11;
     pages->generation   = tree.generation;
-    EXPECT_TRUE(
-        CapturedWriteOperation::create(std::move(stream), std::move(pages), test.source.store, test.source.runtime,
-                                       test.source.lane, limits, test.source.credits.credits,
-                                       extent_write_reservation(test.source.ledger, test.source.credits.credits.bytes),
-                                       {}, &test.source.operation)
-            .ok());
+    EXPECT_TRUE(CapturedWriteOperation::create(
+                    std::move(stream), std::move(pages), test.source.store, test.source.runtime, test.source.lane,
+                    limits, test.source.credits.credits,
+                    extent_write_reservation(test.source.ledger, test.source.credits.credits.reservation()), {},
+                    &test.source.operation)
+                    .ok());
     Completion done;
     test.source.run(&done);
     EXPECT_EQ(done.values.load(), 1U) << done.status.to_string();

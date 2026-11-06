@@ -22,7 +22,7 @@ class OwnedKey
 
   public:
     OwnedKey() = default;
-    OwnedKey(Slice key, const std::shared_ptr<detail::AllocationReservation> &metadata = {});
+    OwnedKey(Slice key, const std::shared_ptr<AllocationBudget> &metadata = {});
 
     OwnedKey(const std::string &key) : OwnedKey(Slice(key))
     {

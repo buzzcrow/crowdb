@@ -46,8 +46,22 @@ using Step                 = AllocationAccountTestAccess::Step;
 inline ResourceBudget::Limits limits(size_t amount)
 {
     ResourceBudget::Limits result{};
-    result.fill(amount);
+    result[kRouting] = amount;
     return result;
+}
+
+inline AllocationLease use_remaining_memory(const std::shared_ptr<ResourceBudget::Account> &account,
+                                            const std::shared_ptr<AllocationBudget>        &budget)
+{
+    const auto usage     = account->resource_usage();
+    size_t     maximum   = 0;
+    size_t     allocated = 0;
+    for (size_t index = 0; index < static_cast<size_t>(BudgetClass::kIo); ++index) {
+        maximum += usage[index].limit;
+        allocated += usage[index].allocated;
+    }
+    // Simulate actual allocator charges without allocating the production limit.
+    return {budget, maximum + (maximum / 2) - allocated};
 }
 
 struct TestAccounts

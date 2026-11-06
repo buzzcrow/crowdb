@@ -15,9 +15,8 @@ std::optional<size_t> LogicalPageCursor::allocation_bound(size_t max_sources) no
 LogicalPageCursor::~LogicalPageCursor() = default;
 
 LogicalPageCursor::LogicalPageCursor(std::shared_ptr<const PageState> page, PageKeyRange range, uint64_t frontier,
-                                     size_t max_sources, bool reverse,
-                                     std::shared_ptr<detail::AllocationReservation> metadata,
-                                     std::optional<LogicalCursorStart>              start)
+                                     size_t max_sources, bool reverse, std::shared_ptr<AllocationBudget> metadata,
+                                     std::optional<LogicalCursorStart> start)
     : page_(std::move(page)),
       range_(std::move(range)),
       frontier_(frontier),

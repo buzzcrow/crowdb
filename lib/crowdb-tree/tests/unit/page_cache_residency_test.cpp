@@ -268,13 +268,13 @@ TEST(PageCacheResidency, PreparedNodesRollbackAndReleaseAfterBudgetSealing)
     PageCacheResidency                   residency(resources, {}, &runtime, lane);
     auto                                 page = published({cold(1), cold(2)});
     const std::array<PageReplacement, 1> edits{{{.page_id = 0, .expected = {}, .replacement = page}}};
-    auto                                 update    = residency.prepare(edits, credits.credits.bytes);
+    auto                                 update    = residency.prepare(edits, credits.credits.reservation());
     const auto                           allocated = credits.budget.snapshot().allocated[LoadCredits::kBytes];
     EXPECT_GT(allocated, 0U);
     EXPECT_EQ(resources->snapshot().proxy_pages, 0U);
     update.reset();
     EXPECT_EQ(credits.budget.snapshot().allocated[LoadCredits::kBytes], 0U);
-    update = residency.prepare(edits, credits.credits.bytes);
+    update = residency.prepare(edits, credits.credits.reservation());
     credits.seal();
     PageCacheResidency::publish(std::move(update));
     runtime.drain();

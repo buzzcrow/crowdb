@@ -7,12 +7,16 @@
 #include "crowdb-tree/backend/page_store.h"
 #include "runtime/tree_runtime_binding.h"
 
+#include <span>
+
 namespace crowdb::tree
 {
+struct ChunkPackBacking;
+
 // Dispatches blocking storage preparation and synchronous backends away from
 // Tree CPU workers. Queue slots, operation controls and outstanding callbacks
 // are bounded; an uncertain submission retains the caller's buffer owner.
-class ScheduledPageStore final : public AsyncPageStore
+class ScheduledPageStore final : public AsyncPageStore, public std::enable_shared_from_this<ScheduledPageStore>
 {
     struct State;
     struct Job;
@@ -37,6 +41,8 @@ class ScheduledPageStore final : public AsyncPageStore
     // boundary as file I/O; it never executes on the submitting CPU worker.
     Status submit_step(detail::InlineFunction<Status()> step, AsyncCompletion complete, size_t read_bytes = 0,
                        size_t write_bytes = 0);
+    void   submit_chunk(std::shared_ptr<ChunkPackBacking> backing, std::span<const uint8_t> input,
+                        AsyncCompletion complete);
 
   private:
     explicit ScheduledPageStore(std::shared_ptr<State> state) : state_(std::move(state))

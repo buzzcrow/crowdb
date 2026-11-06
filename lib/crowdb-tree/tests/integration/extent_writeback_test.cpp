@@ -18,15 +18,17 @@ struct LedgerWrites : TestWriter
     LedgerWrites()
     {
         EXPECT_TRUE(
-            ExtentLedger::create({.backend_id = 3, .address_limit = 65536}, credits.credits.bytes, &ledger).ok());
+            ExtentLedger::create({.backend_id = 3, .address_limit = 65536}, credits.credits.reservation(), &ledger)
+                .ok());
         EXPECT_TRUE(await_ledger([&](auto done) {
-                        return ledger->activate(credits.credits.bytes, std::move(done));
+                        return ledger->activate(credits.credits.reservation(), std::move(done));
                     }).status.ok());
     }
 
     ExtentLedgerResult allocate(uint64_t bytes)
     {
-        return await_ledger([&](auto done) { return ledger->reserve(bytes, credits.credits.bytes, std::move(done)); });
+        return await_ledger(
+            [&](auto done) { return ledger->reserve(bytes, credits.credits.reservation(), std::move(done)); });
     }
 };
 
@@ -54,11 +56,11 @@ TEST(LedgerWriteback, RealBlockPageStaysReadableAndCannotBeReusedUntilLastBackin
     ASSERT_TRUE(uring.valid());
     auto         store = std::make_shared<BlockAsyncPageStore>(file.get(), &uring);
     LedgerWrites test;
-    ASSERT_TRUE(
-        PageWriteOperation::create(store, test.runtime, test.lane, write_input(),
-                                   {.max_frame_bytes = 4096, .compression = compress_algo::kNone}, test.credits.credits,
-                                   extent_write_reservation(test.ledger, test.credits.credits.bytes), &test.operation)
-            .ok());
+    ASSERT_TRUE(PageWriteOperation::create(
+                    store, test.runtime, test.lane, write_input(),
+                    {.max_frame_bytes = 4096, .compression = compress_algo::kNone}, test.credits.credits,
+                    extent_write_reservation(test.ledger, test.credits.credits.reservation()), &test.operation)
+                    .ok());
     ASSERT_TRUE(stdexec::sync_wait(test.operation->sender()));
     test.runtime->drain();
     auto reader = test.operation->result().backing;

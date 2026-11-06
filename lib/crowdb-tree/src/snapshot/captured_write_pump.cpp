@@ -127,8 +127,8 @@ void CapturedWriteOperation::State::received_frame()
         .page_id = frame->info.page_id, .type = frame->info.type, .frame_bytes = frame->info.bytes, .backing = {}};
     descriptor.summary = frame->summary;
     if (!dependencies) {
-        dependencies     = detail::reserved_shared<Dependencies>(budget.bytes, budget.bytes);
-        overflow_backing = detail::reserved_shared<OverflowBackingSet>(budget.bytes, budget.bytes);
+        dependencies     = detail::reserved_shared<Dependencies>(budget.reservation(), budget.reservation());
+        overflow_backing = detail::reserved_shared<OverflowBackingSet>(budget.reservation(), budget.reservation());
     }
     if (frame->reuse) {
         descriptor = frame->reuse->primary->frame;
@@ -140,9 +140,9 @@ void CapturedWriteOperation::State::received_frame()
         dependencies->ids         = frame->info.dependencies;
     }
     else if (descriptor.type == page_type::kLeafBase) {
-        const auto status =
-            capture_stored_overflow(LeafFrameView(frame->buffer->bytes.data(), descriptor.frame_bytes),
-                                    limits.frames.encode.max_entries, budget.bytes, &descriptor.stored_overflow);
+        const auto status = capture_stored_overflow(LeafFrameView(frame->buffer->bytes.data(), descriptor.frame_bytes),
+                                                    limits.frames.encode.max_entries, budget.reservation(),
+                                                    &descriptor.stored_overflow);
         if (!status.ok()) {
             finish(status);
             return;

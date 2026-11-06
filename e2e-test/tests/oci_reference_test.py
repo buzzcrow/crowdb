@@ -2,6 +2,9 @@
 # Licensed under the Apache License, Version 2.0.
 
 from types import SimpleNamespace
+from pathlib import Path
+import tempfile
+import tomllib
 import unittest
 from unittest.mock import Mock, patch
 
@@ -9,6 +12,7 @@ import default_ports
 
 from fixture import LABEL
 import oci_reference_runtime as runtime
+import oci_reference_recovery as recovery
 from scenarios import case_nodes, case_resources, select_cases
 
 
@@ -115,6 +119,26 @@ class OciReferenceOwnershipTest(unittest.TestCase):
         self.assertTrue(case.oci_address_recovery)
         self.assertEqual(case_nodes(case), 4)
         self.assertEqual(case_resources(case, .25), (3.75, 3 * 1536 + 768 + 512))
+
+    def test_later_nonvoter_keeps_accepted_listener_ports_across_cold_recovery(self):
+        cluster = self.cluster()
+        cluster.expected_names = [f'owned-node{index}' for index in range(1, 5)]
+        cluster.port_base, cluster.image, cluster.containers = 20000, 'expected', []
+        accepted = {'setup': {'services': [
+            {'kind': 'paxos-kv', 'listeners': {'http_port': 10135, 'rpc_port': 11135}}]}}
+        with tempfile.TemporaryDirectory() as directory:
+            cluster.artifacts = Path(directory)
+            with patch.object(recovery, 'read_json', return_value=accepted) as read:
+                recovery.create_nonvoter(cluster)
+                policy = tomllib.loads((cluster.artifacts / 'later-member.toml').read_text())
+                kv = next(service for service in policy['services'] if service['kind'] == 'paxos-kv')
+                self.assertEqual(kv['listeners'], accepted['setup']['services'][0]['listeners'])
+                self.assertEqual(policy['storage']['mode'], 'diskless')
+                self.assertTrue(all(not service['enabled'] for service in policy['services']
+                                    if service['kind'] != 'paxos-kv'))
+                cluster.expected_names = [name + '-cold' for name in cluster.expected_names]
+                recovery.create_nonvoter(cluster)
+                read.assert_called_once_with(cluster, 'owned-node1', 'node-policy.json')
 
     def test_recreated_names_reuse_exact_retained_volumes_on_the_accepted_new_network(self):
         cluster = self.cluster()

@@ -34,7 +34,8 @@ TEST(LocalCheckpoint, RealBlockReopenUsesOnlyAnchorAndDurableMapping)
                 next += count;
                 return Status::Ok();
             },
-            extent_write_reservation(test.source.ledger, test.source.credits.credits.bytes), {}, &test.source.operation)
+            extent_write_reservation(test.source.ledger, test.source.credits.credits.reservation()), {},
+            &test.source.operation)
             .ok());
     ASSERT_TRUE(stdexec::sync_wait(test.source.operation->sender()));
     test.source.runtime->drain();

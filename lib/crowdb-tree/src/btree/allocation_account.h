@@ -32,6 +32,16 @@ class AllocationAccount final : public AllocationBudget
         return retirement_;
     }
 
+    [[nodiscard]] std::shared_ptr<TreeWorkMetrics> retirement_metrics() const noexcept override
+    {
+        return work_.lock();
+    }
+
+    [[nodiscard]] std::shared_ptr<TreeResourceMetrics> resource_metrics() const noexcept override
+    {
+        return resources_.lock();
+    }
+
     [[nodiscard]] size_t owned_bytes() const noexcept
     {
         return allocated_.load(std::memory_order_acquire);
@@ -81,6 +91,8 @@ class AllocationAccount final : public AllocationBudget
     // Bound payload accounts use the immutable host service across same-host
     // ownership transfers. Unbound backend accounts do not observe payloads.
     const std::shared_ptr<RetirementQueue>   retirement_;
+    const std::weak_ptr<TreeWorkMetrics>     work_;
+    const std::weak_ptr<TreeResourceMetrics> resources_;
     std::shared_ptr<ResourceBudget::Account> account_;
     BudgetClass                              category_;
     std::atomic<const void *>                domain_;

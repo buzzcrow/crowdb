@@ -15,7 +15,7 @@ TEST(PortableImport, SortedCellsBuildABoundedBalancedReadableGraphWithOverflow)
     config.frame_bytes      = 512;
     config.max_inline_value = 16;
     config.inner_max_keys   = 2;
-    PortableImportBuilder builder(config, {}, 300, test.credits.credits.bytes);
+    PortableImportBuilder builder(config, {}, 300, test.credits.credits.reservation());
     for (size_t i = 0; i != 200; ++i) {
         const auto key    = std::string(3 - std::to_string(i).size(), '0') + std::to_string(i);
         const auto cell   = encode_cell_buf(i + 1, OpKind::kPut, std::string(1000, static_cast<char>('a' + (i % 26))));
@@ -28,7 +28,7 @@ TEST(PortableImport, SortedCellsBuildABoundedBalancedReadableGraphWithOverflow)
     ASSERT_NE(catalog, nullptr);
     EXPECT_GT(catalog->frames.size(), 200U);
     ASSERT_TRUE(RecoveredStateOperation::create_readable(catalog, test.loader, test.runtime, test.lane, {},
-                                                         test.credits.credits.bytes, &test.operation)
+                                                         test.credits.credits.reservation(), &test.operation)
                     .ok());
     status = detail::wait_snapshot_operation(test.operation);
     ASSERT_TRUE(status.ok()) << status.to_string();
@@ -42,7 +42,7 @@ TEST(PortableImport, FailurePoisonsStagingAndDoesNotReturnAPartialCatalog)
 {
     test_read::LoadCredits credits;
     Config                 config;
-    PortableImportBuilder  builder(config, {}, 7, credits.credits.bytes);
+    PortableImportBuilder  builder(config, {}, 7, credits.credits.reservation());
     auto                   cell = encode_cell_buf(7, OpKind::kPut, "value");
     ASSERT_TRUE(builder.append("z", Slice(cell)).ok());
     EXPECT_EQ(builder.append("a", Slice(cell)).code(), Code::kInvalidArgument);
@@ -55,7 +55,7 @@ TEST(PortableImport, FailurePoisonsStagingAndDoesNotReturnAPartialCatalog)
 TEST(PortableImport, EmptyKeyAndTombstonePreserveSlotsAndEmptyImportPreservesCoverage)
 {
     test_read::LoadCredits credits;
-    PortableImportBuilder  builder({}, {}, 17, credits.credits.bytes);
+    PortableImportBuilder  builder({}, {}, 17, credits.credits.reservation());
     const auto             empty   = encode_cell_buf(5, OpKind::kPut, "empty");
     const auto             deleted = encode_cell_buf(9, OpKind::kDelete);
     ASSERT_TRUE(builder.append("", Slice(empty)).ok());
@@ -69,7 +69,7 @@ TEST(PortableImport, EmptyKeyAndTombstonePreserveSlotsAndEmptyImportPreservesCov
     EXPECT_EQ(CellView(leaf.cell(0)).slot(), 5U);
     EXPECT_TRUE(CellView(leaf.cell(1)).is_tombstone());
     EXPECT_EQ(CellView(leaf.cell(1)).slot(), 9U);
-    PortableImportBuilder empty_builder({}, {}, 23, credits.credits.bytes);
+    PortableImportBuilder empty_builder({}, {}, 23, credits.credits.reservation());
     catalog.reset();
     ASSERT_TRUE(empty_builder.finish(&catalog).ok());
     EXPECT_TRUE(catalog->frames.empty());

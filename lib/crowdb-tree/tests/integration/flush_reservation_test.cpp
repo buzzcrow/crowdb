@@ -179,7 +179,7 @@ TEST(FlushReservation, BindingRejectsWrongPartitionBeforeConstructingConsumers)
     detail::FlushCredits credits;
     for (size_t index = 0; index < credits.size(); ++index) {
         auto paid = detail::ResourceBudget::try_reserve(
-            tree.account, index == 3 ? detail::BudgetClass::kRouting : detail::FlushReserveBounds::categories[index],
+            tree.account, index == 2 ? detail::BudgetClass::kRouting : detail::FlushReserveBounds::categories[index],
             bounds.amounts[index]);
         if (!paid) {
             FAIL() << "missing paid test prerequisite";
@@ -298,8 +298,7 @@ TEST(FlushReservation, UncontendedPlanningIsNotAnApplyProgressTransition)
 
 TEST(FlushReservation, EachMissingProgressPartitionRollsBackBeforeSourceClosure)
 {
-    for (const auto category : {detail::BudgetClass::kHandoff, detail::BudgetClass::kRouting,
-                                detail::BudgetClass::kReclaim, detail::BudgetClass::kIo}) {
+    for (const auto category : detail::FlushReserveBounds::categories) {
         TestPreparedFlushTree tree;
         tree.frontier.store(1);
         const auto before  = tree.publisher.capture();
@@ -331,7 +330,7 @@ TEST(FlushReservation, ColdRoutingUsesHeldBytesAndIoUnderCompleteHostPressure)
     std::shared_ptr<FlushOperation> operation;
     auto                            status = tree.controller->prepare(tree.preparation, &operation);
     ASSERT_TRUE(status.ok()) << status.to_string();
-    EXPECT_EQ(tree.preparation.cache->snapshot().reserved_waiters, 1U);
+    EXPECT_EQ(tree.preparation.cache->snapshot().reserved_waiters, 0U);
     auto blockers = tree.exhaust_unused();
     ASSERT_TRUE(stdexec::sync_wait(operation->sender()));
     tree.runtime->drain();
@@ -586,7 +585,7 @@ TEST(FlushReservation, CancelledClosedBatchRetriesWithOriginalCreditsWhileHostIs
     done.get();
     tree.runtime->drain();
     EXPECT_EQ(operation->result().phase, FlushPhase::kRepairRequired);
-    EXPECT_EQ(tree.preparation.cache->snapshot().reserved_waiters, 1U);
+    EXPECT_EQ(tree.preparation.cache->snapshot().reserved_waiters, 0U);
     const auto identity = operation->result().batch_id;
     const auto before   = tree.budget.snapshot();
     const auto owner    = tree.publisher.capture()->flush_admission_owner;
@@ -608,7 +607,7 @@ TEST(FlushReservation, CancelledClosedBatchRetriesWithOriginalCreditsWhileHostIs
     EXPECT_EQ(tree.preparation.cache->snapshot().reserved_waiters, 0U);
 }
 
-TEST(FlushReservation, CacheWaiterPressureRollsBackBeforeSourceClosure)
+TEST(FlushReservation, OccupiedCacheWaiterDoesNotBlockFlush)
 {
     TestPreparedFlushTree tree;
     tree.frontier.store(1);
@@ -618,20 +617,16 @@ TEST(FlushReservation, CacheWaiterPressureRollsBackBeforeSourceClosure)
     ASSERT_TRUE(tree.preparation.cache->bind_reserved(upstream, {}, &occupied).ok());
     const auto                      catalog = tree.sources.catalog();
     const auto                      view    = tree.publisher.capture();
-    const auto                      before  = tree.budget.snapshot();
     std::shared_ptr<FlushOperation> operation;
-    EXPECT_EQ(tree.controller->prepare(tree.preparation, &operation).code(), Code::kUnavailable);
-    EXPECT_FALSE(operation);
+    ASSERT_TRUE(tree.controller->prepare(tree.preparation, &operation).ok());
     EXPECT_FALSE(catalog->active->closed());
     EXPECT_EQ(tree.sources.catalog(), catalog);
     EXPECT_EQ(tree.publisher.capture(), view);
-    EXPECT_EQ(tree.budget.snapshot().reserved, before.reserved);
-    EXPECT_EQ(tree.budget.snapshot().allocated, before.allocated);
-    occupied.reset();
-    ASSERT_TRUE(tree.controller->prepare(tree.preparation, &operation).ok());
     ASSERT_TRUE(stdexec::sync_wait(operation->sender()));
     tree.runtime->drain();
     EXPECT_TRUE(operation->result().handoff_status.ok());
+    EXPECT_EQ(tree.preparation.cache->snapshot().reserved_waiters, 1U);
+    occupied.reset();
     EXPECT_EQ(tree.preparation.cache->snapshot().reserved_waiters, 0U);
 }
 } // namespace

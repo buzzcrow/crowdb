@@ -12,7 +12,7 @@ namespace crowdb::tree
 class ResourceObservation
 {
   public:
-    ResourceObservation(const std::shared_ptr<detail::AllocationReservation> &budget, TreeResourceMetric metric,
+    ResourceObservation(const std::shared_ptr<AllocationBudget> &budget, TreeResourceMetric metric,
                         uint64_t bytes = 0) noexcept;
     ~ResourceObservation();
     ResourceObservation(const ResourceObservation &)            = delete;

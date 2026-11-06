@@ -196,7 +196,7 @@ impl PxGroup {
                     observation: Box::new(crate::rpc::KvCompareObservation::from_versioned(key, value)),
                 }
             }
-            Err(error) => return ProposeResult::Rejected(error),
+            Err(error) => return Self::cas_read_unavailable(&error),
         };
         if !self.cas_admission_ready(tenure, Some(tenure)) {
             return self.cas_not_ready_result();

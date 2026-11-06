@@ -10,7 +10,8 @@ test('native diagnostics: Chunk pagination stops on the final nonempty window', 
   const next = pages.getByRole('button', { name: 'Next', exact: true });
   const windows: string[][] = [];
   let after: string | null = null;
-  for (let index = 0; index < 64; index++) {
+  // Native Tree packs grow independently; the server cursor determines the end.
+  for (;;) {
     const response = await request.get('/api/chunks', { params: { limit: 10, ...(after ? { after } : {}) } });
     expect(response.ok(), await response.text()).toBeTruthy();
     const data = await response.json();
@@ -97,7 +98,7 @@ test('native diagnostics: Chunk replacement windows and real Mirror EC placement
   const rows = page.getByRole('table', { name: 'Chunks' }).getByRole('button');
   const pages = page.getByRole('navigation', { name: 'Chunk page window' });
   const seen = new Set<string>();
-  for (let window = 0; window < 20; window++) {
+  for (;;) {
     const response = await observation;
     expect(response.ok(), await response.text()).toBeTruthy();
     const data = await response.json();

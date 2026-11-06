@@ -18,8 +18,8 @@ struct ChunkCollectionOperation::State
     ~State()
     {
         release_gate();
-        if (budget.bytes) {
-            budget.bytes->seal();
+        if (budget.reservation()) {
+            budget.reservation()->seal();
         }
         if (budget.io) {
             budget.io->seal();
@@ -43,7 +43,7 @@ struct ChunkCollectionOperation::State
         }
         const auto &domain = *backend->domain;
         auto        status = backend->collector.step(*domain.catalog, *domain.transport, domain.tree, domain.epoch,
-                                                     budget.bytes, &progress, domain.physical_registry);
+                                                     budget.reservation(), &progress, domain.physical_registry);
         ++steps;
         if (!status.ok() || done()) {
             release_gate();
@@ -69,10 +69,10 @@ Status ChunkCollectionOperation::create(std::shared_ptr<ChunkBackendState>      
                                         std::shared_ptr<detail::FlushRuntime::Lane> lane, PageLoadBudget budget,
                                         std::shared_ptr<ChunkCollectionOperation> *out)
 try {
-    if (!backend || !store || !budget.bytes || !budget.io || out == nullptr || *out) {
+    if (!backend || !store || !budget.reservation() || !budget.io || out == nullptr || *out) {
         return Status::invalid_argument();
     }
-    auto state     = detail::reserved_shared<State>(budget.bytes);
+    auto state     = detail::reserved_shared<State>(budget.reservation());
     state->backend = std::move(backend);
     state->budget  = budget;
     if (state->backend->needs_recovery.load(std::memory_order_acquire) ||
@@ -80,9 +80,10 @@ try {
         return Status::unavailable();
     }
     state->owns_gate = true;
-    auto operation   = detail::reserved_construct<ChunkCollectionOperation>(
-        budget.bytes, [&](auto *storage) { ::new (static_cast<void *>(storage)) ChunkCollectionOperation(state); });
-    auto status = ChunkProtocolOperation::create(
+    auto operation   = detail::reserved_construct<ChunkCollectionOperation>(budget.reservation(), [&](auto *storage) {
+        ::new (static_cast<void *>(storage)) ChunkCollectionOperation(state);
+    });
+    auto status      = ChunkProtocolOperation::create(
         std::move(store), std::move(runtime), std::move(lane), budget, state,
         [state](bool stopped) { return state->step(stopped); }, [state] { return state->done(); },
         &operation->protocol_);

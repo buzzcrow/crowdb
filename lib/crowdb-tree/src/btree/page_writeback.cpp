@@ -52,13 +52,13 @@ PageWriteOperation::State::State(PageWriteInput source, PageWriteLimits bounds, 
       limits(bounds),
       budget(std::move(credits)),
       io_credit(budget.io, 1),
-      io_resources(budget.bytes, TreeResourceMetric::WriteInflightBytes),
+      io_resources(budget.reservation(), TreeResourceMetric::WriteInflightBytes),
       blob(padded_blob_bound(limits) + limits.buffer_alignment - 1,
-           detail::ReservationAllocator<uint8_t, AllocationKind::kIo>(budget.bytes)),
+           detail::ReservationAllocator<uint8_t, AllocationKind::kIo>(budget.reservation())),
       scratch(durable_encode_scratch_bytes(limits.compression),
-              detail::ReservationAllocator<uint8_t, AllocationKind::kScratch>(budget.bytes)),
-      backing(detail::reserved_shared<BackingRef>(budget.bytes)),
-      protection(detail::reserved_shared<Protection>(budget.bytes))
+              detail::ReservationAllocator<uint8_t, AllocationKind::kScratch>(budget.reservation())),
+      backing(detail::reserved_shared<BackingRef>(budget.reservation())),
+      protection(detail::reserved_shared<Protection>(budget.reservation()))
 {
     void      *data     = blob.data();
     auto       capacity = blob.size();
@@ -70,10 +70,10 @@ PageWriteOperation::State::State(PageWriteInput source, PageWriteLimits bounds, 
     backing->owner           = protection;
     if (limits.chunk_backed) {
         const auto bound = detail::ChunkFixedPackStore::write_allocation_bound(padded_blob_bound(limits));
-        if (!bound || !budget.bytes) {
+        if (!bound || !budget.reservation()) {
             throw std::bad_alloc();
         }
-        chunk_credit = detail::AllocationReservation::create(budget.bytes, *bound);
+        chunk_credit = detail::AllocationReservation::create(budget.reservation(), *bound);
     }
 }
 
@@ -85,11 +85,11 @@ Status PageWriteOperation::create(std::shared_ptr<AsyncPageStore> store, std::sh
     if (!store || !runtime || !lane || !reserve || out == nullptr || !allocation_bound(limits) || !input.owner ||
         input.frame.size() != input.info.bytes || input.frame.size() > limits.max_frame_bytes ||
         input.frame.size() < kFrameHeaderSize + kFrameTrailerSize ||
-        static_cast<bool>(budget.bytes) != static_cast<bool>(budget.io) ||
-        (budget.bytes &&
-         ((budget.bytes->category() != detail::BudgetClass::kRouting &&
-           budget.bytes->category() != detail::BudgetClass::kReclaim) ||
-          budget.io->category() != detail::BudgetClass::kIo || budget.bytes->account() != budget.io->account()))) {
+        static_cast<bool>(budget.reservation()) != static_cast<bool>(budget.io) ||
+        (budget.reservation() && ((budget.reservation()->category() != detail::BudgetClass::kRouting &&
+                                   budget.reservation()->category() != detail::BudgetClass::kReclaim) ||
+                                  budget.io->category() != detail::BudgetClass::kIo ||
+                                  budget.reservation()->account() != budget.io->account()))) {
         return Status::invalid_argument("page write requires owned input and matching byte/I/O credit");
     }
     if (limits.chunk_backed ? dynamic_cast<ScheduledPageStore *>(store.get()) == nullptr
@@ -97,12 +97,12 @@ Status PageWriteOperation::create(std::shared_ptr<AsyncPageStore> store, std::sh
         return Status::not_supported("backend write needs checkpoint/seal before it is independently reloadable");
     }
     try {
-        auto state     = detail::reserved_shared<State>(budget.bytes, std::move(input), limits, budget);
+        auto state     = detail::reserved_shared<State>(budget.reservation(), std::move(input), limits, budget);
         state->store   = std::move(store);
         state->runtime = std::move(runtime);
         state->lane    = std::move(lane);
         state->reserve = std::move(reserve);
-        *out           = detail::reserved_construct<PageWriteOperation>(budget.bytes, [&](auto *storage) {
+        *out           = detail::reserved_construct<PageWriteOperation>(budget.reservation(), [&](auto *storage) {
             ::new (static_cast<void *>(storage)) PageWriteOperation(std::move(state));
         });
     }

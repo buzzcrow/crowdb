@@ -16,7 +16,7 @@ struct TestRecoveredGraph
     std::shared_ptr<detail::FlushRuntime::Lane> lane    = std::make_shared<detail::FlushRuntime::Lane>(8);
     std::shared_ptr<TestInnerStore>             store   = std::make_shared<TestInnerStore>();
     std::shared_ptr<CapturedDurablePages>       pages =
-        detail::reserved_shared<CapturedDurablePages>(credits.credits.bytes, credits.credits.bytes);
+        detail::reserved_shared<CapturedDurablePages>(credits.credits.reservation(), credits.credits.reservation());
     std::shared_ptr<AsyncStorePageLoader> loader = std::make_shared<AsyncStorePageLoader>(
         store, runtime, lane, PageLoadLimits{}, OverflowBackingResolver{}, credits.credits);
     std::shared_ptr<RecoveredStateOperation> operation;
@@ -44,8 +44,8 @@ struct TestRecoveredGraph
                                    .frame_bytes = static_cast<uint32_t>(raw.size()),
                                    .backing     = backing};
         if (frame.type == page_type::kLeafBase) {
-            ASSERT_TRUE(capture_stored_overflow(LeafFrameView(raw.data(), raw.size()), 4096, credits.credits.bytes,
-                                                &frame.stored_overflow)
+            ASSERT_TRUE(capture_stored_overflow(LeafFrameView(raw.data(), raw.size()), 4096,
+                                                credits.credits.reservation(), &frame.stored_overflow)
                             .ok());
         }
         else if (frame.type == page_type::kOverflowFrame) {
@@ -97,7 +97,8 @@ struct TestRecoveredGraph
 
     Status prepare(RecoveredStateLimits limits = {})
     {
-        return RecoveredStateOperation::create(pages, loader, runtime, lane, limits, credits.credits.bytes, &operation);
+        return RecoveredStateOperation::create(pages, loader, runtime, lane, limits, credits.credits.reservation(),
+                                               &operation);
     }
 
     void run(Completion *done) const

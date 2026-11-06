@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 #include "allocation_account_test_support.h"
+#include "btree/source_write_budget.h"
 
 namespace crowdb::tree::detail
 {
@@ -8,7 +9,56 @@ namespace
 {
 using namespace test_allocation_account;
 
-TEST(AllocationAccount, TransferAtFullHostCapacityMovesActualTreeOwnership)
+TEST(AllocationAccount, ActualMemoryCanReachTheMaximumAndStopsNewGrowthAboveOneAndAHalf)
+{
+    constexpr size_t       maximum = 1024 * 1024;
+    ResourceBudget::Limits limits{};
+    limits[kRouting]                                          = maximum / 2;
+    limits[static_cast<size_t>(BudgetClass::kAdmittedWriter)] = maximum / 2;
+    limits[static_cast<size_t>(BudgetClass::kIo)]             = 4;
+    ResourceBudget                     host(limits, 4);
+    auto                               account = host.make_account(limits);
+    std::shared_ptr<AllocationAccount> owner;
+    ASSERT_TRUE(AllocationAccount::create(account, BudgetClass::kRouting, &owner).ok());
+    const auto baseline = account->snapshot().allocated[kRouting];
+    auto       accepted = ResourceBudget::try_reserve(account, BudgetClass::kRouting, 16);
+    if (!accepted) {
+        FAIL() << "missing accepted completion credit";
+    }
+    {
+        BudgetAllocator<uint8_t, AllocationAccount, AllocationKind::kFrame> allocator(owner);
+        auto *first = allocator.allocate(maximum - baseline);
+        EXPECT_EQ(account->snapshot().allocated[kRouting], maximum);
+        auto *second = allocator.allocate(maximum / 2);
+        EXPECT_EQ(account->snapshot().allocated[kRouting], maximum + (maximum / 2));
+        EXPECT_THROW(
+            {
+                auto *rejected = allocator.allocate(1);
+                allocator.deallocate(rejected, 1);
+            },
+            std::bad_alloc);
+        auto completion = accepted.value().allocate(16);
+        ASSERT_TRUE(completion);
+        EXPECT_FALSE(ResourceBudget::try_reserve(account, BudgetClass::kAdmittedWriter, 1));
+        SourceWriteReservation rejected;
+        EXPECT_EQ(SourceWriteReservation::create({.account = account, .max_entries = 1, .max_gap_entries = 1},
+                                                 {.entries = 1, .key_bytes = 1}, BudgetClass::kAdmittedWriter,
+                                                 &rejected)
+                      .code(),
+                  Code::kResourceExhausted);
+        completion.reset();
+        EXPECT_TRUE(ResourceBudget::try_reserve(account, BudgetClass::kAdmittedWriter, 1));
+        allocator.deallocate(first, maximum - baseline);
+        auto *resumed = allocator.allocate(1);
+        allocator.deallocate(resumed, 1);
+        allocator.deallocate(second, maximum / 2);
+        EXPECT_EQ(account->snapshot().allocated[kRouting], baseline);
+    }
+    owner.reset();
+    EXPECT_EQ(account->snapshot().allocated[kRouting], 0U);
+}
+
+TEST(AllocationAccount, UnusedHostReservationDoesNotBlockActualAllocationOrOwnershipTransfer)
 {
     TestAccounts test;
     {
@@ -17,7 +67,8 @@ TEST(AllocationAccount, TransferAtFullHostCapacityMovesActualTreeOwnership)
         auto filler   = test.host.make_account(limits(16384));
         auto capacity = ResourceBudget::try_reserve(filler, BudgetClass::kRouting, 16384 - test.base - 128);
         ASSERT_TRUE(capacity);
-        EXPECT_FALSE(test.budget->claim(1));
+        ASSERT_TRUE(test.budget->claim(1));
+        test.budget->release(1);
         const auto before = test.host.snapshot();
         ASSERT_TRUE(test.budget->rebind(test.next).ok());
         EXPECT_EQ(test.host.snapshot().allocated[kRouting], before.allocated[kRouting]);
@@ -37,16 +88,16 @@ TEST(AllocationAccount, TransferAtFullHostCapacityMovesActualTreeOwnership)
 TEST(AllocationAccount, TargetQuotaFailureLeavesOriginalAccountUsable)
 {
     TestAccounts test;
-    auto         small = test.host.make_account(limits(test.base - 1));
+    auto         small = test.host.make_account(limits(test.base / 2));
     EXPECT_FALSE(test.budget->rebind(small).ok());
     test.expect_only_control(test.old);
     EXPECT_EQ(small->snapshot().allocated[kRouting], 0U);
     ASSERT_TRUE(test.budget->claim(17));
     test.budget->release(17);
     ASSERT_TRUE(test.budget->rebind(test.next).ok());
-    EXPECT_FALSE(test.budget->claim(8192 - test.base + 1));
-    ASSERT_TRUE(test.budget->claim(8192 - test.base));
-    test.budget->release(8192 - test.base);
+    EXPECT_FALSE(test.budget->claim(12288 - test.base + 1));
+    ASSERT_TRUE(test.budget->claim(12288 - test.base));
+    test.budget->release(12288 - test.base);
     test.finish();
 }
 
@@ -88,7 +139,7 @@ TEST(AllocationAccount, ForeignHostAndFailedBootstrapDoNotLeakAdmission)
     EXPECT_FALSE(test.budget->rebind(destination).ok());
     test.expect_only_control(test.old);
     EXPECT_EQ(foreign.snapshot().allocated[kRouting], 0U);
-    auto                               small = test.host.make_account(limits(sizeof(AllocationAccount)));
+    auto                               small = test.host.make_account(limits(sizeof(AllocationAccount) * 2 / 3));
     std::shared_ptr<AllocationAccount> result;
     EXPECT_FALSE(AllocationAccount::create(small, BudgetClass::kRouting, &result).ok());
     EXPECT_FALSE(result);

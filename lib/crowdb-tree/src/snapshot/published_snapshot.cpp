@@ -84,8 +84,10 @@ void SnapshotReadWindow::seal() noexcept
     if (budget.io) {
         budget.io->seal();
     }
-    if (budget.bytes) {
-        budget.bytes->seal();
+    if (!budget.account) {
+        if (auto reserved = budget.reservation()) {
+            reserved->seal();
+        }
     }
 }
 
@@ -163,10 +165,9 @@ try {
     state->loads.max_inflight  = 1;
     state->reads               = core->read_limits();
     state->reads.max_memtables = 1;
-    state->reads.metadata.reset();
-    state->backend  = core->config().async_page_store;
-    state->detached = (state->backend == nullptr && core->config().page_store == nullptr) ||
-                      static_cast<bool>(core->config().backend_owner);
+    state->backend             = core->config().async_page_store;
+    state->detached            = (state->backend == nullptr && core->config().page_store == nullptr) ||
+                                 static_cast<bool>(core->config().backend_owner);
     if (state->detached) {
         state->owner          = reserved_shared<SnapshotBackendOwner>(metadata);
         state->owner->binding = state->binding;
@@ -217,9 +218,35 @@ try {
     }
     SnapshotReadWindow window;
     window.budget.bytes        = AllocationReservation::create(std::move(*credit));
-    window.budget.io           = reserved_shared<AllocationReservation>(window.budget.bytes, std::move(*io));
+    window.budget.io           = reserved_shared<AllocationReservation>(window.budget.reservation(), std::move(*io));
     window.budget.work_metrics = state_->work_metrics;
     window.budget.cause        = TreeWorkCause::Snapshot;
+    return finish_window(std::move(window), out);
+}
+catch (const std::bad_alloc &) {
+    return Status::resource_exhausted("snapshot read window allocation failed");
+}
+
+Status PublishedSnapshotContext::prepare_window(SnapshotReadWindow *out) const
+try {
+    using namespace detail;
+    if (out == nullptr || out->host_core || out->budget.bytes || out->loader || out->ticket) {
+        return Status::invalid_argument("snapshot read window output must be empty");
+    }
+    SnapshotReadWindow window;
+    window.budget.bytes        = state_->reads.metadata;
+    window.budget.account      = state_->binding->account();
+    window.budget.work_metrics = state_->work_metrics;
+    window.budget.cause        = TreeWorkCause::Snapshot;
+    return finish_window(std::move(window), out);
+}
+catch (const std::bad_alloc &) {
+    return Status::resource_exhausted("snapshot read window allocation failed");
+}
+
+Status PublishedSnapshotContext::finish_window(SnapshotReadWindow window, SnapshotReadWindow *out) const
+try {
+    using namespace detail;
     Status          status;
     AsyncPageStore *backend = state_->backend;
     if (state_->detached) {
@@ -234,15 +261,6 @@ try {
             status = Status::unavailable("snapshot source Tree closed");
         }
     }
-    if (!status.ok()) {
-        return status;
-    }
-    status = reserve_backend_operation(backend, state_->binding->account(),
-                                       {.max_io_bytes = state_->loads.max_blob_bytes,
-                                        .write_calls  = 0,
-                                        .workers      = state_->binding->cpu()->worker_count(),
-                                        .barriers     = false},
-                                       &window.budget.backend);
     if (!status.ok()) {
         return status;
     }

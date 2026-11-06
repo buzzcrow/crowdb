@@ -6,8 +6,8 @@
 
 namespace crowdb::tree
 {
-ResourceObservation::ResourceObservation(const std::shared_ptr<detail::AllocationReservation> &budget,
-                                         TreeResourceMetric metric, uint64_t bytes) noexcept
+ResourceObservation::ResourceObservation(const std::shared_ptr<AllocationBudget> &budget, TreeResourceMetric metric,
+                                         uint64_t bytes) noexcept
     : metrics_(budget ? budget->resource_metrics() : nullptr),
       metric_(metric)
 {

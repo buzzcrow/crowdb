@@ -43,18 +43,19 @@ class RunnerProgressionTest(unittest.TestCase):
                     run_cases('image', temporary, 'bundle', 1)
         return cases, events
 
-    def test_dataset_preparation_and_browser_keep_separate_original_budgets(self):
+    def test_dataset_preparation_and_browser_keep_separate_declared_budgets(self):
         cases, events = self.run_dataset_phases()
         self.assertEqual(len(cases), 5)
         self.assertEqual(events, [
-            (case.name, phase, 360)
+            (case.name, phase, case.client_timeout)
             for case in cases
             for phase in ('prepare', case.name.rsplit('::', 1)[-1], 'close')
         ])
 
     def test_dataset_preparation_failure_skips_browser_and_closes_fixture(self):
         cases, events = self.run_dataset_phases(fail_prepare=True)
-        self.assertEqual(events, [(cases[0].name, phase, 360) for phase in ('prepare', 'close')])
+        self.assertEqual(events, [(cases[0].name, phase, cases[0].client_timeout)
+                                  for phase in ('prepare', 'close')])
 
     def test_ready_cli_executes_before_a_peer_finishes_starting(self):
         executed = threading.Event()

@@ -173,6 +173,66 @@ TEST(FlushOperation, NoProgressReturnsCreditWithoutRotatingSourcesOrPublishing)
     EXPECT_EQ(publisher.capture(), tree_before);
 }
 
+TEST(FlushOperation, CoveredPersistentBatchRetainsClosedSourceTailForTheNextPrefix)
+{
+    SourceAdmission        sources;
+    PublicationCoordinator publisher;
+    initialize_sources(publisher, sources);
+    detail::FlushRuntime runtime(1, 8);
+    auto                 lane  = std::make_shared<detail::FlushRuntime::Lane>(8);
+    auto                 table = sources.catalog()->active;
+    ASSERT_TRUE(table->upsert("a", 1, encode_cell_buf(1, OpKind::kPut, "covered")));
+    ASSERT_TRUE(table->upsert("b", 2, encode_cell_buf(2, OpKind::kPut, "tail")));
+    table->close();
+    std::shared_ptr<FlushBatch> first;
+    ASSERT_TRUE(FlushBatch::prepare(publisher, runtime, lane, 1, 1, {}, {}, &first).ok());
+    ASSERT_TRUE(stdexec::sync_wait(first->sender()).has_value());
+    ASSERT_TRUE(first->result().handoff_status.ok()) << first->result().handoff_status.to_string();
+    ASSERT_EQ(publisher.capture()->coverage, 1U);
+    ASSERT_EQ(publisher.capture()->sources->tables.size(), 1U);
+    auto inputs   = std::make_shared<PublishedSources>();
+    inputs->floor = 1;
+    auto acquire  = std::make_shared<PublicationRequest>();
+    acquire->transaction.record =
+        std::make_shared<InstallRecord>(InstallToken{.generation = 1, .batch = 2, .range = 0, .sequence = 0});
+    acquire->transaction.expected_commit_seq   = publisher.capture()->commit_seq;
+    acquire->transaction.flush_admission       = {.action = FlushAdmissionAction::Acquire, .owner = 2};
+    acquire->transaction.flush_admission_owner = 2;
+    acquire->on_done = [](PublicationResult result) { EXPECT_TRUE(result.status.ok()) << result.status.to_string(); };
+    ASSERT_TRUE(publisher.try_submit(acquire));
+    ASSERT_EQ(publisher.capture()->flush_admission_owner, 2U);
+    FlushBatchOptions persistent;
+    persistent.persistent       = true;
+    persistent.checkpoint_token = 1;
+    std::shared_ptr<FlushBatch> checkpoint;
+    EXPECT_EQ(FlushBatch::prepare(publisher, runtime, lane, 2, 2, persistent, {}, &checkpoint, inputs, {}, 2).code(),
+              Code::kInvalidArgument);
+    EXPECT_FALSE(checkpoint);
+    const auto prepared =
+        FlushBatch::prepare(publisher, runtime, lane, 2, 1, persistent, {}, &checkpoint, inputs, {}, 2);
+    ASSERT_TRUE(prepared.ok()) << prepared.to_string();
+    ASSERT_TRUE(stdexec::sync_wait(checkpoint->sender()).has_value());
+    ASSERT_TRUE(checkpoint->result().handoff_status.ok()) << checkpoint->result().handoff_status.to_string();
+    EXPECT_EQ(publisher.capture()->coverage, 1U);
+    ASSERT_EQ(publisher.capture()->sources->tables.size(), 1U);
+    EXPECT_EQ(publisher.capture()->sources->tables.front(), table);
+    EXPECT_EQ(publisher.capture()->mapping.get(0)->leaf->lookup("a").cell.value.to_string(), "covered");
+    EXPECT_EQ(publisher.capture()->mapping.get(0)->leaf->lookup("b").state, LogicalLookupState::kMissing);
+    auto request = std::make_shared<PublicationRequest>();
+    request->transaction.record =
+        std::make_shared<InstallRecord>(InstallToken{.generation = 1, .batch = 2, .range = 0, .sequence = 1});
+    request->transaction.checkpoint = {.action = CheckpointAction::Abort, .token = 1};
+    request->on_done = [](PublicationResult result) { EXPECT_TRUE(result.status.ok()) << result.status.to_string(); };
+    ASSERT_TRUE(publisher.try_submit(request));
+    std::shared_ptr<FlushBatch> next;
+    ASSERT_TRUE(FlushBatch::prepare(publisher, runtime, lane, 3, 2, {}, {}, &next).ok());
+    ASSERT_TRUE(stdexec::sync_wait(next->sender()).has_value());
+    ASSERT_TRUE(next->result().handoff_status.ok()) << next->result().handoff_status.to_string();
+    EXPECT_EQ(publisher.capture()->coverage, 2U);
+    EXPECT_TRUE(publisher.capture()->sources->tables.empty());
+    EXPECT_EQ(publisher.capture()->mapping.get(0)->leaf->lookup("b").cell.value.to_string(), "tail");
+}
+
 TEST(FlushOperation, MaintenanceRetryReusesBatchAfterCoverageAckAndMetadataSeal)
 {
     SourceAdmission        sources;

@@ -14,7 +14,7 @@ using namespace test_read;
 TEST(PublishedReadBudget, FreshWorkerReadsSealedSourceWithItsOwnCreditAndRetainsResultKey)
 {
     LoadCredits credits;
-    auto        raw = credits.credits.bytes->take_reserved(16384);
+    auto        raw = credits.credits.reservation()->take_reserved(16384);
     if (!raw) {
         FAIL() << "initial source credit unavailable";
     }
@@ -29,7 +29,7 @@ TEST(PublishedReadBudget, FreshWorkerReadsSealedSourceWithItsOwnCreditAndRetains
     std::optional<PublishedScanEntry> retained;
     std::jthread                      worker([&] {
         PublishedReadLimits limits;
-        limits.metadata = credits.credits.bytes;
+        limits.metadata = credits.credits.reservation();
         std::shared_ptr<PublishedGet> get;
         ASSERT_TRUE(PublishedGet::create(captured, {}, key, limits, &get).ok());
         complete_inline(get->sender());
@@ -39,7 +39,7 @@ TEST(PublishedReadBudget, FreshWorkerReadsSealedSourceWithItsOwnCreditAndRetains
         ASSERT_TRUE(PublishedScan::create(captured, {}, {}, false, limits, &scan).ok());
         complete_inline(scan->next_sender());
         ASSERT_EQ(scan->result().entries.size(), 1U);
-        EXPECT_EQ(scan->result().entries.get_allocator().owner(), credits.credits.bytes);
+        EXPECT_EQ(scan->result().entries.get_allocator().owner(), credits.credits.reservation());
         retained = scan->result().entries.front();
     });
     worker.join();
@@ -68,7 +68,7 @@ TEST(PublishedReadBudget, ColdReadCancellationKeepsChargedCallbackUntilLateCompl
         {.key = "a", .value = "value"}
     });
     std::shared_ptr<PublishedGet> get;
-    ASSERT_TRUE(PublishedGet::create(captured, loader, "a", {.metadata = credits.credits.bytes}, &get).ok());
+    ASSERT_TRUE(PublishedGet::create(captured, loader, "a", {.metadata = credits.credits.reservation()}, &get).ok());
     Completion terminal;
     {
         auto connected = stdexec::connect(get->sender(), Receiver{.done = &terminal});
@@ -94,7 +94,7 @@ TEST(PublishedReadBudget, ExhaustedAdmissionReturnsStatusWithoutUnbudgetedHandle
     }));
     credits.seal();
     PublishedReadLimits limits;
-    limits.metadata = credits.credits.bytes;
+    limits.metadata = credits.credits.reservation();
     std::shared_ptr<PublishedGet> get;
     EXPECT_EQ(PublishedGet::create(captured, {}, "a", limits, &get).code(), Code::kResourceExhausted);
     EXPECT_FALSE(get);
@@ -124,7 +124,7 @@ TEST(PublishedReadBudget, ColdLeafBeyondSourceWindowUsesCapturedDescriptorBound)
     auto captured = view(logical);
     for (bool scan_read : {false, true}) {
         LoadCredits credits;
-        credits.credits.bytes->seal();
+        credits.credits.reservation()->seal();
         PublishedReadLimits limits;
         limits.max_key_bytes       = 1;
         limits.max_memtables       = 1;

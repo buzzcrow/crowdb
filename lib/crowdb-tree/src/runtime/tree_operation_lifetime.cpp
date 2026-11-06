@@ -28,9 +28,8 @@ struct TreeOperationLifetime::State
     std::atomic<uint64_t>       denied{0};
 };
 
-TreeOperationLifetime::TreeOperationLifetime(size_t                                                maximum,
-                                             const std::shared_ptr<detail::AllocationReservation> &metadata,
-                                             std::shared_ptr<const void>                           host_owner)
+TreeOperationLifetime::TreeOperationLifetime(size_t maximum, const std::shared_ptr<AllocationBudget> &metadata,
+                                             std::shared_ptr<const void> host_owner)
 {
     if (maximum == 0 || maximum >= State::kClosed) {
         throw std::invalid_argument("invalid Tree operation capacity");
@@ -43,19 +42,18 @@ TreeOperationLifetime::~TreeOperationLifetime()
     close();
 }
 
-Status TreeOperationLifetime::acquire(const std::shared_ptr<detail::AllocationReservation> &metadata,
-                                      std::shared_ptr<Ticket>                              *out)
+Status TreeOperationLifetime::acquire(const std::shared_ptr<AllocationBudget> &metadata, std::shared_ptr<Ticket> *out)
 {
     return acquire_impl(metadata, out, false);
 }
 
-Status TreeOperationLifetime::try_acquire(const std::shared_ptr<detail::AllocationReservation> &metadata,
-                                          std::shared_ptr<Ticket>                              *out)
+Status TreeOperationLifetime::try_acquire(const std::shared_ptr<AllocationBudget> &metadata,
+                                          std::shared_ptr<Ticket>                 *out)
 {
     return acquire_impl(metadata, out, true);
 }
 
-Status TreeOperationLifetime::acquire_impl(const std::shared_ptr<detail::AllocationReservation> &metadata,
+Status TreeOperationLifetime::acquire_impl(const std::shared_ptr<AllocationBudget> &metadata,
                                            std::shared_ptr<Ticket> *out, bool temporary_capacity)
 {
     if (out == nullptr || *out) {

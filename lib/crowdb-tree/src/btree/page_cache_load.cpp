@@ -25,7 +25,7 @@ void SharedPageCache::State::process(Request *request, bool queued)
             deliver(request, Status::Ok(), entry.leaf, entry.inner, entry.max_slot, entry.frame);
         }
         else {
-            request->shared_wait.begin(request->metadata ? request->metadata->account()->work_metrics() : nullptr,
+            request->shared_wait.begin(request->metadata ? request->metadata->retirement_metrics() : nullptr,
                                        TreeWaitClass::SharedCache, request->registered_at_ns);
             request->next = entry.waiters;
             entry.waiters = request;

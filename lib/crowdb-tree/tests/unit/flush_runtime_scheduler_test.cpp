@@ -18,7 +18,7 @@ void count_task(void *context) noexcept
 TEST(FlushRuntimeScheduler, ShortLivedSubmittersReuseAdmittedControlStorage)
 {
     test_read::LoadCredits credits;
-    auto                   runtime   = std::make_unique<FlushRuntime>(4, 16, credits.credits.bytes);
+    auto                   runtime   = std::make_unique<FlushRuntime>(4, 16, credits.credits.reservation());
     auto                   lane      = std::make_shared<FlushRuntime::Lane>(16);
     const auto             allocated = credits.budget.snapshot().allocated[test_read::LoadCredits::kBytes];
     std::atomic<size_t>    completed{0};
@@ -46,12 +46,13 @@ TEST(FlushRuntimeScheduler, ShortLivedSubmittersReuseAdmittedControlStorage)
 
 TEST(FlushRuntimeScheduler, ReservedProgressCanMoveAcrossFreshHostThreads)
 {
-    test_read::LoadCredits                  credits;
-    auto                                    runtime   = std::make_unique<FlushRuntime>(2, 1, credits.credits.bytes);
-    auto                                    lane      = std::make_shared<FlushRuntime::Lane>(1);
-    auto                                    completed = std::make_shared<std::atomic<size_t>>(0);
+    test_read::LoadCredits credits;
+    auto                   runtime   = std::make_unique<FlushRuntime>(2, 1, credits.credits.reservation());
+    auto                   lane      = std::make_shared<FlushRuntime::Lane>(1);
+    auto                   completed = std::make_shared<std::atomic<size_t>>(0);
     std::shared_ptr<FlushRuntime::Progress> progress;
-    ASSERT_TRUE(runtime->reserve_progress(lane, &count_task, completed.get(), credits.credits.bytes, &progress).ok());
+    ASSERT_TRUE(
+        runtime->reserve_progress(lane, &count_task, completed.get(), credits.credits.reservation(), &progress).ok());
     const auto allocated = credits.budget.snapshot().allocated[test_read::LoadCredits::kBytes];
     for (size_t iteration = 0; iteration < 32; ++iteration) {
         std::jthread submitter([&] { progress->request(completed); });

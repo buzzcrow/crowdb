@@ -1,5 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+#include "allocation_account_test_support.h"
 #include "btree/tree_core_access.h"
 #include "c_api_internal.h"
 
@@ -9,15 +10,11 @@ namespace crowdb::tree
 {
 namespace
 {
-auto reserve_remaining_routing(Crowdbtree &tree)
+auto use_remaining_memory(Crowdbtree &tree)
 {
-    auto      *core    = TreeCoreAccess::get(tree);
-    auto       account = core->binding()->account();
-    const auto stats   = account->snapshot();
-    const auto index   = static_cast<size_t>(detail::BudgetClass::kRouting);
-    const auto available =
-        core->binding()->options().limits.routing_bytes - stats.allocated[index] - stats.reserved[index];
-    return detail::ResourceBudget::try_reserve(account, detail::BudgetClass::kRouting, available);
+    auto *core    = TreeCoreAccess::get(tree);
+    auto  account = core->binding()->account();
+    return detail::test_allocation_account::use_remaining_memory(account, core->read_limits().metadata);
 }
 } // namespace
 
@@ -36,8 +33,7 @@ TEST(RuntimeRegistry, TreeRegistryAndNamesUseActualRoutingQuotaAndFailedReinitPr
     EXPECT_GT(after.allocated_bytes + after.reserved_bytes, before.allocated_bytes + before.reserved_bytes);
     const auto width = tree.max_name_len();
     {
-        auto held = reserve_remaining_routing(tree);
-        ASSERT_TRUE(held);
+        auto held = use_remaining_memory(tree);
         EXPECT_THROW(tree.init_metrics("replacement", "mem"), std::bad_alloc);
         EXPECT_EQ(tree.max_name_len(), width);
     }
@@ -59,8 +55,7 @@ TEST(RuntimeRegistry, ExhaustedFlushScratchNeverThrowsAcrossEitherCEntryAndCanRe
     ASSERT_EQ(ct_open_with_runtime(&options, runtime, nullptr, &tree), 0);
     c_api_tree(tree)->init_metrics("runtime", "mem");
     {
-        auto held = reserve_remaining_routing(*c_api_tree(tree));
-        ASSERT_TRUE(held);
+        auto held = use_remaining_memory(*c_api_tree(tree));
         EXPECT_EQ(ct_flush_metrics_str(tree, 1.0, "now", 0), nullptr);
         EXPECT_EQ(ct_flush_metrics_str_ext(tree, 1.0, "now", 0, 7, 7), nullptr);
     }

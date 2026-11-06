@@ -61,18 +61,18 @@ try {
     phase->snapshot                      = AllocationReservation::create(std::move(*snapshot));
     limits.publication.snapshot_metadata = phase->snapshot;
     phase->budget.bytes                  = AllocationReservation::create(std::move(*read));
-    phase->budget.io                     = reserved_shared<AllocationReservation>(phase->budget.bytes, std::move(*io));
-    phase->budget.work_metrics           = core->publisher().work_metrics();
-    phase->budget.cause                  = options.cause;
-    phase->budget.cpu_progress           = cpu_progress;
+    phase->budget.io           = reserved_shared<AllocationReservation>(phase->budget.reservation(), std::move(*io));
+    phase->budget.work_metrics = core->publisher().work_metrics();
+    phase->budget.cause        = options.cause;
+    phase->budget.cpu_progress = cpu_progress;
     auto status =
         bind_backend_operation(core->async_backend(), backend_limits, std::move(*backend), &phase->budget.backend);
     if (!status.ok()) {
         return status;
     }
-    auto loader    = reserved_shared<AsyncStorePageLoader>(phase->budget.bytes, ticket->backend(core->async_backend()),
-                                                           core->binding()->cpu(), core->binding()->lane(), loads,
-                                                           OverflowBackingResolver{}, phase->budget);
+    auto loader = reserved_shared<AsyncStorePageLoader>(
+        phase->budget.reservation(), ticket->backend(core->async_backend()), core->binding()->cpu(),
+        core->binding()->lane(), loads, OverflowBackingResolver{}, phase->budget);
     limits.prepaid = AllocationReservation::create(std::move(*bytes));
     return PageSplitOperation::create(core->publisher(), *core->binding()->cpu(), core->binding()->lane(),
                                       std::move(view), pid, std::move(limits), std::move(loader), cpu_progress,

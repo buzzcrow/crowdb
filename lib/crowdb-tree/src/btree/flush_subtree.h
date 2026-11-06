@@ -48,8 +48,6 @@ struct FlushBatch::State::Subtree
     void                                               reset_work();
     void                                               request_load();
     void                                               load() noexcept;
-    Subtree                                           *load_next      = nullptr;
-    bool                                               load_completed = false;
     Status                                             collect(PublicationTransaction &transaction);
     [[nodiscard]] std::shared_ptr<const PublishedPage> lookup(uint64_t page_id) const;
 

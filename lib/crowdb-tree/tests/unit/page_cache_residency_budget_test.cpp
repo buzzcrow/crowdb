@@ -30,8 +30,9 @@ TEST(PageCacheResidency, ActualDecodedAllocationSurvivesEvictionUntilLastReaderP
                                                              OverflowBackingResolver{}, credits.credits);
     auto metrics    = std::make_shared<TreeResourceMetrics>();
     {
-        SharedPageCache cache({.max_pages = 1, .max_waiters = 2}, credits.credits.bytes, metrics, runtime.get(), lane);
-        auto            loader         = cache.bind(upstream, credits.credits.bytes);
+        SharedPageCache cache({.max_pages = 1, .max_waiters = 2}, credits.credits.reservation(), metrics, runtime.get(),
+                              lane);
+        auto            loader         = cache.bind(upstream, credits.credits.reservation());
         const auto      infrastructure = credits.budget.snapshot().allocated[LoadCredits::kBytes];
         std::shared_ptr<const LeafBase> pin;
         loader->load_leaf({.identity = 1, .backing = backing}, [&](Status status, auto leaf) {
@@ -66,7 +67,7 @@ TEST(PageCacheResidency, PinAdmissionFailureReturnsErrorWithoutDiscardingReadyFr
     const auto input = cold(1);
     fixture.load(input).reset();
     LoadCredits credits;
-    auto        loader = fixture.cache->bind(fixture.upstream, credits.credits.bytes);
+    auto        loader = fixture.cache->bind(fixture.upstream, credits.credits.reservation());
     credits.seal();
     size_t done = 0;
     loader->load_leaf(input, [&](Status status, auto frame) {
@@ -85,7 +86,7 @@ TEST(PageCacheResidency, MissAdmissionFailureOccursBeforeIoAndCanRetry)
     TestCache fixture;
     fixture.frame(1);
     LoadCredits credits;
-    auto        loader = fixture.cache->bind(fixture.upstream, credits.credits.bytes);
+    auto        loader = fixture.cache->bind(fixture.upstream, credits.credits.reservation());
     credits.seal();
     size_t     failed = 0;
     const auto input  = cold(1);
@@ -147,19 +148,19 @@ TEST(PageCacheResidency, QueuedCommandsRetainTheirOwnersAfterCacheAndPublisherDe
     gate.entered.wait();
     {
         auto cache = std::make_shared<SharedPageCache>(PageCacheLimits{.max_pages = 1, .max_waiters = 1},
-                                                       credits.credits.bytes, resources, &runtime, lane);
+                                                       credits.credits.reservation(), resources, &runtime, lane);
         PublicationCoordinator publisher(4, 1, {}, std::pmr::get_default_resource(), cache);
         auto                   request = std::make_shared<PublicationRequest>();
         request->transaction = {.record       = std::make_shared<InstallRecord>(InstallToken{}),
                                 .pages        = {{.page_id = 0, .expected = {}, .replacement = published({cold(1)})}},
                                 .root_page_id = 0,
-                                .metadata     = credits.credits.bytes};
+                                .metadata     = credits.credits.reservation()};
         EXPECT_TRUE(publisher.try_submit(request));
         auto upstream       = std::make_shared<TestLoader>();
         upstream->frames[1] = base({
             {.key = "a", .value = "value"}
         });
-        auto loader         = cache->bind(upstream, credits.credits.bytes);
+        auto loader         = cache->bind(upstream, credits.credits.reservation());
         loader->load_leaf(cold(1), [](Status status, auto frame) {
             EXPECT_TRUE(status.ok());
             EXPECT_TRUE(frame);

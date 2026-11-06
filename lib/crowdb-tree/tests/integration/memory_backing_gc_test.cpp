@@ -27,13 +27,13 @@ TEST(MemoryBackingGc, PartialPagesAndReadersRemainProtectedUntilTheirLastOwnerDr
     auto reader = anchor.extent.owner;
     ASSERT_TRUE(ledger.activate().status.ok());
     const LocalBlockGcLimits limits{.max_blocks = 1, .max_deleted_bytes = kPage};
-    auto first = collect_free_local_blocks(store, *ledger.ledger, 0, limits, ledger.credits.credits.bytes);
+    auto first = collect_free_local_blocks(store, *ledger.ledger, 0, limits, ledger.credits.credits.reservation());
     ASSERT_TRUE(first.status.ok());
     EXPECT_EQ(first.protected_blocks, 1U);
     EXPECT_FALSE(first.complete);
-    anchor = {};
-    auto second =
-        collect_free_local_blocks(store, *ledger.ledger, first.next_block, limits, ledger.credits.credits.bytes);
+    anchor      = {};
+    auto second = collect_free_local_blocks(store, *ledger.ledger, first.next_block, limits,
+                                            ledger.credits.credits.reservation());
     ASSERT_TRUE(second.status.ok());
     EXPECT_TRUE(second.complete);
     EXPECT_EQ(second.deleted_bytes, kPage);
@@ -42,7 +42,7 @@ TEST(MemoryBackingGc, PartialPagesAndReadersRemainProtectedUntilTheirLastOwnerDr
     ASSERT_TRUE(store.read_at(kPage + 4096, &value, 1).ok());
     EXPECT_EQ(value, 42);
     reader.reset();
-    auto third = collect_free_local_blocks(store, *ledger.ledger, 1, limits, ledger.credits.credits.bytes);
+    auto third = collect_free_local_blocks(store, *ledger.ledger, 1, limits, ledger.credits.credits.reservation());
     ASSERT_TRUE(third.status.ok());
     EXPECT_EQ(third.deleted_blocks, 1U);
     EXPECT_EQ(store.resident_bytes(), kPage);
@@ -62,21 +62,21 @@ TEST(MemoryBackingGc, PendingWritesAndExclusiveDeletionLeasesPreventAddressReuse
     ASSERT_TRUE(ledger.activate().status.ok());
     auto pending = ledger.reserve(kPage);
     ASSERT_TRUE(pending.status.ok());
-    auto held = collect_free_local_blocks(store, *ledger.ledger, 0, {}, ledger.credits.credits.bytes);
+    auto held = collect_free_local_blocks(store, *ledger.ledger, 0, {}, ledger.credits.credits.reservation());
     ASSERT_TRUE(held.status.ok());
     EXPECT_EQ(held.protected_blocks, 1U);
     EXPECT_EQ(held.deleted_bytes, 0U);
     pending       = {};
     auto deletion = await_ledger([&](auto complete) {
-        return ledger.ledger->claim_free(kPage, kPage, ledger.credits.credits.bytes, std::move(complete));
+        return ledger.ledger->claim_free(kPage, kPage, ledger.credits.credits.reservation(), std::move(complete));
     });
     ASSERT_TRUE(deletion.status.ok());
     EXPECT_EQ(ledger.reserve(kPage).status.code(), Code::kResourceExhausted);
-    auto concurrent = collect_free_local_blocks(store, *ledger.ledger, 0, {}, ledger.credits.credits.bytes);
+    auto concurrent = collect_free_local_blocks(store, *ledger.ledger, 0, {}, ledger.credits.credits.reservation());
     ASSERT_TRUE(concurrent.status.ok());
     EXPECT_EQ(concurrent.deleted_bytes, 0U);
     deletion      = {};
-    auto released = collect_free_local_blocks(store, *ledger.ledger, 0, {}, ledger.credits.credits.bytes);
+    auto released = collect_free_local_blocks(store, *ledger.ledger, 0, {}, ledger.credits.credits.reservation());
     ASSERT_TRUE(released.status.ok());
     EXPECT_EQ(released.deleted_bytes, kPage);
     EXPECT_EQ(store.resident_bytes(), 0U);
@@ -97,7 +97,7 @@ TEST(MemoryBackingGc, FailedMetadataAdmissionAndPartialTailDoNotReleaseBacking)
     LedgerFixture ledger({.backend_id = 1, .file_size = input.size(), .address_limit = input.size()});
     ASSERT_TRUE(ledger.activate().status.ok());
     ledger.credits.seal();
-    auto failed = collect_free_local_blocks(store, *ledger.ledger, 0, {}, ledger.credits.credits.bytes);
+    auto failed = collect_free_local_blocks(store, *ledger.ledger, 0, {}, ledger.credits.credits.reservation());
     EXPECT_EQ(failed.status.code(), Code::kResourceExhausted);
     EXPECT_EQ(failed.next_block, 1U);
     EXPECT_EQ(store.resident_bytes(), 3 * kPage);

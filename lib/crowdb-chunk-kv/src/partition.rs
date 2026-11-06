@@ -2189,11 +2189,8 @@ async fn append_and_apply(state: &mut WorkerState, prepared: Vec<PreparedMutatio
         } else {
             state.tree.advance_noop(entry.record.mutation_seq).await
         };
-        if apply.is_err() {
-            state
-                .lifecycle
-                .store(lifecycle_code(PartitionLifecycle::Recovering), Ordering::Release);
-            state.metrics.apply_unknown();
+        if let Err(error) = apply {
+            tree_apply_failed(state, entry.record.mutation_seq, &error);
             finish_request(state, entry.request, Err(ChunkKvError::ApplyStateUnknown));
             for follower in entry.followers {
                 finish_request(state, follower, Err(ChunkKvError::ApplyStateUnknown));
@@ -2225,6 +2222,20 @@ async fn append_and_apply(state: &mut WorkerState, prepared: Vec<PreparedMutatio
             finish_request(state, follower, Ok(entry.response.clone()));
         }
     }
+}
+
+fn tree_apply_failed(state: &WorkerState, mutation_seq: u64, error: &ChunkKvError) {
+    tracing::error!(
+        partition_id_high = state.partition_id.high,
+        partition_id_low = state.partition_id.low,
+        mutation_seq,
+        %error,
+        "durable chunk KV mutation could not apply to its Tree"
+    );
+    state
+        .lifecycle
+        .store(lifecycle_code(PartitionLifecycle::Recovering), Ordering::Release);
+    state.metrics.apply_unknown();
 }
 
 fn journal_append_failed(state: &WorkerState, error: &ChunkKvError) {

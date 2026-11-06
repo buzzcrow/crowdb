@@ -3,6 +3,7 @@
 #include "btree/scan_output.h"
 #include "btree/tree_core_internal.h"
 #include "btree/tree_core_scan_internal.h"
+#include "crowdb-common/log.h"
 
 #include <algorithm>
 #include <chrono>
@@ -24,9 +25,9 @@ bool CoreScan::expired() const noexcept
 void CoreScan::finish(Status status, bool truncated) noexcept
 {
     auto self = std::move(owner);
-    detail::seal_backend_budget(prepared.backend);
-    prepared.io->seal();
-    prepared.credit->seal();
+    if (status.code() == Code::kResourceExhausted) {
+        CRB_LOG_WARN("scan failed after {} entries: {}", count, status.to_string());
+    }
     try {
         complete(std::move(status), std::move(packed), truncated);
     }
@@ -135,6 +136,9 @@ void TreeCore::scan_impl(CoreScanOptions options, std::function<void(Status, Sca
         status = Status::resource_exhausted("scan admission allocation failed");
     }
     if (!status.ok()) {
+        if (status.code() == Code::kResourceExhausted) {
+            CRB_LOG_WARN("scan admission failed: {}", status.to_string());
+        }
         complete(std::move(status), {}, false);
         return;
     }

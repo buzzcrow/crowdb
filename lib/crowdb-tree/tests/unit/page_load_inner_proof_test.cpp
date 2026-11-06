@@ -34,8 +34,8 @@ TEST(InnerLoadProof, OwnsByteFencesAndDropsProofWhenRoutingIsCopied)
     EXPECT_EQ(proof.frame_bytes, 4096U);
     EXPECT_EQ(proof.lower, "a");
     EXPECT_EQ(proof.upper, "z");
-    auto copied =
-        detail::reserved_shared<InnerPageState>(test.credits.credits.bytes, *result, test.credits.credits.bytes);
+    auto copied = detail::reserved_shared<InnerPageState>(test.credits.credits.reservation(), *result,
+                                                          test.credits.credits.reservation());
     EXPECT_FALSE(copied->frame_proof);
     copied.reset();
     result.reset();

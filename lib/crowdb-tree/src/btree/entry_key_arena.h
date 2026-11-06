@@ -14,7 +14,7 @@ class EntryKeyArena
     using Allocator = detail::ReservationAllocator<char>;
 
   public:
-    EntryKeyArena(size_t bytes, const std::shared_ptr<detail::AllocationReservation> &metadata)
+    EntryKeyArena(size_t bytes, const std::shared_ptr<AllocationBudget> &metadata)
         : bytes_(bytes, '\0', Allocator(metadata))
     {
     }

@@ -118,7 +118,8 @@ TEST(LocalCheckpoint, AllocationFailureAfterAnchorKeepsRecoveryProtection)
     test.source.runtime->drain();
     ASSERT_TRUE(test.store->pending);
     auto            retained_callback = test.store->pending;
-    AllocationLease pressure(test.source.credits.credits.bytes, test.source.credits.credits.bytes->available());
+    AllocationLease pressure(test.source.credits.credits.reservation(),
+                             test.source.credits.credits.reservation()->available());
     test.store->finish();
     test.source.runtime->drain();
     EXPECT_EQ(done.errors.load(), 1U);

@@ -39,7 +39,7 @@ void LocalRecoveryOperation::State::read(uint64_t address, size_t bytes, Stage n
         finish(Status::resource_exhausted());
         return;
     }
-    auto step    = detail::reserved_shared<ReadStep>(budget.bytes, budget);
+    auto step    = detail::reserved_shared<ReadStep>(budget.reservation(), budget);
     step->owner  = shared_from_this();
     step->window = window;
     read_bytes   = bytes;
@@ -71,10 +71,11 @@ void LocalRecoveryOperation::State::protect(uint64_t address, uint64_t bytes, St
     stage   = next;
     waiting = true;
     event_ready.store(false, std::memory_order_release);
-    auto status = ledger->recover(address, bytes, budget.bytes, [self = shared_from_this()](ExtentLedgerResult result) {
-        self->recovered = std::move(result.extent);
-        self->event(std::move(result.status));
-    });
+    auto status =
+        ledger->recover(address, bytes, budget.reservation(), [self = shared_from_this()](ExtentLedgerResult result) {
+            self->recovered = std::move(result.extent);
+            self->event(std::move(result.status));
+        });
     if (!status.ok()) {
         event(std::move(status));
     }

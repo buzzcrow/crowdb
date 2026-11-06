@@ -93,6 +93,8 @@ class ResourceBudget
         std::weak_ptr<TreeResourceMetrics>        resource_metrics_;
         mutable std::atomic<size_t>               retirement_pending_{0};
         Limits                                    limits_;
+        size_t                                    memory_limit_ = 0;
+        std::atomic<size_t>                       memory_allocated_{0};
         uint64_t                                  scope_id_;
         std::array<std::atomic<size_t>, kClasses> used_{};
         std::array<std::atomic<size_t>, kClasses> reserved_{};
@@ -239,6 +241,8 @@ class ResourceBudget
     // Planning hint from admission usage, including both host and Tree limits.
     // A subsequent reservation must still claim the capacity atomically.
     [[nodiscard]] static size_t available(const std::shared_ptr<Account> &account, BudgetClass category) noexcept;
+    [[nodiscard]] static bool   memory_exhausted(const std::shared_ptr<Account> &account) noexcept;
+    [[nodiscard]] static bool   accepting(const std::shared_ptr<Account> &account) noexcept;
     // Stop new admission and cancel waiting requests. Outstanding credit
     // remains charged until its actual owner releases it.
     // Bootstrap-only before publishing the host runtime. New accounts copy

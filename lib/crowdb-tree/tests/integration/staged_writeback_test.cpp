@@ -39,8 +39,8 @@ struct TestStagedWriteback
 
     Status prepare()
     {
-        auto reserved =
-            local.source.credits.credits.bytes->take_reserved(CheckpointOperation::finish_allocation_bound() + 512);
+        auto reserved = local.source.credits.credits.reservation()->take_reserved(
+            CheckpointOperation::finish_allocation_bound() + 512);
         if (!reserved) {
             return Status::resource_exhausted();
         }

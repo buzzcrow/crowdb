@@ -25,10 +25,10 @@ struct TestCollectionCore
 
     TestCollectionCore()
     {
-        EXPECT_TRUE(
-            detail::ChunkPinReleaseQueue::create(
-                credits.credits.bytes, 32, std::make_shared<int>(1), [](void *) noexcept {}, nullptr, &catalog->queue)
-                .ok());
+        EXPECT_TRUE(detail::ChunkPinReleaseQueue::create(
+                        credits.credits.reservation(), 32, std::make_shared<int>(1), [](void *) noexcept {}, nullptr,
+                        &catalog->queue)
+                        .ok());
         TreeRuntimeOptions options;
         options.workers         = 1;
         options.backend_workers = 1;
@@ -40,7 +40,7 @@ struct TestCollectionCore
                                         .iu_size         = 4096,
                                         .mirrors         = 2,
                                         .max_chunk_bytes = 256 * 1024 * 1024},
-            catalog, transport, credits.credits.bytes);
+            catalog, transport, credits.credits.reservation());
         config.page_store                           = store.get();
         config.backend_owner                        = store;
         config.frame_bytes                          = 4096;

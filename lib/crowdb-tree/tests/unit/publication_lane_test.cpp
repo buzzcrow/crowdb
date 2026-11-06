@@ -24,7 +24,7 @@ TEST(PublicationLane, PrepaidWindowProgressesWhenOrdinaryQueueIsFullAndReturnsBe
     test_read::LoadCredits           credits;
     PublicationCoordinator           publisher(2);
     std::shared_ptr<PublicationLane> lane;
-    ASSERT_TRUE(publisher.prepare_lane(2, credits.credits.bytes, &lane).ok());
+    ASSERT_TRUE(publisher.prepare_lane(2, credits.credits.reservation(), &lane).ok());
     std::latch entered(1);
     std::latch release(1);
     auto       blocker = request(1);
@@ -71,9 +71,9 @@ TEST(PublicationLane, WindowIsFixedUniqueAndBoundToItsPublisher)
     PublicationCoordinator           other(2);
     std::shared_ptr<PublicationLane> lane;
     std::shared_ptr<PublicationLane> duplicate;
-    EXPECT_EQ(publisher.prepare_lane(3, credits.credits.bytes, &lane).code(), Code::kInvalidArgument);
-    ASSERT_TRUE(publisher.prepare_lane(2, credits.credits.bytes, &lane).ok());
-    EXPECT_EQ(publisher.prepare_lane(1, credits.credits.bytes, &duplicate).code(), Code::kUnavailable);
+    EXPECT_EQ(publisher.prepare_lane(3, credits.credits.reservation(), &lane).code(), Code::kInvalidArgument);
+    ASSERT_TRUE(publisher.prepare_lane(2, credits.credits.reservation(), &lane).ok());
+    EXPECT_EQ(publisher.prepare_lane(1, credits.credits.reservation(), &duplicate).code(), Code::kUnavailable);
     EXPECT_FALSE(other.try_submit(request(1), lane));
     publisher.close();
     EXPECT_FALSE(publisher.try_submit(request(2), lane));

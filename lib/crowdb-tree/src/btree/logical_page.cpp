@@ -91,8 +91,7 @@ Status KeyArenaBuilder::append(Slice key, std::shared_ptr<const CellVersion> own
 }
 
 Status OverlayBatch::build(uint64_t id, std::vector<EntryRef> entries, const RunLimits &limits,
-                           std::shared_ptr<const OverlayBatch>           *out,
-                           std::shared_ptr<detail::AllocationReservation> metadata)
+                           std::shared_ptr<const OverlayBatch> *out, std::shared_ptr<AllocationBudget> metadata)
 {
     EntryStorage owned(std::make_move_iterator(entries.begin()), std::make_move_iterator(entries.end()),
                        EntryAllocator(std::move(metadata)));
@@ -269,7 +268,7 @@ LogicalLookup PageState::lookup(Slice key, uint64_t frontier) const
 
 MemTableRangeMerge::MemTableRangeMerge(std::initializer_list<std::shared_ptr<MemTable>> sources, PageKeyRange range,
                                        uint64_t frontier, uint64_t floor, RunLimits limits, size_t max_sources,
-                                       std::shared_ptr<detail::AllocationReservation> metadata)
+                                       std::shared_ptr<AllocationBudget> metadata)
     : MemTableRangeMerge(std::span<const std::shared_ptr<MemTable>>(sources), std::move(range), frontier, floor, limits,
                          max_sources, std::move(metadata))
 {
@@ -277,7 +276,7 @@ MemTableRangeMerge::MemTableRangeMerge(std::initializer_list<std::shared_ptr<Mem
 
 MemTableRangeMerge::MemTableRangeMerge(std::span<const std::shared_ptr<MemTable>> sources, PageKeyRange range,
                                        uint64_t frontier, uint64_t floor, RunLimits limits, size_t max_sources,
-                                       std::shared_ptr<detail::AllocationReservation> metadata)
+                                       std::shared_ptr<AllocationBudget> metadata)
     : owners_(detail::ReservationAllocator<std::shared_ptr<MemTable>>(metadata)),
       guards_(detail::ReservationAllocator<EpochManager::Guard>(metadata)),
       range_(std::move(range)),

@@ -122,7 +122,8 @@ struct TestCheckpoint
     TestCheckpoint()
     {
         store->device = source.store->device;
-        EXPECT_TRUE(LocalCheckpointRegistry::create(source.ledger, source.credits.credits.bytes, {}, &registry).ok());
+        EXPECT_TRUE(
+            LocalCheckpointRegistry::create(source.ledger, source.credits.credits.reservation(), {}, &registry).ok());
     }
 
     std::shared_ptr<const CapturedDurablePages> materialize(std::string value = "v", uint64_t coverage = 10)

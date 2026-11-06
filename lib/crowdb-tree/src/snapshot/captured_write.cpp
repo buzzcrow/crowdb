@@ -14,12 +14,12 @@ bool valid_write_limits(const CapturedWriteLimits &limits, const PageLoadBudget 
     return limits.max_frames != 0 && !limits.frames.plan_only && limits.max_dependency_steps != 0 &&
            limits.frames.encode.frame_bytes <= limits.write.max_frame_bytes &&
            PageWriteOperation::allocation_bound(limits.write).has_value() &&
-           static_cast<bool>(budget.bytes) == static_cast<bool>(budget.io) &&
-           (!limits.frames.encode.metadata || limits.frames.encode.metadata == budget.bytes) &&
-           (!budget.bytes ||
-            ((budget.bytes->category() == detail::BudgetClass::kRouting ||
-              budget.bytes->category() == detail::BudgetClass::kReclaim) &&
-             budget.io->category() == detail::BudgetClass::kIo && budget.bytes->account() == budget.io->account()));
+           static_cast<bool>(budget.reservation()) == static_cast<bool>(budget.io) &&
+           (!limits.frames.encode.metadata || limits.frames.encode.metadata == budget.reservation()) &&
+           (!budget.reservation() || ((budget.reservation()->category() == detail::BudgetClass::kRouting ||
+                                       budget.reservation()->category() == detail::BudgetClass::kReclaim) &&
+                                      budget.io->category() == detail::BudgetClass::kIo &&
+                                      budget.reservation()->account() == budget.io->account()));
 }
 } // namespace
 
@@ -67,7 +67,7 @@ Status CapturedWriteOperation::create(std::shared_ptr<const PublishedTreeState> 
         return Status::invalid_argument();
     }
     try {
-        limits.frames.encode.metadata = budget.bytes;
+        limits.frames.encode.metadata = budget.reservation();
         limits.frames.cpu_progress    = budget.cpu_progress;
         if (budget.work_metrics) {
             limits.frames.encode.work_metrics = budget.work_metrics;
@@ -79,7 +79,7 @@ Status CapturedWriteOperation::create(std::shared_ptr<const PublishedTreeState> 
         if (!status.ok()) {
             return status;
         }
-        auto pages          = detail::reserved_shared<CapturedDurablePages>(budget.bytes, budget.bytes);
+        auto pages          = detail::reserved_shared<CapturedDurablePages>(budget.reservation(), budget.reservation());
         pages->root_page_id = captured->root_page_id;
         pages->next_page_id = captured->next_page_id;
         pages->coverage     = captured->coverage;
@@ -110,13 +110,13 @@ Status CapturedWriteOperation::create(std::shared_ptr<CapturedFrameStream>      
         return Status::not_supported();
     }
     try {
-        limits.frames.encode.metadata = budget.bytes;
+        limits.frames.encode.metadata = budget.reservation();
         limits.frames.cpu_progress    = budget.cpu_progress;
         if (budget.work_metrics) {
             limits.frames.encode.work_metrics = budget.work_metrics;
             limits.frames.encode.cause        = budget.cause;
         }
-        auto state       = detail::reserved_shared<State>(budget.bytes, budget.bytes);
+        auto state       = detail::reserved_shared<State>(budget.reservation(), budget.reservation());
         state->store     = std::move(store);
         state->runtime   = std::move(runtime);
         state->lane      = std::move(lane);
@@ -126,7 +126,7 @@ Status CapturedWriteOperation::create(std::shared_ptr<CapturedFrameStream>      
         state->inherited = std::move(inherited);
         state->pages     = std::move(pages);
         state->stream    = std::move(stream);
-        *out             = detail::reserved_construct<CapturedWriteOperation>(state->budget.bytes, [&](auto *storage) {
+        *out = detail::reserved_construct<CapturedWriteOperation>(state->budget.reservation(), [&](auto *storage) {
             ::new (static_cast<void *>(storage)) CapturedWriteOperation(std::move(state));
         });
     }

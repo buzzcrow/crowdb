@@ -21,23 +21,9 @@ try {
     if (!root || root->level >= limits.max_route_depth) {
         return Status::corruption("snapshot has no bounded published root");
     }
-    limits.max_route_depth           = root->level + 1ULL;
-    const auto loads                 = load_limits();
-    const auto workers               = binding()->cpu()->worker_count();
-    const auto leaves                = view()->mapping.copy_bounds().max_leaf_bases;
-    const auto values                = overflow_value_bytes_bound(*view(), loads.max_value_bytes);
-    auto       bounded_loads         = loads;
-    bounded_loads.max_overflow_pages = std::min<uint64_t>(loads.max_overflow_pages, values);
-    const auto loader =
-        values == 0 ? AsyncStorePageLoader::primary_reserve_bound(loads, root->level, workers, leaves)
-                    : AsyncStorePageLoader::read_reserve_bound(bounded_loads, root->level, workers, leaves, 1, values);
-    const auto bound =
-        detail::AllocationBound().add(PublishedGet::allocation_bound(limits, workers)).add(loader).value();
-    if (!bound) {
-        return Status::resource_exhausted("snapshot point read bound overflow");
-    }
+    limits.max_route_depth = root->level + 1ULL;
     SnapshotReadWindow window;
-    auto               status = prepare_window(*bound, &window);
+    auto               status = prepare_window(&window);
     if (!status.ok()) {
         return status;
     }

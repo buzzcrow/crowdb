@@ -46,8 +46,8 @@ struct ChunkOpen
         if (budget.io) {
             budget.io->seal();
         }
-        if (budget.bytes) {
-            budget.bytes->seal();
+        if (budget.reservation()) {
+            budget.reservation()->seal();
         }
         budget = {};
     }
@@ -127,17 +127,17 @@ Status open_credit(ChunkOpen &open)
         return Status::resource_exhausted();
     }
     auto bytes = ResourceBudget::try_reserve(open.binding->account(), BudgetClass::kRouting,
-                                             options.limits.routing_bytes - options.lifecycle_bytes);
+                                             ResourceBudget::available(open.binding->account(), BudgetClass::kRouting));
     auto io    = ResourceBudget::try_reserve(open.binding->account(), BudgetClass::kIo, 1);
     if (!bytes || !io) {
         return Status::resource_exhausted();
     }
     open.budget.bytes = AllocationReservation::create(std::move(*bytes));
-    open.budget.io    = reserved_shared<AllocationReservation>(open.budget.bytes, std::move(*io));
+    open.budget.io    = reserved_shared<AllocationReservation>(open.budget.reservation(), std::move(*io));
     if (!open.lifetime) {
         return Status::internal_error();
     }
-    auto status = open.lifetime->acquire(open.budget.bytes, &open.ticket);
+    auto status = open.lifetime->acquire(open.budget.reservation(), &open.ticket);
     if (status.ok()) {
         open.store = open.ticket->backend(open.backend->store.get());
     }
@@ -159,7 +159,7 @@ template <class Protocol> Status run_protocol(ChunkOpen &open, const std::shared
 
 Status load_root(ChunkOpen &open, std::shared_ptr<RootLoad> *out)
 {
-    auto root        = detail::reserved_shared<RootLoad>(open.budget.bytes, open.budget.bytes);
+    auto root        = detail::reserved_shared<RootLoad>(open.budget.reservation(), open.budget.reservation());
     root->domain     = open.backend->domain;
     root->generation = open.backend->facade->options().open_generation;
     std::shared_ptr<ChunkProtocolOperation> operation;
@@ -192,13 +192,13 @@ Status recover_chunk(ChunkOpen &open, const Config &config, std::shared_ptr<cons
     limits.max_blob_bytes  = round_up_to_iu(limits.max_frame_bytes + kDurableBlobHeader, open.backend->iu_size);
     const auto metadata    = ChunkRootRecovery::allocation_bound(loaded->root);
     const auto window      = ChunkRootRecovery::window_allocation_bound(limits);
-    if (!metadata || !window || *metadata > open.budget.bytes->available() ||
-        *window > open.budget.bytes->available() - *metadata) {
+    if (!metadata || !window || *metadata > open.budget.reservation()->available() ||
+        *window > open.budget.reservation()->available() - *metadata) {
         return Status::resource_exhausted();
     }
     std::shared_ptr<ChunkRootRecovery> recovery;
     status = ChunkRootRecovery::create(std::move(loaded->root), open.backend->domain, open.backend->ids, limits,
-                                       open.budget.bytes, open.budget.bytes, &recovery);
+                                       open.budget.reservation(), open.budget.reservation(), &recovery);
     loaded.reset();
     if (!status.ok()) {
         return status;
@@ -211,12 +211,12 @@ Status recover_chunk(ChunkOpen &open, const Config &config, std::shared_ptr<cons
     loads.max_frame_bytes      = limits.max_frame_bytes;
     loads.max_blob_bytes       = limits.max_blob_bytes;
     loads.max_chunk_blob_bytes = limits.max_blob_bytes;
-    auto loader = detail::reserved_shared<AsyncStorePageLoader>(open.budget.bytes, open.store, open.binding->cpu(),
-                                                                open.binding->lane(), loads, OverflowBackingResolver{},
-                                                                open.budget);
+    auto loader = detail::reserved_shared<AsyncStorePageLoader>(open.budget.reservation(), open.store,
+                                                                open.binding->cpu(), open.binding->lane(), loads,
+                                                                OverflowBackingResolver{}, open.budget);
     std::shared_ptr<RecoveredStateOperation> recovered;
     status = RecoveredStateOperation::create(recovery->pages(), loader, open.binding->cpu(), open.binding->lane(), {},
-                                             open.budget.bytes, &recovered);
+                                             open.budget.reservation(), &recovered);
     if (!status.ok()) {
         return status;
     }

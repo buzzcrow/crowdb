@@ -71,12 +71,15 @@ struct FlushPersistence::Page : std::enable_shared_from_this<Page>
     std::shared_ptr<CapturedWriteOperation>       write;
     std::optional<Attempt>                        attempt;
     enum class Stage : uint8_t { Plan, Dependencies, Write };
-    Stage                 stage = Stage::Plan;
-    Status                status;
-    ApplyDispatcher::Node node{&Page::run, this};
+    Stage                               stage = Stage::Plan;
+    Status                              status;
+    std::optional<TreeMetricsOperation> metrics;
+    ApplyDispatcher::Node               node{&Page::run, this};
 
     void start()
     {
+        metrics.emplace(owner->preparation_->core->publisher().work_metrics(), TreeStage::PageWritebackPipeline,
+                        tree_metrics_now_ns());
         auto &preparation = *owner->preparation_;
         limits            = preparation.options.write;
         const auto bytes  = final_frame_bytes(*input.page, limits.frames.encode.frame_bytes);
@@ -98,19 +101,19 @@ struct FlushPersistence::Page : std::enable_shared_from_this<Page>
         limits.frames.reuse_backend_id = preparation.core->local_backend()
                                            ? preparation.core->local_backend()->ledger->limits().backend_id
                                            : preparation.core->chunk_backend()->backend_identity();
-        auto result                    = preparation.work(*owner->initial_, nullptr, &work, 0, owner->io_, &limits);
+        auto result                    = preparation.work(*owner->initial_, nullptr, &work, 0, {}, &limits);
         if (!result.ok()) {
             finish(std::move(result));
             return;
         }
-        limits.frames.encode.metadata     = work.budget.bytes;
+        limits.frames.encode.metadata     = work.budget.reservation();
         limits.frames.encode.work_metrics = work.budget.work_metrics;
         limits.frames.encode.cause        = work.budget.cause;
         limits.frames.cpu_progress        = work.budget.cpu_progress;
         limits.frames.plan_only           = true;
         planner                           = detail::reserved_unique<CapturedLayoutPlanner>(
-            work.budget.bytes, input.next_page_id, limits.frames.reuse_backend_id, limits,
-            preparation.options.metadata.max_segments, owner->inherited_, work.budget.bytes);
+            work.budget.reservation(), input.next_page_id, limits.frames.reuse_backend_id, limits,
+            preparation.options.metadata.max_segments, owner->inherited_, work.budget.reservation());
         result = CapturedFrameStream::create(input, work.loader, preparation.core->binding()->cpu(),
                                              preparation.core->binding()->lane(), limits.frames, {}, &stream);
         if (!result.ok()) {
@@ -216,12 +219,12 @@ struct FlushPersistence::Page : std::enable_shared_from_this<Page>
             finish(Status::resource_exhausted("durable mapping segment bound overflow"));
             return;
         }
-        result = preparation.work(*owner->initial_, &plan, &work, *bound, owner->io_, &limits);
+        result = preparation.work(*owner->initial_, &plan, &work, *bound, {}, &limits);
         if (!result.ok()) {
             finish(std::move(result));
             return;
         }
-        limits.frames.encode.metadata = work.budget.bytes;
+        limits.frames.encode.metadata = work.budget.reservation();
         limits.frames.plan_only       = false;
         result = CapturedFrameStream::create(input, work.loader, preparation.core->binding()->cpu(),
                                              preparation.core->binding()->lane(), limits.frames, reserve, &stream);
@@ -229,7 +232,8 @@ struct FlushPersistence::Page : std::enable_shared_from_this<Page>
             finish(std::move(result));
             return;
         }
-        auto pages          = detail::reserved_shared<CapturedDurablePages>(work.budget.bytes, work.budget.bytes);
+        auto pages =
+            detail::reserved_shared<CapturedDurablePages>(work.budget.reservation(), work.budget.reservation());
         pages->coverage     = input.coverage;
         pages->generation   = owner->initial_->generation;
         pages->root_page_id = input.page_id;
@@ -238,8 +242,8 @@ struct FlushPersistence::Page : std::enable_shared_from_this<Page>
         result              = CapturedWriteOperation::create(
             stream, pages, preparation.ticket->backend(preparation.core->async_backend()),
             preparation.core->binding()->cpu(), preparation.core->binding()->lane(), limits, work.budget,
-            chunk ? chunk->reserve(work.budget.bytes)
-                  : extent_write_reservation(preparation.core->local_backend()->ledger, work.budget.bytes),
+            chunk ? chunk->reserve(work.budget.reservation())
+                  : extent_write_reservation(preparation.core->local_backend()->ledger, work.budget.reservation()),
             owner->pages_ ? owner->pages_ : owner->inherited_, &write);
         if (!result.ok()) {
             finish(std::move(result));
@@ -266,7 +270,7 @@ struct FlushPersistence::Page : std::enable_shared_from_this<Page>
             receipt.summary->live_value_bytes      = input.children_summary->live_value_bytes;
         }
         std::shared_ptr<const PublishedPage> replacement;
-        auto status = build_writeback_rebase(input.page, input.page, receipt, input.coverage, work.budget.bytes,
+        auto status = build_writeback_rebase(input.page, input.page, receipt, input.coverage, work.budget.reservation(),
                                              &replacement, limits.frames.encode.max_sources, input.gc_floor);
         if (!status.ok()) {
             finish(std::move(status));
@@ -275,7 +279,8 @@ struct FlushPersistence::Page : std::enable_shared_from_this<Page>
         // The catalog receives only final page receipts and their protected raw
         // dependencies. Structural deletions are applied at the root join.
         if (!owner->pages_) {
-            owner->pages_ = detail::reserved_shared<CapturedDurablePages>(work.budget.bytes, work.budget.bytes);
+            owner->pages_ =
+                detail::reserved_shared<CapturedDurablePages>(work.budget.reservation(), work.budget.reservation());
             if (owner->inherited_) {
                 owner->pages_->frames.inherit(owner->inherited_->frames);
                 owner->pages_->overflow_counts_known  = owner->inherited_->overflow_counts_known;
@@ -287,7 +292,7 @@ struct FlushPersistence::Page : std::enable_shared_from_this<Page>
                 return;
             }
         }
-        owner->pages_->frames.budget(work.budget.bytes);
+        owner->pages_->frames.budget(work.budget.reservation());
         status = owner->pages_->replace_primary(*result.pages);
         if (status.ok()) {
             owner->pages_->frames.at(input.page_id).summary = receipt.summary;
@@ -301,11 +306,17 @@ struct FlushPersistence::Page : std::enable_shared_from_this<Page>
         owner->report_.reused_frames += result.reused_frames;
         ++owner->report_.primary_frames;
         ++owner->report_.rebased_pages;
+        if (metrics) {
+            (void)metrics->finish(TreeOutcome::Success, tree_metrics_now_ns());
+        }
         done(Status::Ok(), std::move(replacement));
     }
 
     void finish(Status result) noexcept
     {
+        if (metrics) {
+            (void)metrics->finish(result.ok() ? TreeOutcome::Success : TreeOutcome::Error, tree_metrics_now_ns());
+        }
         if (!result.ok()) {
             CRB_LOG_ERROR("persistent page {} failed: {}", input.page_id, result.to_string());
         }
@@ -350,7 +361,7 @@ try {
         done(Status::Ok(), input.page);
         return;
     }
-    auto page     = detail::reserved_shared<Page>(preparation_->control);
+    auto page     = detail::reserved_shared<Page>(preparation_->core->read_limits().metadata);
     page->owner   = shared_from_this();
     page->input   = std::move(input);
     page->reserve = std::move(reserve);
@@ -361,9 +372,8 @@ catch (const std::bad_alloc &) {
     done(Status::resource_exhausted("flush page control reserve exhausted"), {});
 }
 
-size_t FlushPersistence::control_allocation_bound(size_t workers) noexcept
+size_t FlushPersistence::control_allocation_bound() noexcept
 {
-    return detail::shared_allocation_bound<FlushPersistence>() + commit_control_allocation_bound() +
-           ((workers + 2) * detail::shared_allocation_bound<Page>());
+    return detail::shared_allocation_bound<FlushPersistence>() + commit_control_allocation_bound();
 }
 } // namespace crowdb::tree

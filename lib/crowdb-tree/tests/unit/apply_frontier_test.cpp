@@ -104,7 +104,7 @@ TEST(ApplyFrontier, FixedStorageIsChargedOnceAndCompletionsWorkAfterSealing)
 {
     LoadCredits                    credits;
     std::shared_ptr<ApplyFrontier> tracker;
-    ASSERT_TRUE(ApplyFrontier::create(0, 8, credits.credits.bytes, &tracker).ok());
+    ASSERT_TRUE(ApplyFrontier::create(0, 8, credits.credits.reservation(), &tracker).ok());
     const auto allocated = credits.budget.snapshot().allocated[LoadCredits::kBytes];
     EXPECT_GE(allocated, sizeof(ApplyFrontier) + (8 * sizeof(std::atomic<uint64_t>)));
     const auto bound = ApplyFrontier::allocation_bound(8);
@@ -127,8 +127,8 @@ TEST(ApplyFrontier, InvalidWindowAndAllocationFailureLeaveOutputUnchanged)
     const auto original = tracker;
     EXPECT_EQ(ApplyFrontier::create(0, 0, {}, &tracker).code(), Code::kInvalidArgument);
     EXPECT_EQ(ApplyFrontier::create(0, SIZE_MAX, {}, &tracker).code(), Code::kInvalidArgument);
-    AllocationLease pressure(credits.credits.bytes, credits.credits.bytes->available());
-    EXPECT_EQ(ApplyFrontier::create(0, 4, credits.credits.bytes, &tracker).code(), Code::kResourceExhausted);
+    AllocationLease pressure(credits.credits.reservation(), credits.credits.reservation()->available());
+    EXPECT_EQ(ApplyFrontier::create(0, 4, credits.credits.reservation(), &tracker).code(), Code::kResourceExhausted);
     EXPECT_EQ(tracker, original);
 }
 } // namespace crowdb::tree

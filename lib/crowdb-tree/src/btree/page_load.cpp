@@ -32,16 +32,16 @@ struct LeafLoad : PageLoadProgress, std::enable_shared_from_this<LeafLoad>
     {
     }
 
-    std::shared_ptr<detail::AllocationReservation> metadata;
-    std::shared_ptr<AsyncPageStore>                store;
-    std::shared_ptr<detail::FlushRuntime>          runtime;
-    std::shared_ptr<detail::FlushRuntime::Lane>    lane;
-    PageLoadLimits                                 limits;
-    BaseRef                                        base;
-    AlignedLoadBytes                               blob;
-    PageLoader::LeafComplete                       complete;
-    std::shared_ptr<LeafLoad>                      queued_owner;
-    std::atomic<bool>                              terminal{false};
+    std::shared_ptr<AllocationBudget>           metadata;
+    std::shared_ptr<AsyncPageStore>             store;
+    std::shared_ptr<detail::FlushRuntime>       runtime;
+    std::shared_ptr<detail::FlushRuntime::Lane> lane;
+    PageLoadLimits                              limits;
+    BaseRef                                     base;
+    AlignedLoadBytes                            blob;
+    PageLoader::LeafComplete                    complete;
+    std::shared_ptr<LeafLoad>                   queued_owner;
+    std::atomic<bool>                           terminal{false};
 
     void finish(Status status) noexcept
     {
@@ -120,12 +120,11 @@ AsyncStorePageLoader::AsyncStorePageLoader(std::shared_ptr<AsyncPageStore>      
                                            std::shared_ptr<detail::FlushRuntime::Lane> lane, PageLoadLimits limits,
                                            OverflowBackingResolver overflow, PageLoadBudget budget)
 {
-    if (static_cast<bool>(budget.bytes) != static_cast<bool>(budget.io) ||
-        (budget.bytes &&
-         ((budget.bytes->category() != detail::BudgetClass::kRouting &&
-           budget.bytes->category() != detail::BudgetClass::kReclaim) ||
-          budget.io->category() != detail::BudgetClass::kIo || budget.bytes->account() != budget.io->account()))) {
-        throw std::invalid_argument("page load needs routing/reclaim and I/O credit from the same account");
+    const auto prepaid = budget.reservation();
+    if ((prepaid && prepaid->category() == detail::BudgetClass::kIo) ||
+        (budget.io && (!budget.bytes || budget.io->category() != detail::BudgetClass::kIo ||
+                       budget.bytes->domain() != budget.io->domain()))) {
+        throw std::invalid_argument("page load needs memory and I/O credit from the same runtime");
     }
     state_           = detail::reserved_shared<State>(budget.bytes);
     state_->store    = std::move(store);

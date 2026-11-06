@@ -156,7 +156,7 @@ std::shared_ptr<const PublishedPage> MappingView::get(uint64_t page_id) const
 std::shared_ptr<const MappingView::Directory>
 MappingView::replace_directory(const std::shared_ptr<const Directory> &old, unsigned shift,
                                std::span<const PageReplacement> replacements, CopyStats &copied,
-                               const std::shared_ptr<detail::AllocationReservation> &metadata, uint64_t now_ns)
+                               const std::shared_ptr<AllocationBudget> &metadata, uint64_t now_ns)
 {
     auto next = old ? detail::reserved_shared<Directory>(metadata, *old) : detail::reserved_shared<Directory>(metadata);
     ++copied.directories;
@@ -242,7 +242,7 @@ MappingView::replace_directory(const std::shared_ptr<const Directory> &old, unsi
 }
 
 MappingView MappingView::replace(std::span<const PageReplacement> replacements, CopyStats &copied,
-                                 const std::shared_ptr<detail::AllocationReservation> &metadata) const
+                                 const std::shared_ptr<AllocationBudget> &metadata) const
 {
     uint64_t previous = 0;
     bool     first    = true;

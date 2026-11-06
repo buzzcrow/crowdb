@@ -15,7 +15,7 @@ struct OwnedKey::Storage
 
     std::vector<char, Allocator> bytes;
 
-    Storage(Slice key, const std::shared_ptr<detail::AllocationReservation> &metadata) : bytes(Allocator(metadata))
+    Storage(Slice key, const std::shared_ptr<AllocationBudget> &metadata) : bytes(Allocator(metadata))
     {
         bytes.assign(key.data(), key.data() + key.size());
         record_work(metadata, TreeWorkCounter::KeyCopyBytes, key.size());
@@ -27,7 +27,7 @@ struct OwnedKey::Storage
     }
 };
 
-OwnedKey::OwnedKey(Slice key, const std::shared_ptr<detail::AllocationReservation> &metadata)
+OwnedKey::OwnedKey(Slice key, const std::shared_ptr<AllocationBudget> &metadata)
 {
     if (key.size() <= inline_capacity) {
         if (!key.empty()) {

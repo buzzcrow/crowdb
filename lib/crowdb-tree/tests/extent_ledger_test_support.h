@@ -32,24 +32,27 @@ struct LedgerFixture
 
     explicit LedgerFixture(ExtentLedgerLimits limits = {.backend_id = 1})
     {
-        EXPECT_TRUE(ExtentLedger::create(limits, credits.credits.bytes, &ledger).ok());
+        EXPECT_TRUE(ExtentLedger::create(limits, credits.credits.reservation(), &ledger).ok());
         EXPECT_LE(credits.budget.snapshot().allocated[LoadCredits::kBytes], ExtentLedger::creation_metadata_bound());
     }
 
     ExtentLedgerResult activate()
     {
-        return await_ledger([&](auto done) { return ledger->activate(credits.credits.bytes, std::move(done)); });
+        return await_ledger(
+            [&](auto done) { return ledger->activate(credits.credits.reservation(), std::move(done)); });
     }
 
     ExtentLedgerResult recover(uint64_t address, uint64_t length)
     {
-        return await_ledger(
-            [&](auto done) { return ledger->recover(address, length, credits.credits.bytes, std::move(done)); });
+        return await_ledger([&](auto done) {
+            return ledger->recover(address, length, credits.credits.reservation(), std::move(done));
+        });
     }
 
     ExtentLedgerResult reserve(uint64_t length)
     {
-        return await_ledger([&](auto done) { return ledger->reserve(length, credits.credits.bytes, std::move(done)); });
+        return await_ledger(
+            [&](auto done) { return ledger->reserve(length, credits.credits.reservation(), std::move(done)); });
     }
 };
 } // namespace crowdb::tree::test_read

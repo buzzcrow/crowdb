@@ -34,7 +34,7 @@ try {
     }
     PageLoadBudget budget;
     budget.bytes = AllocationReservation::create(std::move(*bytes));
-    budget.io    = reserved_shared<AllocationReservation>(budget.bytes, std::move(*io));
+    budget.io    = reserved_shared<AllocationReservation>(budget.reservation(), std::move(*io));
 
     struct Credit
     {
@@ -44,14 +44,14 @@ try {
         ~Credit()
         {
             if (!transferred) {
-                budget.bytes->seal();
+                budget.reservation()->seal();
                 budget.io->seal();
             }
         }
     } credit{.budget = budget};
 
     std::shared_ptr<TreeOperationLifetime::Ticket> ticket;
-    auto                                           status = operation_lifetime().acquire(budget.bytes, &ticket);
+    auto                                           status = operation_lifetime().acquire(budget.reservation(), &ticket);
     if (!status.ok()) {
         return status;
     }

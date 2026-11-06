@@ -72,7 +72,7 @@ TEST(ChunkBacking, ProcessFenceAfterIoRejectsTheReadBeforeExposingBytes)
     std::shared_ptr<ChunkPackBacking> pack;
     ASSERT_TRUE(test.prepare(32, &pack).ok());
     std::array<uint8_t, 32> input{};
-    ASSERT_TRUE(write_chunk_backing(*pack, input, test.credits.credits.bytes).ok());
+    ASSERT_TRUE(write_chunk_backing(*pack, input, test.credits.credits.reservation()).ok());
     test.catalog->fence_at = 4;
     auto backing           = std::make_shared<BackingRef>();
     backing->backend_id    = 17;
@@ -83,7 +83,7 @@ TEST(ChunkBacking, ProcessFenceAfterIoRejectsTheReadBeforeExposingBytes)
     std::array<uint8_t, 32> output{};
     std::promise<Status>    completed;
     submit_backing_read(
-        *test.scheduled, backing, output.data(), output.size(), test.credits.credits.bytes,
+        *test.scheduled, backing, output.data(), output.size(), test.credits.credits.reservation(),
         {.context     = &completed,
          .complete_fn = [](void  *raw,
                            Status status) { static_cast<std::promise<Status> *>(raw)->set_value(std::move(status)); },
@@ -100,7 +100,7 @@ TEST(ChunkBacking, UnknownAllocationRetainsItsExactPaidPinUntilHostReleaseSuccee
     ASSERT_TRUE(test.prepare(32, &pack).ok());
     test.transport->unknown_allocate = true;
     std::array<uint8_t, 32> input{};
-    EXPECT_EQ(write_chunk_backing(*pack, input, test.credits.credits.bytes).code(), Code::kUnavailable);
+    EXPECT_EQ(write_chunk_backing(*pack, input, test.credits.credits.reservation()).code(), Code::kUnavailable);
     if (!test.catalog->record) {
         FAIL() << "unknown Allocate lost its StageReserved record";
     }

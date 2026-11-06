@@ -44,7 +44,7 @@ struct TestCollectionCAbi
     ct_status open()
     {
         auto status = detail::ChunkPinReleaseQueue::create(
-            credits.credits.bytes, 32, std::make_shared<int>(1), [](void * /*unused*/) noexcept {}, nullptr,
+            credits.credits.reservation(), 32, std::make_shared<int>(1), [](void * /*unused*/) noexcept {}, nullptr,
             &catalog->queue);
         if (!status.ok()) {
             return static_cast<ct_status>(status.code());

@@ -84,15 +84,16 @@ TEST(FlushRuntime, ReservedProgressConsumesLaneAndGlobalCapacityAndSurvivesFullQ
 TEST(FlushRuntime, ReservedProgressRerunsUseSealedStorageAndDrainReleasesLastContextOwner)
 {
     test_read::LoadCredits credits;
-    FlushRuntime           runtime(1, 2, credits.credits.bytes);
+    FlushRuntime           runtime(1, 2, credits.credits.reservation());
     auto                   lane     = std::make_shared<FlushRuntime::Lane>(2);
     const auto             baseline = credits.budget.snapshot().allocated[test_read::LoadCredits::kBytes];
     std::atomic<size_t>    calls{0};
-    auto                   owner = reserved_shared<TestProgressOwner>(credits.credits.bytes, calls);
+    auto                   owner = reserved_shared<TestProgressOwner>(credits.credits.reservation(), calls);
     owner->remaining             = 1000;
-    ASSERT_TRUE(
-        runtime.reserve_progress(lane, &TestProgressOwner::run, owner.get(), credits.credits.bytes, &owner->progress)
-            .ok());
+    ASSERT_TRUE(runtime
+                    .reserve_progress(lane, &TestProgressOwner::run, owner.get(), credits.credits.reservation(),
+                                      &owner->progress)
+                    .ok());
     std::weak_ptr<TestProgressOwner> retained = owner;
     credits.seal();
     owner->progress->request(owner);
@@ -114,7 +115,7 @@ TEST(FlushRuntime, FailedProgressRegistrationReturnsSlotAndQueueCredits)
     std::atomic<size_t>                     calls{0};
     auto increment = [](void *context) noexcept { static_cast<std::atomic<size_t> *>(context)->fetch_add(1); };
     credits.seal();
-    EXPECT_EQ(runtime.reserve_progress(lane, increment, &calls, credits.credits.bytes, &progress).code(),
+    EXPECT_EQ(runtime.reserve_progress(lane, increment, &calls, credits.credits.reservation(), &progress).code(),
               Code::kResourceExhausted);
     EXPECT_FALSE(progress);
     ASSERT_TRUE(runtime.try_submit(lane, increment, &calls).ok());

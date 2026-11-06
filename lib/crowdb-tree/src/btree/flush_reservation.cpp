@@ -74,7 +74,6 @@ Status bind_flush_reservations(PublicationCoordinator &publisher, const FlushPre
     reserved.handoff    = AllocationReservation::create(std::move(credits[0]));
     reserved.routing    = reserved_shared<AllocationReservation>(reserved.handoff, std::move(credits[1]));
     reserved.reclaim    = reserved_shared<AllocationReservation>(reserved.handoff, std::move(credits[2]));
-    reserved.io         = reserved_shared<AllocationReservation>(reserved.handoff, std::move(credits[3]));
     reserved.snapshot   = AllocationReservation::create(std::move(*snapshot_credit));
     auto backend_status = bind_backend_operation(preparation.store.get(),
                                                  {.max_io_bytes = preparation.loads.max_blob_bytes,
@@ -98,28 +97,20 @@ Status bind_flush_reservations(PublicationCoordinator &publisher, const FlushPre
         // request that waited or joined an older round must use this round's
         // current checkpoint token and durable baseline.
         persistence->configure(*batch);
-        persistence->bind_io(reserved.io);
         *maintenance = [persistence](auto view, auto done) { persistence->commit(std::move(view), std::move(done)); };
     }
     auto loads         = preparation.loads;
-    loads.max_inflight = 1;
+    loads.max_inflight = SIZE_MAX;
     batch->loader      = reserved_shared<AsyncStorePageLoader>(reserved.routing, preparation.store, preparation.runtime,
                                                                lane, loads, OverflowBackingResolver{},
                                                                PageLoadBudget{.bytes        = reserved.routing,
-                                                                              .io           = reserved.io,
                                                                               .work_metrics = publisher.work_metrics(),
                                                                               .backend      = reserved.backend,
                                                                               .cpu_progress = preparation.cpu_progress,
                                                                               .cause        = TreeWorkCause::Flush});
     batch->consolidation_loader = batch->loader;
     if (preparation.cache) {
-        std::shared_ptr<PageLoader> binding;
-        auto                        status =
-            preparation.cache->bind_reserved(batch->loader, reserved.handoff, &binding, PageLoadPriority::Maintenance);
-        if (!status.ok()) {
-            return status;
-        }
-        batch->loader = std::move(binding);
+        batch->loader = preparation.cache->bind(batch->loader, reserved.handoff, PageLoadPriority::Maintenance);
     }
     batch->consolidation                         = preparation.maintenance.publication;
     batch->consolidation->pages.max_output_pages = bounds.maintenance_output_pages;
@@ -145,7 +136,7 @@ Status prepare_flush_reservations(PublicationCoordinator &publisher, const Publi
         return status;
     }
     FlushCredits         credits;
-    constexpr std::array names{"handoff", "routing", "reclaim", "I/O"};
+    constexpr std::array names{"handoff", "routing", "reclaim"};
     for (size_t index = 0; index < credits.size(); ++index) {
         const auto capacity =
             ResourceBudget::capacity(sources.active_budget->options().account, FlushReserveBounds::categories[index]);

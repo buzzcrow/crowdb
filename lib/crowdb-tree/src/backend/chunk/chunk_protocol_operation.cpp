@@ -94,7 +94,7 @@ struct ChunkProtocolOperation::State : std::enable_shared_from_this<State>
         ready.store(false, std::memory_order_release);
         auto status = scheduled->submit_step(
             [self] { return self->step(self->stopped.load(std::memory_order_acquire)); },
-            {.context = this, .complete_fn = &State::completed, .owner = self, .allocations = budget.bytes});
+            {.context = this, .complete_fn = &State::completed, .owner = self, .allocations = budget.reservation()});
         if (!status.ok()) {
             waiting = false;
             finish(std::move(status));
@@ -128,24 +128,24 @@ Status ChunkProtocolOperation::create(std::shared_ptr<AsyncPageStore>           
                                       std::shared_ptr<const void> owner, Step step, Done done,
                                       std::shared_ptr<ChunkProtocolOperation> *out)
 try {
-    if (!store || dynamic_cast<ScheduledPageStore *>(store.get()) == nullptr || !runtime || !lane || !budget.bytes ||
-        !budget.io || !step || !done || out == nullptr || *out || budget.bytes->account() != budget.io->account() ||
-        budget.io->category() != detail::BudgetClass::kIo) {
+    if (!store || dynamic_cast<ScheduledPageStore *>(store.get()) == nullptr || !runtime || !lane ||
+        !budget.reservation() || !budget.io || !step || !done || out == nullptr || *out ||
+        budget.reservation()->account() != budget.io->account() || budget.io->category() != detail::BudgetClass::kIo) {
         return Status::invalid_argument();
     }
-    auto state        = detail::reserved_shared<State>(budget.bytes, budget);
+    auto state        = detail::reserved_shared<State>(budget.reservation(), budget);
     state->store      = std::move(store);
     state->owner      = std::move(owner);
     state->step       = std::move(step);
     state->done       = std::move(done);
     state->dispatcher = budget.cpu_progress;
     if (!state->dispatcher) {
-        auto status = runtime->reserve_progress(lane, &State::run, state.get(), budget.bytes, &state->progress);
+        auto status = runtime->reserve_progress(lane, &State::run, state.get(), budget.reservation(), &state->progress);
         if (!status.ok()) {
             return status;
         }
     }
-    *out = detail::reserved_construct<ChunkProtocolOperation>(budget.bytes, [&](auto *storage) {
+    *out = detail::reserved_construct<ChunkProtocolOperation>(budget.reservation(), [&](auto *storage) {
         ::new (static_cast<void *>(storage)) ChunkProtocolOperation(std::move(state));
     });
     return Status::Ok();

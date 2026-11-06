@@ -8,6 +8,7 @@ mod split_overlay;
 pub use split_overlay::{InstalledSplit, PreparedSplitOverlay, SplitOverlayLimits};
 
 use async_trait::async_trait;
+use crowdb_tree_ffi::{AsyncCrowdbtree, GetOutcome, ScanDirection, ScanOptions};
 
 use crate::{ChunkKvError, MutationOperation, Result, ScanEntry, ValueRevision};
 
@@ -304,8 +305,12 @@ impl PartitionTree for CrowdbPartitionTree {
     }
 
     async fn get(&self, key: &[u8]) -> Result<Option<ValueRevision>> {
-        self.tree
-            .get(key)
+        let reader = AsyncCrowdbtree::from_shared(self.tree.clone());
+        let result = match reader.try_get(key) {
+            GetOutcome::Ready(result) => result,
+            GetOutcome::Pending(pending) => pending.await,
+        };
+        result
             .map(|value| value.map(|(revision, value)| ValueRevision { revision, value }))
             .map_err(map_tree_read_error)
     }
@@ -321,29 +326,16 @@ impl PartitionTree for CrowdbPartitionTree {
         if end_key.is_some_and(<[u8]>::is_empty) {
             return Ok((Vec::new(), false));
         }
-        let scan = match start_key {
-            Some(start_key) => self.tree.scan_from(
-                b"",
-                start_key,
+        let scan = AsyncCrowdbtree::from_shared(self.tree.clone())
+            .scan_with_options(ScanOptions {
+                start: start_key.map(<[u8]>::to_vec),
                 start_inclusive,
-                end_key.unwrap_or_default(),
+                end: end_key.unwrap_or_default().to_vec(),
                 limit,
                 byte_budget,
-                false,
-                0,
-                false,
-            ),
-            None => self.tree.scan(
-                b"",
-                b"",
-                end_key.unwrap_or_default(),
-                limit,
-                byte_budget,
-                false,
-                0,
-                false,
-            ),
-        };
+                ..Default::default()
+            })
+            .await;
         let (entries, truncated) = scan.map_err(map_tree_read_error)?;
         Ok((
             entries
@@ -371,15 +363,17 @@ impl PartitionTree for CrowdbPartitionTree {
         if end.is_some_and(<[u8]>::is_empty) {
             return Ok((Vec::new(), false));
         }
-        let (entries, truncated) = self
-            .tree
-            .scan_from_bounded(
-                start.unwrap_or_default(),
-                start.is_none() || inclusive,
-                end.unwrap_or_default(),
+        let (entries, truncated) = AsyncCrowdbtree::from_shared(self.tree.clone())
+            .scan_with_options(ScanOptions {
+                start: start.map(<[u8]>::to_vec),
+                start_inclusive: inclusive,
+                end: end.unwrap_or_default().to_vec(),
                 limit,
-                bytes,
-            )
+                byte_budget: bytes,
+                strict_byte_budget: true,
+                ..Default::default()
+            })
+            .await
             .map_err(map_tree_read_error)?;
         Ok((
             entries
@@ -402,10 +396,18 @@ impl PartitionTree for CrowdbPartitionTree {
         start_inclusive: bool,
         begin_key: Option<&[u8]>,
     ) -> Result<Option<ScanEntry>> {
-        self.tree
-            .seek_reverse(start_key, start_inclusive, begin_key.unwrap_or_default())
-            .map(|entry| {
-                entry.map(|entry| ScanEntry {
+        AsyncCrowdbtree::from_shared(self.tree.clone())
+            .scan_with_options(ScanOptions {
+                start: Some(start_key.to_vec()),
+                start_inclusive,
+                begin: begin_key.unwrap_or_default().to_vec(),
+                direction: ScanDirection::Reverse,
+                limit: 1,
+                ..Default::default()
+            })
+            .await
+            .map(|(entries, _)| {
+                entries.into_iter().next().map(|entry| ScanEntry {
                     key: entry.key,
                     value: ValueRevision {
                         revision: entry.slot,
@@ -423,15 +425,16 @@ impl PartitionTree for CrowdbPartitionTree {
         limit: usize,
         byte_budget: usize,
     ) -> Result<(Vec<ScanEntry>, bool)> {
-        let (entries, truncated) = self
-            .tree
-            .scan_reverse(
-                start_before,
-                false,
-                begin_key.unwrap_or_default(),
+        let (entries, truncated) = AsyncCrowdbtree::from_shared(self.tree.clone())
+            .scan_with_options(ScanOptions {
+                start: start_before.map(<[u8]>::to_vec),
+                begin: begin_key.unwrap_or_default().to_vec(),
+                direction: ScanDirection::Reverse,
                 limit,
                 byte_budget,
-            )
+                ..Default::default()
+            })
+            .await
             .map_err(map_tree_read_error)?;
         Ok((
             entries
@@ -449,10 +452,14 @@ impl PartitionTree for CrowdbPartitionTree {
     }
 
     async fn apply(&self, mutation_seq: u64, operation: &MutationOperation) -> Result<()> {
-        let result = match operation.successful_value() {
-            Some(value) => self.tree.apply_put(mutation_seq, operation.key(), value),
-            None => self.tree.apply_delete(mutation_seq, operation.key()),
-        };
+        let tree = self.tree.clone();
+        let operation = operation.clone();
+        let result = tokio::task::spawn_blocking(move || match operation.successful_value() {
+            Some(value) => tree.apply_put(mutation_seq, operation.key(), value),
+            None => tree.apply_delete(mutation_seq, operation.key()),
+        })
+        .await
+        .map_err(|error| ChunkKvError::Internal(format!("tree apply task failed: {error}")))?;
         result.map_err(map_tree_apply_error)
     }
 

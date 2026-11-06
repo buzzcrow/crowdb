@@ -34,8 +34,8 @@ struct TestCheckpointPipeline
         backend->store       = local.store;
         backend->ledger      = local.source.ledger;
         backend->checkpoints = local.registry;
-        auto credit =
-            local.source.credits.credits.bytes->take_reserved(CheckpointOperation::finish_allocation_bound() + 512);
+        auto credit          = local.source.credits.credits.reservation()->take_reserved(
+            CheckpointOperation::finish_allocation_bound() + 512);
         EXPECT_TRUE(credit.has_value());
         if (credit) {
             finish = detail::AllocationReservation::create(std::move(*credit));
@@ -230,7 +230,7 @@ TEST(CheckpointOperation, ExhaustedMaterializationStillHasIndependentAbortCredit
     auto       connected = stdexec::connect(test.operation->sender(), Receiver{.done = &done});
     stdexec::start(connected);
     test.local.source.runtime->drain();
-    auto       credit    = test.local.source.credits.credits.bytes;
+    auto       credit    = test.local.source.credits.credits.reservation();
     const auto remaining = credit->available();
     ASSERT_TRUE(credit->claim(remaining));
     test.local.store->finish();

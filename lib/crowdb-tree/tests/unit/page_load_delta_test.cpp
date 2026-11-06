@@ -159,15 +159,15 @@ TEST(PageLoadDelta, IndexAllocationExhaustionReleasesDecodeAndIoCredit)
         ++calls;
     });
     const auto delta_bytes = LeafFrameView(fixture.frame.data(), fixture.frame.size()).delta_count() * sizeof(uint32_t);
-    const auto held        = credits.credits.bytes->available() - fixture.frame.size() - delta_bytes + 1;
-    ASSERT_TRUE(credits.credits.bytes->claim(held));
+    const auto held        = credits.credits.reservation()->available() - fixture.frame.size() - delta_bytes + 1;
+    ASSERT_TRUE(credits.credits.reservation()->claim(held));
     fixture.store->pending.complete(Status::Ok());
     fixture.store->pending = {};
     fixture.runtime->drain();
     EXPECT_EQ(calls, 1U);
     EXPECT_EQ(credits.budget.snapshot().allocated[LoadCredits::kIo], 0U);
     loader.reset();
-    credits.credits.bytes->release(held);
+    credits.credits.reservation()->release(held);
     credits.seal();
     EXPECT_EQ(credits.budget.snapshot().allocated[LoadCredits::kBytes], 0U);
 }

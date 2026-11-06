@@ -12,7 +12,7 @@ namespace crowdb::tree::test_chunk
 struct TestRootBackend
 {
     test_read::LoadCredits                   credits;
-    std::shared_ptr<TestRootCatalog>         catalog   = std::make_shared<TestRootCatalog>(credits.credits.bytes);
+    std::shared_ptr<TestRootCatalog>         catalog = std::make_shared<TestRootCatalog>(credits.credits.reservation());
     std::shared_ptr<TestRootTransport>       transport = std::make_shared<TestRootTransport>(catalog);
     std::shared_ptr<ChunkBackingDomain>      domain    = std::make_shared<ChunkBackingDomain>();
     std::shared_ptr<detail::ChunkRuntimeIds> ids =
@@ -21,8 +21,8 @@ struct TestRootBackend
     explicit TestRootBackend(size_t pin_capacity = 256)
     {
         EXPECT_TRUE(detail::ChunkPinReleaseQueue::create(
-                        credits.credits.bytes, pin_capacity, std::make_shared<int>(1), [](void *) noexcept {}, nullptr,
-                        &catalog->queue)
+                        credits.credits.reservation(), pin_capacity, std::make_shared<int>(1), [](void *) noexcept {},
+                        nullptr, &catalog->queue)
                         .ok());
         domain->backend_id = 17;
         domain->tree       = 19;
@@ -42,9 +42,10 @@ struct TestRootBackend
 
     std::shared_ptr<CapturedDurablePages> pages(size_t count)
     {
-        auto pages        = detail::reserved_shared<CapturedDurablePages>(credits.credits.bytes, credits.credits.bytes);
-        pages->generation = 3;
-        pages->coverage   = 15;
+        auto pages =
+            detail::reserved_shared<CapturedDurablePages>(credits.credits.reservation(), credits.credits.reservation());
+        pages->generation   = 3;
+        pages->coverage     = 15;
         pages->root_page_id = count != 0 ? 0 : kInvalidPageId;
         pages->next_page_id = count;
         pages->backend_id   = 17;
@@ -53,12 +54,12 @@ struct TestRootBackend
             detail::ChunkId      chunk;
             EXPECT_TRUE(ids->next(PagePurpose::kBtreePage, &stage, &chunk).ok());
             std::shared_ptr<ChunkPackBacking> pack;
-            EXPECT_TRUE(
-                prepare_chunk_backing(domain, stage, chunk, 8192, PagePurpose::kBtreePage, credits.credits.bytes, &pack)
-                    .ok());
+            EXPECT_TRUE(prepare_chunk_backing(domain, stage, chunk, 8192, PagePurpose::kBtreePage,
+                                              credits.credits.reservation(), &pack)
+                            .ok());
             std::array<uint8_t, 8192> raw{};
-            EXPECT_TRUE(write_chunk_backing(*pack, raw, credits.credits.bytes).ok());
-            auto backing            = detail::reserved_shared<BackingRef>(credits.credits.bytes);
+            EXPECT_TRUE(write_chunk_backing(*pack, raw, credits.credits.reservation()).ok());
+            auto backing            = detail::reserved_shared<BackingRef>(credits.credits.reservation());
             backing->backend_id     = 17;
             backing->length         = 8192;
             backing->owner          = pack;
@@ -66,7 +67,8 @@ struct TestRootBackend
             backing->storage        = BackingStorage::kChunkPack;
             backing->chunk          = std::move(pack);
             auto refs               = detail::reserved_shared<StoredOverflowReferences>(
-                credits.credits.bytes, detail::ReservationAllocator<StoredOverflowReference>(credits.credits.bytes));
+                credits.credits.reservation(),
+                detail::ReservationAllocator<StoredOverflowReference>(credits.credits.reservation()));
             pages->frames.emplace(i, DurableCapturedFrame{.page_id         = i,
                                                           .type            = page_type::kLeafBase,
                                                           .frame_bytes     = 4096,
@@ -94,9 +96,9 @@ struct TestRootBackend
                                                   .next_page_id      = pages->next_page_id,
                                                   .wal_replay_offset = 4096};
         std::shared_ptr<ChunkRootCommit> result;
-        EXPECT_TRUE(
-            ChunkRootCommit::create(pages, domain, ids, identity, credits.credits.bytes, credits.credits.bytes, &result)
-                .ok());
+        EXPECT_TRUE(ChunkRootCommit::create(pages, domain, ids, identity, credits.credits.reservation(),
+                                            credits.credits.reservation(), &result)
+                        .ok());
         return result;
     }
 };

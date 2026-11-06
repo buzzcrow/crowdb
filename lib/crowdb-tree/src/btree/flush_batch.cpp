@@ -51,8 +51,11 @@ try {
         }
     }
     for (const auto &table : state->captured->sources->tables) {
-        if (!table || (table->closed() && std::find(state->inputs->tables.begin(), state->inputs->tables.end(),
-                                                    table) == state->inputs->tables.end())) {
+        // A checkpoint at current coverage has no new prefix to hand off.
+        // Closed sources can retain later versions for the next flush.
+        if (!table || (frontier > state->captured->coverage && table->closed() &&
+                       std::find(state->inputs->tables.begin(), state->inputs->tables.end(), table) ==
+                           state->inputs->tables.end())) {
             return Status::invalid_argument("every closed source must participate in the captured batch");
         }
     }

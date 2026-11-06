@@ -13,7 +13,7 @@ void LocalRecoveryOperation::State::next_anchor()
         stage   = Stage::Activated;
         waiting = true;
         event_ready.store(false, std::memory_order_release);
-        auto status = ledger->activate(budget.bytes, [self = shared_from_this()](ExtentLedgerResult result) {
+        auto status = ledger->activate(budget.reservation(), [self = shared_from_this()](ExtentLedgerResult result) {
             self->event(std::move(result.status));
         });
         if (!status.ok()) {
@@ -46,9 +46,9 @@ void LocalRecoveryOperation::State::anchor_read()
         finish(Status::corruption());
         return;
     }
-    image               = detail::reserved_shared<ProtectedCheckpoint>(budget.bytes, budget.bytes);
+    image               = detail::reserved_shared<ProtectedCheckpoint>(budget.reservation(), budget.reservation());
     image->anchor       = anchor;
-    pages               = detail::reserved_shared<CapturedDurablePages>(budget.bytes, budget.bytes);
+    pages               = detail::reserved_shared<CapturedDurablePages>(budget.reservation(), budget.reservation());
     pages->root_page_id = anchor.root_page_id;
     pages->next_page_id = anchor.next_page_id;
     pages->coverage     = anchor.last_applied_slot;
@@ -181,7 +181,7 @@ void LocalRecoveryOperation::State::page_extent()
 
 void LocalRecoveryOperation::State::page_protected()
 {
-    auto backing              = detail::reserved_shared<BackingRef>(budget.bytes);
+    auto backing              = detail::reserved_shared<BackingRef>(budget.reservation());
     backing->backend_id       = recovered.backend_id;
     backing->generation       = recovered.generation;
     backing->content_id       = recovered.identity;

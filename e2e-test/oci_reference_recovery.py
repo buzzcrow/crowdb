@@ -25,11 +25,13 @@ def create_nonvoter(cluster):
     name = cluster.expected_names[3]
     volume = runtime.node_volume(cluster, 3)
     policy = cluster.artifacts / 'later-member.toml'
-    content = ('version = 1\nmode = "local"\n'
-               f'cluster = "{cluster.run_id}"\ninitial_voters = 3\n' + diskless_policy())
-    if policy.exists():
-        assert policy.read_text() == content
-    else:
+    if not policy.exists():
+        accepted = read_json(cluster, cluster.expected_names[0], 'node-policy.json')
+        listeners = next(service['listeners'] for service in accepted['setup']['services']
+                         if service['kind'] == 'paxos-kv')
+        content = ('version = 1\nmode = "local"\n'
+                   f'cluster = "{cluster.run_id}"\ninitial_voters = 3\n'
+                   + diskless_policy(listeners))
         policy.write_text(content)
         policy.chmod(0o644)
     cluster.command('volume', 'create', '--label', f'{LABEL}={cluster.run_id}', volume)

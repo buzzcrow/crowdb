@@ -61,7 +61,7 @@ TEST(TreeCoreBlockAccount, ConstructorRecoversAndTransfersExistingBackendWithMon
     }
 }
 
-TEST(TreeCoreBlockAccount, FailedAdoptionReleasesDomainAndPrivateCreateCannotBypassIt)
+TEST(TreeCoreBlockAccount, FailedOpenReleasesDomainAndPrivateCreateCannotBypassIt)
 {
     tree_test::TempDir              directory("core_block_fail_");
     std::unique_ptr<BlockPageStore> device;
@@ -87,10 +87,13 @@ TEST(TreeCoreBlockAccount, FailedAdoptionReleasesDomainAndPrivateCreateCannotByp
         rejected = true;
     }
     EXPECT_TRUE(rejected);
-    EXPECT_EQ(config.runtime->snapshot().allocated.routing_bytes, baseline.allocated.routing_bytes);
-    EXPECT_EQ(config.runtime->snapshot().reserved.routing_bytes, baseline.reserved.routing_bytes);
     ASSERT_TRUE(device->try_claim_runtime_domain());
     device->release_runtime_domain();
+    device.reset();
+    EXPECT_EQ(config.runtime->snapshot().allocated.routing_bytes, baseline.allocated.routing_bytes);
+    EXPECT_EQ(config.runtime->snapshot().reserved.routing_bytes, baseline.reserved.routing_bytes);
+    ASSERT_TRUE(BlockPageStore::open_blocks(directory.path, 4, 5, 65536, 1, &device).ok());
+    config.page_store                           = device.get();
     config.runtime_binding.limits.routing_bytes = original_limit;
     {
         Crowdbtree accepted(config);

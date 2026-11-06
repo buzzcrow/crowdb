@@ -51,12 +51,18 @@ struct PageLoadLimits
 // directly; it never waits for a second host reservation while holding it.
 struct PageLoadBudget
 {
-    std::shared_ptr<detail::AllocationReservation> bytes;
-    std::shared_ptr<detail::AllocationReservation> io;
-    std::shared_ptr<TreeWorkMetrics>               work_metrics = nullptr;
-    std::shared_ptr<AllocationBudget>              backend      = nullptr;
-    std::shared_ptr<ApplyDispatcher>               cpu_progress = nullptr;
-    TreeWorkCause                                  cause        = TreeWorkCause::Other;
+    std::shared_ptr<AllocationBudget>                bytes;
+    std::shared_ptr<detail::AllocationReservation>   io           = nullptr;
+    std::shared_ptr<detail::ResourceBudget::Account> account      = nullptr;
+    std::shared_ptr<TreeWorkMetrics>                 work_metrics = nullptr;
+    std::shared_ptr<AllocationBudget>                backend      = nullptr;
+    std::shared_ptr<ApplyDispatcher>                 cpu_progress = nullptr;
+    TreeWorkCause                                    cause        = TreeWorkCause::Other;
+
+    [[nodiscard]] std::shared_ptr<detail::AllocationReservation> reservation() const noexcept
+    {
+        return std::dynamic_pointer_cast<detail::AllocationReservation>(bytes);
+    }
 };
 
 // The resolver must be bound to the caller's captured backing/mapping view and

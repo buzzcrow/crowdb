@@ -35,7 +35,7 @@ TEST(ChunkBackingPin, RejectsStageAndPackIdentityMismatchBeforeAcquiringProtecti
         detail::ChunkId      unused;
         ASSERT_TRUE(test.ids->next(PagePurpose::kBtreePage, &pin, &unused).ok());
         std::shared_ptr<const ChunkPackBacking> owner;
-        EXPECT_EQ(pin_chunk_backing(test.domain, invalid, pin, test.credits.credits.bytes, &owner).code(),
+        EXPECT_EQ(pin_chunk_backing(test.domain, invalid, pin, test.credits.credits.reservation(), &owner).code(),
                   Code::kCorruption);
         EXPECT_FALSE(owner);
     }
@@ -52,7 +52,7 @@ TEST(ChunkBackingPin, DeletingTransitionBetweenExactValidationAndAcquireRejectsT
     ASSERT_TRUE(test.ids->next(PagePurpose::kBtreePage, &pin, &unused).ok());
     std::shared_ptr<const ChunkPackBacking> owner;
     EXPECT_EQ(pin_chunk_backing(test.domain, pages->frames.begin()->second.backing->chunk->pack, pin,
-                                test.credits.credits.bytes, &owner)
+                                test.credits.credits.reservation(), &owner)
                   .code(),
               Code::kUnavailable);
     EXPECT_FALSE(owner);

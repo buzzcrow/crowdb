@@ -100,8 +100,8 @@ TEST(ChunkSnapshotRetry, SmallFramesCheckpointLargeValues)
     test_chunk::TestCoreChunk             test;
     std::shared_ptr<ChunkPinReleaseQueue> releases;
     ASSERT_TRUE(ChunkPinReleaseQueue::create(
-                    test.backend.credits.credits.bytes, 1024, std::make_shared<int>(1), [](void *) noexcept {}, nullptr,
-                    &releases)
+                    test.backend.credits.credits.reservation(), 1024, std::make_shared<int>(1), [](void *) noexcept {},
+                    nullptr, &releases)
                     .ok());
     test.backend.catalog->queue = std::move(releases);
     ASSERT_TRUE(test.open().ok());

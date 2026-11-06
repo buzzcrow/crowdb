@@ -61,7 +61,7 @@ TEST(BlockAccount, SameHostReopenTransfersFdOwnersAndRejectsSmallerOrForeignAcco
     ASSERT_TRUE(bind_block_account(store.get(), old, 1, &adopted).ok());
     ASSERT_TRUE(store->delete_block(1).ok());
     const auto retained = old->snapshot().allocated[kRouting];
-    auto       small    = host.make_account(limits(retained - 1));
+    auto       small    = host.make_account(limits(retained / 2));
     EXPECT_EQ(bind_block_account(store.get(), small, 1, &adopted).code(), Code::kResourceExhausted);
     EXPECT_EQ(old->snapshot().allocated[kRouting], retained);
     EXPECT_EQ(small->snapshot().allocated[kRouting], 0U);
@@ -110,8 +110,7 @@ TEST(BlockAccount, FailedFirstAdoptionAndRejectedGrowthLeaveFilesAndExistingRead
     EXPECT_EQ(host.snapshot().allocated[kRouting], 0U);
     auto account = host.make_account(limits(kCapacity));
     ASSERT_TRUE(bind_block_account(store.get(), account, 1, &adopted).ok());
-    auto occupied = ResourceBudget::try_reserve(account, BudgetClass::kRouting, kCapacity - adopted.owned_bytes);
-    ASSERT_TRUE(occupied);
+    auto occupied = use_remaining_memory(account, block_allocation_budget(*store));
     EXPECT_EQ(store->write_at(4096000, &value, 1).code(), Code::kResourceExhausted);
     EXPECT_FALSE(std::filesystem::exists(directory.path + "/3-4.blk-1000"));
     EXPECT_EQ(store->num_extents(), 1U);

@@ -83,8 +83,9 @@ TEST(ExtentLedger, RecoveryRejectsPartialOverlapAndCapacityNeverWrapsOrInventsSp
     EXPECT_EQ(test.reserve(4096).status.code(), Code::kResourceExhausted);
     EXPECT_EQ(test.reserve(UINT64_MAX).status.code(), Code::kInvalidArgument);
     EXPECT_EQ(test.recover(12288, 4096).status.code(), Code::kUnavailable);
-    auto retained = await_ledger(
-        [&](auto done) { return test.ledger->retain(8192, 4096, test.credits.credits.bytes, std::move(done)); });
+    auto retained = await_ledger([&](auto done) {
+        return test.ledger->retain(8192, 4096, test.credits.credits.reservation(), std::move(done));
+    });
     EXPECT_TRUE(retained.status.ok());
     EXPECT_EQ(retained.extent.owner, recovered.extent.owner);
 }
@@ -96,7 +97,7 @@ TEST(ExtentLedger, MetadataBoundPaysForReserveAndAllocationFailuresLeaveIndexesU
     bool succeeded           = false;
     for (size_t amount = 64; amount <= ExtentLedger::reservation_metadata_bound(); amount += 64) {
         LoadCredits credits;
-        auto        carved = credits.credits.bytes->take_reserved(amount);
+        auto        carved = credits.credits.reservation()->take_reserved(amount);
         if (!carved.has_value()) {
             FAIL() << "test credit cannot fund reservation";
         }
@@ -205,7 +206,7 @@ TEST(ExtentLedger, MiddleRecoveryFitsItsBoundAndEveryFailedAllocationRollsBack)
     const auto bound = ExtentLedger::reservation_metadata_bound();
     for (size_t amount = 64; amount <= bound; amount = std::min(amount + 64, bound)) {
         LoadCredits credits;
-        auto        carved = credits.credits.bytes->take_reserved(amount);
+        auto        carved = credits.credits.reservation()->take_reserved(amount);
         if (!carved.has_value()) {
             FAIL() << "test credit cannot fund recovery";
         }
@@ -241,11 +242,11 @@ TEST(ExtentLedger, QueueReentryAndThrowingReceiverDoNotStrandAllocationOrRelease
     ProtectedExtent retained;
     ASSERT_TRUE(
         test.ledger
-            ->reserve(4096, test.credits.credits.bytes,
+            ->reserve(4096, test.credits.credits.reservation(),
                       [&](ExtentLedgerResult first) {
                           EXPECT_TRUE(first.status.ok());
                           EXPECT_TRUE(test.ledger
-                                          ->reserve(4096, test.credits.credits.bytes,
+                                          ->reserve(4096, test.credits.credits.reservation(),
                                                     [&](ExtentLedgerResult next) {
                                                         EXPECT_TRUE(next.status.ok());
                                                         retained = std::move(next.extent);
@@ -253,7 +254,8 @@ TEST(ExtentLedger, QueueReentryAndThrowingReceiverDoNotStrandAllocationOrRelease
                                                     })
                                           .ok());
                           EXPECT_EQ(
-                              test.ledger->reserve(4096, test.credits.credits.bytes, [](ExtentLedgerResult) {}).code(),
+                              test.ledger->reserve(4096, test.credits.credits.reservation(), [](ExtentLedgerResult) {})
+                                  .code(),
                               Code::kResourceExhausted);
                           throw std::runtime_error("controlled receiver failure");
                       })

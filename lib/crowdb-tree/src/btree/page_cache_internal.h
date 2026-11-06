@@ -26,20 +26,20 @@ struct SharedPageCache::State : std::enable_shared_from_this<SharedPageCache::St
 
     struct Request
     {
-        std::atomic<bool>                              occupied{false};
-        Command                                        command;
-        Request                                       *next     = nullptr;
-        PageLoadPriority                               priority = PageLoadPriority::Read;
-        std::shared_ptr<State>                         owner;
-        std::shared_ptr<Reservation>                   reservation;
-        std::shared_ptr<PageLoader>                    upstream;
-        std::shared_ptr<detail::AllocationReservation> metadata;
-        BaseRef                                        base;
-        Key                                            key;
-        PageLoader::LeafComplete                       leaf_done;
-        PageLoader::InnerComplete                      inner_done;
-        uint64_t                                       registered_at_ns = 0;
-        TreeWaitSpan                                   shared_wait;
+        std::atomic<bool>                 occupied{false};
+        Command                           command;
+        Request                          *next     = nullptr;
+        PageLoadPriority                  priority = PageLoadPriority::Read;
+        std::shared_ptr<State>            owner;
+        std::shared_ptr<Reservation>      reservation;
+        std::shared_ptr<PageLoader>       upstream;
+        std::shared_ptr<AllocationBudget> metadata;
+        BaseRef                           base;
+        Key                               key;
+        PageLoader::LeafComplete          leaf_done;
+        PageLoader::InnerComplete         inner_done;
+        uint64_t                          registered_at_ns = 0;
+        TreeWaitSpan                      shared_wait;
     };
 
     struct Reservation
@@ -74,7 +74,7 @@ struct SharedPageCache::State : std::enable_shared_from_this<SharedPageCache::St
         std::shared_ptr<PageCacheFrame>            frame;
     };
 
-    State(PageCacheLimits bounds, const std::shared_ptr<detail::AllocationReservation> &metadata,
+    State(PageCacheLimits bounds, const std::shared_ptr<AllocationBudget> &metadata,
           std::shared_ptr<TreeResourceMetrics> resources, detail::FlushRuntime *runtime,
           std::shared_ptr<detail::FlushRuntime::Lane> lane);
     static Key make_key(Kind kind, const BaseRef &base);

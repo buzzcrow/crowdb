@@ -137,4 +137,35 @@ TEST(ChunkFixedPack, WriteFailureKeepsProvisionalReferencesProtected)
     EXPECT_EQ(catalog->record->packs.size(), 1U);
     EXPECT_EQ(output.length, 0U);
 }
+
+TEST(ChunkFixedPack, AggregateFailurePublishesNoMemberAndRetainsTheExactStage)
+{
+    for (const bool unknown : {true, false}) {
+        auto catalog                = std::make_shared<TestStageCatalog>();
+        auto transport              = std::make_shared<TestFixedTransport>(catalog);
+        transport->unknown_allocate = unknown;
+        transport->fail_write       = !unknown;
+        ChunkFixedPackStore                             store(17, 1, 2, catalog, transport);
+        TestPackBudget                                  budget;
+        auto                                            credit = budget.bytes();
+        std::array<uint8_t, 32>                         small{};
+        std::array<uint8_t, 70'000>                     large{};
+        std::array<ChunkFixedPackRef, 2>                output;
+        const std::array<ChunkFixedPackStore::Write, 2> inputs{
+            {{.input = small, .out = output.data()}, {.input = large, .out = &output[1]}}
+        };
+        EXPECT_EQ(store.write_many(operation, fixed, PagePurpose::kBtreePage, inputs, credit).code(),
+                  Code::kUnavailable);
+        if (!catalog->record) {
+            FAIL() << "aggregate lost its durable stage";
+        }
+        EXPECT_EQ(catalog->record->id, operation);
+        EXPECT_EQ(catalog->record->chunk_low, fixed.low);
+        EXPECT_EQ(catalog->record->state, unknown ? ChunkStageState::Reserved : ChunkStageState::Writing);
+        EXPECT_EQ(catalog->record->packs.size(), unknown ? 0U : 2U);
+        EXPECT_EQ(transport->allocations, 1U);
+        EXPECT_EQ(output[0].length, 0U);
+        EXPECT_EQ(output[1].length, 0U);
+    }
+}
 } // namespace crowdb::tree::detail

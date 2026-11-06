@@ -84,6 +84,9 @@ Status AllocationAccount::create(std::shared_ptr<ResourceBudget::Account> accoun
     if (!account || out == nullptr || category == BudgetClass::kIo || category >= BudgetClass::kCount) {
         return Status::invalid_argument("backend metadata requires a byte account and output");
     }
+    if (!ResourceBudget::accepting(account)) {
+        return Status::unavailable("allocation account admission is closed");
+    }
     return build(std::move(account), category, out);
 }
 

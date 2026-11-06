@@ -42,7 +42,7 @@ TEST(ApplyProgress, WakeupCoversTransitionsBeforeAndAfterRegistration)
 {
     test_read::LoadCredits         credits;
     std::shared_ptr<ApplyProgress> progress;
-    ASSERT_TRUE(ApplyProgress::create(1, credits.credits.bytes, &progress).ok());
+    ASSERT_TRUE(ApplyProgress::create(1, credits.credits.reservation(), &progress).ok());
     const auto             initial = progress->sequence();
     ApplyProgress::Request before(*progress, initial);
     TestProgressResult     first;
@@ -65,7 +65,7 @@ TEST(ApplyProgress, BoundedWaitersReturnTheirSlotsOnCancellation)
 {
     test_read::LoadCredits         credits;
     std::shared_ptr<ApplyProgress> progress;
-    ASSERT_TRUE(ApplyProgress::create(1, credits.credits.bytes, &progress).ok());
+    ASSERT_TRUE(ApplyProgress::create(1, credits.credits.reservation(), &progress).ok());
     ApplyProgress::Request first(*progress, progress->sequence());
     ApplyProgress::Request overflow(*progress, progress->sequence());
     TestProgressResult     a;
@@ -92,7 +92,7 @@ TEST(ApplyProgress, LastIngressOwnerStopsPendingRequestsAndPreservesTheirCharged
 {
     test_read::LoadCredits         credits;
     std::shared_ptr<ApplyProgress> progress;
-    ASSERT_TRUE(ApplyProgress::create(2, credits.credits.bytes, &progress).ok());
+    ASSERT_TRUE(ApplyProgress::create(2, credits.credits.reservation(), &progress).ok());
     auto               request = std::make_unique<ApplyProgress::Request>(*progress, progress->sequence());
     TestProgressResult result;
     auto               operation = stdexec::connect(request->sender(), TestProgressReceiver{&result});
@@ -132,7 +132,7 @@ TEST(ApplyProgress, TerminalMayDestroyTheRequestInline)
 {
     test_read::LoadCredits         credits;
     std::shared_ptr<ApplyProgress> progress;
-    ASSERT_TRUE(ApplyProgress::create(1, credits.credits.bytes, &progress).ok());
+    ASSERT_TRUE(ApplyProgress::create(1, credits.credits.reservation(), &progress).ok());
     auto               request = std::make_unique<ApplyProgress::Request>(*progress, progress->sequence());
     TestProgressResult result;
     auto               operation =
@@ -147,7 +147,7 @@ TEST(ApplyProgress, ConcurrentRegistrationAndTransitionNeverLoseTheWakeup)
 {
     test_read::LoadCredits         credits;
     std::shared_ptr<ApplyProgress> progress;
-    ASSERT_TRUE(ApplyProgress::create(1, credits.credits.bytes, &progress).ok());
+    ASSERT_TRUE(ApplyProgress::create(1, credits.credits.reservation(), &progress).ok());
     for (size_t iteration = 0; iteration < 64; ++iteration) {
         ApplyProgress::Request request(*progress, progress->sequence());
         TestProgressResult     result;

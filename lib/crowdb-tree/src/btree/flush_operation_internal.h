@@ -109,6 +109,7 @@ struct FlushOperation::State : std::enable_shared_from_this<State>
     FlushReportComplete                            report_complete  = nullptr;
     bool                                           covered_at_start = false;
     FlushResult                                    report;
+    uint64_t                                       started_at_ns = 0;
     std::optional<TreeMetricsOperation>            batch_metrics;
     std::optional<TreeMetricsOperation>            capture_metrics;
     std::optional<TreeMetricsOperation>            drain_metrics;

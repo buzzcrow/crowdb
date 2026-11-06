@@ -2,30 +2,19 @@
 // Licensed under the Apache License, Version 2.0.
 #include "snapshot/published_snapshot_entries.h"
 
-#include "btree/allocation_bound.h"
-#include "btree/read_value_bound.h"
 #include "snapshot/operation_wait.h"
-#include "snapshot/published_snapshot_budget.h"
 
 namespace crowdb::tree
 {
 struct PublishedSnapshotEntries::State
 {
-    ~State()
-    {
-        if (metadata) {
-            metadata->seal();
-        }
-    }
-
-    std::shared_ptr<PublishedSnapshotContext>      snapshot;
-    std::shared_ptr<detail::AllocationReservation> metadata;
-    std::shared_ptr<SnapshotPageLoader>            loader;
-    std::shared_ptr<PublishedScan>                 scan;
-    size_t                                         read_bound = 0;
-    std::atomic<bool>                              busy{false};
-    Status                                         failure;
-    bool                                           complete = false;
+    std::shared_ptr<PublishedSnapshotContext> snapshot;
+    std::shared_ptr<AllocationBudget>         metadata;
+    std::shared_ptr<SnapshotPageLoader>       loader;
+    std::shared_ptr<PublishedScan>            scan;
+    std::atomic<bool>                         busy{false};
+    Status                                    failure;
+    bool                                      complete = false;
 };
 
 Status PublishedSnapshotEntries::create(std::shared_ptr<PublishedSnapshotContext>  snapshot,
@@ -52,45 +41,12 @@ try {
     if (limits.max_route_depth > 64) {
         return Status::resource_exhausted("snapshot entry cursor exceeds route depth bound");
     }
-    const auto  workers = snapshot->binding()->cpu()->worker_count();
-    const auto  loads   = snapshot->load_limits();
-    const auto &view    = *snapshot->view();
-    const auto  leaves  = snapshot_leaf_window(view, limits.max_entries);
-    if (!leaves) {
-        return Status::resource_exhausted("snapshot entry frame window overflow");
-    }
-    const auto value_bytes   = overflow_value_bytes_bound(view, loads.max_value_bytes);
-    auto       bounded_loads = loads;
-    // Each accepted overflow frame supplies at least one value byte. Keep the
-    // loader's validation limits unchanged; only this fixed window is smaller.
-    bounded_loads.max_overflow_pages = std::min<uint64_t>(loads.max_overflow_pages, value_bytes);
-    const auto read_bound =
-        value_bytes == 0 ? AsyncStorePageLoader::primary_reserve_bound(loads, limits.max_route_depth, workers, *leaves)
-                         : AsyncStorePageLoader::read_reserve_bound(bounded_loads, limits.max_route_depth, workers,
-                                                                    *leaves, 1, value_bytes);
-    using detail::shared_allocation_bound;
-    const auto bound =
-        detail::AllocationBound(shared_allocation_bound<State>() + shared_allocation_bound<PublishedSnapshotEntries>() +
-                                shared_allocation_bound<SnapshotPageLoader>() +
-                                shared_allocation_bound<detail::AllocationReservation>())
-            .add(PublishedScan::allocation_bound(limits, workers))
-            .add_product(2, OwnedKey::allocation_overhead() + limits.max_key_bytes + 1)
-            .value();
-    if (!bound || !read_bound) {
-        return Status::resource_exhausted("snapshot entry cursor bound overflow");
-    }
-    auto credit =
-        detail::ResourceBudget::try_reserve(snapshot->binding()->account(), detail::BudgetClass::kRouting, *bound);
-    if (!credit) {
-        return Status::resource_exhausted("snapshot entry control reserve unavailable");
-    }
-    auto metadata     = detail::AllocationReservation::create(std::move(*credit));
-    auto state        = detail::reserved_shared<State>(metadata);
-    state->snapshot   = std::move(snapshot);
-    state->metadata   = metadata;
-    state->loader     = detail::reserved_shared<SnapshotPageLoader>(metadata);
-    state->read_bound = *read_bound;
-    limits.metadata   = metadata;
+    auto metadata   = limits.metadata;
+    auto state      = detail::reserved_shared<State>(metadata);
+    state->snapshot = std::move(snapshot);
+    state->metadata = metadata;
+    state->loader   = detail::reserved_shared<SnapshotPageLoader>(metadata);
+    limits.metadata = metadata;
     PageKeyRange selection;
     if (range.start()) {
         selection.lower = OwnedKey(Slice(*range.start()), metadata);
@@ -161,7 +117,7 @@ Status PublishedSnapshotEntries::next(std::optional<PublishedScanEntry> *out, bo
             }
         } active{*state_->loader};
 
-        auto status = state_->snapshot->prepare_window(state_->read_bound, &window);
+        auto status = state_->snapshot->prepare_window(&window);
         if (status.ok()) {
             status = state_->loader->begin(window.loader);
         }

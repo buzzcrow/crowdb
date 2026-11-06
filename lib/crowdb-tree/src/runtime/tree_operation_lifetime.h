@@ -38,18 +38,16 @@ class TreeOperationLifetime
         std::shared_ptr<State> state_;
     };
 
-    explicit TreeOperationLifetime(size_t maximum, const std::shared_ptr<detail::AllocationReservation> &metadata = {},
+    explicit TreeOperationLifetime(size_t maximum, const std::shared_ptr<AllocationBudget> &metadata = {},
                                    std::shared_ptr<const void> host_owner = {});
     ~TreeOperationLifetime();
     TreeOperationLifetime(const TreeOperationLifetime &)            = delete;
     TreeOperationLifetime &operator=(const TreeOperationLifetime &) = delete;
 
-    [[nodiscard]] Status acquire(const std::shared_ptr<detail::AllocationReservation> &metadata,
-                                 std::shared_ptr<Ticket>                              *out);
+    [[nodiscard]] Status acquire(const std::shared_ptr<AllocationBudget> &metadata, std::shared_ptr<Ticket> *out);
     // Before consensus, a full operation window is temporary admission
     // pressure. Allocation failure remains a resource error.
-    [[nodiscard]] Status        try_acquire(const std::shared_ptr<detail::AllocationReservation> &metadata,
-                                            std::shared_ptr<Ticket>                              *out);
+    [[nodiscard]] Status try_acquire(const std::shared_ptr<AllocationBudget> &metadata, std::shared_ptr<Ticket> *out);
     [[nodiscard]] ResourceUsage resource_usage() const noexcept;
     [[nodiscard]] static size_t allocation_bound() noexcept;
     [[nodiscard]] static size_t ticket_allocation_bound() noexcept;
@@ -64,8 +62,8 @@ class TreeOperationLifetime
     void drain_accepted() noexcept;
 
   private:
-    Status acquire_impl(const std::shared_ptr<detail::AllocationReservation> &metadata, std::shared_ptr<Ticket> *out,
-                        bool temporary_capacity);
+    Status                 acquire_impl(const std::shared_ptr<AllocationBudget> &metadata, std::shared_ptr<Ticket> *out,
+                                        bool temporary_capacity);
     std::shared_ptr<State> state_;
 };
 } // namespace crowdb::tree

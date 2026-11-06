@@ -22,7 +22,8 @@ TEST(BackendAllocationGrant, UsesExistingAdmissionAndRecyclesTemporaryWindows)
     const auto control = test.old->snapshot().allocated[kRouting] - test.base;
     ASSERT_LE(control, BackendAllocationGrant::allocation_bound());
     const auto window = 8192 - test.base - control;
-    EXPECT_FALSE(test.budget->claim(1));
+    ASSERT_TRUE(test.budget->claim(1));
+    test.budget->release(1);
     {
         MetadataAllocator<uint8_t, BackendAllocationGrant> allocator(grant);
         for (size_t i = 0; i != 3; ++i) {
@@ -68,8 +69,8 @@ TEST(BackendAllocationGrant, RetainedAllocationMovesWithBackendAfterOperationSea
 TEST(BackendAllocationGrant, TargetQuotaRefusalReturnsSourceCreditWithoutDoubleCharge)
 {
     TestAccounts test;
-    auto         blocker = ResourceBudget::try_reserve(test.old, BudgetClass::kRouting, 8192 - test.base);
-    ASSERT_TRUE(blocker);
+    const auto   blocker = 12288 - test.base;
+    ASSERT_TRUE(test.budget->claim(blocker));
     auto source = ResourceBudget::try_reserve(test.next, BudgetClass::kRouting, 2048);
     ASSERT_TRUE(source);
     if (!source) {
@@ -83,7 +84,7 @@ TEST(BackendAllocationGrant, TargetQuotaRefusalReturnsSourceCreditWithoutDoubleC
     EXPECT_EQ(test.next->snapshot().reserved[kRouting], 0U);
     EXPECT_EQ(test.host.snapshot().allocated[kRouting], host_before.allocated[kRouting]);
     EXPECT_EQ(test.host.snapshot().reserved[kRouting], host_before.reserved[kRouting] - 2048);
-    blocker.reset();
+    test.budget->release(blocker);
     test.finish();
 }
 

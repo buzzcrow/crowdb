@@ -11,7 +11,18 @@ use crowdb_paxos_kv::kv::{CrowdbTreeConfig, CrowdbTreeEngine};
 use super::conformance;
 
 fn open() -> CrowdbTreeEngine {
-    CrowdbTreeEngine::open(&CrowdbTreeConfig::default()).unwrap()
+    // Each conformance fixture owns its host quotas, independently of other tests.
+    let config = CrowdbTreeConfig {
+        runtime: Some(std::sync::Arc::new(
+            crowdb_tree_ffi::TreeRuntime::new(crowdb_tree_ffi::TreeRuntimeOptions {
+                workers: 1,
+                ..Default::default()
+            })
+            .unwrap(),
+        )),
+        ..Default::default()
+    };
+    CrowdbTreeEngine::open(&config).unwrap()
 }
 
 fn durable_config(path: &std::path::Path) -> CrowdbTreeConfig {

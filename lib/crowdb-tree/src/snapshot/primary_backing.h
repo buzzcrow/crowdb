@@ -23,7 +23,7 @@ struct PrimaryBackingMetadata
 
 struct PrimaryReuseOutput
 {
-    explicit PrimaryReuseOutput(const std::shared_ptr<detail::AllocationReservation> &metadata)
+    explicit PrimaryReuseOutput(const std::shared_ptr<AllocationBudget> &metadata)
         : dependencies(detail::ReservationAllocator<ReusedOverflowDependency>(metadata))
     {
     }

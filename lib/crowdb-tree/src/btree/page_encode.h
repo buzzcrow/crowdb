@@ -11,15 +11,15 @@ namespace crowdb::tree
 {
 struct PageEncodeLimits
 {
-    uint32_t                                       frame_bytes        = 64 * 1024;
-    size_t                                         inline_value_bytes = 8 * 1024;
-    size_t                                         max_sources        = 64;
-    size_t                                         max_entries        = 4096;
-    size_t                                         max_work_entries   = 65536;
-    size_t                                         max_metadata_bytes = 1024 * 1024;
-    std::shared_ptr<detail::AllocationReservation> metadata           = nullptr;
-    std::shared_ptr<TreeWorkMetrics>               work_metrics       = nullptr;
-    TreeWorkCause                                  cause              = TreeWorkCause::Other;
+    uint32_t                          frame_bytes        = 64 * 1024;
+    size_t                            inline_value_bytes = 8 * 1024;
+    size_t                            max_sources        = 64;
+    size_t                            max_entries        = 4096;
+    size_t                            max_work_entries   = 65536;
+    size_t                            max_metadata_bytes = 1024 * 1024;
+    std::shared_ptr<AllocationBudget> metadata           = nullptr;
+    std::shared_ptr<TreeWorkMetrics>  work_metrics       = nullptr;
+    TreeWorkCause                     cause              = TreeWorkCause::Other;
 };
 
 struct InnerEncodeFences

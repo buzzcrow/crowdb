@@ -3,6 +3,7 @@
 #include "backend/checkpoint_backend.h"
 #include "backend/local/local_backend_state.h"
 #include "backend/local/scheduled_page_store.h"
+#include "btree/allocation_account.h"
 #include "btree/allocation_bound.h"
 #include "runtime/tree_tuning_c_api.h"
 #include "snapshot/snapshot_baseline.h"
@@ -290,8 +291,15 @@ Status TreeCore::State::initialize(TreeCoreBootstrap bootstrap)
         loads.max_leaf_key_bytes   = loads.max_frame_bytes;
     }
     reads.max_key_bytes = writers.max_key_size;
-    auto batch          = flush_options(config, *binding, writers.max_key_size);
-    preparation = {.runtime = binding->cpu(), .store = backend, .loads = loads, .maintenance = {}, .cache = cache};
+    std::shared_ptr<detail::AllocationAccount> read_allocations;
+    auto                                       read_status =
+        detail::AllocationAccount::create(binding->account(), detail::BudgetClass::kRouting, &read_allocations);
+    if (!read_status.ok()) {
+        return read_status;
+    }
+    reads.metadata = std::move(read_allocations);
+    auto batch     = flush_options(config, *binding, writers.max_key_size);
+    preparation    = {.runtime = binding->cpu(), .store = backend, .loads = loads, .maintenance = {}, .cache = cache};
     preparation.cpu_progress = apply_dispatcher;
     status                   = publisher->prepare_lane(batch.parallelism + 1, credit, &preparation.publication);
     if (!status.ok()) {

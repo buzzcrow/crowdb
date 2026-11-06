@@ -18,8 +18,8 @@ struct PublishedReadLimits
     size_t max_entries      = 128;
     size_t max_result_bytes = 1024 * 1024;
     // Captured mapping shape, independent of the cursor's source work window.
-    size_t                                         page_metadata_bytes = 0;
-    std::shared_ptr<detail::AllocationReservation> metadata            = nullptr;
+    size_t                            page_metadata_bytes = 0;
+    std::shared_ptr<AllocationBudget> metadata            = nullptr;
 };
 
 struct PublishedGetResult

@@ -25,7 +25,7 @@ TEST(CapturedFrameWindow, WarmAndColdOversizedLeavesUseExactPrepaidDescriptorBou
         auto captured          = std::make_shared<PublishedTreeState>(*view(logical, {}, 10));
         captured->next_page_id = 1;
         LoadCredits credits;
-        credits.credits.bytes->seal();
+        credits.credits.reservation()->seal();
         CapturedFrameLimits limits;
         limits.max_depth                 = 1;
         limits.page_metadata_bytes       = captured->mapping.copy_bounds().max_leaf_bytes;

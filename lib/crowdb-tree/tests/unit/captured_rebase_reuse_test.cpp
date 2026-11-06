@@ -111,7 +111,7 @@ TEST(CapturedRebaseReuse, ZeroReplacementCreditPreservesExactPageAndLaterOverlay
         if (!bound) {
             FAIL() << "zero-replacement rebase bound overflow";
         }
-        auto paid = credits.credits.bytes->take_reserved(
+        auto paid = credits.credits.reservation()->take_reserved(
             *bound + detail::shared_allocation_bound<detail::AllocationReservation>());
         if (!paid) {
             FAIL() << "zero-replacement rebase credit unavailable";

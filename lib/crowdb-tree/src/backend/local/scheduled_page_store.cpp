@@ -2,6 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 #include "scheduled_page_store.h"
 
+#include "backend/chunk/chunk_write_queue.h"
+#include "btree/allocation_account.h"
 #include "btree/allocation_bound.h"
 #include "btree/tree_metrics.h"
 #include "crowdb-common/log.h"
@@ -17,6 +19,7 @@ struct ScheduledPageStore::State
     std::shared_ptr<TreeRuntimeBinding>            binding;
     std::shared_ptr<detail::FlushRuntime::Lane>    lane;
     std::shared_ptr<detail::AllocationReservation> jobs;
+    std::shared_ptr<ChunkWriteQueue>               chunks;
     std::atomic<size_t>                            active{0};
 
     ~State()
@@ -199,7 +202,13 @@ try {
     state->async         = async;
     state->backend_owner = std::move(backend_owner);
     state->binding       = std::move(binding);
-    *out                 = detail::reserved_construct<ScheduledPageStore>(
+    std::shared_ptr<detail::AllocationAccount> actual;
+    auto status = detail::AllocationAccount::create(state->binding->account(), detail::BudgetClass::kRouting, &actual);
+    if (!status.ok()) {
+        return status;
+    }
+    state->chunks = std::allocate_shared<ChunkWriteQueue>(MetadataAllocator<ChunkWriteQueue>(actual), actual);
+    *out          = detail::reserved_construct<ScheduledPageStore>(
         metadata, [&](auto *storage) { ::new (static_cast<void *>(storage)) ScheduledPageStore(std::move(state)); });
     return Status::Ok();
 }
@@ -317,5 +326,11 @@ void ScheduledPageStore::cancel(uint64_t /*operation*/)
 {
     // Accepted operations keep their owners until real terminal or transport
     // disposal. Cancellation of a consumer never releases in-flight I/O early.
+}
+
+void ScheduledPageStore::submit_chunk(std::shared_ptr<ChunkPackBacking> backing, std::span<const uint8_t> input,
+                                      AsyncCompletion complete)
+{
+    state_->chunks->submit(shared_from_this(), std::move(backing), input, std::move(complete));
 }
 } // namespace crowdb::tree

@@ -32,15 +32,16 @@ std::shared_ptr<ChunkRootCommit> next(test_chunk::TestRootBackend               
     identity.wal_replay_offset = wal;
     std::shared_ptr<ChunkRootCommit> operation;
     const auto                       status =
-        ChunkRootCommit::create(pages, test.domain, test.ids, identity, test.credits.credits.bytes,
-                                test.credits.credits.bytes, &operation, 1024 * 1024, previous, baseline);
+        ChunkRootCommit::create(pages, test.domain, test.ids, identity, test.credits.credits.reservation(),
+                                test.credits.credits.reservation(), &operation, 1024 * 1024, previous, baseline);
     EXPECT_TRUE(status.ok()) << status.to_string();
     return status.ok() ? finish(std::move(operation)) : nullptr;
 }
 
 std::shared_ptr<CapturedDurablePages> inherit(test_chunk::TestRootBackend &test, const CapturedDurablePages &source)
 {
-    auto pages = detail::reserved_shared<CapturedDurablePages>(test.credits.credits.bytes, test.credits.credits.bytes);
+    auto pages = detail::reserved_shared<CapturedDurablePages>(test.credits.credits.reservation(),
+                                                               test.credits.credits.reservation());
     pages->frames.inherit(source.frames);
     pages->backend_id   = source.backend_id;
     pages->generation   = source.generation;
@@ -99,9 +100,10 @@ TEST(ChunkRootIncremental, DeletingAWholeSegmentKeepsLaterPackIdentityAndBirthOr
     detail::ChunkId      unused;
     ASSERT_TRUE(test.ids->next(PagePurpose::kPageIndex, &pin, &unused).ok());
     std::shared_ptr<const ChunkPackBacking> pack;
-    ASSERT_TRUE(pin_chunk_backing(test.domain, root->indexes[0].pack, pin, test.credits.credits.bytes, &pack).ok());
+    ASSERT_TRUE(
+        pin_chunk_backing(test.domain, root->indexes[0].pack, pin, test.credits.credits.reservation(), &pack).ok());
     std::vector<uint8_t> bytes(pack->pack.length);
-    ASSERT_TRUE(read_chunk_backing(*pack, bytes, test.credits.credits.bytes).ok());
+    ASSERT_TRUE(read_chunk_backing(*pack, bytes, test.credits.credits.reservation()).ok());
     uint64_t count  = 0;
     size_t   offset = 0;
     ASSERT_TRUE(decode_chunk_index_header(bytes, root->identity, 0, &count, &offset).ok());

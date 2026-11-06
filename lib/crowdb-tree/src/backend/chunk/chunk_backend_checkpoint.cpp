@@ -72,10 +72,10 @@ Status ChunkBackendState::prepare_checkpoint(BackendCheckpointInput input, std::
     auto identity              = next_identity(input.view);
     identity.next_page_id      = input.pages->next_page_id;
     identity.wal_replay_offset = input.wal_offset;
-    auto result                = detail::reserved_shared<ChunkCheckpoint>(input.budget.bytes);
+    auto result                = detail::reserved_shared<ChunkCheckpoint>(input.budget.reservation());
     result->backend            = this;
-    auto status = ChunkRootCommit::create(input.pages, domain, ids, identity, input.budget.bytes, input.budget.bytes,
-                                          &result->commit, input.max_dependency_steps,
+    auto status = ChunkRootCommit::create(input.pages, domain, ids, identity, input.budget.reservation(),
+                                          input.budget.reservation(), &result->commit, input.max_dependency_steps,
                                           committed_root.load(std::memory_order_acquire),
                                           input.view.snapshot_baseline ? input.view.snapshot_baseline->pages : nullptr);
     if (!status.ok()) {

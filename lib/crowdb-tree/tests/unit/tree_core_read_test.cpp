@@ -223,6 +223,49 @@ TEST_F(TreeCoreRead, PackedResultKeepsCapacityChargedAfterTreeClose)
     EXPECT_LT(runtime->snapshot().allocated.routing_bytes, held);
 }
 
+TEST(TreeCoreReadProgress, SmallResidentReadsUseActualMemoryInsteadOfWorstCaseWindows)
+{
+    std::shared_ptr<TreeRuntime> runtime;
+    ASSERT_TRUE(TreeRuntime::create({.workers = 4}, &runtime).ok());
+    Config config;
+    config.runtime                              = runtime;
+    config.runtime_binding.limits.routing_bytes = 4 * 1024 * 1024;
+    config.runtime_binding.limits.io_operations = 1;
+    std::shared_ptr<TreeRuntimeBinding> binding;
+    ASSERT_TRUE(TreeRuntimeBinding::create(runtime, config.runtime_binding, &binding).ok());
+    std::shared_ptr<TreeCore> core;
+    ASSERT_TRUE(TreeCore::create(config, binding, {}, &core).ok());
+    ASSERT_TRUE(core->apply(1, {.ops = {{.key = "key", .kind = OpKind::kPut, .value = "value"}}}).ok());
+    GetView value;
+    auto    status = core->get("key", &value);
+    ASSERT_TRUE(status.ok()) << status.to_string();
+    EXPECT_EQ(value.value().to_string(), "value");
+    std::atomic<size_t> remaining{32};
+    std::atomic<size_t> failures{0};
+    for (size_t index = 0; index < 32; ++index) {
+        core->get_async("key", [&](Status outcome, GetView result) {
+            if (!outcome.ok() || !result.found() || result.value().to_string() != "value") {
+                failures.fetch_add(1, std::memory_order_relaxed);
+            }
+            remaining.fetch_sub(1, std::memory_order_release);
+            remaining.notify_all();
+        });
+    }
+    while (const auto pending = remaining.load(std::memory_order_acquire)) {
+        remaining.wait(pending, std::memory_order_acquire);
+    }
+    EXPECT_EQ(failures.load(), 0U);
+    ScanPackedBuf packed;
+    bool          truncated = false;
+    size_t        count     = 0;
+    status                  = core->scan({}, nullptr, &truncated, &packed, &count);
+    ASSERT_TRUE(status.ok()) << status.to_string();
+    EXPECT_EQ(count, 1U);
+    EXPECT_FALSE(truncated);
+    EXPECT_LT(packed.capacity(), 1024U);
+    EXPECT_LT(runtime->snapshot().allocated.routing_bytes, 4 * 1024 * 1024U);
+}
+
 TEST_F(TreeCoreRead, TerminalGetReturnsIoCreditBeforeCallingConsumer)
 {
     use_single_io();

@@ -42,13 +42,6 @@ void submit_chunk_write(AsyncPageStore &store, std::shared_ptr<ChunkPackBacking>
         complete.complete(Status::not_supported("Chunk writes require a paid backend lane"));
         return;
     }
-    auto status = scheduled->submit_step(
-        [backing = std::move(backing), input, metadata = std::move(metadata)] {
-            return write_chunk_backing(*backing, input, metadata);
-        },
-        complete, 0, input.size());
-    if (!status.ok()) {
-        complete.complete(std::move(status));
-    }
+    scheduled->submit_chunk(std::move(backing), input, std::move(complete));
 }
 } // namespace crowdb::tree

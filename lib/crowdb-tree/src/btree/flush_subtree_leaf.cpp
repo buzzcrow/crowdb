@@ -172,46 +172,20 @@ void FlushBatch::State::Subtree::leaf()
 
 void FlushBatch::State::Subtree::request_load()
 {
-    auto *head = owner.load_waiters.load(std::memory_order_relaxed);
-    do {
-        load_next = head;
-    } while (
-        !owner.load_waiters.compare_exchange_weak(head, this, std::memory_order_release, std::memory_order_relaxed));
-    owner.start_load();
-}
-
-void FlushBatch::State::start_load() noexcept
-{
-    if (load_active.exchange(true, std::memory_order_acq_rel)) {
-        return;
-    }
-    auto *next = load_waiters.load(std::memory_order_acquire);
-    while (next != nullptr && !load_waiters.compare_exchange_weak(next, next->load_next, std::memory_order_acq_rel)) {
-    }
-    if (next != nullptr) {
-        next->load();
-        return;
-    }
-    load_active.exchange(false, std::memory_order_acq_rel);
-    // Pair with producer publication so an arrival cannot miss the idle edge.
-    if (load_waiters.load(std::memory_order_acquire) != nullptr) {
-        start_load();
-    }
+    load();
 }
 
 void FlushBatch::State::Subtree::load() noexcept
 {
     try {
         if ((owner.lifecycle.load(std::memory_order_acquire) & kStopped) != 0) {
-            status         = Status::unavailable("flush stopped before cold load");
-            load_completed = true;
+            status = Status::unavailable("flush stopped before cold load");
             schedule();
             return;
         }
         if (writing) {
             if (!owner.options.consolidation) {
-                status         = Status::invalid_argument("flush consolidation options are absent");
-                load_completed = true;
+                status = Status::invalid_argument("flush consolidation options are absent");
                 schedule();
                 return;
             }
@@ -253,8 +227,7 @@ void FlushBatch::State::Subtree::load() noexcept
                     }
                     status = std::move(result);
                     ++persist_at;
-                    writing        = false;
-                    load_completed = true;
+                    writing = false;
                     schedule();
                 });
             return;
@@ -267,7 +240,6 @@ void FlushBatch::State::Subtree::load() noexcept
                 if (status.ok() && !inner) {
                     status = Status::corruption("flush loader returned no index");
                 }
-                load_completed = true;
                 schedule();
             });
         }
@@ -283,19 +255,16 @@ void FlushBatch::State::Subtree::load() noexcept
                                   if (status.ok()) {
                                       loaded_leaf->bases[next_base++].resident = std::move(page);
                                   }
-                                  load_completed = true;
                                   schedule();
                               });
         }
     }
     catch (const std::bad_alloc &) {
-        status         = Status::resource_exhausted("flush cold load allocation failed");
-        load_completed = true;
+        status = Status::resource_exhausted("flush cold load allocation failed");
         schedule();
     }
     catch (const std::exception &) {
-        status         = Status::internal_error("flush cold load failed");
-        load_completed = true;
+        status = Status::internal_error("flush cold load failed");
         schedule();
     }
 }

@@ -106,11 +106,11 @@ void CheckpointOperation::State::begin_layout()
     auto limits                           = options.write.frames;
     limits.max_depth                      = depth;
     limits.plan_only                      = true;
-    limits.encode.metadata                = budget.bytes;
+    limits.encode.metadata                = budget.reservation();
     limits.cpu_progress                   = budget.cpu_progress;
-    planner     = detail::reserved_unique<CapturedLayoutPlanner>(budget.bytes, view->next_page_id, backend_identity(),
-                                                                 options.write, options.metadata.max_segments,
-                                                                 inherited_pages(), budget.bytes);
+    planner                               = detail::reserved_unique<CapturedLayoutPlanner>(
+        budget.reservation(), view->next_page_id, backend_identity(), options.write, options.metadata.max_segments,
+        inherited_pages(), budget.reservation());
     auto status = CapturedFrameStream::create(view, loader, runtime, lane, std::move(limits), {}, &planning_stream);
     if (!status.ok()) {
         finish(std::move(status));
@@ -186,8 +186,8 @@ void CheckpointOperation::State::planned()
 
 void CheckpointOperation::State::begin_materialization()
 {
-    writeback_metrics = detail::reserved_shared<WritebackMetrics>(budget.bytes, publisher.work_metrics(), budget.bytes,
-                                                                  plan.primary_frames);
+    writeback_metrics = detail::reserved_shared<WritebackMetrics>(budget.reservation(), publisher.work_metrics(),
+                                                                  budget.reservation(), plan.primary_frames);
     options.write.frames.writeback_metrics = writeback_metrics;
     capture();
 }

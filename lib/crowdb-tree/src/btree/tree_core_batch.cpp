@@ -202,14 +202,12 @@ Status write_inputs(SourceAdmission &sources, ApplyFrontier &frontier, uint64_t 
         }
         if (!paused && rotation != nullptr && category == detail::BudgetClass::kAdmittedWriter &&
             status.code() == Code::kUnavailable && !detail::FlushRuntime::on_worker_thread()) {
-            const auto source    = sources.catalog()->active->id();
-            const auto requested = rotation->request();
+            auto requested = rotation->request();
             if (requested == 0) {
-                (void)rotation->request_pressure();
-                return status;
+                requested = rotation->request_pressure();
             }
-            rotation->wait(requested);
-            if (sources.catalog()->active->id() != source) {
+            if (requested != 0) {
+                rotation->wait(requested);
                 continue;
             }
         }
@@ -267,12 +265,15 @@ Status apply_source_batch(const Config &config, SourceAdmission &sources, ApplyF
         }
         return status.ok() ? frontier.complete(slot) : status;
     }
-    const auto  catalog = sources.catalog();
-    const auto &options = catalog->active_budget->options();
-    status              = validate_inputs(config, options, max_value_bytes, supplied_slot.value_or(0), count, read);
+    auto       catalog = sources.catalog();
+    const auto options = catalog->active_budget->options();
+    const auto floor   = catalog->floor;
+    status             = validate_inputs(config, options, max_value_bytes, supplied_slot.value_or(0), count, read);
     if (!status.ok()) {
         return status;
     }
+    // Waiting for flush must not retain the source payloads it needs to retire.
+    catalog.reset();
     const auto bytes     = detail::shared_allocation_bound<detail::AllocationReservation>() +
                            TreeOperationLifetime::ticket_allocation_bound() +
                            (count * (sizeof(size_t) + sizeof(SourceAdmission::Writer::Prepared)));
@@ -293,7 +294,7 @@ Status apply_source_batch(const Config &config, SourceAdmission &sources, ApplyF
         return status;
     }
     auto order = select_inputs(count, read, credit);
-    if (supplied_slot && *supplied_slot <= catalog->floor) {
+    if (supplied_slot && *supplied_slot <= floor) {
         return frontier.complete(*supplied_slot);
     }
     return write_inputs(sources, frontier, completed, supplied_slot, automatic, order, read, credit, category, progress,

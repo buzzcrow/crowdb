@@ -277,7 +277,7 @@ void CheckpointOperation::State::captured()
     const auto end         = overflow_begin + plan.new_overflow_frames;
     // The publication owns the advanced high-water mark. A tiny independent
     // owner, rather than this operation, protects the emitted interval.
-    auto lease   = detail::reserved_shared<ReservedOverflowIds>(budget.bytes);
+    auto lease   = detail::reserved_shared<ReservedOverflowIds>(budget.reservation());
     lease->first = overflow_begin;
     lease->count = plan.new_overflow_frames;
     auto reserve = [lease, next = overflow_begin, end](uint64_t count, ReservedOverflowIds *out) mutable {
@@ -290,7 +290,7 @@ void CheckpointOperation::State::captured()
     };
     auto status = CapturedWriteOperation::create(
         view, loader, store, runtime, lane, options.write, budget, std::move(reserve),
-        chunk ? chunk->reserve(budget.bytes) : extent_write_reservation(backend->ledger, budget.bytes),
+        chunk ? chunk->reserve(budget.reservation()) : extent_write_reservation(backend->ledger, budget.reservation()),
         inherited_pages(), &write);
     if (!status.ok()) {
         reconcile(std::move(status));
@@ -392,8 +392,8 @@ void CheckpointOperation::State::begin_rebase()
         finish_rebase(Status::unavailable());
         return;
     }
-    auto status = CapturedRebaseOperation::create(publisher, view, written_pages, runtime, lane, budget.bytes, &rebase,
-                                                  options.write.frames.encode.max_sources, writeback_metrics,
+    auto status = CapturedRebaseOperation::create(publisher, view, written_pages, runtime, lane, budget.reservation(),
+                                                  &rebase, options.write.frames.encode.max_sources, writeback_metrics,
                                                   cpu_progress, options.publication, options.cause);
     if (!status.ok()) {
         finish_rebase(std::move(status));

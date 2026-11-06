@@ -7,8 +7,8 @@
 namespace crowdb::tree
 {
 void PageCacheResidency::State::prepare_page(Update &update, uint64_t pid,
-                                             const std::shared_ptr<const PublishedPage>           &replacement,
-                                             const std::shared_ptr<detail::AllocationReservation> &metadata)
+                                             const std::shared_ptr<const PublishedPage> &replacement,
+                                             const std::shared_ptr<AllocationBudget>    &metadata)
 {
     std::shared_ptr<Page> page;
     if (replacement) {
@@ -38,16 +38,15 @@ void PageCacheResidency::State::prepare_page(Update &update, uint64_t pid,
 }
 
 std::shared_ptr<PageCacheResidency::Update>
-PageCacheResidency::prepare_initial(const MappingView                                    &mapping,
-                                    const std::shared_ptr<detail::AllocationReservation> &metadata) const
+PageCacheResidency::prepare_initial(const MappingView &mapping, const std::shared_ptr<AllocationBudget> &metadata) const
 {
     auto                         update = detail::reserved_shared<Update>(metadata, state_);
     PageCacheNodeResource::Scope scope(metadata);
 
     struct Context
     {
-        std::shared_ptr<Update>                               update;
-        const std::shared_ptr<detail::AllocationReservation> &metadata;
+        std::shared_ptr<Update>                  update;
+        const std::shared_ptr<AllocationBudget> &metadata;
     } context{.update = update, .metadata = metadata};
 
     mapping.visit(&context, [](void *argument, uint64_t pid, const auto &page) {
@@ -62,8 +61,8 @@ PageCacheResidency::prepare_initial(const MappingView                           
 }
 
 std::shared_ptr<PageCacheResidency::Update>
-PageCacheResidency::prepare_replacement(const MappingView                                    &mapping,
-                                        const std::shared_ptr<detail::AllocationReservation> &metadata) const
+PageCacheResidency::prepare_replacement(const MappingView                       &mapping,
+                                        const std::shared_ptr<AllocationBudget> &metadata) const
 {
     auto update   = prepare_initial(mapping, metadata);
     update->reset = true;

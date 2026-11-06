@@ -4,6 +4,7 @@
 #include "btree/resource_budget.h"
 
 #include "btree/allocation_reservation.h"
+#include "crowdb-common/log.h"
 #include "tree_work_counters.h"
 
 #include <algorithm>
@@ -27,15 +28,39 @@ uint64_t budget_now_ns() noexcept
             .count());
 }
 
-bool reserve_amount(std::atomic<size_t> &used, size_t limit, size_t amount) noexcept
+bool reserve_amount(std::atomic<size_t> &used, size_t limit, size_t amount, size_t *previous = nullptr) noexcept
 {
     auto current = used.load(std::memory_order_relaxed);
     while (current <= limit && amount <= limit - current) {
         if (used.compare_exchange_weak(current, current + amount, std::memory_order_acq_rel)) {
+            if (previous != nullptr) {
+                *previous = current;
+            }
             return true;
         }
     }
     return false;
+}
+
+size_t memory_limit(const ResourceBudget::Limits &limits) noexcept
+{
+    size_t total = 0;
+    for (size_t index = 0; index < static_cast<size_t>(BudgetClass::kIo); ++index) {
+        total += std::min(limits[index], SIZE_MAX - total);
+    }
+    return total;
+}
+
+size_t memory_ceiling(size_t limit) noexcept
+{
+    return limit + std::min(limit / 2, SIZE_MAX - limit);
+}
+
+void report_memory(size_t previous, size_t current, size_t limit, uint64_t scope) noexcept
+{
+    if (previous < limit && current >= limit) {
+        CRB_LOG_ERROR("Tree memory reached configured maximum: scope={} used={} maximum={}", scope, current, limit);
+    }
 }
 } // namespace
 
@@ -43,14 +68,38 @@ struct ResourceBudget::State
 {
     State(Limits capacity, size_t max_waiters, const std::shared_ptr<AllocationBudget> &bootstrap)
         : limits(capacity),
+          memory_limit_bytes(memory_limit(capacity)),
           waiter_capacity(max_waiters),
           waiters(max_waiters * kClasses, MetadataAllocator<std::atomic<Request *>>(bootstrap))
     {
     }
 
+    void allocated_bytes(Account &account, size_t category, size_t bytes) noexcept
+    {
+        if (category == static_cast<size_t>(BudgetClass::kIo)) {
+            return;
+        }
+        const auto tree = account.memory_allocated_.fetch_add(bytes, std::memory_order_relaxed);
+        const auto host = memory_allocated.fetch_add(bytes, std::memory_order_relaxed);
+        report_memory(tree, tree + bytes, account.memory_limit_, account.scope_id_);
+        report_memory(host, host + bytes, memory_limit_bytes, 0);
+    }
+
+    void freed_bytes(Account &account, size_t category, size_t bytes) noexcept
+    {
+        if (category != static_cast<size_t>(BudgetClass::kIo)) {
+            account.memory_allocated_.fetch_sub(bytes, std::memory_order_relaxed);
+            memory_allocated.fetch_sub(bytes, std::memory_order_relaxed);
+        }
+    }
+
     std::optional<Credit> reserve(const std::shared_ptr<Account> &account, size_t category, size_t amount) noexcept
     {
         if (category >= kClasses || closed.load(std::memory_order_acquire)) {
+            return {};
+        }
+        if (category == static_cast<size_t>(BudgetClass::kAdmittedWriter) && memory_exhausted(account)) {
+            denied(*account, category, false);
             return {};
         }
         if (!reserve_amount(account->used_[category], account->limits_[category], amount)) {
@@ -213,6 +262,8 @@ struct ResourceBudget::State
 
     std::weak_ptr<RetirementQueue>                                                 retirement;
     Limits                                                                         limits;
+    size_t                                                                         memory_limit_bytes;
+    std::atomic<size_t>                                                            memory_allocated{0};
     size_t                                                                         waiter_capacity;
     Request                                                                        idle_request;
     std::array<std::atomic<size_t>, kClasses>                                      used{};
@@ -252,8 +303,22 @@ ResourceBudget::Account::Account(std::shared_ptr<State> state, Limits limits)
     : state_(std::move(state)),
       retirement_(state_->retirement),
       limits_(limits),
+      memory_limit_(memory_limit(limits)),
       scope_id_(next_scope_id.fetch_add(1, std::memory_order_relaxed))
 {
+}
+
+bool ResourceBudget::memory_exhausted(const std::shared_ptr<Account> &account) noexcept
+{
+    return account &&
+           (account->memory_allocated_.load(std::memory_order_relaxed) > memory_ceiling(account->memory_limit_) ||
+            account->state_->memory_allocated.load(std::memory_order_relaxed) >
+                memory_ceiling(account->state_->memory_limit_bytes));
+}
+
+bool ResourceBudget::accepting(const std::shared_ptr<Account> &account) noexcept
+{
+    return account && !account->state_->closed.load(std::memory_order_acquire);
 }
 
 void ResourceBudget::Account::set_resource_metrics(const std::shared_ptr<TreeResourceMetrics> &metrics) noexcept
@@ -338,6 +403,7 @@ bool AllocationReservation::claim(size_t bytes) noexcept
             account_->reserved_[category_].fetch_sub(bytes, std::memory_order_relaxed);
             state.allocated[category_].fetch_add(bytes, std::memory_order_relaxed);
             state.reserved[category_].fetch_sub(bytes, std::memory_order_relaxed);
+            state.allocated_bytes(*account_, category_, bytes);
             state.allocation_changed();
             return true;
         }
@@ -355,6 +421,7 @@ void AllocationReservation::release(size_t bytes) noexcept
             account_->reserved_[category_].fetch_add(bytes, std::memory_order_relaxed);
             state->allocated[category_].fetch_sub(bytes, std::memory_order_relaxed);
             state->reserved[category_].fetch_add(bytes, std::memory_order_relaxed);
+            state->freed_bytes(*account_, category_, bytes);
             return;
         }
     }
@@ -364,6 +431,7 @@ void AllocationReservation::release(size_t bytes) noexcept
     }
     account_->allocated_[category_].fetch_sub(bytes, std::memory_order_relaxed);
     state->allocated[category_].fetch_sub(bytes, std::memory_order_relaxed);
+    state->freed_bytes(*account_, category_, bytes);
     account_->used_[category_].fetch_sub(bytes, std::memory_order_acq_rel);
     state->used[category_].fetch_sub(bytes, std::memory_order_acq_rel);
     state->notify();
@@ -473,6 +541,7 @@ std::optional<ResourceBudget::Credit> ResourceBudget::Credit::allocate(size_t am
     account_->reserved_[category_].fetch_sub(amount, std::memory_order_relaxed);
     state.allocated[category_].fetch_add(amount, std::memory_order_relaxed);
     state.reserved[category_].fetch_sub(amount, std::memory_order_relaxed);
+    state.allocated_bytes(*account_, category_, amount);
     amount_ -= amount;
     state.allocation_changed();
     return Credit(account_, category_, amount, true);
@@ -505,6 +574,9 @@ void ResourceBudget::Credit::release() noexcept
     auto &account_counter = allocated_ ? account->allocated_[category_] : account->reserved_[category_];
     account_counter.fetch_sub(amount, std::memory_order_relaxed);
     counter.fetch_sub(amount, std::memory_order_relaxed);
+    if (allocated_) {
+        state->freed_bytes(*account, category_, amount);
+    }
     account->used_[category_].fetch_sub(amount, std::memory_order_acq_rel);
     state->used[category_].fetch_sub(amount, std::memory_order_acq_rel);
     state->notify();
@@ -681,20 +753,28 @@ ResourceBudget::ResourceBudget(Limits limits, size_t max_waiters_per_class,
 bool ResourceBudget::claim_allocation(const std::shared_ptr<Account> &account, BudgetClass category,
                                       size_t bytes) noexcept
 {
-    if (category == BudgetClass::kIo) {
+    const auto index = static_cast<size_t>(category);
+    if (!account || category == BudgetClass::kIo || index >= kClasses) {
         return false;
     }
-    auto credit = try_reserve(account, category, bytes);
-    if (!credit) {
+    auto   state = account->state_;
+    size_t tree  = 0;
+    size_t host  = 0;
+    if (!reserve_amount(account->memory_allocated_, memory_ceiling(account->memory_limit_), bytes, &tree)) {
+        state->denied(*account, index, false);
         return false;
     }
-    auto allocation = credit->allocate(bytes);
-    if (!allocation) {
+    if (!reserve_amount(state->memory_allocated, memory_ceiling(state->memory_limit_bytes), bytes, &host)) {
+        account->memory_allocated_.fetch_sub(bytes, std::memory_order_relaxed);
+        state->denied(*account, index, true);
         return false;
     }
-    credit->account_.reset();
-    allocation->amount_ = 0;
-    allocation->account_.reset();
+    account->used_[index].fetch_add(bytes, std::memory_order_relaxed);
+    state->used[index].fetch_add(bytes, std::memory_order_relaxed);
+    account->allocated_[index].fetch_add(bytes, std::memory_order_relaxed);
+    state->allocated[index].fetch_add(bytes, std::memory_order_relaxed);
+    report_memory(tree, tree + bytes, account->memory_limit_, account->scope_id_);
+    report_memory(host, host + bytes, state->memory_limit_bytes, 0);
     return true;
 }
 
@@ -732,10 +812,14 @@ bool ResourceBudget::transfer_allocation(
     if (from == to) {
         return true;
     }
-    if (!reserve_amount(to->used_[index], to->limits_[index], bytes)) {
+    size_t memory_before = 0;
+    if (!reserve_amount(to->memory_allocated_, memory_ceiling(to->memory_limit_), bytes, &memory_before)) {
         to->state_->denied(*to, index, false);
         return false;
     }
+    to->used_[index].fetch_add(bytes, std::memory_order_relaxed);
+    from->memory_allocated_.fetch_sub(bytes, std::memory_order_relaxed);
+    report_memory(memory_before, memory_before + bytes, to->memory_limit_, to->scope_id_);
     to->allocated_[index].fetch_add(bytes, std::memory_order_relaxed);
     [[maybe_unused]] const auto previous = from->allocated_[index].fetch_sub(bytes, std::memory_order_relaxed);
     assert(previous >= bytes);

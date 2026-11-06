@@ -26,7 +26,7 @@ TEST(AllocationAccountAdoption, FirstBindChargesEveryExistingOwnerBeforeFurtherG
         const auto bound = host.snapshot().allocated[kRouting];
         EXPECT_GT(bound, 103U + sizeof(AllocationAccount));
         EXPECT_EQ(account->snapshot().physical[kMetadata], bound);
-        EXPECT_FALSE(budget->claim(8192 - bound + 1));
+        EXPECT_FALSE(budget->claim(12288 - bound + 1));
         allocator.deallocate(data, 103);
         EXPECT_EQ(account->snapshot().allocated[kRouting], bound - 103);
     }

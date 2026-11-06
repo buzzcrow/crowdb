@@ -28,8 +28,7 @@ namespace detail
 {
 struct FlushReserveBounds
 {
-    static constexpr std::array categories{BudgetClass::kHandoff, BudgetClass::kRouting, BudgetClass::kReclaim,
-                                           BudgetClass::kIo};
+    static constexpr std::array categories{BudgetClass::kHandoff, BudgetClass::kRouting, BudgetClass::kReclaim};
     std::array<size_t, categories.size()> amounts{};
     size_t                                backend_bytes            = 0;
     size_t                                snapshot_bytes           = 0;
@@ -45,13 +44,12 @@ struct FlushReservations
     std::shared_ptr<AllocationReservation> handoff;
     std::shared_ptr<AllocationReservation> routing;
     std::shared_ptr<AllocationReservation> reclaim;
-    std::shared_ptr<AllocationReservation> io;
     std::shared_ptr<AllocationReservation> snapshot;
 
     void seal() const noexcept
     {
         seal_backend_budget(backend);
-        for (const auto &credit : {handoff, routing, reclaim, io, snapshot}) {
+        for (const auto &credit : {handoff, routing, reclaim, snapshot}) {
             if (credit) {
                 credit->seal();
             }

@@ -213,12 +213,12 @@ TEST(RecoveredState, ExhaustedAdmissionFailsWithoutStartingIo)
 {
     TestRecoveredGraph test;
     test.balanced();
-    const auto held = test.credits.credits.bytes->available();
-    ASSERT_TRUE(test.credits.credits.bytes->claim(held));
+    const auto held = test.credits.credits.reservation()->available();
+    ASSERT_TRUE(test.credits.credits.reservation()->claim(held));
     EXPECT_EQ(test.prepare().code(), Code::kResourceExhausted);
     EXPECT_EQ(test.store->reads.load(), 0U);
     EXPECT_FALSE(test.operation);
-    test.credits.credits.bytes->release(held);
+    test.credits.credits.reservation()->release(held);
     test.loader.reset();
     test.pages.reset();
     test.credits.seal();

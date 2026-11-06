@@ -185,11 +185,11 @@ void LocalCheckpointOperation::State::reserve(uint64_t length, Stage next)
     stage   = next;
     waiting = true;
     event_ready.store(false, std::memory_order_release);
-    auto status =
-        registry->ledger_->reserve(length, budget.bytes, [self = shared_from_this()](ExtentLedgerResult result) {
-            self->reserved = std::move(result.extent);
-            self->event(std::move(result.status));
-        });
+    auto status = registry->ledger_->reserve(length, budget.reservation(),
+                                             [self = shared_from_this()](ExtentLedgerResult result) {
+                                                 self->reserved = std::move(result.extent);
+                                                 self->event(std::move(result.status));
+                                             });
     if (!status.ok()) {
         event(std::move(status));
     }

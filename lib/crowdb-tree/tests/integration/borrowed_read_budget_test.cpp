@@ -18,7 +18,7 @@ TEST(BorrowedReadBudget, InlineWritebackAndNewUnknownOverlaysAdmitConcurrentRead
     config.page_store                           = &store;
     config.frame_bytes                          = 65536;
     config.runtime_binding.limits.routing_bytes = 128 * 1024 * 1024;
-    // Each accepted read owns a loader ticket and backend admission together.
+    // I/O credit is consumed only when a backing read is submitted.
     config.runtime_binding.limits.io_operations = 64;
     Crowdbtree        tree(config);
     const std::string value(16384, 'v');
@@ -37,7 +37,7 @@ TEST(BorrowedReadBudget, InlineWritebackAndNewUnknownOverlaysAdmitConcurrentRead
     std::array<core_read_detail::ReadPreparation, 16> accepted;
     size_t                                            readers = 0;
     for (auto &read : accepted) {
-        const auto status = core_read_detail::prepare(core, captured, core.read_limits(), false, 0, 0, &read);
+        const auto status = core_read_detail::prepare(core, captured, core.read_limits(), &read);
         ASSERT_TRUE(status.ok()) << "readers=" << readers << ' ' << status.to_string();
         ++readers;
     }

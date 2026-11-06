@@ -5,7 +5,10 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <future>
 #include <latch>
+#include <thread>
 
 namespace crowdb::tree
 {
@@ -74,6 +77,8 @@ TEST(TreeSourceWindow, WriterCreditReturnsOnlyAfterPhysicalRetirement)
         std::latch entered{1}, release{1};
     } gate;
 
+    std::future<Status> writes;
+
     auto unblock = [binding](Gate *gate) {
         gate->release.count_down();
         binding->drain();
@@ -90,29 +95,38 @@ TEST(TreeSourceWindow, WriterCreditReturnsOnlyAfterPhysicalRetirement)
                         &gate)
                     .ok());
     gate.entered.wait();
-    uint64_t rejected = 0;
-    for (uint64_t slot = 1; slot <= 128; ++slot) {
-        Batch      batch{.ops = {{.key = "key", .kind = OpKind::kPut, .value = std::to_string(slot)}}};
-        const auto status = tree.apply(slot, batch);
-        if (!status.ok()) {
-            EXPECT_EQ(status.code(), Code::kUnavailable) << status.to_string();
-            rejected = slot;
-            break;
+    writes                  = std::async(std::launch::async, [&] {
+        for (uint64_t slot = 1; slot <= 128; ++slot) {
+            Batch batch{.ops = {{.key = "key", .kind = OpKind::kPut, .value = std::to_string(slot)}}};
+            auto  status = tree.apply(slot, batch);
+            if (!status.ok()) {
+                return status;
+            }
         }
-    }
-    ASSERT_GT(rejected, 1U);
-    EXPECT_EQ(tree.contiguous_slot(), rejected - 1);
-    EXPECT_GT(binding->account()->retirements_pending_for_tests(), 0U);
+        return Status::Ok();
+    });
     constexpr auto category = static_cast<size_t>(detail::BudgetClass::kAdmittedWriter);
-    const auto     held     = binding->account()->snapshot().allocated[category];
+    const auto     deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (binding->account()->snapshot().allocated[category] <= config.runtime_binding.limits.writer_bytes / 2 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(writes.wait_for(std::chrono::milliseconds(20)), std::future_status::timeout);
+    EXPECT_GT(tree.contiguous_slot(), 1U);
+    EXPECT_LT(tree.contiguous_slot(), 128U);
+    EXPECT_GT(binding->account()->retirements_pending_for_tests(), 0U);
+    const auto held = binding->account()->snapshot().allocated[category];
     EXPECT_GT(held, config.runtime_binding.limits.writer_bytes / 2);
     cleanup.reset();
+    const auto status = writes.get();
+    ASSERT_TRUE(status.ok()) << status.to_string();
     binding->account()->drain_retirements();
     EXPECT_LT(binding->account()->snapshot().allocated[category], held / 2);
-    EXPECT_EQ(tree.get_view("key").value().to_string(), std::to_string(rejected - 1));
+    EXPECT_EQ(tree.contiguous_slot(), 128U);
+    EXPECT_EQ(tree.get_view("key").value().to_string(), "128");
     const Batch next{.ops = {{.key = "key", .kind = OpKind::kPut, .value = "continued"}}};
-    ASSERT_TRUE(tree.apply(rejected, next).ok());
-    EXPECT_EQ(tree.contiguous_slot(), rejected);
+    ASSERT_TRUE(tree.apply(129, next).ok());
+    EXPECT_EQ(tree.contiguous_slot(), 129U);
     EXPECT_EQ(tree.get_view("key").value().to_string(), "continued");
 }
 #endif

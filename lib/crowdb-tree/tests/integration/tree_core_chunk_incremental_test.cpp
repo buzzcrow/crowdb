@@ -46,14 +46,14 @@ TEST(TreeCoreChunkIncremental, OneLeafChangeReusesOtherIndexPacksAndOldReader)
     ASSERT_TRUE(test.tree->snapshot().ok());
     auto held = test.tree->get_view("key");
     ASSERT_TRUE(held.found());
-    ChunkRootManifest prior(test.backend.credits.credits.bytes);
+    ChunkRootManifest prior(test.backend.credits.credits.reservation());
     ASSERT_TRUE(decode_chunk_root(test.backend.catalog->committed_manifest, 19, 1, &prior).ok());
     ASSERT_GT(prior.indexes.size(), 1U);
     const auto allocations = test.backend.transport->ids.size();
     ASSERT_TRUE(test.tree->apply(2, Batch{.ops = {{.key = "other", .kind = OpKind::kPut, .value = "small"}}}).ok());
     const auto status = test.tree->snapshot();
     ASSERT_TRUE(status.ok()) << status.to_string();
-    ChunkRootManifest current(test.backend.credits.credits.bytes);
+    ChunkRootManifest current(test.backend.credits.credits.reservation());
     ASSERT_TRUE(decode_chunk_root(test.backend.catalog->committed_manifest, 19, 2, &current).ok());
     ASSERT_EQ(current.indexes.size(), prior.indexes.size());
     size_t changed = 0;

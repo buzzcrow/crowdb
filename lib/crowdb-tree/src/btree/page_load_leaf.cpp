@@ -66,7 +66,7 @@ Status check_cells(const LeafFrameView &view, const std::optional<uint64_t> &max
     return Status::Ok();
 }
 
-Status fold_leaf(LoadBytes &frame, const std::shared_ptr<detail::AllocationReservation> &metadata)
+Status fold_leaf(LoadBytes &frame, const std::shared_ptr<AllocationBudget> &metadata)
 {
     const LeafFrameView view(frame.data(), static_cast<uint32_t>(frame.size()));
     if (view.delta_count() == 0) {
@@ -134,8 +134,7 @@ std::optional<size_t> decoded_leaf_allocation_bound(const PageLoadLimits &limits
 }
 
 Status decode_loaded_leaf(std::span<const uint8_t> blob, const BaseRef &base, const PageLoadLimits &limits,
-                          const std::shared_ptr<detail::AllocationReservation> &metadata,
-                          std::shared_ptr<const LeafBase>                      *out)
+                          const std::shared_ptr<AllocationBudget> &metadata, std::shared_ptr<const LeafBase> *out)
 {
     LoadBytes  frame{LoadBytes::allocator_type(metadata)};
     auto       status = decode_backing_frame(blob, *base.backing, limits, metadata, &frame);

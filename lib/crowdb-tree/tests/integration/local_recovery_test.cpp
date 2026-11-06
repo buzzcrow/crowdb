@@ -90,7 +90,7 @@ TEST(LocalRecovery, FreshDomainActivatesAnEmptyRegistryBeforeItsFirstAllocation)
     EXPECT_EQ(result.registry->snapshot_sequence(), 0U);
     EXPECT_EQ(result.ledger->stats().protected_ranges, 0U);
     auto allocated = await_ledger(
-        [&](auto done) { return result.ledger->reserve(4096, test.credits.credits.bytes, std::move(done)); });
+        [&](auto done) { return result.ledger->reserve(4096, test.credits.credits.reservation(), std::move(done)); });
     ASSERT_TRUE(allocated.status.ok());
     EXPECT_EQ(allocated.extent.address, 8192U);
     EXPECT_EQ(allocated.extent.generation, 2U);
@@ -126,8 +126,8 @@ TEST(LocalRecovery, NewestSequenceWinsAfterAChangedGenerationResetsCoverage)
 {
     TestRecovery test;
     test.checkpoint("old generation");
-    auto empty        = detail::reserved_shared<CapturedDurablePages>(test.original.source.credits.credits.bytes,
-                                                                      test.original.source.credits.credits.bytes);
+    auto empty = detail::reserved_shared<CapturedDurablePages>(test.original.source.credits.credits.reservation(),
+                                                               test.original.source.credits.credits.reservation());
     empty->generation = test.original.operation->result().checkpoint->pages->generation + 1;
     ASSERT_TRUE(test.original.prepare(empty).ok());
     Completion cleared;
@@ -154,7 +154,7 @@ TEST(LocalRecovery, RecoveredRegistryCanCommitTheNextCheckpointAndAdvanceDurable
     test.checkpoint("reopened");
     ASSERT_TRUE(recover(test).ok());
     const auto &result = test.operation->result();
-    auto        pages  = detail::reserved_shared<CapturedDurablePages>(test.credits.credits.bytes, *result.latest);
+    auto pages = detail::reserved_shared<CapturedDurablePages>(test.credits.credits.reservation(), *result.latest);
     ++pages->coverage;
     ++pages->generation;
     std::shared_ptr<LocalCheckpointOperation> checkpoint;
@@ -288,8 +288,8 @@ TEST(LocalRecovery, UnreferencedCrashTailBecomesReusableAfterAllAnchorsAreProtec
     ASSERT_TRUE(test.store->device->write_at(orphan, bytes.data(), bytes.size()).ok());
     ASSERT_TRUE(recover(test).ok());
     auto ledger = test.operation->result().ledger;
-    auto reused =
-        await_ledger([&](auto done) { return ledger->reserve(4096, test.credits.credits.bytes, std::move(done)); });
+    auto reused = await_ledger(
+        [&](auto done) { return ledger->reserve(4096, test.credits.credits.reservation(), std::move(done)); });
     ASSERT_TRUE(reused.status.ok());
     EXPECT_EQ(reused.extent.address, orphan);
     EXPECT_EQ(ledger->stats().reused_allocations, 1U);

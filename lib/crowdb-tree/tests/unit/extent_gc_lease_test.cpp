@@ -11,7 +11,7 @@ namespace
 ExtentLedgerResult claim(LedgerFixture &test, uint64_t address, uint64_t length)
 {
     return await_ledger([&](auto done) {
-        return test.ledger->claim_free(address, length, test.credits.credits.bytes, std::move(done));
+        return test.ledger->claim_free(address, length, test.credits.credits.reservation(), std::move(done));
     });
 }
 
@@ -32,8 +32,9 @@ TEST(ExtentGcLease, RequiresActivatedFreeRangeAndNeverBorrowsDataOwners)
     EXPECT_EQ(leased.extent.address, 8192U);
     EXPECT_NE(leased.extent.owner, live.extent.owner);
     EXPECT_EQ(claim(test, 8192, 8192).status.code(), Code::kNotFound);
-    auto retained = await_ledger(
-        [&](auto done) { return test.ledger->retain(8192, 4096, test.credits.credits.bytes, std::move(done)); });
+    auto retained = await_ledger([&](auto done) {
+        return test.ledger->retain(8192, 4096, test.credits.credits.reservation(), std::move(done));
+    });
     EXPECT_EQ(retained.status.code(), Code::kNotFound);
     auto allocated = test.reserve(8192);
     ASSERT_TRUE(allocated.status.ok());

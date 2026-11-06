@@ -52,8 +52,8 @@ Status PublishedNativeCursor::State::generated_frame(const SnapshotReadWindow   
         // The encoder deliberately reuses one buffer. Copy only this frame
         // into an independently charged owner before advancing that buffer.
         auto bytes = detail::reserved_shared<NativeOutput>(
-            window.budget.bytes, std::span<const uint8_t>(frame.buffer->bytes.data(), frame.info.bytes),
-            window.budget.bytes);
+            window.budget.reservation(), std::span<const uint8_t>(frame.buffer->bytes.data(), frame.info.bytes),
+            window.budget.reservation());
         *out = NativeFrameView{.page_id      = frame.info.page_id,
                                .bytes        = bytes->bytes,
                                .owner        = std::move(bytes),

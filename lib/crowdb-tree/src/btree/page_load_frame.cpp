@@ -8,7 +8,7 @@
 namespace crowdb::tree
 {
 Status decode_backing_frame(std::span<const uint8_t> blob, const BackingRef &backing, const PageLoadLimits &limits,
-                            const std::shared_ptr<detail::AllocationReservation> &metadata, LoadBytes *out)
+                            const std::shared_ptr<AllocationBudget> &metadata, LoadBytes *out)
 {
     if (!backing.readable()) {
         return Status::corruption("backing has neither an extent nor an owned resident frame");

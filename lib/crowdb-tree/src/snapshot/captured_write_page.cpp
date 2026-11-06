@@ -49,7 +49,7 @@ PageWriteOperation::ReserveExtent CapturedWriteOperation::State::reserve_page(bo
             done(Status::unavailable(), {});
             return;
         }
-        auto event      = detail::reserved_shared<Reservation>(self->budget.bytes);
+        auto event      = detail::reserved_shared<Reservation>(self->budget.reservation());
         event->complete = std::move(done);
         if (protect_dependency) {
             event->dependencies = self->dependencies;
@@ -85,7 +85,7 @@ void CapturedWriteOperation::State::received_write()
                                                             .logical_bytes = descriptor.logical_bytes});
     }
     else if (descriptor.type == page_type::kLeafBase) {
-        auto primary       = detail::reserved_shared<BackingRef>(budget.bytes, *descriptor.backing);
+        auto primary       = detail::reserved_shared<BackingRef>(budget.reservation(), *descriptor.backing);
         primary->overflow  = overflow_backing;
         descriptor.backing = std::move(primary);
     }

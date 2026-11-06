@@ -228,7 +228,8 @@ TEST_F(TreeCoreAdmitted, FullSourceAwaitsCompleteFlushCreditThenConsumesThePrepa
     EXPECT_EQ(core->contiguous_slot(), 129U);
     const auto terminal = core->publisher().work_metrics()->totals();
     EXPECT_EQ(terminal[static_cast<size_t>(TreeStage::FlushAdmissionWait)].count, 1U);
-    EXPECT_EQ(terminal[static_cast<size_t>(TreeStage::BudgetWait)].count, 4U);
+    EXPECT_EQ(terminal[static_cast<size_t>(TreeStage::BudgetWait)].count,
+              detail::FlushReserveBounds::categories.size());
     EXPECT_EQ(terminal[static_cast<size_t>(TreeStage::BudgetWait)].inflight, 0U);
 }
 

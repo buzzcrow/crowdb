@@ -16,13 +16,13 @@ class PageCacheNodeResource final : public std::pmr::memory_resource
     class Scope
     {
       public:
-        explicit Scope(std::shared_ptr<detail::AllocationReservation> budget);
+        explicit Scope(std::shared_ptr<AllocationBudget> budget);
         ~Scope();
         Scope(const Scope &)            = delete;
         Scope &operator=(const Scope &) = delete;
 
       private:
-        std::shared_ptr<detail::AllocationReservation> previous_;
+        std::shared_ptr<AllocationBudget> previous_;
     };
 
   private:
@@ -47,7 +47,7 @@ struct PageCacheResidency::State : std::enable_shared_from_this<State>
 
     struct Page
     {
-        explicit Page(const std::shared_ptr<detail::AllocationReservation> &metadata)
+        explicit Page(const std::shared_ptr<AllocationBudget> &metadata)
             : links(detail::ReservationAllocator<Link>(metadata))
         {
         }
@@ -75,7 +75,7 @@ struct PageCacheResidency::State : std::enable_shared_from_this<State>
 
     explicit State(std::shared_ptr<TreeResourceMetrics> resources);
     static void prepare_page(Update &update, uint64_t pid, const std::shared_ptr<const PublishedPage> &replacement,
-                             const std::shared_ptr<detail::AllocationReservation> &metadata);
+                             const std::shared_ptr<AllocationBudget> &metadata);
     void        enqueue(Command *command) noexcept;
     bool        enter() noexcept;
     void        leave() noexcept;

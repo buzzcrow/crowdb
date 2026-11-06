@@ -106,8 +106,8 @@ void LocalRecoveryOperation::State::frame_read()
                 return;
             }
         }
-        status =
-            capture_stored_overflow(leaf, limits.max_overflow_references, budget.bytes, &descriptor.stored_overflow);
+        status = capture_stored_overflow(leaf, limits.max_overflow_references, budget.reservation(),
+                                         &descriptor.stored_overflow);
         if (!status.ok()) {
             finish(std::move(status));
             return;
@@ -158,10 +158,10 @@ void LocalRecoveryOperation::State::dependencies()
             finish(Status::corruption());
             return;
         }
-        protection           = detail::reserved_shared<LeafProtection>(budget.bytes, budget.bytes);
-        overflow_backing     = detail::reserved_shared<OverflowBackingSet>(budget.bytes, budget.bytes);
+        protection           = detail::reserved_shared<LeafProtection>(budget.reservation(), budget.reservation());
+        overflow_backing     = detail::reserved_shared<OverflowBackingSet>(budget.reservation(), budget.reservation());
         protection->primary  = leaf->second.backing->owner;
-        auto backing         = detail::reserved_shared<BackingRef>(budget.bytes, *leaf->second.backing);
+        auto backing         = detail::reserved_shared<BackingRef>(budget.reservation(), *leaf->second.backing);
         backing->owner       = protection;
         backing->overflow    = overflow_backing;
         leaf->second.backing = std::move(backing);

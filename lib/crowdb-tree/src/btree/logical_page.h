@@ -46,7 +46,7 @@ struct RunLimits
 class KeyArenaBuilder
 {
   public:
-    explicit KeyArenaBuilder(RunLimits limits, std::shared_ptr<detail::AllocationReservation> metadata = {})
+    explicit KeyArenaBuilder(RunLimits limits, std::shared_ptr<AllocationBudget> metadata = {})
         : limits_(limits),
           metadata_(std::move(metadata))
     {
@@ -55,13 +55,13 @@ class KeyArenaBuilder
     Status append(Slice key, std::shared_ptr<const CellVersion> owner, EntryRef *out);
 
   private:
-    RunLimits                                      limits_;
-    std::shared_ptr<detail::AllocationReservation> metadata_;
-    size_t                                         entries_   = 0;
-    size_t                                         bytes_     = 0;
-    size_t                                         allocated_ = 0;
-    size_t                                         used_      = 0;
-    std::shared_ptr<EntryKeyArena>                 block_;
+    RunLimits                         limits_;
+    std::shared_ptr<AllocationBudget> metadata_;
+    size_t                            entries_   = 0;
+    size_t                            bytes_     = 0;
+    size_t                            allocated_ = 0;
+    size_t                            used_      = 0;
+    std::shared_ptr<EntryKeyArena>    block_;
 };
 
 class OverlayBatch
@@ -78,12 +78,11 @@ class OverlayBatch
     }
 
     static Status build(uint64_t id, std::vector<EntryRef> entries, const RunLimits &limits,
-                        std::shared_ptr<const OverlayBatch>           *out,
-                        std::shared_ptr<detail::AllocationReservation> metadata = {});
+                        std::shared_ptr<const OverlayBatch> *out, std::shared_ptr<AllocationBudget> metadata = {});
     static Status build_owned(uint64_t id, EntryStorage entries, const RunLimits &limits,
                               std::shared_ptr<const OverlayBatch> *out);
 
-    explicit OverlayBatch(std::shared_ptr<detail::AllocationReservation> metadata = {})
+    explicit OverlayBatch(std::shared_ptr<AllocationBudget> metadata = {})
         : entries_(EntryAllocator(std::move(metadata)))
     {
     }
@@ -133,7 +132,7 @@ class OverlayBatch
 class OverlayBuilder
 {
   public:
-    explicit OverlayBuilder(RunLimits limits, std::shared_ptr<detail::AllocationReservation> metadata = {})
+    explicit OverlayBuilder(RunLimits limits, std::shared_ptr<AllocationBudget> metadata = {})
         : limits_(limits),
           metadata_(std::move(metadata)),
           arena_(limits, metadata_),
@@ -146,11 +145,11 @@ class OverlayBuilder
     Status finish(uint64_t id, std::shared_ptr<const OverlayBatch> *out);
 
   private:
-    RunLimits                                      limits_;
-    std::shared_ptr<detail::AllocationReservation> metadata_;
-    KeyArenaBuilder                                arena_;
-    size_t                                         key_bytes_ = 0;
-    EntryStorage                                   entries_;
+    RunLimits                         limits_;
+    std::shared_ptr<AllocationBudget> metadata_;
+    KeyArenaBuilder                   arena_;
+    size_t                            key_bytes_ = 0;
+    EntryStorage                      entries_;
 };
 
 struct BaseRef
@@ -228,13 +227,13 @@ struct PageState
         return overlays.empty() && bases.empty();
     }
 
-    explicit PageState(std::shared_ptr<detail::AllocationReservation> metadata = {})
+    explicit PageState(std::shared_ptr<AllocationBudget> metadata = {})
         : bases(BaseAllocator(metadata)),
           overlays(OverlayAllocator(std::move(metadata)))
     {
     }
 
-    PageState(const PageState &source, std::shared_ptr<detail::AllocationReservation> metadata = {})
+    PageState(const PageState &source, std::shared_ptr<AllocationBudget> metadata = {})
         : range(source.range),
           route_generation(source.route_generation),
           content_id(source.content_id),
@@ -264,10 +263,10 @@ class MemTableRangeMerge
   public:
     MemTableRangeMerge(std::initializer_list<std::shared_ptr<MemTable>> sources, PageKeyRange range, uint64_t frontier,
                        uint64_t floor, RunLimits limits, size_t max_sources,
-                       std::shared_ptr<detail::AllocationReservation> metadata = {});
+                       std::shared_ptr<AllocationBudget> metadata = {});
     MemTableRangeMerge(std::span<const std::shared_ptr<MemTable>> sources, PageKeyRange range, uint64_t frontier,
                        uint64_t floor, RunLimits limits, size_t max_sources,
-                       std::shared_ptr<detail::AllocationReservation> metadata = {});
+                       std::shared_ptr<AllocationBudget> metadata = {});
     MemTableRangeMerge(const MemTableRangeMerge &)            = delete;
     MemTableRangeMerge &operator=(const MemTableRangeMerge &) = delete;
 
@@ -295,7 +294,7 @@ class MemTableRangeMerge
     std::vector<EpochManager::Guard, detail::ReservationAllocator<EpochManager::Guard>>               guards_;
     PageKeyRange                                                                                      range_;
     RunLimits                                                                                         limits_;
-    std::shared_ptr<detail::AllocationReservation>                                                    metadata_;
+    std::shared_ptr<AllocationBudget>                                                                 metadata_;
     KeyArenaBuilder                                                                                   arena_;
     std::vector<ConcurrentSkipList::Cursor, detail::ReservationAllocator<ConcurrentSkipList::Cursor>> cursors_;
     std::vector<MergeSource, detail::ReservationAllocator<MergeSource>>                               sources_;
@@ -317,7 +316,7 @@ class LogicalPageCursor
   public:
     [[nodiscard]] static std::optional<size_t> allocation_bound(size_t max_sources) noexcept;
     LogicalPageCursor(std::shared_ptr<const PageState> page, PageKeyRange range, uint64_t frontier, size_t max_sources,
-                      bool reverse = false, std::shared_ptr<detail::AllocationReservation> metadata = {},
+                      bool reverse = false, std::shared_ptr<AllocationBudget> metadata = {},
                       std::optional<LogicalCursorStart> start = {});
     ~LogicalPageCursor();
 

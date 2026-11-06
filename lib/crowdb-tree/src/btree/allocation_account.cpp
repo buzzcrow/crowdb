@@ -10,6 +10,8 @@ namespace crowdb::tree::detail
 {
 AllocationAccount::AllocationAccount(std::shared_ptr<ResourceBudget::Account> account, BudgetClass category)
     : retirement_(account ? account->retirement_.lock() : nullptr),
+      work_(account ? account->work_metrics() : nullptr),
+      resources_(account ? account->resource_metrics() : nullptr),
       account_(std::move(account)),
       category_(category),
       domain_(ResourceBudget::allocation_domain(account_))

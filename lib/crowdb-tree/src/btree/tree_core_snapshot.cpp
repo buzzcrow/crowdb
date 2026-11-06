@@ -27,9 +27,9 @@ Status TreeCore::capture_snapshot(std::shared_ptr<const PublishedTreeState>  vie
     return PublishedSnapshotContext::capture_admitted(shared_from_this(), out, std::move(view));
 }
 
-Status TreeCore::acquire_snapshot_window(const std::shared_ptr<detail::AllocationReservation> &metadata,
-                                         std::shared_ptr<TreeOperationLifetime::Ticket>       *ticket,
-                                         AsyncPageStore                                      **backend)
+Status TreeCore::acquire_snapshot_window(const std::shared_ptr<AllocationBudget>        &metadata,
+                                         std::shared_ptr<TreeOperationLifetime::Ticket> *ticket,
+                                         AsyncPageStore                                **backend)
 {
     if (backend == nullptr) {
         return Status::invalid_argument("snapshot read window requires backend output");

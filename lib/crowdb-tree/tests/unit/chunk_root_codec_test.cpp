@@ -39,13 +39,13 @@ detail::ChunkFixedPackRef test_index_pack(uint32_t bytes)
 TEST(ChunkRootCodec, RoundTripKeepsRootSequenceAndWalDistinctFromPageGeneration)
 {
     test_read::LoadCredits credits;
-    ChunkRootManifest      root(credits.credits.bytes);
+    ChunkRootManifest      root(credits.credits.reservation());
     root.identity    = test_identity();
     root.frame_count = 2;
     root.indexes.push_back({.first_page = 0, .last_page = 9, .frame_count = 2, .pack = test_index_pack(512)});
-    ChunkMetadataBytes bytes{detail::ReservationAllocator<uint8_t>(credits.credits.bytes)};
+    ChunkMetadataBytes bytes{detail::ReservationAllocator<uint8_t>(credits.credits.reservation())};
     ASSERT_TRUE(encode_chunk_root(root, &bytes).ok());
-    ChunkRootManifest decoded(credits.credits.bytes);
+    ChunkRootManifest decoded(credits.credits.reservation());
     ASSERT_TRUE(decode_chunk_root(bytes, 19, 7, &decoded).ok());
     EXPECT_EQ(decoded.identity.root_generation, 7U);
     EXPECT_EQ(decoded.identity.snapshot_sequence, 4U);
@@ -53,7 +53,7 @@ TEST(ChunkRootCodec, RoundTripKeepsRootSequenceAndWalDistinctFromPageGeneration)
     EXPECT_EQ(decoded.identity.coverage, 15U);
     EXPECT_EQ(decoded.identity.wal_replay_offset, 4096U);
     EXPECT_EQ(decoded.indexes.size(), 1U);
-    ChunkRootManifest wrong_root(credits.credits.bytes);
+    ChunkRootManifest wrong_root(credits.credits.reservation());
     EXPECT_EQ(decode_chunk_root(bytes, 19, 8, &wrong_root).code(), Code::kCorruption);
     chunk_codec::put(bytes, 13, UINT64_MAX);
     chunk_codec::seal(bytes);
@@ -65,14 +65,15 @@ TEST(ChunkRootCodec, IndexValidatesExactNamespaceAndRejectsOversizedPackFields)
     test_chunk::TestChunkBackend      test;
     std::shared_ptr<ChunkPackBacking> pack;
     ASSERT_TRUE(test.prepare(8192, &pack).ok());
-    auto backing        = detail::reserved_shared<BackingRef>(test.credits.credits.bytes);
+    auto backing        = detail::reserved_shared<BackingRef>(test.credits.credits.reservation());
     backing->backend_id = 17;
     backing->length     = 8192;
     backing->owner      = pack;
     backing->chunk      = pack;
     backing->storage    = BackingStorage::kChunkPack;
     auto refs           = detail::reserved_shared<StoredOverflowReferences>(
-        test.credits.credits.bytes, detail::ReservationAllocator<StoredOverflowReference>(test.credits.credits.bytes));
+        test.credits.credits.reservation(),
+        detail::ReservationAllocator<StoredOverflowReference>(test.credits.credits.reservation()));
     refs->push_back({.head = 4, .bytes = 123});
     DurableCapturedFrame        frame{.page_id         = 0,
                                       .type            = page_type::kLeafBase,
@@ -84,7 +85,7 @@ TEST(ChunkRootCodec, IndexValidatesExactNamespaceAndRejectsOversizedPackFields)
                                       .stored_overflow = refs,
                                       .summary         = {}};
     const DurableCapturedFrame *frames[]{&frame};
-    ChunkMetadataBytes          bytes{detail::ReservationAllocator<uint8_t>(test.credits.credits.bytes)};
+    ChunkMetadataBytes          bytes{detail::ReservationAllocator<uint8_t>(test.credits.credits.reservation())};
     ASSERT_TRUE(encode_chunk_index(test_identity(), 2, frames, &bytes).ok());
     uint64_t count  = 0;
     size_t   offset = 0;
@@ -123,10 +124,11 @@ TEST(ChunkRuntimePageStore, UnsupportedCatalogDoesNotExposeAnIndependentAddressS
     test_read::LoadCredits        credits;
     auto                          catalog   = std::make_shared<detail::MemoryRootCatalog>(1);
     auto                          transport = std::make_shared<detail::MemoryChunkTransport>();
-    detail::ChunkRuntimePageStore store({.tree = 19, .owner_epoch = 1}, catalog, transport, credits.credits.bytes);
+    detail::ChunkRuntimePageStore store({.tree = 19, .owner_epoch = 1}, catalog, transport,
+                                        credits.credits.reservation());
     EXPECT_FALSE(store.supported());
     std::shared_ptr<const ChunkBackingDomain> domain;
-    EXPECT_EQ(store.make_domain(17, credits.credits.bytes, &domain).code(), Code::kNotSupported);
+    EXPECT_EQ(store.make_domain(17, credits.credits.reservation(), &domain).code(), Code::kNotSupported);
     EXPECT_FALSE(domain);
     EXPECT_EQ(store.sync().code(), Code::kNotSupported);
     EXPECT_EQ(store.write_at(0, nullptr, 0).code(), Code::kNotSupported);
@@ -148,24 +150,24 @@ TEST(ChunkStageCodec, OwnedEncodingAndDecodingRetainTheCallerAllocator)
         .manifest_generation = 0,
         .purpose             = 2,
         .state               = detail::ChunkStageState::Reloadable,
-        .packs = decltype(Record::packs)(MetadataAllocator<detail::ChunkStagePack>(credits.credits.bytes))
+        .packs = decltype(Record::packs)(MetadataAllocator<detail::ChunkStagePack>(credits.credits.reservation()))
     };
     record.packs.push_back({.offset = 0, .length = 32, .checksum = 9});
     auto decoded = record;
     decoded.packs.clear();
     decoded.packs.shrink_to_fit();
-    const auto before = credits.credits.bytes->available();
+    const auto before = credits.credits.reservation()->available();
     {
-        detail::ChunkStageBytes bytes{MetadataAllocator<uint8_t>(credits.credits.bytes)};
+        detail::ChunkStageBytes bytes{MetadataAllocator<uint8_t>(credits.credits.reservation())};
         ASSERT_TRUE(detail::encode_stage_record_owned(record, &bytes).ok());
         ASSERT_TRUE(detail::decode_stage_record(bytes, &decoded).ok());
-        EXPECT_EQ(decoded.packs.get_allocator().owner(), credits.credits.bytes);
+        EXPECT_EQ(decoded.packs.get_allocator().owner(), credits.credits.reservation());
         EXPECT_EQ(decoded, record);
-        EXPECT_EQ(before - credits.credits.bytes->available(),
+        EXPECT_EQ(before - credits.credits.reservation()->available(),
                   bytes.capacity() + (decoded.packs.capacity() * sizeof(detail::ChunkStagePack)));
     }
     decoded.packs.clear();
     decoded.packs.shrink_to_fit();
-    EXPECT_EQ(credits.credits.bytes->available(), before);
+    EXPECT_EQ(credits.credits.reservation()->available(), before);
 }
 } // namespace crowdb::tree

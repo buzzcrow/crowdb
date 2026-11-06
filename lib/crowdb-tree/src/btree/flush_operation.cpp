@@ -86,9 +86,12 @@ bool FlushOperation::State::start(detail::CallbackComplete callback, void *argum
             return false;
         }
     } while (!lifecycle.compare_exchange_weak(previous, previous | kRunning, std::memory_order_acq_rel));
+    started_at_ns = tree_metrics_now_ns();
     batch_metrics.reset();
     if (!only_capture) {
-        batch_metrics.emplace(publisher.work_metrics(), TreeStage::FlushBatch, tree_metrics_now_ns());
+        batch_metrics.emplace(publisher.work_metrics(), TreeStage::FlushBatch, started_at_ns);
+        CRB_LOG_INFO("flush begin: tree={} start_ns={} persistent={}", static_cast<const void *>(&publisher),
+                     started_at_ns, options.persistent);
     }
     capture_metrics.reset();
     drain_metrics.reset();
@@ -158,14 +161,7 @@ void FlushOperation::State::run_cpu(void *context) noexcept
 
 void FlushOperation::State::begin()
 {
-    if (options.persistent && report.phase == FlushPhase::kRepairRequired && reservations.io &&
-        reservations.io->available() == 0) {
-        auto credit = detail::ResourceBudget::try_reserve(reservations.io->account(), detail::BudgetClass::kIo, 1);
-        if (!credit || !reservations.io->return_reserved(std::move(*credit))) {
-            fail(Status::unavailable("persistent flush awaits its next I/O window"));
-            return;
-        }
-    }
+
     if (capture_only && !frozen.base && covered_at_start) {
         // A normal connection already handed off this source set. Pair the
         // newly requested capture with that complete source-free L1, not its
@@ -335,11 +331,7 @@ void FlushOperation::State::finish() noexcept
         CRB_LOG_ERROR("flush failed: batch={} frontier={} handoff={} maintenance={}", report.batch_id, report.frontier,
                       report.handoff_status.to_string(), report.maintenance_status.to_string());
     }
-    if (options.persistent && report.phase == FlushPhase::kRepairRequired && reservations.io) {
-        // All accepted children have joined. An idle repair must not monopolize
-        // the only I/O grant needed by an old reader between attempts.
-        auto unused = reservations.io->take_reserved(reservations.io->available());
-    }
+
     auto  self            = weak_from_this().lock();
     auto  callback        = complete;
     auto *argument        = context;
@@ -369,6 +361,13 @@ void FlushOperation::State::finish() noexcept
         outcome = TreeOutcome::Cancelled;
     }
     const auto now = tree_metrics_now_ns();
+    if (!capture_only) {
+        CRB_LOG_INFO("flush end: tree={} start_ns={} end_ns={} persistent={} batch={} floor={} frontier={} "
+                     "coverage={} handoff_ok={} maintenance_ok={} admission_stale={} phase={}",
+                     static_cast<const void *>(&publisher), started_at_ns, now, options.persistent, report.batch_id,
+                     report.floor, report.frontier, report.published_coverage, report.handoff_status.ok(),
+                     report.maintenance_status.ok(), report.admission_stale, static_cast<unsigned>(report.phase));
+    }
     if (batch_metrics) {
         const auto batch_outcome =
             outcome == TreeOutcome::Success && !report.maintenance_status.ok() ? TreeOutcome::Error : outcome;

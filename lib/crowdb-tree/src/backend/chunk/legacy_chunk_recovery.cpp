@@ -24,8 +24,8 @@ struct RecoveryCredits
         if (budget.io) {
             budget.io->seal();
         }
-        if (budget.bytes) {
-            budget.bytes->seal();
+        if (budget.reservation()) {
+            budget.reservation()->seal();
         }
     }
 };
@@ -46,7 +46,7 @@ Status recover(const Config &config, const std::shared_ptr<TreeRuntimeBinding> &
         return Status::resource_exhausted();
     }
     credits.budget.bytes = AllocationReservation::create(std::move(*bytes));
-    credits.budget.io    = reserved_shared<AllocationReservation>(credits.budget.bytes, std::move(*io));
+    credits.budget.io    = reserved_shared<AllocationReservation>(credits.budget.reservation(), std::move(*io));
     auto local           = reserved_shared<LocalBackendState>(binding->lifecycle_budget());
     auto status          = LocalBackendDomain::claim(store.get(), store, binding->lifecycle_budget(), &local->domain);
     if (status.ok()) {
@@ -83,11 +83,11 @@ Status recover(const Config &config, const std::shared_ptr<TreeRuntimeBinding> &
     loads.max_blob_bytes  = limits.max_blob_bytes;
     loads.max_frame_bytes = limits.max_frame_bytes;
     auto loader =
-        reserved_shared<AsyncStorePageLoader>(credits.budget.bytes, local->store, binding->cpu(), binding->lane(),
-                                              loads, OverflowBackingResolver{}, credits.budget);
+        reserved_shared<AsyncStorePageLoader>(credits.budget.reservation(), local->store, binding->cpu(),
+                                              binding->lane(), loads, OverflowBackingResolver{}, credits.budget);
     std::shared_ptr<RecoveredStateOperation> graph;
     status = RecoveredStateOperation::create(local->inherited, loader, binding->cpu(), binding->lane(), {},
-                                             credits.budget.bytes, &graph);
+                                             credits.budget.reservation(), &graph);
     if (status.ok()) {
         status = wait_snapshot_operation(graph);
     }
@@ -99,7 +99,7 @@ Status recover(const Config &config, const std::shared_ptr<TreeRuntimeBinding> &
     loader.reset();
     recovered.reset();
     credits.budget.io->seal();
-    credits.budget.bytes->seal();
+    credits.budget.reservation()->seal();
     binding->drain();
     return TreeCore::create(config, binding, {.initial = initial, .local = std::move(local)}, out);
 }

@@ -16,14 +16,9 @@ class FlushPersistence : public std::enable_shared_from_this<FlushPersistence>
 
   public:
     explicit FlushPersistence(std::shared_ptr<checkpoint_detail::Preparation> preparation, uint64_t wal_offset = 0);
-    [[nodiscard]] static size_t control_allocation_bound(size_t workers) noexcept;
+    [[nodiscard]] static size_t control_allocation_bound() noexcept;
     [[nodiscard]] static size_t commit_control_allocation_bound() noexcept;
     void                        configure(FlushBatchOptions &options);
-
-    void bind_io(std::shared_ptr<detail::AllocationReservation> io)
-    {
-        io_ = std::move(io);
-    }
 
     void               write(PageEncodeInput input, FlushBatchOptions::ReserveOverflow reserve,
                              FlushBatchOptions::PersistComplete done);
@@ -41,7 +36,6 @@ class FlushPersistence : public std::enable_shared_from_this<FlushPersistence>
     CheckpointResult                                                  report_;
     bool                                                              finished_   = false;
     uint64_t                                                          wal_offset_ = 0;
-    std::shared_ptr<detail::AllocationReservation>                    io_;
     std::shared_ptr<detail::AllocationReservation>                    selection_metadata_;
     std::optional<detail::ReservedVector<const SnapshotPageChange *>> pending_leaves_;
     void                                                              select_inputs();

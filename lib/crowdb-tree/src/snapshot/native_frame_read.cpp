@@ -30,7 +30,7 @@ struct NativeFrameRead::State : PageLoadProgress, std::enable_shared_from_this<S
 {
     State(const PageLoadBudget &budget, uint64_t started_at_ns)
         : PageLoadProgress(budget, started_at_ns),
-          metadata(budget.bytes),
+          metadata(budget.reservation()),
           blob(detail::ReservationAllocator<uint8_t>(metadata))
     {
     }
@@ -187,9 +187,9 @@ Status NativeFrameRead::create(uint64_t pid, OverflowBackingPage page, std::shar
     std::shared_ptr<State> state;
     auto                   status = [&]() -> Status {
         try {
-            if (out == nullptr || *out || pid == kInvalidPageId || !runtime || !lane || !budget.bytes ||
-                budget.bytes->category() == detail::BudgetClass::kIo || !page.backing || !page.backing->readable() ||
-                page.backing->encoding != 0 || page.bytes == 0 ||
+            if (out == nullptr || *out || pid == kInvalidPageId || !runtime || !lane || !budget.reservation() ||
+                budget.reservation()->category() == detail::BudgetClass::kIo || !page.backing ||
+                !page.backing->readable() || page.backing->encoding != 0 || page.bytes == 0 ||
                 page.frame_bytes <= kFrameHeaderSize + kFrameTrailerSize ||
                 page.bytes > overflow_chunk_cap(page.frame_bytes) || page.next == pid) {
                 return Status::invalid_argument("native frame read requires a protected bounded descriptor");
@@ -202,8 +202,8 @@ Status NativeFrameRead::create(uint64_t pid, OverflowBackingPage page, std::shar
                 }
             }
             else if (!store || !budget.io || budget.io->category() != detail::BudgetClass::kIo ||
-                     budget.bytes->account() != budget.io->account() || page.logical_bytes < kDurableBlobHeader ||
-                     page.logical_bytes > page.backing->length) {
+                     budget.reservation()->account() != budget.io->account() ||
+                     page.logical_bytes < kDurableBlobHeader || page.logical_bytes > page.backing->length) {
                 return Status::invalid_argument(
                     "native durable frame read needs matching I/O credit and blob geometry");
             }
@@ -215,14 +215,15 @@ Status NativeFrameRead::create(uint64_t pid, OverflowBackingPage page, std::shar
             if (resident) {
                 progress.io.reset();
             }
-            state             = detail::reserved_shared<State>(budget.bytes, progress, started_at_ns);
+            state             = detail::reserved_shared<State>(budget.reservation(), progress, started_at_ns);
             state->pid        = pid;
             state->descriptor = std::move(page);
             state->store      = std::move(store);
             state->runtime    = std::move(runtime);
             state->lane       = std::move(lane);
-            *out              = detail::reserved_construct<NativeFrameRead>(
-                budget.bytes, [&](auto *storage) { ::new (static_cast<void *>(storage)) NativeFrameRead(state); });
+            *out              = detail::reserved_construct<NativeFrameRead>(budget.reservation(), [&](auto *storage) {
+                ::new (static_cast<void *>(storage)) NativeFrameRead(state);
+            });
             return Status::Ok();
         }
         catch (const std::bad_alloc &) {

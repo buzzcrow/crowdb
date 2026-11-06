@@ -48,6 +48,7 @@ class PublishedSnapshotContext
     // bytes covers the caller's operation, loader and output capacities.
     // This adds reservation-control/ticket overhead and reserves one I/O.
     Status prepare_window(size_t bytes, SnapshotReadWindow *out) const;
+    Status prepare_window(SnapshotReadWindow *out) const;
     Status get(Slice key, GetView *out) const;
     Status scan(CoreScanOptions options, ScanPackedBuf *out, size_t *count, bool *truncated) const;
 
@@ -68,6 +69,8 @@ class PublishedSnapshotContext
     explicit PublishedSnapshotContext(std::shared_ptr<State> state) : state_(std::move(state))
     {
     }
+
+    Status finish_window(SnapshotReadWindow window, SnapshotReadWindow *out) const;
 
     std::shared_ptr<State> state_;
 };

@@ -54,7 +54,8 @@ TEST(WritebackRebase, ReplacesCapturedSuffixAndKeepsNewValuesAndTombstones)
     current_leaf->content_id                     = 9;
     auto                                 current = dirty_page(current_leaf);
     std::shared_ptr<const PublishedPage> replacement;
-    ASSERT_TRUE(build_writeback_rebase(captured, current, receipt(), 10, credits.credits.bytes, &replacement).ok());
+    ASSERT_TRUE(
+        build_writeback_rebase(captured, current, receipt(), 10, credits.credits.reservation(), &replacement).ok());
     ASSERT_EQ(replacement->leaf->overlays.size(), 1U);
     EXPECT_EQ(replacement->leaf->overlays.front(), later->overlays.front());
     EXPECT_EQ(replacement->leaf->content_id, 9U);
@@ -155,7 +156,7 @@ TEST(WritebackRebase, CapturedSourcesDoNotConsumeTheRetainedSuffixWindow)
 TEST(WritebackRebase, BudgetFailurePreservesCurrentAndOutput)
 {
     LoadCredits credits;
-    auto        metadata  = credits.credits.bytes;
+    auto        metadata  = credits.credits.reservation();
     const auto  remaining = metadata->available();
     ASSERT_TRUE(metadata->claim(remaining));
     auto                                 captured = dirty_page(page({
@@ -196,9 +197,9 @@ TEST(WritebackRebase, BoundedOperationPublishesOnlyRepresentationAndDefersChange
         pages->generation            = 1;
         pages->frames.emplace(0, receipt());
         std::shared_ptr<CapturedRebaseOperation> operation;
-        ASSERT_TRUE(
-            CapturedRebaseOperation::create(publisher, initial, pages, runtime, lane, credits.credits.bytes, &operation)
-                .ok());
+        ASSERT_TRUE(CapturedRebaseOperation::create(publisher, initial, pages, runtime, lane,
+                                                    credits.credits.reservation(), &operation)
+                        .ok());
         Completion done;
         auto       connected = stdexec::connect(operation->sender(), Receiver{.done = &done});
         stdexec::start(connected);

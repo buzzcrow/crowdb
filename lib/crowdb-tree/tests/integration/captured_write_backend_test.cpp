@@ -36,7 +36,7 @@ TEST(CapturedWrite, RealBlockReopenReloadsPrimaryAndOverflowThroughItsCapturedMa
                 next += count;
                 return Status::Ok();
             },
-            extent_write_reservation(test.ledger, test.credits.credits.bytes), {}, &test.operation)
+            extent_write_reservation(test.ledger, test.credits.credits.reservation()), {}, &test.operation)
             .ok());
     ASSERT_TRUE(stdexec::sync_wait(test.operation->sender()));
     test.runtime->drain();

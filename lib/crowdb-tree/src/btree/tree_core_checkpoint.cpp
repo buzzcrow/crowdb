@@ -90,7 +90,7 @@ Status TreeCore::prepare_checkpoint_state(const CheckpointOptions               
                            .add(shared_allocation_bound<checkpoint_detail::Preparation>())
                            .add_product(2, shared_allocation_bound<checkpoint_detail::Credits>())
                            .add(shared_allocation_bound<AllocationReservation>())
-                           .add(FlushPersistence::control_allocation_bound(binding()->cpu()->worker_count()))
+                           .add(FlushPersistence::control_allocation_bound())
                            .add(TreeOperationLifetime::ticket_allocation_bound())
                            .value();
     if (!bound) {

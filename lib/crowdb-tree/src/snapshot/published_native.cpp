@@ -32,9 +32,9 @@ Status plan_native(const std::shared_ptr<PublishedSnapshotContext> &snapshot, Ca
     if (!status.ok()) {
         return status;
     }
-    frames.encode.metadata = window.budget.bytes;
-    auto planner           = detail::reserved_shared<NativeLayoutPlanner>(window.budget.bytes, snapshot->view(), limits,
-                                                                          window.budget.bytes, backend_id, incarnation);
+    frames.encode.metadata = window.budget.reservation();
+    auto planner = detail::reserved_shared<NativeLayoutPlanner>(window.budget.reservation(), snapshot->view(), limits,
+                                                                window.budget.reservation(), backend_id, incarnation);
     std::shared_ptr<CapturedFrameStream> stream;
     status = CapturedFrameStream::create(snapshot->view(), window.loader, snapshot->binding()->cpu(), snapshot->lane(),
                                          frames, {}, &stream);
@@ -43,7 +43,7 @@ Status plan_native(const std::shared_ptr<PublishedSnapshotContext> &snapshot, Ca
     }
     std::shared_ptr<NativePlanOperation> plan;
     status = NativePlanOperation::create(std::move(stream), planner, snapshot->binding()->cpu(), snapshot->lane(),
-                                         window.budget.bytes, &plan);
+                                         window.budget.reservation(), &plan);
     if (status.ok()) {
         status = detail::wait_snapshot_operation(plan);
         if (!status.ok()) {

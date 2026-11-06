@@ -21,12 +21,12 @@ Config configuration(test_chunk::TestLegacyChunk &fixture)
     host.backend_workers = 1;
     EXPECT_TRUE(TreeRuntime::create(host, &config.runtime).ok());
     EXPECT_TRUE(detail::ChunkPinReleaseQueue::create(
-                    fixture.credits.credits.bytes, 256, std::make_shared<int>(1), [](void *) noexcept {}, nullptr,
-                    &fixture.catalog->queue)
+                    fixture.credits.credits.reservation(), 256, std::make_shared<int>(1), [](void *) noexcept {},
+                    nullptr, &fixture.catalog->queue)
                     .ok());
     auto store = std::make_shared<detail::ChunkRuntimePageStore>(
         detail::ChunkRuntimeOptions{.tree = 42, .owner_epoch = 7, .iu_size = 1, .mirrors = 2}, fixture.catalog,
-        fixture.transport, fixture.credits.credits.bytes);
+        fixture.transport, fixture.credits.credits.reservation());
     config.page_store                           = store.get();
     config.backend_owner                        = std::move(store);
     config.frame_bytes                          = 4096;
@@ -129,7 +129,7 @@ TEST(LegacyChunkMigration, ExplicitMigrationCommitsTheSameRootAndReopensWithNewF
         fixture.transport->catalog = next;
         auto store                 = std::make_shared<detail::ChunkRuntimePageStore>(
             detail::ChunkRuntimeOptions{.tree = 42, .owner_epoch = 7, .iu_size = 1, .mirrors = 2}, next,
-            fixture.transport, fixture.credits.credits.bytes);
+            fixture.transport, fixture.credits.credits.reservation());
         config.page_store    = store.get();
         config.backend_owner = store;
         const auto reopened  = Crowdbtree::open(config, &tree);
@@ -202,7 +202,7 @@ TEST(LegacyChunkMigration, UnknownCommitRetainsOldPinAndRetryResolvesDurableRece
         fixture.transport->catalog = fixture.catalog;
         auto store                 = std::make_shared<detail::ChunkRuntimePageStore>(
             detail::ChunkRuntimeOptions{.tree = 42, .owner_epoch = 7, .iu_size = 1, .mirrors = 2}, fixture.catalog,
-            fixture.transport, fixture.credits.credits.bytes);
+            fixture.transport, fixture.credits.credits.reservation());
         config.page_store    = store.get();
         config.backend_owner = store;
         const auto retried   = Crowdbtree::migrate_legacy_chunk(config, 1, &tree);
@@ -244,8 +244,8 @@ TEST(LegacyChunkMigration, PublicCEntryUsesInjectedRuntimeBackendAndPreservesThe
 {
     test_chunk::TestLegacyChunk fixture;
     ASSERT_TRUE(detail::ChunkPinReleaseQueue::create(
-                    fixture.credits.credits.bytes, 256, std::make_shared<int>(1), [](void *) noexcept {}, nullptr,
-                    &fixture.catalog->queue)
+                    fixture.credits.credits.reservation(), 256, std::make_shared<int>(1), [](void *) noexcept {},
+                    nullptr, &fixture.catalog->queue)
                     .ok());
     ct_runtime *raw_runtime = nullptr;
     ASSERT_EQ(ct_runtime_create(nullptr, &raw_runtime), 0);
@@ -254,7 +254,7 @@ TEST(LegacyChunkMigration, PublicCEntryUsesInjectedRuntimeBackendAndPreservesThe
     store->bundle                                                       = std::make_shared<PageStoreBundle>();
     store->bundle->store = std::make_unique<detail::ChunkRuntimePageStore>(
         detail::ChunkRuntimeOptions{.tree = 42, .owner_epoch = 7, .iu_size = 1, .mirrors = 2}, fixture.catalog,
-        fixture.transport, fixture.credits.credits.bytes);
+        fixture.transport, fixture.credits.credits.reservation());
     ct_options options{};
     options.page_store       = store.get();
     options.frame_bytes      = 4096;

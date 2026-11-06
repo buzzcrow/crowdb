@@ -47,7 +47,7 @@ struct LoadCredits
 
     void seal() const
     {
-        credits.bytes->seal();
+        credits.reservation()->seal();
         credits.io->seal();
     }
 };

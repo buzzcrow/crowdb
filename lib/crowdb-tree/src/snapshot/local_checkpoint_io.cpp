@@ -35,7 +35,7 @@ void LocalCheckpointOperation::State::IoStep::publish() noexcept
 
 void LocalCheckpointOperation::State::io(bool barrier, uint64_t address, size_t bytes, Stage next, bool anchor)
 {
-    auto step        = detail::reserved_shared<IoStep>(budget.bytes, budget);
+    auto step        = detail::reserved_shared<IoStep>(budget.reservation(), budget);
     step->owner      = shared_from_this();
     step->window     = window;
     step->checkpoint = image;

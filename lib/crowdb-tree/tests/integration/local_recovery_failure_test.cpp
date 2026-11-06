@@ -133,7 +133,7 @@ TEST(LocalRecoveryFailure, BudgetExhaustionAfterReadCannotPublishPartialOwnershi
     stdexec::start(connected);
     test.original.source.runtime->drain();
     ASSERT_TRUE(test.store->pending);
-    AllocationLease pressure(test.credits.credits.bytes, test.credits.credits.bytes->available());
+    AllocationLease pressure(test.credits.credits.reservation(), test.credits.credits.reservation()->available());
     test.store->finish();
     test.original.source.runtime->drain();
     EXPECT_EQ(done.errors.load(), 1U);

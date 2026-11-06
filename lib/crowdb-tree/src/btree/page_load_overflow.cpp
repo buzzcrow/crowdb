@@ -16,7 +16,7 @@ namespace
 {
 struct LoadedValue
 {
-    LoadedValue(const std::shared_ptr<detail::AllocationReservation> &metadata, size_t bytes)
+    LoadedValue(const std::shared_ptr<AllocationBudget> &metadata, size_t bytes)
         : payload(metadata, bytes > buffer::kInlineCap ? bytes : 0, AllocationKind::kPayload),
           value(buffer::alloc(bytes))
     {
@@ -36,7 +36,7 @@ struct OverflowLoad : PageLoadProgress, std::enable_shared_from_this<OverflowLoa
     {
     }
 
-    std::shared_ptr<detail::AllocationReservation>                          metadata;
+    std::shared_ptr<AllocationBudget>                                       metadata;
     std::shared_ptr<AsyncPageStore>                                         store;
     std::shared_ptr<detail::FlushRuntime>                                   runtime;
     std::shared_ptr<detail::FlushRuntime::Lane>                             lane;

@@ -34,7 +34,7 @@ inline bool chunk_load_allowed(const BackingRef &backing, const PageLoadLimits &
 using LoadBytes = detail::ReservedVector<uint8_t, AllocationKind::kScratch>;
 
 Status decode_backing_frame(std::span<const uint8_t> blob, const BackingRef &backing, const PageLoadLimits &limits,
-                            const std::shared_ptr<detail::AllocationReservation> &metadata, LoadBytes *out);
+                            const std::shared_ptr<AllocationBudget> &metadata, LoadBytes *out);
 
 [[nodiscard]] std::optional<size_t> decoded_leaf_allocation_bound(const PageLoadLimits &limits) noexcept;
 [[nodiscard]] std::optional<size_t> overflow_read_allocation_bound(const PageLoadLimits &limits, size_t workers,

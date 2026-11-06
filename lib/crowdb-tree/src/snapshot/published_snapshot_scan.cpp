@@ -17,25 +17,8 @@ namespace crowdb::tree
 {
 namespace
 {
-std::optional<size_t> result_count_bound(const PublishedTreeState &view, const PageLoadLimits &loads,
-                                         bool include_tombstones)
-{
-    // Snapshot capture removes the live source catalog. Exact live-key counts
-    // exclude tombstones; otherwise each captured base contributes at most its
-    // configured leaf capacity in addition to the immutable overlay entries.
-    if (!include_tombstones && view.stats.kv_unknown_pages == 0) {
-        return view.stats.kv_known_count;
-    }
-    const auto shape = view.mapping.copy_bounds();
-    const auto bases = detail::AllocationBound().add_product(shape.leaf_pages, shape.max_leaf_bases).value();
-    if (!bases) {
-        return {};
-    }
-    return detail::AllocationBound(view.stats.overlay_entries).add_product(*bases, loads.max_leaf_entries).value();
-}
-
 PageKeyRange scan_range(CoreScanOptions options, const PageKeyRange &domain,
-                        const std::shared_ptr<detail::AllocationReservation> &credit)
+                        const std::shared_ptr<AllocationBudget> &credit)
 {
     PageKeyRange range;
     if (!options.prefix.empty()) {
@@ -136,46 +119,17 @@ try {
         return Status::corruption("snapshot scan has no bounded root");
     }
     using detail::AllocationBound;
-    const auto loads         = load_limits();
-    const auto maximum_count = result_count_bound(*view(), loads, options.include_tombstones);
-    if (!maximum_count) {
-        return Status::resource_exhausted("snapshot scan result count bound overflow");
-    }
-    options.limit           = options.limit == 0 ? *maximum_count : std::min(options.limit, *maximum_count);
+    const auto loads        = load_limits();
+    options.limit           = options.limit == 0 ? SIZE_MAX : options.limit;
     limits.max_route_depth  = root->level + 1ULL;
     const auto byte_limit   = options.byte_budget == 0 ? SIZE_MAX : options.byte_budget;
     limits.max_result_bytes = std::min(byte_limit, limits.max_result_bytes);
     // The public limit bounds the whole packed result. Each read still uses a
     // fixed work window, with at most one zero-byte empty-key result.
-    const auto byte_count  = AllocationBound(limits.max_result_bytes).add(1).value().value_or(SIZE_MAX);
-    limits.max_entries     = std::max<size_t>(1, std::min({options.limit, limits.max_entries, byte_count}));
-    const auto workers     = binding()->cpu()->worker_count();
-    const auto normal      = AllocationBound(limits.max_result_bytes).add_product(options.limit, 17).value();
-    const auto value_limit = overflow_value_bytes_bound(*view(), loads.max_value_bytes);
-    const auto values      = AllocationBound(value_limit).add(value_limit == 0 ? 0 : limits.max_result_bytes).value();
-    if (!normal || !values) {
-        return Status::resource_exhausted("snapshot scan result bound overflow");
-    }
-    const auto leaves = snapshot_leaf_window(*view(), limits.max_entries);
-    if (!leaves) {
-        return Status::resource_exhausted("snapshot scan frame window overflow");
-    }
-    auto bounded_loads               = loads;
-    bounded_loads.max_overflow_pages = std::min<uint64_t>(loads.max_overflow_pages, value_limit);
-    const auto loader = value_limit == 0
-                          ? AsyncStorePageLoader::primary_reserve_bound(loads, root->level, workers, *leaves)
-                          : AsyncStorePageLoader::read_reserve_bound(bounded_loads, root->level, workers, *leaves,
-                                                                     limits.max_entries, *values);
-    const auto bound  = AllocationBound()
-                            .add(PublishedScan::allocation_bound(limits, workers))
-                            .add(loader)
-                            .add_product(6, OwnedKey::allocation_overhead() + limits.max_key_bytes + 1)
-                            .value();
-    if (!bound) {
-        return Status::resource_exhausted("snapshot scan read bound overflow");
-    }
+    const auto byte_count = AllocationBound(limits.max_result_bytes).add(1).value().value_or(SIZE_MAX);
+    limits.max_entries    = std::max<size_t>(1, std::min({options.limit, limits.max_entries, byte_count}));
     SnapshotReadWindow window;
-    auto               status = prepare_window(*bound, &window);
+    auto               status = prepare_window(&window);
     if (!status.ok()) {
         return status;
     }
@@ -191,11 +145,7 @@ try {
     std::shared_ptr<PublishedScan> scan;
     status = PublishedScan::create(view(), window.loader, scan_range(options, range(), limits.metadata),
                                    options.reverse, limits, &scan, std::move(selection));
-    std::shared_ptr<detail::AllocationAccount> output;
-    if (status.ok()) {
-        status = detail::AllocationAccount::create(binding()->account(), detail::BudgetClass::kRouting, &output);
-    }
-    ScanPackedBuf packed(std::move(output));
+    ScanPackedBuf packed(window.budget.bytes);
     size_t        bytes = 0;
     while (status.ok()) {
         if (expired(options.deadline_ms)) {
@@ -206,8 +156,8 @@ try {
         if (!status.ok()) {
             break;
         }
-        status = pack_window(scan->result(), options, byte_limit, *normal, loads.max_value_bytes, &packed, count,
-                             &bytes, truncated);
+        status = pack_window(scan->result(), options, byte_limit, 0, loads.max_value_bytes, &packed, count, &bytes,
+                             truncated);
         if (scan->result().done || *truncated) {
             break;
         }

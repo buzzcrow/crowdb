@@ -174,7 +174,7 @@ TEST(TreeWaitMetrics, SharedCacheWaitersHaveIndependentProofOutcomesAndNoHitOrLo
     upstream->frames[1]      = test_read::base({
         {.key = "key", .slot = 7, .value = "value"}
     });
-    auto   loader            = cache.bind(upstream, credits.credits.bytes);
+    auto   loader            = cache.bind(upstream, credits.credits.reservation());
     auto   input             = test_read::cold(1, 10);
     size_t success           = 0;
     size_t failure           = 0;
@@ -220,11 +220,11 @@ TEST(TreeWaitMetrics, NativeRegistrySamplesOnceWithoutDrainingAndReleasesEveryPa
     wait.finish(TreeWaitOutcome::Granted, 150);
     TreeMetricsOperation stage(metrics, TreeStage::PageLoadPipeline, 100);
     ASSERT_TRUE(stage.finish(TreeOutcome::Success, 150));
-    const auto available = credits.credits.bytes->available();
+    const auto available = credits.credits.reservation()->available();
     {
-        auto resource = std::make_shared<detail::AllocationMemoryResource>(credits.credits.bytes);
-        auto registry = create_tree_work_registry(resource, "tree", metrics, credits.credits.bytes);
-        EXPECT_LT(credits.credits.bytes->available(), available);
+        auto resource = std::make_shared<detail::AllocationMemoryResource>(credits.credits.reservation());
+        auto registry = create_tree_work_registry(resource, "tree", metrics, credits.credits.reservation());
+        EXPECT_LT(credits.credits.reservation()->available(), available);
         std::unique_ptr<FILE, decltype(&std::fclose)> file(std::tmpfile(), &std::fclose);
         ASSERT_NE(file, nullptr);
         registry->flush_to(file.get(), 1, "test");
@@ -255,7 +255,7 @@ TEST(TreeWaitMetrics, NativeRegistrySamplesOnceWithoutDrainingAndReleasesEveryPa
         EXPECT_EQ(collector->capture_window()[static_cast<size_t>(TreeStage::PageLoadPipeline)].count, 1U);
         EXPECT_EQ(metrics->waits.totals(300)[static_cast<size_t>(TreeWaitClass::SharedCache)].count, 1U);
     }
-    EXPECT_EQ(credits.credits.bytes->available(), available);
+    EXPECT_EQ(credits.credits.reservation()->available(), available);
 }
 } // namespace
 } // namespace crowdb::tree

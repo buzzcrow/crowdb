@@ -28,12 +28,9 @@ TEST(BlockAccountGrant, SparseGrowthAndBounceUsePrepaidCapacityAtTheHardLimit)
     std::shared_ptr<AllocationBudget> grant;
     const BackendOperationLimits      work{.max_io_bytes = 512, .write_calls = 1, .workers = 1, .barriers = false};
     ASSERT_TRUE(reserve_backend_operation(store.get(), account, work, &grant).ok());
-    const auto admitted = account->snapshot();
-    auto occupied = ResourceBudget::try_reserve(account, BudgetClass::kRouting,
-                                                kCapacity - admitted.allocated[kRouting] - admitted.reserved[kRouting]);
-    ASSERT_TRUE(occupied);
-    const uint8_t  value  = 73;
-    const uint64_t offset = (65536ULL * 1000) + 17;
+    auto           occupied = use_remaining_memory(account, block_allocation_budget(*store));
+    const uint8_t  value    = 73;
+    const uint64_t offset   = (65536ULL * 1000) + 17;
     EXPECT_EQ(store->write_at(offset, &value, 1).code(), Code::kResourceExhausted);
     ASSERT_TRUE(store->write_at(offset, &value, 1, grant).ok());
     EXPECT_EQ(account->snapshot().physical[kIoBytes], 0U);
